@@ -63,6 +63,21 @@ pub trait ContainmentQuery {
     fn contains(&self, region: &Value, point: &Value) -> Option<bool>;
 }
 
+/// Kernel-free selector-constructor capability (task #7875).
+///
+/// Probed by the `FunctionCall` arm only after `reify_stdlib::eval_builtin` returned
+/// `Value::Undef`, with the call expression and the CURRENT scope's values:
+/// - `Some(v)` — the call is a selector ctor this hook builds; `v` replaces the Undef
+///   (`Some(Value::Undef)` is allowed and leaves the call Undef).
+/// - `None` — not a selector ctor the hook can build; the call stays Undef.
+///
+/// Diagnostics pushed into the `Vec` are forwarded to the runtime diagnostics sink.
+/// A plain fn pointer (not `&dyn`) so it can carry no engine state and costs the
+/// recursive `EvalContext` chain 8 bytes. `reify-eval` attaches
+/// `try_eval_symbolic_topology_selector` in `eval_ctx_with_meta`.
+pub type SymbolicSelectorCtorFn =
+    fn(&CompiledExpr, &ValueMap, &mut Vec<Diagnostic>) -> Option<Value>;
+
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
     /// Current values of all cells.
@@ -125,6 +140,10 @@ pub struct EvalContext<'a> {
     /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
     /// call sites that invoke the constraint solver.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    /// Optional kernel-free selector-ctor capability (task #7875); see
+    /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
+    /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
+    pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -140,6 +159,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -155,6 +175,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -171,6 +192,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -236,6 +258,15 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach the kernel-free selector-ctor capability (task #7875).
+    ///
+    /// See [`SymbolicSelectorCtorFn`] for the contract. Inherited by every child scope
+    /// (user-fn bodies, lambdas, let-blocks, quantifier predicates).
+    pub fn with_symbolic_selector_ctor(mut self, f: SymbolicSelectorCtorFn) -> Self {
+        self.symbolic_selector_ctor = Some(f);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -251,6 +282,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: self.undef_causes,
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
+            symbolic_selector_ctor: self.symbolic_selector_ctor,
         }
     }
 }
@@ -626,7 +658,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         return apply_lambda_with_point_unpacking(lambda, &evaluated_args[0], ctx);
                     }
-                    let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
+                    let result = resolve_symbolic_selector_on_undef(
+                        reify_stdlib::eval_builtin(&function.name, &evaluated_args),
+                        expr,
+                        ctx,
+                    );
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
                     // case (`linear_combine`) / AffineMap-constructor or
                     // transform_exp / inverse-dynamics / iso_it_tolerance /
@@ -1591,6 +1627,31 @@ fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalConte
     ctx.compute_dispatch?.dispatch(target, args)
 }
 
+/// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
+/// call the builtins left `Undef`. Any non-Undef `result`, or a context without the
+/// capability, passes through unchanged. See [`SymbolicSelectorCtorFn`] for the
+/// contract. The hook's diagnostics are forwarded to the runtime sink.
+///
+/// `#[inline(never)]` so the diagnostics `Vec` and minted value live in this frame,
+/// not on every recursive `eval_expr` frame — the same stack budget as
+/// `try_compute_dispatch`; pinned by `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn resolve_symbolic_selector_on_undef(
+    result: Value,
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+) -> Value {
+    let Some(mint) = ctx.symbolic_selector_ctor.filter(|_| result.is_undef()) else {
+        return result;
+    };
+    let mut diags = Vec::new();
+    let minted = mint(expr, ctx.values, &mut diags);
+    if let Some(sink) = ctx.diagnostics {
+        sink.borrow_mut().extend(diags);
+    }
+    minted.unwrap_or(result)
+}
+
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
@@ -1860,6 +1921,7 @@ fn eval_pred_for_value_elem<'a>(
                 undef_causes: ctx.undef_causes,
                 containment: ctx.containment,
                 compute_dispatch: ctx.compute_dispatch,
+                symbolic_selector_ctor: ctx.symbolic_selector_ctor,
             },
         )
     } else {
@@ -9961,7 +10023,10 @@ mod tests {
     #[test]
     fn symbolic_selector_ctor_hook_resolves_undef_call_nested_in_list() {
         let list = CompiledExpr::list_literal(
-            vec![stub_sel_call(lit(Value::Int(1), Type::Int), b"stub_sel_in_list")],
+            vec![stub_sel_call(
+                lit(Value::Int(1), Type::Int),
+                b"stub_sel_in_list",
+            )],
             Type::List(Box::new(Type::Int)),
         );
         let values = ValueMap::new();
@@ -10060,7 +10125,12 @@ mod tests {
 
         assert_eq!(eval_expr(&call, &ctx), Value::Undef);
         let drained = sink.into_inner();
-        assert_eq!(drained.len(), 1, "exactly the hook's warning; got {:?}", drained);
+        assert_eq!(
+            drained.len(),
+            1,
+            "exactly the hook's warning; got {:?}",
+            drained
+        );
         assert_eq!(drained[0].message, "stub-mint");
     }
 
