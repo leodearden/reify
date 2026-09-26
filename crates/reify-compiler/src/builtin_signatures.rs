@@ -46,6 +46,11 @@
 //!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
 //!   the canonical enumeration of every position routed through the eval-layer
 //!   LENGTH chokepoint.
+//! - The ANGLE producer positions of PRD
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md` leaf ζ (task 5782):
+//!   the transform, sweep, curve, modify and pattern producers whose angle
+//!   occupies a real positional index at the call site, all built by
+//!   [`angle_arg`].
 //! - The Euler builtins' `convention` slot (task #6082) — `orient_euler` and
 //!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
 //!   here only because the mechanism is name-keyed and generic. They are the
@@ -360,13 +365,13 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 ///
 /// Hoisted for the same reason [`length_arg`] is, and with a sharper
 /// obligation behind it: PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
-/// leaf ζ lands TWELVE angle slots at once — the four directional selectors'
-/// `tol`, and the eight producer positions across `rotate`, `rotate_around`,
+/// leaf ζ lands its angle slots at once — the four directional selectors'
+/// `tol`, and every producer angle position across `rotate`, `rotate_around`,
 /// `revolve`, `arc`, `draft` and `circular_pattern` — and decision D11 requires
-/// every ANGLE rejection to read with ONE wording. Twelve longhand literals
-/// would be twelve places a `migration_hint` could go missing, which is exactly
-/// the drift this leaf exists to end: eval and compile already spent one PRD
-/// apart on this field.
+/// every ANGLE rejection to read with ONE wording. A longhand literal per slot
+/// would be one more place per slot for a `migration_hint` to go missing,
+/// which is exactly the drift this leaf exists to end: eval and compile
+/// already spent one PRD apart on this field.
 ///
 /// Callers need the inline `const { &[…] }` block — a const-fn CALL is not
 /// promotable, as the "Shape" section on [`builtin_arg_slots`] explains for
@@ -468,7 +473,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // These four were the table's ONLY angle slots until PRD 3 leaf ζ, and
         // they carried no migration hint while eval's angle path carried one
         // from leaf β. ζ closes that gap by routing them through [`angle_arg`]
-        // with the eight producer positions below, so ANGLE has one wording
+        // with the producer positions below, so ANGLE has one wording
         // rather than an old one and a new one (decision D11). Pinned by
         // `angle_slot_rejection_carries_the_migration_hint`, which asserts the
         // reconciliation reached the OLDEST slot and not just the new ones.
@@ -2295,10 +2300,7 @@ mod tests {
     fn arc_slots_both_angles_but_neither_its_centre_nor_its_radius() {
         assert_slots_at_every_arity(
             "arc",
-            &[
-                angle_slot(4, "start_angle"),
-                angle_slot(5, "end_angle"),
-            ],
+            &[angle_slot(4, "start_angle"), angle_slot(5, "end_angle")],
         );
 
         let slotted: Vec<usize> = builtin_arg_slots("arc", 9)
@@ -4000,7 +4002,7 @@ mod tests {
     /// names happen to sit in a family slice.
     ///
     /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
-    /// admits NO name today. Of the 35 [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
+    /// admits NO name today. Of the [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
     /// `generate` is the only one unreachable from the family slices, and it is
     /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
     /// a NEW non-selector key added to that curated list is now swept even if
@@ -4086,8 +4088,8 @@ mod tests {
     /// [`crate::arg_check::check_arg_count_at_least`], and bare custom pushes
     /// such as `geometry.rs`'s `extrude` arm, which carries NO `"wrong number of
     /// arguments"` label at all. The label is therefore NOT universal. The
-    /// message shape `"{name}() expects … got {N}"` IS: it held for all 34
-    /// observable names across all three emit sites when this ledger was
+    /// message shape `"{name}() expects … got {N}"` IS: it held for every
+    /// observable name across all three emit sites when this ledger was
     /// measured. The trailing `", got {N}"` is matched with `ends_with` and not
     /// `contains`, because `", got 1"` is a prefix of `", got 12"`.
     ///
@@ -4188,7 +4190,7 @@ mod tests {
         }
     }
 
-    /// The PINNED accepted-arity ledger: the 34 slotted names whose lowering
+    /// The PINNED accepted-arity ledger: every slotted name whose lowering
     /// emits an observable arg-count diagnostic, and the arities each accepts.
     ///
     /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
@@ -4199,7 +4201,7 @@ mod tests {
     /// hazard arriving (task 5351's value forms are the named motivating case) —
     /// rather than blindly re-pinning the new value.
     ///
-    /// The 10 slotted names deliberately absent from this list are recorded, with
+    /// The slotted names deliberately absent from this list are recorded, with
     /// the measurement that justifies their absence, in
     /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`]; the completeness arm of
     /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] asserts
@@ -4259,8 +4261,8 @@ mod tests {
         // `draft` moves its angle between forms; its guarded pair discharges
         // the coupling rule exactly as `rotate`'s guard does.
         ("draft", AcceptedArities::Exactly(&[3, 4])),
-        // Pattern ORIGIN triples (task 5662) — the only rows here that are
-        // multi-arity because the name is genuinely OVERLOADED: the scalar form
+        // Pattern ORIGIN triples (task 5662) — multi-arity because the name
+        // is genuinely OVERLOADED: the scalar form
         // and the value form. Both are safe under the coupling rule because
         // their arms carry a load-bearing `if arg_count ==` guard, so no
         // MULTI_ARITY_AGNOSTIC_SAFE exemption is needed; pinned by

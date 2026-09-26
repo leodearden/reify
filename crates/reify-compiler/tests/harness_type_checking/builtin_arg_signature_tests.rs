@@ -449,7 +449,7 @@ const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
 /// COUPLING — the drift pin above is the same `&'static str` both layers read.
 ///
 /// This is what makes hard-coding [`ANGLE_HINT`] a pin rather than a second
-/// copy. PRD 3 leaf ζ lands twelve ANGLE slots on ONE hint-carrying template
+/// copy. PRD 3 leaf ζ lands every ANGLE slot on ONE hint-carrying template
 /// (decision D11); if `ANGLE_MIGRATION_HINT` is ever reworded, every message
 /// assertion below would silently follow the implementation, and only this
 /// assertion says so.
@@ -537,8 +537,8 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 /// the OPPOSITE — that an ANGLE slot renders the un-hinted form — and its job
 /// was to keep FAILING for anyone who added the hint early, so the compile and
 /// eval halves would move in one deliberate step rather than drifting apart a
-/// second time. ζ IS that step: it lands twelve ANGLE slots (the four selector
-/// `tol` arguments plus eight producer positions) on one hint-carrying
+/// second time. ζ IS that step: it lands every ANGLE slot (the four selector
+/// `tol` arguments plus every producer angle position) on one hint-carrying
 /// construction site, so the gap this pin held open is closed and the pin's job
 /// flips from holding it open to holding the reconciliation CLOSED. Anyone
 /// reverting an ANGLE slot to `migration_hint: None` now reds here.
@@ -1721,7 +1721,9 @@ fn draft_bare_angle_is_rejected_at_both_arity_forms() {
             .collect();
         assert_eq!(
             messages,
-            vec![format!("draft: angle argument expects Angle, got Int; {ANGLE_HINT}")],
+            vec![format!(
+                "draft: angle argument expects Angle, got Int; {ANGLE_HINT}"
+            )],
             "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
             compiled.diagnostics
         );
