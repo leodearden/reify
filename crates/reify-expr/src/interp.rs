@@ -156,16 +156,17 @@ fn locate_cell(grid: &[f64], query: f64) -> Option<usize> {
     Some(p - 1)
 }
 
-/// The sample at a cell endpoint: `lo` at `t = 0`, `hi` at `t = 1`, and
-/// `None` anywhere else, a NaN `t` included.
+/// The cell endpoint a query at cell parameter `t` sits on: `lo` at `t = 0`,
+/// `hi` at `t = 1`, and `None` anywhere else, a NaN `t` included. `lo`/`hi`
+/// are the endpoint samples or their grid indices.
 ///
 /// At a cell endpoint every other stencil entry has weight zero. Returning the
-/// endpoint sample leaves those entries out of the sum rather than multiplying
-/// them by 0, so a non-finite one cannot poison the result (`0 · NaN` and
-/// `0 · ∞` are both NaN). See the module-level "Grid nodes and non-finite
-/// samples" section.
+/// endpoint leaves those entries out of the sum rather than multiplying them
+/// by 0, so a non-finite one cannot poison the result (`0 · NaN` and `0 · ∞`
+/// are both NaN). See the module-level "Grid nodes and non-finite samples"
+/// section.
 #[inline]
-fn cell_endpoint_sample(lo: f64, hi: f64, t: f64) -> Option<f64> {
+fn cell_endpoint<T>(lo: T, hi: T, t: f64) -> Option<T> {
     if t == 0.0 {
         Some(lo)
     } else if t == 1.0 {
@@ -178,10 +179,10 @@ fn cell_endpoint_sample(lo: f64, hi: f64, t: f64) -> Option<f64> {
 /// Linear interpolation between `a` and `b` at parameter `t ∈ [0, 1]`.
 ///
 /// Returns `a` at `t = 0` and `b` at `t = 1` bit for bit, without reading the
-/// other, zero-weight endpoint ([`cell_endpoint_sample`]).
+/// other, zero-weight endpoint ([`cell_endpoint`]).
 #[inline]
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    cell_endpoint_sample(a, b, t).unwrap_or(a + (b - a) * t)
+    cell_endpoint(a, b, t).unwrap_or(a + (b - a) * t)
 }
 
 /// Index of the grid sample nearest to `query`, with reproducible tie-breaking
@@ -303,10 +304,10 @@ pub fn interpolate_1d(
 }
 
 /// Evaluate the 4-point Lagrange cubic interpolating `(p0, p1, p2, p3)` at
-/// equally-spaced parameters `(-1, 0, 1, 2)` for query parameter `t ∈ [0, 1]`.
-///
-/// Returns `p1` at `t=0` and `p2` at `t=1` bit for bit, without reading the
-/// other, zero-weight entries ([`cell_endpoint_sample`]).
+/// equally-spaced parameters `(-1, 0, 1, 2)` for a query parameter `t`
+/// strictly inside the cell, `t ∈ (0, 1)`. At a cell endpoint three of the
+/// four weights are zero, and a zero weight times a non-finite entry is NaN,
+/// so an endpoint query takes its node sample from [`cell_endpoint`] instead.
 ///
 /// Reproduces any cubic polynomial exactly when the four control values come
 /// from the polynomial at the matching parameters — this is the property
@@ -324,9 +325,6 @@ pub fn interpolate_1d(
 /// `t ∈ {0, 0.5, 1}` but diverge at all other parameter values.
 #[inline]
 fn cubic4_eval(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
-    if let Some(node) = cell_endpoint_sample(p1, p2, t) {
-        return node;
-    }
     // Lagrange basis at parameters (-1, 0, 1, 2):
     //   L_{-1}(t) = -t(t-1)(t-2)/6
     //   L_{0}(t)  =  (t+1)(t-1)(t-2)/2
@@ -355,7 +353,8 @@ fn cubic4_eval(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 /// preserved everywhere in the interior and the 2-point degenerate case
 /// collapses to linear (an algebraic identity verifiable by substituting the
 /// ghost expressions into the Lagrange basis sum). Constant-extrapolates
-/// outside the convex hull. Reads at most 4 samples (1 at boundaries).
+/// outside the convex hull. Reads at most 4 samples, and just one at a grid
+/// node or outside the convex hull.
 fn cubic_1d_kernel<F: Fn(usize) -> f64>(grid: &[f64], query: f64, val: F) -> f64 {
     if query <= grid[0] {
         return val(0);
@@ -370,6 +369,9 @@ fn cubic_1d_kernel<F: Fn(usize) -> f64>(grid: &[f64], query: f64, val: F) -> f64
         return val(i);
     }
     let t = (query - grid[i]) / span;
+    if let Some(node) = cell_endpoint(i, i + 1, t) {
+        return val(node);
+    }
 
     let p1 = val(i);
     let p2 = val(i + 1);
@@ -527,11 +529,11 @@ fn linear_2d(grid_x: &[f64], grid_y: &[f64], values: &[f64], query: (f64, f64)) 
 /// Bicubic kernel for a 2D grid that reads sample values via a closure.
 ///
 /// Computed as a tensor product of 1D cubic interpolations via
-/// [`cubic_1d_kernel`]: for each of the (≤4) x-indices in the bracketing
-/// 4×4 stencil, evaluate the cubic along `y` to collapse the column to a
-/// single value, then evaluate the cubic along `x` over those intermediates.
-/// Boundary cells inherit the linear-extrapolated ghost-point convention.
-/// Reads at most 16 samples per query — no `Vec` allocations.
+/// [`cubic_1d_kernel`]: the cubic along `x` over the (≤4) x-indices of the
+/// bracketing 4×4 stencil, each collapsed to a single value by the cubic
+/// along `y`. Boundary clamps, ghost points and the grid-node rule are
+/// therefore the 1D kernel's on each axis. Reads at most 16 samples per
+/// query — no `Vec` allocations.
 fn cubic_2d_kernel<F: Fn(usize, usize) -> f64>(
     grid_x: &[f64],
     grid_y: &[f64],
@@ -539,38 +541,7 @@ fn cubic_2d_kernel<F: Fn(usize, usize) -> f64>(
     qy: f64,
     val: F,
 ) -> f64 {
-    let last_x = grid_x.len() - 1;
-    // Collapse the y-axis at a fixed x-index to a single cubic-interpolated
-    // value. Uses the same closure-driven kernel as the 1D entry point, so
-    // boundary clamps and ghost points behave identically.
-    let y_collapse = |i_idx: usize| cubic_1d_kernel(grid_y, qy, |j| val(i_idx, j));
-
-    if qx <= grid_x[0] {
-        return y_collapse(0);
-    }
-    if qx >= grid_x[last_x] {
-        return y_collapse(last_x);
-    }
-    let i = locate_cell(grid_x, qx).expect("in-range query bracketed");
-    let span_x = grid_x[i + 1] - grid_x[i];
-    if span_x <= 0.0 {
-        return y_collapse(i);
-    }
-    let tx = (qx - grid_x[i]) / span_x;
-
-    let p1 = y_collapse(i);
-    let p2 = y_collapse(i + 1);
-    let p0 = if i == 0 {
-        2.0 * p1 - p2
-    } else {
-        y_collapse(i - 1)
-    };
-    let p3 = if i + 2 > last_x {
-        2.0 * p2 - p1
-    } else {
-        y_collapse(i + 2)
-    };
-    cubic4_eval(p0, p1, p2, p3, tx)
+    cubic_1d_kernel(grid_x, qx, |i| cubic_1d_kernel(grid_y, qy, |j| val(i, j)))
 }
 
 /// Slice-based 2D cubic kernel — thin wrapper over [`cubic_2d_kernel`].
@@ -738,43 +709,11 @@ fn cubic_3d(
     let (qx, qy, qz) = query;
     let ny = grid_y.len();
     let nz = grid_z.len();
-    let last_x = grid_x.len() - 1;
-
-    // For a fixed x-index `i_idx`, collapse the (y, z) slice to a single
-    // bicubic-interpolated value at (qy, qz). Reuses `cubic_2d_kernel` so
-    // ghost-point and boundary-clamp behaviour matches the 2D entry point.
-    let yz_collapse = |i_idx: usize| {
+    cubic_1d_kernel(grid_x, qx, |i| {
         cubic_2d_kernel(grid_y, grid_z, qy, qz, |j, k| {
-            values[index_3d(i_idx, j, k, ny, nz)]
+            values[index_3d(i, j, k, ny, nz)]
         })
-    };
-
-    if qx <= grid_x[0] {
-        return yz_collapse(0);
-    }
-    if qx >= grid_x[last_x] {
-        return yz_collapse(last_x);
-    }
-    let i = locate_cell(grid_x, qx).expect("in-range query bracketed");
-    let span_x = grid_x[i + 1] - grid_x[i];
-    if span_x <= 0.0 {
-        return yz_collapse(i);
-    }
-    let tx = (qx - grid_x[i]) / span_x;
-
-    let p1 = yz_collapse(i);
-    let p2 = yz_collapse(i + 1);
-    let p0 = if i == 0 {
-        2.0 * p1 - p2
-    } else {
-        yz_collapse(i - 1)
-    };
-    let p3 = if i + 2 > last_x {
-        2.0 * p2 - p1
-    } else {
-        yz_collapse(i + 2)
-    };
-    cubic4_eval(p0, p1, p2, p3, tx)
+    })
 }
 
 /// Locate a cell on a single axis with constant-extrapolation clamping.
