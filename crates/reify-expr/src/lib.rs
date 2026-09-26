@@ -9922,6 +9922,148 @@ mod tests {
         );
     }
 
+    // ── SymbolicSelectorCtorFn hook tests (step-1 RED / step-2 GREEN, task #7875) ─
+
+    /// Stand-in for reify-eval's `try_eval_symbolic_topology_selector`: builds only
+    /// calls named `stub_sel`. A `ValueRef` first arg is echoed from the `values`
+    /// the hook was handed, so a test can tell WHICH scope the hook saw.
+    fn stub_mint(
+        expr: &CompiledExpr,
+        values: &ValueMap,
+        _diags: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+            return None;
+        };
+        if function.name != "stub_sel" {
+            return None;
+        }
+        match args.first().map(|a| &a.kind) {
+            Some(CompiledExprKind::ValueRef(id)) => values.get(id).cloned(),
+            _ => Some(Value::Int(7)),
+        }
+    }
+
+    fn stub_sel_call(arg: CompiledExpr, tag: &[u8]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: ContentHash::of(tag),
+            result_type: Type::Int,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "stub_sel".to_string(),
+                    qualified_name: "std::stub_sel".to_string(),
+                },
+                args: vec![arg],
+            },
+        }
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_resolves_undef_call_nested_in_list() {
+        let list = CompiledExpr::list_literal(
+            vec![stub_sel_call(lit(Value::Int(1), Type::Int), b"stub_sel_in_list")],
+            Type::List(Box::new(Type::Int)),
+        );
+        let values = ValueMap::new();
+
+        let hooked = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        assert_eq!(eval_expr(&list, &hooked), Value::List(vec![Value::Int(7)]));
+
+        let unhooked = EvalContext::simple(&values);
+        assert_eq!(
+            eval_expr(&list, &unhooked),
+            Value::List(vec![Value::Undef]),
+            "without a hook the unknown call keeps its legacy Undef",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_user_fn_body_scope() {
+        let params = vec![("x".to_string(), Type::Int)];
+        let f = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Int,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: stub_sel_call(vref("f", "x", Type::Int), b"stub_sel_of_param"),
+            },
+            content_hash: ContentHash::of(b"f_stub_sel_body"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let call = CompiledExpr {
+            content_hash: ContentHash::of(b"call_f_stub_sel"),
+            result_type: Type::Int,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "f".to_string(),
+                args: vec![lit(Value::Int(5), Type::Int)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [f];
+        let ctx = EvalContext::new(&values, &functions).with_symbolic_selector_ctor(stub_mint);
+
+        assert_eq!(
+            eval_expr(&call, &ctx),
+            Value::Int(5),
+            "the hook must be inherited by the fn-body scope and see the param binding",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_not_consulted_when_builtin_resolves() {
+        fn mint_anything(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            _diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            Some(Value::Int(99))
+        }
+        let abs_call = CompiledExpr {
+            content_hash: ContentHash::of(b"abs_with_hook"),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![lit(Value::Real(-3.0), Type::dimensionless_scalar())],
+            },
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values).with_symbolic_selector_ctor(mint_anything);
+
+        assert_eq!(eval_expr(&abs_call, &ctx), Value::Real(3.0));
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_diagnostics_reach_runtime_sink() {
+        fn mint_nothing_but_warn(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            diags.push(Diagnostic::warning("stub-mint"));
+            None
+        }
+        let call = stub_sel_call(lit(Value::Int(1), Type::Int), b"stub_sel_warns");
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values)
+            .with_runtime_diagnostics(&sink)
+            .with_symbolic_selector_ctor(mint_nothing_but_warn);
+
+        assert_eq!(eval_expr(&call, &ctx), Value::Undef);
+        let drained = sink.into_inner();
+        assert_eq!(drained.len(), 1, "exactly the hook's warning; got {:?}", drained);
+        assert_eq!(drained[0].message, "stub-mint");
+    }
+
     /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`
     /// above): when `apply_lambda(f, [e])` itself evaluates to `Value::Undef`
     /// (e.g. `f` is partial or mistyped), the result must be a *determined*
