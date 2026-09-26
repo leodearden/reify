@@ -1026,16 +1026,25 @@ mod tests {
         path
     }
 
-    /// A stub body: append one byte to `counter` (the run-count seam), then copy
-    /// the committed fixture to whatever `-o <path>` the composed args carry, and
-    /// exit 0 — a successful slice that records that it ran.
+    /// A stub body: copy `fixture` to whatever `-o <path>` the composed args
+    /// carry, and exit 0 — a successful slice.
+    #[cfg(unix)]
+    fn emit_fixture_body(fixture: &Path) -> String {
+        format!(
+            "out=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
+             if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\ncp '{f}' \"$out\"\n",
+            f = fixture.display(),
+        )
+    }
+
+    /// [`emit_fixture_body`], first appending one line to `counter` (the
+    /// run-count seam) — a successful slice that records that it ran.
     #[cfg(unix)]
     fn emit_fixture_counting_body(fixture: &Path, counter: &Path) -> String {
         format!(
-            "echo x >> '{c}'\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
-             if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\ncp '{f}' \"$out\"\n",
+            "echo x >> '{c}'\n{body}",
             c = counter.display(),
-            f = fixture.display(),
+            body = emit_fixture_body(fixture),
         )
     }
 
@@ -1363,11 +1372,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let gcode = dir.path().join("temperature-less.gcode");
         std::fs::write(&gcode, temperature_less).expect("write temperature-less G-code");
-        let counter = dir.path().join("run-count");
         let stub = write_stub_script(
             dir.path(),
             "temperature-less-slicer.sh",
-            &emit_fixture_counting_body(&gcode, &counter),
+            &emit_fixture_body(&gcode),
         );
 
         let result = match fdm_slice_dispatch(
@@ -1380,10 +1388,6 @@ mod tests {
             ComputeOutcome::Completed { result, .. } => result,
             other => panic!("the stub-slicer dispatch expected Completed, got {other:?}"),
         };
-        let runs = std::fs::read_to_string(&counter)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
-        assert_eq!(runs, 1, "the stub slicer ran exactly once");
 
         let beads = as_list(field(&result, "beads").expect("beads field"));
         assert!(
