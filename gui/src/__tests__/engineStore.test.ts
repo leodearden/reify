@@ -40,6 +40,7 @@ vi.mock('../bridge', () => ({
   onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
   onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
   onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onEvalGeneration: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 import {
@@ -63,6 +64,7 @@ import {
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
   onDisplayAppearanceUpdate,
+  onEvalGeneration,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -86,6 +88,7 @@ const mockOnTensegrityWiresUpdate = vi.mocked(onTensegrityWiresUpdate);
 const mockOnTensegritySurfacesUpdate = vi.mocked(onTensegritySurfacesUpdate);
 const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
 const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
+const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,6 +106,7 @@ beforeEach(() => {
   mockOnTensegritySurfacesUpdate.mockResolvedValue(vi.fn());
   mockOnDisplayPanesUpdate.mockResolvedValue(vi.fn());
   mockOnDisplayAppearanceUpdate.mockResolvedValue(vi.fn());
+  mockOnEvalGeneration.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
@@ -314,6 +318,7 @@ describe('engineStore', () => {
       const unlistenMeshRemoved = vi.fn();
       const unlistenValueRemoved = vi.fn();
       const unlistenConstraintRemoved = vi.fn();
+      const unlistenEvalGeneration = vi.fn();
 
       mockOnMeshUpdate.mockResolvedValue(unlistenMesh);
       mockOnValueUpdate.mockResolvedValue(unlistenValue);
@@ -322,6 +327,7 @@ describe('engineStore', () => {
       mockOnMeshRemoved.mockResolvedValue(unlistenMeshRemoved);
       mockOnValueRemoved.mockResolvedValue(unlistenValueRemoved);
       mockOnConstraintRemoved.mockResolvedValue(unlistenConstraintRemoved);
+      mockOnEvalGeneration.mockResolvedValue(unlistenEvalGeneration);
 
       const { subscribeToEvents } = createEngineStore();
       const cleanup = await subscribeToEvents();
@@ -340,6 +346,7 @@ describe('engineStore', () => {
       expect(unlistenMeshRemoved).toHaveBeenCalled();
       expect(unlistenValueRemoved).toHaveBeenCalled();
       expect(unlistenConstraintRemoved).toHaveBeenCalled();
+      expect(unlistenEvalGeneration).toHaveBeenCalled();
 
       dispose();
     });
@@ -2777,6 +2784,146 @@ describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', 
 
       await cleanup();
       expect(spyUnlisten).toHaveBeenCalled();
+      dispose();
+    });
+  });
+});
+
+// ── task 7853: a whole-state snapshot never overwrites newer event-applied state ──
+
+describe('engineStore publish-generation guard', () => {
+  const width = (value: string): ValueData => ({ ...sampleValue, value });
+
+  function snapshot(value: string, feaDiagnostics: FeaDiagnosticInfo[] = []): GuiState {
+    return {
+      fea_convergence: null,
+      meshes: [sampleMesh],
+      values: [width(value)],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: feaDiagnostics,
+    };
+  }
+
+  /** A store subscribed to its events, and the callbacks it handed the bridge. */
+  async function subscribedStore() {
+    let announce: ((generation: number) => void) | undefined;
+    let valueUpdate: ((value: ValueData) => void) | undefined;
+    let feaDiagnosticsChanged: ((diags: FeaDiagnosticInfo[]) => void) | undefined;
+    mockOnMeshUpdate.mockResolvedValue(vi.fn());
+    mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+    mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+    mockOnMeshRemoved.mockResolvedValue(vi.fn());
+    mockOnValueRemoved.mockResolvedValue(vi.fn());
+    mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+    mockOnEvalGeneration.mockImplementation(async (cb) => {
+      announce = cb;
+      return vi.fn();
+    });
+    mockOnValueUpdate.mockImplementation(async (cb) => {
+      valueUpdate = cb;
+      return vi.fn();
+    });
+    mockOnFeaDiagnosticsChanged.mockImplementation(async (cb) => {
+      feaDiagnosticsChanged = cb as (diags: FeaDiagnosticInfo[]) => void;
+      return vi.fn();
+    });
+    const onEngineReinitialized = vi.fn();
+    const store = createEngineStore({ onEngineReinitialized });
+    await store.subscribeToEvents();
+    return {
+      store,
+      onEngineReinitialized,
+      announce: announce!,
+      valueUpdate: valueUpdate!,
+      feaDiagnosticsChanged: feaDiagnosticsChanged!,
+    };
+  }
+
+  const shownWidth = (store: ReturnType<typeof createEngineStore>) =>
+    store.state.values[sampleValue.cell_id]?.value;
+
+  it('applyPublishedState applies a snapshot when no newer generation was announced', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized } = await subscribedStore();
+
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      expect(shownWidth(store)).toBe('50');
+      expect(store.state.meshes[sampleMesh.entity_path]).toEqual(sampleMesh);
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  it('a snapshot older than an announced generation leaves event-applied state in place', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized, announce, valueUpdate, feaDiagnosticsChanged } =
+        await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      store.beginAutoResolveLoop();
+      store.applyAutoResolveIteration(sampleIteration);
+      expect(store.state.autoResolve.iterations).toHaveLength(1);
+      onEngineReinitialized.mockClear();
+
+      announce(5);
+      valueUpdate(width('120'));
+      const live: FeaDiagnosticInfo[] = [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }];
+      feaDiagnosticsChanged(live);
+      store.applyPublishedState({
+        generation: 4,
+        state: snapshot('80', [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationY'] }]),
+      });
+
+      expect(shownWidth(store)).toBe('120');
+      expect(store.state.feaDiagnostics).toEqual(live);
+      expect(store.state.autoResolve).toEqual({ active: false, iterations: [] });
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  it('a snapshot of the announced generation itself is applied', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(5);
+      store.applyPublishedState({ generation: 5, state: snapshot('80') });
+
+      expect(shownWidth(store)).toBe('80');
+      dispose();
+    });
+  });
+
+  it('an applied snapshot raises the newest generation', async () => {
+    await createRoot(async (dispose) => {
+      const { store } = await subscribedStore();
+
+      store.applyPublishedState({ generation: 7, state: snapshot('70') });
+      store.applyPublishedState({ generation: 6, state: snapshot('60') });
+
+      expect(shownWidth(store)).toBe('70');
+      dispose();
+    });
+  });
+
+  it('announcements never lower the newest generation', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(9);
+      announce(4);
+      store.applyPublishedState({ generation: 6, state: snapshot('60') });
+
+      expect(shownWidth(store)).toBe('50');
       dispose();
     });
   });
