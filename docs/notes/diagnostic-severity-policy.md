@@ -297,9 +297,9 @@ The review checks are the ones that make it falsifiable:
   the gate is RED at every commit in between.
 
 Worked example: bounding the code probe (2026-09, task #5887) raised
-`crates/reify-eval/src/geometry_ops.rs` from 137 to 138 and moved no other ROW
+`crates/reify-eval/src/geometry_ops.rs` from 137 to 139 and moved no other ROW
 — which is exactly why the first check above is necessary but not sufficient.
-It surfaced FOUR sites, not one: `modal_ops.rs` and `reify-stdlib/src/geometry.rs`
+It surfaced FOUR sites, not two: `modal_ops.rs` and `reify-stdlib/src/geometry.rs`
 each carried a pre-existing stale row with one of headroom, which absorbed
 their new site without moving a row, so a reviewer reading only the manifest
 diff sees two of the four movers not at all. The census diff does show them,
@@ -431,9 +431,11 @@ value that retired nothing.
 
 ### Why the code probe is bounded at a constructor beyond a statement end
 
-*Re-measured 2026-09-21, task #5887, on the tree the bound lands on: 529 swept
-files / 67 with rows / **644** code-less sites. Not comparable with the window
-table above, which is a #5405-era corpus.*
+*Re-measured 2026-09-21, task #5887, on the tree the bound was written against:
+529 swept files / 67 with rows / **644** code-less sites. Not comparable with the
+window table above, which is a #5405-era corpus. The branch was later rebased;
+the figures for the tree it actually lands on are under "Rebased" at the end of
+this subsection.*
 
 The probe used to run its whole 15-line window unconditionally, so a brand-new
 code-less site parked directly ABOVE an existing coded one was censused as
@@ -514,7 +516,8 @@ so it closed a latent false RED without moving a verdict.
 Because all four movers are genuine, the correct action was to re-bless them —
 but only ONE manifest row moved, and the gap matters to §3(e)'s first review
 check. `geometry_ops.rs` gained two sites against a row carrying one of
-headroom, so it rose 137 → 138. `modal_ops.rs` (row 25, live 24) and
+headroom, so it rose 137 → 138 on that tree (137 → 139 on the rebased one, see
+below). `modal_ops.rs` (row 25, live 24) and
 `reify-stdlib/src/geometry.rs` (row 2, live 1) each carried a pre-existing
 STALE row with exactly one of headroom, which silently absorbed their new site:
 live rose, the row did not, and the manifest diff shows nothing. So "the diff
@@ -530,6 +533,21 @@ off that inflated start, +7 read as +6 for the rejected rule and +4 as +3 for
 the accepted one. Derive the census and the mover list from the SAME pair of
 generator runs; an endpoint that looks right (651 here did) does not confirm
 the start.
+
+**Rebased.** *Re-measured 2026-09-26 on the tree the bound lands on: 530 swept
+files / 67 with rows.* The accepted rule takes it from **645 → 649** sites. It
+moves the same four sites, now at `geometry_ops.rs:382` and `:693`,
+`modal_ops.rs:556` and `reify-stdlib/src/geometry.rs:2231`, and only the
+`geometry_ops.rs` row moves, but that row now goes **137 → 139**, not 137 → 138.
+The reason is task #5666 (`528945134e`), which landed on `main` after the first
+measurement. It added one code-less `Diagnostic::warning` to `geometry_ops.rs`,
+and that site used up the row's one site of headroom on `main` (row 137, live
+137). So the row rises by the full two movers. The pre-rebase row of 138 was
+green on the branch as committed and red on the rebased tree. That is the rule
+under "Regeneration is tree-bound" in action: a green captured before a rebase
+says nothing about what lands.
+The rejected rule was not re-run on the rebased tree, so its 644 → 651 is still
+the pre-rebase figure.
 
 ### Comment-mask incidence
 
