@@ -246,9 +246,52 @@ fn validate_accepts_empty_baseline() {
 
 #[test]
 fn validate_accepts_wellformed_sorted_triples() {
-    let good = "crates/reify-eval/src/dispatcher.rs :: orphaned :: #4592 status=done: x\n\
+    let good = "crates/reify-eval/src/dispatcher.rs :: malformed-cite :: // TODO(task 4592): x\n\
                 crates/reify-eval/src/engine_eval.rs :: untracked :: // TODO: y\n";
     assert!(validate_baseline_content(good).is_ok(), "well-formed sorted content must pass");
+}
+
+/// A DB-dependent kind never enters the baseline, even on an otherwise
+/// well-formed line: the kind is the only defect in each fixture, and the
+/// rejection must name it.
+#[test]
+fn validate_rejects_db_dependent_kinds() {
+    for kind in [
+        "orphaned",
+        "unknown-id",
+        "parked-on-anchor",
+        "g-allow-orphaned",
+        "g-allow-unknown-id",
+        "task-cites-deleted-path",
+        "task-cites-renamed-path",
+    ] {
+        let line = format!("crates/x/y.rs :: {kind} :: #1234 status=done: x\n");
+        match validate_baseline_content(&line) {
+            Ok(()) => panic!("a `{kind}` line must be rejected; line={line:?}"),
+            Err(e) => assert!(
+                e.contains(kind),
+                "the rejection must name `{kind}`; got {e:?}"
+            ),
+        }
+    }
+}
+
+/// Over-narrowing guard, green on arrival: every structural kind stays
+/// accepted. The literal list is this test's independent oracle.
+#[test]
+fn validate_accepts_every_structural_kind() {
+    for kind in [
+        "untracked",
+        "malformed-cite",
+        "phantom-tracking",
+        "bare-ignore",
+    ] {
+        let line = format!("crates/x/y.rs :: {kind} :: x\n");
+        assert!(
+            validate_baseline_content(&line).is_ok(),
+            "a `{kind}` line must be accepted; line={line:?}"
+        );
+    }
 }
 
 #[test]
