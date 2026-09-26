@@ -655,16 +655,13 @@ fn merge_post_build_verdicts(
 /// and an id-less `ConstraintIndeterminate` carries no needle to match
 /// (`idless_indeterminate_warning_survives_an_upgrade`).
 ///
-/// γ (#5403) has since landed the unified gate over the merged set and did NOT
-/// resolve either — both remain #6048's.  The gate did make the FIRST gap
-/// consequential, which is why it is worth restating here: a surviving stale
-/// `ConstraintViolated` Error would now move the exit code, contradicting the
-/// `Satisfied` verdict `check` prints on stdout.  That is held off by
-/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4, which excuses `ConstraintViolated`
-/// with disposition `FixPath` — the fix belongs HERE (widen this helper's
-/// scope past `ConstraintIndeterminate`), not in the gate.  Real violations
-/// still exit non-zero via `ConstraintOutcome::SomeViolated` in
-/// [`finish_check`], so nothing is lost meanwhile.
+/// The first gap is exit-relevant: [`check_gating_error`] reads the merged set,
+/// so a surviving stale `ConstraintViolated` Error would move the exit code
+/// against the `Satisfied` verdict `check` prints on stdout.
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4 (`FixPath`) holds that off; its fix
+/// belongs HERE — widening this helper's scope past `ConstraintIndeterminate`
+/// (#6048) — not in the gate.  Real violations still exit non-zero via
+/// `ConstraintOutcome::SomeViolated` in [`finish_check`].
 ///
 /// No exit code can move either way: `report_eval_output`'s outcome derives
 /// solely from `constraint_results`, never from the diagnostic list.  An empty
@@ -743,13 +740,12 @@ fn drop_falsified_indeterminate_diagnostics(
 /// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
 /// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
 ///
-/// **Other `error:` lines.** Task 5311 removed this diagnostic from the set of
-/// `error:` lines `check` used to print at exit 0, but did not empty it; the
-/// residual shapes across `examples/**/*.ri` are inventoried and classified in
-/// #7308, which also records the sweep command that measures them.  Each of
-/// them now exits non-zero under `check` through [`check_gating_error`] unless
-/// a [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses it.  #7308 owns triaging
-/// them, and never by adding allowlist entries.
+/// **Other `error:` lines.** Every other `Severity::Error` diagnostic makes
+/// `check` exit non-zero through [`check_gating_error`] unless a
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses it.  The residual shapes across
+/// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
+/// measures them), which owns triaging them — never by adding allowlist
+/// entries.
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -964,14 +960,6 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // run on the check path — a behaviour change this leaf is not
                 // scoped to make.
                 //
-                // γ (#5403) HAS SINCE LANDED and did NOT pay this down. It
-                // rewrote the escalation predicates below — both ad-hoc
-                // per-code bolt-ons replaced by one `check_gating_error` over
-                // the merged set — but that is an exit-code change over a set
-                // this arm already computes, and it neither adds nor removes a
-                // pass. The restructure is a different, larger move, and it is
-                // recorded here so the cost is not lost, not because γ owns it.
-                //
                 // OWNER: #5973 ("push the post-realization constraint re-check
                 // down into Engine::check(), retiring cmd_check's CLI-side
                 // merge_post_build_verdicts"), which is option (C) from
@@ -1055,31 +1043,18 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // INV-SF-2 (#5403): any Error-severity diagnostic on any channel makes
-        // `check` exit non-zero, unless an enumerated
+        // INV-SF-2: any `Severity::Error` in the set `report_eval_output` just
+        // showed the user makes `check` exit non-zero, unless a
         // `CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.
         //
-        // Gated on `merged_diagnostics` — the set `report_eval_output` just
-        // showed the user — and NOT on `result.diagnostics` (check()'s own
-        // list, which is what the two ad-hoc escalations deleted here read).
-        // That is the widening leaf β recorded and deferred to γ: a
-        // realization-only Error is no longer invisible to the exit code. The
-        // post-geometry harvest's `E_DFM_BUILD_VOLUME` is the concrete family
-        // β named; it now gates, on purpose, pinned by
-        // `check_error_gate_tests::build_volume_harvest_error_now_gates`.
+        // Gated on `merged_diagnostics`, NOT `result.diagnostics`, so a
+        // realization-only Error moves the exit code too — e.g. the
+        // post-geometry harvest's `E_DFM_BUILD_VOLUME`, which check()'s own
+        // list never carries. Pinned end to end by
+        // `cli_check.rs::check_exits_nonzero_on_a_realization_only_build_volume_error`.
         //
-        // Runs AFTER `finish_check` so stdout is byte-identical and only the
-        // exit code escalates — exactly the placement, and exactly the
-        // stdout/exit pair, the deleted bolt-ons already had.
-        //
-        // Both deleted escalations are SUBSUMED, not lost:
-        // `GdtIllegalModifier` has a single, unconditionally-`Diagnostic::
-        // error` emission site (`engine_constraints::illegal_modifier_error`),
-        // and the deleted DFM predicate was this same severity test plus an
-        // `E_DFM_` message filter. Locked by
-        // `check_error_gate_tests::the_deleted_bolt_ons_are_subsumed`.
-        // Warning-severity diagnostics (GdtRemoved2018, W_DFM_*) stay
-        // non-fatal, as before (C1).
+        // Runs AFTER `finish_check`, so stdout is unchanged and only the exit
+        // code escalates. Warnings (GdtRemoved2018, W_DFM_*) never gate (C1).
         if check_gating_error(&merged_diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
@@ -1093,10 +1068,9 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // check_constraints_with_values.
         //
         // GD&T legality is enforced on BOTH paths via `engine.run_gdt_check_passes`
-        // (task 4589): diagnostics are folded in before `report_eval_output` below
-        // and the same GdtIllegalModifier → FAILURE escalation is applied after
-        // `finish_check`.  The former known-limitation comment (task 4475 β scope)
-        // has been resolved.
+        // (task 4589): diagnostics are folded in before `report_eval_output` below,
+        // so the exit gate after `finish_check` sees a `GdtIllegalModifier` Error
+        // exactly as the no-purpose path does.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.
@@ -1303,25 +1277,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // INV-SF-2 (#5403): the IDENTICAL gate the no-purpose branch runs, over
-        // this branch's own already-merged, already-reported list — the build/
-        // eval front end, `check_constraints_with_values` and
-        // `run_gdt_check_passes` folded together above. Both paths therefore
-        // gate on "what the user was just shown", which is PRD §7's "applied
-        // identically on check's no-purpose and `--purpose` paths via one
-        // shared helper".
-        //
-        // Placement is unchanged from the GdtIllegalModifier escalation this
-        // replaces: after `finish_check`, so stdout is byte-identical and only
-        // the exit code escalates. That escalation is subsumed —
-        // `illegal_modifier_error` is unconditionally `Diagnostic::error`, so
-        // the general severity test sees every diagnostic the code-scoped one
-        // did. GdtRemoved2018 warnings stay non-fatal.
-        //
-        // #5748 recorded this branch's lack of a DFM-Error counterpart as a
-        // PRE-EXISTING asymmetry for γ to close incidentally; it is closed
-        // here, and `cli_check.rs::check_purpose_gate_matches_the_no_purpose_gate`
-        // asserts the two paths' exit codes agree so they cannot drift again.
+        // INV-SF-2: the same gate as the no-purpose branch, over this branch's
+        // already-merged, already-reported list — the build/eval front end,
+        // `check_constraints_with_values` and `run_gdt_check_passes` folded
+        // together above — and placed after `finish_check` for the same
+        // reason. `cli_check.rs::check_purpose_gate_matches_the_no_purpose_gate`
+        // asserts the two paths' exit codes agree.
         if check_gating_error(&diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
@@ -2994,20 +2955,24 @@ struct CheckErrorExitAllowance {
 /// The BOUNDED burn-down set for INV-SF-2's `reify check` exit gate.
 ///
 /// [`check_gating_error`] makes any `Severity::Error` diagnostic on any
-/// channel exit non-zero — *unless* an entry here excuses it.  Every entry is
-/// a legacy emission that predates the gate and whose Error severity is wrong
-/// (or wrongly reachable) on `check`'s deliberately kernel-less, solver-less
-/// path; none of them is a policy decision about what `check` should tolerate.
+/// channel exit non-zero — *unless* an entry here excuses it.  Every entry was
+/// seeded for a legacy emission that predates the gate and whose Error
+/// severity is wrong (or wrongly reachable) on `check`'s deliberately
+/// kernel-less, solver-less path; none of them is a policy decision about what
+/// `check` should tolerate.  The enforced excusal is the MATCHER, not that
+/// intent, and entry #2's matcher is knowingly broader than its intent — see
+/// that entry.
 ///
 /// The table is pinned whole by `check_error_exit_allowlist_ratchet` and is
 /// burned to ZERO by #5404, converging on INV-SF-2's end state where no
 /// per-code list mediates the exit code at all.  **Do not add entries** — see
 /// that module's doc for the standing obligation.
 ///
-/// Entries #2 and #3 come from a MEASURED sweep of `reify check` over all
-/// `examples/*.ri` and `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of
-/// the files that exited 0 while printing an `error:` line, only those
-/// families are expected on a healthy path.  Entry #1 is a posture entry that
+/// Entries #2 and #3 were seeded from a MEASURED sweep of `reify check` over
+/// all `examples/*.ri` and `crates/reify-cli/tests/fixtures/*.ri`
+/// (2026-08-29): of the files that exited 0 while printing an `error:` line,
+/// the `auto`-param case they target was the only one expected on a healthy
+/// path.  Their code-less substrings excuse more than that case.  Entry #1 is a posture entry that
 /// excuses nothing `check` reaches today, kept by ruling until its deadline
 /// (see its marker); entry #4 is a merge hazard, not a corpus finding.  The
 /// genuine design errors in that same sweep —
@@ -3037,16 +3002,25 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
         disposition: CheckErrorAllowlistDisposition::Demote,
         cite: "#5404",
     },
-    // TODO(#5404): demote or re-scope this so `check` does not report an
-    // unresolved `auto` param as an Error, then delete this entry.
+    // TODO(#5404): give the `auto`-param-awaiting-solver case its own code or
+    // message, key this excusal on that, then delete this entry.
     //
-    // A geometry op argument is left `Undef` because an `auto` param awaits a
-    // solver `check` deliberately does not run (`examples/
+    // Seeded for a geometry op argument left `Undef` because an `auto` param
+    // awaits a solver `check` deliberately does not run (`examples/
     // fea_bracket_minimize_mass.ri`, `param thickness : Length = auto(free)`).
     // `reify eval` on that same file exits 0 (MEASURED — it takes >60s because
-    // it actually solves), so gating here would make `check` newly DISAGREE
-    // with `eval` about a healthy design.  Same posture artifact as the
-    // trampoline entry above.
+    // it actually solves), so gating there would make `check` newly DISAGREE
+    // with `eval` about a healthy design.
+    //
+    // KNOWINGLY OVER-BROAD: the text comes from
+    // `geometry_ops.rs::unresolved_arg_message`, which words EVERY Undef
+    // geometry argument this way, so this entry also excuses genuine design
+    // errors that `reify eval` rejects (a `box` width divided by a zero param
+    // exits 0 under `check`, 1 under `eval`), as well as the code-less
+    // "per-instance re-realization compile error … is unresolved (Undef)"
+    // family #6608 replaces with coded Errors.  That gap is pinned by
+    // `cli_check.rs::check_excuses_every_code_less_undef_geometry_argument`,
+    // which #5404 flips.
     CheckErrorExitAllowance {
         matcher: CheckErrorAllowlistMatcher::MessageContains("is unresolved (Undef)"),
         disposition: CheckErrorAllowlistDisposition::Demote,
@@ -3055,13 +3029,15 @@ const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
     // TODO(#5404): demote alongside the entry above — this is its rollup.
     //
     // "all geometry operations failed; no geometry output produced" is the
-    // summary line for the entry above; `check` writes no geometry, so "no
-    // geometry output produced" is not a fact about the design.
+    // rollup printed whenever every op failed, WHATEVER the cause; `check`
+    // writes no geometry, so "no geometry output produced" is not a fact about
+    // the design.  Excusing it is harmless only while the per-op errors beside
+    // it still gate; where entry #2 excuses those too, this entry inherits
+    // entry #2's over-breadth.
     //
-    // This does NOT rescue `examples/sweep_degenerate.ri`, which carries the
-    // same rollup: its `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')`
-    // errors are matched by nothing here, so it still exits 1 — as `reify
-    // eval` already does.
+    // `examples/sweep_degenerate.ri` carries the same rollup beside
+    // `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')` errors that
+    // nothing here matches, so it still exits 1 — as `reify eval` does.
     CheckErrorExitAllowance {
         matcher: CheckErrorAllowlistMatcher::MessageContains("all geometry operations failed"),
         disposition: CheckErrorAllowlistDisposition::Demote,
@@ -3135,9 +3111,9 @@ fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
 /// set — what the user was just shown — so a realization-only Error is no
 /// longer invisible to the exit code.
 ///
-/// Returns the diagnostic rather than a `bool` so a caller can name the entry
-/// that gated, and so `an_excused_error_neither_gates_nor_masks` can assert
-/// that an allowlisted Error never masks a co-resident gating one.
+/// Both production callers only test `.is_some()`.  The diagnostic is returned
+/// rather than a `bool` solely so `an_excused_error_neither_gates_nor_masks`
+/// can assert that an allowlisted Error never masks a co-resident gating one.
 fn check_gating_error(
     diagnostics: &[reify_core::Diagnostic],
 ) -> Option<&reify_core::Diagnostic> {
@@ -3433,12 +3409,10 @@ fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> boo
 /// asymmetry is stderr ordering only — membership is a union under the same
 /// key either way, so no invariant depends on it and no exit code can move.
 ///
-/// γ (#5403) has landed and did NOT unify the arms: it adds one exit gate that
-/// reads whichever merged set each arm produced, and a gate over a set is
-/// blind to that set's order.  So the asymmetry stands, still costing nothing.
-/// The natural point to collapse it is **#5973**, which moves sub-path (b)
-/// onto (c)'s shape — after that both arms seed from the realization's list
-/// and there is only one ordering left to pick.
+/// The exit gate, [`check_gating_error`], reads whichever merged set an arm
+/// produced and is blind to its order, so the asymmetry costs nothing.
+/// Collapsing it is owned by **#5973**, which moves sub-path (b) onto (c)'s
+/// shape so both arms seed from the realization's list.
 ///
 /// # Dedup key
 ///
@@ -5578,26 +5552,6 @@ mod check_error_gate_tests {
         }
     }
 
-    /// The one class the general gate WIDENS to, deliberately.
-    ///
-    /// `E_DFM_BUILD_VOLUME` is appended by the post-geometry harvest and
-    /// reaches the MERGED set, but the deleted bolt-on read check()'s own list
-    /// and was additionally gated on `has_dfm_rule`.  #5748's pre-γ pin warned
-    /// that pointing the old predicate at the merged set would widen the gate
-    /// "off the back of a collection change"; γ makes exactly that widening,
-    /// on purpose and with this test.
-    #[test]
-    fn build_volume_harvest_error_now_gates() {
-        assert!(
-            check_gating_error(&[Diagnostic::error(
-                "E_DFM_BUILD_VOLUME: realized volume is zero"
-            )])
-            .is_some(),
-            "the harvest Error reaches the user through the merged set, so it \
-             must move the exit code too"
-        );
-    }
-
     /// Each seeded allowlist entry, exercised against a message taken verbatim
     /// from the MEASURED corpus sweep that seeded it.
     #[test]
@@ -6946,30 +6900,17 @@ mod d2_pass_ordering_tests {
         );
     }
 
-    /// POST-γ (#5403): the exit gate reads the MERGED set — what
-    /// `report_eval_output` just showed the user — and NOT `result.diagnostics`,
-    /// check()'s own list, where β deliberately left it.
+    /// The exit gate reads the MERGED set — what `report_eval_output` just
+    /// showed the user — and NOT `result.diagnostics`, check()'s own list.
     ///
-    /// This is the inversion of the pre-γ pin that stood here. That pin held
-    /// the split the two ad-hoc escalations depended on: the harvest error IS
-    /// in the merged set (D2 — it must reach the user) and is NOT in the
-    /// predicate's input (β — it must not move the exit), because feeding the
-    /// merged set to the deleted `E_DFM_` message-filter predicate would have
-    /// widened the gate off the back of a pure COLLECTION change, with no `.ri`
-    /// fixture exercising it. Its doc named this test as the one γ must update.
+    /// `E_DFM_BUILD_VOLUME` (appended by `check_constraints_post_geometry`) is
+    /// realization-only: it reaches the merged set (D2) and is absent from
+    /// check()'s list, so it gates only because the gate reads the merged set.
+    /// This is the helper-level half of that pin; the end-to-end half is
+    /// `cli_check.rs::check_exits_nonzero_on_a_realization_only_build_volume_error`.
     ///
-    /// γ makes exactly that widening, deliberately: `check_gating_error` is a
-    /// general `Severity::Error` gate, `E_DFM_BUILD_VOLUME` (appended
-    /// unconditionally by `check_constraints_post_geometry`) is not
-    /// allowlisted, and it now gates. The `.ri` fixture the pre-γ doc asked for
-    /// is `cli_check.rs::check_exits_nonzero_on_eval_phase_circular_let_binding`,
-    /// which exercises the same "Error in the reported set → non-zero exit"
-    /// contract end to end on a kernel-free file.
-    ///
-    /// The D2 precondition is preserved verbatim, because it is what makes the
-    /// widening meaningful rather than accidental: if the harvest error ever
-    /// stops reaching the merged set, this test must fail loudly rather than
-    /// pass vacuously.
+    /// The D2 precondition assertion makes this fail loudly, rather than pass
+    /// vacuously, if the harvest error ever stops reaching the merged set.
     #[test]
     fn gate_reads_the_merged_set_not_checks_own_list() {
         let harvest_error = Diagnostic::error("E_DFM_BUILD_VOLUME: realized volume is zero");
@@ -6984,13 +6925,12 @@ mod d2_pass_ordering_tests {
         );
         assert!(
             check_gating_error(&check_diags).is_none(),
-            "check()'s own list carries no Error at all here — so a gate still \
-             reading it, as β's did, would let this module exit 0"
+            "check()'s own list carries no Error at all here — so a gate \
+             reading it would let this module exit 0"
         );
         assert!(
             check_gating_error(&merged).is_some(),
-            "and the merged set does gate: this is γ's widening, the one β \
-             recorded and deferred. If this ever stops holding, the harvest \
+            "the merged set must gate. If this ever stops holding, the harvest \
              error stopped reaching the reported set and the D2 precondition \
              above is the assertion to trust"
         );
@@ -7230,15 +7170,13 @@ mod d2_pass_ordering_tests {
     /// describes.  It is pinned rather than fixed because dropping a violation
     /// error is a heavier call than dropping an indeterminacy warning.
     ///
-    /// γ (#5403) has since landed the unified gate over this merged set, and
-    /// that raised the stakes rather than resolving it: a stale
-    /// `ConstraintViolated` Error surviving into the merged set would now move
-    /// `check`'s EXIT CODE, contradicting the `Satisfied` verdict on its own
-    /// stdout.  What stops that today is `CHECK_ERROR_EXIT_ALLOWLIST` entry #4
-    /// (`Code(ConstraintViolated)`, disposition `FixPath`) — so this test and
-    /// that entry are two views of one gap, and the entry's `FixPath` says the
-    /// repair belongs in `drop_falsified_indeterminate_diagnostics`, not in
-    /// the gate.
+    /// The gap is exit-relevant: `check_gating_error` reads this merged set,
+    /// so a surviving stale `ConstraintViolated` Error would move `check`'s
+    /// EXIT CODE against the `Satisfied` verdict on its own stdout.
+    /// `CHECK_ERROR_EXIT_ALLOWLIST` entry #4 (`Code(ConstraintViolated)`,
+    /// disposition `FixPath`) holds that off — this test and that entry are
+    /// two views of one gap, and `FixPath` says the repair belongs in
+    /// `drop_falsified_indeterminate_diagnostics`, not in the gate.
     ///
     /// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
     /// assert the drop, and retire allowlist entry #4 in the same change.
