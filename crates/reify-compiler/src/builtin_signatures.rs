@@ -948,15 +948,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // An arity-agnostic `radius@1` slot would therefore demand a Length of
         // a Selector on correct code — the same class of false positive the
         // `linear_pattern_2d` arm's guard exists to prevent, and the reason
-        // these two are the only modify arms that carry an `arg_count` guard.
-        // Every OTHER name below holds its magnitude at a STABLE index across
-        // every arity it accepts, so per the rule stated on this function they
-        // stay unguarded.
+        // every modify arm whose magnitude moves — `fillet`, `chamfer`, `draft`
+        // — carries an `arg_count` guard. Every OTHER name below holds its
+        // magnitude at a STABLE index across every arity it accepts, so per the
+        // rule stated on this function they stay unguarded.
         //
         // NOT slotted here, each for a stated reason:
-        // - `draft`'s `angle` — `docs/prds/v0_6/angle-units-surface-convergence.md`
-        //   owns every ANGLE by binding seam decree; gating one here would be a
-        //   scope violation, not an improvement.
         // - `offset_curve`'s 3rd argument (`"third"`) — a reference Surface
         //   handle OR a direction vec3, disambiguated at eval on the Value
         //   variant. A direction's components are legitimately bare, and
@@ -972,6 +969,14 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // chamfer(target, distance) / chamfer(target, edges, distance)
         "chamfer" if arg_count == 2 => const { &[length_arg(1, "distance")] },
         "chamfer" if arg_count == 3 => const { &[length_arg(2, "distance")] },
+
+        // draft(target, angle, plane) / draft(target, faces, angle, plane)
+        //   arg0: the geometry handle. 3-arg: `angle`@1 → ANGLE, the neutral
+        //   `plane`@2 unslotted. 4-arg: the face SELECTOR@1 unslotted,
+        //   `angle`@2 → ANGLE, `plane`@3 unslotted. Since PRD 3 leaf ζ
+        //   (task 5782); pinned by `draft_angle_slot_moves_with_its_arity`.
+        "draft" if arg_count == 3 => const { &[angle_arg(1, "angle")] },
+        "draft" if arg_count == 4 => const { &[angle_arg(2, "angle")] },
 
         // chamfer_asymmetric(target, edges, d1, d2)
         //   Single-form (`check_arg_count_exact(4)`). BOTH setbacks are
@@ -1666,6 +1671,7 @@ mod tests {
         // PRD 3 leaf ζ (task 5782) — ANGLE producers.
         "rotate",
         "arc",
+        "draft",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -4233,6 +4239,9 @@ mod tests {
         // `"rotate() expects 2 or 5 arguments, got {n}"`.
         ("rotate", AcceptedArities::Exactly(&[2, 5])),
         ("arc", AcceptedArities::Exactly(&[9])),
+        // `draft` moves its angle between forms; its guarded pair discharges
+        // the coupling rule exactly as `rotate`'s guard does.
+        ("draft", AcceptedArities::Exactly(&[3, 4])),
         // Pattern ORIGIN triples (task 5662) — the only rows here that are
         // multi-arity because the name is genuinely OVERLOADED: the scalar form
         // and the value form. Both are safe under the coupling rule because
