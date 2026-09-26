@@ -149,8 +149,9 @@ fn seeded_satisfied_constraint_is_reported() {
 /// caller in this file that walks real corpus files prints the file path to
 /// stderr first, so such a panic stays attributable to a file — see
 /// `run_corpus_gate`. Re-asserting the zero-Error compile contract itself is
-/// deliberately out of scope: `examples_smoke.rs` is the designated compile
-/// gate for this corpus.
+/// deliberately out of scope:
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// is the designated compile gate for this corpus.
 fn constraint_statuses(source: &str) -> Vec<(reify_core::ConstraintNodeId, Satisfaction)> {
     let result = reify_test_support::check_source_with_stdlib(source);
     result
@@ -556,12 +557,12 @@ fn describe_failure(failure: &GateFailure) -> String {
 /// every `GateFailure` found across `examples/best_practices/`.
 ///
 /// Deliberately does NOT re-assert the zero-Error compile contract —
-/// `examples_smoke.rs` owns that gate and duplicating it here would be
-/// lockstep duplication. `constraint_statuses` (via
-/// `check_source_with_stdlib`) panics on a parse/compile error, so this fn
-/// `eprintln!`s each file's repo-relative path immediately BEFORE checking
-/// it, keeping such a panic attributable to a file without re-asserting the
-/// compile contract itself.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// owns that gate and duplicating it here would be lockstep duplication.
+/// `constraint_statuses` (via `check_source_with_stdlib`) panics on a
+/// parse/compile error, so this fn `eprintln!`s each file's repo-relative
+/// path immediately BEFORE checking it, keeping such a panic attributable to
+/// a file without re-asserting the compile contract itself.
 ///
 /// When `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS=1` is set, the offender
 /// report is still printed but this returns an empty vec, downgrading
