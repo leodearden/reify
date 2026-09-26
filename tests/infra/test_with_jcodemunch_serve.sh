@@ -26,9 +26,11 @@
 # `capstone-must-not-become-gate-resident` resolution applies to ε, and the same
 # split β's tests/infra/test_jcodemunch_index_reify.sh already makes.
 #
-# COST: 130 s wall MEASURED at 104 assertions (4.6 s user, 8.5 s sys — almost
-# all of it sleeping rather than burning CPU), against ~135 s quiet / ~185 s
-# under a loaded pool when this suite carried 87. The sleeping is the readiness
+# COST: 134 s wall MEASURED at 122 assertions (4.7 s user, 15.5 s sys — almost
+# all of it sleeping rather than burning CPU), against 130 s at 104 and ~135 s
+# quiet / ~185 s under a loaded pool when this suite carried 87. The wall clock
+# has not moved with the count because everything added since is a file read
+# costing milliseconds. The sleeping is the readiness
 # poll interval, the never-ready deadlines and the deliberate-leak runs'
 # teardown free-waits, which by construction always run to their cap.
 # Measured against siblings in the same bucket: test_warm_lane_audit.sh 143 s,
@@ -57,6 +59,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
+
+# The SUT-AGNOSTIC half of the invocation-triple guard, shared with β's suite
+# (tests/infra/test_jcodemunch_index_reify.sh): the lib-value extractors, the
+# positional argv parse, the value comparator, the per-consumer
+# structural/refusal guards and the map-registration oracle. It defines
+# JC_PIN_LIB_FILE. Each suite keeps its OWN argv PRODUCTION, since constructing
+# a --dry-run argv means running that suite's own SUT; everything downstream of
+# that string has no such tie and lives in the shared lib.
+[ -f "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh" ] || { echo "ERROR: jcodemunch_pin_guard_lib.sh not found at $SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"; exit 1; }
+# shellcheck source=tests/infra/jcodemunch_pin_guard_lib.sh
+source "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"
 
 JC_SERVE="$REPO_ROOT/scripts/with-jcodemunch-serve.sh"
 
@@ -327,10 +340,16 @@ DRY_DEFAULT="$(dry_argv || true)"
 DRY_PORTED="$(dry_argv --port 8917 || true)"
 DRY_PORTED_EQ="$(dry_argv --port=8917 || true)"
 
+# The LITERAL oracle. `--python` used to be asserted PRESENT but with its value
+# unpinned, which left the interpreter with no independent check at all: every
+# other interpreter assertion below reads the lib, so once δ's argv is DERIVED
+# from the lib they would all move together and stay green through a bad bump.
+# The literal "3.13" here is what fails when the value in the LIB itself moves —
+# the same role "jcodemunch-mcp==1.108.54" already plays for the wheel.
 b2_pin_and_shape() {
     argv_has_in_order "$DRY_DEFAULT" \
         "env" "JCODEMUNCH_GIT_ROOT_IDENTITY=0" \
-        "--python" \
+        "--python" "3.13" \
         "--from" "jcodemunch-mcp==1.108.54" \
         "jcodemunch-mcp" \
         "serve" \
@@ -368,66 +387,498 @@ b2_port_eq_form() {
     argv_lacks "$DRY_PORTED_EQ" "8901"
 }
 
-# -- THE FOUR-SITE PIN INVENTORY, ASSERTED RATHER THAN MERELY DOCUMENTED ------
+# -- THE LIB CONTRACT: scripts/lib_jcodemunch_pin.sh (#6454) ------------------
 #
-# The wheel version is COPIED across four sites and, until these assertions,
-# nothing in the repo checked that the copies agree:
-#   * δ  scripts/with-jcodemunch-serve.sh          — read here out of the
-#        CONSTRUCTED argv, not out of the source line, so the value under test
-#        is the one that would really be spawned;
-#   * β  scripts/jcodemunch-index-reify.sh:394     — the indexer side;
-#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs:76;
-#   * the literal needle in b2_pin_and_shape above, which is what fails if δ
-#        alone moves.
+# The invocation triple — wheel pin, interpreter, identity lever — has ONE
+# definition site, `scripts/lib_jcodemunch_pin.sh`, which both β
+# (scripts/jcodemunch-index-reify.sh) and δ (this suite's SUT) source. This
+# block guards the LIB'S OWN CONTRACT, separately from the agreement assertions
+# below that consume it: a lib that failed to define one of the three, defined
+# JC_IDENTITY_ENV as a STRING rather than an array, or wrote anything to stdout
+# at load would break both consumers in ways the agreement checks alone would
+# misreport as an unrelated pin drift.
+#
+# STDOUT SILENCE IS LOAD-BEARING, not tidiness. The lib is sourced INTO two
+# scripts whose `--dry-run` output IS their contract — the argv assertions above
+# and β's Test 9 both parse it — so one stray `echo` at load time corrupts the
+# very thing this suite reads.
+#
+# EVERY PROBE RUNS IN A CHILD BASH under `set -euo pipefail`, never by sourcing
+# into this shell. Two reasons, both load-bearing: a lib that (wrongly) carried
+# `set -e` or an `exit` would otherwise take the whole suite down instead of
+# failing one assertion, and nothing the lib defines can leak into the
+# assertions that follow and quietly satisfy them.
+#
+# JC_PIN_LIB_FILE comes from tests/infra/jcodemunch_pin_guard_lib.sh, sourced at
+# the top of this file — one path, resolved once, for both suites.
+
+# jc_lib_emit <expr> — print ONE expression evaluated in a child bash that has
+# sourced the lib. Under `set -u` an UNDEFINED name exits non-zero and prints
+# nothing, so a missing definition surfaces as an empty extraction, which
+# require_nonempty then refuses rather than comparing "" against "".
+jc_lib_emit() {
+    local expr="$1"
+    bash -euo pipefail -c "source \"\$1\"; printf '%s\n' \"$expr\"" _ "$JC_PIN_LIB_FILE"
+}
+
+# jc_lib_triple — the whole triple plus the array's LENGTH as one line, used by
+# the idempotence check below. The length is carried because a re-source that
+# APPENDED to JC_IDENTITY_ENV would leave "${JC_IDENTITY_ENV[*]}" looking merely
+# doubled in a way a careless string compare could still call "equal enough".
+jc_lib_triple() {
+    bash -euo pipefail -c \
+        'source "$1"; printf "%s|%s|%s|%s\n" "$JC_PIN" "$JC_PYTHON" "${JC_IDENTITY_ENV[*]}" "${#JC_IDENTITY_ENV[@]}"' \
+        _ "$JC_PIN_LIB_FILE"
+}
+
+jc_lib_triple_twice() {
+    bash -euo pipefail -c \
+        'source "$1"; source "$1"; printf "%s|%s|%s|%s\n" "$JC_PIN" "$JC_PYTHON" "${JC_IDENTITY_ENV[*]}" "${#JC_IDENTITY_ENV[@]}"' \
+        _ "$JC_PIN_LIB_FILE"
+}
+
+b2_lib_exists() { [ -f "$JC_PIN_LIB_FILE" ] && [ -r "$JC_PIN_LIB_FILE" ]; }
+
+b2_lib_sources_silently() {
+    local out rc=0
+    if [ ! -f "$JC_PIN_LIB_FILE" ]; then
+        printf '%s\n' "the lib does not exist: $JC_PIN_LIB_FILE"
+        return 1
+    fi
+    out="$(bash -euo pipefail -c 'source "$1"' _ "$JC_PIN_LIB_FILE")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "sourcing the lib under 'set -euo pipefail' exited $rc (it must be inert at load)"
+        return 1
+    fi
+    if [ -n "$out" ]; then
+        printf '%s\n' "the lib wrote to STDOUT at load time: [$out]" \
+            "  Both consumers print their CONSTRUCTED argv on stdout under --dry-run; a lib that speaks there corrupts it."
+        return 1
+    fi
+    return 0
+}
+
+# The two `case` arms per value pin the SHAPE and the ALPHABET separately: a
+# glob's `*` alone would let `1.2.3rc1` — or a whole extra shell word — through.
+b2_lib_pin_shape() {
+    local v ver
+    v="$(jc_lib_emit '${JC_PIN}')" || true
+    require_nonempty "JC_PIN as defined by the lib" "$v" || return 1
+    case "$v" in
+        jcodemunch-mcp==*) ;;
+        *) printf '%s\n' "the lib's JC_PIN is not a 'jcodemunch-mcp==' requirement: [$v]"; return 1 ;;
+    esac
+    ver="${v#jcodemunch-mcp==}"
+    case "$ver" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) printf '%s\n' "the lib's JC_PIN version is not <n>.<n>.<n>: [$ver]"; return 1 ;;
+    esac
+    case "$ver" in
+        *[!0-9.]*) printf '%s\n' "the lib's JC_PIN version carries a non-[0-9.] character: [$ver]"; return 1 ;;
+    esac
+    return 0
+}
+
+b2_lib_python_shape() {
+    local v
+    v="$(jc_lib_emit '${JC_PYTHON}')" || true
+    require_nonempty "JC_PYTHON as defined by the lib" "$v" || return 1
+    case "$v" in
+        [0-9]*.[0-9]*) ;;
+        *) printf '%s\n' "the lib's JC_PYTHON is not <major>.<minor>: [$v]"; return 1 ;;
+    esac
+    case "$v" in
+        *.*.*) printf '%s\n' "the lib's JC_PYTHON carries more than two fields: [$v]"; return 1 ;;
+    esac
+    case "$v" in
+        *[!0-9.]*) printf '%s\n' "the lib's JC_PYTHON carries a non-[0-9.] character: [$v]"; return 1 ;;
+    esac
+    return 0
+}
+
+# JC_IDENTITY_ENV must be an ARRAY, not a string. Both consumers splice it as
+# "${JC_IDENTITY_ENV[@]}" straight into the spawned argv, so a string-valued
+# copy would word-split differently at the call site — and `${#x[@]}` over a
+# plain string is 1, which is exactly the discriminator asserted here.
+b2_lib_identity_env_is_a_two_element_array() {
+    local joined n
+    joined="$(jc_lib_emit '${JC_IDENTITY_ENV[*]}')" || true
+    require_nonempty "JC_IDENTITY_ENV as defined by the lib" "$joined" || return 1
+    if [ "$joined" != "env JCODEMUNCH_GIT_ROOT_IDENTITY=0" ]; then
+        printf '%s\n' "the lib's JC_IDENTITY_ENV expands to [$joined]" \
+            "  expected [env JCODEMUNCH_GIT_ROOT_IDENTITY=0]"
+        return 1
+    fi
+    n="$(jc_lib_emit '${#JC_IDENTITY_ENV[@]}')" || true
+    if [ "$n" != "2" ]; then
+        printf '%s\n' "the lib's JC_IDENTITY_ENV has ${n:-<none>} element(s), expected 2 (a STRING copy reports 1)" \
+            "  Both consumers splice it as \"\${JC_IDENTITY_ENV[@]}\" into the spawned argv."
+        return 1
+    fi
+    return 0
+}
+
+# MAP-WIRING: every file this suite makes load-bearing must be REGISTERED as a
+# verify-pipeline artifact, so that an edit to IT selects the guard that checks
+# it. Modelled on the self-wiring assertions in
+# tests/infra/test_verify_pipeline_guard.sh:1374-1401 (_map_selects_this_test)
+# and test_govtest_slice_reaper.sh's Block K, but asked through the guard's own
+# `is-registered` oracle (jc_guard_is_registered, shared) rather than by
+# re-implementing the map parse here — a second parser is a second thing to
+# drift.
+#
+# WHY THIS IS NOT DECORATIVE: column 1 of scripts/verify-pipeline-infra-tests.txt
+# is matched by EXACT STRING EQUALITY, never by glob or directory prefix. Without
+# rows of its own, an edit touching ONLY that file selects NEITHER guard suite.
+# MEASURED against the guard's own oracle, and narrow on purpose:
+# scripts/lib_portable.sh is registered nowhere and takes the fast path, so it
+# suffers exactly that gap. (lib_proc_reaper.sh and lib_clock_stop.sh do NOT —
+# is-registered exits 0 for both, the first auto-derived from verify.sh's
+# `source` line, the second by an explicit row in
+# scripts/verify-pipeline-paths.txt. Checked before citing: a confidently-wrong
+# pointer at a well-covered file invites a "fix" to a non-gap.)
+#
+# TWO PATHS ARE ASSERTED, NOT THREE. The lib is the file a pin bump touches; α
+# is the consumer that cannot source it and mirrors the two values in consts,
+# and its row is its ONLY registration, so deleting either row is otherwise
+# silent. The third file this change makes load-bearing —
+# tests/infra/jcodemunch_pin_guard_lib.sh, whose edit changes what BOTH suites
+# assert — deliberately takes NO assertion: it is a tests/infra path, so the
+# guard's open-ended infra glob clause answers is-registered 0 for it no matter
+# what the map says (MEASURED: tests/infra/test_helpers.sh has no row anywhere
+# and still exits 0), and that clause routes it to the FULL gate. An assertion
+# there would pass with its rows deleted — the PASS-shaped evidence PRD §2.4
+# names as the disease.
+b2_lib_is_registered() {
+    jc_guard_is_registered scripts/lib_jcodemunch_pin.sh \
+        "Add rows to scripts/verify-pipeline-infra-tests.txt mapping the lib to BOTH" \
+        "guard suites — its column-1 match is exact string equality, so a lib-only edit" \
+        "otherwise selects neither, leaving the one file a pin bump touches unguarded."
+}
+
+b2_alpha_is_registered() {
+    jc_guard_is_registered crates/reify-audit/tests/jcodemunch_session_live.rs \
+        "Restore α's row in scripts/verify-pipeline-infra-tests.txt, mapping it to this suite." \
+        "α's live test is #[ignore]d and its own crate's gate never reads the two consts, so" \
+        "that row is the ONLY thing that selects a guard for an α-only edit — reverting the" \
+        "interpreter, or renaming either const so both extractors return empty."
+}
+
+# Sourcing TWICE must be a no-op — the repo's `_REIFY_LIB_*_SH_SOURCED` guard
+# convention (scripts/lib_test_semaphore.sh:66-69). Both consumers source the
+# lib before constructing argv, and a re-source that reset or APPENDED to
+# JC_IDENTITY_ENV would silently double the `env` prefix in the spawned command.
+b2_lib_double_source_is_idempotent() {
+    local once twice
+    once="$(jc_lib_triple)" || true
+    twice="$(jc_lib_triple_twice)" || true
+    require_nonempty "the lib's triple after ONE source" "$once" || return 1
+    require_nonempty "the lib's triple after TWO sources" "$twice" || return 1
+    [ "$once" = "$twice" ] && return 0
+    printf '%s\n' "sourcing scripts/lib_jcodemunch_pin.sh twice is NOT idempotent:" \
+        "  once:  $once" \
+        "  twice: $twice" \
+        "  Add the repo's _REIFY_LIB_JCODEMUNCH_PIN_SH_SOURCED guard (cf. scripts/lib_test_semaphore.sh:66-69)."
+    return 1
+}
+
+# -- THE PIN INVENTORY, POST-HOIST: ONE DEFINITION SITE, FOUR CONSUMERS -------
+#
+# The wheel version USED to be copied across four independent sites with
+# nothing in the repo checking that the copies agree. It now has exactly ONE
+# definition site — scripts/lib_jcodemunch_pin.sh, guarded above — and the
+# consumers are cross-checked against it here:
+#   * δ  scripts/with-jcodemunch-serve.sh          — read out of the CONSTRUCTED
+#        argv, not out of a source line, so the value under test is the one
+#        that would really be spawned, INCLUDING the sourcing plumbing;
+#   * β  scripts/jcodemunch-index-reify.sh         — cross-checked the same way,
+#        against its own --dry-run argv, in tests/infra/test_jcodemunch_index_reify.sh
+#        (each suite owns its own SUT's argv harness; centralising would make
+#        this `pool`-classified suite execute a second SUT);
+#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs — a Rust test that
+#        cannot source a shell lib, so it MIRRORS the value in a const and is
+#        compared against δ's argv below;
+#   * the LITERAL needle in b2_pin_and_shape above, and its sibling in β's
+#        suite. Those two deliberately do NOT read the lib: δ's and β's argv
+#        are now DERIVED from it, so a guard that took its expectation from the
+#        lib would compare the lib to itself — tautologically green. The
+#        literal needles are the only assertions that fail when the value in
+#        the LIB moves, which is exactly what a pin bump is.
 # A serve running an OLDER wheel than the indexer that WROTE the index it is
 # being asked to query is precisely the drift the inventory exists to prevent,
 # and it is silent at the call site: the session opens, the query answers, and
 # the answer is merely wrong.
 #
 # HERMETIC AND ~5 ms: pure file read + string compare, no uvx, no PyPI, no
-# network. It does not FIX the duplication — hoisting the triple into one
-# sourced scripts/lib_jcodemunch_pin.sh needs locks on β and α that δ does not
-# hold, and is tracked as #6454 — but it makes a one-sided bump fail the gate
-# instead of shipping.
-JC_PIN_BETA_FILE="$REPO_ROOT/scripts/jcodemunch-index-reify.sh"
+# network.
 JC_PIN_ALPHA_FILE="$REPO_ROOT/crates/reify-audit/tests/jcodemunch_session_live.rs"
 
-# Each extractor is ONE awk with an `exit` and no pipeline — a `… | head -n1`
-# would be an early-closing consumer under `set -euo pipefail`, the same trap
-# the wrapper's own SSE branch documents. Each emits nothing when it does not
-# match, and the comparator treats "nothing" as a FAILURE rather than as
-# agreement, so a renamed file or a reshaped literal fails loudly here instead
-# of comparing "" against "" and reporting that all four sites agree.
+# The LIB's side of every comparison below comes from jc_lib_pin_version /
+# jc_lib_pin_requirement / jc_lib_python in tests/infra/jcodemunch_pin_guard_lib.sh.
+# The two extractors here are the ones that are not SUT-agnostic: δ's reads a
+# CONSTRUCTED argv, α's reads Rust source. Same discipline as the shared ones —
+# ONE awk with an `exit` and no pipeline, since a `… | head -n1` would be an
+# early-closing consumer under `set -euo pipefail`, the same trap the wrapper's
+# own SSE branch documents — and each emits nothing when it does not match, so
+# the comparator treats "nothing" as a FAILURE rather than as agreement.
 jc_pin_delta() {
     awk '/jcodemunch-mcp==/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' <<< "$DRY_DEFAULT"
-}
-jc_pin_beta() {
-    [ -f "$JC_PIN_BETA_FILE" ] || return 0
-    awk '/^JC_PIN=/ { sub(/^.*jcodemunch-mcp==/, ""); sub(/[^0-9.].*$/, ""); print; exit }' "$JC_PIN_BETA_FILE"
 }
 jc_pin_alpha() {
     [ -f "$JC_PIN_ALPHA_FILE" ] || return 0
     awk '/const JCODEMUNCH_PIN/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_ALPHA_FILE"
 }
 
-# b2_pin_agrees <label> <file> <extractor-fn>
+# b2_pin_agrees <label> <file> <extractor-fn>. The comparison itself —
+# emptiness refusal, whole-string compare, uniform DRIFT headline — is
+# jc_guard_value_agrees from the shared guard lib, so this and β's interpreter
+# check are one comparator rather than two near-identical copies of one.
 b2_pin_agrees() {
     local label="$1" file="$2" fn="$3" mine theirs
     mine="$(jc_pin_delta)"
-    require_nonempty "the pin in δ's constructed argv" "$mine" || return 1
     if [ ! -f "$file" ]; then
         printf '%s\n' "$label's pin site is GONE: $file does not exist." \
             "  The four-site inventory in scripts/with-jcodemunch-serve.sh is stale — update it and this guard together."
         return 1
     fi
     theirs="$("$fn")"
-    require_nonempty "the pin extracted from $label ($file)" "$theirs" || return 1
-    [ "$mine" = "$theirs" ] && return 0
-    printf '%s\n' "jcodemunch pin DRIFT: δ constructs [$mine] but $label pins [$theirs]." \
-        "  $file" \
-        "  A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
-        "  Bump every site in the inventory comment at scripts/with-jcodemunch-serve.sh (see #6454)."
+    jc_guard_value_agrees "jcodemunch pin" \
+        "δ's constructed argv" "$mine" "$label ($file)" "$theirs" \
+        "A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
+        "Bump scripts/lib_jcodemunch_pin.sh — the ONE definition site — plus α's const and the" \
+        "two literal guard needles its PIN-BUMP CHECKLIST names."
+}
+
+# -- SINGLE DEFINITION: δ MUST NOT CARRY ITS OWN COPY OF THE TRIPLE ----------
+#
+# THE LOAD-BEARING HALF OF THE HOIST, and the reason the agreement assertion
+# above is not sufficient on its own. Every copy of the triple AGREES today, so
+# "δ's constructed argv matches the lib" is green whether or not δ sources the
+# lib at all — it was green the moment the lib was created and before δ was
+# touched. What actually needs pinning is that the lib is the SOLE definition
+# site AND that its value reaches the argv. jc_guard_defines_no_triple and
+# jc_guard_refuses_without_lib below are the first half; b2_pin_agrees above is
+# the second. Neither alone is sufficient.
+#
+# Both are parameterised over the SUT and live in the shared guard lib, so β's
+# suite runs the identical check against its own script rather than a
+# copy-pasted twin of this one. δ's scratch dir is this suite's own mk_tmpdir,
+# reaped by cleanup().
+b2_delta_defines_no_triple() { jc_guard_defines_no_triple "$JC_SERVE"; }
+b2_delta_sources_the_lib()   { jc_guard_sources_the_lib "$JC_SERVE"; }
+
+# The third structural leg, and the one the two above cannot reach: a script may
+# source the lib and then ignore it. jc_guard_argv_uses_the_lib is the δ/β
+# counterpart of b2_alpha_consts_reach_the_argv below — the three values must be
+# SPLICED on a non-comment line, and no pin or interpreter LITERAL may appear on
+# one. Shared, so β runs the identical check against its own script.
+b2_delta_argv_uses_the_lib() { jc_guard_argv_uses_the_lib "$JC_SERVE"; }
+
+# The REFUSAL, executed rather than grepped: a lib-less copy of δ must exit
+# non-zero, print nothing on stdout, and name the missing file on stderr. The
+# spelling of the existence check is deliberately NOT asserted — `[ ! -f … ]`,
+# `[[ ! -r … ]]` and a `command -v`-style resolution are equally correct, and a
+# grep for one of them both reds a working rewrite and passes a guard placed
+# AFTER the source, where it protects nothing.
+b2_delta_refuses_without_lib() {
+    local d
+    d="$(mk_tmpdir)" || return 1
+    jc_guard_refuses_without_lib "$JC_SERVE" "$d"
+}
+
+# -- THE INTERPRETER INVENTORY, MIRRORING THE PIN'S (#6548) ------------------
+#
+# `--from jcodemunch-mcp==…` is only HALF a pin: it fixes the package and leaves
+# the INTERPRETER floating, and uvx defaults to the newest interpreter uv
+# manages. So the interpreter gets the same one-definition-site treatment as the
+# wheel version — scripts/lib_jcodemunch_pin.sh's JC_PYTHON — and the same
+# cross-check against every consumer.
+#
+# WHY δ AND α HAVE TO AGREE: a serve and an indexer resolving the SAME pinned
+# wheel under DIFFERENT interpreters is a hand-maintained drift surface. The
+# resolution genuinely differs — a transitive dep can publish a wheel for one
+# interpreter and not the other, which is exactly how the unpinned form fails on
+# this host — and nothing at the call site reports the divergence.
+#
+# δ's value comes out of the CONSTRUCTED argv, positionally — the token FOLLOWING
+# `--python` — so what is compared is the interpreter that would really be
+# spawned, including the sourcing plumbing that delivers it. The positional read
+# itself is jc_argv_python in the shared guard lib: β wants the identical parse
+# over its own argv, and the argv PRODUCTION is the only part that has to stay
+# per-suite.
+jc_python_delta() { jc_argv_python "$DRY_DEFAULT"; }
+
+# α mirrors the value in a NAMED const rather than a bare literal inside its
+# argv array, so this extractor is the same shape as jc_pin_alpha above. Keying
+# on `"--python"` and consuming the next line's string instead would be brittle
+# against reflow, argument reordering or a trailing comment.
+jc_python_alpha() {
+    [ -f "$JC_PIN_ALPHA_FILE" ] || return 0
+    awk '/const JCODEMUNCH_PYTHON/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_ALPHA_FILE"
+}
+
+# b2_python_agrees <label> <file> <extractor-fn>. The LIB is the baseline, since
+# it is the definition site. Emptiness on either side is refused by
+# jc_guard_value_agrees rather than here, which is the point of sharing it: a
+# renamed const or a reshaped literal fails loudly instead of comparing "" with
+# "" and reporting that every site agrees.
+b2_python_agrees() {
+    local label="$1" file="$2" fn="$3" mine theirs
+    mine="$(jc_lib_python)"
+    if [ ! -f "$file" ]; then
+        printf '%s\n' "$label's interpreter site is GONE: $file does not exist." \
+            "  The consumer inventory in scripts/lib_jcodemunch_pin.sh is stale — update it and this guard together."
+        return 1
+    fi
+    theirs="$("$fn")"
+    jc_guard_value_agrees "jcodemunch INTERPRETER" \
+        "the lib (JC_PYTHON)" "$mine" "$label ($file)" "$theirs" \
+        "A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
+        "hand-maintained drift surface: resolution can succeed for one and fail for the other" \
+        "(a transitive dep may publish a wheel for only one), and nothing at the call site says so." \
+        "scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in a const only" \
+        "because a Rust test cannot source a shell lib."
+}
+
+# -- α's CONSTS MUST REACH α's ARGV -----------------------------------------
+#
+# jc_pin_alpha and jc_python_alpha read α's two consts BY NAME, which proves the
+# CONSTS agree with the lib and nothing more. α's live test is `#[ignore]`d, so
+# nothing at gate time ever spawns its command and the const-to-argv plumbing
+# has to be drawn statically.
+#
+# δ AND β GET THE SAME LEG, NOT A WEAKER ONE, and this block used to claim
+# otherwise. Their argv-agreement assertions do read a CONSTRUCTED --dry-run
+# argv, but that only bites when a re-inlined literal DIFFERS from today's lib
+# value: re-inlining today's value left both suites fully green (MEASURED — β
+# stayed at 54 passed, 0 failed with its INDEXER_CMD reading the lib nowhere).
+# jc_guard_argv_uses_the_lib in the shared guard lib is their symmetric
+# counterpart of the two assertions below, asserted for δ by
+# b2_delta_argv_uses_the_lib and for β by b9_beta_argv_uses_the_lib.
+#
+# Without the two below, re-inlining a bare "3.12" at α's `--python` argument
+# while leaving the const at 3.13 passes b2_python_agrees, b2_pin_agrees and
+# b2_delta_alpha_cites_resolve alike, leaving the drift this task exists to
+# close reachable in α alone.
+#
+# α's use sites are greppable even though its argv is not runnable, so these are
+# referential-integrity checks in the same style as JC_ALPHA_CITES below:
+# (the spelling that must appear in α's argv, what it is). Matched on NON-COMMENT
+# lines only, so a doc comment naming a const cannot satisfy the check for the
+# code that must use it.
+JC_ALPHA_CONST_USES=(
+    'JCODEMUNCH_PYTHON,'               'the --python argument'
+    'jcodemunch-mcp=={JCODEMUNCH_PIN}' 'the --from requirement string'
+)
+
+b2_alpha_consts_reach_the_argv() {
+    local i use what rc=0
+    if [ ! -f "$JC_PIN_ALPHA_FILE" ]; then
+        printf '%s\n' "α is GONE: $JC_PIN_ALPHA_FILE does not exist."
+        return 1
+    fi
+    for ((i = 0; i < ${#JC_ALPHA_CONST_USES[@]}; i += 2)); do
+        use="${JC_ALPHA_CONST_USES[i]}"
+        what="${JC_ALPHA_CONST_USES[i + 1]}"
+        if ! awk -v needle="$use" \
+            '!/^[[:space:]]*\/\// && index($0, needle) { found = 1 } END { exit !found }' \
+            "$JC_PIN_ALPHA_FILE"; then
+            printf '%s\n' "α's Serve::spawn argv no longer uses [$use] for $what." \
+                "  $JC_PIN_ALPHA_FILE" \
+                "  The const is cross-checked against the lib, but a const nothing SPAWNS is" \
+                "  decoration: an argv that re-inlines a literal passes every value assertion here."
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# The counterpart leg, because a use site and a stray literal can coexist: α
+# must carry exactly ONE quoted interpreter literal, the const's own
+# initialiser. Any second one is a hardcoded interpreter, and it is a second
+# definition site by another name.
+#
+# THE MAJOR IS DERIVED FROM THE LIB, never hardcoded. A JC_PYTHON bump to a
+# non-3 major would otherwise leave α perfectly consistent with the lib while
+# this counter reported 0 and red with "α carries 0 quoted interpreter
+# literals" — a confident failure pointing at a non-problem, and one the
+# PIN-BUMP CHECKLIST would have no reason to warn about. b2_lib_python_shape
+# already accepts any <major>.<minor>, so this is the one place that disagreed.
+#
+# `[.]` rather than an escaped dot: awk processes escape sequences in a -v
+# value, where `\.` is undefined and gawk silently flattens it to a bare `.`
+# that matches ANY character. A bracket expression needs no backslash at all.
+#
+# Counted per OCCURRENCE, not per LINE: two literals on one line are two
+# hardcoded interpreters, and the previous per-line increment called that 1.
+b2_alpha_has_one_interpreter_literal() {
+    local want pat n
+    if [ ! -f "$JC_PIN_ALPHA_FILE" ]; then
+        printf '%s\n' "α is GONE: $JC_PIN_ALPHA_FILE does not exist."
+        return 1
+    fi
+    want="$(jc_lib_python)"
+    require_nonempty "the interpreter the lib defines (JC_PYTHON)" "$want" || return 1
+    pat="\"${want%%.*}[.][0-9]+\""
+    n="$(awk -v pat="$pat" \
+        '!/^[[:space:]]*\/\// { s = $0; while (match(s, pat)) { c++; s = substr(s, RSTART + RLENGTH) } }
+         END { print c + 0 }' "$JC_PIN_ALPHA_FILE")"
+    [ "$n" = "1" ] && return 0
+    printf '%s\n' "α carries $n quoted interpreter literals matching $pat; exactly 1 is expected (const JCODEMUNCH_PYTHON):" \
+        "$(grep -nE -- "$pat" "$JC_PIN_ALPHA_FILE" || true)" \
+        "  scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in that const" \
+        "  and must reference the const everywhere else."
     return 1
+}
+
+# -- EVERY α ITEM δ CITES STILL RESOLVES -------------------------------------
+#
+# δ leans on α for nine separate design decisions and cites it throughout, by
+# ITEM NAME (those cites were once line ranges, which went stale as α reflowed).
+# An item name survives reflow for free AND is checkable, which is what
+# b2_delta_alpha_cites_resolve makes of it: renaming or deleting a cited α item
+# reds it.
+#
+# The pairs below are (the cite AS δ SPELLS IT, the spelling that must still
+# exist in α), consumed two at a time. Hand-maintained on purpose, exactly like
+# the literal pin needles: it is the independent statement of what δ claims
+# about α, so adding a cite to δ means adding a pair here.
+JC_ALPHA_CITES=(
+    'Serve::spawn'         'fn spawn() -> Self'
+    'Serve::await_ready'   'fn await_ready(&mut self)'
+    'Serve::output'        'fn output(&self) -> String'
+    'Drop for Serve'       'impl Drop for Serve'
+    'finish_teardown'      'fn finish_teardown('
+    'signal_process_group' 'fn signal_process_group('
+    'READY_TIMEOUT'        'const READY_TIMEOUT'
+    'READY_POLL_INTERVAL'  'const READY_POLL_INTERVAL'
+    '.process_group(0)'    '.process_group(0)'
+    'try_wait'             '.try_wait()'
+)
+
+b2_delta_alpha_cites_resolve() {
+    local i cite def rc=0
+    if [ ! -f "$JC_PIN_ALPHA_FILE" ]; then
+        printf '%s\n' "α is GONE: $JC_PIN_ALPHA_FILE does not exist." \
+            "  Every cite δ makes into it is now dangling."
+        return 1
+    fi
+    for ((i = 0; i < ${#JC_ALPHA_CITES[@]}; i += 2)); do
+        cite="${JC_ALPHA_CITES[i]}"
+        def="${JC_ALPHA_CITES[i + 1]}"
+        if ! grep -qF -- "$cite" "$JC_SERVE"; then
+            printf '%s\n' "δ no longer cites α's [$cite]." \
+                "  Drop the pair from JC_ALPHA_CITES in this suite in the same change."
+            rc=1
+        fi
+        if ! grep -qF -- "$def" "$JC_PIN_ALPHA_FILE"; then
+            printf '%s\n' "DANGLING CITE: δ points at α's [$cite], but [$def] is gone from" \
+                "  $JC_PIN_ALPHA_FILE" \
+                "  Renaming an α item silently invalidates every δ comment that names it."
+            rc=1
+        fi
+    done
+    return "$rc"
 }
 
 b2_dry_run_exits_zero() { "$JC_SERVE" --dry-run >/dev/null 2>&1; }
@@ -458,14 +909,44 @@ b2_dry_run_skips_wrapped_command() {
     return 0
 }
 
-assert "the dry-run argv carries the identity lever, pin, transport and port in order" b2_pin_and_shape
+assert "the dry-run argv carries the identity lever, interpreter, pin, transport and port in order" b2_pin_and_shape
 assert "the dry-run argv contains neither --paths-from nor the watch/index subcommands" b2_bans
 assert "--port 8917 moves the port in the argv (and drops the 8901 default)" b2_port_moves
 assert "the --port=N spelling moves the port too" b2_port_eq_form
-assert "δ's pin agrees with β's (scripts/jcodemunch-index-reify.sh)" \
-    b2_pin_agrees "β" "$JC_PIN_BETA_FILE" jc_pin_beta
+assert "scripts/lib_jcodemunch_pin.sh exists and is readable" b2_lib_exists
+assert "the lib sources clean under set -euo pipefail and says nothing on stdout" b2_lib_sources_silently
+assert "the lib defines JC_PIN as jcodemunch-mcp==<n>.<n>.<n>" b2_lib_pin_shape
+assert "the lib defines JC_PYTHON as <major>.<minor>" b2_lib_python_shape
+assert "the lib defines JC_IDENTITY_ENV as a 2-element ARRAY, not a string" \
+    b2_lib_identity_env_is_a_two_element_array
+assert "sourcing the lib twice is idempotent (the _REIFY_LIB_*_SH_SOURCED guard)" \
+    b2_lib_double_source_is_idempotent
+assert "MAP-WIRING: the lib is a registered verify-pipeline artifact (is-registered)" \
+    b2_lib_is_registered
+assert "MAP-WIRING: α is a registered verify-pipeline artifact (is-registered)" \
+    b2_alpha_is_registered
+assert "δ's constructed argv agrees with the lib (scripts/lib_jcodemunch_pin.sh)" \
+    b2_pin_agrees "the lib" "$JC_PIN_LIB_FILE" jc_lib_pin_version
+assert "δ defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
+    b2_delta_defines_no_triple
+assert "δ sources scripts/lib_jcodemunch_pin.sh" \
+    b2_delta_sources_the_lib
+assert "δ with no lib beside it refuses: non-zero, silent on stdout, names the file on stderr" \
+    b2_delta_refuses_without_lib
+assert "δ's argv splices \$JC_PIN/\$JC_PYTHON/\$JC_IDENTITY_ENV, never re-inlined literals" \
+    b2_delta_argv_uses_the_lib
 assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
     b2_pin_agrees "α" "$JC_PIN_ALPHA_FILE" jc_pin_alpha
+assert "δ's constructed argv uses the interpreter the lib pins (JC_PYTHON)" \
+    b2_python_agrees "δ's constructed argv" "$JC_SERVE" jc_python_delta
+assert "α's interpreter agrees with the lib (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
+    b2_python_agrees "α" "$JC_PIN_ALPHA_FILE" jc_python_alpha
+assert "α's argv references JCODEMUNCH_PYTHON/JCODEMUNCH_PIN, never re-inlined literals" \
+    b2_alpha_consts_reach_the_argv
+assert "α carries exactly one quoted interpreter literal (the const's initialiser)" \
+    b2_alpha_has_one_interpreter_literal
+assert "every α item δ cites by name still exists in α (no dangling cite)" \
+    b2_delta_alpha_cites_resolve
 assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command

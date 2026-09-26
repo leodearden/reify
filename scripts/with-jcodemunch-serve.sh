@@ -41,8 +41,8 @@
 #
 # A bare TCP connect is answered happily by ANY port squatter, so the probe
 # requires `result.serverInfo.name == "jcodemunch-mcp"` before declaring ready —
-# `crates/reify-audit/tests/jcodemunch_session_live.rs:210-264` (α) makes the
-# same demand for the same reason. α picks an ephemeral port; this script
+# α's `Serve::await_ready` (crates/reify-audit/tests/jcodemunch_session_live.rs)
+# makes the same demand for the same reason. α picks an ephemeral port; this script
 # DEFAULTS to a fixed 8901, so the squatter risk here is strictly higher, not
 # lower.
 #
@@ -73,21 +73,11 @@
 # recorded acceptance evidence passes it explicitly rather than relying on the
 # default.
 #
-# PIN-BUMP CHECKLIST — this env var is accepted but DEPRECATED upstream; the
-# package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
-# v2.0 must re-establish the lever in config.jsonc BEFORE landing, or the
-# identity silently reverts:
-#   * THE KEY IS `"git_root_identity": false`, NOT `"identity_mode": "local"`.
-#     `config.py:384` is the shipped default that has to be flipped; `:474` is
-#     its CONFIG_TYPES entry — the map a key must appear in to survive the load
-#     at all.
-#   * `"identity_mode"` is a TRAP: the shipped config template advertises it
-#     (config.py:1872-1896, even presenting it as the preferred spelling) yet at
-#     1.108.54 it is in neither DEFAULTS nor CONFIG_TYPES, so it is discarded
-#     silently on the load path (config.py:708, "Ignore unknown keys silently").
-#   * Run `jcodemunch-mcp config --check` (server.py:6042) against any
-#     config.jsonc a bump introduces: `validate_config` DOES name an
-#     unrecognised key (config.py:1194). It is the only signal upstream gives.
+# PIN-BUMP CHECKLIST: consolidated into `scripts/lib_jcodemunch_pin.sh` (#6454),
+# the ONE definition site for the pin, the interpreter and this lever. Its
+# header carries the v2.0 deprecation, the `"git_root_identity": false`
+# successor with both config.py cites, the `"identity_mode"` trap and the
+# `config --check` instruction. Read it before bumping anything here.
 # Carried as an explicit `env` prefix rather than an `export` so `--dry-run`
 # prints a command that actually reproduces the behaviour when pasted.
 #
@@ -111,6 +101,23 @@
 # Prerequisites: uvx (https://docs.astral.sh/uv/), curl, jq.
 
 set -euo pipefail
+
+# Self-location, so the sibling lib resolves regardless of CWD: both guard
+# suites invoke this script by ABSOLUTE PATH from REPO_ROOT, and operators run
+# it from anywhere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The invocation triple — JC_PIN, JC_PYTHON, JC_IDENTITY_ENV — has ONE
+# definition site (#6454). The existence check is not boilerplate: without it a
+# missing or renamed lib surfaces as an unbound-variable failure deep inside
+# argv construction below, which reads as a bug in THIS script rather than as a
+# missing file.
+if [ ! -f "$SCRIPT_DIR/lib_jcodemunch_pin.sh" ]; then
+    echo "with-jcodemunch-serve.sh: ERROR — scripts/lib_jcodemunch_pin.sh not found next to with-jcodemunch-serve.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_jcodemunch_pin.sh
+source "$SCRIPT_DIR/lib_jcodemunch_pin.sh"
 
 # The one port D5 names. `--port` moves it; the guard needs that because it is a
 # `pool` member and must never bind a host-global fixed port.
@@ -231,11 +238,18 @@ fi
 
 # ── The serve command ────────────────────────────────────────────────────────
 #
-# The BARE transient-serve form and nothing more. Mirrors α's spawn at
-# `crates/reify-audit/tests/jcodemunch_session_live.rs:156-173`:
+# The BARE transient-serve form and nothing more. Mirrors α's `Serve::spawn`
+# (`crates/reify-audit/tests/jcodemunch_session_live.rs`):
 #
-#     uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
-#         --transport streamable-http --host 127.0.0.1 --port <PORT> --watcher=false
+#     env JCODEMUNCH_GIT_ROOT_IDENTITY=0 uvx --python <JC_PYTHON> --from <JC_PIN> \
+#         jcodemunch-mcp serve --transport streamable-http --host 127.0.0.1 \
+#         --port <PORT> --watcher=false
+#
+# Placeholders, not values, and the identity lever shown because SERVE_ARGV
+# really does splice it: an illustration that restated the pin or the
+# interpreter would drift on the next bump with nothing cross-checking it — the
+# same reason the paragraph below forbids restating them. β's sibling example in
+# scripts/jcodemunch-index-reify.sh has the identical shape.
 #
 # `--watcher=false` because the file watcher indexes the whole repo on start and
 # δ needs only the MCP session seam — indexing belongs to β
@@ -245,57 +259,25 @@ fi
 # previously-indexed file absent from its list — server.py:6505,
 # index_folder.py:1505-1511, sqlite_store.py:1698), and neither is `watch`.
 #
-# THE PIN IS COPIED, NOT SHARED. Four sites carry this version and nothing in
-# the repo asserts they agree, so a bump has to touch all four in one change:
-#   * here (δ, the serve side);
-#   * `scripts/jcodemunch-index-reify.sh:394` (β, the indexer side) — a serve on
-#     an older wheel than the indexer that wrote the index is precisely the
-#     drift this list exists to prevent;
-#   * `crates/reify-audit/tests/jcodemunch_session_live.rs:76` (α's
-#     JCODEMUNCH_PIN);
-#   * the `--dry-run` needle in `tests/infra/test_with_jcodemunch_serve.sh`,
-#     which is what fails loudly if THIS line alone moves.
-# THE LIST IS NO LONGER PROSE-ONLY: that same guard now greps the version out of
-# β and α and asserts all three agree with the argv this script constructs, so a
-# bump that touches one site fails the gate instead of drifting silently.
-# Hoisting the three values (pin, interpreter, identity lever) into one sourced
-# `scripts/lib_jcodemunch_pin.sh` is still the real fix, and it remains out of
-# δ's scope: δ holds neither β nor α. Tracked as #6454.
-JC_PIN="jcodemunch-mcp==1.108.54"
-
-# THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
-# alone is only HALF a pin: it fixes the package and leaves the interpreter
-# floating, and uvx defaults to the newest interpreter uv manages — on this host
-# cpython-3.14.0+freethreaded, against which a transitive dep publishes no
-# compatible wheel ("Failed to download and build
-# `tree-sitter-embedded-template==0.25.0` … not compatible with the current
-# Python 3.14t"), so the bare form does not run at all.
+# THE PIN, THE INTERPRETER AND THE IDENTITY LEVER ALL COME FROM THE LIB.
+# `scripts/lib_jcodemunch_pin.sh`, sourced at the top of this file, defines
+# JC_PIN, JC_PYTHON and JC_IDENTITY_ENV — there and nowhere else (#6454). Its
+# header carries the PIN-BUMP CHECKLIST and the provenance of all three values,
+# including the measurement that authorises the interpreter. Do NOT restate any
+# of it here: the guard suites cross-check this script's CONSTRUCTED argv
+# against the lib, but nothing cross-checks this COMMENT against it, so a second
+# copy of a measurement record drifts unseen.
 #
-# 3.13 vs 3.12 — the two siblings measured DIFFERENT values against DIFFERENT
-# subcommands, and this is the reconciliation: α measured `--python 3.12`
-# against `serve` (jcodemunch_session_live.rs:157-159), while β measured 3.13
-# against the heavier `watch` path, which resolves the full dependency closure
-# (a superset of what `serve` needs). 3.13 is chosen here for sibling-
-# consistency with β and because a closure that resolved for `watch` necessarily
-# covers `serve`.
+# α IS A MIRROR, NOT AN INDEPENDENT OWNER (#6548).
+# `crates/reify-audit/tests/jcodemunch_session_live.rs` cannot source a shell
+# lib, so it carries `const JCODEMUNCH_PIN` and `const JCODEMUNCH_PYTHON`. BOTH
+# are cross-checked against the lib by tests/infra/test_with_jcodemunch_serve.sh,
+# so δ and α cannot resolve the same wheel under different interpreters.
 #
-# MEASURED 2026-08-22 (task 6109 step-15), so this is no longer an inference:
-# `--python 3.13` resolves the pinned 1.108.54 and SERVES. `uvx` installed 37
-# packages in 311 ms from a warm cache, the serve answered `initialize` as
-# `jcodemunch-mcp` on 8901, and three full wrapped runs completed over it
-# (readiness ~13 s cold, ~5 s warm). No fallback to 3.12 was needed.
-JC_PYTHON="3.13"
-
-# ── THE IDENTITY LEVER IS PART OF THE INVOCATION ─────────────────────────────
-#
-# Carried as an explicit argv PREFIX rather than an `export`, so `--dry-run`
-# prints a command that actually reproduces this behaviour when pasted. The
-# full rationale and the PIN-BUMP CHECKLIST are in this file's header; the one
-# line that matters here is that without it jcodemunch answers for
+# WHY THE LEVER MATTERS HERE SPECIFICALLY: without it jcodemunch answers for
 # `leodearden/reify` (the empty husk) instead of the per-path
 # `local/reify-4ae45bbd` that β indexes, and the wrapped command then audits
 # nothing while emitting a perfectly well-formed empty findings array.
-JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)
 
 SERVE_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
 if [ -n "${REIFY_JC_SERVE_CMD:-}" ]; then
@@ -336,8 +318,8 @@ require_tools() {
 
 # port_is_free <port> — does NOTHING accept a connection there right now?
 #
-# A bounded pure-bash /dev/tcp connect, the same primitive α's Drop uses
-# (`TcpStream::connect_timeout`, jcodemunch_session_live.rs:366-370) and
+# A bounded pure-bash /dev/tcp connect, the same primitive α's `Drop for Serve`
+# uses (`TcpStream::connect_timeout`) and
 # deliberately not a second dependency: this is called both here in preflight
 # and in the teardown free-wait, so one implementation serves both and the two
 # cannot drift. `timeout 1` bounds it — a loopback connect to a closed port is
@@ -364,9 +346,9 @@ require_tools
 # is out of scope and unsafe — on 8901 the listener could be a hand-started
 # serve someone is mid-debug on. The operator, not this script, decides.
 #
-# The diagnostic names `ss -ltnp` for the same reason α's does
-# (jcodemunch_session_live.rs:320-324): the port number alone does not tell an
-# operator WHICH process to reclaim.
+# The diagnostic names `ss -ltnp` for the same reason α's `finish_teardown`
+# does: the port number alone does not tell an operator WHICH process to
+# reclaim.
 if ! port_is_free "$PORT"; then
     refuse E_JC_SERVE_PORT_BUSY \
         "something is already accepting on 127.0.0.1:$PORT. This script never adopts a serve it did not spawn (unknown pin, unknown identity lever — it may answer for leodearden/reify instead of local/reify-4ae45bbd) and never kills one either. Find the listener with 'ss -ltnp | grep $PORT' and stop it, or pass --port N to use a different port."
@@ -374,8 +356,8 @@ fi
 
 # ── Readiness constants ──────────────────────────────────────────────────────
 #
-# Inherited from α's MEASURED values, not guessed: `READY_TIMEOUT` /
-# `READY_POLL_INTERVAL` at jcodemunch_session_live.rs:93-97, where a cold start
+# Inherited from α's MEASURED values, not guessed: its `READY_TIMEOUT` /
+# `READY_POLL_INTERVAL` consts, where a cold start
 # with the wheels already in the uv cache was ~37 s and the ceiling is generous
 # because a cold uv cache must also fetch from PyPI. Exceeding it is a hard
 # refusal, never a skip.
@@ -390,7 +372,7 @@ READY_TIMEOUT="${REIFY_JC_SERVE_READY_TIMEOUT:-180}"
 READY_POLL_INTERVAL=1
 
 # Teardown deadlines, in WALL-CLOCK SECONDS (see the free-wait loop in cleanup).
-# α's Drop constants (:361-362): give the group 10 s to release the port and
+# α's `Drop for Serve` deadlines: give the group 10 s to release the port and
 # exit, escalating ONCE from -TERM to -KILL at the 5 s mark.
 #
 # REIFY_JC_SERVE_TEARDOWN_DEADLINE / _KILL_AFTER are TEST-ONLY overrides, the
@@ -414,7 +396,7 @@ PROBE_BODY="$SCRATCH/probe.body"
 PROBE_HEAD="$SCRATCH/probe.head"
 
 # Whatever the serve has written so far, for a failure message (α's
-# `Serve::output`, :197-208). Only ever called on a refusal path.
+# `Serve::output`). Only ever called on a refusal path.
 serve_output() {
     printf -- '--- serve stdout ---\n%s\n--- serve stderr ---\n%s\n' \
         "$(cat "$SERVE_OUT" 2>/dev/null || echo '<unreadable>')" \
@@ -424,8 +406,7 @@ serve_output() {
 # ── Teardown ─────────────────────────────────────────────────────────────────
 #
 # Armed HERE, the moment the pgid is known, so no window exists in which a
-# spawned serve has no reaper. Ported from α's `Drop`
-# (jcodemunch_session_live.rs:344-402).
+# spawned serve has no reaper. Ported from α's `Drop for Serve`.
 #
 # THE `--` IS MANDATORY AND UNCONDITIONAL — do not tidy it away. MEASURED on
 # this host during planning:
@@ -438,7 +419,8 @@ serve_output() {
 # procps-ng's `kill` swallows the negated pgid as an unknown option cluster and
 # never delivers, while still exiting 0. `--` ends option parsing so the group
 # is read as a target, and it is the only spelling correct under BOTH
-# resolutions. This is α's finding at :277-283, re-measured here for bash.
+# resolutions. This is α's finding in `signal_process_group`, re-measured here
+# for bash.
 #
 # THE VERDICT RESTS ON OBSERVED OUTCOMES, NEVER on `kill`'s exit status. The
 # buggy bare form returns 0 for a group it never reached, so a status gate would
@@ -530,7 +512,7 @@ cleanup() {
     TERM_STATUS="$(signal_group -TERM)"
 
     # Bounded free-wait to a 10 s deadline, escalating ONCE to -KILL at the 5 s
-    # mark — α's Drop constants (:361-362). Both conditions are re-observed each
+    # mark — α's `Drop for Serve` deadlines. Both conditions are re-observed each
     # iteration: -TERM is asynchronous, so the port and the group stop at
     # slightly different moments and either can be the laggard. port_is_free is
     # the same probe preflight used, so "free" means the same thing at both ends
@@ -599,7 +581,7 @@ cleanup() {
 # a leak; the CALLER decides what that does to the exit status, so this function
 # never touches it.
 #
-# Inherits α's `finish_teardown` split (jcodemunch_session_live.rs:302-333),
+# Inherits α's `finish_teardown` split,
 # including the reason the decision rests on the OBSERVED outcomes — the port
 # and the group — and never on `kill`'s exit status, which is why TERM_STATUS
 # and KILL_STATUS appear only as diagnostic detail on the line above the
@@ -614,9 +596,9 @@ cleanup() {
 # A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the
 # very next invocation refuses E_JC_SERVE_PORT_BUSY with nothing in the log to
 # say why. An otherwise-successful run therefore exits non-zero — cleanup does
-# that promotion, and only when the status is still 0. That is α's unwinding
-# case at :325-331, which likewise refuses to raise a panic that would swallow
-# the assertion message the reader actually needs.
+# that promotion, and only when the status is still 0. That is α's
+# `finish_teardown` unwinding case, which likewise refuses to raise a panic that
+# would swallow the assertion message the reader actually needs.
 #
 # The markers below are inline literals on purpose: usage() is a quoted heredoc
 # that carries them as literals too, so a variable here would buy a second
@@ -669,8 +651,8 @@ trap 'INTENDED_RC=143; cleanup; exit 143' TERM
 # THE PROCESS GROUP IS THE POINT. `uvx` fronts a child python that actually
 # holds the port, and a bare kill of the direct child orphans it. Putting the
 # serve in a process group of its OWN lets teardown signal `uvx` *and* the
-# python by group id alone — this is the bash equivalent of α's
-# `.process_group(0)` (jcodemunch_session_live.rs:177-182), and the alternative
+# python by group id alone — this is the bash equivalent of the
+# `.process_group(0)` in α's `Serve::spawn`, and the alternative
 # it rejects is a `pkill -f` pattern match, which is an unanchored substring
 # test against every command line on the host (`--port 8917` also matches a
 # `--port 89170` serve, and the blast radius is somebody else's watcher).
@@ -701,8 +683,8 @@ done
 
 # ── Readiness ────────────────────────────────────────────────────────────────
 #
-# IDENTITY, NOT LIVENESS. Ported from α's `await_ready`
-# (jcodemunch_session_live.rs:210-264). `result.serverInfo.name ==
+# IDENTITY, NOT LIVENESS. Ported from α's `Serve::await_ready`.
+# `result.serverInfo.name ==
 # "jcodemunch-mcp"` is positive proof that the endpoint answering is the serve
 # THIS script spawned; a bare TCP connect is answered happily by any squatter,
 # and this script defaults to a FIXED port, so that risk is higher here than in
@@ -729,8 +711,9 @@ probe_once() {
         return 1
     fi
 
-    # SSE-vs-plain-JSON body routing, reusing scripts/smoke-jcodemunch-serve.sh's
-    # shape (:96-102): a streamable-http serve may answer with
+    # SSE-vs-plain-JSON body routing, reusing the shape of
+    # scripts/smoke-jcodemunch-serve.sh's `text/event-stream` branch: a
+    # streamable-http serve may answer with
     # `text/event-stream`, in which case the JSON-RPC payload is the first
     # `data:` line rather than the whole body.
     if grep -qi 'text/event-stream' "$PROBE_HEAD" 2>/dev/null; then
@@ -765,7 +748,7 @@ probe_once() {
 
     # The server must ASSIGN a session id. Its absence means the session
     # contract is not being honoured server-side, so nothing downstream of here
-    # could be trusted (α's assertion at :240-245). Header names are
+    # could be trusted (α's assertion in `Serve::await_ready`). Header names are
     # case-insensitive per RFC 7230, hence `grep -i`.
     session="$(grep -i '^mcp-session-id:' "$PROBE_HEAD" 2>/dev/null | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)"
     if [ -z "$session" ]; then
@@ -791,7 +774,7 @@ await_ready() {
         # A serve that died (bad pin, no network, port taken between preflight
         # and spawn) will NEVER become ready — refuse now rather than burn the
         # whole deadline and then blame a timeout for what was really a spawn
-        # failure (α's try_wait check at :224-230).
+        # failure (α's `try_wait` check in `Serve::await_ready`).
         if ! kill -0 "$SERVE_PGID" 2>/dev/null; then
             status=0
             wait "$SERVE_JOB" 2>/dev/null || status=$?
