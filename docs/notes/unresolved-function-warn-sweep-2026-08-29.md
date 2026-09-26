@@ -88,7 +88,7 @@ surprised by a stale entry after it thinks it is done.
 | swept sites | `examples/fea_bracket_member_access.ri:29`, `examples/representation_within.ri:54`, `examples/tolerancing/gdt_pass_weave.ri:117` |
 | unswept sites | 8 more under `tests/prd-gate/fixtures/` (see "Not swept" below) |
 | disposition | manifest, own group |
-| owning task | **none verified** — stated as such in the manifest |
+| owning task | **none verified** at sweep time → ruled onto **#6010 (τ8) / #6944** by #7035 (2026-09-24) |
 
 A fully landed language feature, not a typo and not dead: #4198 measured the
 achieved-deviation metric, #4199 promoted the verb from a tolerance-bound
@@ -111,7 +111,20 @@ registry task, this one is called out as the exception — in the manifest's own
 module doc as well as at the entry — rather than filed under the nearest
 plausible τ. Assigning it a row owner is follow-up ticket
 `tkt_0RT1CF3Q06BNRBRGCS970CVB75`; #6014 needs it resolved before it can delete
-the fallback.
+the fallback (resolved below, #7035).
+
+**Resolution (2026-09-24, #7035).** Owner: τ-queries/selectors, as an
+`EnginePostProcess` row (`Const(Type::Bool)`, `Exact(2)`, basis
+`Ruling("#7035")`), per `docs/prds/v0_6/builtin-signature-registry.md` §3
+decision 4 and §9. The assignment is enforced by a delivered_check on τ8
+(#6010, coalesced into #6944) and
+by `eval_deferred_names_are_disjoint_from_every_registered_family`. Correction to
+property 1 above: the fallback's mistyping WAS observable. Every call site draws
+`warning: constraint expression has type <Subject>, expected Bool`, measured on
+`examples/representation_within.ri` (`CurvedBall`),
+`examples/fea_bracket_member_access.ri` (`FeaFace`) and
+`examples/tolerancing/gdt_pass_weave.ri` (`WeaveSphere`). What held is only that
+it yields no value cell anyone reads.
 
 ---
 
