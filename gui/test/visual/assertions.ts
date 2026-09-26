@@ -302,11 +302,13 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     ],
   },
   // Pins step-12's read-back contract end to end: `applied` is the LIVE pose after
-  // controls.update(), not the request echoed back. The pose is well inside both
-  // distance limits, so the ordinary unclamped path is what is exercised here.
+  // controls.update(), not the request echoed back. The fit_to_view setup makes the
+  // orbit floor this fixture's own, not whatever an earlier scenario last framed; the
+  // pose is then well inside both distance limits, so the unclamped path is exercised.
   {
     name: "set_camera_reports_live_pose",
     fixture: "small_cube",
+    setup: [{ tool: "fit_to_view", args: {} }],
     tool: "set_camera",
     args: { position: [0.03, 0.03, 0.03], target: [0, 0, 0] },
     assertions: [
@@ -327,11 +329,12 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
   // set_camera just reported, with no intervening render. pick_entity_at_small_cube
   // above deliberately exercises the DEFAULT camera and never moves it, so it cannot
   // observe the stale-matrixWorld bug at all — this is its framed counterpart, not a
-  // duplicate of it.
+  // duplicate of it. fit_to_view first, for the same fixture-owned floor as above.
   {
     name: "pick_after_set_camera_small_cube",
     fixture: "small_cube",
     setup: [
+      { tool: "fit_to_view", args: {} },
       {
         tool: "set_camera",
         args: {
