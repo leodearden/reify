@@ -15,7 +15,8 @@
 //! Edits and evaluations publish: each is announced by its generation before
 //! it runs, its snapshot becomes a delta before its reply is delivered, and the
 //! queue reports [`EvalActivity::Evaluating`] when the first of them is
-//! accepted while idle and [`EvalActivity::Idle`] after the last one's delta.
+//! accepted while idle and [`EvalActivity::Idle`] after the last one's delta. A
+//! snapshot's reply carries the generation its state was published under.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
@@ -252,6 +253,24 @@ impl<T> EvalOutcome<T> {
     }
 }
 
+/// A whole state as the queue published it: `state` is exactly the snapshot the
+/// queue published under `generation`. Only the queue constructs one.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedState {
+    generation: u64,
+    state: GuiState,
+}
+
+impl PublishedState {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn state(&self) -> &GuiState {
+        &self.state
+    }
+}
+
 /// A unit of engine work, as the queue will treat it, and the ticket its reply
 /// arrives on.
 pub struct EvalRequest<T> {
@@ -268,6 +287,20 @@ impl EvalRequest<()> {
         job: impl FnOnce() -> EvalOutcome<()> + Send + 'static,
     ) -> Self {
         Self::new(job, |job| Work::Edit(identity, Box::new(job)))
+    }
+}
+
+impl EvalRequest<PublishedState> {
+    /// An ordered evaluation whose job builds a whole state: the queue
+    /// publishes exactly that state and replies it stamped with the generation
+    /// it was published under.
+    pub fn snapshot(job: impl FnOnce() -> Result<GuiState, String> + Send + 'static) -> Self {
+        Self::replying(|reply| {
+            Work::Evaluation(Box::new(SnapshotJob {
+                job: Box::new(job),
+                reply,
+            }))
+        })
     }
 }
 
@@ -292,12 +325,19 @@ impl<T: Send + 'static> EvalRequest<T> {
         job: impl FnOnce() -> EvalOutcome<T> + Send + 'static,
         as_work: impl FnOnce(TypedJob<T>) -> Work,
     ) -> Self {
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        Self {
-            work: as_work(TypedJob {
+        Self::replying(|reply| {
+            as_work(TypedJob {
                 job: Box::new(job),
                 reply,
-            }),
+            })
+        })
+    }
+
+    /// A new ticket, and the work `as_work` makes of the sender of its reply.
+    fn replying(as_work: impl FnOnce(ReplySender<T>) -> Work) -> Self {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        Self {
+            work: as_work(reply),
             ticket: EvalTicket { reply: receiver },
         }
     }
@@ -320,12 +360,28 @@ impl<T> Future for EvalTicket<T> {
     }
 }
 
+/// The sender of a ticket's reply.
+type ReplySender<T> = tokio::sync::oneshot::Sender<Result<T, String>>;
+
+fn deliver<T>(sender: ReplySender<T>, reply: Result<T, String>) {
+    // A dropped ticket means nobody is waiting for the reply.
+    let _ = sender.send(reply);
+}
+
+/// Run `job`, turning its panic into the `Err` message its reply carries.
+fn run_catching_panic<R>(job: impl FnOnce() -> R) -> Result<R, String> {
+    std::panic::catch_unwind(AssertUnwindSafe(job))
+        .map_err(|payload| format!("panic in evaluation: {}", panic_payload_message(&*payload)))
+}
+
 /// A request's job and its ticket's sender, with the reply type erased so one
 /// queue holds every request.
 trait QueuedJob: Send {
     /// Run the job — a panicking job replies `Err` — hand its snapshot, if
-    /// any, to `publish`, then deliver the reply.
-    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState));
+    /// any, to `publish`, then deliver the reply. `publish` returns the
+    /// generation the snapshot was published under, or `None` when it was not
+    /// published.
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState) -> Option<u64>);
 
     /// Reply `Err(message)` without running the job.
     fn fail(self: Box<Self>, message: String);
@@ -338,30 +394,23 @@ trait QueuedEdit: QueuedJob {
 
 struct TypedJob<T> {
     job: Box<dyn FnOnce() -> EvalOutcome<T> + Send>,
-    reply: tokio::sync::oneshot::Sender<Result<T, String>>,
+    reply: ReplySender<T>,
 }
 
 impl<T> TypedJob<T> {
     fn resolve(self, reply: Result<T, String>) {
-        // A dropped ticket means nobody is waiting for the reply.
-        let _ = self.reply.send(reply);
+        deliver(self.reply, reply);
     }
 }
 
 impl<T: Send> QueuedJob for TypedJob<T> {
-    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState) -> Option<u64>) {
         let TypedJob { job, reply } = *self;
-        let outcome = std::panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|payload| {
-            EvalOutcome::failed(format!(
-                "panic in evaluation: {}",
-                panic_payload_message(&*payload)
-            ))
-        });
+        let outcome = run_catching_panic(job).unwrap_or_else(EvalOutcome::failed);
         if let Some(state) = outcome.publish {
             publish(state);
         }
-        // A dropped ticket means nobody is waiting for the reply.
-        let _ = reply.send(outcome.reply);
+        deliver(reply, outcome.reply);
     }
 
     fn fail(self: Box<Self>, message: String) {
@@ -372,6 +421,30 @@ impl<T: Send> QueuedJob for TypedJob<T> {
 impl QueuedEdit for TypedJob<()> {
     fn supersede(self: Box<Self>) {
         self.resolve(Ok(()));
+    }
+}
+
+/// A snapshot's job: it builds a state, which the queue publishes and replies
+/// stamped with the generation it was published under.
+struct SnapshotJob {
+    job: Box<dyn FnOnce() -> Result<GuiState, String> + Send>,
+    reply: ReplySender<PublishedState>,
+}
+
+impl QueuedJob for SnapshotJob {
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState) -> Option<u64>) {
+        let SnapshotJob { job, reply } = *self;
+        let published = run_catching_panic(job)
+            .and_then(|built| built)
+            .and_then(|state| match publish(state.clone()) {
+                Some(generation) => Ok(PublishedState { generation, state }),
+                None => Err("the state was not published, so it has no generation".to_string()),
+            });
+        deliver(reply, published);
+    }
+
+    fn fail(self: Box<Self>, message: String) {
+        deliver(self.reply, Err(message));
     }
 }
 
@@ -626,9 +699,10 @@ impl EvalQueue {
         }
         let ran = std::panic::catch_unwind(AssertUnwindSafe(|| {
             entry.into_job().run(&mut |state| {
-                if let Some(generation) = generation {
-                    self.publisher.publish(generation, state);
-                }
+                let generation = generation?;
+                self.publisher
+                    .publish(generation, state)
+                    .then_some(generation)
             });
         }));
         if let Err(payload) = ran {
