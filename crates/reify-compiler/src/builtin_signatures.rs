@@ -117,7 +117,9 @@
 //!   gated at eval, so they are eligible in the mechanical sense; they are
 //!   simply not among the families task 5750's leaf scoped, and no fixture
 //!   forced the decision. A later leaf can add them by following the arms
-//!   above verbatim.
+//!   above verbatim. `arc`'s two ANGLES are the exception: PRD 3 leaf ζ
+//!   (task 5782) slotted them, which leaves its centre and radius — and
+//!   `line_segment` and `helix` — outside the table, unchanged.
 //!
 //! - The ARITY-OPEN variadic route — `polygon`'s 2-D vertex pairs, `interp`
 //!   and `bezier`'s coordinate triples, and `nurbs`' `2 .. 2 + 3·n_points`
@@ -1072,6 +1074,26 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "semi_minor"),
         ] },
 
+        // ── Curve producers (PRD 3 leaf ζ, task 5782) ────────────────────────
+        //
+        // Arg names copied from `geometry_curve.rs`'s `arc` lowering arm (D9).
+        //
+        // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
+        //   args0-2: the centre `cx`/`cy`/`cz`, and arg3 `radius` — Length-
+        //            semantic, but deliberately UNSLOTTED here: curve producers
+        //            sit outside task 5750's families, recorded under the module
+        //            doc's "Contract C positions this table deliberately does NOT
+        //            cover" CURVE bullet. PRD 1's territory, not this leaf's.
+        //   args4-5: `start_angle` / `end_angle` → ANGLE ("Angle").
+        //   args6-8: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
+        //
+        // Single-form (`check_arg_count_exact(.., 9, ..)`), so arity-agnostic per
+        // the "guard only genuinely overloaded names" rule. Pinned by
+        // `arc_slots_both_angles_but_neither_its_centre_nor_its_radius` and, at
+        // the message layer, by `arc_bare_angles_are_both_rejected_in_one_pass`.
+        "arc" => const { &[angle_arg(4, "start_angle"), angle_arg(5, "end_angle")] },
+
         // ── Euler builtins: the convention is an enum, not a String (#6082) ──
         // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention
         // comes FIRST and selects the meaning of the three angles that follow
@@ -1643,6 +1665,7 @@ mod tests {
         "circular_pattern",
         // PRD 3 leaf ζ (task 5782) — ANGLE producers.
         "rotate",
+        "arc",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1834,7 +1857,7 @@ mod tests {
                 builtin_arg_slots(name, arg_count),
                 expected,
                 "builtin_arg_slots({name:?}, {arg_count}) must expose exactly the \
-                 expected LENGTH slots; {name} is not an overloaded name, so its \
+                 expected slots; {name} is not an overloaded name, so its \
                  arm must carry no `if arg_count ==` guard"
             );
         }
@@ -4187,6 +4210,7 @@ mod tests {
         // permitted. `geometry_transform.rs`' fallback reads
         // `"rotate() expects 2 or 5 arguments, got {n}"`.
         ("rotate", AcceptedArities::Exactly(&[2, 5])),
+        ("arc", AcceptedArities::Exactly(&[9])),
         // Pattern ORIGIN triples (task 5662) — the only rows here that are
         // multi-arity because the name is genuinely OVERLOADED: the scalar form
         // and the value form. Both are safe under the coupling rule because
