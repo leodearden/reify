@@ -217,7 +217,15 @@ const MAXIMUM_XREF_WORDS: usize = 150;
 /// `stdlib_chunk_geometry_ops_smoke.rs::geometry_op_doc_coverage_violations` is,
 /// so the controls below pin every class with synthetic data.
 fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
-    let prose = strip_html_comments(region);
+    let prose = match strip_html_comments(region) {
+        Ok(prose) => prose,
+        Err(error) => {
+            return vec![format!(
+                "{chunk_path}'s `{ORACLE_XREF_MARKER}` region cannot be read: {error} — so none \
+                 of its pointer checks can run. FIX: repair the markup."
+            )];
+        }
+    };
     let mut out = Vec::new();
 
     if prose.contains(HTML_COMMENT_CLOSE) {
@@ -408,6 +416,22 @@ fn a_pointer_sized_region_naming_both_call_forms_and_the_destination_is_clean() 
         Vec::<String>::new(),
         "the clean control must decide NOTHING is wrong — otherwise every other \
          control below is passing for the wrong reason"
+    );
+}
+
+/// A region whose fences cannot be read is one violation, not a region judged
+/// on whatever text a misread fence left behind.
+#[test]
+fn a_region_with_an_unterminated_fence_is_reported_as_unreadable() {
+    let region = format!("{POINTER_SIZED_REGION}\n```text\nnever closed\n");
+
+    let violations = xref_region_violations(&region, "synthetic.md");
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("synthetic.md") && violations[0].contains("cannot be read"),
+        "got: {}",
+        violations[0]
     );
 }
 
@@ -689,7 +713,8 @@ The posed form and the traps are in the `geometry` chunk — topic `geometry` of
 #[test]
 fn html_comments_are_removed_and_the_prose_around_them_is_kept() {
     assert_eq!(
-        strip_html_comments("before\n<!-- an editor note\n   spanning lines -->\nafter\n"),
+        strip_html_comments("before\n<!-- an editor note\n   spanning lines -->\nafter\n")
+            .expect("no fence to misread"),
         "before\n\nafter\n"
     );
 }
@@ -700,7 +725,8 @@ fn an_unterminated_html_comment_consumes_the_remainder() {
     // region then reports as missing its call forms, which is TRUE of the
     // rendered chunk — not a scanner defect to be worked around.
     assert_eq!(
-        strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n"),
+        strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n")
+            .expect("no fence to misread"),
         "visible\n"
     );
 }
@@ -733,7 +759,8 @@ fn a_quoted_terminator_closes_the_comment_early() {
              `<!-- ORACLE-XREF -->` marker line — retitling is free.\n\
              -->\n\
              prose below\n"
-        ),
+        )
+        .expect("no fence to misread"),
         "prose above\n` marker line — retitling is free.\n-->\nprose below\n"
     );
 }

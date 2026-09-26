@@ -2,17 +2,17 @@
 //! blocks and maintainer notes, with every line and column still pointing into
 //! the source.
 //!
-//! Fenced blocks come from [`parse_fences`], the binary's one fence model.
-//! HTML comments and code spans share CommonMark's one inline precedence —
-//! whichever STARTS first wins — so backticks protect in one direction only. A
-//! `<!--` quoted in a prose code span is literal text. Inside a comment, where
-//! markdown is not processed, backticks protect nothing: a comment runs from
-//! `<!--` to its FIRST `-->`, even one quoted in backticks. A maintainer note
-//! that quotes a full marker therefore ends at the quote and leaks its tail into
-//! the rendered chunk — the defect [`stray_comment_terminators`] reports,
-//! measured in five notes of `geometry.md` and `units.md` when this module
-//! landed. Code spans pair per CommonMark within one paragraph, so a stray
-//! backtick cannot swallow the paragraphs after it.
+//! Fenced blocks come from [`parse_fences`], the binary's one fence model, and
+//! every reader here sees comments only outside them. HTML comments and code
+//! spans share CommonMark's one inline precedence — whichever STARTS first wins
+//! — so backticks protect in one direction only. A `<!--` quoted in a prose code
+//! span is literal text. Inside a comment, where markdown is not processed,
+//! backticks protect nothing: a comment runs from `<!--` to its FIRST `-->`,
+//! even one quoted in backticks. A maintainer note that quotes a full marker
+//! therefore ends at the quote and leaks its tail into the rendered chunk — the
+//! defect [`stray_comment_terminators`] reports. Code spans pair within one
+//! block, as CommonMark scopes them ([`LineRole`]), so a stray backtick cannot
+//! reach past its own paragraph, table row, list item or heading.
 
 use std::ops::Range;
 
@@ -106,14 +106,16 @@ pub(crate) fn stray_comment_terminators(markdown: &str) -> Result<Vec<usize>, St
     Ok(lines)
 }
 
-/// `markdown` with every `<!-- … -->` comment removed.
+/// `markdown` with every `<!-- … -->` comment outside a fence removed. A fenced
+/// block is kept whole: a renderer shows a `<!--` inside one as code.
 ///
 /// An UNTERMINATED comment consumes the remainder, which is exactly what a
 /// markdown renderer does with it — so a region whose pointer has been swallowed
 /// by a stray `<!--` reports as missing its call forms, which is the true
-/// description of what the reader can now see.
-pub(crate) fn strip_html_comments(markdown: &str) -> String {
-    let comments = scan_comments(markdown);
+/// description of what the reader can now see. `Err` only on an unterminated
+/// fence (the fence model's own message).
+pub(crate) fn strip_html_comments(markdown: &str) -> Result<String, String> {
+    let comments = scan_comments(&without_fences(markdown)?);
     let mut out = String::with_capacity(markdown.len());
     let mut kept_from = 0;
     for comment in comments.closed {
@@ -121,18 +123,64 @@ pub(crate) fn strip_html_comments(markdown: &str) -> String {
         kept_from = comment.end;
     }
     out.push_str(&markdown[kept_from..comments.unterminated.unwrap_or(markdown.len())]);
-    out
+    Ok(out)
 }
 
 /// Every inline code span in `text`, in document order.
 ///
 /// A backtick run of N opens a span that closes at the next run of EXACTLY N in
-/// the same paragraph; an opener with no such closer is literal text.
+/// the same block; an opener with no such closer is literal text.
 pub(crate) fn code_spans(text: &str) -> Vec<CodeSpan> {
-    paragraphs(text)
+    blocks(text)
         .into_iter()
-        .flat_map(|(first_line, lines)| paragraph_code_spans(first_line, &lines.join("\n")))
+        .flat_map(|(first_line, lines)| block_code_spans(first_line, &lines.join("\n")))
         .collect()
+}
+
+/// How one line bounds the CommonMark block around it — the scope within which
+/// code spans pair and a backtick can protect a comment opener.
+#[derive(PartialEq)]
+enum LineRole {
+    /// Ends the block above it.
+    Blank,
+    /// Opens a block of its own, ending the one above: an HTML comment or a list
+    /// item.
+    Opens,
+    /// A whole block on one line, ending the one above it and itself: a table row
+    /// or an ATX heading.
+    Whole,
+    /// Continues the block above it.
+    Continues,
+}
+
+fn line_role(line: &str) -> LineRole {
+    let content = line.trim_start();
+    if content.is_empty() {
+        LineRole::Blank
+    } else if content.starts_with('|') || is_atx_heading(content) {
+        LineRole::Whole
+    } else if content.starts_with(HTML_COMMENT_OPEN) || is_list_item(content) {
+        LineRole::Opens
+    } else {
+        LineRole::Continues
+    }
+}
+
+/// One to six `#`, then a space, a tab or the end of the line.
+fn is_atx_heading(content: &str) -> bool {
+    let level = content.bytes().take_while(|byte| *byte == b'#').count();
+    (1..=6).contains(&level) && matches!(content.as_bytes().get(level), None | Some(b' ' | b'\t'))
+}
+
+/// A bullet (`-`, `+`, `*`) or an ordinal (`1.`, `2)`), then a space or a tab.
+fn is_list_item(content: &str) -> bool {
+    let digits = content.bytes().take_while(u8::is_ascii_digit).count();
+    let marker_len = match content.as_bytes().get(digits) {
+        Some(b'.' | b')') if (1..=9).contains(&digits) => digits + 1,
+        Some(b'-' | b'+' | b'*') if digits == 0 => 1,
+        _ => return false,
+    };
+    matches!(content.as_bytes().get(marker_len), Some(b' ' | b'\t'))
 }
 
 /// The comments in `text` as byte ranges, delimiters included, in document
@@ -175,28 +223,38 @@ fn next_comment_open(text: &str, from: usize) -> Option<usize> {
 
 /// Where the backtick run starting at `tick` stops protecting what follows it:
 /// the end of the code span it opens — closed, as [`code_spans`] pairs them, by
-/// the next run of the same length in its paragraph — or, with no such closer,
-/// the end of the run itself, which is then literal text.
+/// the next run of the same length in its block — or, with no such closer, the
+/// end of the run itself, which is then literal text.
 fn code_span_end(text: &str, tick: usize) -> usize {
-    let runs = backtick_runs(&text[tick..paragraph_end(text, tick)]);
+    let runs = backtick_runs(&text[tick..block_end(text, tick)]);
     let opener = &runs[0];
     let closer = runs[1..].iter().find(|run| run.len() == opener.len());
     tick + closer.unwrap_or(opener).end
 }
 
-/// Where the paragraph holding `offset` ends: before its next blank line, or
-/// before its next line that opens a comment — an HTML block interrupts a
-/// paragraph, so no backtick above a note can pair with one inside it.
-fn paragraph_end(text: &str, offset: usize) -> usize {
-    let mut line_start = offset;
-    while let Some(newline) = text[line_start..].find('\n') {
-        line_start += newline + 1;
-        let line = text[line_start..].lines().next().unwrap_or_default();
-        if line.trim().is_empty() || line.trim_start().starts_with(HTML_COMMENT_OPEN) {
-            return line_start;
-        }
+/// Where the block holding `offset` ends: after its own line when that line is
+/// a whole block, else before the next line that does not continue it — so no
+/// backtick above a note, or in another table row, can pair with one past it.
+fn block_end(text: &str, offset: usize) -> usize {
+    let line_start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+    let mut end = next_line_start(text, offset);
+    if line_role(first_line(&text[line_start..])) == LineRole::Whole {
+        return end;
     }
-    text.len()
+    while end < text.len() && line_role(first_line(&text[end..])) == LineRole::Continues {
+        end = next_line_start(text, end);
+    }
+    end
+}
+
+fn next_line_start(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .find('\n')
+        .map_or(text.len(), |newline| offset + newline + 1)
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
 }
 
 fn closed_comments(text: &str) -> Result<Vec<Range<usize>>, String> {
@@ -245,27 +303,32 @@ fn line_at(text: &str, offset: usize) -> usize {
         + 1
 }
 
-/// Maximal runs of non-blank lines, each with the 1-based number of its first
-/// line.
-fn paragraphs(text: &str) -> Vec<(usize, Vec<&str>)> {
+/// The blocks of `text` that inline content is scoped to, as [`LineRole`]
+/// bounds them — each its lines, with the 1-based number of the first.
+fn blocks(text: &str) -> Vec<(usize, Vec<&str>)> {
     let mut out: Vec<(usize, Vec<&str>)> = Vec::new();
     let mut current: Option<(usize, Vec<&str>)> = None;
     for (index, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
+        let role = line_role(line);
+        if role != LineRole::Continues {
             out.extend(current.take());
-        } else {
+        }
+        if role != LineRole::Blank {
             current
                 .get_or_insert_with(|| (index + 1, Vec::new()))
                 .1
                 .push(line);
+        }
+        if role == LineRole::Whole {
+            out.extend(current.take());
         }
     }
     out.extend(current);
     out
 }
 
-fn paragraph_code_spans(first_line: usize, paragraph: &str) -> Vec<CodeSpan> {
-    let runs = backtick_runs(paragraph);
+fn block_code_spans(first_line: usize, block: &str) -> Vec<CodeSpan> {
+    let runs = backtick_runs(block);
     let mut spans = Vec::new();
     let mut next = 0;
     while let Some(opener) = runs.get(next) {
@@ -278,8 +341,8 @@ fn paragraph_code_spans(first_line: usize, paragraph: &str) -> Vec<CodeSpan> {
         };
         let closer = &runs[next + 1 + skip];
         spans.push(CodeSpan {
-            line: first_line + line_at(paragraph, opener.start) - 1,
-            text: span_content(&paragraph[opener.end..closer.start]),
+            line: first_line + line_at(block, opener.start) - 1,
+            text: span_content(&block[opener.end..closer.start]),
         });
         next += skip + 2;
     }
@@ -444,6 +507,16 @@ fn a_stray_backtick_above_a_note_cannot_pair_into_it() {
     );
 }
 
+/// Each table row is a block of its own, so a backtick left unpaired in one row
+/// cannot pair with one in the next and hide the note between them.
+#[test]
+fn a_stray_backtick_in_one_table_row_cannot_hide_a_note_in_the_next() {
+    let md = "| stray ` tick | x |\n\
+              | <!-- a note --> | `y` |\n";
+
+    assert_eq!(comments_of(md), vec![(2, " a note ".to_string())]);
+}
+
 /// The early-close check stays conservative: a quoted terminator cannot be
 /// told from a closed-early note's tail, so it is reported.
 #[test]
@@ -478,11 +551,36 @@ fn an_unterminated_comment_is_an_error_naming_its_opening_line() {
 #[test]
 fn an_unterminated_fence_is_the_fence_models_own_error() {
     let md = "prose\n```reify\nstructure def S { let n = 1 }\n";
+    let fence_error = parse_fences(md).expect_err("fixture: the fence is unterminated");
+
+    let outcomes = [
+        ("unfenced_prose", unfenced_prose(md).map(drop)),
+        ("strip_html_comments", strip_html_comments(md).map(drop)),
+    ];
+    for (entry_point, outcome) in outcomes {
+        assert_eq!(
+            outcome.expect_err("an unterminated fence must not read as prose"),
+            fence_error,
+            "{entry_point} passes the fence model's message through, not re-worded"
+        );
+    }
+}
+
+/// A blank line in a fence body leaves the opening delimiter nothing to pair
+/// with, so only the fence model keeps a `<!--` in that body from opening a
+/// comment that swallows the prose after the fence.
+#[test]
+fn strip_html_comments_keeps_a_fence_whole_and_strips_only_the_notes_outside_it() {
+    let md = "```text\n\
+              <!-- a fenced opener\n\
+              \n\
+              still fenced\n\
+              ```\n\
+              prose <!-- a note --> after\n";
 
     assert_eq!(
-        unfenced_prose(md).expect_err("an unterminated fence must not read as prose"),
-        parse_fences(md).expect_err("fixture: the fence is unterminated"),
-        "the fence model's message is passed through, not re-worded"
+        strip_html_comments(md).expect("the fence is closed"),
+        "```text\n<!-- a fenced opener\n\nstill fenced\n```\nprose  after\n"
     );
 }
 
@@ -604,6 +702,50 @@ fn an_unmatched_backtick_run_is_literal_and_never_pairs_across_a_blank_line() {
         spans_of("``unclosed then `single(x)` span\n"),
         vec![(1, "single(x)".to_string())],
         "an opener with no closer of its own length is literal text"
+    );
+}
+
+/// A table row and a heading are each a whole block, and a list item opens one,
+/// so a backtick left unpaired above any of them cannot pair into it.
+#[test]
+fn a_stray_backtick_cannot_pair_past_its_own_table_row_list_item_or_heading() {
+    let cases = [
+        (
+            "| stray ` tick | x |\n| `some(v, w)` | form |\n",
+            "a table row below a table row",
+        ),
+        (
+            "a stray ` tick\n- `some(v, w)` is an item\n",
+            "a bullet item below a paragraph",
+        ),
+        (
+            "a stray ` tick\n1. `some(v, w)` is an item\n",
+            "an ordinal item below a paragraph",
+        ),
+        (
+            "a stray ` tick\n## `some(v, w)` heads a section\n",
+            "a heading below a paragraph",
+        ),
+        (
+            "## A stray ` tick\n`some(v, w)` follows the heading\n",
+            "a paragraph below a heading",
+        ),
+    ];
+    for (markdown, case) in cases {
+        assert_eq!(
+            spans_of(markdown),
+            vec![(2, "some(v, w)".to_string())],
+            "{case}: the stray backtick must stay literal"
+        );
+    }
+}
+
+#[test]
+fn a_span_wrapped_inside_a_list_item_stays_one_span() {
+    assert_eq!(
+        spans_of("- see `rotate(geo,\n  angle)` here\n- next item\n"),
+        vec![(1, "rotate(geo, angle)".to_string())],
+        "a list item's continuation line is part of its block"
     );
 }
 
