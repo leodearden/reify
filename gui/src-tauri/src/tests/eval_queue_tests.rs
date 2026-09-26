@@ -727,9 +727,14 @@ fn each_edit_and_evaluation_announces_its_generation_before_its_delta() {
     assert_eq!(rig.ran(), ["A", "call", "E", "B"]);
     let generations = rig.observer.started_generations();
     let [a, e, b] = generations[..] else {
-        panic!("expected one announcement per edit or evaluation, none for the engine call; got {generations:?}");
+        panic!(
+            "expected one announcement per edit or evaluation, none for the engine call; got {generations:?}"
+        );
     };
-    assert!(a < e && e < b, "announced generations must increase: {generations:?}");
+    assert!(
+        a < e && e < b,
+        "announced generations must increase: {generations:?}"
+    );
     assert_eq!(
         rig.announcements_and_deltas(),
         [
@@ -752,7 +757,7 @@ fn superseded_and_late_edits_announce_nothing() {
         rig.queue
             .submit(EvalRequest::edit(preview("B", 1), move || {
                 for seq in 1..=5 {
-                    let _ = queue.submit(logged_edit(&log, preview("A", seq), &format!("A{seq}")));
+                    drop(queue.submit(logged_edit(&log, preview("A", seq), &format!("A{seq}"))));
                 }
                 log_run(&log, "B");
                 EvalOutcome {
@@ -841,7 +846,11 @@ fn an_observer_that_panics_on_started_does_not_stop_the_queue() {
 
     assert_eq!(settled(ticket), Ok("E".to_string()));
     assert_eq!(*log.lock().expect("run log"), ["E"]);
-    assert_eq!(observer.0.deltas().len(), 1, "the evaluation still publishes");
+    assert_eq!(
+        observer.0.deltas().len(),
+        1,
+        "the evaluation still publishes"
+    );
     assert_eq!(
         observer.0.activities(),
         [EvalActivity::Evaluating, EvalActivity::Idle]

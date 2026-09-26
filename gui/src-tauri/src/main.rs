@@ -5,8 +5,9 @@
 // reify-kernel-occt::register. The kernel_status::current_kernel_status() call surfaces the
 // build-time OCCT_AVAILABLE constant for the startup banner. Wraps in AppState and starts the
 // Tauri application with all command handlers. Engine-touching commands submit to the
-// evaluation queue, which publishes each evaluation's delta and the evaluation status through
-// TauriEvalObserver.
+// evaluation queue, which publishes the evaluation status as `evaluation-status`, each
+// generation it starts running as `eval-generation`, and each evaluation's delta as targeted
+// events, through TauriEvalObserver.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -28,7 +29,7 @@ use reify_gui::engine::{
 use reify_gui::eval_queue::{EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
-use reify_gui::types::EvaluationStatus;
+use reify_gui::types::{EvalGeneration, EvaluationStatus};
 use reify_gui::watcher::{FileEvent, FileWatcher};
 use reify_lsp::server::{LogLine, NotificationSink};
 use tower_lsp::lsp_types::{Diagnostic, Url};
@@ -55,7 +56,8 @@ fn emit_status(app: &tauri::AppHandle, phase: &str) {
 }
 
 /// Tells the frontend what the evaluation queue did: its activity as
-/// `evaluation-status`, and each published delta as targeted events.
+/// `evaluation-status`, each generation it starts running as `eval-generation`,
+/// and each published delta as targeted events.
 struct TauriEvalObserver {
     app: tauri::AppHandle,
 }
@@ -67,6 +69,12 @@ impl EvalObserver for TauriEvalObserver {
             EvalActivity::Idle => "idle",
         };
         emit_status(&self.app, phase);
+    }
+
+    fn started(&self, generation: u64) {
+        if let Err(e) = emit_typed(&self.app, "eval-generation", &EvalGeneration { generation }) {
+            warn!("eval-generation emit failed: {}", e);
+        }
     }
 
     fn delta(&self, delta: &StateDelta) {

@@ -12,10 +12,10 @@
 //! one. A superseding edit takes its own arrival position, so it never jumps a
 //! barrier.
 //!
-//! Edits and evaluations publish: their snapshot becomes a delta before their
-//! reply is delivered, and the queue reports [`EvalActivity::Evaluating`] when
-//! the first of them is accepted while idle and [`EvalActivity::Idle`] after
-//! the last one's delta.
+//! Edits and evaluations publish: each is announced by its generation before
+//! it runs, its snapshot becomes a delta before its reply is delivered, and the
+//! queue reports [`EvalActivity::Evaluating`] when the first of them is
+//! accepted while idle and [`EvalActivity::Idle`] after the last one's delta.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
@@ -170,6 +170,12 @@ pub enum EvalActivity {
 /// into the queue.
 pub trait EvalObserver: Send + Sync {
     fn activity(&self, activity: EvalActivity);
+
+    /// An edit or evaluation of `generation` is about to run: everything it
+    /// makes the frontend see, its delta included, follows this call, and
+    /// everything an older generation caused precedes it.
+    fn started(&self, generation: u64);
+
     fn delta(&self, delta: &StateDelta);
 }
 
@@ -615,6 +621,9 @@ impl EvalQueue {
 
     fn process(&self, entry: Entry) {
         let generation = entry.generation();
+        if let Some(generation) = generation {
+            self.announce(generation);
+        }
         let ran = std::panic::catch_unwind(AssertUnwindSafe(|| {
             entry.into_job().run(&mut |state| {
                 if let Some(generation) = generation {
@@ -638,14 +647,23 @@ impl EvalQueue {
     }
 
     fn report(&self, activity: EvalActivity) {
-        let reported = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            self.observer.activity(activity);
-        }));
-        if let Err(payload) = reported {
-            tracing::warn!(
-                "reporting evaluation activity panicked: {}",
-                panic_payload_message(&*payload)
-            );
+        self.notify("reporting evaluation activity", |observer| {
+            observer.activity(activity)
+        });
+    }
+
+    fn announce(&self, generation: u64) {
+        self.notify("announcing an evaluation", |observer| {
+            observer.started(generation)
+        });
+    }
+
+    /// Make one observer call, containing its panic: a failing observer must
+    /// never stop the queue.
+    fn notify(&self, what: &str, call: impl FnOnce(&dyn EvalObserver)) {
+        let notified = std::panic::catch_unwind(AssertUnwindSafe(|| call(&*self.observer)));
+        if let Err(payload) = notified {
+            tracing::warn!("{what} panicked: {}", panic_payload_message(&*payload));
         }
     }
 
