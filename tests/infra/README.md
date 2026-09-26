@@ -321,7 +321,8 @@ capture the construct's output. So `$(readlink /proc/self/fd/1)` reads back
 `pipe:*` whatever the probed process really inherited: `/proc/self` is the
 `readlink` process itself, running inside the capture. `$BASHPID` spelled
 *inside* the substitution expands to the substitution subshell's PID, so
-`/proc/$BASHPID/fd/1` there is equally vacuous. Census origin: codebook entry
+`/proc/$BASHPID/fd/1` there is equally vacuous, as are the aliases `/dev/fd/1`
+and `/proc/thread-self/fd/1`. Census origin: codebook entry
 `entry-cand-20260818-22` — task #6219's Block V in `test_seed_warm_lane.sh`
 measured a memory-prescribed probe reading `pipe:*` unconditionally, fix or no
 fix. The correct idiom captures the PID **outside** any substitution:
@@ -336,28 +337,30 @@ fd 0 and fd 2 are not flagged: a command substitution inherits them, so
 correct. One caution the guard does **not** enforce: a probe must not redirect
 the fd it reads — `$(readlink /proc/self/fd/2 2>/dev/null)` reads `/dev/null`.
 
-`scripts/check-fd-probe-self-reference.py` flags a non-comment line on which
-`/proc/self/fd/1`, `/proc/$BASHPID/fd/1` or `/proc/${BASHPID}/fd/1` sits
-inside such a span; its `SELF_FD1` regex is the one list of spellings. The
-corpus is `git ls-files -- '*.sh' 'hooks/*'`, shared with the flock guard
-above. A line carrying `fdprobe:allow` is exempt.
+`scripts/check-fd-probe-self-reference.py` flags a non-comment line on which a
+path naming the current process's fd 1 sits inside such a span; its
+`SELF_FD1` regex is the one list of spellings. The corpus is
+`git ls-files -- '*.sh' 'hooks/*'`, shared with the flock guard above. A line
+carrying `fdprobe:allow` is exempt.
 
 **Scope, honestly.** Spans are line-local, so a `$(` split across lines is not
-followed. Not covered: a probe inside a function whose *caller* wrapped it in
-`$(...)`, a probe reaching fd 1 through a pipeline or its own redirect, and
-bash embedded in `.py` files (a line scanner cannot tell code from docstring).
-The corpus is code only: the machine-written mention corpus
+followed. Span ends are found by counting parentheses without regard to
+quoting, so a quoted `)` truncates a span:
+`$(echo ")"; readlink /proc/self/fd/1)` is missed. Not covered: a probe inside
+a function whose *caller* wrapped it in `$(...)`, a probe reaching fd 1
+through a pipeline or its own redirect, and bash embedded in `.py` files (a
+line scanner cannot tell code from docstring). `/dev/stdout` is deliberately
+not a `SELF_FD1` spelling: inside a substitution it is an idiomatic *write*
+target (`$(curl -so /dev/stdout ...)`) that a spelling scan cannot tell from a
+probe, so the vacuous `$(readlink -f /dev/stdout)` goes unflagged. The corpus
+is code only: the machine-written mention corpus
 (`docs/legibility/confusion-codebook.yaml`, `plans/confusion-census-*.md`)
 quotes the banned spelling but is structurally outside it, so
 `docs/legibility/landing-contract.md` §5 trigger 2 (a mention-corpus exclusion
 plus a `--scope staged` selector) does not apply.
 
-Zero offenders exist today, so `test_fd_probe_self_reference.py` ships three
-liveness controls with the all-clear: a corpus-size floor, membership of known
-files (an extension-less hook and the fd-0 near-miss among them), and a
-mutation control that reverts Block V's fixed shim line to each census
-spelling and demands exactly one finding. `BashPremiseTest` pins the bash
-behaviour the rule rests on.
+Premise, detection cases and the all-clear's liveness controls:
+`test_fd_probe_self_reference.py`.
 
 ## Cited test-path resolution (`cited-test-path-baseline.manifest`)
 

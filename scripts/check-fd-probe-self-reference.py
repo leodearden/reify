@@ -4,8 +4,9 @@ check-fd-probe-self-reference.py — flag /proc probes of the current process's
 fd 1 written inside an output-capturing construct.
 
 Inside `$(...)`, backticks or `<(...)`, fd 1 IS the pipe bash uses to capture
-the construct's output, so `readlink /proc/self/fd/1` (or `/proc/$BASHPID/fd/1`
-spelled inside the construct) reads back `pipe:*` whatever the real fd 1 is.
+the construct's output, so `readlink /proc/self/fd/1` (or an alias such as
+`/dev/fd/1`, or `/proc/$BASHPID/fd/1` spelled inside the construct) reads back
+`pipe:*` whatever the real fd 1 is.
 A line is flagged when one of those self-fd-1 spellings sits inside such a
 span; whole-line comments and lines carrying `fdprobe:allow` are exempt.
 
@@ -28,7 +29,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-SELF_FD1 = re.compile(r"/proc/(?:self|\$BASHPID|\$\{BASHPID\})/fd/1(?![0-9])")
+SELF_FD1 = re.compile(
+    r"(?:/proc/(?:self|thread-self|\$BASHPID|\$\{BASHPID\})|/dev)/fd/1(?![0-9])"
+)
 
 ALLOW_TOKEN = "fdprobe:allow"
 

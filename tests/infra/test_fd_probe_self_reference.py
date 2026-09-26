@@ -10,6 +10,7 @@ tests/infra/README.md "Self-referential fd-probe guard".
 """
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -55,33 +56,45 @@ class CheckerTestCase(unittest.TestCase):
 class BashPremiseTest(CheckerTestCase):
     """Characterises bash, not repo code: which fd-1 spellings are vacuous."""
 
-    SCRIPT = "\n".join([
-        "a=$(readlink /proc/self/fd/1)",
-        "b=$(readlink /proc/$BASHPID/fd/1)",
-        '_p=$BASHPID; c=$(readlink "/proc/$_p/fd/1")',
-        "d=$(readlink /proc/self/fd/0)",
-        "printf '%s\\n' \"$a\" \"$b\" \"$c\" \"$d\" >&2",
-    ])
+    VACUOUS_SPELLINGS = (
+        "/proc/self/fd/1",
+        "/proc/$BASHPID/fd/1",
+        "/proc/thread-self/fd/1",
+        "/dev/fd/1",
+    )
 
-    def test_self_fd1_inside_substitution_reads_the_capture_pipe(self):
-        tmp = self.make_tmpdir()
-        stdin_file = tmp / "stdin.txt"
-        stdin_file.write_text("probe stdin\n")
-        out_file = tmp / "stdout.txt"
-        with open(stdin_file) as stdin, open(out_file, "w") as stdout:
+    def setUp(self):
+        tmp = self.make_tmpdir().resolve()
+        self.stdin_file = tmp / "stdin.txt"
+        self.stdin_file.write_text("probe stdin\n")
+        self.out_file = tmp / "stdout.txt"
+
+    def readback(self, assignment):
+        """Run bash `assignment` (it sets $r) on file-backed stdin/stdout."""
+        with open(self.stdin_file) as stdin, open(self.out_file, "w") as stdout:
             proc = subprocess.run(
-                ["bash", "-c", self.SCRIPT],
+                ["bash", "-c", f"{assignment}; printf '%s' \"$r\" >&2"],
                 stdin=stdin,
                 stdout=stdout,
                 stderr=subprocess.PIPE,
                 text=True,
                 check=True,
             )
-        a, b, c, d = proc.stderr.splitlines()
-        self.assertTrue(a.startswith("pipe:"), a)
-        self.assertTrue(b.startswith("pipe:"), b)
-        self.assertEqual(c, str(out_file.resolve()))
-        self.assertEqual(d, str(stdin_file.resolve()))
+        return proc.stderr
+
+    def test_self_fd1_inside_substitution_reads_the_capture_pipe(self):
+        for spelling in self.VACUOUS_SPELLINGS:
+            with self.subTest(spelling=spelling):
+                seen = self.readback(f"r=$(readlink {spelling})")
+                self.assertTrue(seen.startswith("pipe:"), seen)
+
+    def test_pid_captured_outside_reads_the_real_stdout(self):
+        seen = self.readback('_p=$BASHPID; r=$(readlink "/proc/$_p/fd/1")')
+        self.assertEqual(seen, str(self.out_file))
+
+    def test_fd0_is_inherited_into_the_substitution(self):
+        seen = self.readback("r=$(readlink /proc/self/fd/0)")
+        self.assertEqual(seen, str(self.stdin_file))
 
 
 class DetectionTest(CheckerTestCase):
@@ -92,6 +105,8 @@ class DetectionTest(CheckerTestCase):
         ("z=`readlink /proc/self/fd/1`", True),
         ('w=$(readlink "/proc/$BASHPID/fd/1")', True),
         ("v=$(readlink /proc/${BASHPID}/fd/1)", True),
+        ("s=$(readlink /dev/fd/1)", True),
+        ("s=$(readlink /proc/thread-self/fd/1)", True),
         ("printf '%s' \"$(basename \"$(readlink /proc/self/fd/1)\")\"", True),
         ("cat <(readlink /proc/self/fd/1)", True),
         ("bash -c 'u=$(readlink /proc/self/fd/1)'", True),
@@ -99,6 +114,9 @@ class DetectionTest(CheckerTestCase):
         ("t=$(readlink /proc/self/fd/0 2>/dev/null || echo unknown)", False),
         ("t=$(readlink /proc/self/fd/2)", False),
         ("t=$(readlink /proc/self/fd/10)", False),
+        ("t=$(readlink /dev/fd/0)", False),
+        ("t=$(readlink /dev/fd/10)", False),
+        ('t=$(curl -so /dev/stdout "$url")', False),
         ("t=$(readlink /proc/$$/fd/1)", False),
         ("out=$(date +%s); printf '%s\\n' \"$out\" >/proc/self/fd/1", False),
         ("n=$(( 1 + 1 ))", False),
@@ -218,22 +236,28 @@ class RealTreeTest(CheckerTestCase):
 
 
 class MutationControlTest(CheckerTestCase):
-    """Reverting Block V's fix at its origin site must flag exactly once."""
+    """Reverting Block V's fix at its origin site must flag exactly once.
+
+    Reads the live origin file on purpose, as the flock guard's Cycle 3 does:
+    if the shim is reshaped so a reverted probe would escape the checker, this
+    goes red. The fixed probe is found by shape, not by its variable's name.
+    """
 
     ORIGIN = REPO_ROOT / "tests" / "infra" / "test_seed_warm_lane.sh"
-    FIXED_SPELLING = "/proc/$_v_mypid/fd/1"
+    PID_VARIABLE_PROBE = re.compile(r"/proc/\$\w+/fd/1(?![0-9])")
     CENSUS_SPELLINGS = ("/proc/self/fd/1", "/proc/$BASHPID/fd/1")
 
     def fixed_line_index(self, lines):
         hits = [
             i for i, line in enumerate(lines)
-            if self.FIXED_SPELLING in line and not line.lstrip().startswith("#")
+            if self.PID_VARIABLE_PROBE.search(line)
+            and not line.lstrip().startswith("#")
         ]
         self.assertEqual(
             len(hits), 1,
             f"precondition: expected exactly one non-comment line in "
-            f"{self.ORIGIN} containing {self.FIXED_SPELLING!r} (Block V's "
-            f"fixed shim), found {len(hits)}",
+            f"{self.ORIGIN} matching {self.PID_VARIABLE_PROBE.pattern!r} "
+            f"(Block V's fixed shim), found {len(hits)}",
         )
         return hits[0]
 
@@ -243,7 +267,9 @@ class MutationControlTest(CheckerTestCase):
         for spelling in self.CENSUS_SPELLINGS:
             with self.subTest(spelling=spelling):
                 mutant = list(lines)
-                mutant[index] = mutant[index].replace(self.FIXED_SPELLING, spelling)
+                mutant[index] = self.PID_VARIABLE_PROBE.sub(
+                    lambda _: spelling, mutant[index]
+                )
                 path = self.make_tmpdir() / self.ORIGIN.name
                 path.write_text("\n".join(mutant))
                 _, payload = self.run_json(str(path))
