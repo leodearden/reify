@@ -930,6 +930,99 @@ fn linear_query_giving_nonzero_weight_to_a_non_finite_sample_is_non_finite() {
 }
 
 // ---------------------------------------------------------------------------
+// Grid nodes and non-finite samples (Cubic)
+// ---------------------------------------------------------------------------
+
+/// A Cubic query AT a node gives every other entry of its 4-point stencil
+/// weight zero: the next node (p3 slot), the LEFT neighbour (p0 slot, which
+/// Linear never reads), and at the last interior node both the poisoned p2
+/// and the ghost p3 = 2·p2 − p1 extrapolated from it.
+#[test]
+fn cubic_1d_node_query_ignores_non_finite_zero_weight_stencil_entries() {
+    let grid = [0.0f64, 1.0, 2.0, 3.0, 4.0];
+    let cases = [(4.0, 2.0, 3.0), (1.0, 2.0, 3.0), (4.0, 3.0, 4.0)];
+    for poison in NON_FINITE {
+        for (poisoned, query, expected) in cases {
+            let values = grid.map(|x| if x == poisoned { poison } else { x + 1.0 });
+            let r = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, query);
+            assert_bit_exact(
+                r.value,
+                expected,
+                &format!("node x = {query} with {poison} at x = {poisoned}"),
+            );
+        }
+    }
+}
+
+/// Bicubic and tricubic node queries leave the zero-weight entries of every
+/// axis's stencil out of the sum, the far corner of the 4×4 / 4×4×4 stencil
+/// included.
+#[test]
+fn cubic_2d_and_3d_node_query_ignores_non_finite_zero_weight_stencil_entries() {
+    let g = [0.0f64, 1.0, 2.0, 3.0];
+    for poison in NON_FINITE {
+        let values_2d = build_2d(&g, &g, |x, y| {
+            if (x, y) == (3.0, 3.0) {
+                poison
+            } else {
+                10.0 * x + y
+            }
+        });
+        let r = interpolate_2d(InterpolationMethod::Cubic, &g, &g, &values_2d, (1.0, 1.0));
+        assert_bit_exact(
+            r.value,
+            11.0,
+            &format!("2-D node (1, 1) with {poison} at (3, 3)"),
+        );
+
+        let values_3d = build_3d(&g, &g, &g, |x, y, z| {
+            if (x, y, z) == (3.0, 3.0, 3.0) {
+                poison
+            } else {
+                100.0 * x + 10.0 * y + z
+            }
+        });
+        let r = interpolate_3d(
+            InterpolationMethod::Cubic,
+            &g,
+            &g,
+            &g,
+            &values_3d,
+            (1.0, 1.0, 1.0),
+        );
+        assert_bit_exact(
+            r.value,
+            111.0,
+            &format!("3-D node (1, 1, 1) with {poison} at (3, 3, 3)"),
+        );
+    }
+}
+
+/// GUARD on the boundary of the node rule: Cubic's poison radius is its
+/// 4-wide stencil. With a non-finite sample at x = 4, the query 1.5 (stencil
+/// x = 0..3) stays finite, while the query 2.5 (stencil x = 1..4) gives it
+/// nonzero weight and is non-finite.
+#[test]
+fn cubic_off_node_query_whose_stencil_holds_a_non_finite_sample_is_non_finite() {
+    let grid = [0.0f64, 1.0, 2.0, 3.0, 4.0];
+    for poison in NON_FINITE {
+        let values = [1.0, 2.0, 3.0, 4.0, poison];
+        let outside = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, 1.5);
+        assert!(
+            outside.value.is_finite(),
+            "x = 1.5, stencil clear of {poison}: got {}",
+            outside.value
+        );
+        let inside = interpolate_1d(InterpolationMethod::Cubic, &grid, &values, 2.5);
+        assert!(
+            !inside.value.is_finite(),
+            "x = 2.5, stencil holding {poison}: got {}",
+            inside.value
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3D NearestNeighbor
 // ---------------------------------------------------------------------------
 
