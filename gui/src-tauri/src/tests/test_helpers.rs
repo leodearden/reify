@@ -411,6 +411,7 @@ pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::Gu
 #[derive(Debug, Clone)]
 pub(crate) enum Observed {
     Activity(crate::eval_queue::EvalActivity),
+    Started(u64),
     Delta(Box<crate::diff::StateDelta>),
 }
 
@@ -440,7 +441,18 @@ impl RecordingObserver {
             .into_iter()
             .filter_map(|o| match o.observed {
                 Observed::Activity(activity) => Some(activity),
-                Observed::Delta(_) => None,
+                Observed::Started(_) | Observed::Delta(_) => None,
+            })
+            .collect()
+    }
+
+    /// The generations announced as starting, in order.
+    pub(crate) fn started_generations(&self) -> Vec<u64> {
+        self.observations()
+            .into_iter()
+            .filter_map(|o| match o.observed {
+                Observed::Started(generation) => Some(generation),
+                Observed::Activity(_) | Observed::Delta(_) => None,
             })
             .collect()
     }
@@ -450,7 +462,7 @@ impl RecordingObserver {
             .into_iter()
             .filter_map(|o| match o.observed {
                 Observed::Delta(delta) => Some(*delta),
-                Observed::Activity(_) => None,
+                Observed::Activity(_) | Observed::Started(_) => None,
             })
             .collect()
     }
@@ -478,6 +490,10 @@ impl RecordingObserver {
 impl crate::eval_queue::EvalObserver for RecordingObserver {
     fn activity(&self, activity: crate::eval_queue::EvalActivity) {
         self.record(Observed::Activity(activity));
+    }
+
+    fn started(&self, generation: u64) {
+        self.record(Observed::Started(generation));
     }
 
     fn delta(&self, delta: &crate::diff::StateDelta) {

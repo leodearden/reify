@@ -238,6 +238,16 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
 }
 
 #[test]
+fn eval_generation_serializes_to_expected_json_shape() {
+    // Pins PRD §3.2 field-name-exactness: no rename_all, field names match TS exactly.
+    let payload = EvalGeneration { generation: 7 };
+    let wire = serde_json::to_string(&payload).unwrap();
+    assert_eq!(wire, r#"{"generation":7}"#);
+    let back: EvalGeneration = serde_json::from_str(&wire).unwrap();
+    assert_eq!(back, payload);
+}
+
+#[test]
 fn format_determinacy_returns_lowercase_strings() {
     // The frontend expects lowercase determinacy strings (e.g. 'determined', not 'Determined')
     assert_eq!(

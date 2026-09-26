@@ -361,19 +361,36 @@ impl ManualRig {
         self.observer
             .observations()
             .into_iter()
-            .map(|observation| match observation.observed {
-                Observed::Activity(activity) => format!("{activity:?}"),
-                Observed::Delta(delta) => {
-                    let labels: Vec<_> = delta
-                        .changed_values
-                        .iter()
-                        .map(|v| v.value.as_str())
-                        .collect();
-                    format!("delta {}", labels.join(","))
-                }
+            .filter_map(|observation| match observation.observed {
+                Observed::Activity(activity) => Some(format!("{activity:?}")),
+                Observed::Delta(delta) => Some(render_delta(&delta)),
+                Observed::Started(_) => None,
             })
             .collect()
     }
+
+    /// The announcements and deltas the observer saw, in order: `started N`
+    /// for each announced generation, deltas by the labels they carry.
+    fn announcements_and_deltas(&self) -> Vec<String> {
+        self.observer
+            .observations()
+            .into_iter()
+            .filter_map(|observation| match observation.observed {
+                Observed::Started(generation) => Some(format!("started {generation}")),
+                Observed::Delta(delta) => Some(render_delta(&delta)),
+                Observed::Activity(_) => None,
+            })
+            .collect()
+    }
+}
+
+fn render_delta(delta: &StateDelta) -> String {
+    let labels: Vec<_> = delta
+        .changed_values
+        .iter()
+        .map(|v| v.value.as_str())
+        .collect();
+    format!("delta {}", labels.join(","))
 }
 
 #[test]
@@ -556,6 +573,8 @@ struct ReplyProbe {
 impl EvalObserver for ReplyProbe {
     fn activity(&self, _: EvalActivity) {}
 
+    fn started(&self, _: u64) {}
+
     fn delta(&self, _: &StateDelta) {
         let mut ticket = self.ticket.lock().expect("probe ticket");
         let resolved = ticket.as_mut().is_some_and(|t| poll_now(t).is_some());
@@ -691,6 +710,142 @@ fn a_drainer_that_unwinds_with_no_executor_left_fails_what_is_queued() {
     rig.executor.run_pending();
     assert_eq!(settled(next), Ok("next".to_string()));
     assert_eq!(rig.ran(), ["next"]);
+}
+
+// ── Announcements: every publishing entry is fenced by its generation ────────
+
+#[test]
+fn each_edit_and_evaluation_announces_its_generation_before_its_delta() {
+    let rig = ManualRig::new();
+    let _edit_a = rig.edit(preview("A", 1), "A");
+    let _call = rig.engine_call("call");
+    let _evaluation = rig.evaluation("E");
+    let _edit_b = rig.edit(commit("B", 2), "B");
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.ran(), ["A", "call", "E", "B"]);
+    let generations = rig.observer.started_generations();
+    let [a, e, b] = generations[..] else {
+        panic!("expected one announcement per edit or evaluation, none for the engine call; got {generations:?}");
+    };
+    assert!(a < e && e < b, "announced generations must increase: {generations:?}");
+    assert_eq!(
+        rig.announcements_and_deltas(),
+        [
+            format!("started {a}"),
+            "delta A".to_string(),
+            format!("started {e}"),
+            "delta E".to_string(),
+            format!("started {b}"),
+            "delta B".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn superseded_and_late_edits_announce_nothing() {
+    let rig = ManualRig::new();
+    let running = {
+        let queue = Arc::clone(&rig.queue);
+        let log = Arc::clone(&rig.log);
+        rig.queue
+            .submit(EvalRequest::edit(preview("B", 1), move || {
+                for seq in 1..=5 {
+                    let _ = queue.submit(logged_edit(&log, preview("A", seq), &format!("A{seq}")));
+                }
+                log_run(&log, "B");
+                EvalOutcome {
+                    publish: Some(labelled("B")),
+                    reply: Ok(()),
+                }
+            }))
+    };
+    rig.executor.run_pending();
+    let mut late = rig.edit(preview("A", 4), "late A4");
+    rig.executor.run_pending();
+
+    assert_eq!(poll_now(&mut late), Some(Ok(())));
+    assert_eq!(settled(running), Ok(()));
+    assert_eq!(rig.ran(), ["B", "A5"]);
+    let generations = rig.observer.started_generations();
+    let [b, a5] = generations[..] else {
+        panic!("expected one announcement per entry that ran; got {generations:?}");
+    };
+    assert_eq!(
+        rig.announcements_and_deltas(),
+        [
+            format!("started {b}"),
+            "delta B".to_string(),
+            format!("started {a5}"),
+            "delta A5".to_string(),
+        ]
+    );
+}
+
+/// The fence for what a job emits itself, such as `fea-diagnostics-changed`
+/// from inside an evaluation: its announcement precedes everything it runs.
+#[test]
+fn an_entry_is_announced_before_its_job_runs() {
+    let rig = ManualRig::new();
+    let observer = Arc::clone(&rig.observer);
+    let seen = rig.queue.submit(EvalRequest::evaluation(move || {
+        let last = observer.observations().last().map(|o| o.observed.clone());
+        EvalOutcome {
+            publish: Some(labelled("E")),
+            reply: Ok(last),
+        }
+    }));
+
+    rig.executor.run_pending();
+
+    let announced = rig.observer.started_generations();
+    let seen = settled(seen).expect("the evaluation replies");
+    assert!(
+        matches!(seen, Some(Observed::Started(g)) if announced == [g]),
+        "the job must run after its own announcement; it saw {seen:?}, announced {announced:?}"
+    );
+}
+
+/// Records everything but panics on every announcement.
+#[derive(Default)]
+struct PanicsOnStarted(RecordingObserver);
+
+impl EvalObserver for PanicsOnStarted {
+    fn activity(&self, activity: EvalActivity) {
+        self.0.activity(activity);
+    }
+
+    fn started(&self, _: u64) {
+        panic!("announcing panicked");
+    }
+
+    fn delta(&self, delta: &StateDelta) {
+        self.0.delta(delta);
+    }
+}
+
+#[test]
+fn an_observer_that_panics_on_started_does_not_stop_the_queue() {
+    let executor = ManualExecutor::new();
+    let observer = Arc::new(PanicsOnStarted::default());
+    let queue = EvalQueue::with_executor(
+        executor.executor(),
+        Arc::new(Mutex::new(None)),
+        observer.clone(),
+    );
+    let log = RunLog::default();
+    let ticket = queue.submit(logged_evaluation(&log, "E"));
+
+    executor.run_pending();
+
+    assert_eq!(settled(ticket), Ok("E".to_string()));
+    assert_eq!(*log.lock().expect("run log"), ["E"]);
+    assert_eq!(observer.0.deltas().len(), 1, "the evaluation still publishes");
+    assert_eq!(
+        observer.0.activities(),
+        [EvalActivity::Evaluating, EvalActivity::Idle]
+    );
 }
 
 #[tokio::test]
