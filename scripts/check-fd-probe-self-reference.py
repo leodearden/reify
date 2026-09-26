@@ -9,7 +9,10 @@ spelled inside the construct) reads back `pipe:*` whatever the real fd 1 is.
 A line is flagged when one of those self-fd-1 spellings sits inside such a
 span; whole-line comments and lines carrying `fdprobe:allow` are exempt.
 
-Exit contract: 0 clean, 1 findings, 2 usage or I/O error.
+With no PATH, scans the tracked shell corpus under --root (default: this
+repo), `git ls-files -- '*.sh' 'hooks/*'`, reporting root-relative paths.
+
+Exit contract: 0 clean, 1 findings, 2 usage, git or I/O error.
 
 --json prints {"scanned": [path, ...],
                "findings": [{"path": str, "line": int, "source": str}, ...]}.
@@ -21,11 +24,17 @@ Rationale, correct idiom and scope: tests/infra/README.md
 import argparse
 import json
 import re
+import subprocess
 import sys
+from pathlib import Path
 
 SELF_FD1 = re.compile(r"/proc/(?:self|\$BASHPID|\$\{BASHPID\})/fd/1(?![0-9])")
 
 ALLOW_TOKEN = "fdprobe:allow"
+
+SHELL_CORPUS_PATHSPEC = ("*.sh", "hooks/*")
+
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
 FINDING_MESSAGE = (
     "self-referential fd-1 probe inside a command substitution reads the "
@@ -76,11 +85,27 @@ def scan_text(text):
     return findings
 
 
-def scan_paths(paths):
+def tracked_shell_files(root):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--",
+             *SHELL_CORPUS_PATHSPEC],
+            capture_output=True,
+        )
+    except OSError as err:
+        raise CheckerError(f"git: {err.strerror or err}") from err
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode(errors="replace").strip()
+        raise CheckerError(f"{root}: git ls-files failed: {stderr}")
+    listing = proc.stdout.decode(errors="surrogateescape")
+    return [rel for rel in listing.split("\0") if rel]
+
+
+def scan_paths(paths, base=Path(".")):
     scanned, findings = [], []
     for path in paths:
         try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
+            with open(base / path, encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
         except OSError as err:
             raise CheckerError(f"{path}: {err.strerror or err}") from err
@@ -98,13 +123,14 @@ def parse_args(argv):
         "backticks or <(...), where fd 1 is the capture pipe."
     )
     parser.add_argument("paths", nargs="*", metavar="PATH",
-                        help="shell files to scan")
+                        help="shell files to scan (default: the tracked "
+                        "shell corpus under --root)")
     parser.add_argument("--json", action="store_true",
                         help="print {scanned, findings} as JSON")
-    args = parser.parse_args(argv)
-    if not args.paths:
-        parser.error("no PATH given: pass one or more shell files to scan")
-    return args
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
+                        help="repo whose tracked shell corpus is scanned "
+                        "when no PATH is given (default: this repo)")
+    return parser.parse_args(argv)
 
 
 def report(scanned, findings, as_json):
@@ -118,7 +144,11 @@ def report(scanned, findings, as_json):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        scanned, findings = scan_paths(args.paths)
+        if args.paths:
+            scanned, findings = scan_paths(args.paths)
+        else:
+            scanned, findings = scan_paths(tracked_shell_files(args.root),
+                                           base=args.root)
     except CheckerError as err:
         print(err, file=sys.stderr)
         return 2
