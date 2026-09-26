@@ -14,6 +14,8 @@ import type {
   ConstraintData,
   EvaluationStatus,
   EvalGeneration,
+  PublishedState,
+  RawPublishedState,
   SourceLocation,
   FileData,
   SerializationError,
@@ -35,7 +37,7 @@ import type {
   DisplayDirective,
   AppearanceDirective,
 } from './types';
-import { convertRawMesh, convertRawGuiState } from './types';
+import { convertRawMesh, convertRawGuiState, convertRawPublishedState } from './types';
 import type {
   OutboundMessage,
   TextDelta,
@@ -50,16 +52,23 @@ import type {
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
-/** Fetch the full initial GUI state from the backend. Converts mesh wire data to typed arrays. */
-export async function getInitialState(): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('get_initial_state');
-  return convertRawGuiState(raw);
+/**
+ * The full GUI state, stamped with the generation it was published under for
+ * `engineStore.applyPublishedState`. Converts mesh wire data to typed arrays.
+ */
+async function fetchPublishedState(): Promise<PublishedState> {
+  const raw = await invoke<RawPublishedState>('get_initial_state');
+  return convertRawPublishedState(raw);
+}
+
+/** Fetch the full initial GUI state from the backend, stamped with its publish generation. */
+export async function getInitialState(): Promise<PublishedState> {
+  return fetchPublishedState();
 }
 
 /** Refresh the full GUI state for recovery from missed events. Semantic alias for getInitialState. */
-export async function refreshFullState(): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('get_initial_state');
-  return convertRawGuiState(raw);
+export async function refreshFullState(): Promise<PublishedState> {
+  return fetchPublishedState();
 }
 
 /**
@@ -156,10 +165,14 @@ export async function openFile(path: string): Promise<FileData> {
   return invoke<FileData>('open_file', { path });
 }
 
-/** Open a file and load it into the engine for evaluation. Returns updated GUI state. */
-export async function openFileEngine(path: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('open_file_engine', { path });
-  return convertRawGuiState(raw);
+/**
+ * Open a file and load it into the engine for evaluation. Returns the updated
+ * GUI state, stamped with the generation it was published under for
+ * `engineStore.applyPublishedState`.
+ */
+export async function openFileEngine(path: string): Promise<PublishedState> {
+  const raw = await invoke<RawPublishedState>('open_file_engine', { path });
+  return convertRawPublishedState(raw);
 }
 
 /** Export geometry to a file in the specified format. */
