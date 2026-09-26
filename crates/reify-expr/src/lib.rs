@@ -2711,7 +2711,7 @@ fn eval_from_samples(
     // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
     // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
     // and handles Value::Scalar { si_value, .. } consistently with how
-    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs).
     let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
@@ -3062,20 +3062,6 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
-/// Apply a lambda to a point or vector, handling multi-param unpacking.
-///
-/// Accept both `Value::Point` and `Value::Vector` — they share structural
-/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
-/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
-/// and `compute_numerical_curl_at_point`.
-///
-/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
-/// with matching length, unpacks the components into individual scalar arguments
-/// so the arity check in `apply_lambda` passes.  A single-param lambda
-/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
-/// unpacking), preserving the single-param binding contract.
-///
-/// See also: `calculus.rs::extract_point_coords`.
 /// Sample `field` at `at`, dispatching over the stored lambda form.
 ///
 /// This is the shared core of the `"sample"` builtin arm extracted from the
@@ -3087,8 +3073,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// | any + `Value::Lambda`                      | apply lambda directly (point unpacking if needed)   |
 /// | `Sampled`/`Imported` + `Value::SampledField` | grid interpolation via `sampled::sample_at_point`  |
 /// | `Gradient`/`Divergence`/`Curl`/`Laplacian` + inner `Value::Field` | numerical calculus helpers |
-/// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
-/// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
+/// | `VonMises`/`PrincipalStresses`/`MaxShear`/`SafetyFactor` (any lambda) | `analysis::sample_*_at_point` — callable or Sampled tensor backing |
 /// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
 /// | `Restricted` + `Value::List[inner, region]`| `ContainmentQuery` hook → inner value or `Value::Undef` |
 fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
@@ -3172,36 +3157,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                 codomain_type,
                 ctx,
             ),
-            // Analysis field wrappers: sample the inner field, then apply the
-            // analysis builtin pointwise.
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::VonMises,
-            ) => analysis::sample_von_mises_at_point(inner_lambda, at, codomain_type, ctx),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::PrincipalStresses,
-            ) => analysis::sample_principal_stresses_at_point(
-                inner_lambda,
-                at,
-                codomain_type,
-                ctx,
-            ),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::MaxShear,
-            ) => analysis::sample_max_shear_at_point(inner_lambda, at, codomain_type, ctx),
-            // SafetyFactor: lambda slot is List[field, yield_val],
-            // not a nested Field — match on the source kind directly.
+            // Analysis field wrappers: forward the WHOLE lambda slot — the
+            // original tensor field, or List[field, yield_val] for SafetyFactor
+            // — keyed on the source kind alone. `analysis` classifies the tensor
+            // field's backing (callable or Sampled grid) and samples it
+            // pointwise, so the Sampled backing's SampledField is not lost here.
+            (_, FieldSourceKind::VonMises) => {
+                analysis::sample_von_mises_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::PrincipalStresses) => {
+                analysis::sample_principal_stresses_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::MaxShear) => {
+                analysis::sample_max_shear_at_point(lambda, at, codomain_type, ctx)
+            }
             (_, FieldSourceKind::SafetyFactor) => {
                 analysis::sample_safety_factor_at_point(lambda, at, codomain_type, ctx)
             }
@@ -3258,6 +3227,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
     }
 }
 
+/// Apply a lambda to a point or vector, handling multi-param unpacking.
+///
+/// Accept both `Value::Point` and `Value::Vector` — they share structural
+/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
+/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// and `compute_numerical_curl_at_point`.
+///
+/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
+/// with matching length, unpacks the components into individual scalar arguments
+/// so the arity check in `apply_lambda` passes.  A single-param lambda
+/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
+/// unpacking), preserving the single-param binding contract.
+///
+/// See also: `calculus.rs::extract_point_coords`.
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,

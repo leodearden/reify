@@ -6,10 +6,11 @@
 //!
 //! Follows the same FieldSourceKind pattern as gradient/divergence/curl/laplacian
 //! in calculus.rs: the original field is stored in the lambda slot, and the sample
-//! handler in lib.rs dispatches to pointwise evaluation via reify_stdlib.
+//! handler in lib.rs forwards that whole slot to the `sample_*_at_point`
+//! functions here, which dispatch on how the tensor field is backed.
 //!
 //! Two tensor-field backings are accepted, and the accepted set is expressed as
-//! a `(source, lambda)` PAIR (see `validate_tensor_field`):
+//! a `(source, lambda)` PAIR (see `tensor_backing`):
 //!
 //! - `(Analytical | Composed, Value::Lambda { .. })` — a callable backing,
 //!   evaluated pointwise on sample.
@@ -21,45 +22,64 @@
 //!
 //! # Reachability contract for a `Sampled` tensor backing
 //!
-//! This module only decides whether a wrapper may be BUILT. All of the actual
-//! work over a Sampled backing happens later, in `field_reductions.rs`:
-//! `project_sampled_tensor_windows` walks the backing buffer in stride-9
-//! windows, applies the shared `reify_stdlib` kernels
-//! (`compute_von_mises_3x3`, `compute_max_shear_3x3`,
-//! `compute_eigenvalues_3x3`) per window, and hands the resulting stride-1
-//! scalar field to `reduce_sampled_extremum`. Out-of-solid `f64::NAN` sentinel
-//! windows project to NaN and are dropped by the `is_finite()` gate in
-//! `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
+//! Over a grid backing, a wrapper's value at a grid node is the shared
+//! `reify_stdlib` kernel (`compute_von_mises_3x3`, `compute_max_shear_3x3`,
+//! `compute_eigenvalues_3x3`; safety factor = yield / von Mises) applied to
+//! that node's stride-9 row-major window. Two consumers read those node values:
+//!
+//! - Reductions, in `field_reductions.rs`: `project_sampled_tensor_windows`
+//!   projects every window and hands the stride-1 result to
+//!   `reduce_sampled_extremum`. Out-of-solid `f64::NAN` sentinel windows
+//!   project to NaN and are dropped by the `is_finite()` gate in
+//!   `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
+//! - Pointwise `sample()`, here (`sample_tensor_grid_at_point`): project every
+//!   window FIRST, then interpolate the projected node values with the grid's
+//!   own method. A sample whose interpolation stencil holds a non-finite node
+//!   value (an out-of-solid sentinel window, or a hydrostatic node's infinite
+//!   safety factor) is `Value::Undef`, and an out-of-bounds query is
+//!   `Value::Undef` with one `W_FIELD_OUT_OF_BOUNDS` warning per backing field
+//!   per session.
+//!
+//! The two consumers agree wherever the stencil is finite: at a grid node a
+//! sample equals the value the reductions scan, and under Linear /
+//! NearestNeighbor every sample lies within the wrapper's `[min, max]`. Each
+//! per-kind kernel is applied in both places — the `sample_*_at_point`
+//! closures here and the `project_*_sampled` functions in
+//! `field_reductions.rs` — and
+//! `every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates`
+//! (`tests/field_analysis_tests.rs`) pins the two to the same node values.
+//!
+//! Node equality has two exceptions:
+//!
+//! - A finite node beside a non-finite one. The interpolation stencil includes
+//!   zero-weight corners — a Linear query AT a node still reads the neighbour
+//!   across its cell, with weight 0 — and a NaN there poisons the sum anyway.
+//!   Such a node samples as `Value::Undef` although the reductions count its
+//!   value; on a real solve that is the solid's surface, where the peak often
+//!   sits, so `sample(W, argmax(W))` can be `Value::Undef` there.
+//! - A non-positive safety-factor yield. The reductions refuse it
+//!   (`project_safety_factor_sampled` → `Value::Undef`), while `sample()`
+//!   follows the pointwise `safety_factor` builtin and returns
+//!   yield / von Mises.
 //!
 //! What that makes reachable for a `Field { source: Sampled }` tensor input:
 //!
+//! - `sample()` — all four wrapper kinds.
 //! - `max` / `min` / `argmax` / `argmin` (1-arg) — all four wrapper kinds.
 //! - The 2-arg bounded `max` / `min` / `argmax` / `argmin` — `VonMises` only.
 //!
-//! What is NOT reachable, and why:
-//!
-//! - The 2-arg bounded forms of `MaxShear`, `SafetyFactor` and
-//!   `PrincipalStresses` return `Value::Undef`. Pre-existing and unrelated to
-//!   the Sampled backing — the bounded dispatch simply has no arm for them.
-//!   Already documented at the head of `field_reductions.rs`.
-//! - Pointwise `sample()` of ANY Sampled-backed analysis wrapper returns
-//!   `Value::Undef`. `sample_field_at` in `lib.rs` forwards the INNER field's
-//!   lambda slot — a `Value::SampledField` — into
-//!   `apply_lambda_with_point_unpacking`, which handles `Value::Lambda` only.
-//!   Pinned by the live test
-//!   `sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef`
-//!   in `tests/field_analysis_tests.rs`. This is not a regression from
-//!   admitting the Sampled backing: before it, the wrapper was itself `Undef`,
-//!   so sampling it was `Undef` too. Closing it needs the tensor element
-//!   dimension plumbed through `sample_field_at` plus a stride-3 variant for
-//!   `principal_stresses` — out of scope here, and carried by task #7131.
+//! What is NOT reachable: the 2-arg bounded forms of `MaxShear`,
+//! `SafetyFactor` and `PrincipalStresses` return `Value::Undef`. Pre-existing
+//! and unrelated to the Sampled backing — the bounded dispatch simply has no
+//! arm for them. Already documented at the head of `field_reductions.rs`.
 
 use std::sync::Arc;
 
 use reify_core::{DimensionVector, Type};
-use reify_ir::{FieldSourceKind, Value};
+use reify_ir::{FieldSourceKind, SampledField, Value};
 
-use super::{EvalContext, apply_lambda_with_point_unpacking};
+use super::sanitize::sanitize_value;
+use super::{EvalContext, apply_lambda_with_point_unpacking, sampled};
 
 /// Extract the element dimension from a 3×3 matrix/tensor codomain type.
 ///
@@ -88,20 +108,28 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
     }
 }
 
-/// Validate that a value is a field with a tensor codomain suitable for analysis.
+/// How an analysis wrapper's tensor field is backed. Within this module
+/// [`tensor_backing`] alone decides which backings are admitted, so a wrapper
+/// that can be built ([`validate_tensor_field`]) is exactly one that can be
+/// sampled (the four `sample_*_at_point` functions). The reductions re-match
+/// the Grid pair on their own side, in
+/// `field_reductions::project_sampled_tensor_windows`.
+enum TensorBacking<'a> {
+    /// A callable lambda: evaluated at the query point, then handed to the
+    /// pointwise `reify_stdlib` builtin.
+    Callable(&'a Value),
+    /// A grid holding one stride-9 row-major 3×3 tensor window per node.
+    Grid(&'a SampledField),
+}
+
+/// Classify `field_val`'s tensor backing from its `(source, lambda)` PAIR:
 ///
-/// Performs validation analogous to `calculus::validate_differentiable_field`:
-/// 1. `field_val` must be `Value::Field { .. }`
-/// 2. The `(source, lambda)` PAIR must be one of exactly two accepted shapes:
-///    - `(Analytical | Composed, Value::Lambda { .. })` — the analytical /
-///      derived path: the backing is a callable lambda, sampled pointwise.
-///    - `(Sampled, Value::SampledField(_))` — a grid-backed tensor field, e.g.
-///      the stress field `solve_elastic_static` returns
-///      (`reify_eval::compute_targets::sampled_stress_field`).
-/// 3. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
-///
-/// Returns `Some((domain_type, codomain_type, element_dimension))` if all
-/// checks pass, `None` otherwise.
+/// - `(Analytical | Composed, Value::Lambda { .. })` → [`TensorBacking::Callable`],
+///   the analytical / derived path.
+/// - `(Sampled, Value::SampledField(_))` → [`TensorBacking::Grid`], e.g. the
+///   stress field `solve_elastic_static` returns
+///   (`reify_eval::compute_targets::sampled_stress_field`).
+/// - Anything else, a non-`Field` value included → `None`.
 ///
 /// The pair must be matched on BOTH halves, never on either alone.
 /// `FieldSourceKind::Imported` also carries a `Value::SampledField` in its
@@ -114,12 +142,37 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
 /// lambda slot holds no grid at all. The `calculus.rs` eager-lowering arms
 /// (gradient / divergence / curl / laplacian) test both halves for the same
 /// reason.
+fn tensor_backing(field_val: &Value) -> Option<TensorBacking<'_>> {
+    let Value::Field { source, lambda, .. } = field_val else {
+        return None;
+    };
+    match (source, lambda.as_ref()) {
+        (
+            FieldSourceKind::Analytical | FieldSourceKind::Composed,
+            callable @ Value::Lambda { .. },
+        ) => Some(TensorBacking::Callable(callable)),
+        (FieldSourceKind::Sampled, Value::SampledField(grid)) => Some(TensorBacking::Grid(grid)),
+        _ => None,
+    }
+}
+
+/// Validate that a value is a field with a tensor codomain suitable for analysis.
+///
+/// Performs validation analogous to `calculus::validate_differentiable_field`:
+/// 1. `field_val` must be `Value::Field { .. }`
+/// 2. The `(source, lambda)` PAIR must be an admitted [`TensorBacking`] — see
+///    [`tensor_backing`].
+/// 3. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
+///
+/// Returns `Some((domain_type, codomain_type, element_dimension))` if all
+/// checks pass, `None` otherwise.
 ///
 /// For a `Sampled` backing the wrapper this validation gates is LAZY: the
 /// stride-9 window projection, the shared `reify_stdlib` per-window kernels and
-/// the out-of-solid NaN skip all happen later, in
+/// the non-finite handling all happen later — in
 /// `field_reductions::project_sampled_tensor_windows`
-/// (`crates/reify-expr/src/field_reductions.rs`), when the wrapper is reduced.
+/// (`crates/reify-expr/src/field_reductions.rs`) when the wrapper is reduced,
+/// and in [`sample_tensor_grid_at_point`] when it is sampled.
 ///
 /// NOTE: check 1 duplicates `calculus::validate_differentiable_field`; check 2
 /// deliberately DIVERGES from it, so only check 1 is shared logic that a future
@@ -134,13 +187,12 @@ fn validate_tensor_field<'a>(
     field_val: &'a Value,
     op: &str,
 ) -> Option<(&'a Type, &'a Type, DimensionVector)> {
-    let (domain_type, codomain_type, source, lambda) = match field_val {
+    let (domain_type, codomain_type) = match field_val {
         Value::Field {
             domain_type,
             codomain_type,
-            source,
-            lambda,
-        } => (domain_type, codomain_type, source, lambda),
+            ..
+        } => (domain_type, codomain_type),
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -151,19 +203,13 @@ fn validate_tensor_field<'a>(
         }
     };
 
-    // Match the (source, lambda) PAIR — see the doc comment for why either
-    // half alone is wrong (Imported is also SampledField-backed).
-    if !matches!(
-        (source, lambda.as_ref()),
-        (
-            FieldSourceKind::Analytical | FieldSourceKind::Composed,
-            Value::Lambda { .. }
-        ) | (FieldSourceKind::Sampled, Value::SampledField(_))
-    ) {
+    // The (source, lambda) PAIR — `tensor_backing` owns the admitted set and
+    // why either half alone is wrong (Imported is also SampledField-backed).
+    if tensor_backing(field_val).is_none() {
         #[cfg(debug_assertions)]
         eprintln!(
-            "[reify-expr] {op}: unsupported (source, lambda) pair: source {:?}, lambda {:?}",
-            source, lambda
+            "[reify-expr] {op}: unsupported (source, lambda) pair: {:?}",
+            field_val
         );
         return None;
     }
@@ -234,7 +280,7 @@ pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
 ///
 /// Given a `Field<D, Matrix3x3<Q>>`, returns a `Field<D, List<Scalar<Q>>>` with
 /// `source = FieldSourceKind::PrincipalStresses`. Sampling produces a
-/// `Value::List` of 3 scalars (the eigenvalues sorted descending), so the
+/// `Value::List` of 3 scalars (the eigenvalues sorted ascending), so the
 /// codomain is `Type::List(Box<scalar_type>)` rather than a bare scalar.
 pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
     let (domain_type, _codomain_type, elem_dim) =
@@ -302,10 +348,58 @@ pub(crate) fn compute_safety_factor(field_val: &Value, yield_val: &Value) -> Val
 }
 
 // ── Sampling functions ──────────────────────────────────────────────────────
+//
+// Each `sample_*_at_point` takes the wrapper's whole lambda slot — the original
+// tensor field, or `List[field, yield]` for safety_factor — and dispatches on
+// its `TensorBacking`: a Callable backing through the pointwise builtin, a Grid
+// backing through the same per-window kernel the reductions use.
 
-/// Sample a unary analysis field at a point.
+/// Floats per node of a Grid tensor backing: one row-major 3×3 window.
+const TENSOR_WINDOW_LEN: usize = 9;
+
+/// The builtins' sanitize rule for a Grid-path sample: a non-finite `Real` or
+/// `Scalar` becomes `Undef`, and a `List` becomes `Undef` AS A WHOLE when any
+/// element is non-finite — as the `principal_stresses` builtin returns `Undef`
+/// itself rather than a list of `Undef`s.
+fn finite_or_undef(value: Value) -> Value {
+    match value {
+        Value::List(items) => {
+            let items: Vec<Value> = items.into_iter().map(sanitize_value).collect();
+            if items.iter().any(Value::is_undef) {
+                Value::Undef
+            } else {
+                Value::List(items)
+            }
+        }
+        other => sanitize_value(other),
+    }
+}
+
+/// Sample a Grid tensor backing's per-node projection at `point`: every node's
+/// window goes through `project`, the projected node values are interpolated
+/// with the grid's own method and wrapped per the wrapper's `codomain_type`,
+/// and the result is sanitized by [`finite_or_undef`].
+fn sample_tensor_grid_at_point<const K: usize>(
+    grid: &SampledField,
+    point: &Value,
+    codomain_type: &Type,
+    ctx: &EvalContext,
+    project: impl Fn(&[f64]) -> [f64; K],
+) -> Value {
+    finite_or_undef(sampled::sample_window_projection_at_point(
+        grid,
+        TENSOR_WINDOW_LEN,
+        project,
+        point,
+        codomain_type,
+        ctx,
+    ))
+}
+
+/// Sample a unary analysis field over a Callable tensor backing at a point:
+/// evaluate the backing lambda there, then apply the named builtin.
 ///
-/// Shared implementation for `sample_von_mises_at_point`,
+/// The Callable-backing path shared by `sample_von_mises_at_point`,
 /// `sample_principal_stresses_at_point`, and `sample_max_shear_at_point`.
 /// Each differs only in the builtin name passed to `eval_builtin`.
 fn sample_unary_analysis_at_point(
@@ -321,48 +415,79 @@ fn sample_unary_analysis_at_point(
     reify_stdlib::eval_builtin(builtin_name, &[tensor])
 }
 
-/// Sample a VonMises-wrapped field at a point.
-///
-/// Evaluates the original tensor field's lambda at the given point, then
-/// applies `von_mises` pointwise via `reify_stdlib::eval_builtin`.
+/// Sample a VonMises-wrapped field at a point: the von Mises stress of the
+/// wrapped `tensor_field` there.
 pub(crate) fn sample_von_mises_at_point(
-    inner_lambda: &Value,
+    tensor_field: &Value,
     point: &Value,
-    _codomain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    sample_unary_analysis_at_point(inner_lambda, point, ctx, "von_mises")
+    match tensor_backing(tensor_field) {
+        Some(TensorBacking::Callable(lambda)) => {
+            sample_unary_analysis_at_point(lambda, point, ctx, "von_mises")
+        }
+        Some(TensorBacking::Grid(grid)) => {
+            sample_tensor_grid_at_point(grid, point, codomain_type, ctx, |w| {
+                [reify_stdlib::compute_von_mises_3x3(w)]
+            })
+        }
+        None => Value::Undef,
+    }
 }
 
-/// Sample a PrincipalStresses-wrapped field at a point.
+/// Sample a PrincipalStresses-wrapped field at a point: the principal stresses
+/// of the wrapped `tensor_field` there, as a `Value::List` in ascending order.
 pub(crate) fn sample_principal_stresses_at_point(
-    inner_lambda: &Value,
+    tensor_field: &Value,
     point: &Value,
-    _codomain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    sample_unary_analysis_at_point(inner_lambda, point, ctx, "principal_stresses")
+    match tensor_backing(tensor_field) {
+        Some(TensorBacking::Callable(lambda)) => {
+            sample_unary_analysis_at_point(lambda, point, ctx, "principal_stresses")
+        }
+        Some(TensorBacking::Grid(grid)) => {
+            sample_tensor_grid_at_point(grid, point, codomain_type, ctx, |w| {
+                reify_stdlib::compute_eigenvalues_3x3(w).unwrap_or([f64::NAN; 3])
+            })
+        }
+        None => Value::Undef,
+    }
 }
 
-/// Sample a MaxShear-wrapped field at a point.
+/// Sample a MaxShear-wrapped field at a point: the maximum shear stress of the
+/// wrapped `tensor_field` there.
 pub(crate) fn sample_max_shear_at_point(
-    inner_lambda: &Value,
+    tensor_field: &Value,
     point: &Value,
-    _codomain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    sample_unary_analysis_at_point(inner_lambda, point, ctx, "max_shear")
+    match tensor_backing(tensor_field) {
+        Some(TensorBacking::Callable(lambda)) => {
+            sample_unary_analysis_at_point(lambda, point, ctx, "max_shear")
+        }
+        Some(TensorBacking::Grid(grid)) => {
+            sample_tensor_grid_at_point(grid, point, codomain_type, ctx, |w| {
+                [reify_stdlib::compute_max_shear_3x3(w)]
+            })
+        }
+        None => Value::Undef,
+    }
 }
 
 /// Sample a SafetyFactor-wrapped field at a point.
 ///
-/// The lambda slot contains a `Value::List([original_field, yield_val])`.
-/// Extracts the original field, samples it at the point, then computes
-/// safety_factor(tensor, yield_val) pointwise.
+/// The lambda slot contains a `Value::List([original_field, yield_val])`; the
+/// result is yield / von Mises of the original field's tensor at the point.
+/// Like the pointwise `safety_factor` builtin, neither path guards a
+/// non-positive yield.
 pub(crate) fn sample_safety_factor_at_point(
     captured: &Value,
     point: &Value,
-    _codomain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     // Extract original field and yield value from the List
@@ -378,15 +503,22 @@ pub(crate) fn sample_safety_factor_at_point(
         }
     };
 
-    // Extract the inner field's lambda
-    let inner_lambda = match field_val {
-        Value::Field { lambda, .. } => lambda.as_ref(),
-        _ => return Value::Undef,
-    };
-
-    let tensor = apply_lambda_with_point_unpacking(inner_lambda, point, ctx);
-    if tensor.is_undef() {
-        return Value::Undef;
+    match tensor_backing(field_val) {
+        Some(TensorBacking::Callable(lambda)) => {
+            let tensor = apply_lambda_with_point_unpacking(lambda, point, ctx);
+            if tensor.is_undef() {
+                return Value::Undef;
+            }
+            reify_stdlib::eval_builtin("safety_factor", &[tensor, yield_val.clone()])
+        }
+        Some(TensorBacking::Grid(grid)) => {
+            let Some(yield_si) = yield_val.as_f64() else {
+                return Value::Undef;
+            };
+            sample_tensor_grid_at_point(grid, point, codomain_type, ctx, move |w| {
+                [yield_si / reify_stdlib::compute_von_mises_3x3(w)]
+            })
+        }
+        None => Value::Undef,
     }
-    reify_stdlib::eval_builtin("safety_factor", &[tensor, yield_val.clone()])
 }
