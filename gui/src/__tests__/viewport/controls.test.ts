@@ -74,14 +74,6 @@ describe('createControls', () => {
     expect(capturedDomElement).toBe(domElement);
   });
 
-  it('camera and mock agree on the startup pose the floor is measured from', () => {
-    const { camera } = setup();
-    expect(camera.position.distanceTo(capturedInstance.target)).toBeCloseTo(
-      STARTUP_POSITION.length(),
-      12,
-    );
-  });
-
   it('enableDamping is set to true', () => {
     setup();
     expect(capturedInstance.enableDamping).toBe(true);

@@ -593,8 +593,8 @@ describe('set_camera up-axis coherence (real three + real OrbitControls)', () =>
     })) as any;
 
     // LIVE state.  An azimuthal orbit about +Z conserves the component along +Z and
-    // the radius in the plane normal to it.  Today the camera orbits the stale +Y
-    // frame instead, so z moves and y stays ~0.
+    // the radius in the plane normal to it.  Without the frame sync (#6497) the camera
+    // orbited the stale +Y frame instead, so z moved and y stayed ~0.
     expect(camera.position.z).toBeCloseTo(START.z, 6);
     expect(Math.hypot(camera.position.x, camera.position.y)).toBeCloseTo(
       Math.hypot(START.x, START.y),
