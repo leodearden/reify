@@ -4095,10 +4095,11 @@ impl Engine {
     /// walk emits EXPORT-ONLY diagnostics ("all realized bodies are aux; no
     /// product geometry to export", "export error: …", "compound assembly
     /// error: …"). `reify check` writes no artifact, so surfacing those to the
-    /// user is a false error — and once leaf γ (#5403) gates the exit code on
-    /// `Severity::Error` over that same set, a false EXIT. `build()` discarded
-    /// its whole `BuildResult` before task 5748, which is why the leak only
-    /// appears now that the diagnostics are merged.
+    /// user would be a false error — and, because `reify check` gates its exit
+    /// code on every non-allowlisted `Severity::Error` in that same merged set
+    /// (#5403), a false exit 1 as well. `build()` discarded its whole
+    /// `BuildResult` before task 5748, which is why the leak only appears now
+    /// that the diagnostics are merged.
     ///
     /// Same reasoning and same mechanism as [`Self::build_outputs_with_result`],
     /// which passes `false` here to avoid a redundant serialization.

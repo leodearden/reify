@@ -467,48 +467,6 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
-/// `reify check <file>` — lightweight static constraint checker.
-///
-/// ## Engine posture: deliberately NO compute trampolines
-///
-/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
-/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
-/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
-/// FEA/buckling/modal compute trampolines
-/// ([`register_compute_trampolines`]).
-///
-/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
-/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
-/// against the body-inline `undef` fallback and report **Indeterminate** under
-/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
-/// FEA exit-code gate.
-///
-/// **Rationale:** registering compute trampolines here would run a potentially
-/// slow FEA solve inside the lightweight static-check path, violating the design
-/// intent that *check attaches no kernel by design*.  The trampoline-free posture
-/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
-/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
-///
-/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
-/// surfaces the engine-owned "no registered compute trampoline (falling back to
-/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
-/// `Severity::Warning`, carrying
-/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
-/// severity on its compute registry being entirely EMPTY, which is exactly this
-/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
-/// so a missing trampoline here is the declared posture rather than a defect.
-/// `reify eval` and `reify build` DO register the production bundle, so the
-/// same diagnostic stays `Severity::Error` there and keeps gating their exit
-/// codes.  The contrast is pinned by
-/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
-/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
-///
-/// **Other `error:` lines still printed at exit 0.** Task 5311 removed this
-/// diagnostic from that set but did not empty it; the residual shapes across
-/// `examples/**/*.ri` are inventoried and classified in #7308, which also
-/// records the sweep command that measures them.  Triage is required there
-/// BEFORE #5403 (leaf gamma) lands the general `Severity::Error` ⇒
-/// non-zero-exit gate for `check`, or each becomes a spurious CI failure.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
@@ -695,8 +653,15 @@ fn merge_post_build_verdicts(
 /// under #6048: build reporting `Violated` where check says `Satisfied` keeps
 /// build's error line (`mirror_case_build_side_violation_currently_survives`),
 /// and an id-less `ConstraintIndeterminate` carries no needle to match
-/// (`idless_indeterminate_warning_survives_an_upgrade`).  γ (#5403) owns the
-/// unified gate over the merged set and is the natural point to resolve both.
+/// (`idless_indeterminate_warning_survives_an_upgrade`).
+///
+/// The first gap is exit-relevant: [`check_gating_error`] reads the merged set,
+/// so a surviving stale `ConstraintViolated` Error would move the exit code
+/// against the `Satisfied` verdict `check` prints on stdout.
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4 (`FixPath`) holds that off; its fix
+/// belongs HERE — widening this helper's scope past `ConstraintIndeterminate`
+/// (#6048) — not in the gate.  Real violations still exit non-zero via
+/// `ConstraintOutcome::SomeViolated` in [`finish_check`].
 ///
 /// No exit code can move either way: `report_eval_output`'s outcome derives
 /// solely from `constraint_results`, never from the diagnostic list.  An empty
@@ -739,6 +704,48 @@ fn drop_falsified_indeterminate_diagnostics(
         .collect()
 }
 
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`register_compute_trampolines`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
+/// surfaces the engine-owned "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
+/// `Severity::Warning`, carrying
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
+/// severity on its compute registry being entirely EMPTY, which is exactly this
+/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
+/// so a missing trampoline here is the declared posture rather than a defect.
+/// `reify eval` and `reify build` DO register the production bundle, so the
+/// same diagnostic stays `Severity::Error` there and keeps gating their exit
+/// codes.  The contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
+///
+/// **Other `error:` lines.** Every other `Severity::Error` diagnostic makes
+/// `check` exit non-zero through [`check_gating_error`] unless a
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses it.  The residual shapes across
+/// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
+/// measures them), which owns triaging them — never by adding allowlist
+/// entries.
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -933,7 +940,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // discarded but are false errors now that the merge is live —
                 // `check` exports nothing.
                 //
-                // COST, recorded not paid down (task 5748 → γ/#5403): adding
+                // COST, recorded not paid down (task 5748 → #5973): adding
                 // `has_geometry` to this gate means a plain geometry module —
                 // which previously took the lightweight `Engine::new(None) +
                 // check()` path — now evaluates the module at least TWICE per
@@ -951,8 +958,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // redundant eval, the verdict merge AND the (b)/(c)
                 // composition asymmetry together, but it changes which passes
                 // run on the check path — a behaviour change this leaf is not
-                // scoped to make. γ (#5403) already rewrites the escalation
-                // predicates here and is the natural place to do it.
+                // scoped to make.
+                //
+                // OWNER: #5973 ("push the post-realization constraint re-check
+                // down into Engine::check(), retiring cmd_check's CLI-side
+                // merge_post_build_verdicts"), which is option (C) from
+                // esc-5748-1's steward ruling — the ruling took the CLI-side
+                // merge precisely BECAUSE (C) fell outside 5748's file scope.
+                // The double eval, the verdict merge and the (b)/(c) asymmetry
+                // all retire together there.
                 build_result = Some(engine.realize_for_check(&compiled));
             }
             if has_representation_within {
@@ -1029,58 +1043,19 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // Both ad-hoc escalations below read `result.diagnostics` — check()'s
-        // OWN list — and deliberately NOT the merged set that was just
-        // reported.
+        // INV-SF-2: any `Severity::Error` in the set `report_eval_output` just
+        // showed the user makes `check` exit non-zero, unless a
+        // `CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.
         //
-        // This leaf fixes diagnostic COLLECTION, not the exit gate: every
-        // build()-only diagnostic now reaches the user's terminal, and none of
-        // them moves the exit code. That is exactly what the end-to-end tests
-        // assert for the geometry-compile case
-        // (`check_surfaces_geometry_compile_error_from_discarded_build` and
-        // friends print the error and still expect exit 0), and reading the
-        // merged set here would contradict it for one family: the
-        // post-geometry harvest in `engine_build::check_constraints_post_
-        // geometry` appends `dfm_build_diags` unconditionally, and
-        // `E_DFM_BUILD_VOLUME` (reify-stdlib `dfm.rs`) is always
-        // `Severity::Error` with the `E_DFM_` prefix `dfm_has_error_diagnostic`
-        // matches — so a `has_dfm_rule` module whose harvest carries one would
-        // flip exit 0 → FAILURE off the back of a *collection* change, with no
-        // `.ri` fixture exercising it end to end.
+        // Gated on `merged_diagnostics`, NOT `result.diagnostics`, so a
+        // realization-only Error moves the exit code too — e.g. the
+        // post-geometry harvest's `E_DFM_BUILD_VOLUME`, which check()'s own
+        // list never carries. Pinned end to end by
+        // `cli_check.rs::check_exits_nonzero_on_a_realization_only_build_volume_error`.
         //
-        // Leaf γ (#5403) is where the gate legitimately widens: it replaces
-        // both ad-hoc predicates with one general `Severity::Error` gate over
-        // the merged set, deliberately and with its own tests. Pinned in both
-        // directions by `d2_pass_ordering_tests::dfm_escalation_stays_on_
-        // checks_own_list_until_gamma`.
-        //
-        // Escalate to FAILURE when a GdtIllegalModifier error is present.
-        // Scoped strictly to this code so non-GD&T modules are byte-identical.
-        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
-        if result
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
-        {
-            return ExitCode::FAILURE;
-        }
-
-        // Escalate to FAILURE when any DFM Error-severity diagnostic is present
-        // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
-        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix, so
-        // unrelated Error diagnostics co-resident in a DFM module are NOT
-        // escalated whether they carry a `DiagnosticCode` or not.
-        // (The FEA "no registered compute trampoline" diagnostic used to be the
-        // stock example of that. Since task 5311 it is no longer even a
-        // candidate here: it is a `Severity::Warning` carrying
-        // `DiagnosticCode::NoRegisteredComputeTrampoline` under `check`'s
-        // empty-registry posture, so it fails this predicate's severity test
-        // before the message test is reached.)
-        // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
-        // remain byte-identical (C2).
-        // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
-        // exit 0, never a false positive (C1 graceful degradation).
-        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
+        // Runs AFTER `finish_check`, so stdout is unchanged and only the exit
+        // code escalates. Warnings (GdtRemoved2018, W_DFM_*) never gate (C1).
+        if check_gating_error(&merged_diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
 
@@ -1093,10 +1068,9 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // check_constraints_with_values.
         //
         // GD&T legality is enforced on BOTH paths via `engine.run_gdt_check_passes`
-        // (task 4589): diagnostics are folded in before `report_eval_output` below
-        // and the same GdtIllegalModifier → FAILURE escalation is applied after
-        // `finish_check`.  The former known-limitation comment (task 4475 β scope)
-        // has been resolved.
+        // (task 4589): diagnostics are folded in before `report_eval_output` below,
+        // so the exit gate after `finish_check` sees a `GdtIllegalModifier` Error
+        // exactly as the no-purpose path does.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.
@@ -1303,21 +1277,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        // Escalate to FAILURE when a GdtIllegalModifier error is present —
-        // mirrors the GdtIllegalModifier escalation in the no-purpose branch
-        // of cmd_check (the block that follows `finish_check` there).
-        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
-        //
-        // NOTE (task 5748): this is the ONLY ad-hoc escalation on this branch —
-        // there is no DFM-Error counterpart to sub-path (b)'s
-        // `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. That asymmetry
-        // is PRE-EXISTING and deliberately NOT fixed here; leaf γ (#5403)
-        // closes it incidentally when it replaces both ad-hoc predicates with a
-        // single general `Severity::Error` gate over the merged set.
-        if diagnostics
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
-        {
+        // INV-SF-2: the same gate as the no-purpose branch, over this branch's
+        // already-merged, already-reported list — the build/eval front end,
+        // `check_constraints_with_values` and `run_gdt_check_passes` folded
+        // together above — and placed after `finish_check` for the same
+        // reason. `cli_check.rs::check_purpose_gate_matches_the_no_purpose_gate`
+        // asserts the two paths' exit codes agree.
+        if check_gating_error(&diagnostics).is_some() {
             return ExitCode::FAILURE;
         }
 
@@ -1701,9 +1667,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
                             println!("Some constraints violated.");
                         }
                     }
-                    let has_error_diagnostic =
-                        result.diagnostics.iter().any(|d| d.severity == Severity::Error);
-                    if build_is_success(&outcome, has_error_diagnostic) {
+                    if build_is_success(&outcome, has_error_diagnostic(&result.diagnostics)) {
                         ExitCode::SUCCESS
                     } else {
                         ExitCode::FAILURE
@@ -1854,9 +1818,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     println!("Some constraints violated.");
                 }
             }
-            let has_error_diagnostic =
-                all_diagnostics.iter().any(|d| d.severity == Severity::Error);
-            if build_is_success(&outcome, has_error_diagnostic) {
+            if build_is_success(&outcome, has_error_diagnostic(&all_diagnostics)) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -2274,7 +2236,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("persistent-cache: {} hit(s), {} miss(es)", hits, misses);
     }
 
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    if has_error_diagnostic(&diagnostics) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -2894,8 +2856,16 @@ fn cmd_lsp() -> ExitCode {
 /// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
 /// an `Error`-severity engine diagnostic was emitted alongside a non-violated
 /// constraint outcome.  This helper aligns `cmd_build`'s exit code with
-/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
-/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+/// `cmd_eval`'s `Severity::Error` gate: since #5403 both callers compute the
+/// `has_error_diagnostic` argument by calling [`has_error_diagnostic`], the
+/// one shared severity predicate, so the two commands cannot drift apart.
+///
+/// `reify check` gates on that SAME predicate and then layers one extra thing
+/// on top: [`check_gating_error`] excuses any Error a
+/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry claims (a bounded burn-down ratchet,
+/// #5404).  `build`/`eval` are deliberately NOT allowlist-aware — they have
+/// gated on raw `Severity::Error` since #4458 and must keep gating on e.g.
+/// the trampoline Error that `check` excuses.
 ///
 /// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
 /// unit-testable; callers convert to `ExitCode` at the boundary.
@@ -2918,6 +2888,236 @@ fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
         ConstraintOutcome::SomeIndeterminate(_) => strict,
         ConstraintOutcome::AllSatisfied => false,
     }
+}
+
+/// How one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry selects the diagnostics it
+/// excuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckErrorAllowlistMatcher {
+    /// Preferred: match the machine-readable [`DiagnosticCode`].
+    Code(DiagnosticCode),
+    /// LEGACY code-less emissions ONLY — enforced, not merely documented:
+    /// [`allowlist_excuses`] never lets this arm match a diagnostic that
+    /// carries a [`DiagnosticCode`].  Coding a legacy emission therefore drops
+    /// it out of the allowlist with no table edit, and a code minted after
+    /// the gate can never be excused through a legacy substring
+    /// (`check_error_gate_tests::message_entries_excuse_only_code_less_diagnostics`).
+    ///
+    /// PRD §7 sketches this as `MessagePrefix`; entry #2's marker
+    /// (`is unresolved (Undef)`) sits mid-string, after the per-argument
+    /// detail, so a prefix match could not express it.  Substring is the
+    /// honest spelling of the same intent.
+    MessageContains(&'static str),
+}
+
+/// What retiring one [`CHECK_ERROR_EXIT_ALLOWLIST`] entry will take.  Recorded
+/// so the burn-down owner does not have to re-derive it from the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckErrorAllowlistDisposition {
+    /// The emission's `Severity::Error` is simply wrong for this path; the
+    /// producer should emit `Severity::Warning` instead.  A Warning never
+    /// gates, so the entry can then be deleted with no other change.
+    Demote,
+    /// The emission needs a machine-readable [`DiagnosticCode`] before it can
+    /// be reasoned about (or excused) precisely.
+    ///
+    /// Part of the documented taxonomy but not exercised by the seeded table:
+    /// both code-less seed entries are `Demote`, because their severity — not
+    /// their lack of a code — is what is wrong on `check`'s path.  Kept so
+    /// the burn-down owner has the vocabulary without having to invent it, and
+    /// carrying a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it
+    /// anchors no PTODO marker — there is no deferred work here to cite).
+    #[allow(dead_code)]
+    Recode,
+    /// The emission is a real Error, but `check` reaching it at all is the
+    /// bug; the fix is on the code path, not on the diagnostic.
+    FixPath,
+}
+
+/// One row of the `reify check` Error-exit burn-down allowlist.
+struct CheckErrorExitAllowance {
+    /// The only field the gate itself reads — see [`allowlist_excuses`].
+    matcher: CheckErrorAllowlistMatcher,
+    /// What retiring this entry will take.  BURN-DOWN METADATA: read by
+    /// `check_error_exit_allowlist_ratchet`, never by the gate, so it carries
+    /// a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it anchors
+    /// no PTODO marker — the work is cited by `cite` below, not here).
+    /// Deliberately data rather than prose: the burn-down owner reads it off
+    /// the table instead of re-deriving it from each message.
+    #[allow(dead_code)]
+    disposition: CheckErrorAllowlistDisposition,
+    /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
+    /// Burn-down metadata, same as `disposition` above.
+    #[allow(dead_code)]
+    cite: &'static str,
+}
+
+/// The BOUNDED burn-down set for INV-SF-2's `reify check` exit gate.
+///
+/// [`check_gating_error`] makes any `Severity::Error` diagnostic on any
+/// channel exit non-zero — *unless* an entry here excuses it.  Every entry was
+/// seeded for a legacy emission that predates the gate and whose Error
+/// severity is wrong (or wrongly reachable) on `check`'s deliberately
+/// kernel-less, solver-less path; none of them is a policy decision about what
+/// `check` should tolerate.  The enforced excusal is the MATCHER, not that
+/// intent, and entry #2's matcher is knowingly broader than its intent — see
+/// that entry.
+///
+/// The table is pinned whole by `check_error_exit_allowlist_ratchet` and is
+/// burned to ZERO by #5404, converging on INV-SF-2's end state where no
+/// per-code list mediates the exit code at all.  **Do not add entries** — see
+/// that module's doc for the standing obligation.
+///
+/// Entries #2 and #3 were seeded from a MEASURED sweep of `reify check` over
+/// all `examples/*.ri` and `crates/reify-cli/tests/fixtures/*.ri`
+/// (2026-08-29): of the files that exited 0 while printing an `error:` line,
+/// the `auto`-param case they target was the only one expected on a healthy
+/// path.  Their code-less substrings excuse more than that case.  Entry #1 is a posture entry that
+/// excuses nothing `check` reaches today, kept by ruling until its deadline
+/// (see its marker); entry #4 is a merge hazard, not a corpus finding.  The
+/// genuine design errors in that same sweep —
+/// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
+/// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
+/// deliberately NOT excused and now exit 1, matching `reify eval`, which
+/// already exits 1 on every one of them.
+const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
+    // TODO(#5404): delete this entry no later than the change that gives
+    // `check` a non-empty compute registry (#6693).
+    //
+    // `cmd_check` attaches NO compute trampoline BY DESIGN (see its doc
+    // contract: registering one would run a potentially slow FEA solve inside
+    // the lightweight static-check path).  The engine conditions this
+    // diagnostic's severity on that posture: on an EMPTY compute registry it
+    // is a `Severity::Warning`, so today this entry excuses nothing `check`
+    // can reach, and `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated`
+    // holds its exit 0 by severity alone.  The entry is kept deliberately (the
+    // ruling is recorded on #5404).  On a non-empty registry the same emission
+    // is a correct Error that this entry would silence — hence the deadline.
+    //
+    // Keyed on the code rather than the message stem, as `engine_compute.rs`
+    // advises: the co-resident code-less "compute trampoline was cancelled"
+    // Error shares the `@optimized target {t:?}: ` prefix and must keep gating.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::NoRegisteredComputeTrampoline),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5404",
+    },
+    // TODO(#5404): give the `auto`-param-awaiting-solver case its own code or
+    // message, key this excusal on that, then delete this entry.
+    //
+    // Seeded for a geometry op argument left `Undef` because an `auto` param
+    // awaits a solver `check` deliberately does not run (`examples/
+    // fea_bracket_minimize_mass.ri`, `param thickness : Length = auto(free)`).
+    // `reify eval` on that same file exits 0 (MEASURED — it takes >60s because
+    // it actually solves), so gating there would make `check` newly DISAGREE
+    // with `eval` about a healthy design.
+    //
+    // KNOWINGLY OVER-BROAD: the text comes from
+    // `geometry_ops.rs::unresolved_arg_message`, which words EVERY Undef
+    // geometry argument this way, so this entry also excuses genuine design
+    // errors that `reify eval` rejects (a `box` width divided by a zero param
+    // exits 0 under `check`, 1 under `eval`), as well as the code-less
+    // "per-instance re-realization compile error … is unresolved (Undef)"
+    // family #6608 replaces with coded Errors.  That gap is pinned by
+    // `cli_check.rs::check_excuses_every_code_less_undef_geometry_argument`,
+    // which #5404 flips.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::MessageContains("is unresolved (Undef)"),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5404",
+    },
+    // TODO(#5404): demote alongside the entry above — this is its rollup.
+    //
+    // "all geometry operations failed; no geometry output produced" is the
+    // rollup printed whenever every op failed, WHATEVER the cause; `check`
+    // writes no geometry, so "no geometry output produced" is not a fact about
+    // the design.  Excusing it is harmless only while the per-op errors beside
+    // it still gate; where entry #2 excuses those too, this entry inherits
+    // entry #2's over-breadth.
+    //
+    // `examples/sweep_degenerate.ri` carries the same rollup beside
+    // `unresolvable GeomRef::Step(0)` / `GeomRef::Sub('s1')` errors that
+    // nothing here matches, so it still exits 1 — as `reify eval` does.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::MessageContains("all geometry operations failed"),
+        disposition: CheckErrorAllowlistDisposition::Demote,
+        cite: "#5404",
+    },
+    // TODO(#5404): retire once #6048 widens
+    // `drop_falsified_indeterminate_diagnostics` past `ConstraintIndeterminate`.
+    //
+    // MERGE HAZARD, not a corpus finding: build's copy can emit a stale
+    // `ConstraintViolated` Error that survives the merge while `check`'s
+    // AUTHORITATIVE verdict for the same constraint is `Satisfied` — pinned by
+    // `d2_pass_ordering_tests::mirror_case_build_side_violation_currently_
+    // survives`.  `drop_falsified_indeterminate_diagnostics` scopes only to
+    // `ConstraintIndeterminate`, so nothing withdraws it today.  Gating on it
+    // would produce a FALSE exit 1 contradicting `check`'s own stdout.
+    //
+    // No real signal is lost: a genuine violation still exits non-zero through
+    // `ConstraintOutcome::SomeViolated` in `finish_check`, which reads the
+    // authoritative `constraint_results`, never the diagnostic list.
+    CheckErrorExitAllowance {
+        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::ConstraintViolated),
+        disposition: CheckErrorAllowlistDisposition::FixPath,
+        cite: "#5404",
+    },
+];
+
+/// Every `Severity::Error` entry of `diagnostics`, in order.
+///
+/// The single per-diagnostic severity test, so [`has_error_diagnostic`] and
+/// [`check_gating_error`] cannot drift apart: `check`'s gate is exactly this
+/// filter plus [`allowlist_excuses`], never a restatement of the severity
+/// comparison.
+fn error_diagnostics(
+    diagnostics: &[reify_core::Diagnostic],
+) -> impl Iterator<Item = &reify_core::Diagnostic> {
+    diagnostics.iter().filter(|d| d.severity == Severity::Error)
+}
+
+/// The ONE definition of "this diagnostic set carries an Error".
+///
+/// Shared by [`cmd_eval`], `cmd_build` (as [`build_is_success`]' second
+/// argument) and [`check_gating_error`] — PRD §7's "one shared helper also
+/// used by eval/build".
+///
+/// Deliberately allowlist-BLIND: [`CHECK_ERROR_EXIT_ALLOWLIST`] is a
+/// `check`-only migration ratchet.  `eval` and `build` have gated on
+/// `Severity::Error` since #4458 and must keep gating on the trampoline Error
+/// — locked by `check_error_gate_tests::
+/// has_error_diagnostic_is_pure_severity_and_allowlist_blind`.
+fn has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    error_diagnostics(diagnostics).next().is_some()
+}
+
+/// Whether some [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses `d` from moving
+/// `reify check`'s exit code.
+fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
+    CHECK_ERROR_EXIT_ALLOWLIST
+        .iter()
+        .any(|entry| match entry.matcher {
+            CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
+            CheckErrorAllowlistMatcher::MessageContains(needle) => {
+                d.code.is_none() && d.message.contains(needle)
+            }
+        })
+}
+
+/// `reify check`'s exit gate (INV-SF-2): the first `Severity::Error`
+/// diagnostic that no [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses, or `None`.
+///
+/// Applied identically on both `cmd_check` paths, over the MERGED diagnostic
+/// set — what the user was just shown — so a realization-only Error is no
+/// longer invisible to the exit code.
+///
+/// Both production callers only test `.is_some()`.  The diagnostic is returned
+/// rather than a `bool` solely so `an_excused_error_neither_gates_nor_masks`
+/// can assert that an allowlisted Error never masks a co-resident gating one.
+fn check_gating_error(
+    diagnostics: &[reify_core::Diagnostic],
+) -> Option<&reify_core::Diagnostic> {
+    error_diagnostics(diagnostics).find(|d| !allowlist_excuses(d))
 }
 
 /// Outcome of constraint checking.
@@ -3174,37 +3374,6 @@ fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> boo
         })
 }
 
-/// Returns `true` when `diagnostics` contains at least one DFM Error-severity
-/// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
-///
-/// All DFM Error diagnostics embed their code prefix `E_DFM_` at the start of
-/// the [`reify_core::Diagnostic::message`] field (the format is
-/// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
-/// is more precise than `d.code.is_none()`: it avoids escalating unrelated
-/// Error diagnostics that may co-reside with a DFMRule in the same module,
-/// whether or not they carry a [`reify_core::DiagnosticCode`] — the predicate
-/// never consults `code` at all, so minting a code for a neighbouring
-/// diagnostic cannot change what escalates here.
-///
-/// The FEA "no registered compute trampoline" diagnostic was this doc's
-/// standing example of such a neighbour.  Task 5311 gave it
-/// `DiagnosticCode::NoRegisteredComputeTrampoline` and made it a
-/// `Severity::Warning` under `cmd_check`'s empty-registry posture, so under
-/// `check` it no longer reaches the message test at all; under `eval`/`build`
-/// it stays a (now coded) `Severity::Error` and is still correctly not
-/// escalated here.  Both shapes are pinned by
-/// `dfm_error_escalation_requires_e_dfm_prefix`.
-///
-/// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
-/// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
-/// failure per PRD §2.3), so this predicate correctly captures it alongside
-/// `E_DFM_OVERHANG` / `E_DFM_DRAFT` from `DFMSeverity::Error` rules.
-fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
-}
-
 /// Structural-equality merge of a discarded [`reify_eval::BuildResult`]'s
 /// diagnostics into the authoritative [`reify_eval::CheckResult`]'s.
 ///
@@ -3239,7 +3408,11 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// first absorb its own internal UNCODED duplicates via [`dedup_diagnostics`].  The
 /// asymmetry is stderr ordering only — membership is a union under the same
 /// key either way, so no invariant depends on it and no exit code can move.
-/// γ/#5403 unifies both arms and is the natural point to pick one ordering.
+///
+/// The exit gate, [`check_gating_error`], reads whichever merged set an arm
+/// produced and is blind to its order, so the asymmetry costs nothing.
+/// Collapsing it is owned by **#5973**, which moves sub-path (b) onto (c)'s
+/// shape so both arms seed from the realization's list.
 ///
 /// # Dedup key
 ///
@@ -5136,116 +5309,363 @@ mod format_undef_cause_tests {
     }
 }
 
+/// Ratchet pin for `CHECK_ERROR_EXIT_ALLOWLIST` (PRD §7: "the ratchet test
+/// asserts the exact table contents").
+///
+/// ## Standing obligation (2026-08-26 ruling)
+///
+/// The allowlist is a **bounded migration ratchet**, not a policy surface.  It
+/// exists only because INV-SF-2's general `Severity::Error` exit gate landed
+/// (#5403) before the individual legacy emissions it catches were corrected,
+/// and it is burned to ZERO by #5404 — at which point `reify check` converges
+/// on INV-SF-2's end state, where no per-code list mediates the exit at all.
+///
+/// Consequently: **`DiagnosticCode`s minted after this gate landed — #6608's
+/// in particular — MUST NEVER be added.**  A code that did not exist before
+/// the gate has no legacy burn-down claim; if a new emission would trip the
+/// gate, the emission's severity is what is wrong, not the gate.  This
+/// whole-table equality assertion exists precisely so that an ADDITION is as
+/// loud in review as a modification: there is no way to slip an entry in
+/// without editing the literal below.
 #[cfg(test)]
-mod dfm_error_escalation_tests {
-    use super::dfm_has_error_diagnostic;
+mod check_error_exit_allowlist_ratchet {
+    use super::{
+        CheckErrorAllowlistDisposition, CheckErrorExitAllowance, CHECK_ERROR_EXIT_ALLOWLIST,
+    };
+
+    /// Renders one table row to a comparable tuple.  The matcher goes through
+    /// its `Debug` rendering so the expected side below can be written as a
+    /// plain string literal rather than by re-constructing the same enum value
+    /// (which would make the assertion tautological).
+    fn key(
+        e: &CheckErrorExitAllowance,
+    ) -> (String, CheckErrorAllowlistDisposition, &'static str) {
+        (format!("{:?}", e.matcher), e.disposition, e.cite)
+    }
+
+    #[test]
+    fn allowlist_table_is_exactly_the_seeded_burn_down_set() {
+        assert_eq!(
+            CHECK_ERROR_EXIT_ALLOWLIST.len(),
+            4,
+            "the seeded burn-down set has exactly four entries; growing it is a \
+             regression against INV-SF-2's no-per-code-list end state, and \
+             shrinking it means an entry was retired — update this pin \
+             deliberately, in the same commit as the demotion/fix that retired it"
+        );
+
+        let expected: Vec<(String, CheckErrorAllowlistDisposition, &'static str)> = vec![
+            (
+                "Code(NoRegisteredComputeTrampoline)".to_string(),
+                CheckErrorAllowlistDisposition::Demote,
+                "#5404",
+            ),
+            (
+                r#"MessageContains("is unresolved (Undef)")"#.to_string(),
+                CheckErrorAllowlistDisposition::Demote,
+                "#5404",
+            ),
+            (
+                r#"MessageContains("all geometry operations failed")"#.to_string(),
+                CheckErrorAllowlistDisposition::Demote,
+                "#5404",
+            ),
+            (
+                "Code(ConstraintViolated)".to_string(),
+                CheckErrorAllowlistDisposition::FixPath,
+                "#5404",
+            ),
+        ];
+
+        assert_eq!(
+            CHECK_ERROR_EXIT_ALLOWLIST
+                .iter()
+                .map(key)
+                .collect::<Vec<_>>(),
+            expected,
+            "CHECK_ERROR_EXIT_ALLOWLIST drifted from its seeded contents. This \
+             is a whole-table equality on purpose: an addition, a re-ordering, \
+             a matcher widening and a cite change are all equally loud."
+        );
+    }
+
+    /// Every cite must be in the PTODO canonical `#NNNN` form, so a
+    /// Greek-letter alias (`task ε`), a PRD-relative index (`task-5`) or a
+    /// prose form (`task 5404`) cannot be smuggled into the table and leave the
+    /// burn-down untrackable.  Matches `^#[1-9][0-9]*$`, hand-rolled because
+    /// `reify-cli` carries no regex dependency.
+    #[test]
+    fn every_allowlist_cite_is_canonical() {
+        for e in CHECK_ERROR_EXIT_ALLOWLIST {
+            let digits = e.cite.strip_prefix('#').unwrap_or_else(|| {
+                panic!("allowlist cite {:?} must start with '#'", e.cite)
+            });
+            assert!(
+                !digits.is_empty()
+                    && !digits.starts_with('0')
+                    && digits.bytes().all(|b| b.is_ascii_digit()),
+                "allowlist cite {:?} is not PTODO-canonical (`^#[1-9][0-9]*$`)",
+                e.cite
+            );
+        }
+    }
+}
+
+/// Unit behaviour for INV-SF-2's two pure exit-gate helpers, built from
+/// synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
+/// these run in a stub-mode build.
+#[cfg(test)]
+mod check_error_gate_tests {
+    use super::{check_gating_error, has_error_diagnostic};
     use reify_core::{Diagnostic, DiagnosticCode};
 
-    /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
-    /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
-    /// violations from unrelated code-less Error diagnostics.
-    ///
-    /// This exercises the escalation predicate (used in `cmd_check`'s
-    /// `has_dfm_rule && dfm_has_error_diagnostic(...)` gate) without requiring
-    /// OCCT or a CLI exec — the gate logic is tested at the unit level with
-    /// synthetic [`reify_core::Diagnostic`] values.
-    ///
-    /// Covers the reviewer concern (amend: robustness_error_handling) that a
-    /// module carrying BOTH a DFMRule and an unrelated non-DFM Error diagnostic
-    /// must NOT escalate to FAILURE: the `E_DFM_` prefix match is keyed to the
-    /// DFM diagnostic's MESSAGE, not to code-lessness — the predicate never
-    /// reads `Diagnostic::code`.
-    ///
-    /// Task 5311 note: the standing example of such a neighbour used to be a
-    /// code-less FEA "no registered compute trampoline" Error. The engine no
-    /// longer produces that shape — the diagnostic now always carries
-    /// `DiagnosticCode::NoRegisteredComputeTrampoline`, and under `cmd_check`'s
-    /// empty-registry posture it is a `Severity::Warning` rather than an Error.
-    /// Both of its real shapes are exercised below (the coded `eval`/`build`
-    /// Error and the coded `check` Warning), alongside a genuinely code-less
-    /// non-DFM Error with no FEA attribution, so the test keeps covering
-    /// code-lessness without asserting it of a diagnostic that has a code.
+    /// The SOFT missing-trampoline message, verbatim as
+    /// `engine_compute.rs::soft_no_trampoline_diagnostic` builds it.
+    const TRAMPOLINE: &str =
+        "@optimized target \"solver::elastic_static\": no registered compute trampoline \
+         (falling back to body-inlining)";
+
+    /// The missing-trampoline diagnostic on a NON-empty compute registry:
+    /// `reify eval` / `reify build`, or `reify check` once #6693 gives it one.
+    fn trampoline_error() -> Diagnostic {
+        Diagnostic::error(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+
+    /// The same diagnostic on an EMPTY compute registry — `reify check`'s
+    /// posture today.
+    fn trampoline_warning() -> Diagnostic {
+        Diagnostic::warning(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+
+    /// The code-less sibling emission that SHARES the `@optimized target `
+    /// prefix and must keep gating.
+    const TRAMPOLINE_CANCELLED: &str =
+        "@optimized target \"solver::elastic_static\": compute trampoline was cancelled";
+
+    // -------------------------------------------------------------------
+    // has_error_diagnostic — the shared, allowlist-BLIND severity predicate
+    // -------------------------------------------------------------------
+
+    /// `has_error_diagnostic` is the ONE definition of "this set carries an
+    /// Error", shared with `cmd_eval` and `cmd_build`.  It must know nothing
+    /// about `CHECK_ERROR_EXIT_ALLOWLIST`: the allowlist is a `check`-only
+    /// migration ratchet, and eval/build have gated on `Severity::Error` since
+    /// #4458 — including on the trampoline Error, which `build_is_success`'
+    /// own doc names as its motivating example.
     #[test]
-    fn dfm_error_escalation_requires_e_dfm_prefix() {
-        // E_DFM_ prefix Error → escalates (DFM violation)
-        let diag_e_dfm =
-            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
+    fn has_error_diagnostic_is_pure_severity_and_allowlist_blind() {
+        assert!(!has_error_diagnostic(&[]), "empty set carries no Error");
         assert!(
-            dfm_has_error_diagnostic(&[diag_e_dfm]),
-            "E_DFM_ prefix Error must trigger escalation (DFM violation)"
+            !has_error_diagnostic(&[Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit")]),
+            "a Warning is not an Error"
         );
-
-        // Another DFM Error code variant → also escalates
-        let diag_e_undercut =
-            Diagnostic::error("E_DFM_UNDERCUT: re-entrant wall — part cannot release");
         assert!(
-            dfm_has_error_diagnostic(&[diag_e_undercut]),
-            "E_DFM_UNDERCUT Error must trigger escalation"
+            has_error_diagnostic(&[Diagnostic::error("failed to compile geometry operation")]),
+            "any Severity::Error makes this true"
         );
-
-        // Code-less Error WITHOUT E_DFM_ prefix → must NOT escalate.
-        // Deliberately generic: no FEA attribution, because the FEA
-        // missing-trampoline diagnostic is no longer code-less (task 5311).
-        let diag_codeless = Diagnostic::error("synthetic unrelated failure, no code");
         assert!(
-            !dfm_has_error_diagnostic(&[diag_codeless]),
-            "a non-DFM code-less Error must NOT trigger escalation"
+            has_error_diagnostic(&[trampoline_error()]),
+            "the trampoline Error is allowlisted for `check` ONLY; the shared \
+             predicate must still report it, or `reify build` / `reify eval` \
+             would silently stop gating on it"
         );
+    }
 
-        // The REAL missing-trampoline shapes, as the engine emits them since
-        // task 5311 — both coded, one Error (eval/build: non-empty registry)
-        // and one Warning (check: empty registry). Neither may escalate: the
-        // Error is rejected by the `E_DFM_` message test, the Warning by the
-        // severity test.
-        let diag_trampoline_error = Diagnostic::error(
-            "@optimized target \"solver::elastic_static\": no registered compute trampoline",
+    /// Both real shapes of the missing-trampoline diagnostic, carrying the
+    /// same `NoRegisteredComputeTrampoline` code: a Warning on an empty compute
+    /// registry, an Error on a non-empty one.
+    #[test]
+    fn missing_trampoline_warning_never_gates_and_its_error_is_excused() {
+        assert!(
+            check_gating_error(&[trampoline_warning()]).is_none(),
+            "check's empty-registry Warning never gates"
+        );
+        assert!(
+            check_gating_error(&[trampoline_error()]).is_none(),
+            "entry 1 (#5404) excuses the coded Error under check"
+        );
+        assert!(
+            has_error_diagnostic(&[trampoline_error()]),
+            "eval/build keep gating on the coded Error"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // check_gating_error — severity AND no allowlist match
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn nothing_gates_on_an_empty_set() {
+        assert!(check_gating_error(&[]).is_none());
+    }
+
+    /// C1 (graceful degradation): a Warning never invents a failure, whatever
+    /// it says.  `W_DFM_*` is the family that most looks like it should.
+    #[test]
+    fn warnings_never_gate() {
+        assert!(
+            check_gating_error(&[
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+                Diagnostic::warning("W_DFM_DRAFT: 0.5° below the 1° minimum"),
+            ])
+            .is_none(),
+            "Warning-severity DFM findings are non-fatal by design"
+        );
+    }
+
+    /// EXECUTABLE PROOF of PRD §3 Leg B item 3 — "behavior stays byte-identical
+    /// for those classes".
+    ///
+    /// Both bolt-ons this task removes escalated a strict SUBSET of what the
+    /// general `Severity::Error` gate catches:
+    ///
+    /// - `GdtIllegalModifier` has exactly one emission site
+    ///   (`engine_constraints::illegal_modifier_error`) and it is
+    ///   unconditionally `Diagnostic::error`, so every diagnostic the deleted
+    ///   code-scoped escalation could see is Error-severity;
+    /// - the deleted `E_DFM_` message-filter predicate matched `severity ==
+    ///   Error && message contains "E_DFM_"`, which is the general predicate
+    ///   AND a message filter.
+    ///
+    /// Deleting them therefore cannot lose a gate, only widen one.
+    #[test]
+    fn the_deleted_bolt_ons_are_subsumed() {
+        let gdt = Diagnostic::error(
+            "`flatness` is an RFS-only characteristic; the `M` material-condition \
+             modifier is illegal on it",
         )
-        .with_code(DiagnosticCode::NoRegisteredComputeTrampoline);
+        .with_code(DiagnosticCode::GdtIllegalModifier);
         assert!(
-            !dfm_has_error_diagnostic(&[diag_trampoline_error]),
-            "the CODED missing-trampoline Error (eval/build posture) must NOT \
-             trigger escalation — the predicate keys on the E_DFM_ message \
-             prefix, never on the presence or absence of a DiagnosticCode"
-        );
-        let diag_trampoline_warning = Diagnostic::warning(
-            "@optimized target \"solver::elastic_static\": no registered compute \
-             trampoline (falling back to body-inlining)",
-        )
-        .with_code(DiagnosticCode::NoRegisteredComputeTrampoline);
-        assert!(
-            !dfm_has_error_diagnostic(&[diag_trampoline_warning]),
-            "the missing-trampoline Warning (check's empty-registry posture) \
-             must NOT trigger escalation — check must stay exit 0 for it"
+            check_gating_error(std::slice::from_ref(&gdt)).is_some(),
+            "GdtIllegalModifier still exits non-zero, now via the general gate"
         );
 
-        // W_DFM_ Warning → must NOT escalate (only Errors escalate)
-        let diag_w_dfm =
-            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
-        assert!(
-            !dfm_has_error_diagnostic(&[diag_w_dfm]),
-            "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"
-        );
+        for msg in [
+            "E_DFM_OVERHANG: face dips past the overhang limit",
+            "E_DFM_UNDERCUT: re-entrant wall — part cannot release",
+            "E_DFM_DRAFT: 0.2° below the 1° minimum",
+        ] {
+            assert!(
+                check_gating_error(&[Diagnostic::error(msg)]).is_some(),
+                "DFM Error {msg:?} still exits non-zero, now via the general gate"
+            );
+        }
+    }
 
-        // Empty slice → no escalation
+    /// Each seeded allowlist entry, exercised against a message taken verbatim
+    /// from the MEASURED corpus sweep that seeded it.
+    #[test]
+    fn seeded_allowlist_entries_excuse_their_families() {
         assert!(
-            !dfm_has_error_diagnostic(&[]),
-            "empty diagnostics must not trigger escalation"
+            check_gating_error(&[trampoline_error()]).is_none(),
+            "entry 1 (#5404): check attaches no compute trampoline BY DESIGN"
         );
-
-        // Mixed: FEA Error + W_DFM_ Warning → must NOT escalate
-        // (the mix that triggered the reviewer concern: a DFM module
-        // co-resident with an unrelated FEA Error must stay exit 0)
-        let mixed: Vec<Diagnostic> = vec![
-            Diagnostic::error(
-                "@optimized target \"solver::elastic_static\": no registered compute trampoline",
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "failed to compile geometry operation: argument 'depth' for box \
+                 is unresolved (Undef)"
+            )])
+            .is_none(),
+            "entry 2 (#5404): an `auto` param awaits a solver check does not run"
+        );
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "all geometry operations failed; no geometry output produced"
+            )])
+            .is_none(),
+            "entry 3 (#5404): check writes no geometry, so this is not a fact \
+             about the design"
+        );
+        assert!(
+            check_gating_error(&[Diagnostic::error(
+                "constraint BoltFlange#constraint[1] violated: clearance 0.4mm \
+                 below minimum 0.5mm"
             )
-            .with_code(DiagnosticCode::NoRegisteredComputeTrampoline),
-            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
-        ];
+            .with_code(DiagnosticCode::ConstraintViolated)])
+            .is_none(),
+            "entry 4 (#5404): a stale build-side ConstraintViolated can survive \
+             the merge while check's authoritative verdict is Satisfied; gating \
+             on it would contradict check's own stdout"
+        );
+    }
+
+    /// The matcher must not be over-broad: `TRAMPOLINE_CANCELLED` shares the
+    /// `@optimized target "solver::elastic_static": ` prefix with the excused
+    /// message and is a genuine failure that must keep gating.
+    #[test]
+    fn allowlist_does_not_swallow_the_prefix_sibling() {
         assert!(
-            !dfm_has_error_diagnostic(&mixed),
-            "FEA Error + W_DFM_ Warning must NOT trigger escalation \
-             (only E_DFM_ Errors are fatal)"
+            check_gating_error(&[Diagnostic::error(TRAMPOLINE_CANCELLED)]).is_some(),
+            "a cancelled trampoline is a real failure; only the MISSING-trampoline \
+             message is excused"
+        );
+    }
+
+    /// A `MessageContains` entry excuses CODE-LESS diagnostics only, and entry
+    /// 1 keys on its code rather than its text.
+    ///
+    /// This is the executable form of the 2026-08-26 ruling that codes minted
+    /// after the gate can never be excused: once an emission is coded — #6608's
+    /// replacement of the code-less "per-instance re-realization compile error
+    /// … is unresolved (Undef)" family in particular — no legacy substring
+    /// entry may silently keep excusing it.  The code attached below is
+    /// arbitrary; it is one no `Code(..)` entry names.
+    #[test]
+    fn message_entries_excuse_only_code_less_diagnostics() {
+        for msg in [
+            "failed to compile geometry operation: argument 'depth' for box is \
+             unresolved (Undef)",
+            "all geometry operations failed; no geometry output produced",
+        ] {
+            assert!(
+                check_gating_error(&[
+                    Diagnostic::error(msg).with_code(DiagnosticCode::ArgTypeMismatch)
+                ])
+                .is_some(),
+                "a CODED Error must not be excused by a legacy substring: {msg:?}"
+            );
+        }
+
+        assert!(
+            check_gating_error(&[Diagnostic::error("no registered compute trampoline")]).is_some(),
+            "entry 1 keys on NoRegisteredComputeTrampoline, not on its message text"
+        );
+    }
+
+    /// The load-bearing composition: an allowlisted Error must neither invent a
+    /// gate nor mask a co-resident one.
+    #[test]
+    fn an_excused_error_neither_gates_nor_masks() {
+        assert!(
+            check_gating_error(&[
+                trampoline_error(),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ])
+            .is_none(),
+            "an excused Error beside a Warning must not gate"
+        );
+        assert!(
+            check_gating_error(&[
+                trampoline_warning(),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ])
+            .is_none(),
+            "check's empty-registry trampoline Warning — what \
+             `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated` \
+             sees — beside a DFM Warning must stay exit 0"
+        );
+
+        let mixed = [
+            trampoline_error(),
+            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
+        ];
+        let gating = check_gating_error(&mixed)
+            .expect("a co-resident non-allowlisted Error must still gate");
+        assert!(
+            gating.message.contains("E_DFM_OVERHANG"),
+            "the gate must return the diagnostic that actually gates, not the \
+             excused one it scanned past; got {:?}",
+            gating.message
         );
     }
 }
@@ -6111,7 +6531,7 @@ mod merge_post_build_verdicts_tests {
 #[cfg(test)]
 mod d2_pass_ordering_tests {
     use super::{
-        dedup_diagnostics, dfm_has_error_diagnostic, drop_falsified_indeterminate_diagnostics,
+        check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
         merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
     };
     use reify_core::{
@@ -6480,29 +6900,19 @@ mod d2_pass_ordering_tests {
         );
     }
 
-    /// The exit gate stays where β found it: the `has_dfm_rule` escalation reads
-    /// `result.diagnostics` — check()'s OWN list — not the merged set that was
-    /// just reported.
+    /// The exit gate reads the MERGED set — what `report_eval_output` just
+    /// showed the user — and NOT `result.diagnostics`, check()'s own list.
     ///
-    /// `check_constraints_post_geometry` appends `dfm_build_diags` to the
-    /// realization's diagnostics unconditionally, and `E_DFM_BUILD_VOLUME` is
-    /// always `Severity::Error` with the `E_DFM_` prefix
-    /// `dfm_has_error_diagnostic` matches.  Feeding the MERGED set to the
-    /// escalation would therefore flip a DFM-rule module from exit 0 to FAILURE
-    /// off the back of a collection change — contradicting this leaf's own
-    /// end-to-end contract, where every newly-collected build diagnostic prints
-    /// and none of them moves the exit code
-    /// (`cli_check.rs::check_surfaces_geometry_compile_error_from_discarded_build`
-    /// and its siblings all assert `status.success()`).
+    /// `E_DFM_BUILD_VOLUME` (appended by `check_constraints_post_geometry`) is
+    /// realization-only: it reaches the merged set (D2) and is absent from
+    /// check()'s list, so it gates only because the gate reads the merged set.
+    /// This is the helper-level half of that pin; the end-to-end half is
+    /// `cli_check.rs::check_exits_nonzero_on_a_realization_only_build_volume_error`.
     ///
-    /// This test pins the split the escalation depends on: the harvest error IS
-    /// in the merged set (D2 — it must reach the user), and is NOT in the
-    /// predicate's input (β — it must not move the exit).  γ (#5403) is the leaf
-    /// that legitimately widens this, replacing both ad-hoc predicates with one
-    /// general `Severity::Error` gate over the merged set; when it lands, THIS
-    /// TEST is the one to update, deliberately and with an `.ri` fixture.
+    /// The D2 precondition assertion makes this fail loudly, rather than pass
+    /// vacuously, if the harvest error ever stops reaching the merged set.
     #[test]
-    fn dfm_escalation_stays_on_checks_own_list_until_gamma() {
+    fn gate_reads_the_merged_set_not_checks_own_list() {
         let harvest_error = Diagnostic::error("E_DFM_BUILD_VOLUME: realized volume is zero");
         let harvest_warning = Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit");
         let check_diags = vec![Diagnostic::warning("unrelated")];
@@ -6514,22 +6924,21 @@ mod d2_pass_ordering_tests {
              through the merged, REPORTED set"
         );
         assert!(
-            !dfm_has_error_diagnostic(&check_diags),
-            "the escalation reads check()'s own list, which carries no DFM \
-             error — so this module keeps exiting 0 until γ (#5403) lands the \
-             general Severity::Error gate"
+            check_gating_error(&check_diags).is_none(),
+            "check()'s own list carries no Error at all here — so a gate \
+             reading it would let this module exit 0"
         );
         assert!(
-            dfm_has_error_diagnostic(&merged),
-            "and the widening is real, which is exactly why the predicate must \
-             not be pointed at the merged set by accident: if this assertion \
-             ever fails, `dfm_has_error_diagnostic` stopped matching the harvest \
-             and γ's gate needs rethinking, not just re-pointing"
+            check_gating_error(&merged).is_some(),
+            "the merged set must gate. If this ever stops holding, the harvest \
+             error stopped reaching the reported set and the D2 precondition \
+             above is the assertion to trust"
         );
         assert!(
-            !dfm_has_error_diagnostic(&merge_build_diagnostics(&check_diags, &[harvest_warning])),
-            "a W_DFM_ warning in the same harvest must NOT escalate on either \
-             list (C1: graceful degradation never invents a failure)"
+            check_gating_error(&merge_build_diagnostics(&check_diags, &[harvest_warning]))
+                .is_none(),
+            "a W_DFM_ warning in the same harvest must NOT gate on either list \
+             (C1: graceful degradation never invents a failure)"
         );
     }
 
@@ -6759,9 +7168,18 @@ mod d2_pass_ordering_tests {
     ///
     /// The surviving error IS the stdout/stderr self-contradiction #6048
     /// describes.  It is pinned rather than fixed because dropping a violation
-    /// error is a heavier call than dropping an indeterminacy warning, and
-    /// γ/#5403 owns the unified gate over this merged set.  When #6048 lands,
-    /// THIS TEST MUST FAIL — that is the point; flip it to assert the drop.
+    /// error is a heavier call than dropping an indeterminacy warning.
+    ///
+    /// The gap is exit-relevant: `check_gating_error` reads this merged set,
+    /// so a surviving stale `ConstraintViolated` Error would move `check`'s
+    /// EXIT CODE against the `Satisfied` verdict on its own stdout.
+    /// `CHECK_ERROR_EXIT_ALLOWLIST` entry #4 (`Code(ConstraintViolated)`,
+    /// disposition `FixPath`) holds that off — this test and that entry are
+    /// two views of one gap, and `FixPath` says the repair belongs in
+    /// `drop_falsified_indeterminate_diagnostics`, not in the gate.
+    ///
+    /// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
+    /// assert the drop, and retire allowlist entry #4 in the same change.
     #[test]
     fn mirror_case_build_side_violation_currently_survives() {
         let needle = "BoltFlange#constraint[1]";

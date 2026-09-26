@@ -150,14 +150,21 @@ fn build_fea_violated_constraint_exits_nonzero() {
 /// why this test still sees INDETERMINATE + exit 0 here while `reify eval` on
 /// the same fixture reports VIOLATED + exit 1.  Assertions unchanged.
 ///
-/// Note: stderr is NOT asserted clean here — check still surfaces the
-/// engine-owned trampoline diagnostic by design.  Its severity is no longer
-/// deferred: task 5311 landed the downgrade, so under `check` (whose compute
-/// registry is empty) the line is a `warning:`, while `reify eval` / `reify
-/// build` keep printing it as `error:`.  That contrast is pinned by
+/// WHAT HOLDS THE EXIT 0.  `reify check` gates its exit code on every
+/// `Severity::Error` in the merged diagnostic set (#5403), so this test is green
+/// only because the fixture prints none.  `check` still surfaces the
+/// engine-owned trampoline diagnostic by design, but task 5311's severity
+/// conditioning makes it a `warning:` under `check` (whose compute registry is
+/// empty), while `reify eval` / `reify build` keep printing it as `error:` — the
+/// contrast pinned by
 /// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
-/// in `cli_check.rs`.  This test's own assertions are severity-blind (they
-/// match message TEXT) and are unaffected.
+/// in `cli_check.rs`.  The no-`error:`-line assertion below pins that severity
+/// here, and the text-presence assertion keeps the fixture on the trampoline
+/// path so the severity assertion cannot pass vacuously.
+///
+/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #1 excuses nothing on this path.  #5404
+/// retires it no later than #6693, which gives `check` a non-empty compute
+/// registry and inverts this test.
 #[test]
 fn check_fea_violated_constraint_is_not_gated() {
     let path = common::fixture_path("fea_cantilever_violated.ri");
@@ -167,7 +174,9 @@ fn check_fea_violated_constraint_is_not_gated() {
         status.success(),
         "reify check fea_cantilever_violated.ri should exit 0 — FEA-result \
          constraints are Indeterminate (not violated) under the lightweight \
-         check posture.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+         check posture, and no Severity::Error is emitted: the trampoline \
+         diagnostic is a Warning on check's empty compute registry.\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     assert!(
@@ -175,5 +184,19 @@ fn check_fea_violated_constraint_is_not_gated() {
         "stdout should contain 'INDETERMINATE' — both FEA constraints evaluate \
          to Undef under check's unregistered-trampoline posture.\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        stderr.contains("no registered compute trampoline"),
+        "the trampoline diagnostic must still be EMITTED, or the fixture has \
+         stopped reaching the trampoline path and the no-`error:` assertion \
+         below passes vacuously.\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("error:")),
+        "check must print NO `error:` line here: its compute registry is empty, \
+         so the trampoline diagnostic is a `warning:`, and this exit 0 is held \
+         by severity alone — not by CHECK_ERROR_EXIT_ALLOWLIST.\nstderr:\n{stderr}"
     );
 }

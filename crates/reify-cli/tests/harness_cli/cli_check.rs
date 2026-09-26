@@ -653,6 +653,280 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
     );
 }
 
+/// Task 5403 (γ) / PRD `eradicate-silent-undef.md` Leg B, INV-SF-2 — the
+/// concrete regression this gate exists for, folded in from observation
+/// esc-6584-2.
+///
+/// MEASURED pre-change baseline for `fixtures/cyclic_let_scalar.ri`:
+///     stderr: "warning: W_MODULE_DECL_MISSING: …"
+///             "error: circular let-binding dependency in template P: [a, b]"
+///     stdout: "All constraints satisfied."
+///     exit 0
+///
+/// An `error:` line and "All constraints satisfied." in the same run, exiting
+/// 0 — silent undef, exactly what INV-SF-2 forbids.
+///
+/// Three assertions, each load-bearing for a different reason:
+///
+/// 1. `!status.success()` is the RED half — this is the one assertion in the
+///    task that genuinely failed before the gate existed.
+/// 2. the `circular let-binding` stderr assertion guards against the test
+///    passing for the WRONG reason. Without it, a future change that stopped
+///    the fixture reaching the eval phase at all (see the dimensional variant,
+///    which fails at COMPILE time under the #6584 bug) would leave this test
+///    green while proving nothing about the gate.
+/// 3. the stdout assertion pins that the gate escalates the exit code AFTER
+///    `finish_check` and does NOT rewrite the summary. That stdout/exit pair
+///    looks contradictory in isolation and is deliberate: it is exactly how
+///    the two ad-hoc escalations this task deletes (GdtIllegalModifier and
+///    the now-deleted `has_dfm_rule && dfm_has_error_diagnostic`) already
+///    behaved, so `check`'s
+///    stdout stays byte-identical across the change.
+///
+/// Deliberately NOT OCCT-gated: the fixture declares no geometry, so it takes
+/// the lightweight `Engine::new(None) + check()` arm and asserts identically
+/// in a stub-mode build.
+#[test]
+fn check_exits_nonzero_on_eval_phase_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_scalar.ri"));
+
+    assert!(
+        !status.success(),
+        "an eval-phase Severity::Error must move the exit code (INV-SF-2); \
+         measured baseline before #5403 was exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("circular let-binding dependency in template P: [a, b]"),
+        "the cycle Error must still be REPORTED — if it is missing, this test is \
+         green for the wrong reason and proves nothing about the gate.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout stays byte-identical: the gate runs AFTER `finish_check` and \
+         escalates only the exit code.\nstdout: {stdout}"
+    );
+}
+
+/// Task 5403 (γ) — DUAL-REGIME forward lock on the DIMENSIONAL cyclic let.
+///
+/// NOT this task's RED proof, and it must not be mistaken for one. Read both
+/// regimes before editing:
+///
+/// - TODAY (MEASURED on this base): exit 1 comes from the compile-diagnostics
+///   early return in `cmd_check`, not from the INV-SF-2 gate at all. The #6584
+///   forward-reference bug manufactures `error: dimension mismatch in
+///   addition: Real vs Scalar[m]` for `let a = b + 5mm`, and `cmd_check`
+///   returns before it ever evaluates. So this assertion holds with or without
+///   the INV-SF-2 gate.
+/// - AFTER #6584 lands: that spurious compile error disappears, the file
+///   compiles, and the eval-phase `circular let-binding dependency in template
+///   P: [a, b]` Error is what keeps the exit non-zero — through THIS task's
+///   gate.
+///
+/// The lock's value is that the exit code is non-zero under BOTH regimes, so
+/// #6584 cannot silently turn this file into another silent-undef exit 0 on
+/// its way past the type bug.
+///
+/// Only the exit code is asserted, deliberately: the MESSAGE legitimately
+/// differs between the two regimes, and pinning either one would make this
+/// test fail for a reason that is not a defect. The regime-free proof of γ's
+/// gate is `check_exits_nonzero_on_eval_phase_circular_let_binding` above, on
+/// the dimensionless fixture.
+///
+/// Do NOT "fix" the fixture to make one regime win — `cyclic_let_dimensional.ri`
+/// is byte-identical to the copy on the unmerged `task/6584` branch precisely
+/// so the two add/adds merge cleanly.
+#[test]
+fn check_exits_nonzero_on_dimensional_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_dimensional.ri"));
+
+    assert!(
+        !status.success(),
+        "a dimensional circular let must exit non-zero under BOTH regimes — via \
+         the compile-phase gate while the #6584 forward-reference bug stands, \
+         and via #5403's Severity::Error gate once it is fixed.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// PRD `eradicate-silent-undef.md` §8 boundary row 5: `reify check` on the
+/// #5386 repro — a non-`pub` structure used from a sibling module — exits 1,
+/// regardless of whether #5386's compile-time fix has landed.
+///
+/// Today the reference is caught only at EVAL time (`sub-component "j"
+/// references unknown structure "InternalJig"`, printed beside "All
+/// constraints satisfied."), so it is the Severity::Error gate that moves the
+/// exit code.  #5386 / #5523 will replace that message with a
+/// visibility-specific COMPILE error and drop the summary line, so this test
+/// deliberately asserts neither the message wording nor stdout — only the
+/// exit status and that the diagnostic names the structure.
+#[test]
+fn check_exits_nonzero_on_cross_file_private_structure_reference() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // Each file stem must match its `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    std::fs::write(
+        dir.path().join("parts.ri"),
+        "module parts\n\nstructure def InternalJig {\n    param w : Length = 10mm\n}\n",
+    )
+    .expect("failed to write parts.ri");
+    let entry = dir.path().join("entry.ri");
+    std::fs::write(
+        &entry,
+        "module entry\n\nimport parts\n\nstructure def Top {\n    sub j = InternalJig()\n}\n",
+    )
+    .expect("failed to write entry.ri");
+
+    let entry_str = entry.to_str().expect("temp path is UTF-8");
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", entry_str]);
+
+    assert!(
+        !status.success(),
+        "a private structure referenced from a sibling module must exit \
+         non-zero under `check`.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("InternalJig"),
+        "the gating diagnostic must name the unreachable structure, or this \
+         test could pass for an unrelated reason.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// INV-SF-2's gate reads the MERGED diagnostic set — what `report_eval_output`
+/// showed the user — not check()'s own list: the end-to-end pin.
+///
+/// A part that does not fit its envelope, checked with
+/// `fits_build_volume(…, DFMSeverity.Error)`, yields `E_DFM_BUILD_VOLUME` from
+/// the post-geometry harvest only: the realization's list carries it and
+/// check()'s own list does not. MEASURED: pointing `cmd_check`'s gate at
+/// `result.diagnostics` instead of `merged_diagnostics` turns this run into
+/// exit 0 with the same `error:` line on stderr.
+#[test]
+fn check_exits_nonzero_on_a_realization_only_build_volume_error() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Without a kernel `bounding_box` is Undef, so the harvest cannot
+        // produce the does-not-fit Error this test is about.
+        eprintln!(
+            "skipping realization-only gate assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("oversized_build_volume.ri");
+    std::fs::write(
+        &path,
+        r#"module oversized_build_volume
+
+import std.process
+
+structure def OversizedBuildVolume {
+    param part     : Solid = box(250mm, 250mm, 250mm)
+    param envelope : Solid = box(10mm, 10mm, 10mm)
+
+    let fits = fits_build_volume(
+        bounding_box(part),
+        bounding_box(envelope),
+        DFMSeverity.Error
+    )
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        stderr.contains("error: E_DFM_BUILD_VOLUME"),
+        "the harvest Error must reach `check`'s stderr through the merged set \
+         (D2); without it this test proves nothing about the gate.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !status.success(),
+        "a realization-only Severity::Error must move `check`'s exit code — the \
+         gate must read the merged set, not check()'s own list.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// KNOWN GAP, pinned so #5404 has a target to flip — characterization, not
+/// endorsement.
+///
+/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #2 was seeded for an `auto` param awaiting
+/// a solver, but its code-less substring `is unresolved (Undef)` matches the one
+/// wording `geometry_ops.rs::unresolved_arg_message` gives EVERY Undef geometry
+/// argument. So a genuine design error — here a `box` width that divides by a
+/// zero param — prints `error:` lines beside "All constraints satisfied." and
+/// exits 0, the shape INV-SF-2 forbids, while `reify eval` on the same file
+/// exits 1.
+///
+/// When #5404 narrows entry #2, THIS TEST MUST FAIL: flip the `check` exit
+/// assertion to `!status.success()` and drop the known-gap framing.
+#[test]
+fn check_excuses_every_code_less_undef_geometry_argument() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Whether the realization loop that produces the Undef-argument error
+        // is reached under a stub build is not measured; follow the C1
+        // convention of the sibling tests and skip rather than guess.
+        eprintln!(
+            "skipping Undef-argument allowlist assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("undef_box_width.ri");
+    std::fs::write(
+        &path,
+        r#"module undef_box_width
+
+structure def UndefBoxWidth {
+    param n : Int = 0
+    let w = 10mm / n
+    let body = box(w, 1mm, 1mm)
+}
+"#,
+    )
+    .expect("failed to write temp module");
+    let path = path.to_str().expect("temp path is UTF-8");
+
+    let (status, stdout, stderr) = common::run_with_args(&["check", path]);
+    assert!(
+        stderr.contains("argument 'width' for box is unresolved (Undef)")
+            && stdout.contains("All constraints satisfied."),
+        "precondition: the Undef-argument Error is reported beside a green \
+         summary; without it this test pins nothing.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    // TODO(#5404): flip to `!status.success()` once entry #2 stops excusing
+    // non-`auto` Undef arguments.
+    assert!(
+        status.success(),
+        "KNOWN GAP: entry #2's substring excuses this genuine design error. If \
+         this now exits non-zero, #5404 narrowed entry #2 — flip this assertion.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let (eval_status, eval_stdout, eval_stderr) = common::run_with_args(&["eval", path]);
+    assert!(
+        !eval_status.success(),
+        "`reify eval` rejects the same file, which is what makes the `check` \
+         exit 0 above a gap rather than a posture.\n\
+         stdout: {eval_stdout}\nstderr: {eval_stderr}"
+    );
+}
+
 /// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
 ///
 /// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
@@ -701,20 +975,29 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 /// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
 /// site, so a merge that deduped only against `check()`'s original list (which
 /// is empty here) would print it twice on `check`'s stderr.
+///
+/// Task 5403 (γ) — POST-GATE. Leaf β collected these diagnostics into the
+/// reported set but deliberately left the exit code alone; γ makes any
+/// `Severity::Error` in that MERGED set exit non-zero unless
+/// `CHECK_ERROR_EXIT_ALLOWLIST` excuses it. Nothing excuses
+/// `mirror_bare_origin.ri`'s `mirror: ox argument expects Length` /
+/// `failed to compile geometry operation: …` errors — they are genuine design
+/// errors, and `reify eval` on the same file has always exited 1 — so the
+/// status assertion below is now `!status.success()`. The collection
+/// assertions are untouched: γ moves the exit code, never the output.
 #[test]
 fn check_surfaces_geometry_compile_error_from_discarded_build() {
     let (status, stdout, stderr) =
         common::run_subcommand("check", &common::fixture_path("mirror_bare_origin.ri"));
 
-    // Mode-independent: this leaf fixes diagnostic COLLECTION, not the exit
-    // gate — that is the PRD's β/γ split.  Task 5403 (γ) lands the general
-    // `Severity::Error` exit gate and is the leaf that flips this assertion to
-    // `!status.success()`; γ's implementer finds it by grepping #5403 in the
-    // test tree.
+    // Mode-independent, and deliberately ABOVE the OCCT early-return so it
+    // also runs in stub mode: the gate is a pure function of the merged
+    // diagnostic list and needs no kernel.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates `check` on any non-allowlisted Severity::Error in the \
+         merged set, and this fixture's geometry-compile errors are not \
+         allowlisted.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -787,9 +1070,11 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 /// above exercises.
 ///
 /// NOT an exit-gate flip: this asserts FAILURE on a COMPILE `Severity::Error`,
-/// which `cmd_check` has always produced.  The two `status.success()` assertions
-/// above are about BUILD-only diagnostics and stay as they are until #5403 (leaf
-/// γ) lands the general Severity::Error gate.
+/// which `cmd_check` has always produced.  The sibling decoded-value tests above
+/// assert FAILURE through the INV-SF-2 `Severity::Error` gate, but that exit is
+/// carried by the `plane_yz` rejection, which check()'s own list also holds;
+/// the gate's reading of the MERGED set is pinned by
+/// `check_exits_nonzero_on_a_realization_only_build_volume_error`.
 #[test]
 fn check_rejects_bare_scalar_mirror_origin_before_reaching_build() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -995,12 +1280,17 @@ fn check_purpose_surfaces_geometry_compile_error() {
         &common::fixture_path("mirror_bare_origin_purpose.ri"),
     ]);
 
-    // Unchanged by this leaf — see the sibling test: β fixes collection, γ
-    // (#5403) lands the Severity::Error exit gate that flips this.
+    // POST-γ (#5403): the identical `check_gating_error` gate now runs on this
+    // path too, over the same already-merged, already-reported `diagnostics`
+    // list. This fixture's `mirror: ox argument expects Length` /
+    // `failed to compile geometry operation: …` errors are not allowlisted, so
+    // the exit code moves. Above the OCCT early-return on purpose: the gate is
+    // a pure function of the diagnostic list and needs no kernel.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates the --purpose path identically to the no-purpose one; \
+         this fixture's geometry-compile errors are not allowlisted.\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     // The purpose path itself must be untouched by the build()-vs-eval() swap.
@@ -1079,11 +1369,14 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
         &common::fixture_path("mirror_bare_origin_purpose.ri"),
     ]);
 
-    // Unchanged by this leaf — γ (#5403) lands the Severity::Error exit gate.
+    // POST-γ (#5403): same flip as the sibling test above. Orthogonal to what
+    // this lock actually measures — the self-contradiction check below reads
+    // stdout against stderr and is indifferent to the exit code — but asserted
+    // rather than dropped, so a one-sided regression on either path is loud.
     assert!(
-        status.success(),
-        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
-         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "γ (#5403) gates the --purpose path on this fixture's non-allowlisted \
+         geometry-compile errors.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     let definite: Vec<&str> = stdout
@@ -1114,6 +1407,60 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
     }
 }
 
+/// Task 5403 (γ) — the two `cmd_check` paths must gate IDENTICALLY.
+///
+/// This closes a PRE-EXISTING asymmetry that #5748 recorded but deliberately
+/// did not fix: before γ, the `--purpose` path carried only the
+/// `GdtIllegalModifier` escalation, with no counterpart to the no-purpose
+/// path's `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. Its comment
+/// said leaf γ "closes it incidentally when it replaces both ad-hoc predicates
+/// with a single general `Severity::Error` gate over the merged set". It does
+/// — and this test is what stops the two paths drifting apart again, since
+/// nothing else compares them directly.
+///
+/// `mirror_bare_origin_purpose.ri` is the right fixture: it carries
+/// non-allowlisted geometry-compile Errors, and both paths reach them (the
+/// no-purpose path through `realize_for_check`, the `--purpose` path through
+/// D1 item 2's `module_has_geometry` build routing).
+///
+/// Asserting `status.code()` EQUALITY, not just "both non-zero", so a future
+/// one-sided change — one path exiting 1 and the other 2, say — is loud rather
+/// than silently tolerated.
+///
+/// Not OCCT-gated: the gate reads the merged diagnostic list and needs no
+/// kernel, and both paths are compared under whatever mode the build is in, so
+/// stub mode compares stub against stub.
+#[test]
+fn check_purpose_gate_matches_the_no_purpose_gate() {
+    let fixture = common::fixture_path("mirror_bare_origin_purpose.ri");
+
+    let (plain_status, plain_stdout, plain_stderr) = common::run_subcommand("check", &fixture);
+    let (purpose_status, purpose_stdout, purpose_stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &fixture,
+    ]);
+
+    assert!(
+        !plain_status.success(),
+        "no-purpose path must gate on the non-allowlisted geometry-compile \
+         errors.\nstdout: {plain_stdout}\nstderr: {plain_stderr}"
+    );
+    assert!(
+        !purpose_status.success(),
+        "--purpose path must gate on the SAME errors — this is the asymmetry \
+         #5748 recorded and γ closes.\nstdout: {purpose_stdout}\nstderr: {purpose_stderr}"
+    );
+    assert_eq!(
+        plain_status.code(),
+        purpose_status.code(),
+        "both paths run the identical `check_gating_error` gate over their own \
+         already-reported diagnostic list, so their exit codes must agree \
+         exactly.\nno-purpose stderr: {plain_stderr}\n--purpose stderr: {purpose_stderr}"
+    );
+}
+
 /// esc-5748-6 regression lock: `reify check` must not print EXPORT-ONLY errors.
 ///
 /// D2 merges the realization's diagnostics into `check`'s reported set. While
@@ -1126,10 +1473,15 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
 ///
 /// `reify check` writes no artifact, so "cannot export" is not a fact about the
 /// design — it is a FALSE error, and precisely the class of untruthful output
-/// PRD `check-diagnostic-truthfulness.md` exists to remove. It is also a
-/// forward landmine: leaf γ (#5403) replaces the two ad-hoc escalations with a
-/// general `Severity::Error` gate over this same merged set, at which point a
-/// leaked export error makes `reify check` EXIT 1 on a perfectly valid design.
+/// PRD `check-diagnostic-truthfulness.md` exists to remove.
+///
+/// It is also a false EXIT: `check_gating_error` exits non-zero on any
+/// non-allowlisted `Severity::Error` in exactly this merged set, and no
+/// allowlist entry covers the export-walk messages (nor should one — they are
+/// output `check` must never produce at all). So the `realize_for_check`
+/// choice below is what keeps THIS TEST's `status.success()` assertion true:
+/// were `cmd_check` to go back to `Engine::build`, the leaked export error
+/// would make `reify check` exit 1 on a perfectly valid design.
 ///
 /// Fix: `cmd_check` calls `Engine::realize_for_check` (realization with the
 /// Phase-B export disabled) instead of `Engine::build`. Both `cmd_check`
@@ -1172,8 +1524,9 @@ fn check_does_not_surface_export_only_diagnostics() {
         !stderr.contains("no product geometry to export"),
         "`reify check` writes no artifact, so an export-only diagnostic is a \
          FALSE error — `cmd_check` must realize via `realize_for_check` (Phase-B \
-         export disabled), never `build()`. Leaf γ (#5403) turns this leak into \
-         a false EXIT 1.\nstdout: {stdout}\nstderr: {stderr}"
+         export disabled), never `build()`. Under the INV-SF-2 gate this leak is \
+         also a false EXIT 1, so the `status.success()` assertion above fails \
+         with it.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     // The other two export-only producers on the same walk.
@@ -1362,9 +1715,9 @@ structure def TrampolineSeverityProbe {
     let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
     assert!(
         status.success(),
-        "`reify check` must still exit 0 here — this task changes the SEVERITY \
-         of the fallback diagnostic, not the exit gate (#5403 / leaf γ owns \
-         that).\nstdout: {stdout}\nstderr: {stderr}"
+        "`reify check` must still exit 0 here — the fallback diagnostic is a \
+         Warning under check, and a Warning never moves #5403's \
+         Severity::Error exit gate.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains(&warning_line),
