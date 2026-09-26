@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
@@ -15,30 +15,32 @@ Pick from the user's invocation and context:
 
 | Invocation | Behaviour | Detail |
 |---|---|---|
-| `/audit` (default) | Window sweep over the last 14 days — all four default detectors (P1, P2, P5, PTODO) | `references/modes.md` §1 |
-| `/audit --task <id>` | Spot-check a single task — all four default detectors | `references/modes.md` §2 |
+| `/audit` (default) | Window sweep over the last 14 days — every default-sweep detector (`references/severity-routing.md` §0) | `references/modes.md` §1 |
+| `/audit --task <id>` | Spot-check a single task — every default-sweep detector (`references/severity-routing.md` §0) | `references/modes.md` §2 |
 | `/audit --since <iso-date>` | Window sweep from a given date to now | `references/modes.md` §3 |
 | `/audit --pattern P1\|P2\|P5` | Restrict to one of the standard detectors | `references/modes.md` §4 |
 | `/audit --pattern PTODO` | Run only the TODO-tracking invariant detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
+| `/audit --pattern PDSSENTINEL` | Run only the ds-sentinel reintroduction guard (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDEAD\|PUNTESTED\|PLAYER` | Run one advisory jcodemunch detector (opt-in, Severity Low, serve-dependent) | `references/modes.md` §4 |
+| `/audit --pattern PDIAG\|PDOCCOVER\|PDCHECK` | Run one opt-in structural detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
 **jcodemunch resilience — two arms, and they behave differently.**
 
-*Serve unreachable.* The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are all resilient. P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while P2/P5 still run normally — the sweep does **not** exit 125.
+*Serve unreachable.* The default sweep, `--pattern P1`, and the advisory patterns (`--pattern PDEAD|PUNTESTED|PLAYER`) are all resilient. P1 and all three advisory P-* patterns degrade to **zero findings** (a `reify-audit: jcodemunch unreachable …` breadcrumb appears on stderr) while every detector that does not query jcodemunch still runs normally. The sweep does **not** exit 125.
 
 *Serve reachable but the index is not usable.* After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs, and here the outcome splits on what `--pattern` selected:
 
 - An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr and emits **no JSON array**. Nothing in the run set could have survived, so nothing is salvaged.
-- A **mixed or pattern-less** run keeps fail-softing: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted.
+- A **mixed or pattern-less** run keeps fail-softing: the jcodemunch-backed detectors degrade to zero findings, every other selected detector still runs, and the findings array is still emitted.
 
 The refusal names its cause with an `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE` marker token — plus one deliberately token-less case, where HEAD itself could not be read and so nothing was learned about the index at all. The per-code remedies differ, and re-indexing is the wrong first move for two of the four; `references/cli-invocation.md` §4.1 holds the single normative table.
 
 **Exit 125 is overloaded — never read it as a single cause.** Inside `reify-audit` it spans infra/setup errors (malformed argv, a rejected `--pre-done` flag combination, an unloadable tasks source, an unopenable runs-db) and, since the freshness gate, an unusable index. It is **not** confined to those: a literal **125 High findings** collides with it, because `high_severity_exit_code` returns `count.min(254)` — which is why parsing the tempfile as a JSON array is mandatory *before* reading any 125 as infra (`references/cli-invocation.md` §3.1) — and on the D-1 pre-done path the predone wrapper's `E_AUDIT_BIN_STALE` / `E_AUDIT_BIN_MISSING` binary-freshness refusals exit 125 as well (§5, *`--pre-done` landing gate*). Take the complete list from `references/cli-invocation.md` §3.1, §4.1 and §5 — not from this paragraph. A serve that cannot be reached has **never** exited 125 — it fail-softs, per the *Serve unreachable* arm above. The marker token in stderr is the discriminator **when there is one** — a 125 whose message names freshness but carries no token is the unreadable-HEAD case above, not a dead serve.
 
-**PTODO is unaffected by jcodemunch outages** — it is deterministic (grep + read-only sqlite) and never contacts jcodemunch, so it is absent from the freshness gate's run set as well; only its liveness lane degrades when `tasks.db` is absent (stderr breadcrumb, structural lane still runs). Use `--no-jcodemunch` to force the inert stub and silence the breadcrumb. See `references/cli-invocation.md` §4.1 for failure-mode detail and recovery hints.
+**The structural lanes are unaffected by jcodemunch outages**, but the two that read `tasks.db` degrade without it — and a skipped PDCHECK reports zero findings that mean "not checked", not "clean". Which lanes those are, their stderr breadcrumbs and the recovery: `references/cli-invocation.md` §4.1. Use `--no-jcodemunch` to force the inert stub and silence the jcodemunch breadcrumb.
 
 ## Advisory jcodemunch patterns (PDEAD / PUNTESTED / PLAYER)
 
@@ -63,7 +65,7 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 
 See `references/cli-invocation.md` §2 and §4.1 for full flag documentation and the trailing-slash gotcha.
 
-**Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs P1/P2/P5/PTODO (the four default-sweep detectors), not the advisory P-* patterns.
+**Not part of the default sweep:** PDEAD/PUNTESTED/PLAYER fire **only** when named explicitly via `--pattern`. Running `/audit` without a `--pattern` flag runs the default-sweep detectors (`references/severity-routing.md` §0), which exclude the advisory P-* patterns.
 
 ## PTODO — TODO-tracking invariant
 
@@ -82,13 +84,28 @@ PTODO detects violations of the project's TODO citation invariant (per `docs/prd
 | `task-cites-deleted-path` | Medium (advisory) | A non-terminal task's `metadata.files` path has git history but is no longer tracked |
 | `task-cites-renamed-path` | Medium (advisory) | A non-terminal task's `metadata.files` path was renamed; the new path is still tracked at HEAD and is named in the finding |
 
-**Exit-code model (task η, #4559):** `untracked`/`orphaned`/`bare-ignore` emit `Severity::High` → `reify-audit` exits non-zero (exit code = High count, `bin/reify-audit.rs::high_severity_exit_code`, a raw count with no baseline suppression). The Medium kinds and the two inverse kinds `task-cites-deleted-path`/`task-cites-renamed-path` (advisory) remain exit-neutral.
+Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (High) among them. The current High-kind list is `references/modes.md` §4 PTODO notes.
+
+**Exit-code model (task η, #4559):** the High kinds (η's `untracked`/`orphaned`/`bare-ignore`, plus those later lanes added — current list in `references/modes.md` §4) emit `Severity::High` → `reify-audit` exits non-zero (exit code = High count, `bin/reify-audit.rs::high_severity_exit_code`, a raw count with no baseline suppression). The Medium kinds and the two inverse kinds `task-cites-deleted-path`/`task-cites-renamed-path` (advisory) remain exit-neutral.
 
 **What actually gates verify (corrected 2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous):** *not* this exit code. `tests/infra/test_reify_audit_ptodo.sh` runs every one of its nine exit-code assertions against **hermetic fixture repos** built in `mktemp -d`; its only invocation against the real repo is the **fingerprint ratchet** (`ptodo-baseline-gen --project-root "$REPO_ROOT"`, asserting `comm -23 <live> <baseline>` is empty against `crates/reify-audit/ptodo-baseline.txt`). Because `ptodo::fingerprint` is `path :: kind :: normalized text`, severity plays no part: the real-tree gate blocks **any new fingerprint of any kind, at any severity**, and correspondingly never observes the High count. Severity is therefore load-bearing for this skill's routing ladder below, not for the merge gate. Canonical record: `docs/prds/reify-audit-ptodo-detector.md` §8.4.
 
-**Degradation:** when `tasks.db` is absent/unreadable, the liveness and inverse lanes are skipped (one stderr breadcrumb); the structural lane (`untracked`/`malformed-cite`/`bare-ignore`) still runs. The structural High kinds (untracked/bare-ignore) fire everywhere; the liveness High kind (orphaned) fires only where tasks.db exists.
+**Degradation:** when `tasks.db` is absent/unreadable, PTODO's `tasks.db`-backed lanes are skipped behind one stderr breadcrumb (which lanes: `references/cli-invocation.md` §4.1); the structural lane (`untracked`/`malformed-cite`/`bare-ignore`) still runs. So the structural High kinds fire everywhere, and the `tasks.db`-backed High kinds only where tasks.db exists.
 
-**Default-sweep membership:** PTODO High kinds (`untracked`/`orphaned`/`bare-ignore`) drive a non-zero exit when violations are present. **Main is not a clean tree** (corrected 2026-08-27, esc-6088-2). Measured on main 2026-08-27: **65 findings, 11 High, exit code 11.** Composition — 10 `untracked` + 1 `orphaned` (High), 3 `malformed-cite`, 51 `task-cites-deleted-path` (ζ inverse lane; that measurement predates the renamed/deleted split — after #5654 the same ζ population splits between `task-cites-deleted-path` and `task-cites-renamed-path`, with the total and the exit code unchanged because the two kinds are mutually exclusive per cited path and both Medium). **Exit 11 is the steady state on main, not a regression signal**; do not treat a non-zero PTODO exit as evidence that something newly broke. Only the 14 path-keyed source-marker findings are ratcheted, collapsing to the 5 fingerprints in `ptodo-baseline.txt` (fingerprints drop line numbers, so the 8 identical `#[allow(dead_code)] // T12 layer-B seam …` markers in `engine_build.rs` are one baseline line). The 51 ζ findings are keyed by task ID, so `ptodo-baseline-gen`'s `is_swept_ext` filter excludes them from the baseline — they are outside the ratchet *and* exit-neutral, i.e. gated by nothing. To see what is actually new, diff live fingerprints against the baseline.
+**Default-sweep membership:** PTODO High kinds (the current list is in `references/modes.md` §4 PTODO notes) drive a non-zero exit when violations are present. **Main is not a clean tree** (corrected 2026-08-27, esc-6088-2). Measured on main 2026-08-27: **65 findings, 11 High, exit code 11.** Composition — 10 `untracked` + 1 `orphaned` (High), 3 `malformed-cite`, 51 `task-cites-deleted-path` (ζ inverse lane; that measurement predates the renamed/deleted split — after #5654 the same ζ population splits between `task-cites-deleted-path` and `task-cites-renamed-path`, with the total and the exit code unchanged because the two kinds are mutually exclusive per cited path and both Medium). **Exit 11 is the steady state on main, not a regression signal**; do not treat a non-zero PTODO exit as evidence that something newly broke. Only the 14 path-keyed source-marker findings are ratcheted, collapsing to the 5 fingerprints in `ptodo-baseline.txt` (fingerprints drop line numbers, so the 8 identical `#[allow(dead_code)] // T12 layer-B seam …` markers in `engine_build.rs` are one baseline line). The 51 ζ findings are keyed by task ID, so `ptodo-baseline-gen`'s `is_swept_ext` filter excludes them from the baseline — they are outside the ratchet *and* exit-neutral, i.e. gated by nothing. To see what is actually new, diff live fingerprints against the baseline.
+
+## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK
+
+Four more deterministic detectors that, like PTODO, read the tracked tree (PDCHECK also reads `tasks.db`) and never contact jcodemunch:
+
+| Pattern | Detects |
+|---|---|
+| `PDSSENTINEL` | A `dimensionless_scalar()` fallback within a bounded window after an `UnresolvedType` diagnostic push in the scoped compiler files, without a `// ds-sentinel:allow <reason>` marker (`docs/prds/dimensionless-scalar-sentinel-stampout.md`) |
+| `PDIAG` | Code-less `Diagnostic::error`/`Diagnostic::warning` sites counted against `crates/reify-audit/pdiag-baseline.txt` (INV-SF-6). The merge gate `tests/infra/test_reify_audit_pdiag.sh` also runs it |
+| `PDOCCOVER` | Name drift between the builtin registries and the MCP language chunks: undocumented and fabricated names |
+| `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
+
+PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other three key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
 ## Severity ladder
 
@@ -102,7 +119,9 @@ Route each finding by its `severity` field immediately after parsing the CLI's J
 
 The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage. See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
 
-**PTODO severity routing (post-η):** `untracked`/`orphaned`/`bare-ignore` → High → escalate via `escalate_info`; `malformed-cite`/`phantom-tracking`/`unknown-id` → Medium → file deferred follow-up task; `task-cites-deleted-path` → Medium (advisory) → file deferred follow-up task; `task-cites-renamed-path` → Medium (advisory) → file deferred follow-up task (the summary already names the new path, so the follow-up is a repoint of `metadata.files`, not an investigation). See `references/severity-routing.md` for the PTODO title template and per-kind routing notes.
+**PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
+
+**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK):** route each finding by its own `severity` field, like every other pattern, with one exception: PDOCCOVER's findings go out as **one batched escalation per run**, not one per finding (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 
 ## Outputs
 
