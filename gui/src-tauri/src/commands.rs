@@ -9,7 +9,9 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::eval_queue::{EditIdentity, EditOrder, EvalOutcome, EvalQueue, EvalRequest, EvalTicket};
+use crate::eval_queue::{
+    EditIdentity, EditOrder, EvalOutcome, EvalQueue, EvalRequest, EvalTicket, PublishedState,
+};
 use crate::types::{
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
     PersistentViewState,
@@ -67,22 +69,15 @@ pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState,
         .and_then(std::convert::identity)
 }
 
-/// [`get_initial_state_impl`] as a queued evaluation.
-pub fn initial_state_evaluation(engine: Arc<Mutex<EngineSession>>) -> EvalRequest<GuiState> {
-    EvalRequest::evaluation(move || publish_and_reply(get_initial_state_impl(&engine)))
+/// [`get_initial_state_impl`] as a queued snapshot.
+pub fn initial_state_evaluation(engine: Arc<Mutex<EngineSession>>) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || get_initial_state_impl(&engine))
 }
 
 /// Publish the state a request produced; its reply reports only success.
 fn publish_only(produced: Result<GuiState, String>) -> EvalOutcome<()> {
     produced.map_or_else(EvalOutcome::failed, |state| {
         EvalOutcome::succeeded(Some(state), ())
-    })
-}
-
-/// Publish the state a request produced, and reply with it as well.
-fn publish_and_reply(produced: Result<GuiState, String>) -> EvalOutcome<GuiState> {
-    produced.map_or_else(EvalOutcome::failed, |state| {
-        EvalOutcome::succeeded(Some(state.clone()), state)
     })
 }
 
@@ -830,12 +825,12 @@ pub fn open_file_engine_impl(
     load_initial_file_impl(engine, Path::new(&canonical))
 }
 
-/// [`open_file_engine_impl`] as a queued evaluation.
+/// [`open_file_engine_impl`] as a queued snapshot.
 pub fn open_file_evaluation(
     engine: Arc<Mutex<EngineSession>>,
     path: String,
-) -> EvalRequest<GuiState> {
-    EvalRequest::evaluation(move || publish_and_reply(open_file_engine_impl(&engine, &path)))
+) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || open_file_engine_impl(&engine, &path))
 }
 
 /// The ONE load-and-resolve body behind both file-open entry points: the
@@ -883,12 +878,12 @@ pub fn load_initial_file_impl(
     Ok(state.resolve(path))
 }
 
-/// [`load_initial_file_impl`] as a queued evaluation of the argv file.
+/// [`load_initial_file_impl`] as a queued snapshot of the argv file.
 pub fn initial_file_evaluation(
     engine: Arc<Mutex<EngineSession>>,
     canonical: PathBuf,
-) -> EvalRequest<GuiState> {
-    EvalRequest::evaluation(move || publish_and_reply(load_initial_file_impl(&engine, &canonical)))
+) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || load_initial_file_impl(&engine, &canonical))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
@@ -927,7 +922,7 @@ pub fn begin_initial_file_load(
     queue: &Arc<EvalQueue>,
     engine: Arc<Mutex<EngineSession>>,
     argv_path: &str,
-) -> Option<(PathBuf, EvalTicket<GuiState>)> {
+) -> Option<(PathBuf, EvalTicket<PublishedState>)> {
     let canonical = resolve_initial_file_path(argv_path)?;
     let load = queue.submit(initial_file_evaluation(engine, canonical.clone()));
     Some((canonical, load))

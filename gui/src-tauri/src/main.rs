@@ -26,7 +26,9 @@ use reify_gui::engine::{
     AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaConvergenceEmitter,
     FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter,
 };
-use reify_gui::eval_queue::{EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest};
+use reify_gui::eval_queue::{
+    EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest, PublishedState,
+};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::{EvalGeneration, EvaluationStatus};
@@ -358,7 +360,7 @@ async fn engine_call<T: Send + 'static>(
 async fn get_initial_state(
     state: tauri::State<'_, AppState>,
     evals: tauri::State<'_, Arc<EvalQueue>>,
-) -> Result<reify_gui::types::GuiState, String> {
+) -> Result<PublishedState, String> {
     let engine = Arc::clone(&state.engine);
     evals
         .submit(reify_gui::commands::initial_state_evaluation(engine))
@@ -471,7 +473,7 @@ async fn open_file_engine(
     state: tauri::State<'_, AppState>,
     evals: tauri::State<'_, Arc<EvalQueue>>,
     path: String,
-) -> Result<reify_gui::types::GuiState, String> {
+) -> Result<PublishedState, String> {
     let engine = Arc::clone(&state.engine);
     let opened = evals
         .submit(reify_gui::commands::open_file_evaluation(
