@@ -17,6 +17,7 @@ import type {
   AppearanceDirective,
   FeaDiagnosticInfo,
   FeaConvergenceInfo,
+  PublishedState,
 } from '../types';
 import {
   onMeshUpdate,
@@ -38,6 +39,7 @@ import {
   onAutoResolveIteration,
   onAutoResolveComplete,
   onSolverProgress,
+  onEvalGeneration,
   cancelSolve as bridgeCancelSolve,
   syncObservedDemand as bridgeSyncObservedDemand,
   syncDemand as bridgeSyncDemand,
@@ -113,13 +115,13 @@ export interface EngineState {
   /**
    * FEA diagnostic entries from the last solve (#4818, #2966).
    * Empty when no FEA diagnostics are present (non-FEA builds or successful solve).
-   * Populated only via the full-state initFromState path (file-open / initial-load).
+   * Written by whole-state snapshots and by the `fea-diagnostics-changed` event.
    */
   feaDiagnostics: FeaDiagnosticInfo[];
   /**
    * A-posteriori convergence status of the active FEA case (task 3001).
    * `null` when no FEA solve has run or the active scene has no `ElasticResult`.
-   * Populated only via the full-state initFromState path (file-open / initial-load).
+   * Written by whole-state snapshots and by the `fea-convergence-changed` event.
    */
   feaConvergence: FeaConvergenceInfo | null;
   solverProgress: SolverProgressState;
@@ -127,10 +129,17 @@ export interface EngineState {
 
 export interface EngineStoreOptions {
   onEntityRemoved?: (id: string) => void;
-  // Fires after `initFromState` writes new state. Needed because `initFromState`
-  // does not move `evalStatus.phase`, so phase-transition listeners do not
-  // observe a file load — derived data (entity tree, mechanisms) would go stale.
+  // Fires after every whole-state reload — `initFromState`, and
+  // `applyPublishedState` even when it skips a stale snapshot. Needed because a
+  // reload does not move `evalStatus.phase`, so phase-transition listeners do
+  // not observe a file load — derived data (entity tree, mechanisms) would go
+  // stale.
   onEngineReinitialized?: () => void;
+}
+
+/** The auto-resolve state of a store that has run no loop since its last reload. */
+function freshAutoResolve(): AutoResolveLoopState {
+  return { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined };
 }
 
 export function createEngineStore(options?: EngineStoreOptions) {
@@ -142,7 +151,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     tessellationDiagnostics: [],
     compileDiagnostics: [],
     kernelStatus: null,
-    autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined },
+    autoResolve: freshAutoResolve(),
     tensegrityWires: [],
     tensegritySurfaces: [],
     displayPanes: [],
@@ -168,15 +177,47 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    // `autoResolve` resets alongside the rest of the snapshot: a completed loop
-    // now persists (the panel is data-gated, not `active`-gated), so without
-    // this the previous file's resolved parameters and constraint rows would
-    // stay mounted after opening a new one. Safe because this is the
-    // full-snapshot path ONLY — file-open / initial-load / debug
-    // fixture-injection (App.tsx:1241, App.tsx:1453, debug/bridge.ts:1346,1362),
-    // never a per-re-eval path — so it cannot clobber a loop that is mid-flight.
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null, autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined, pendingReset: undefined } });
+    reload({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null });
+  }
+
+  /**
+   * One whole-state reload, written atomically: `snapshot`'s fields, plus the
+   * reset every reload owes.
+   *
+   * `autoResolve` resets alongside the snapshot: a completed loop now persists
+   * (the panel is data-gated, not `active`-gated), so without this the previous
+   * file's resolved parameters and constraint rows would stay mounted after
+   * opening a new one. Safe because reloads come ONLY from whole-state replies
+   * (`applyPublishedState`: file-open / initial-load) and debug
+   * fixture-injection (debug/bridge.ts), never from a per-re-eval path — so it
+   * cannot clobber a loop that is mid-flight.
+   */
+  function reload(snapshot: Partial<EngineState>) {
+    setState({ ...snapshot, autoResolve: freshAutoResolve() });
     options?.onEngineReinitialized?.();
+  }
+
+  // The newest generation the backend announced or a whole-state reply was
+  // applied under (task 7853). Backend generations start at 1.
+  let newestGeneration = 0;
+
+  function noteGeneration(generation: number) {
+    newestGeneration = Math.max(newestGeneration, generation);
+  }
+
+  /**
+   * Apply a whole-state reply, unless a newer generation already reached the
+   * store: every event of that generation followed its announcement, so the
+   * reply is older than state events have applied since, and none of its
+   * fields is written. The reload's reset and callback run either way.
+   */
+  function applyPublishedState(published: PublishedState) {
+    if (published.generation < newestGeneration) {
+      reload({});
+      return;
+    }
+    newestGeneration = published.generation;
+    initFromState(published.state);
   }
 
   function applyMeshUpdate(mesh: MeshData) {
@@ -535,6 +576,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onAutoResolveIteration(applyAutoResolveIteration),
       onAutoResolveComplete(endAutoResolveLoop),
       onSolverProgress(applySolverProgress),
+      onEvalGeneration(noteGeneration),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -625,6 +667,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
   return {
     state,
     initFromState,
+    applyPublishedState,
     syncObservedDemand,
     syncDemand,
     applyMeshUpdate,

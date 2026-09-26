@@ -13,6 +13,7 @@ import type {
   ValueData,
   ConstraintData,
   EvaluationStatus,
+  EvalGeneration,
   SourceLocation,
   FileData,
   SerializationError,
@@ -543,6 +544,26 @@ export async function onEvaluationStatus(
 ): Promise<UnlistenFn> {
   return listen<EvaluationStatus>('evaluation-status', (event) => {
     callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to the generation of each edit or evaluation the backend starts
+ * running. Everything that generation makes the frontend see follows its
+ * announcement — the fence `engineStore.applyPublishedState` orders
+ * whole-state replies against.
+ */
+export async function onEvalGeneration(
+  callback: (generation: number) => void,
+): Promise<UnlistenFn> {
+  // Payload shape: docs/gui-event-channels/eval-generation.md (§2)
+  return listen<unknown>('eval-generation', (event) => {
+    const p = event.payload;
+    if (!isPlainObject(p) || typeof p['generation'] !== 'number') {
+      console.warn('[eval-generation] malformed payload; dropping event', p);
+      return;
+    }
+    callback((p as unknown as EvalGeneration).generation);
   });
 }
 
