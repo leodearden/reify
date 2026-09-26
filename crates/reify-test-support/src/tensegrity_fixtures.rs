@@ -14,9 +14,7 @@
 //! Each remaining one is inventoried by exact path in the task that closes it —
 //! #7286 for the `harness_fea_solver_e2e` siblings, #7292 for
 //! reify-solver-elastic’s `tests/`, and #7721 for the `#[cfg(test)]`-internal
-//! ones — rather than listed here, where nothing would keep the list true.
-//! `triplex_node_coords` below is the raw-coordinate seam those collapses are
-//! meant to land on.
+//! ones.
 //!
 //! Two axes on which the superseded copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
@@ -40,57 +38,36 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 ///
 /// Reordering this changes the meaning of every per-member array handed to or
 /// returned by a form-find solve.
-pub const TRIPLEX_MEMBERS: [(usize, usize); 12] = [
-    (0, 4),
-    (1, 5),
-    (2, 3),
-    (0, 1),
-    (1, 2),
-    (2, 0),
-    (3, 4),
-    (4, 5),
-    (5, 3),
-    (0, 3),
-    (1, 4),
-    (2, 5),
+pub const TRIPLEX_MEMBERS: [[i64; 2]; 12] = [
+    [0, 4],
+    [1, 5],
+    [2, 3],
+    [0, 1],
+    [1, 2],
+    [2, 0],
+    [3, 4],
+    [4, 5],
+    [5, 3],
+    [0, 3],
+    [1, 4],
+    [2, 5],
 ];
 
 /// Split point of [`TRIPLEX_MEMBERS`]: the first `TRIPLEX_STRUTS` entries are
-/// struts, the remainder cables. That split is what lets consumers re-assert the
-/// documented sign contract (struts q < 0, cables q > 0) instead of merely
-/// checking finiteness.
+/// struts, the remainder cables.
 pub const TRIPLEX_STRUTS: usize = 3;
 
 /// The anchored node set for the anchored (non-free-standing) solves: the bottom
 /// triangle {3, 4, 5} is fixed, the top triangle {0, 1, 2} is free.
 pub const TRIPLEX_ANCHORS: [i64; 3] = [3, 4, 5];
 
-/// Height of the top triangle. Not a parameter: every fixture this module
-/// replaced put the top ring at `z = +1.0`, and the only axis they disagreed on
-/// is the bottom ring (see [`canonical_triplex_tensegrity`] /
-/// [`tall_triplex_tensegrity`]). Keeping it a constant is what stops the two
-/// heights from becoming a transposable pair of bare `f64` arguments.
+/// Height of the top triangle, shared by both prisms; only the bottom ring varies.
 const TRIPLEX_TOP_Z: f64 = 1.0;
 
-/// The canonical symmetric triplex prism at circumradius 1, as RAW coordinates:
-/// top triangle (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom
-/// triangle (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
-///
-/// SEAM for the raw-coordinate copies still to be collapsed (module header):
-/// each is exactly this value in exactly this `Vec<[f64; 3]>` shape, and every
-/// crate holding one already dev-deps this one, so none needs a dependency
-/// change. PRIVATE until the first lands: widening it costs nothing in that
-/// diff, and until then a `pub` with no consumer only enlarges the interface
-/// this crate carries into reify-audit's build graph. `triplex_nodes` is the
-/// `Value`-form counterpart.
-///
-/// `bottom_z` is a parameter, not a constant, because the pre-existing fixtures
-/// genuinely disagreed on it — gauge and T1b use `0.0`, δ uses `-1.0`. Silently
-/// picking one would change the geometry a solve converges from.
+/// The triplex prism at circumradius 1, as raw coordinates: top triangle
+/// (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom triangle
+/// (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
 fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
-    // `.to_radians()` is `self * (PI / 180.0)`; the contract tests below pin
-    // that it agrees bit-for-bit with the explicit `* (PI / 180.0)` spelling the
-    // superseded T1b/δ copies used, so this collapse is not a numerical change.
     let ring = |i: usize, twist: f64, z: f64| {
         let a = (120.0 * (i as f64) + twist).to_radians();
         [a.cos(), a.sin(), z]
@@ -100,49 +77,26 @@ fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     coords
 }
 
-/// [`triplex_node_coords`] lifted into the DSL's `Value` domain via
-/// [`crate::values::point3`], so each node is a `Value::Point` of three
-/// LENGTH-dimensioned SI-metre `Value::Scalar`s.
-///
-/// SEAM, private for the same reason as `triplex_node_coords`: every consuming
-/// suite today goes through [`canonical_triplex_tensegrity`] /
-/// [`tall_triplex_tensegrity`] and needs only the assembled structure. A suite
-/// that wants the bare node list — to perturb it, or to build a non-`Tensegrity`
-/// structure over the same geometry — should reach for this rather than
-/// re-deriving the ring math, and widen it here in that same diff.
+/// [`triplex_node_coords`] as `Value::Point`s of LENGTH-dimensioned SI-metre
+/// `Value::Scalar`s, via [`crate::values::point3`].
 fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
     triplex_node_coords(bottom_z).into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
 }
 
-/// Lower a list of index tuples (`[[j, k], …]` for struts and cables,
-/// `[[i, j, k], …]` for surfaces) the way the DSL lowers them: a `Value::List`
-/// of `Value::List`s of `Value::Int`.
-///
-/// Private: [`tensegrity`] takes the raw index rows and does this itself, so no
-/// consumer has to know the lowering — or can get it wrong.
+/// Lower index rows (`[[j, k], …]` for struts and cables, `[[i, j, k], …]` for
+/// surfaces) the way the DSL lowers them: a `Value::List` of `Value::List`s of
+/// `Value::Int`.
 fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
     let row = |r: &[i64; N]| Value::List(r.iter().map(|&i| Value::Int(i)).collect());
     Value::List(rows.iter().map(row).collect())
 }
 
-/// Assemble a `Tensegrity` structure `Value` from raw node / strut / cable
-/// fields.
+/// Assemble a `Tensegrity` structure `Value` from nodes and raw index rows,
+/// which it lowers via [`index_lists`].
 ///
-/// The three member fields are RAW INDEX ROWS, not pre-lowered `Value`s, and
-/// this function lowers them via [`index_lists`]. That is what makes a
-/// structurally invalid Tensegrity — a `struts` that is not a list of index
-/// pairs — unrepresentable at the call site rather than a failure surfacing
-/// from deep inside the solve, and it means no consumer has to remember which
-/// arguments get wrapped.
-///
-/// `surfaces` is an [`Option`] and the distinction is LOAD-BEARING: `None`
-/// OMITS the `surfaces` key from the field map entirely, where `Some(rows)`
-/// inserts it — including for `Some(&[])`. A structure with no `surfaces` key
-/// is the line-only input; one carrying a PRESENT-but-empty `surfaces` list is
-/// a different input. `None` must never be lowered to `Value::Undef` or to an
-/// empty list — the combined membrane δ suite asserts the no-surfaces path
-/// returns an empty `surface_stresses` echo and never an absent one, so both
-/// shapes have to stay reachable and distinguishable.
+/// `None` surfaces OMITS the `surfaces` key; `Some(rows)` inserts it, even for
+/// `Some(&[])`. Absent and present-but-empty are different solver inputs, so
+/// `None` is never lowered to `Value::Undef` or an empty list.
 pub fn tensegrity(
     nodes: Vec<Value>,
     struts: &[[i64; 2]],
@@ -164,35 +118,24 @@ pub fn tensegrity(
     }))
 }
 
-/// The triplex as a `Tensegrity` structure: [`triplex_nodes`] at the requested
-/// bottom height, with [`TRIPLEX_MEMBERS`] split at [`TRIPLEX_STRUTS`] into the
-/// `struts` and `cables` fields.
-///
-/// Private on purpose. `bottom_z` has exactly two inhabitants across the repo
-/// and both have a named constructor ([`canonical_triplex_tensegrity`],
-/// [`tall_triplex_tensegrity`]); routing every call site through those keeps the
-/// geometry choice readable and keeps a third variant from being introduced at a
-/// call site instead of here, where the anti-drift property lives.
+/// The triplex as a `Tensegrity` structure: [`triplex_nodes`] at `bottom_z`,
+/// with [`TRIPLEX_MEMBERS`] split at [`TRIPLEX_STRUTS`] into struts and cables.
 fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<&[[i64; 3]]>) -> Value {
-    let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
-    let struts: Vec<[i64; 2]> = TRIPLEX_MEMBERS[..TRIPLEX_STRUTS].iter().map(pair).collect();
-    let cables: Vec<[i64; 2]> = TRIPLEX_MEMBERS[TRIPLEX_STRUTS..].iter().map(pair).collect();
-    tensegrity(triplex_nodes(bottom_z), &struts, &cables, surfaces)
+    let (struts, cables) = TRIPLEX_MEMBERS.split_at(TRIPLEX_STRUTS);
+    tensegrity(triplex_nodes(bottom_z), struts, cables, surfaces)
 }
 
 /// The canonical triplex: circumradius 1, **unit height** (top `z = +1.0`,
 /// bottom `z = 0.0`), 30° twist. This is the force-density gauge and T1b prism.
 ///
 /// See [`tensegrity`] for what `surfaces: None` means — it is not the same input
-/// as `Some(Value::List(vec![]))`.
+/// as `Some(&[])`.
 pub fn canonical_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
     triplex_tensegrity_at(0.0, surfaces)
 }
 
 /// The taller triplex: circumradius 1, **height 2** (top `z = +1.0`, bottom
-/// `z = -1.0`), 30° twist. This is the combined membrane δ prism, and the height
-/// difference is a real one — it changes the geometry the combined solve
-/// converges from, so it is named rather than left as a positional float.
+/// `z = -1.0`), 30° twist. This is the combined membrane δ prism.
 ///
 /// See [`tensegrity`] for what `surfaces: None` means.
 pub fn tall_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
@@ -200,25 +143,13 @@ pub fn tall_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
 }
 
 /// Both membrane end caps of the triplex, as raw index rows: the top cap over
-/// nodes 0, 1, 2 and the bottom cap over nodes 3, 4, 5 (= [`TRIPLEX_ANCHORS`]).
-/// The top cap spans the three FREE nodes of the anchored solve, so it genuinely
-/// enters `D_ff` rather than sitting inertly on the anchored side.
-///
-/// A const, and the only spelling: it is handed straight to
-/// [`canonical_triplex_tensegrity`] / [`tall_triplex_tensegrity`] as
-/// `Some(&TRIPLEX_CAPS)`, and a consumer’s per-surface array is sized
-/// `[_; TRIPLEX_CAPS.len()]` — so adding a cap here is a compile error at that
-/// call site rather than a length mismatch surfacing from inside the solver.
+/// the free nodes 0, 1, 2 and the bottom cap over nodes 3, 4, 5 (=
+/// [`TRIPLEX_ANCHORS`]). Consumers size their per-cap σ arrays from
+/// `TRIPLEX_CAPS.len()`.
 pub const TRIPLEX_CAPS: [[i64; 3]; 2] = [[0, 1, 2], [3, 4, 5]];
 
 /// Group ids in [`TRIPLEX_MEMBERS`] order: the three struts to group 0, the six
 /// horizontals (top and bottom rings) to group 1, the three verticals to group 2.
-///
-/// Sized from [`TRIPLEX_MEMBERS`] for the same reason [`TRIPLEX_CAPS`] is a
-/// const: a member added there is then a compile error HERE, rather than a
-/// length mismatch surfacing from inside the solve. Private because every
-/// consumer hands the lowered [`triplex_group_ids`] straight to a trampoline;
-/// widen it in the diff that brings the first array consumer.
 const TRIPLEX_GROUP_IDS: [i64; TRIPLEX_MEMBERS.len()] = [0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2];
 
 /// [`TRIPLEX_GROUP_IDS`] lowered to the `List<Int>` the free-standing solve
@@ -229,20 +160,12 @@ pub fn triplex_group_ids() -> Value {
 }
 
 /// One seed ratio per group, in group-id order: struts compressive (−1),
-/// horizontals and verticals tensile (+1).
-///
-/// A const as well as the lowered [`triplex_seeds`] because the force-density
-/// gauge rescales the whole seed vector by λ to test the free path’s gauge
-/// covariance, and needs `f64`s to multiply. Both spellings therefore have one
-/// source. The length is not tied to anything syntactically — a group count is
-/// not derivable from the member list — so it is pinned relationally instead, by
-/// `triplex_group_ids_index_the_seeds_and_honour_the_sign_contract`, which
-/// requires the distinct group ids to be exactly `0..TRIPLEX_SEEDS.len()`.
+/// horizontals and verticals tensile (+1). The distinct group ids must be exactly
+/// `0..TRIPLEX_SEEDS.len()`.
 pub const TRIPLEX_SEEDS: [f64; 3] = [-1.0, 1.0, 1.0];
 
-/// [`TRIPLEX_SEEDS`] lowered to the `List<Real>` the free-standing solve takes.
-/// `Value::Real` rather than a dimensioned `Value::Scalar`: seed ratios are
-/// DIMENSIONLESS relative ratios, and a dimensioned one is a different input.
+/// [`TRIPLEX_SEEDS`] lowered to the dimensionless `List<Real>` the free-standing
+/// solve takes.
 pub fn triplex_seeds() -> Value {
     Value::List(TRIPLEX_SEEDS.into_iter().map(Value::Real).collect())
 }
@@ -610,7 +533,7 @@ mod tests {
         );
 
         for (m, &g) in groups.iter().enumerate() {
-            let (j, k) = TRIPLEX_MEMBERS[m];
+            let [j, k] = TRIPLEX_MEMBERS[m];
             let seed = seeds[g as usize];
             let (kind, sign_ok) =
                 if m < TRIPLEX_STRUTS { ("strut", seed < 0.0) } else { ("cable", seed > 0.0) };
@@ -632,8 +555,8 @@ mod tests {
         let groups = int_list(&triplex_group_ids(), "triplex_group_ids");
         let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
         let member_len = |m: usize| {
-            let (j, k) = TRIPLEX_MEMBERS[m];
-            let (a, b) = (coords[j], coords[k]);
+            let [j, k] = TRIPLEX_MEMBERS[m];
+            let (a, b) = (coords[j as usize], coords[k as usize]);
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
         };
 
@@ -650,7 +573,7 @@ mod tests {
 
         for (m, &g) in groups.iter().enumerate() {
             let want = representative[classes.iter().position(|&c| c == g).unwrap()];
-            let (j, k) = TRIPLEX_MEMBERS[m];
+            let [j, k] = TRIPLEX_MEMBERS[m];
             assert!(
                 (member_len(m) - want).abs() < 1e-12,
                 "member {m} ({j},{k}) is in group {g} but its length {} differs from that \

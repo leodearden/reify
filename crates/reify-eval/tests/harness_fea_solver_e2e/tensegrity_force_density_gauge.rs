@@ -59,7 +59,7 @@ const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
 /// fanned by [`TENT_TRIS`], no struts/cables. Mirrors the kernel's `tent_membrane()`
 /// golden — reused solely to reach the NON-EMPTY `surface_stresses` echo branch.
 /// Stays local because it is that golden rather than the triplex; only its
-/// assembly is shared.
+/// assembly is shared. Collapsing the mirror onto the golden is #7284.
 fn membrane_tensegrity() -> Value {
     let nodes = vec![
         point3(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
@@ -221,8 +221,8 @@ fn point_xyz(v: &Value) -> [f64; 3] {
 }
 
 /// Euclidean length of a member on the returned geometry.
-fn member_length(nodes: &[Value], (j, k): (usize, usize)) -> f64 {
-    let (a, b) = (point_xyz(&nodes[j]), point_xyz(&nodes[k]));
+fn member_length(nodes: &[Value], [j, k]: [i64; 2]) -> f64 {
+    let (a, b) = (point_xyz(&nodes[j as usize]), point_xyz(&nodes[k as usize]));
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 

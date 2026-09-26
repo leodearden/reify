@@ -56,9 +56,9 @@ fn force_val(v: &Value) -> f64 {
     }
 }
 
-/// Surface stresses: one uniform σ=0.2 per triangle (top and bottom caps).
-fn two_triangle_stresses(sigma: f64) -> Value {
-    Value::List(vec![Value::Real(sigma), Value::Real(sigma)])
+/// Surface stresses: one uniform σ per membrane cap in `TRIPLEX_CAPS`.
+fn cap_stresses(sigma: f64) -> Value {
+    Value::List(vec![Value::Real(sigma); TRIPLEX_CAPS.len()])
 }
 
 // ── trampoline helper ─────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group = horizontals
-        two_triangle_stresses(SIGMA),
+        cap_stresses(SIGMA),
     ];
 
     let fields = match call_form_find_free(&value_inputs) {
