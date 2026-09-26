@@ -594,12 +594,10 @@ describe('debug contract — pick↔raycast agreement (step-7, real three)', () 
 // ─────────────────────────────────────────────────────────────────────────────
 // Camera-framing coherence for sub-150 mm parts (task 6965)
 //
-// The defect this pins: createControls seeds an ABSOLUTE minDistance of 0.5 m in a
-// workspace whose parts span four orders of magnitude, and OrbitControls.update()
-// clamps the orbit radius unconditionally (_clampDistance, OrbitControls.js:1072,
-// invoked from :771/:776/:814).  So a 75 mm probe fits to ~86 mm, gets silently
-// relocated back out to 0.5 m, and a follow-up zoom_camera saturates the same floor
-// and reports distanceDelta: 0 — a no-op the MCP surface reports as success.
+// Pins the model-derived orbit floor (docs/debug-mcp-contract.md §6 point 3) against
+// the dogfood signature it replaced: a fixed floor that OrbitControls.update() clamps
+// to unconditionally (_clampDistance), so a small part is silently relocated out and
+// a follow-up zoom_camera saturates, reporting distanceDelta: 0 as success.
 //
 // Real three AND a real OrbitControls, because _clampDistance is the library
 // behaviour under test; a hand-rolled stub would pass in both the broken and the
@@ -615,9 +613,7 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
   // fitCameraToBox frames the sphere circumscribing the box: radius = ½·diagonal.
   const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);
   // The expected framing distance comes from fitCameraToBox's own formula
-  // (`fittedDistanceFor`) at the app's real FOV, never a hand-derived multiple — at
-  // CAMERA_FOV_DEG = 60 and the default padding that lands at ≈ 86 mm, well inside the
-  // old 0.5 m floor, which is exactly why the floor swallowed it.
+  // (`fittedDistanceFor`) at the app's real FOV, never a hand-derived multiple.
   const ASPECT = 800 / 600;
   const ZOOM_SCALE = 0.3;
 
@@ -699,8 +695,8 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
     const result = (await dispatchCmd(capturedHandler!, 6001, 'fit_to_view', {})) as any;
     expect(result.ok).toBe(true);
 
-    // LIVE state, not the echoed response.  Before the fix this read exactly 0.5 —
-    // _clampDistance relocated the camera and nothing reported it.
+    // LIVE state, not the echoed response: a fixed floor would show up here as a
+    // _clampDistance relocation that no response reports.
     expect(controls.getDistance()).toBeCloseTo(FIT_DISTANCE, 5);
     expect(controls.getDistance()).toBeLessThan(0.5);
   });

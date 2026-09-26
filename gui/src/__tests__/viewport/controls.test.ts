@@ -91,12 +91,8 @@ describe('createControls', () => {
     expect(mockOrbitControlsUpdate).toHaveBeenCalled();
   });
 
-  // createControls runs in Viewport.tsx's onMount, BEFORE any geometry exists, so it has
-  // no bounds to derive a floor from.  It applies the SAME policy to the startup orbit
-  // distance instead, which rules out both degenerate seeds: a guessed absolute blocks
-  // commanded poses closer than itself (0.5 m made a fitted 75 mm part unreachable —
-  // #6965), while ORBIT_MIN_DISTANCE_FLOOR blocks nothing at all and lets the wheel dolly
-  // an empty scene to a 1e-6 radius that is ~160 multiplicative ticks from workable.
+  // createControls runs before any geometry exists, so it applies the floor policy to
+  // the startup orbit distance (docs/debug-mcp-contract.md §6 point 3).
   it('seeds minDistance by applying the policy to the startup orbit distance', () => {
     const { camera } = setup();
     const startupDistance = camera.position.distanceTo(capturedInstance.target);

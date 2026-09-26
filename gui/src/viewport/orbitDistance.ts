@@ -1,38 +1,16 @@
 /**
  * orbitDistance.ts — the camera-distance policy: how far the camera sits from its
  * target when a subject is framed, and how close it may then be dollied in.
+ * Contract and rationale: docs/debug-mcp-contract.md §6 point 3.
  *
- * Deliberately dependency-free (no `three` import).  Three consequences, all load-bearing:
- *   • `fitCamera.ts` consumes this policy, and `selection.test.ts` exercises `fitCamera.ts`
- *     behind a PARTIAL `vi.mock('three')`.  Putting the policy in `controls.ts` — the other
- *     obvious home — would drag the real OrbitControls module through that partial mock at
- *     import time and break an unrelated suite.
- *   • The e2e harness (`gui/test/visual/assertions.ts`, run under bare `tsx`, not vitest)
- *     can import the real formula to derive its expectations instead of restating them.
- *   • Both distance limits, and the framing distance they are stated against, have ONE
- *     home, so no caller has to re-derive the relation between them (SPOT).
- *
- * The scale-free invariant
- * ────────────────────────
- * `fittedDistanceFor` is the single implementation of "how far back must the camera be to
- * frame a sphere of this radius" — `fitCameraToBox` calls it, and the floor below is stated
- * as a FRACTION of its result rather than of the radius.  So the guarantee "anything that
- * can be framed can then be dollied in ~110× from its fitted pose" holds at every model
- * scale, at every field of view and for every pane shape, BY CONSTRUCTION: retune the
- * padding or the FOV and the floor follows, because neither number appears here twice.
- *
- * What this replaces, and why a fraction rather than a smaller constant: the floor used to
- * be an absolute 0.5 m in a workspace whose parts span four orders of magnitude.  A 75 mm
- * probe fits at ~86 mm, so the floor silently relocated the camera ~6× too far out and made
- * `zoom_camera` a no-op (#6965, litter-tray round-3 dogfood).  Any absolute value merely
- * moves that cliff to some other part size; only a fraction cannot recur.
+ * Keep this module dependency-free (no `three`, no DOM).  `fitCamera.ts` imports it and
+ * `selection.test.ts` exercises `fitCamera.ts` behind a PARTIAL `vi.mock('three')`, and
+ * the e2e harness (`gui/test/visual/assertions.ts`) imports it under bare `tsx`.
  */
 
 /**
  * Multiplicative padding around the framed bounding sphere, so the subject never touches
- * the frame edges.  Tunable: the suite asserts qualitative containment (strict inside-frame
- * margin + not-a-speck) and derives every fitted distance from `fittedDistanceFor`, so no
- * test pins this value.
+ * the frame edges.  Tunable: no test pins the value.
  */
 export const DEFAULT_FIT_PADDING = 1.1;
 
@@ -59,7 +37,7 @@ export function fittedDistanceFor(
 
 /**
  * Fraction of the FRAMED distance the camera may approach its target — equivalently, the
- * dolly-in headroom a framed subject is guaranteed.  See the scale-free invariant above.
+ * dolly-in headroom a framed subject is guaranteed, at any model scale.
  */
 export const ORBIT_MIN_DISTANCE_FRACTION_OF_FIT = 1 / 110;
 
@@ -67,23 +45,13 @@ export const ORBIT_MIN_DISTANCE_FRACTION_OF_FIT = 1 / 110;
  * Strictly-positive absolute floor, used only when the framed distance is degenerate
  * (zero, negative or non-finite).  A zero or non-finite floor would make OrbitControls'
  * `_clampDistance` produce NaN camera positions, which is unrecoverable without a reload.
- *
- * This is the NaN guard and nothing else — it is deliberately NOT what `createControls`
- * seeds.  Seeding it would leave an empty scene's wheel able to dolly to a 1e-6 orbit
- * radius, and since dolly is multiplicative (and pan magnitude scales with distance),
- * climbing back out takes ~160 wheel ticks: a soft-lock escapable only via `fit_to_view`.
+ * A NaN guard only: never seed `minDistance` with it directly.
  */
 export const ORBIT_MIN_DISTANCE_FLOOR = 1e-6;
 
 /**
- * The far limit, deliberately left an ABSOLUTE distance rather than model-derived.
- *
- * Unlike the floor it is not implicated by #6965 and has no scale cliff in reach: it binds
- * only on a model whose bounding sphere exceeds ~227 m in radius (≈455 m across), since
- * such a model's own fitted distance would exceed it and `_clampDistance` would pull the
- * framing inward.  Reify parts are four orders of magnitude smaller than that.  Should a
- * model that large ever appear, the fix is the same one the floor received — derive it from
- * `fittedDistanceFor` — not a bigger constant.
+ * The far limit, deliberately an ABSOLUTE distance rather than model-derived; where it
+ * binds is stated in docs/debug-mcp-contract.md §6 point 3.
  */
 export const ORBIT_MAX_DISTANCE = 500;
 

@@ -12,20 +12,9 @@ export interface ControlsContext {
 /**
  * Creates an OrbitControls wrapper with sensible defaults.
  *
- * `minDistance` is seeded by applying the SAME policy to the camera's initial orbit
- * distance, because this runs in `Viewport.tsx`'s `onMount` BEFORE any geometry
- * exists and there are no model bounds to derive a floor from.  The startup pose is
- * the best available stand-in for a framed one, and `Viewport.tsx` auto-fits as soon
- * as the first mesh arrives, so this provisional value governs the empty scene only.
- *
- * Neither degenerate alternative is used.  A guessed absolute (the previous 0.5 m)
- * blocks commanded poses: a fitted 75 mm part sits at ~86 mm, so the clamp silently
- * relocated the camera ~6× too far out (#6965).  Seeding `ORBIT_MIN_DISTANCE_FLOOR`
- * instead blocks nothing at all — including the wheel, which can then dolly an empty
- * scene to a 1e-6 orbit radius that takes ~160 multiplicative ticks to climb out of.
- *
- * `maxDistance` is unchanged in value — it is not implicated by that defect and is
- * only re-homed into `orbitDistance.ts` so both limits are stated in one place.
+ * `minDistance` is seeded by applying the orbit-floor policy to the camera's startup
+ * orbit distance: this runs before any geometry exists, and the first framing
+ * (`fitCameraToBox`) replaces it.  See docs/debug-mcp-contract.md §6 point 3.
  *
  * @param camera - The camera to orbit.
  * @param domElement - The DOM element for pointer events.

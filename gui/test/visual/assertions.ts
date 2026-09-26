@@ -120,22 +120,16 @@ const SMALL_CUBE_ZOOM_DELTA = SMALL_CUBE_FIT_DISTANCE - SMALL_CUBE_ZOOMED_DISTAN
 
 // Headroom on the upper bound, because a tall/narrow pane fits FARTHER back (above)
 // and so also lands farther back after the dolly. 8× covers aspect ratios down to
-// ≈0.2, while the resulting bound (≈4.6e-2) is still an order of magnitude BELOW the
-// 0.5 m floor this task retired — so the scenario keeps its discriminating power
-// against the regression without being hostage to the pane's shape.
+// ≈0.2 and keeps the bound (≈4.6e-2) an order of magnitude below a fixed 0.5 m floor.
 const SMALL_CUBE_PANE_ASPECT_HEADROOM = 8;
 
 // An iso-ish close-in pose at the fitted distance, used to prove a pick still
 // resolves after the camera has been re-framed (#6496).
 const SMALL_CUBE_FRAMED_POSE = SMALL_CUBE_FIT_DISTANCE / Math.sqrt(3); // ≈ 1.100e-2
 
-// controls.update() round-trips camera.position through spherical coordinates, so
-// the read-back differs from the request by ~1 ulp — MEASURED against real three
-// 0.183.2: requesting [0.03,0.03,0.03] reads back [0.03,0.03,0.030000000000000002],
-// and no pose tried survived exactly. `equals` is therefore the wrong op for
-// applied.position; this absolute tolerance is ~7 orders above that drift and ~7
-// orders below any clamp worth detecting. controls.target, by contrast, is NOT
-// round-tripped and does survive update() exactly, so it is asserted with `equals`.
+// applied.position can differ from an unclamped request by ~1 ulp and applied.target
+// is exact (docs/debug-mcp-contract.md §6 point 1), so position is bracketed with this
+// tolerance — far above that drift, far below any clamp — and target uses `equals`.
 const CAMERA_READBACK_TOL = 1e-9;
 
 export const VALUE_SCENARIOS: ValueScenario[] = [
@@ -277,10 +271,8 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
   // `applied` and zoom_camera's `distance` are read back from the camera/controls
   // after OrbitControls has applied its constraints), never a restatement of inputs.
   //
-  // zoom_camera_small_cube IS the dogfood no-op turned into a standing assertion:
-  // before this task the hardcoded 0.5 m minDistance floor snapped the fitted 10 mm
-  // cube out to 0.5 m, and the subsequent dolly reported `distance: 0.5,
-  // distanceDelta: 0` — a silent saturation reported as success.
+  // zoom_camera_small_cube pins the dogfood no-op (a fixed floor saturating the dolly,
+  // reported as `distanceDelta: 0`; docs/debug-mcp-contract.md §6 point 3).
   {
     name: "zoom_camera_small_cube",
     fixture: "small_cube",
@@ -313,7 +305,7 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     args: { position: [0.03, 0.03, 0.03], target: [0, 0, 0] },
     assertions: [
       { path: "ok", op: "equals", expected: true },
-      // target survives update() exactly (measured), so it pins the read-back source.
+      // target survives update() exactly, so it pins the read-back source.
       { path: "applied.target", op: "equals", expected: [0, 0, 0] },
       // position is bracketed rather than equated — see CAMERA_READBACK_TOL.
       { path: "applied.position.0", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },

@@ -29,24 +29,17 @@
  *    `fittedDistanceFor` owns the padding constant and the two-half-angle
  *    trigonometry (decision 2 above); this module keeps only the three-specific
  *    work — box → bounding-sphere radius, and repositioning.
- *    That split is what lets the orbit floor be stated as a fraction of the
- *    fitted distance without either module importing the other, and stops the
- *    padding/FOV relation from being re-derived in the tests (SPOT).
  *
  * 4. Preserved view direction
  *    The camera is repositioned along its existing view direction vector, so
  *    the orientation the user last set (pan/orbit) is retained.  Only the
  *    distance changes.
  *
- * 5. Framing also sets the orbit distance floor (task 6965)
- *    Framing a model and deciding how close the user may then get to it are the
- *    same question asked twice, so both are answered from the ONE `distance`
- *    computed here — not from two independent derivations that could drift
- *    apart.  Only the near limit is model-derived; `ORBIT_MAX_DISTANCE` is
- *    deliberately absolute (see orbitDistance.ts for the size at which it would
- *    bind).  The write sits AFTER the degenerate-box early return, so the
- *    documented "a degenerate box mutates no controls state" contract covers
- *    minDistance exactly as it already covers target.
+ * 5. Framing also sets the orbit distance floor
+ *    `controls.minDistance = orbitFloorFor(distance)`, from the same `distance`
+ *    the camera is placed at (docs/debug-mcp-contract.md §6 point 3).  The write
+ *    sits AFTER the degenerate-box early return, so a degenerate box mutates no
+ *    controls state, minDistance included.
  */
 
 import { Vector3 } from 'three';
