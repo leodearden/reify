@@ -857,6 +857,128 @@ fn an_observer_that_panics_on_started_does_not_stop_the_queue() {
     );
 }
 
+// ── Snapshots: a whole-state reply stamped with its publish generation ──────
+
+#[test]
+fn a_snapshot_replies_the_state_it_published_stamped_with_its_generation() {
+    let rig = ManualRig::new();
+    let _edit = rig.edit(preview("A", 1), "A");
+    let snapshot = rig
+        .queue
+        .submit(EvalRequest::snapshot(|| Ok(labelled("S"))));
+    let _evaluation = rig.evaluation("E");
+
+    rig.executor.run_pending();
+
+    let published = settled(snapshot).expect("the snapshot replies");
+    assert_eq!(published.state(), &labelled("S"));
+    let generations = rig.observer.started_generations();
+    let [a, s, e] = generations[..] else {
+        panic!("expected three announcements; got {generations:?}");
+    };
+    assert_eq!(
+        rig.announcements_and_deltas(),
+        [
+            format!("started {a}"),
+            "delta A".to_string(),
+            format!("started {s}"),
+            "delta S".to_string(),
+            format!("started {e}"),
+            "delta E".to_string(),
+        ]
+    );
+    assert_eq!(
+        published.generation(),
+        s,
+        "the reply is stamped with the generation its state was published under"
+    );
+    assert!(a < s && s < e, "got {generations:?}");
+}
+
+#[test]
+fn a_snapshot_is_announced_before_its_job_runs_under_the_generation_it_replies() {
+    let rig = ManualRig::new();
+    let seen = Arc::new(Mutex::new(None));
+    let snapshot = {
+        let (observer, seen) = (Arc::clone(&rig.observer), Arc::clone(&seen));
+        rig.queue.submit(EvalRequest::snapshot(move || {
+            *seen.lock().expect("seen") =
+                observer.observations().last().map(|o| o.observed.clone());
+            Ok(labelled("S"))
+        }))
+    };
+
+    rig.executor.run_pending();
+
+    let published = settled(snapshot).expect("the snapshot replies");
+    let seen = seen.lock().expect("seen").take();
+    assert!(
+        matches!(seen, Some(Observed::Started(g)) if g == published.generation()),
+        "the job must run after the announcement of the generation it replies; it saw {seen:?}, \
+         replied generation {}",
+        published.generation()
+    );
+}
+
+#[test]
+fn a_failed_snapshot_replies_err_and_publishes_nothing() {
+    let rig = ManualRig::new();
+    let snapshot = rig
+        .queue
+        .submit(EvalRequest::snapshot(|| Err("nope".to_string())));
+
+    rig.executor.run_pending();
+
+    let error = settled(snapshot).expect_err("a failed snapshot must reply Err");
+    assert!(error.contains("nope"), "got {error:?}");
+    assert!(rig.observer.deltas().is_empty(), "nothing is published");
+    assert_eq!(
+        rig.observer.activities(),
+        [EvalActivity::Evaluating, EvalActivity::Idle]
+    );
+}
+
+#[test]
+fn a_panicking_snapshot_replies_err_and_the_queue_carries_on() {
+    let rig = ManualRig::new();
+    let panicking = rig.queue.submit(EvalRequest::snapshot(|| panic!("kaboom")));
+    let next = rig.edit(preview("A", 1), "A1");
+
+    rig.executor.run_pending();
+
+    let error = settled(panicking).expect_err("a panicking snapshot must reply Err");
+    assert!(error.contains("kaboom"), "got {error:?}");
+    assert_eq!(settled(next), Ok(()));
+    assert_eq!(rig.ran(), ["A1"]);
+    assert_eq!(rig.observer.activities().last(), Some(&EvalActivity::Idle));
+}
+
+/// The wire shape `bridge.ts` reads a whole-state reply in.
+#[test]
+fn a_published_state_serializes_as_a_generation_and_state_envelope() {
+    let rig = ManualRig::new();
+    let snapshot = rig
+        .queue
+        .submit(EvalRequest::snapshot(|| Ok(labelled("S"))));
+    rig.executor.run_pending();
+    let published = settled(snapshot).expect("the snapshot replies");
+
+    let wire = serde_json::to_value(&published).expect("a published state serializes");
+
+    let envelope = wire.as_object().expect("an object");
+    let mut keys: Vec<_> = envelope.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["generation", "state"]);
+    assert_eq!(
+        envelope["generation"],
+        serde_json::json!(published.generation())
+    );
+    assert_eq!(
+        envelope["state"],
+        serde_json::to_value(labelled("S")).expect("a state serializes")
+    );
+}
+
 #[tokio::test]
 async fn on_the_engine_lane_requests_run_and_publish_on_the_large_stack_lane() {
     use crate::large_stack::WORKER_THREAD_NAME;
