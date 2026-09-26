@@ -86,7 +86,10 @@ pub struct DirichletBc {
 /// within each row, i.e. sorted and free of duplicate `(row, col)` entries, as
 /// [`SparseRowMat::try_new_from_triplets`] and
 /// [`assemble_global_stiffness`](crate::assembly::assemble_global_stiffness)
-/// produce.  A duplicated entry makes the result unspecified.
+/// produce.  A duplicated entry makes the result unspecified.  The elimination
+/// itself needs only the absence of duplicates; sortedness is required by
+/// choice, to keep one CSR contract across this crate's eliminators (`mpc`'s
+/// binary search does need it).
 ///
 /// # Symmetry preservation
 ///
@@ -186,12 +189,11 @@ pub fn apply_dirichlet_row_elimination(
         }
     }
 
-    // Debug-only: assert the canonical-CSR precondition — strictly increasing
-    // col_idx within every row, which rules out both unsorted rows and
-    // duplicate (row, col) entries. The column walk below would visit each
-    // copy of a duplicated entry (a duplicated diagonal then sums to 2.0)
-    // without any symptom, so surface the violation eagerly here. O(nnz)
-    // total per call, paid only in debug builds.
+    // Debug-only: assert the canonical-CSR precondition as documented —
+    // strictly increasing col_idx within every row. The duplicate half is the
+    // one the column walk below depends on: it would visit each copy of a
+    // duplicated entry (a duplicated diagonal then sums to 2.0) without any
+    // symptom. O(nnz) total per call, paid only in debug builds.
     #[cfg(debug_assertions)]
     {
         let sym = k.symbolic();
@@ -1162,7 +1164,8 @@ mod tests {
 
     /// Runs the production routine and [`reference_row_elimination`] on
     /// clones of `k` and `f`, then asserts that every stored K value and every
-    /// `f` entry agree by `to_bits()`, naming the first mismatch.
+    /// `f` entry agree by `to_bits()`, naming the first mismatch. Bit identity,
+    /// not a tolerance, is the bar every rewrite of the elimination loop meets.
     fn assert_bit_identical_to_reference(
         k: &SparseRowMat<usize, f64>,
         f: &[f64],
@@ -1244,10 +1247,6 @@ mod tests {
         SparseRowMat::try_new_from_triplets(n, n, &triplets).expect("distinct in-range triplets")
     }
 
-    /// Guard, green on arrival: it was written before the O(nnz) column-walk
-    /// rewrite of the elimination loop, and its value is forward protection —
-    /// that rewrite, and any later one, must reproduce every bit.
-    ///
     /// Fixture: the FEA-assembled 15 × 15 shared-face K with 9 of its 15 DOFs
     /// pinned in non-monotone slice order, homogeneous, positive and negative
     /// values over two orders of magnitude, and a mixed-sign f.
@@ -1274,10 +1273,6 @@ mod tests {
         assert_bit_identical_to_reference(&k, &f, &bcs);
     }
 
-    /// Guard, green on arrival: it was written before the O(nnz) column-walk
-    /// rewrite of the elimination loop, and its value is forward protection —
-    /// that rewrite, and any later one, must reproduce every bit.
-    ///
     /// Fixture: the morph's pinned-surface proportion — 40% of the DOFs of a
     /// structurally unsymmetric synthetic system, pinned in stride-permuted
     /// slice order, every 4th BC homogeneous. The anti-vacuity asserts prove
@@ -1344,10 +1339,6 @@ mod tests {
         assert_bit_identical_to_reference(&k, &f, &bcs);
     }
 
-    /// Guard, green on arrival: it was written before the O(nnz) column-walk
-    /// rewrite of the elimination loop, and its value is forward protection —
-    /// that rewrite, and any later one, must reproduce every bit.
-    ///
     /// Signed-zero probe: `-0.0 - (-1.0 · 0.0) = +0.0`, so a homogeneous BC's
     /// column-into-RHS subtraction is observable. A rewrite that skips
     /// homogeneous BCs or zero entries leaves `f[1] = -0.0`.

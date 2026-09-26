@@ -105,8 +105,8 @@ The cost is `apply_dirichlet_row_elimination`
 (`crates/reify-solver-elastic/src/boundary/dirichlet.rs`): for every
 prescribed DOF it scans all `n` rows of K, so it is O(n × |bcs|). The morph
 pins every surface node — 13,932 prescribed DOFs at n=18 against 61,617 rows —
-which is exactly the "pinned-surface scale" its own `# Complexity` note names
-as the case where a column-indexed mirror is needed. The CG solve is at most
+which is exactly the "pinned-surface scale" its then-current `# Complexity`
+note named as the case where a column-indexed mirror is needed. The CG solve is at most
 ~3% of the leg (rule-of-three bound on 0/104 samples; 208 iterations). Fix:
 task #7834. Expected post-fix n=18 morph leg: single-digit seconds — roughly
 par with gmsh, not 10x faster. The re-measurement, #7834's acceptance step, is
