@@ -2607,7 +2607,7 @@ PAT = re.compile(
 # --- §2.2.3 exclusions: trait-requirement `let`s, a different mechanism ------
 EXCLUDED = {
     'crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:296',
-    'crates/reify-compiler/tests/m9_error_cases.rs:276',
+    'crates/reify-compiler/tests/harness_diagnostics_robustness/m9_error_cases.rs:276',
 }
 
 
@@ -2726,7 +2726,7 @@ from the same run, and 12.4 reconciles the totals.
 | 16 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:110` | `param w : Length = 1` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
 | 17 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:166` | `param w : Length = 1` | **c1** | CONFIRMED | **BREAKS — migrate** (δ₁) |
 | 18 | `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:224` | `param w : Length = 1` | **?** | CONFIRMED | UNCLASSIFIED — resolve before landing |
-| 19 | `crates/reify-compiler/tests/m9_error_cases.rs:276` | `let score : Mass = 1.5` | —  *(§2.2.3 excluded)* | n/a | not counted in the 58 — trait-requirement `let`, a different mechanism |
+| 19 | `crates/reify-compiler/tests/harness_diagnostics_robustness/m9_error_cases.rs:276` | `let score : Mass = 1.5` | —  *(§2.2.3 excluded)* | n/a | not counted in the 58 — trait-requirement `let`, a different mechanism |
 | 20 | `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:175` | `param zero_int   : Length = 0` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
 | 21 | `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:176` | `param one_int    : Length = 1` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
 | 22 | `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:177` | `param half_real  : Length = 0.5` | **c2** | CONFIRMED | **DELIBERATE NEGATIVE TEST — invert** (δ₁) |
