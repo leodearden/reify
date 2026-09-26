@@ -3,8 +3,9 @@
 //!
 //! Structural (always-run) tests compile from source and check the lowered
 //! op shapes. OCCT-gated volume oracle tests build through Engine with
-//! OcctKernelHandle, then replay the lowered ops on a parallel direct
-//! OcctKernel to verify volume identities.
+//! OcctKernelHandle. The zone_cylinder / zone_annulus oracles then replay the
+//! lowered ops on a parallel direct OcctKernel to verify volume identities;
+//! the zone_profile oracles read the realized volume from a `volume()` cell.
 //!
 //! Mirrors tube_pipe_e2e.rs: same harness pattern, validated rel_err bounds
 //! (pipe 1e-6, boolean-of-pipes 1e-2).
@@ -13,8 +14,9 @@
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
 };
-use reify_core::{ModulePath, Severity};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
+use reify_test_support::fixtures::assert_rel;
 use reify_test_support::*;
 
 // ─── zone_cylinder (step 1 RED / step 2 GREEN) ───────────────────────────────
@@ -513,15 +515,15 @@ fn zone_annulus_volume_matches_formula() {
     );
 }
 
-// ─── zone_profile (step 5 RED / step 6 GREEN) ────────────────────────────────
+// ─── zone_profile ────────────────────────────────────────────────────────────
 
 /// Structural test: `zone_profile(box(10mm,10mm,10mm), 1mm)` lowers to
-/// [Primitive{Box}, Modify{Thicken,target:Step(0),offset=+0.0005},
-///  Modify{Thicken,target:Step(0),offset=-0.0005},
+/// [Primitive{Box}, Modify{OffsetSolid,target:Step(0),distance=+0.0005},
+///  Modify{OffsetSolid,target:Step(0),distance=-0.0005},
 ///  Boolean{Difference,left:Step(1),right:Step(2)}].
 ///
-/// Both Thicken ops target the same box (Step(0)); offsets are ±width/2 = ±0.5mm.
-/// Always-run (no OCCT required). RED until step-6 registers zone_profile.
+/// Both OffsetSolid ops target the same box (Step(0)); distances are ±width/2 = ±0.5mm.
+/// Always-run (no OCCT required).
 #[test]
 fn zone_profile_structural_lowers_to_four_ops() {
     let source = r#"structure S {
@@ -552,7 +554,7 @@ fn zone_profile_structural_lowers_to_four_ops() {
     assert_eq!(
         realization.operations.len(),
         4,
-        "expected 4 ops [Box, Thicken(+w/2), Thicken(-w/2), Boolean(Difference)], got {}",
+        "expected 4 ops [Box, OffsetSolid(+w/2), OffsetSolid(-w/2), Boolean(Difference)], got {}",
         realization.operations.len()
     );
     assert!(
@@ -566,33 +568,33 @@ fn zone_profile_structural_lowers_to_four_ops() {
         "op[0] should be Primitive(Box), got {:?}",
         &realization.operations[0]
     );
-    // op[1]: outer Thicken (+w/2), targets the box at Step(0)
+    // op[1]: outer OffsetSolid (+w/2), targets the box at Step(0)
     assert!(
         matches!(
             &realization.operations[1],
             CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
+                kind: ModifyKind::OffsetSolid,
                 target: GeomRef::Step(0),
                 ..
             }
         ),
-        "op[1] should be Modify(Thicken, target=Step(0)), got {:?}",
+        "op[1] should be Modify(OffsetSolid, target=Step(0)), got {:?}",
         &realization.operations[1]
     );
-    // op[2]: inner Thicken (-w/2), also targets the box at Step(0)
+    // op[2]: inner OffsetSolid (-w/2), also targets the box at Step(0)
     assert!(
         matches!(
             &realization.operations[2],
             CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
+                kind: ModifyKind::OffsetSolid,
                 target: GeomRef::Step(0),
                 ..
             }
         ),
-        "op[2] should be Modify(Thicken, target=Step(0)), got {:?}",
+        "op[2] should be Modify(OffsetSolid, target=Step(0)), got {:?}",
         &realization.operations[2]
     );
-    // op[3]: Boolean{Difference, left:Step(1)=plus_thicken, right:Step(2)=minus_thicken}
+    // op[3]: Boolean{Difference, left:Step(1)=plus_offset, right:Step(2)=minus_offset}
     assert!(
         matches!(
             &realization.operations[3],
@@ -606,7 +608,7 @@ fn zone_profile_structural_lowers_to_four_ops() {
         &realization.operations[3]
     );
 
-    // ── MockGeometryKernel: verify runtime offsets and Difference ──
+    // ── MockGeometryKernel: verify runtime distances and Difference ──
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
@@ -617,36 +619,36 @@ fn zone_profile_structural_lowers_to_four_ops() {
     assert_eq!(
         ops.len(),
         4,
-        "engine should dispatch 4 ops (Box, Thicken+, Thicken-, Difference), got {}",
+        "engine should dispatch 4 ops (Box, OffsetSolid+, OffsetSolid-, Difference), got {}",
         ops.len()
     );
-    // op[1]: outer Thicken, offset = +w/2 = +1mm/2 = +0.0005m
+    // op[1]: outer OffsetSolid, distance = +w/2 = +1mm/2 = +0.0005m
     match &ops[1].op {
-        GeometryOp::Thicken { offset, .. } => {
-            let o = offset.as_f64().expect("offset should be numeric");
+        GeometryOp::OffsetSolid { distance, .. } => {
+            let d = distance.as_f64().expect("distance should be numeric");
             assert!(
-                (o - 0.0005).abs() < 1e-9,
-                "outer Thicken offset should be +0.0005 m (+w/2 = +1mm/2), got {}",
-                o
+                (d - 0.0005).abs() < 1e-9,
+                "outer OffsetSolid distance should be +0.0005 m (+w/2 = +1mm/2), got {}",
+                d
             );
         }
         other => panic!(
-            "expected GeometryOp::Thicken at op[1] (plus), got {:?}",
+            "expected GeometryOp::OffsetSolid at op[1] (plus), got {:?}",
             other
         ),
     }
-    // op[2]: inner Thicken, offset = -w/2 = -0.0005m
+    // op[2]: inner OffsetSolid, distance = -w/2 = -0.0005m
     match &ops[2].op {
-        GeometryOp::Thicken { offset, .. } => {
-            let o = offset.as_f64().expect("offset should be numeric");
+        GeometryOp::OffsetSolid { distance, .. } => {
+            let d = distance.as_f64().expect("distance should be numeric");
             assert!(
-                (o + 0.0005).abs() < 1e-9,
-                "inner Thicken offset should be -0.0005 m (-w/2 = -1mm/2), got {}",
-                o
+                (d + 0.0005).abs() < 1e-9,
+                "inner OffsetSolid distance should be -0.0005 m (-w/2 = -1mm/2), got {}",
+                d
             );
         }
         other => panic!(
-            "expected GeometryOp::Thicken at op[2] (minus), got {:?}",
+            "expected GeometryOp::OffsetSolid at op[2] (minus), got {:?}",
             other
         ),
     }
@@ -657,146 +659,153 @@ fn zone_profile_structural_lowers_to_four_ops() {
     }
 }
 
-/// OCCT realize-smoke for zone_profile: pins that the compile-to-kernel
-/// pipeline is wired end to end, not that the annular shell is correct.
-///
-/// zone_profile(box(10mm,10mm,10mm), 1mm) is INTENDED to build an annular shell
-/// around the box surface; it does not yet, so its volume is exactly 0.0 and
-/// becomes > 0 only once #7287 lands — that is #7287's acceptance criterion,
-/// not this smoke's. Asserts what holds either way: every op succeeds, and
-/// 0 ≤ volume ≤ box volume = (10mm)³ = 1e-6 m³. WHY the result is empty, and
-/// why an empty result is legal rather than a failure, is recorded at the
-/// realization step below.
-///
-/// Parallel OcctKernel replay: Box + Thicken(+0.5mm) + Thicken(-0.5mm) + Difference.
-/// OCCT-gated; skips cleanly when OCCT is unavailable.
-#[test]
-fn zone_profile_realize_smoke() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping zone_profile_realize_smoke: OCCT not available");
-        return;
-    }
-
-    let source = r#"structure S {
-    let z = zone_profile(box(10mm, 10mm, 10mm), 1mm)
-}"#;
-
-    let parsed = reify_syntax::parse(source, ModulePath::single("zone_profile_smoke"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    // ── Full-pipeline: Engine + OcctKernelHandle (no Error diag, realize completes) ──
-    //
-    // OCCT's `BRepOffsetAPI_MakeOffsetShape::PerformBySimple` is documented for
-    // OPEN SHELLS. On a closed solid (box) it does not yield a valid solid for
-    // the cut, so the Difference this lowering ends in is GENUINELY EMPTY —
-    // zero volume, and a mesh with no vertices, without OCCT raising anything.
-    // An empty boolean result is a legal kernel value, so realization stays
-    // silent; what this smoke pins is that the compile-to-kernel pipeline is
-    // wired end to end, not that the annular shell is correct.
-    //
-    // The underlying geometry defect — zone_profile does not actually build the
-    // annular shell — is tracked by #7287 (replace the PerformBySimple
-    // Thicken+Difference lowering with a MakeThickSolid-based construction).
-    let checker = reify_constraints::SimpleConstraintChecker;
+fn occt_engine() -> reify_eval::Engine {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(planner)),
+    )
+}
 
-    let tess_result = engine.tessellate_realizations(&compiled);
-    let geom_errors: Vec<_> = tess_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+/// Compiles `source`; `None` when OCCT is unavailable, so the oracle skips.
+fn compile_for_occt(source: &str) -> Option<reify_compiler::CompiledModule> {
+    let compiled = parse_and_compile_with_stdlib(source);
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping zone_profile OCCT oracle: OCCT not available");
+        return None;
+    }
+    Some(compiled)
+}
+
+/// The realized value of `compiled`'s `S.v` cell, which must be a `volume()`.
+fn realized_volume(
+    engine: &mut reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+) -> f64 {
+    let result = engine.build(compiled, ExportFormat::Step);
+    let errors = collect_errors(&result.diagnostics);
+    assert!(errors.is_empty(), "unexpected build errors: {errors:#?}");
+    match result.values.get(&ValueCellId::new("S", "v")) {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::VOLUME,
+                "volume() cell must have VOLUME dimension"
+            );
+            *si_value
+        }
+        other => panic!("expected a Value::Scalar volume in cell S.v, got {other:?}"),
+    }
+}
+
+/// [`realized_volume`] on a fresh engine; `None` when OCCT is unavailable.
+fn realized_volume_of(source: &str) -> Option<f64> {
+    let compiled = compile_for_occt(source)?;
+    Some(realized_volume(&mut occt_engine(), &compiled))
+}
+
+/// Every face of the 10mm box moves ±0.5mm, so the zone is (11mm)³ − (9mm)³.
+#[test]
+fn zone_profile_volume_matches_formula() {
+    let Some(compiled) = compile_for_occt(
+        r#"structure S {
+    let z = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+    let v = volume(z)
+}"#,
+    ) else {
+        return;
+    };
+    let mut engine = occt_engine();
+    let v = realized_volume(&mut engine, &compiled);
+    let box_volume = 0.010_f64.powi(3);
     assert!(
-        geom_errors.is_empty(),
-        "unexpected geometry errors in tessellate: {:?}",
-        geom_errors
+        v < box_volume,
+        "zone_profile volume {v:.3e} m³ should be below the box volume {box_volume:.3e} m³"
     );
-    assert!(
-        !tess_result.meshes.is_empty(),
-        "zone_profile should produce at least 1 mesh result"
-    );
-    // Tessellation produces a result entry, but vertices may be empty because
-    // of the PerformBySimple-on-closed-solid limitation noted above. Log the
-    // vertex count for diagnostics; do not assert non-empty here.
-    let mesh = &tess_result.meshes[0].mesh;
-    eprintln!(
-        "zone_profile tessellation: {} vertices, {} indices \
-         (empty is expected until #7287 replaces PerformBySimple)",
-        mesh.vertices.len(),
-        mesh.indices.len()
-    );
-
-    // ── Direct OcctKernel replay — build smoke ──
-    //
-    // All four ops must succeed: Box, both Thickens and the final Difference.
-    // The Difference is empty, which is a legal result the kernel returns as an
-    // empty compound — so this replay pins the WIRING, and deliberately does
-    // not assert a volume value, which is 0.0 until #7287 lands.
-    let box_side = 0.010_f64; // 10mm in metres
-    let box_volume = box_side.powi(3); // 1e-6 m³
-
-    let mut kernel = reify_kernel_occt::OcctKernel::new();
-    let box_h = kernel
-        .execute(&GeometryOp::Box {
-            width: Value::Real(box_side),
-            height: Value::Real(box_side),
-            depth: Value::Real(box_side),
-        })
-        .expect("Box execute should succeed");
-    let outer_h = kernel
-        .execute(&GeometryOp::Thicken {
-            target: box_h.id,
-            offset: Value::Real(0.0005), // +w/2 = +1mm/2 = +0.5mm
-        })
-        .expect("outer Thicken execute should succeed");
-    let inner_h = kernel
-        .execute(&GeometryOp::Thicken {
-            target: box_h.id,
-            offset: Value::Real(-0.0005), // -w/2 = -1mm/2 = -0.5mm
-        })
-        .expect("inner Thicken execute should succeed");
-    let profile_h = kernel
-        .execute(&GeometryOp::Difference {
-            left: outer_h.id,
-            right: inner_h.id,
-        })
-        .expect("Difference execute should succeed");
-    // Volume diagnostic: expected ~6e-7 m³ once #7287 replaces PerformBySimple
-    // with MakeThickSolid. Currently 0 — logged, not asserted.
-    let vol = kernel
-        .query(&GeometryQuery::Volume(profile_h.id))
-        .expect("Volume query should succeed");
-    let v = vol.as_f64().expect("volume should be numeric");
-    eprintln!(
-        "zone_profile direct-replay volume = {:.3e} m³ (expected ~6e-7 once #7287 fixes \
-         PerformBySimple; currently {} of box_volume={:.3e})",
+    assert_rel(
         v,
-        if v > 0.0 { "within" } else { "OUTSIDE (0)" },
-        box_volume
+        0.011_f64.powi(3) - 0.009_f64.powi(3),
+        1e-9,
+        "zone_profile(box 10mm, 1mm)",
     );
-    // Invariant we CAN assert: Difference must be non-negative (never > the box solid).
+
+    let tess = engine.tessellate_realizations(&compiled);
+    let errors = collect_errors(&tess.diagnostics);
     assert!(
-        v >= 0.0,
-        "zone_profile volume must be non-negative, got {}",
-        v
+        errors.is_empty(),
+        "unexpected tessellate errors: {errors:#?}"
+    );
+    let mesh = &tess
+        .meshes
+        .first()
+        .expect("zone_profile should produce a mesh")
+        .mesh;
+    assert!(
+        !mesh.vertices.is_empty(),
+        "zone_profile mesh should have vertices"
     );
     assert!(
-        v <= box_volume,
-        "zone_profile volume ({:.3e} m³) should be ≤ solid box volume ({:.3e} m³)",
-        v,
-        box_volume
+        !mesh.indices.is_empty(),
+        "zone_profile mesh should have triangles"
+    );
+}
+
+/// Cylinder r=5mm h=10mm: π(5.5²·11 − 4.5²·9) mm³. Curved faces integrate
+/// numerically, hence the looser tolerance.
+#[test]
+fn zone_profile_on_a_curved_solid_matches_formula() {
+    let Some(v) = realized_volume_of(
+        r#"structure S {
+    let z = zone_profile(cylinder(5mm, 10mm), 1mm)
+    let v = volume(z)
+}"#,
+    ) else {
+        return;
+    };
+    let expected = std::f64::consts::PI * (0.0055_f64.powi(2) * 0.011 - 0.0045_f64.powi(2) * 0.009);
+    assert_rel(v, expected, 1e-6, "zone_profile(cylinder r5 h10, 1mm)");
+}
+
+/// A centred cross (two crossing boxes) has concave edges; its offsets are
+/// the crosses of the ±0.5mm-offset boxes.
+#[test]
+fn zone_profile_on_a_concave_solid_matches_formula() {
+    let Some(v) = realized_volume_of(
+        r#"structure S {
+    let z = zone_profile(union(box(20mm, 10mm, 10mm), box(10mm, 10mm, 20mm)), 1mm)
+    let v = volume(z)
+}"#,
+    ) else {
+        return;
+    };
+    let cross = |long: f64, short: f64| 2.0 * long * short * short - short.powi(3);
+    let expected = cross(0.021, 0.011) - cross(0.019, 0.009);
+    assert_rel(v, expected, 1e-9, "zone_profile(cross, 1mm)");
+}
+
+/// A 12mm width offsets the 10mm box inward by 6mm, past its 5mm inradius.
+/// Realized without export: STEP export already rejects an empty shape, which
+/// would mask a zone that silently came out empty.
+#[test]
+fn zone_profile_wider_than_the_solid_reports_an_error() {
+    let Some(compiled) = compile_for_occt(
+        r#"structure S {
+    let z = zone_profile(box(10mm, 10mm, 10mm), 12mm)
+    let v = volume(z)
+}"#,
+    ) else {
+        return;
+    };
+    let tess = occt_engine().tessellate_realizations(&compiled);
+    assert!(
+        collect_errors(&tess.diagnostics)
+            .iter()
+            .any(|error| error.message.contains("offset_solid_shape")),
+        "zone_profile wider than the solid should report the offset collapse as an Error, got: {:#?}",
+        tess.diagnostics
     );
 }

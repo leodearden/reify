@@ -123,7 +123,7 @@ fn assert_length_scaled_by_dimensionless(expr: &CompiledExpr, label: &str) -> f6
 ///
 ///  1. MIS-ATTRIBUTION — one of the two is not in `rounded_box` at all. It is
 ///     `minus_offset = w * (-0.5)` inside the `zone_profile` arm, feeding a
-///     `Modify{Thicken}` "offset" slot. `rounded_box` has exactly ONE dz.
+///     `Modify{OffsetSolid}` "distance" slot. `rounded_box` has exactly ONE dz.
 ///  2. WRONG CLASS — both are dimensionless MULTIPLIERS, not slot-bound zeros.
 ///     The enclosing binop ALREADY carries the magnitude's LENGTH result_type,
 ///     and at eval `Scalar{LENGTH} × Real` takes the Scalar×Real arm and
@@ -179,7 +179,7 @@ fn rounded_box_dz_is_length_scaled_by_a_dimensionless_factor() {
 /// (`docs/prds/v0_6/units-length-gate-completion.md` §8 α / §4 M1 / §2 anchor
 /// table) actually names, while attributing them to `rounded_box`'s corner dz.
 /// Both `±0.5` offsets must stay dimensionless multipliers of a LENGTH width,
-/// feeding the two `Modify{Thicken}` "offset" slots.
+/// feeding the two `Modify{OffsetSolid}` "distance" slots.
 ///
 /// HOME RATIONALE: `zone_profile` also has structural coverage in
 /// `reify-eval/tests/zone_constructors_e2e.rs`, which would otherwise be the
@@ -207,36 +207,39 @@ fn zone_profile_offsets_are_length_scaled_by_dimensionless_factors() {
         .iter()
         .filter_map(|op| match op {
             CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
+                kind: ModifyKind::OffsetSolid,
                 args,
                 ..
-            } => args.iter().find(|(k, _)| k == "offset"),
+            } => args.iter().find(|(k, _)| k == "distance"),
             _ => None,
         })
-        .map(|(_, offset_expr)| {
-            assert_length_scaled_by_dimensionless(offset_expr, "zone_profile thicken offset")
+        .map(|(_, distance_expr)| {
+            assert_length_scaled_by_dimensionless(
+                distance_expr,
+                "zone_profile offset_solid distance",
+            )
         })
         .collect();
 
     assert_eq!(
         factors.len(),
         2,
-        "zone_profile must lower to two Modify{{Thicken}} ops carrying an `offset`; \
+        "zone_profile must lower to two Modify{{OffsetSolid}} ops carrying a `distance`; \
          got {} — if this changed, the pin above is no longer covering what it claims to",
         factors.len()
     );
     // ORDERED and bit-exact, not just "a +/- pair somewhere". `zone_profile` pushes
     // plus_offset (at plus_step) BEFORE minus_offset (at minus_step) and then emits
-    // Boolean{Difference, left: plus_step, right: minus_step} — so the outer shell is
-    // positionally the first Thicken. Swapping the two offset expressions would invert
+    // Boolean{Difference, left: plus_step, right: minus_step} — so the outer solid is
+    // positionally the first OffsetSolid. Swapping the two offset expressions would invert
     // outer/inner and yield an empty or inverted zone, which an unordered
     // any-positive-and-any-negative check would pass straight through. The ±0.5
-    // magnitudes are the half-width contract (offset = ±w/2).
+    // magnitudes are the half-width contract (distance = ±w/2).
     assert_eq!(
         factors,
         vec![0.5, -0.5],
-        "zone_profile's thicken offsets must be exactly [+0.5, -0.5] in emission order \
-         (outer shell first, then inner — Boolean{{Difference}} depends on that order); \
+        "zone_profile's offset_solid distances must be exactly [+0.5, -0.5] in emission order \
+         (outer solid first, then inner — Boolean{{Difference}} depends on that order); \
          got {factors:?}"
     );
 }

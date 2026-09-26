@@ -2610,12 +2610,12 @@ fn compile_geometry_call_inner(
         //
         // Lowers to:
         //   [N+0] <solid ops> — resolved geometry from geom_ref(0)
-        //   [N+k] Modify{Thicken, target:Step(N+k-1), offset=+w/2}  — outer shell boundary
-        //   [N+k+1] Modify{Thicken, target:Step(N+k-1), offset=−w/2} — inner shell boundary
+        //   [N+k] Modify{OffsetSolid, target:Step(N+k-1), distance=+w/2}   — outer boundary
+        //   [N+k+1] Modify{OffsetSolid, target:Step(N+k-1), distance=−w/2} — inner boundary
         //   [N+k+2] Boolean{Difference, left:Step(N+k), right:Step(N+k+1)}
         //
-        // Both Thicken ops target the SAME solid (the last solid op in sub_ops before pushing).
-        // No closed-form volume: V ≈ surface_area × width; realized via OCCT Thicken.
+        // Both OffsetSolid ops target the SAME solid (the last solid op in sub_ops before pushing).
+        // The zone's volume is the difference of the two offset solids.
         "zone_profile" => {
             if !check_arg_count_exact(
                 "zone_profile",
@@ -2660,22 +2660,22 @@ fn compile_geometry_call_inner(
             );
 
             // Track absolute step indices for the Boolean Difference.
-            let plus_step = step_offset + sub_ops.len(); // step of plus-thicken op
+            let plus_step = step_offset + sub_ops.len(); // step of plus-offset op
             sub_ops.push(CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
+                kind: ModifyKind::OffsetSolid,
                 target: solid_target.clone(),
                 args: vec![
                     ("target".to_string(), solid_expr.clone()),
-                    ("offset".to_string(), plus_offset),
+                    ("distance".to_string(), plus_offset),
                 ],
             });
-            let minus_step = step_offset + sub_ops.len(); // step of minus-thicken op
+            let minus_step = step_offset + sub_ops.len(); // step of minus-offset op
             sub_ops.push(CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
+                kind: ModifyKind::OffsetSolid,
                 target: solid_target,
                 args: vec![
                     ("target".to_string(), solid_expr),
-                    ("offset".to_string(), minus_offset),
+                    ("distance".to_string(), minus_offset),
                 ],
             });
             sub_ops.push(CompiledGeometryOp::Boolean {

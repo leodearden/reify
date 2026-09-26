@@ -276,10 +276,14 @@ fourth argument, `length`, is accepted and validated but does **not** drive the 
 `zone_cylinder`, the swept extent comes from the axis wire. Pass it for signature completeness,
 and size the wire to size the zone.
 
-`zone_profile` lowers to the difference of two OCCT thicken results — the solid thickened by
-`+width/2` minus the same solid thickened by `−width/2` — giving a shell that straddles the input
-solid's surface. It has no closed-form volume; expect roughly `surface_area × width`, and query
-the realized solid rather than computing it by hand.
+`zone_profile` lowers to the difference of two `offset_solid` results — the solid offset by
+`+width/2` minus the same solid offset by `−width/2` — giving a shell that straddles the input
+solid's surface. Every face moves along its normal and sharp edges stay sharp, so for a box of
+side `a` the zone volume is exactly `(a+w)³ − (a−w)³`. A width whose inward half reaches past the
+solid's inradius is an error. So is an input that is not one single solid bounded by planes,
+cylinders, cones, spheres and tori: a disjoint union, or a freeform face such as a loft's, is
+refused rather than offset inexactly. For general shapes, query the realized solid rather than
+computing its volume by hand.
 
 Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
 
