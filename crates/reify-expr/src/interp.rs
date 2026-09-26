@@ -44,17 +44,19 @@
 //! # Grid nodes and non-finite samples
 //!
 //! Along each axis, a query at a cell endpoint (`t = 0` or `t = 1`) gives
-//! every other sample on that axis weight zero. Zero-weight samples are left
-//! out of the sum rather than multiplied by 0, so a query at a grid node
-//! returns the node's sample bit for bit, even beside a non-finite neighbour
-//! (an out-of-solid NaN sentinel window, an infinite safety factor). A query
-//! on a cell edge or face leaves out the zero-weight samples of the axes it
-//! sits on in the same way.
+//! every other sample on that axis weight zero: the other end of a `Linear`
+//! cell, and the other three entries of a `Cubic` 4-point stencil, ghost
+//! points included. Zero-weight samples are left out of the sum rather than
+//! multiplied by 0, so a query at a grid node returns the node's sample bit
+//! for bit, even beside a non-finite neighbour (an out-of-solid NaN sentinel
+//! window, an infinite safety factor). A query on a cell edge or face leaves
+//! out the zero-weight samples of the axes it sits on in the same way.
 //!
 //! A non-finite sample with NONZERO weight still propagates (IEEE 754): a
-//! `Linear` query is non-finite when a corner of its cell that it gives
-//! nonzero weight is non-finite, which for a query strictly inside the cell
-//! is every corner.
+//! query is non-finite when a sample it gives nonzero weight is non-finite.
+//! Strictly inside a cell that is every corner of the cell for `Linear`, and
+//! every entry of the 4-point-per-axis stencil (ghost points included) for
+//! `Cubic` — a wider radius than `Linear`'s one cell.
 //!
 //! Pinned by the "Grid nodes and non-finite samples" tests in
 //! `tests/interpolation_tests.rs`.
@@ -303,10 +305,13 @@ pub fn interpolate_1d(
 /// Evaluate the 4-point Lagrange cubic interpolating `(p0, p1, p2, p3)` at
 /// equally-spaced parameters `(-1, 0, 1, 2)` for query parameter `t ∈ [0, 1]`.
 ///
-/// Returns `p1` at `t=0` and `p2` at `t=1`. Reproduces any cubic polynomial
-/// exactly when the four control values come from the polynomial at the
-/// matching parameters — this is the property required by the v0.1
-/// `cubic_1d_reproduces_cubic_polynomial_in_interior` test.
+/// Returns `p1` at `t=0` and `p2` at `t=1` bit for bit, without reading the
+/// other, zero-weight entries ([`cell_endpoint_sample`]).
+///
+/// Reproduces any cubic polynomial exactly when the four control values come
+/// from the polynomial at the matching parameters — this is the property
+/// required by the v0.1 `cubic_1d_reproduces_cubic_polynomial_in_interior`
+/// test.
 ///
 /// # Note on naming
 ///
@@ -319,6 +324,9 @@ pub fn interpolate_1d(
 /// `t ∈ {0, 0.5, 1}` but diverge at all other parameter values.
 #[inline]
 fn cubic4_eval(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    if let Some(node) = cell_endpoint_sample(p1, p2, t) {
+        return node;
+    }
     // Lagrange basis at parameters (-1, 0, 1, 2):
     //   L_{-1}(t) = -t(t-1)(t-2)/6
     //   L_{0}(t)  =  (t+1)(t-1)(t-2)/2
