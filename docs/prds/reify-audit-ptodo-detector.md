@@ -203,7 +203,10 @@ requires the baseline to shrink, or a baseline entry to still be live. Adding th
 assertion was considered and **declined** on measurement — **§18** (2026-08-28, task
 #6859), the single home for that ruling. After δ the baseline should be ≈ empty —
 **an aspiration with no mechanism**: measured unchanged from the 2026-08-07 seed through
-2026-08-28 (**§18**).
+2026-08-28 (**§18**). **Superseded in part 2026-09-26 (§19, esc-5714-9):** the ratchet is
+now structural-only, *explicitly* DB-absent, and **two-directional** over a structural-only
+baseline; §18's declined second assertion is adopted on grounds §18 did not consider. Read
+§19 before touching the oracle, the baseline file, or the seed rule below.
 
 **Sequencing rule for a new lane — re-seed in the same diff (2026-08-07, task #6087).**
 Widening marker recognition necessarily discovers pre-existing debt, so the lane's own
@@ -217,7 +220,10 @@ else `REIFY_AUDIT_*`/`REIFY_PTODO_*` is a test seam), so a flag is new machinery
 would leave the lane dark indefinitely; (3) decisively, the baseline is read only by the
 ratchet test and the generator — `reify-audit` itself never consults it — so seeding
 keeps the gate green while `--pattern PTODO` still REPORTS the findings. An opt-in flag
-would suppress the report too, defeating the point of adding the lane. Generate the seed
+would suppress the report too, defeating the point of adding the lane. *(Superseded
+2026-09-26 — §19: generate the seed DB-ABSENT. Liveness kinds never enter the baseline, so a
+DB-present seed is a policy violation, not a superset. The sentence that follows is kept as
+the historical rationale.)* Generate the seed
 with the task DB present: a `Cited` line yields an `orphaned` fingerprint when the DB is
 reachable and none when it degrades (§6.7), so the DB-present set is a superset of the
 degraded one and the `comm -23 live baseline` subset oracle stays empty in both the main
@@ -346,6 +352,13 @@ absence (125 stays reserved for arg/IO misconfiguration). The implementer-facing
 detection (liveness) runs wherever the DB exists — the main checkout, where the
 `/audit` sweep runs. DB path: `REIFY_PTODO_TASKS_DB` env override, default
 `<repo-root>/.taskmaster/tasks/tasks.db`; rows filtered to `tag='master'`.
+
+**Amendment 2026-09-26 (§19).** "orphan detection runs wherever the DB exists — the main
+checkout" is a statement about the *sweep*, not about any *gate*: liveness findings never red
+a commit gate. A cadenced sweep (dark-factory 5796) runs the liveness, inverse and G-allow
+lanes DB-present on the main checkout and FILES healing tasks; the §6.6 ratchet forces
+DB-absent everywhere, the main checkout included, because the default path above resolves
+there and silently turned the hook-gated main-commit ratchet DB-present (§19 finding 2).
 
 ### 6.8 Allowlist — **path-prefix + inline escape; `.md` excluded entirely**
 
@@ -1393,6 +1406,10 @@ Re-open when the cost/benefit inverts — measurably, either:
 Re-measure the multiplicity and churn table before adopting anything, per the §16 evidence
 standard — including a dated row here when the answer is again no.
 
+| Date | Disposition |
+|---|---|
+| 2026-09-26 | **RE-OPENED → ADOPTED (esc-5714-9, Leo-ratified, §19).** Condition 1 measured MET on main @ `1b3c1171de`: 6 baseline entries, every fingerprint at multiplicity 1, all of kind `orphaned`; the structural live set in the gate's mode is **empty**. Adopted on grounds this section did not consider — a structural-only baseline removes constraints (a) and (b) by construction — not on the drain argument, which §18.1 still refutes. |
+
 ### Mechanical pin
 
 Prose-only guidance in *this* PRD has a measured track record of failing: §12's η signal was
@@ -1403,3 +1420,130 @@ the same reason. §6.6's surviving "shrink-only" phrasing is exactly what invite
 committed-baseline entry absent from the live set must **not** red the ratchet, and a live
 fingerprint absent from the baseline must **still** red it (the second direction exists so
 the guard cannot degenerate into a constant-true after the oracle it pins is disarmed).
+**Direction (i) flips under §19 (owner: reify #7001):** a committed-baseline entry absent
+from the live set MUST red the ratchet. Direction (ii) is unchanged.
+
+## 19. Assessment 2026-09-26 (esc-5714-9, Leo-ratified): the three drift axes, split by what can move
+
+**DECISION.** The §6.6 ratchet becomes **structural-only, hermetic, mode-invariant and
+two-directional** over a **structural-only baseline**; every DB-dependent finding kind is
+owned by a **cadenced tasks.db sweep on the main checkout that files healing tasks** and
+never blocks. Liveness never reds a commit gate. §18 is re-opened and adopted on grounds it
+did not consider; §18.1 (set-equality is not a drain forcing function) still stands and is
+not contradicted here. This section is the single home for the ruling; §6.6, §6.7 and §18
+carry pointers.
+
+**The question.** The ratchet drifts along three axes, and each had a task or an escalation
+treating it alone: (1) *live-but-not-in-baseline* — the oracle's own direction, caught per
+merge; (2) *baseline-but-no-longer-live* — uncaught, proposed by task #7001, declined by §18;
+(3) *orphaned-cite drift* — a marker unchanged while its cited task goes done/cancelled, so
+the tree is static and the task store moves under it (#7398, #7787, esc-5714-8 → esc-5714-9,
+recurring). Deciding one axis moves the others (the baseline's *contents* decide whether axis
+2 is checkable at all), so they are decided together.
+
+### Measurements (2026-09-26, main @ `1b3c1171de` — re-measured, not copied)
+
+| Measure | Value |
+|---|---|
+| Committed `ptodo-baseline.txt` | **6** fingerprints, all kind `orphaned`, every one still live DB-present, every one at multiplicity 1 in its file |
+| Live set, **true** DB-absent (`REIFY_PTODO_TASKS_DB=/nonexistent/…`) | **0** — `@@PTODO_SCAN@@ files_scanned=3369 markers_examined=67`, 2 s |
+| Live set, DB-present (main checkout, default path) | **11**, all `orphaned`, 396 s |
+| Axis 1 — live − baseline, DB-absent (the merge gate's oracle) | **empty** |
+| Axis 2 — baseline − live, DB-present | **empty** |
+| Axis 3 — live − baseline, DB-present | **5**: `completion.rs` #5752 (×2 texts), `geometry.rs` #6080, `printer.ri` #6583, and `cli_check.rs` `#2` — an allowlist *index* read as a cite (false positive, landed `cbdd88432c3` the same day) |
+| Baseline − live in the gate's own (DB-absent) mode | **6 of 6** — the entire baseline |
+| Task #7398's 2026-09-11 cohort (5 files) | **already healed** on main; its file list names nothing live |
+| Arm-6 discharged phantom-tracking lines (task #6816's population) | **6** tracked lines, all citing real task ids (#1904, #5835 ×2, #5224, #6156/#7756, #6564) |
+
+### Three findings that reframe the axes
+
+1. **The baseline holds nothing the gate can see.** Every line is a DB-dependent kind, so in
+   the mode the merge gate runs in the live set is empty and the whole baseline is "not
+   live". The ratchet on the merge path asserts exactly "no structural finding anywhere",
+   and the six lines contribute nothing to it. They were seeded DB-present under §6.6's
+   "superset" rationale — which only matters if the ratchet ever runs DB-present, and it
+   should not (finding 2).
+2. **Axis 3 is not gate-invisible; it is gate-inconsistent.** Scenario (a) runs
+   `env -u REIFY_PTODO_TASKS_DB`, which only unsets the override; §6.7's default path
+   `<repo-root>/.taskmaster/tasks/tasks.db` then resolves on the main checkout. Under
+   `REIFY_PTODO_RATCHET_REQUIRED=1` — `scripts/verify.sh --scope staged`, emitted when a
+   hook-gated main commit stages any swept-extension file (a `.ri` fixture, a `.sh`/`.py`
+   test) — the ratchet ran **DB-present** and was **red on the five axis-3 lines** on
+   2026-09-26. Pure `.md` commits never emit the leaf, which is why docs landings passed.
+   This is the same class as the `g_allow_repo_wide_hard_gate_live` red that blocked the
+   docs path (#7787): a gate skipped on every automated path and armed only on the one
+   path where a red is least expected.
+3. **Fixing #6816's arm-6 gap perturbs the baseline by zero once the baseline is
+   structural-only.** All six discharged lines would register as `Cited` and feed only the
+   liveness lane. #6933 coalesced #6816 with a workstream blocked on #6431 to keep baseline
+   perturbation in one diff; that reason no longer holds.
+
+### The ruling
+
+**(a) Per-merge ratchet — structural, hermetic, mode-invariant, two-directional.** Owner:
+reify **#7001** (revived).
+
+- Scenario (a) forces DB-absent **explicitly** (an override pointing at a path that cannot
+  exist), and proves it by *evidence* — the generator's §6.7 stderr breadcrumb, or an
+  equivalent machine token under the §6.6 cross-file-contract rule — not by env shape. The
+  ratchet then behaves identically in warm lanes, `_merge-*` lanes, the main-tip sweep and
+  the main checkout.
+- The baseline is **structural-only by construction** (today: empty).
+  `baseline_is_well_formed` rejects liveness/inverse kinds. The §6.6 seed rule flips to
+  "generate DB-absent".
+- A second assertion, `comm -13 <live> <baseline>`: every baseline line must be live. A stale
+  line reds with a one-command remedy — regenerate DB-absent (2 s, valid in any worktree)
+  and commit.
+- Why §18's objections no longer bind: constraint (a) — the baseline carries liveness kinds
+  a degraded run cannot reproduce — is removed by construction; constraint (b) — a kind list
+  in bash — does not arise, because the partition is the generator's own §6.7 degrade path,
+  so #6241's "derivation lives only in `ptodo-baseline-gen`" invariant holds in full; §18.4's
+  remediation objection — DB-present regen exceeds five minutes and is unavailable in a task
+  worktree — inverts, because regen is now DB-free and fast. §18.2's multiplicity argument
+  is moot today (every entry ×1) and re-arms only per the revisit condition below.
+- `test_reify_audit_ptodo_ratchet_superset.sh` direction (i) flips; direction (ii) is
+  unchanged. The `#[ignore]`d `live_findings_are_within_baseline` convergence test is
+  re-pointed at the DB-absent structural set or retired — #7001 decides.
+
+**(b) Cadenced sweep — DB-present, files healing tasks, never blocks.** Owner: dark-factory
+**5796**, widened from G-allow-only to **every DB-dependent kind** (`orphaned`, `unknown-id`,
+`g-allow-orphaned`, `g-allow-unknown-id`, `parked-on-anchor`, `task-cites-deleted-path`,
+`task-cites-renamed-path`). Mechanics: `reify-audit --pattern PTODO --require-tasks-db`
+(#7787's flag, so a misconfigured DB path fails loud rather than reporting a vacuous clean)
+against the main checkout `/home/leo/src/reify` — the only place a tasks.db exists — every
+**6 h** (measured DB-present run: 396 s); **one** healing task per run, deduplicated by
+fingerprint against open healing tasks; never cancel, redispatch or block (the DF 5247
+lesson). Orphaned cites are healed by *tasks*, never by an unattended writer committing to
+main (the #7788 lesson). The six grandfathered baseline lines are the sweep's first cohort
+once #7001 empties the baseline; #7398 is rewritten as the **last manual** healing task
+(today's five lines). One sweep, several kinds — not one sweep per kind.
+
+**(c) Liveness never reds a commit gate — corollary for the `*_live` cargo gates.** The
+main-checkout hard gates `g_allow_repo_wide_hard_gate_live` and
+`engine_seam_g_allow_cites_resolve_live_real_db` graceful-skip without a DB and therefore
+fire only on the hook-gated commit path (#7787's structural-defect analysis). Owner: reify
+**#7787**, extended — once 5796 owns liveness, those tests become on-demand (`#[ignore]`,
+run by the sweep or by hand), keeping their hermetic siblings as the always-on assertions.
+
+**(d) #6816 proceeds now**, split back out of #6933 and un-deferred: arm (6) registers a
+`Cited` LineClass for a discharged phantom-tracking cite, exactly as arms (3)/(4)/(5) do.
+Under (a) the baseline diff is empty; the six lines simply become sweep candidates.
+
+### What this ruling does NOT claim
+
+- It is not a drain mechanism. §18.1 stands: fixing markers drains the debt; the
+  two-directional check only keeps the baseline honest after a §6.6 lane re-seed (the #7001
+  instance: a stale line survived a full verify + review + merge cycle unnoticed).
+- The sweep does not make the merge gate see axis 3. It is deliberately outside the verify
+  path: per-verify DB access would arm a fleet-wide gate on mutable global state the branch
+  under verify never touched — the alternative task 7795 rejected, and still rejected.
+- Small-id false positives (the `#2` allowlist-index line) are healed by rewording, not by
+  widening §8.2's grammar; if they recur, that is a §8.2 question, not a ratchet one.
+
+### Revisit condition
+
+- A structural fingerprint with multiplicity > 1 is seeded into the baseline: §18.2's
+  "last removal only" reach argument re-arms for that entry. The check stays; its limited
+  reach on that entry must be stated in the seed commit.
+- The sweep's healing-task rate exceeds what the backlog absorbs: then the question is the
+  citation convention (CLAUDE.md → TODO citation convention), not the ratchet.
