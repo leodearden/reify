@@ -1528,13 +1528,49 @@ fn sampled_backed_von_mises_wrapper_samples_to_its_reduction_extrema_at_their_ar
 /// matching end of the sampled List is compared.
 #[test]
 fn every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates() {
+    assert_every_wrapper_kind_samples_to_its_reduction_extrema(sampled_stress_fixture);
+}
+
+/// The peak node x = 2 borders an out-of-solid sentinel at x = 3, the
+/// surface-node case of a real solve.
+fn sampled_stress_with_peak_beside_exterior_fixture() -> (Value, Type) {
+    let sf = make_sampled_tensor_1d(
+        "stress_with_peak_beside_exterior",
+        vec![0.0, 1.0, 2.0, 3.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(175e6),
+            uniaxial_window(250e6),
+            [f64::NAN; 9], // out-of-solid sentinel
+        ],
+    );
+    wrap_sampled_stress_field(sf)
+}
+
+/// Node equality holds where the arg node borders an out-of-solid window:
+/// `sample(W, argmax(W)) == max(W)`. `argmax` of `von_mises`, `max_shear` and
+/// `principal_stresses`, and `argmin` of `safety_factor`, all land on x = 2,
+/// the finite node beside the NaN sentinel.
+#[test]
+fn every_wrapper_kind_samples_to_its_reduction_extrema_where_the_arg_node_borders_an_out_of_solid_window()
+ {
+    assert_every_wrapper_kind_samples_to_its_reduction_extrema(
+        sampled_stress_with_peak_beside_exterior_fixture,
+    );
+}
+
+/// Sample every wrapper kind over `stress_fixture()` at its own
+/// `argmax`/`argmin` and assert it equals its `max`/`min`.
+fn assert_every_wrapper_kind_samples_to_its_reduction_extrema(
+    stress_fixture: fn() -> (Value, Type),
+) {
     for kind in [
         "von_mises",
         "max_shear",
         "principal_stresses",
         "safety_factor",
     ] {
-        let wrapper = analysis_wrapper(kind, sampled_stress_fixture());
+        let wrapper = analysis_wrapper(kind, stress_fixture());
         for (arg_reduction, reduction) in [("argmax", "max"), ("argmin", "min")] {
             let (field, field_type) = wrapper.clone();
             let at = reduce(

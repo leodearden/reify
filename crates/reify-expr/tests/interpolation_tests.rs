@@ -746,6 +746,190 @@ fn linear_3d_out_of_range_clamps_each_axis() {
 }
 
 // ---------------------------------------------------------------------------
+// Grid nodes and non-finite samples (Linear)
+// ---------------------------------------------------------------------------
+
+/// Non-finite sample values a grid can hold: the NaN of an out-of-solid
+/// sentinel window and the ±∞ of e.g. a hydrostatic node's safety factor.
+const NON_FINITE: [f64; 3] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+/// Assert that `actual` is `expected` bit for bit.
+fn assert_bit_exact(actual: f64, expected: f64, what: &str) {
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "{what}: expected {expected}, got {actual}"
+    );
+}
+
+/// A query AT an interior node gives the next node weight zero, so a
+/// non-finite sample there is left out and the node's own sample comes back.
+#[test]
+fn linear_1d_node_query_ignores_a_non_finite_zero_weight_neighbour() {
+    let grid = [0.0f64, 1.0, 2.0, 3.0];
+    for poison in NON_FINITE {
+        let values = [1.0, 2.0, 3.0, poison];
+        let r = interpolate_1d(InterpolationMethod::Linear, &grid, &values, 2.0);
+        assert_bit_exact(r.value, 3.0, &format!("node x = 2 beside {poison}"));
+    }
+}
+
+/// Bilinear node and cell-edge queries leave every zero-weight corner out of
+/// the sum: the diagonal corner of an interior node, the LOWER neighbours of
+/// the top corner (reached at t = 1), and the whole upper row of a query on
+/// the cell edge y = 1.
+#[test]
+fn linear_2d_zero_weight_corners_never_poison_a_node_or_cell_edge_query() {
+    let g = [0.0f64, 1.0, 2.0];
+    let f = |x: f64, y: f64| 10.0 * x + y;
+    let cases: [(&[(f64, f64)], (f64, f64), f64); 3] = [
+        (&[(2.0, 2.0)], (1.0, 1.0), 11.0),
+        (&[(1.0, 1.0)], (2.0, 2.0), 22.0),
+        (&[(1.0, 2.0), (2.0, 2.0)], (1.5, 1.0), 16.0),
+    ];
+    for poison in NON_FINITE {
+        for (poisoned, query, expected) in cases {
+            let values = build_2d(&g, &g, |x, y| {
+                if poisoned.contains(&(x, y)) {
+                    poison
+                } else {
+                    f(x, y)
+                }
+            });
+            let r = interpolate_2d(InterpolationMethod::Linear, &g, &g, &values, query);
+            assert_bit_exact(
+                r.value,
+                expected,
+                &format!("query {query:?} with {poison} at {poisoned:?}"),
+            );
+        }
+    }
+}
+
+/// Trilinear node queries leave every zero-weight corner out of the sum, at
+/// an interior node and at the top corner alike.
+#[test]
+fn linear_3d_zero_weight_corners_never_poison_a_node_query() {
+    let g = [0.0f64, 1.0, 2.0];
+    let f = |x: f64, y: f64, z: f64| 100.0 * x + 10.0 * y + z;
+    let cases = [
+        ((2.0, 2.0, 2.0), (1.0, 1.0, 1.0), 111.0),
+        ((1.0, 1.0, 1.0), (2.0, 2.0, 2.0), 222.0),
+    ];
+    for poison in NON_FINITE {
+        for (poisoned, query, expected) in cases {
+            let values = build_3d(&g, &g, &g, |x, y, z| {
+                if (x, y, z) == poisoned {
+                    poison
+                } else {
+                    f(x, y, z)
+                }
+            });
+            let r = interpolate_3d(InterpolationMethod::Linear, &g, &g, &g, &values, query);
+            assert_bit_exact(
+                r.value,
+                expected,
+                &format!("query {query:?} with {poison} at {poisoned:?}"),
+            );
+        }
+    }
+}
+
+/// A node query returns the node's sample bit for bit even where the
+/// arithmetic `a + (b − a)·t` would not: across a large dynamic range
+/// (1.0 − 1e17 rounds to −1e17, so t = 1 gives 0.0) and across a difference
+/// that overflows (f64::MAX − (−f64::MAX) = ∞, and ∞·0 = NaN at t = 0).
+#[test]
+fn linear_node_query_returns_the_node_sample_bit_for_bit() {
+    let unit = [0.0f64, 1.0];
+    let dynamic_range = |x: f64| if x == 0.0 { 1e17 } else { 1.0 };
+
+    let values_2d = build_2d(&unit, &unit, |x, _| dynamic_range(x));
+    let r = interpolate_2d(
+        InterpolationMethod::Linear,
+        &unit,
+        &unit,
+        &values_2d,
+        (1.0, 0.0),
+    );
+    assert_bit_exact(r.value, 1.0, "2-D node (1, 0) beside 1e17");
+
+    let values_3d = build_3d(&unit, &unit, &unit, |x, _, _| dynamic_range(x));
+    let r = interpolate_3d(
+        InterpolationMethod::Linear,
+        &unit,
+        &unit,
+        &unit,
+        &values_3d,
+        (1.0, 0.0, 0.0),
+    );
+    assert_bit_exact(r.value, 1.0, "3-D node (1, 0, 0) beside 1e17");
+
+    let r = interpolate_1d(
+        InterpolationMethod::Linear,
+        &[0.0, 1.0, 2.0],
+        &[0.0, -f64::MAX, f64::MAX],
+        1.0,
+    );
+    assert_bit_exact(r.value, -f64::MAX, "1-D node x = 1 beside f64::MAX");
+}
+
+/// GUARD on the boundary of the node rule: an off-node query that gives a
+/// non-finite sample NONZERO weight is non-finite (IEEE 754).
+#[test]
+fn linear_query_giving_nonzero_weight_to_a_non_finite_sample_is_non_finite() {
+    let g = [0.0f64, 1.0, 2.0];
+    for poison in NON_FINITE {
+        let r = interpolate_1d(
+            InterpolationMethod::Linear,
+            &[0.0, 1.0, 2.0, 3.0],
+            &[1.0, 2.0, 3.0, poison],
+            2.5,
+        );
+        assert!(
+            !r.value.is_finite(),
+            "1-D x = 2.5 beside {poison}: got {}",
+            r.value
+        );
+
+        let values_2d = build_2d(&g, &g, |x, y| {
+            if (x, y) == (2.0, 2.0) {
+                poison
+            } else {
+                10.0 * x + y
+            }
+        });
+        let r = interpolate_2d(InterpolationMethod::Linear, &g, &g, &values_2d, (1.5, 1.5));
+        assert!(
+            !r.value.is_finite(),
+            "2-D (1.5, 1.5) beside {poison}: got {}",
+            r.value
+        );
+
+        let values_3d = build_3d(&g, &g, &g, |x, y, z| {
+            if (x, y, z) == (2.0, 2.0, 2.0) {
+                poison
+            } else {
+                100.0 * x + 10.0 * y + z
+            }
+        });
+        let r = interpolate_3d(
+            InterpolationMethod::Linear,
+            &g,
+            &g,
+            &g,
+            &values_3d,
+            (1.5, 1.5, 1.5),
+        );
+        assert!(
+            !r.value.is_finite(),
+            "3-D (1.5, 1.5, 1.5) beside {poison}: got {}",
+            r.value
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3D NearestNeighbor
 // ---------------------------------------------------------------------------
 
