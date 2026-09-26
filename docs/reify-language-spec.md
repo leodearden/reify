@@ -843,7 +843,7 @@ pub trait Rigid : Physical {
 | Member kind       | Description |
 |-------------------|-------------|
 | Parameters        | Required named parameters with types |
-| Ports             | Required interaction points |
+| Ports *(deferred)* | Required interaction points. **Not implemented:** a `port` line in a trait body is not a trait member today. Trait-required ports are deferred to the generic-assemblies programme; see [generic-assemblies-interface-traits.md](prds/v0_6/generic-assemblies-interface-traits.md) (tracker #7882). Ports *typed by* a trait (`port x : RotaryPort` in a structure) are unaffected. |
 | Sub-structure slots | Required contained sub-structures satisfying a trait |
 | Associated types  | Type-level members that implementing types must bind |
 | Constraints       | Logical requirements on relationships between members |
@@ -2731,8 +2731,10 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
                      (':' trait_ref ('+' trait_ref)*)? where_clause?
                      '{' trait_member* '}'
 
-trait_member    ::= param_decl | port_decl | sub_decl | let_decl | constraint_line
+trait_member    ::= param_decl | sub_decl | let_decl | constraint_line
                    | assoc_type_decl
+                   (* port_decl: deferred -- see section 4.2 and
+                      prds/v0_6/generic-assemblies-interface-traits.md *)
 
 assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated type *)
 

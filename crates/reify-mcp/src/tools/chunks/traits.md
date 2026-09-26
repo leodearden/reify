@@ -23,7 +23,7 @@ value reference rather than a member access.
 | Member kind | Description |
 |------------|-------------|
 | Parameters | Required named parameters with types |
-| Ports | Required interaction points |
+| Ports *(deferred — not implemented)* | Do NOT write `port` inside a trait body; it is not a trait member kind yet (spec §4.2, tracker #7882). Ports *typed by* a trait (`port x : RotaryPort` in a structure) work. |
 | Sub-structure slots | Required contained sub-structures satisfying a trait |
 | Associated types | Type-level members that implementing types must bind |
 | Constraints | Logical requirements on member relationships |
