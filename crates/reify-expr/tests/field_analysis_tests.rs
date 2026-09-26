@@ -1391,10 +1391,10 @@ fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
 // see, and a Linear sample is a convex combination of node values.
 //
 // Every expected value below is exact in binary: the inputs are integers or
-// dyadics, `lerp(a, b, t) = a + (b − a)·t` is exact at t ∈ {0, 0.5, 1} for
-// them, and at t = 0 it returns `a` bit for bit whenever the right neighbour is
-// finite. `Value::eq` compares f64 bits, so whole values are compared with
-// `assert_eq!`; every zero here is +0.0.
+// dyadics, `lerp(a, b, t) = a + (b − a)·t` is exact at t = 0.5 for them, and
+// at a grid node the interpolator returns the node sample bit for bit (the
+// `reify_expr::interp` module doc). `Value::eq` compares f64 bits, so whole
+// values are compared with `assert_eq!`; every zero here is +0.0.
 
 /// Build `sample(<field>, <at>)`, typed as the field's codomain.
 fn sample_call((field, field_type): &(Value, Type), at: Value, at_type: Type) -> CompiledExpr {
@@ -1663,9 +1663,8 @@ fn max_shear_principal_stresses_and_safety_factor_sample_their_node_projections(
 /// window is `Undef` for every wrapper kind — never NaN — while a sample over
 /// a fully finite cell of the same field keeps its value.
 ///
-/// Nothing is asserted AT x = 2, the finite node beside the sentinel: a t = 0
-/// lerp against a NaN right neighbour yields NaN there, an interpolation
-/// artefact rather than a contract worth pinning.
+/// The finite node x = 2 beside the sentinel keeps its node value, pinned by
+/// `every_wrapper_kind_samples_to_its_reduction_extrema_where_the_arg_node_borders_an_out_of_solid_window`.
 #[test]
 fn sampled_backed_wrapper_samples_undef_where_the_stencil_touches_an_out_of_solid_window() {
     for (kind, at_node) in [

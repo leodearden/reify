@@ -40,6 +40,24 @@
 //! NaN queries propagate to a NaN value with no diagnostics; this is the
 //! IEEE 754 NaN-poisoning convention and matches the silent treatment of
 //! out-of-range queries.
+//!
+//! # Grid nodes and non-finite samples
+//!
+//! Along each axis, a query at a cell endpoint (`t = 0` or `t = 1`) gives
+//! every other sample on that axis weight zero. Zero-weight samples are left
+//! out of the sum rather than multiplied by 0, so a query at a grid node
+//! returns the node's sample bit for bit, even beside a non-finite neighbour
+//! (an out-of-solid NaN sentinel window, an infinite safety factor). A query
+//! on a cell edge or face leaves out the zero-weight samples of the axes it
+//! sits on in the same way.
+//!
+//! A non-finite sample with NONZERO weight still propagates (IEEE 754): a
+//! `Linear` query is non-finite when a corner of its cell that it gives
+//! nonzero weight is non-finite, which for a query strictly inside the cell
+//! is every corner.
+//!
+//! Pinned by the "Grid nodes and non-finite samples" tests in
+//! `tests/interpolation_tests.rs`.
 
 use reify_core::{Diagnostic, DiagnosticCode};
 
@@ -136,10 +154,32 @@ fn locate_cell(grid: &[f64], query: f64) -> Option<usize> {
     Some(p - 1)
 }
 
+/// The sample at a cell endpoint: `lo` at `t = 0`, `hi` at `t = 1`, and
+/// `None` anywhere else, a NaN `t` included.
+///
+/// At a cell endpoint every other stencil entry has weight zero. Returning the
+/// endpoint sample leaves those entries out of the sum rather than multiplying
+/// them by 0, so a non-finite one cannot poison the result (`0 · NaN` and
+/// `0 · ∞` are both NaN). See the module-level "Grid nodes and non-finite
+/// samples" section.
+#[inline]
+fn cell_endpoint_sample(lo: f64, hi: f64, t: f64) -> Option<f64> {
+    if t == 0.0 {
+        Some(lo)
+    } else if t == 1.0 {
+        Some(hi)
+    } else {
+        None
+    }
+}
+
 /// Linear interpolation between `a` and `b` at parameter `t ∈ [0, 1]`.
+///
+/// Returns `a` at `t = 0` and `b` at `t = 1` bit for bit, without reading the
+/// other, zero-weight endpoint ([`cell_endpoint_sample`]).
 #[inline]
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t
+    cell_endpoint_sample(a, b, t).unwrap_or(a + (b - a) * t)
 }
 
 /// Index of the grid sample nearest to `query`, with reproducible tie-breaking

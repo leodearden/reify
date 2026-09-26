@@ -782,10 +782,10 @@ fn linear_1d_node_query_ignores_a_non_finite_zero_weight_neighbour() {
 fn linear_2d_zero_weight_corners_never_poison_a_node_or_cell_edge_query() {
     let g = [0.0f64, 1.0, 2.0];
     let f = |x: f64, y: f64| 10.0 * x + y;
-    let cases: [(&[(f64, f64)], (f64, f64), f64); 3] = [
-        (&[(2.0, 2.0)], (1.0, 1.0), 11.0),
-        (&[(1.0, 1.0)], (2.0, 2.0), 22.0),
-        (&[(1.0, 2.0), (2.0, 2.0)], (1.5, 1.0), 16.0),
+    let cases = [
+        (&[(2.0, 2.0)][..], (1.0, 1.0), 11.0),
+        (&[(1.0, 1.0)][..], (2.0, 2.0), 22.0),
+        (&[(1.0, 2.0), (2.0, 2.0)][..], (1.5, 1.0), 16.0),
     ];
     for poison in NON_FINITE {
         for (poisoned, query, expected) in cases {
