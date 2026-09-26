@@ -649,12 +649,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            The FIFTH and widest straddle case.
         //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
         //            not a dimension error.
-        //   arg8:    `angle` — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree; gating it here would be a scope
-        //            violation.
-        //   Pinned by
-        //   `circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle`.
+        //   arg8:    `angle` → ANGLE ("Angle"), gated since PRD 3 leaf ζ
+        //            (task 5782).
+        //   Pinned by `circular_pattern_forms_are_keyed_independently` and
+        //   `circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count`.
         //
         // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
         // arity 4.
@@ -700,7 +698,17 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "ox"),
             length_arg(2, "oy"),
             length_arg(3, "oz"),
+            angle_arg(8, "angle"),
         ] },
+
+        // circular_pattern(target, axis, count, angle) — 4-arg value form
+        //   arg1: `axis`, a decoded Axis VALUE — never an origin slot (the
+        //         STRUCTURAL EXCLUSION above is about the ORIGIN, which this
+        //         form never exposes positionally).
+        //   arg2: `count` — an Int, never a slot.
+        //   arg3: `angle` → ANGLE ("Angle"), since PRD 3 leaf ζ (task 5782).
+        // The guard is load-bearing: index 3 is the `oz` LENGTH at arity 9.
+        "circular_pattern" if arg_count == 4 => const { &[angle_arg(3, "angle")] },
 
         // ── HAZARD: an arity-agnostic arm meets a future value-form overload ─
         //
@@ -1610,7 +1618,8 @@ mod tests {
     ///   turn every `rotate(…)` / `arc(…)` / `draft(…)` call into a panic on
     ///   the `expect(…)` at `expr.rs:3253`. The other three names this leaf
     ///   slots — `revolve`, `rotate_around`, `circular_pattern` — were already
-    ///   here for their task-5750/5662 LENGTH slots and are unchanged by it.
+    ///   here for their task-5750/5662 LENGTH slots; their listing is
+    ///   unchanged, and each now ALSO holds an ANGLE slot from this leaf.
     ///
     /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
     ///   `circular_pattern`. Same story a third time: both are CSG producers
@@ -1620,7 +1629,8 @@ mod tests {
     ///   doing so would route every `mirror(...)` call through the selector arm
     ///   at `expr.rs:3243`, whose
     ///   `topology_selector_result_type(name).expect(...)` has no entry for
-    ///   them and would panic.
+    ///   them and would panic. `circular_pattern` ALSO holds an ANGLE slot at
+    ///   both of its forms from PRD 3 leaf ζ.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
