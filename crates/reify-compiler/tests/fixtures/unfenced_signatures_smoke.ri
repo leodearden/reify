@@ -4,11 +4,12 @@
 // type-plausible arguments.
 //
 // SYNC CONTRACT: every signature-shaped span in those chunks' unfenced prose is
-// mirrored here or in stdlib_geometry_ops_smoke.ri at its documented arity, and
-// this file compiles clean — guarded by
-// crates/reify-compiler/tests/harness_doc_chunks/unfenced_signature_gate.rs.
+// mirrored here or in stdlib_geometry_ops_smoke.ri at its documented arity —
+// guarded by crates/reify-compiler/tests/harness_doc_chunks/unfenced_signature_gate.rs
+// — and this file compiles clean — guarded by
+// crates/reify-compiler/tests/harness_doc_chunks/signature_fixtures.rs.
 // Which of these calls the compiler truly arity-checks, and which it passes
-// silently, is stated in that gate's module doc.
+// silently, is stated in the first gate's module doc.
 
 structure def OptionAndCollectionForms {
     let coating = some(1mm)

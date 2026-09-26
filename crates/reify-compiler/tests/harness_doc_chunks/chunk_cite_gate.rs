@@ -17,26 +17,10 @@ use crate::chunk_prose::{
     EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, HtmlComment, html_comments,
     stray_comment_terminators,
 };
-use crate::fence_gate::{
-    CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
-};
+use crate::fence_gate::{all_chunks, chunk_label, repo_root, report};
 
 /// Every `.rs`/`.ri` file under `crates/` and `examples/`, keyed by basename.
 type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;
-
-/// Repo root, derived from this crate's manifest dir
-/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
-/// binary resolves against, cites and signature fixtures alike.
-pub(crate) fn repo_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| {
-            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
-        })
-        .to_path_buf()
-}
 
 /// Index of every tracked-ish `.rs`/`.ri` file under `crates/` and `examples/`,
 /// keyed by BASENAME, so the chunk may cite a test by bare file name (as its
@@ -89,7 +73,7 @@ fn source_files_by_basename() -> &'static BasenameIndex {
 /// sentence period is not part of the path.
 ///
 /// ANY extension, not a `.rs`/`.ri` allowlist: stale citations span many file
-/// kinds (#7095 measured eight), and an allowlist silently misses the next one.
+/// kinds, and an allowlist silently misses the next one.
 /// LETTER-led, so a divided length (`width/2.0`) stays arithmetic.
 ///
 /// A URL is NOT a cite, however file-like its path: each whitespace-separated
@@ -261,14 +245,8 @@ pub(crate) fn audit_cited_paths(chunk_path: &str, markdown: &str) -> CiteAudit {
 /// least `min_fn` / `min_rs` / `min_ri` of them.
 ///
 /// SHARED BY BOTH CHUNK MODULES — `geometry_chunk_smoke.rs`'s traps SYNC block
-/// and `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory. It exists because the
-/// second copy of this loop was a ~55-line near-verbatim duplicate of the first,
-/// differing only in the chunk path, three numeric floors and the panic wording;
-/// a fix to the resolution or existence rule (a `#[cfg]`-gated fn, a `fn foo<T>(`
-/// with a generic parameter) then had to be applied twice or drift. Growing that
-/// kind of copy is exactly the tracked defect
-/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924) this harness binary is trying
-/// to shrink.
+/// and `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory — so the resolution
+/// and existence rule has one copy.
 ///
 /// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
 /// not in the panic text here, so the shared message stays true for both. What
@@ -395,17 +373,9 @@ const MINIMUM_CITING_CHUNKS: usize = 5;
 /// MOVED `crates/*/tests/*.rs` cites — never a deleted target or a non-test path.
 #[test]
 fn every_path_cited_by_any_chunk_resolves() {
-    let stems = discover_chunk_stems();
-    assert!(
-        stems.len() >= CHUNK_FILE_COUNT,
-        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the cite gate \
-         below would be vacuous",
-        stems.len()
-    );
-
-    let audits: Vec<CiteAudit> = stems
+    let audits: Vec<CiteAudit> = all_chunks("the cite gate")
         .iter()
-        .map(|stem| audit_cited_paths(&chunk_label(stem), &read_chunk_file(stem)))
+        .map(|(stem, markdown)| audit_cited_paths(&chunk_label(stem), markdown))
         .collect();
 
     let cites: usize = audits.iter().map(|audit| audit.cites.len()).sum();
@@ -454,18 +424,7 @@ const SYNC_NOTE_FLOORS: &[(&str, usize)] = &[("geometry", 5), ("stdlib", 1), ("u
 /// reds one test.
 #[test]
 fn every_maintainer_note_in_every_chunk_is_intact_and_every_sync_note_names_a_path() {
-    let stems = discover_chunk_stems();
-    assert!(
-        stems.len() >= CHUNK_FILE_COUNT,
-        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the note gate \
-         below would be vacuous",
-        stems.len()
-    );
-
-    let chunks: Vec<(&String, String)> = stems
-        .iter()
-        .map(|stem| (stem, read_chunk_file(stem)))
-        .collect();
+    let chunks = all_chunks("the note gate");
 
     for (stem, markdown) in &chunks {
         // An unreadable chunk is reported below, as a violation of its own.

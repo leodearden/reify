@@ -1,13 +1,13 @@
 //! Every SIGNATURE written in a chunk's unfenced prose must be exercised, at its
-//! documented arity, by a fixture that compiles clean.
+//! documented arity, by a call in a signature fixture — one of
+//! `signature_fixtures.rs`'s, each held there to compiling clean.
 //!
 //! A span is a signature only when it is signature-shaped as a whole — the rule
 //! is `doc_forms.rs`'s — and the prose read is `chunk_prose.rs`'s unfenced model,
 //! so fence bodies (the fence gate's jurisdiction) and maintainer notes are never
-//! scanned. The mirror set is this gate's own fixture together with
-//! `stdlib_geometry_ops_smoke.ri`. A span shaped like a signature that is not one
-//! — a prose mention, a trap example — is excused by an audited [`ProseMention`],
-//! and an excuse that matches nothing is reported in its turn.
+//! scanned. A span shaped like a signature that is not one — a prose mention, a
+//! trap example — is excused by an audited [`ProseMention`], and an excuse that
+//! matches nothing is reported in its turn.
 //!
 //! # What is NOT established
 //!
@@ -15,32 +15,17 @@
 //! arms, `some` and stdlib-`.ri` functions reject a wrong arity; list and field
 //! helpers only WARN at an unrecognised argument shape; measurement, oracle and
 //! kinematic queries, topology selectors, trailing field-op arity, `single` and
-//! `mechanism` are SILENT (measured 2026-09-23). For those the pairing is a
-//! doc↔fixture consistency pin that becomes a real arity pin as #7343 and the
-//! builtin-signature-registry work land — deliberately not pinned executably,
-//! so those merges stay in scope. Argument type and order are never checked.
-//! Lambda-parameter spans and ```` ```reify-schematic ```` listings are out of
-//! scope.
+//! `mechanism` are SILENT. For those the pairing is a doc↔fixture consistency
+//! pin, which becomes a real arity pin as #7343 and the builtin-signature-registry
+//! work land. Argument type and order are never checked. Lambda-parameter spans
+//! and ```` ```reify-schematic ```` listings are out of scope.
 
 use std::collections::BTreeSet;
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::compile_source_with_stdlib;
-
-use crate::chunk_cite_gate::repo_root;
 use crate::chunk_prose::{code_spans, unfenced_prose};
 use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span};
-use crate::fence_gate::{
-    CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
-};
-use crate::stdlib_chunk_geometry_ops_smoke::FIXTURE_PATH;
-
-/// This gate's own fixture, repo-relative — how every violation names it.
-const UNFENCED_FIXTURE: &str = "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
-
-/// Every compile-verified fixture whose calls can exercise a documented form —
-/// this gate's own, and stdlib's — each repo-relative.
-const SIGNATURE_FIXTURES: &[&str] = &[UNFENCED_FIXTURE, FIXTURE_PATH];
+use crate::fence_gate::{all_chunks, chunk_label, report};
+use crate::signature_fixtures::{SIGNATURE_FIXTURES, UNFENCED_SIGNATURES_FIXTURE, read_fixture};
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
 /// excused from the gate for the recorded reason.
@@ -138,9 +123,10 @@ pub(crate) fn unfenced_signature_violations(
                 format!(
                     "{}:{} — `{}` documents {}/{:?}, which no signature fixture calls at that \
                      arity. FIX: if the signature is right, add a call at that arity to \
-                     {UNFENCED_FIXTURE} (it must compile clean); if the compiler rejects it, \
-                     correct the chunk; if the span is not a signature (a prose mention or a \
-                     trap example), add a ProseMention with its reason to NOT_SIGNATURES.",
+                     {UNFENCED_SIGNATURES_FIXTURE} (it must compile clean); if the compiler \
+                     rejects it, correct the chunk; if the span is not a signature (a prose \
+                     mention or a trap example), add a ProseMention with its reason to \
+                     NOT_SIGNATURES.",
                     chunk_label(stem),
                     documented.line,
                     documented.span,
@@ -177,35 +163,6 @@ pub(crate) fn unfenced_signature_violations(
     violations
 }
 
-/// The diagnostics that make a signature fixture's calls untrustworthy, rendered
-/// one per line: any `Severity::Error`, a call to a name nothing resolves, and a
-/// builtin called at an argument shape it does not recognise. Any other warning
-/// never counts.
-pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
-    compile_source_with_stdlib(source)
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            diagnostic.severity == Severity::Error
-                || matches!(
-                    diagnostic.code,
-                    Some(
-                        DiagnosticCode::UnresolvedFunction
-                            | DiagnosticCode::BuiltinArgShapeUnrecognized
-                    )
-                )
-        })
-        .map(|diagnostic| {
-            let code = diagnostic
-                .code
-                .as_ref()
-                .map(|code| format!(" {code:?}"))
-                .unwrap_or_default();
-            format!("{:?}{code}: {}", diagnostic.severity, diagnostic.message)
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // The real-corpus gate
 // ---------------------------------------------------------------------------
@@ -226,29 +183,15 @@ const SENTINELS: &[(&str, &str, Arity)] = &[
     ("geometry", "faces_by_normal", Arity::Exact(3)),
 ];
 
-fn read_fixture(path: &str) -> String {
-    std::fs::read_to_string(repo_root().join(path)).unwrap_or_else(|e| {
-        panic!("{path} must be readable ({e}) — it is one of this gate's SIGNATURE_FIXTURES")
-    })
-}
-
 /// Every signature in any chunk's unfenced prose is exercised, at its documented
 /// arity, by a call in a compile-verified fixture. Scope and limits: this
 /// module's doc.
 #[test]
 fn every_unfenced_signature_is_exercised_by_a_compiling_fixture() {
-    let stems = discover_chunk_stems();
-    assert!(
-        stems.len() >= CHUNK_FILE_COUNT,
-        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the gate below \
-         would be vacuous",
-        stems.len()
-    );
-    let markdowns: Vec<String> = stems.iter().map(|stem| read_chunk_file(stem)).collect();
-    let chunks: Vec<(&str, &str)> = stems
+    let corpus = all_chunks("the unfenced-signature gate");
+    let chunks: Vec<(&str, &str)> = corpus
         .iter()
-        .map(String::as_str)
-        .zip(markdowns.iter().map(String::as_str))
+        .map(|(stem, markdown)| (stem.as_str(), markdown.as_str()))
         .collect();
     let calls: Vec<(String, usize)> = SIGNATURE_FIXTURES
         .iter()
@@ -299,19 +242,6 @@ fn every_unfenced_signature_is_exercised_by_a_compiling_fixture() {
         "signatures in the MCP language-reference chunks' prose that no compile-verified fixture \
          exercises at their documented arity",
         &unfenced_signature_violations(&chunks, &calls, NOT_SIGNATURES),
-    );
-}
-
-/// This gate's fixture compiles clean: every call in it stands for a documented
-/// signature, so an Error, an unresolved name or an unrecognised argument shape
-/// there is a documented form the compiler does not accept.
-#[test]
-fn unfenced_signatures_fixture_compiles_clean() {
-    let violations = fixture_compile_violations(&read_fixture(UNFENCED_FIXTURE));
-    assert!(
-        violations.is_empty(),
-        "{UNFENCED_FIXTURE} does not compile clean:\n{}",
-        violations.join("\n")
     );
 }
 
@@ -447,36 +377,5 @@ fn a_chunk_whose_prose_cannot_be_read_is_reported_not_skipped() {
     assert!(
         violations[0].contains("chunks/fenced.md") && violations[1].contains("chunks/noted.md"),
         "got {violations:#?}"
-    );
-}
-
-#[test]
-fn fixture_compile_violations_counts_errors_unresolved_names_and_unrecognised_arg_shapes_only() {
-    let reported = [
-        (
-            "structure def S {\n    let o = some(1mm, 2mm)\n}\n",
-            "Error",
-        ),
-        (
-            "structure def S {\n    let x = bogus_fn(1mm)\n}\n",
-            "UnresolvedFunction",
-        ),
-        (
-            "structure def S {\n    let xs = generate(3)\n}\n",
-            "BuiltinArgShapeUnrecognized",
-        ),
-    ];
-    for (source, class) in reported {
-        let violations = fixture_compile_violations(source);
-        assert!(
-            violations.iter().any(|violation| violation.contains(class)),
-            "`{source}` must be reported as {class}, got {violations:#?}"
-        );
-    }
-
-    assert_eq!(
-        fixture_compile_violations("structure def S {\n    let o = some(1mm)\n}\n"),
-        Vec::<String>::new(),
-        "any other diagnostic — e.g. the missing-`module` warning — never counts"
     );
 }

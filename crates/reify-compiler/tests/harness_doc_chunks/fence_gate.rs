@@ -147,6 +147,8 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
+use std::path::{Path, PathBuf};
+
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
 use crate::geometry_chunk_smoke::reify_tagged_fences;
@@ -674,6 +676,40 @@ pub(crate) fn read_chunk_file(stem: &str) -> String {
 /// path a developer can open rather than an absolute build-machine path.
 pub(crate) fn chunk_label(stem: &str) -> String {
     format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
+}
+
+/// Every chunk as `(stem, markdown)`, in stem order, for the corpus-wide check
+/// `gate` names — after asserting the scan found the whole corpus, so a check
+/// over a vacuous scan fails rather than passes.
+pub(crate) fn all_chunks(gate: &str) -> Vec<(String, String)> {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — {gate} would \
+         be vacuous",
+        stems.len()
+    );
+    stems
+        .into_iter()
+        .map(|stem| {
+            let markdown = read_chunk_file(&stem);
+            (stem, markdown)
+        })
+        .collect()
+}
+
+/// Repo root, derived from this crate's manifest dir
+/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
+/// binary resolves against.
+pub(crate) fn repo_root() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| {
+            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
+        })
+        .to_path_buf()
 }
 
 // ---------------------------------------------------------------------------

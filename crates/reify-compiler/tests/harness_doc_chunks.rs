@@ -30,6 +30,8 @@
 //!   and maintainer-note gates.
 //! - `doc_forms` (#6974) — documented call forms, read from markdown spans and
 //!   parsed sources, and their pairing.
+//! - `signature_fixtures` (#6974) — the compile-verified fixtures whose calls
+//!   stand for documented signatures, and what "compiles clean" means for them.
 //! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced
 //!   prose is exercised by a compile-verified fixture.
 
@@ -51,6 +53,8 @@ mod functions_chunk_overloading_smoke;
 mod geometry_chunk_smoke;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/signature_fixtures.rs"]
+mod signature_fixtures;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
 #[path = "harness_doc_chunks/unfenced_signature_gate.rs"]

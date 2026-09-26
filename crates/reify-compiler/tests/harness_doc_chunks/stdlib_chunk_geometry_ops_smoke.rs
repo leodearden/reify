@@ -73,16 +73,13 @@ use reify_compiler::{
 };
 use reify_core::Severity;
 
-use crate::chunk_cite_gate::{cited_source_paths, repo_root};
+use crate::chunk_cite_gate::cited_source_paths;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
-
-/// The fixture, repo-relative — the currency the corpus-wide signature gate
-/// names every fixture in.
-pub(crate) const FIXTURE_PATH: &str =
-    "crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri";
+use crate::fence_gate::repo_root;
+use crate::signature_fixtures::{STDLIB_GEOMETRY_OPS_FIXTURE, read_fixture};
 
 /// The chunk this fixture transcribes. Read (never written) to check documented
 /// names against the compiler's registries. If the chunk moves, this const must
@@ -152,17 +149,12 @@ fn read_all_chunks() -> String {
         .join("\n")
 }
 
-fn read_fixture() -> String {
-    std::fs::read_to_string(repo_root().join(FIXTURE_PATH))
-        .unwrap_or_else(|e| panic!("{FIXTURE_PATH} must be readable ({e})"))
-}
-
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
 /// "Key Geometry Operations" (+ "Curves") table must compile with no
 /// Error-severity diagnostics.
 #[test]
 fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
-    let source = read_fixture();
+    let source = read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE);
     let parsed = parse_or_panic(&source, "fixture");
 
     // Compile phase — filter to Error severity only (warnings are allowed).
@@ -330,7 +322,7 @@ structure def KnownOps {
 /// goes RED even though the compile smoke stays green.
 #[test]
 fn fixture_geometry_call_names_all_exist_in_the_compiler() {
-    let source = read_fixture();
+    let source = read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE);
     let unrecognised = unrecognised_geometry_call_names(&source, "fixture");
 
     assert!(
@@ -473,7 +465,7 @@ fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
     let documented = documented_geometry_op_names(&markdown);
     assert_scan_not_vacuous(&documented);
 
-    let exercised = geometry_call_names(&read_fixture(), "fixture");
+    let exercised = geometry_call_names(&read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE), "fixture");
     let missing: Vec<&String> = documented
         .iter()
         .filter(|name| !exercised.contains(name))
@@ -1337,7 +1329,7 @@ structure def SortedAndDeduped {
 // name-only guard cannot see this — `rotate` and `translate` are both real
 // names, exercised by the fixture, just not at THAT arity. Each test feeds a
 // SYNTHETIC markdown snippet — never editing stdlib.md or the fixture — but
-// checks it against the REAL fixture source via `read_fixture()`.
+// checks it against the REAL fixture source via `read_fixture`.
 
 /// Every documented form in `markdown` with no matching call in
 /// `fixture_source` — the doc → fixture direction at FORM granularity, by
@@ -1361,7 +1353,11 @@ fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![
             DocForm {
                 name: "rotate".to_string(),
@@ -1388,7 +1384,11 @@ fn unmirrored_documented_forms_reports_nothing_for_the_corrected_row() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         Vec::<DocForm>::new(),
         "the control's control: with the compiler-true forms stdlib.md documents today, \
          nothing must be reported — the guard is not merely \"reports everything\""
@@ -1404,7 +1404,11 @@ fn unmirrored_documented_forms_at_least_matches_greater_or_equal_but_exact_does_
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![DocForm {
             name: "nurbs".to_string(),
             arity: Arity::Exact(12),
@@ -1424,7 +1428,11 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![DocForm {
             name: "nonexistent_op".to_string(),
             arity: Arity::Exact(2),
@@ -1521,7 +1529,11 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
     let documented = documented_geometry_op_forms(&markdown);
     assert_form_scan_not_vacuous(&documented);
 
-    let unmirrored = unmirrored_documented_forms(&markdown, &read_fixture(), "fixture");
+    let unmirrored = unmirrored_documented_forms(
+        &markdown,
+        &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+        "fixture",
+    );
     assert!(
         unmirrored.is_empty(),
         "stdlib.md documents geometry-op FORM(s) with no compiling instance at that exact \
