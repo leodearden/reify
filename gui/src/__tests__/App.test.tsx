@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective } from '../types';
+import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -9,6 +9,7 @@ import {
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
+import { published } from './test_utils/publishedState';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -2906,6 +2907,83 @@ describe('App handleOpen dirty-check confirmation', () => {
       expect(bridge.pickOpenPath).toHaveBeenCalled();
     });
     expect(bridge.ask).not.toHaveBeenCalled();
+  });
+});
+
+// Task 7853: a whole-state reply travels over IPC while newer events are
+// already reaching the store, so App routes it through the store's
+// publish-generation guard.
+describe('App whole-state replies honour the publish generation', () => {
+  const width = (value: string): ValueData => ({
+    cell_id: 'c1',
+    name: 'width',
+    value,
+    unit: 'mm',
+    determinacy: 'determined',
+    entity_path: 'Bracket.width',
+    kind: 'parameter',
+    freshness: 'final',
+  });
+  const stateWithWidth = (value: string): GuiState => ({
+    ...emptyState,
+    values: [width(value)],
+    files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+  });
+  const shownWidth = () =>
+    (within(screen.getByTestId('prop-row-c1')).getByRole('textbox') as HTMLInputElement).value;
+
+  /**
+   * Render the app, press Ctrl+O, and leave the open's engine reply pending
+   * behind a newer announced generation whose value update already landed.
+   */
+  async function openBehindANewerGeneration() {
+    let announce: ((generation: number) => void) | undefined;
+    let valueUpdate: ((value: ValueData) => void) | undefined;
+    vi.mocked(bridge.onEvalGeneration).mockImplementation(async (cb) => {
+      announce = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.onValueUpdate).mockImplementation(async (cb) => {
+      valueUpdate = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(stateWithWidth('50'), 1));
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
+    const reply = deferred<PublishedState>();
+    vi.mocked(bridge.openFileEngine).mockReturnValue(reply.promise);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(announce && valueUpdate).toBeTruthy());
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/project/other.ri'));
+
+    announce!(3);
+    valueUpdate!(width('120'));
+    await waitFor(() => expect(shownWidth()).toContain('120'));
+    return reply.resolve;
+  }
+
+  it('a File→Open reply older than an announced generation keeps the newer event-applied values', async () => {
+    const resolveReply = await openBehindANewerGeneration();
+    const treeFetchesBefore = vi.mocked(bridge.getEntityTree).mock.calls.length;
+
+    resolveReply(published(stateWithWidth('80'), 2));
+
+    await waitFor(() =>
+      expect(vi.mocked(bridge.getEntityTree).mock.calls.length).toBeGreaterThan(treeFetchesBefore),
+    );
+    expect(shownWidth()).toContain('120');
+    expect(shownWidth()).not.toContain('80');
+  });
+
+  it('a File→Open reply at or above the announced generation is applied', async () => {
+    const resolveReply = await openBehindANewerGeneration();
+
+    resolveReply(published(stateWithWidth('80'), 3));
+
+    await waitFor(() => expect(shownWidth()).toContain('80'));
+    expect(shownWidth()).not.toContain('120');
   });
 });
 

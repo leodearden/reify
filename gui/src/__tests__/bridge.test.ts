@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { GuiState, RawGuiState, EvaluationStatus, MechanismDescriptor } from '../types';
+import type { RawGuiState, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -26,6 +26,7 @@ import {
   updateSource,
   exportGeometry,
   refreshFullState,
+  openFileEngine,
   getEntityTree,
   onMeshUpdate,
   onEvaluationStatus,
@@ -67,26 +68,46 @@ beforeEach(() => {
 });
 
 describe('bridge commands', () => {
-  it('getInitialState calls invoke with correct command', async () => {
-    const mockState: GuiState = { fea_convergence: null,
-      meshes: [],
+  /** A whole-state reply as it arrives over IPC: stamped, with wire-format meshes. */
+  const rawPublished = (): RawPublishedState => ({
+    generation: 4,
+    state: {
+      meshes: [{ entity_path: 'Box.body', vertices: [1, 2, 3], indices: [0, 1, 2], normals: null }],
       values: [],
       constraints: [],
-      files: [],
+      files: [{ path: 'main.ri', content: 'content' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
-      tensegrity_wires: [],
-      tensegrity_surfaces: [],
-      display_panes: [],
-      display_appearance: [],
-      fea_diagnostics: [],
-    };
-    mockInvoke.mockResolvedValue(mockState);
+    },
+  });
 
-    const result = await getInitialState();
+  function expectConvertedPublishedState(result: PublishedState) {
+    expect(result.generation).toBe(4);
+    expect(result.state.meshes[0].vertices).toBeInstanceOf(Float32Array);
+    expect(result.state.meshes[0].indices).toBeInstanceOf(Uint32Array);
+    expect(result.state.files).toEqual([{ path: 'main.ri', content: 'content' }]);
+  }
+
+  // refreshFullState is the missed-event recovery alias of getInitialState.
+  it.each([
+    ['getInitialState', getInitialState],
+    ['refreshFullState', refreshFullState],
+  ])('%s invokes get_initial_state and converts the stamped reply', async (_name, fetchState) => {
+    mockInvoke.mockResolvedValue(rawPublished());
+
+    const result = await fetchState();
 
     expect(mockInvoke).toHaveBeenCalledWith('get_initial_state');
-    expect(result).toEqual(mockState);
+    expectConvertedPublishedState(result);
+  });
+
+  it('openFileEngine invokes open_file_engine with the path and converts the stamped reply', async () => {
+    mockInvoke.mockResolvedValue(rawPublished());
+
+    const result = await openFileEngine('/project/bracket.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('open_file_engine', { path: '/project/bracket.ri' });
+    expectConvertedPublishedState(result);
   });
 
   // The two wire names carry opposite cadences, so a swap would be silent and
@@ -204,27 +225,6 @@ describe('bridge commands', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('get_entity_tree');
     expect(result).toEqual(sampleTree);
-  });
-
-  // S7: refreshFullState should call get_initial_state and return a converted GuiState
-  it('refreshFullState calls get_initial_state and returns converted GuiState', async () => {
-    const rawState: RawGuiState = {
-      meshes: [{ entity_path: 'Box.body', vertices: [1, 2, 3], indices: [0, 1, 2], normals: null }],
-      values: [],
-      constraints: [],
-      files: [{ path: 'main.ri', content: 'content' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-    };
-    mockInvoke.mockResolvedValue(rawState);
-
-    const result = await refreshFullState();
-
-    expect(mockInvoke).toHaveBeenCalledWith('get_initial_state');
-    expect(result).toBeDefined();
-    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
-    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
-    expect(result.files).toHaveLength(1);
   });
 });
 
