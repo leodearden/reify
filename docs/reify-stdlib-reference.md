@@ -1976,7 +1976,7 @@ fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionV
 fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. It re-drives that joint's whole geometry at the derived value — the parent's axis *and* its mount (the optional pivot third argument of `prismatic`/`revolute`, a `point3` or `frame3`) — so `transform_at(couple(p, r, o), v)` equals `transform_at(p, r * v + o)`: a lead-screw follower on a corner-pivoted lift travels at that corner, not at the world origin. The coupling captures its parent by value when it is built, so only a mount the parent already carries at that point is inherited: a `relate`-solved mount (a `sub … at auto` placement), which the engine writes into the parent joint's cell after evaluation, does not reach a coupling of that joint (task #7194). A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
 **`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
@@ -1992,10 +1992,10 @@ fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+These are the registered builtin names (the `"joint_axis"`, `"joint_range"`, `"joint_ratio"`, and `"joint_offset"` arms of `eval_joints` in `crates/reify-stdlib/src/joints.rs`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
-**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
+**Jacobian.** `joint_jacobian` is a live builtin (the `"joint_jacobian"` arm of `eval_joints` in
+`crates/reify-stdlib/src/joints.rs`, delegating to `joint_jacobian_value`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned type is `JacobianColumn`: the partial derivative of pose with respect
