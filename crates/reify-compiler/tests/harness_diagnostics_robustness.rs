@@ -21,8 +21,8 @@
 //! `tests/common/mod.rs` as external lines, which rule (a) counts against the C2 cap, for
 //! a module nothing references. That line count is computed by `harness_layout_unit_lines`
 //! (tests/infra/harness-layout-lib.sh) and deliberately NOT pinned here, where nothing
-//! would recompute it — `harness_result_annotation` carried such a figure and it drifted.
-//! That root makes the same no-`common` call for the same reason.
+//! would recompute it. `harness_result_annotation` makes the same no-`common` call for the
+//! same reason.
 #[path = "harness_diagnostics_robustness/ambient_default_injection_tests.rs"]
 mod ambient_default_injection_tests;
 #[path = "harness_diagnostics_robustness/ambient_default_material_integration_gate.rs"]
