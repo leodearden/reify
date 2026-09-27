@@ -1293,8 +1293,8 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // `Untracked`; δ-B has only the comment, so the cite IS the anchor
             // — which is what stops the lane firing on every prose comment
             // containing "pending". It emits only `Cited` and reaches ONLY the
-            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
-            // and the §8.4 severity map untouched.
+            // unchanged β liveness lane, leaving §8.3's taxonomy,
+            // `STRUCTURAL_KINDS` and the §8.4 severity map untouched.
             //
             // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
             // `// G-allow:` register to its owner lane, which has its own
@@ -1825,14 +1825,14 @@ fn fold_whitespace(s: &str) -> String {
 /// hard gate in both the engine-seam primitive and the repo-wide lane; task
 /// η #4559 analogue) and `g-allow-unknown-id` (Medium).
 ///
-/// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
-/// G-allow advisory lane from the source-marker baseline, mirroring the ζ
-/// inverse-lane exclusion: G-allow findings are a distinct
-/// orphan-suppression-provenance taxonomy (path-keyed, `.rs` files) whose kind
-/// strings (`g-allow-*`) are outside `baseline_is_well_formed`'s `VALID_KINDS`
-/// set — including them in the baseline would make a regen fail the kind check.
-// G-allow: pub for external callers (tests/ptodo_baseline.rs, src/bin/ptodo-baseline-gen.rs —
-// separate crates / bins that cannot see crate-private items). Mirrors the
+/// Used by `ptodo-baseline-gen` to exclude the G-allow advisory lane from the
+/// source-marker baseline, mirroring the ζ inverse-lane exclusion: G-allow
+/// findings are a distinct orphan-suppression-provenance taxonomy (path-keyed,
+/// `.rs` files) whose kind strings (`g-allow-*`) are outside
+/// [`STRUCTURAL_KINDS`] — including them in the baseline would make a regen
+/// fail `baseline_is_well_formed`'s kind check.
+// G-allow: pub for an external caller (src/bin/ptodo-baseline-gen.rs — a
+// separate bin that cannot see crate-private items). Mirrors the
 // resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn is_g_allow_finding(f: &Finding) -> bool {
     f.summary.starts_with("g-allow-")
@@ -3452,7 +3452,7 @@ mod tests {
     /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
     /// and reaches only the unchanged β liveness lane. Pinned as its own
     /// assertion because it is the property that keeps §8.3's taxonomy (and
-    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// therefore `STRUCTURAL_KINDS`, `fingerprint` and the §8.4 severity map)
     /// byte-unchanged by this lane.
     #[test]
     fn scan_file_delta_b_emits_no_structural_kind() {
