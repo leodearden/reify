@@ -64,13 +64,10 @@ impl SolverRegistry {
         Self::with_solvers(
             Box::new(crate::DimensionalSolver),
             Some(Box::new(crate::SolveSpaceSolver)),
-            Some(Box::new(crate::CpSatSolver)),
-            Some(Box::new(ProtoDiscreteFirstFallback)),
+            None,
+            None,
         )
     }
-
-    #[allow(dead_code)]
-    fn _proto_marker() {}
 
     /// Create a new solver registry with explicit solvers for each domain.
     pub fn with_solvers(
@@ -1025,55 +1022,4 @@ fn build_band_constraints(
             ge_expr,
         ),
     ]
-}
-
-
-/// PROTOTYPE ONLY — architect premise probe for task 5469. Reverted before commit.
-struct ProtoDiscreteFirstFallback;
-
-impl ConstraintSolver for ProtoDiscreteFirstFallback {
-    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        if all_discrete(problem) {
-            crate::CpSatSolver.solve(problem)
-        } else {
-            crate::DimensionalSolver.solve(problem)
-        }
-    }
-    fn solve_with_dispatch(
-        &self,
-        problem: &ResolutionProblem,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> SolveResult {
-        if all_discrete(problem) {
-            crate::CpSatSolver.solve_with_dispatch(problem, dispatch)
-        } else {
-            crate::DimensionalSolver.solve_with_dispatch(problem, dispatch)
-        }
-    }
-    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        if all_discrete(problem) {
-            crate::CpSatSolver.solve_ranked(problem)
-        } else {
-            crate::DimensionalSolver.solve_ranked(problem)
-        }
-    }
-    fn solve_ranked_with_dispatch(
-        &self,
-        problem: &ResolutionProblem,
-        dispatch: Option<&dyn ComputeDispatch>,
-    ) -> RankedSolveResult {
-        if all_discrete(problem) {
-            crate::CpSatSolver.solve_ranked_with_dispatch(problem, dispatch)
-        } else {
-            crate::DimensionalSolver.solve_ranked_with_dispatch(problem, dispatch)
-        }
-    }
-}
-
-fn all_discrete(problem: &ResolutionProblem) -> bool {
-    !problem.auto_params.is_empty()
-        && problem
-            .auto_params
-            .iter()
-            .all(|ap| crate::cpsat::can_enumerate(ap, &problem.constraints))
 }
