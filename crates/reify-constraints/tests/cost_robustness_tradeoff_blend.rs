@@ -9,7 +9,9 @@
 //! problem with two-sided inequalities (`1mm < t < 4mm`):
 //!
 //!   - λ=1 ⇒ pure-cost, floor-free minimisation → the TRUE constraint boundary
-//!     (1mm), not the α-floor-held standoff.
+//!     (1mm), not the α-floor-held standoff. The bound is STRICT, so "the
+//!     boundary" is the nearest representable value inside it: `reify check`
+//!     compares exactly, and the model's own `t > 1mm` must hold there.
 //!   - λ=0 ⇒ identical argmax to [`build_centrality_objective`]'s Chebyshev
 //!     centre (2.5mm) — the blend at λ=0 is a positive-affine transform of
 //!     `min_slack`, so both share the exact same argmax.
@@ -45,10 +47,17 @@ const ANCHOR_TOL_M: f64 = 1e-5;
 /// Returns `5 USD × (x / 1mm)` — Money-dimensioned, monotonically increasing
 /// in `x`, so minimizing it pushes toward the smallest feasible `x`.
 fn money_expr_x_per_mm(x_id: &ValueCellId) -> CompiledExpr {
-    let money_dim = DimensionVector::MONEY;
-    let length_dim = DimensionVector::LENGTH;
-    let dimensionless = DimensionVector::DIMENSIONLESS;
+    five_usd_times(length_ratio(length_ref(x_id), length_literal(0.001)))
+}
 
+/// Returns `5 USD × (1mm / x)` — Money-dimensioned, monotonically DECREASING
+/// in `x` over `x > 0`, so minimizing it pushes toward the largest feasible `x`.
+fn money_expr_mm_per_x(x_id: &ValueCellId) -> CompiledExpr {
+    five_usd_times(length_ratio(length_literal(0.001), length_ref(x_id)))
+}
+
+fn five_usd_times(dimensionless_factor: CompiledExpr) -> CompiledExpr {
+    let money_dim = DimensionVector::MONEY;
     let five_usd = CompiledExpr::literal(
         Value::Scalar {
             si_value: 5.0,
@@ -56,25 +65,34 @@ fn money_expr_x_per_mm(x_id: &ValueCellId) -> CompiledExpr {
         },
         Type::Scalar { dimension: money_dim },
     );
-    let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim });
-    let one_mm = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: 0.001,
-            dimension: length_dim,
-        },
-        Type::Scalar { dimension: length_dim },
-    );
-    let x_per_mm = CompiledExpr::binop(
-        BinOp::Div,
-        x_ref,
-        one_mm,
-        Type::Scalar { dimension: dimensionless },
-    );
     CompiledExpr::binop(
         BinOp::Mul,
         five_usd,
-        x_per_mm,
+        dimensionless_factor,
         Type::Scalar { dimension: money_dim },
+    )
+}
+
+fn length_ratio(numerator: CompiledExpr, denominator: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::binop(
+        BinOp::Div,
+        numerator,
+        denominator,
+        Type::Scalar { dimension: DimensionVector::DIMENSIONLESS },
+    )
+}
+
+fn length_ref(x_id: &ValueCellId) -> CompiledExpr {
+    CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: DimensionVector::LENGTH })
+}
+
+fn length_literal(si_m: f64) -> CompiledExpr {
+    CompiledExpr::literal(
+        Value::Scalar {
+            si_value: si_m,
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar { dimension: DimensionVector::LENGTH },
     )
 }
 
@@ -168,6 +186,12 @@ fn lambda_one_reaches_true_boundary_floor_free() {
         "λ=1 should reach the TRUE constraint boundary (1mm, floor-free), got t = {:.6e} m",
         t_si,
     );
+    assert!(
+        t_si > 0.001,
+        "the model's own strict `t > 1mm` must hold at the λ=1 value: `reify check` \
+         compares exactly (reify-expr `eval_cmp` is a bare f64 `>`), so a value ON the \
+         bound is reported violated; got t = {t_si:.17e} m",
+    );
 }
 
 /// λ=0 ≡ [`build_centrality_objective`]'s argmax (Chebyshev centre of
@@ -246,8 +270,9 @@ fn lambda_half_strictly_between_anchors() {
 // outside it, trips `solve_core_with_sd_tolerance`'s initially-feasible
 // fallback, and reports the initial point verbatim.
 
-/// `base_problem`'s constraints and objective on the PRODUCTION auto shape
-/// (`bounds: None`), with the Nelder-Mead SEED under the caller's control.
+/// `base_problem`'s constraints on the PRODUCTION auto shape (`bounds: None`),
+/// minimising `cost_robustness_tradeoff(cost, lambda)`, with the Nelder-Mead
+/// SEED under the caller's control.
 ///
 /// `seed_si_m` is threaded through `current_values`, which is the sanctioned —
 /// and the only — way for a test to move the seed: `extract_initial_point`'s
@@ -261,6 +286,7 @@ fn lambda_half_strictly_between_anchors() {
 /// way. The strict-auto verdict is the subject of the next section.
 fn seeded_free_problem(
     t_id: &ValueCellId,
+    cost: CompiledExpr,
     lambda: f64,
     seed_si_m: Option<f64>,
 ) -> ResolutionProblem {
@@ -287,10 +313,7 @@ fn seeded_free_problem(
             (constraint_id("CostRobustnessTradeoff", 1), lt_expr(t_id, 0.004)),
         ],
         current_values,
-        objective: Some(ObjectiveSet::cost_robustness_tradeoff(
-            money_expr_x_per_mm(t_id),
-            lambda,
-        )),
+        objective: Some(ObjectiveSet::cost_robustness_tradeoff(cost, lambda)),
         functions: vec![].into(),
     }
 }
@@ -327,7 +350,10 @@ fn gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds() {
     for lambda in [1.0_f64, 0.0] {
         let resolved: Vec<f64> = seeds
             .iter()
-            .map(|seed| solve_t(&seeded_free_problem(&t_id, lambda, *seed), &t_id))
+            .map(|seed| {
+                let cost = money_expr_x_per_mm(&t_id);
+                solve_t(&seeded_free_problem(&t_id, cost, lambda, *seed), &t_id)
+            })
             .collect();
 
         let first = resolved[0];
@@ -349,9 +375,39 @@ fn gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds() {
                      explicit-bounds shape `lambda_one_reaches_true_boundary_floor_free` \
                      covers; seed {seed:?} resolved t = {t_si:.6e} m"
                 );
+                assert!(
+                    *t_si > 0.001,
+                    "the model's own strict `t > 1mm` must hold at the λ=1 value: `reify \
+                     check` compares exactly (reify-expr `eval_cmp` is a bare f64 `>`); seed \
+                     {seed:?} resolved t = {t_si:.17e} m"
+                );
             }
         }
     }
+}
+
+/// The mirror of the λ=1 lower-boundary contract: a monotone DECREASING cost
+/// (`5 USD × (1mm / t)`) drives λ=1 to the strict UPPER bound `t < 4mm`, on the
+/// production `bounds: None` shape. It must land at that boundary and still
+/// satisfy the model's own strict comparison — the nearest representable value
+/// BELOW 4mm, never 4mm itself, which `reify check` would report violated.
+#[test]
+fn lambda_one_on_a_strict_upper_bound_stops_inside_it() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let problem = seeded_free_problem(&t_id, money_expr_mm_per_x(&t_id), 1.0, None);
+
+    let t_si = solve_t(&problem, &t_id);
+
+    assert!(
+        (t_si - 0.004).abs() < ANCHOR_TOL_M,
+        "λ=1 over a decreasing cost must reach the TRUE upper boundary (4mm); got t = \
+         {t_si:.6e} m"
+    );
+    assert!(
+        t_si < 0.004,
+        "the model's own strict `t < 4mm` must hold at the λ=1 value: `reify check` \
+         compares exactly (reify-expr `eval_cmp` is a bare f64 `<`); got t = {t_si:.17e} m"
+    );
 }
 
 // ── γ + STRICT auto (task #5711 amendment 2) ──────────────────────────────
