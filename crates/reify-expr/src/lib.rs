@@ -72,9 +72,7 @@ pub trait ContainmentQuery {
 /// - `None` — not a selector ctor the hook can build; the call stays Undef.
 ///
 /// Diagnostics pushed into the `Vec` are forwarded to the runtime diagnostics sink.
-/// A plain fn pointer (not `&dyn`) so it can carry no engine state and costs the
-/// recursive `EvalContext` chain 8 bytes. `reify-eval` attaches
-/// `try_eval_symbolic_topology_selector` in `eval_ctx_with_meta`.
+/// `reify-eval` attaches `try_eval_symbolic_topology_selector` in `eval_ctx_with_meta`.
 pub type SymbolicSelectorCtorFn =
     fn(&CompiledExpr, &ValueMap, &mut Vec<Diagnostic>) -> Option<Value>;
 
@@ -1632,9 +1630,7 @@ fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalConte
 /// capability, passes through unchanged. See [`SymbolicSelectorCtorFn`] for the
 /// contract. The hook's diagnostics are forwarded to the runtime sink.
 ///
-/// `#[inline(never)]` so the diagnostics `Vec` and minted value live in this frame,
-/// not on every recursive `eval_expr` frame — the same stack budget as
-/// `try_compute_dispatch`; pinned by `eval_user_fn_recursion_depth_exceeded`.
+/// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
 #[inline(never)]
 fn resolve_symbolic_selector_on_undef(
     result: Value,
@@ -10132,6 +10128,38 @@ mod tests {
             drained
         );
         assert_eq!(drained[0].message, "stub-mint");
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_quantifier_predicate_scope() {
+        let loop_var = ValueCellId::new("__quant_stub_sel", "m");
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var.clone(),
+            CompiledExpr::list_literal(
+                vec![lit(Value::Bool(true), Type::Bool); 2],
+                Type::List(Box::new(Type::Bool)),
+            ),
+            stub_sel_call(
+                CompiledExpr::value_ref(loop_var, Type::Bool),
+                b"stub_sel_of_loop_var",
+            ),
+        );
+        let values = ValueMap::new();
+        let det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+
+        let plain = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        let with_determinacy = EvalContext::simple(&values)
+            .with_determinacy(&det_map)
+            .with_symbolic_selector_ctor(stub_mint);
+        for (label, ctx) in [("plain", plain), ("with determinacy", with_determinacy)] {
+            assert_eq!(
+                eval_expr(&quant, &ctx),
+                Value::Bool(true),
+                "{label}: the predicate scope must inherit the hook and bind the loop var",
+            );
+        }
     }
 
     /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`
