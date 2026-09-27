@@ -30,10 +30,13 @@
 //! (C) **`generator_emits_scan_evidence_*`** — always-on, hermetic. Runs the
 //!   real `ptodo-baseline-gen` binary over staged tempdir git fixtures and pins
 //!   the §6.6 scan-evidence contract it emits on stderr
-//!   (`@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>`): exactly one such
-//!   line per run, carrying the REAL counts, never leaking onto stdout, and
-//!   still emitted when the tree is clean and stdout is empty. Graceful-skip if
-//!   `git` is unavailable.
+//!   (`@@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M> tasks_db=<mode>`):
+//!   exactly one such line per run, carrying the REAL counts, never leaking
+//!   onto stdout, and still emitted when the tree is clean and stdout is empty.
+//!   The `tasks_db` token reports whether the DB-dependent lanes ran: `present`
+//!   when the default tasks.db resolves, `absent` when an unresolvable
+//!   `REIFY_PTODO_TASKS_DB` override beats it (the DB-absent mode PRD §19
+//!   requires of the ratchet). Graceful-skip if `git` is unavailable.
 //!
 //! (D) **fixture git-env hygiene** — always-on. Pins that the two fixture
 //!   command builders (C) drives the real binary through strip every
@@ -498,6 +501,16 @@ fn untracked_marker(body: &str) -> String {
     format!("// {}{}: {body}\n", "TO", "DO")
 }
 
+/// A marker citing task `id` canonically, assembled at runtime like
+/// [`untracked_marker`].
+fn cited_marker(id: u32, body: &str) -> String {
+    format!("// {}{}(#{id}): {body}\n", "TO", "DO")
+}
+
+/// A `REIFY_PTODO_TASKS_DB` override that can never resolve: no path beneath a
+/// character device can exist.
+const TASKS_DB_ABSENT: &str = "/dev/null/tasks.db";
+
 /// A `git` command targeting the fixture repo at `root`.
 ///
 /// Built through the shared `git -C <root>` constructor, as this crate's
@@ -564,7 +577,17 @@ fn run_generator(root: &Path) -> std::process::Output {
         .expect("ptodo-baseline-gen spawns")
 }
 
-/// Extract the single `@@PTODO_SCAN@@` line's counters from `stderr`, asserting
+/// The fields of one `@@PTODO_SCAN@@` line.
+#[derive(Debug)]
+struct ScanEvidence {
+    files_scanned: usize,
+    markers_examined: usize,
+    /// The `tasks_db=` token's value. OPTIONAL in the grammar: only the two
+    /// counters are required (§6.6 EXTENSIBILITY).
+    tasks_db: Option<String>,
+}
+
+/// Extract the single `@@PTODO_SCAN@@` line's fields from `stderr`, asserting
 /// there is EXACTLY one such line and that both REQUIRED fields are well formed.
 ///
 /// Mirrors the PRD §6.6 grammar rules exactly, so the two consumers of this
@@ -577,7 +600,7 @@ fn run_generator(root: &Path) -> std::process::Output {
 ///     stays backward compatible and cannot turn this contract test RED.  Only a
 ///     MISSING required field (`files_scanned` / `markers_examined`) or an
 ///     unparseable value panics.
-fn parse_scan_line(stderr: &str) -> (usize, usize) {
+fn parse_scan_line(stderr: &str) -> ScanEvidence {
     let lines: Vec<&str> = stderr
         .lines()
         .filter(|l| l.contains("@@PTODO_SCAN@@"))
@@ -594,6 +617,7 @@ fn parse_scan_line(stderr: &str) -> (usize, usize) {
         .unwrap_or_else(|| panic!("scan line must start with the bare token: {line:?}"));
     let mut files: Option<usize> = None;
     let mut markers: Option<usize> = None;
+    let mut tasks_db: Option<String> = None;
     for field in rest.split_whitespace() {
         if let Some(v) = field.strip_prefix("files_scanned=") {
             files = Some(v.parse().unwrap_or_else(|e| {
@@ -603,14 +627,18 @@ fn parse_scan_line(stderr: &str) -> (usize, usize) {
             markers = Some(v.parse().unwrap_or_else(|e| {
                 panic!("markers_examined must be an integer ({v:?}): {e}")
             }));
+        } else if let Some(v) = field.strip_prefix("tasks_db=") {
+            tasks_db = Some(v.to_string());
         }
         // else: an unrecognised token is an ADDITIVE extension of the grammar —
         // ignored by contract, never a failure (PRD §6.6).
     }
-    (
-        files.unwrap_or_else(|| panic!("scan line lacks files_scanned: {line:?}")),
-        markers.unwrap_or_else(|| panic!("scan line lacks markers_examined: {line:?}")),
-    )
+    ScanEvidence {
+        files_scanned: files.unwrap_or_else(|| panic!("scan line lacks files_scanned: {line:?}")),
+        markers_examined: markers
+            .unwrap_or_else(|| panic!("scan line lacks markers_examined: {line:?}")),
+        tasks_db,
+    }
 }
 
 /// (C1) The generator emits the §6.6 scan-evidence line on stderr with the REAL
@@ -642,7 +670,11 @@ fn generator_emits_scan_evidence_with_real_counts() {
     );
 
     // (i)+(ii) exactly one well-formed scan line, carrying the real counts.
-    let (files_scanned, markers_examined) = parse_scan_line(&stderr);
+    let ScanEvidence {
+        files_scanned,
+        markers_examined,
+        ..
+    } = parse_scan_line(&stderr);
     assert_eq!(
         files_scanned, 2,
         "files_scanned must be the fixture's swept staged file count (src/fresh.rs, \
@@ -709,7 +741,11 @@ fn generator_emits_scan_evidence_on_a_marker_free_repo() {
         "a marker-free repo emits no fingerprints; got stdout:\n{stdout}"
     );
 
-    let (files_scanned, markers_examined) = parse_scan_line(&stderr);
+    let ScanEvidence {
+        files_scanned,
+        markers_examined,
+        ..
+    } = parse_scan_line(&stderr);
     assert_eq!(
         files_scanned, 2,
         "both marker-free swept files must count as scanned; stderr:\n{stderr}"
@@ -752,7 +788,11 @@ fn parse_scan_line_ignores_unrecognised_tokens() {
                   @@PTODO_SCAN@@ markers_examined=4 future_counter=9 \
                   files_scanned=7 skipped_files_scanned=0\n";
 
-    let (files_scanned, markers_examined) = parse_scan_line(stderr);
+    let ScanEvidence {
+        files_scanned,
+        markers_examined,
+        ..
+    } = parse_scan_line(stderr);
 
     assert_eq!(
         files_scanned, 7,
@@ -763,6 +803,98 @@ fn parse_scan_line_ignores_unrecognised_tokens() {
         markers_examined, 4,
         "markers_examined must survive both an unrecognised token and a \
          non-canonical field order"
+    );
+}
+
+/// A staged fixture whose one marker cites task 4444, with a tasks.db seeded
+/// AFTER staging at §6.7's default path (so it is reachable with no override
+/// and is never itself scanned) recording 4444 as `done`.
+fn cited_fixture_with_default_tasks_db() -> tempfile::TempDir {
+    let fixture = staged_fixture(&[("src/cited.rs", cited_marker(4444, "wire the fixture up"))]);
+    common::schema::seed_tasks_db_at(
+        &fixture.path().join(".taskmaster/tasks/tasks.db"),
+        &[("master", 4444, "done")],
+    );
+    fixture
+}
+
+/// (C4) CONTROL — with the default tasks.db reachable, the DB-dependent lanes
+/// run: the scan line says `tasks_db=present` and the done cite surfaces as
+/// one `orphaned` fingerprint.
+#[test]
+fn generator_emits_scan_evidence_tasks_db_present_when_default_db_resolves() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("ptodo_baseline: skipping tasks_db control test — git not available");
+        return;
+    }
+
+    let fixture = cited_fixture_with_default_tasks_db();
+    let out = run_generator(fixture.path());
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        out.status.success(),
+        "generator must exit 0; status={:?}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert_eq!(
+        parse_scan_line(&stderr).tasks_db.as_deref(),
+        Some("present"),
+        "a reachable default tasks.db must be reported; stderr:\n{stderr}"
+    );
+    let kinds: Vec<&str> = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split(" :: ").nth(1).unwrap_or(""))
+        .collect();
+    assert_eq!(
+        kinds,
+        ["orphaned"],
+        "the DB lanes must really run (one orphaned fingerprint); stdout:\n{stdout}"
+    );
+}
+
+/// (C5) An unresolvable `REIFY_PTODO_TASKS_DB` override beats a reachable
+/// default: the scan line says `tasks_db=absent` and no DB-dependent
+/// fingerprint is emitted. This is the main-checkout case of PRD §19 finding 2,
+/// reproduced hermetically.
+#[test]
+fn generator_emits_scan_evidence_tasks_db_absent_when_override_is_unresolvable() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("ptodo_baseline: skipping tasks_db override test — git not available");
+        return;
+    }
+
+    let fixture = cited_fixture_with_default_tasks_db();
+    let out = generator_cmd(fixture.path())
+        .env("REIFY_PTODO_TASKS_DB", TASKS_DB_ABSENT)
+        .output()
+        .expect("ptodo-baseline-gen spawns");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        out.status.success(),
+        "generator must exit 0; status={:?}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert_eq!(
+        parse_scan_line(&stderr).tasks_db.as_deref(),
+        Some("absent"),
+        "an unresolvable override must force the DB-absent mode; stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "DB-absent, a cited marker yields no fingerprint; stdout:\n{stdout}"
     );
 }
 
@@ -834,13 +966,14 @@ fn fixture_commands_remove_every_repo_redirect_var() {
 /// hand-rolled trio already removed exactly those. It is regression protection
 /// for the ambient condition itself — (D1) is what pins the rest of the set.
 ///
-/// Floor 2 is the selection measured today: (C1)
-/// `generator_emits_scan_evidence_with_real_counts` and (C2)
-/// `generator_emits_scan_evidence_on_a_marker_free_repo`. (C3)
+/// Floor 4 is the selection measured today: (C1)
+/// `generator_emits_scan_evidence_with_real_counts`, (C2)
+/// `generator_emits_scan_evidence_on_a_marker_free_repo`, and the two
+/// `generator_emits_scan_evidence_tasks_db_*` tests (C4)/(C5). (C3)
 /// `parse_scan_line_ignores_unrecognised_tokens` and this test's own name both
 /// fall outside the filter, so the replay cannot select itself and the floor is
 /// not vacuous.
 #[test]
 fn hook_env_replay_of_generator_scan_evidence_tests() {
-    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 2);
+    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 4);
 }
