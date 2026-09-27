@@ -7640,6 +7640,16 @@ mod tests {
     /// Locks the arity-check added in the amendment pass: shape-based conformance now
     /// also requires matching `n` for `Type::Vector` args. `vec2` is a real mismatch
     /// for a `vec3`-typed param and must be rejected at compile time.
+    ///
+    /// This probe builds its `Type::Vector { n: 2, .. }` by hand, so it reaches the
+    /// walker without depending on `math_fn_result_type`'s name-suffix `n` inference.
+    /// The `.ri` twin that DOES depend on that inference, and so is the one that would
+    /// notice it ceasing to produce a `Type::Vector { n: 2, .. }` at all, is
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`
+    /// (`struct_ctor_field_conformance_tests.rs`). Sibling of
+    /// `point_param_rejects_wrong_arity_point_arg`, whose own doc states the two arms'
+    /// arity legs differ in EMITTER, not in reachability: `Point` routes arity through
+    /// `emit_arg_type_mismatch`, `Vector` keeps this bespoke `TypeNotConformingToVector`.
     #[test]
     fn vector_param_rejects_wrong_arity_vector_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
