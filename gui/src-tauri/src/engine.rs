@@ -2996,9 +2996,9 @@ impl EngineSession {
     /// (locked by the engine test
     /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
     /// Unparseable entries are skipped, never a panic: realization and
-    /// constraint keys warn individually, while unaddressable CELL ids — a
-    /// standing population, not an event (see the loop) — are counted and
-    /// reported once per sync. See `docs/prds/v0_6/selective-demand.md` §G6.
+    /// constraint keys warn, while unaddressable cell ids — a standing
+    /// population, not an event (see the loop) — log at debug. See
+    /// `docs/prds/v0_6/selective-demand.md` §G6.
     pub fn sync_observed_demand(
         &mut self,
         visible_realizations: &[String],
@@ -3019,38 +3019,20 @@ impl EngineSession {
                 ),
             }
         }
-        // A displayed cell whose id does not parse is not an anomaly worth one
-        // warn line per cell per sync: `build_values` emits EVERY cell in
-        // `template.value_cells` verbatim, and the compiler mints auto-arg
-        // cells under a dotted entity (`ValueCellId("<entity>.<sub>", arg)` —
-        // the auto-arg `scoped_entity` mints in `compile_entity`,
-        // reify-compiler/src/entity.rs). Any model with an `auto` sub
-        // arg therefore displays a steady population of ids the wire format
-        // cannot address (#7717), and syncs fire on every state change. So:
-        // per-cell detail at debug, and ONE warn per sync carrying the count —
-        // a population size is the actionable signal, a name repeated per
-        // keystroke is not.
-        let mut unaddressable = 0usize;
+        // An unaddressable displayed cell is a standing state, not an anomaly:
+        // `build_values` displays every template cell verbatim, including auto
+        // sub-arg cells minted under a dotted entity (`"E.bolt.length"`), and
+        // syncs fire on every state change. So it is skipped at debug — never
+        // mis-split into a bogus demand root — until #7717 makes it addressable.
         for cell in displayed_cells {
             match parse_cell_id(cell) {
                 Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
-                Err(e) => {
-                    unaddressable += 1;
-                    tracing::debug!(
-                        cell = %cell,
-                        error = %e,
-                        "sync_observed_demand: skipping unaddressable cell"
-                    );
-                }
+                Err(e) => tracing::debug!(
+                    cell = %cell,
+                    error = %e,
+                    "sync_observed_demand: skipping unaddressable cell"
+                ),
             }
-        }
-        if unaddressable > 0 {
-            warn!(
-                skipped = unaddressable,
-                displayed = displayed_cells.len(),
-                "sync_observed_demand: displayed cells are not addressable as \
-                 '<entity>.<member>' ids and were skipped (per-cell ids at debug)"
-            );
         }
         for constraint in panel_constraints {
             match parse_constraint_key(constraint) {
@@ -4943,24 +4925,19 @@ impl EngineSession {
     /// caller's cue to emit a structured error rather than to guess (PRD §6.1,
     /// §7 B7). It covers every non-resolving case:
     ///
-    /// * the cell id is malformed (no `.`),
+    /// * the cell id does not name exactly one `(entity, member)` pair — no
+    ///   `.` at all, or a second `.` as in an INSTANCE path
+    ///   (`Parent.childinst.member`),
     /// * no module is loaded, so there is no parse to read,
     /// * the entity is neither a `structure def` nor an `occurrence def` in the
     ///   loaded module,
     /// * the member is not a param, has no default, or is declared more than
     ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
-    /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
     /// * the member names a param inside a PORT body.
     ///
-    /// The instance-path case is worth stating outright, and its MECHANISM
-    /// changed under task #6405 while its outcome did not. `"Parent.childinst.height"`
-    /// is now refused by `parse_cell_id` itself — its member half still holds a
-    /// `.`, so the id names no single cell — and the walk is never reached. It
-    /// previously got the same `None` a step later, by splitting on the first
-    /// `.` and then matching no `ParamDecl.name`. Callers see no change; only
-    /// the reason is now accurate. That `None` is correct rather than a gap — a
-    /// shared structure's default literal is not one instance's value, and
-    /// rewriting it would change every instance.
+    /// The instance-path case is worth stating outright: its `None` is correct
+    /// rather than a gap — a shared structure's default literal is not one
+    /// instance's value, and rewriting it would change every instance.
     ///
     /// The port-body case is likewise correct rather than a gap. The compiler
     /// registers a port member under the COMPOSITE name

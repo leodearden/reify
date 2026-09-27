@@ -16179,6 +16179,53 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     );
 }
 
+/// `sync_observed_demand` must SKIP a displayed cell id that names no single
+/// cell, never mis-split it into a demand root for a cell that does not exist.
+///
+/// An `auto` sub arg is minted under a dotted entity (`E.bolt` + `length`) and
+/// displayed verbatim as `"E.bolt.length"`. A first-dot split registers
+/// `(E, bolt.length)` instead, and roots enter the observed cone
+/// unconditionally, so that bogus cell would read as demanded.
+#[test]
+fn sync_observed_demand_skips_an_auto_sub_arg_cell_rather_than_mis_splitting_it() {
+    use reify_eval::cache::NodeId;
+
+    let source = r#"
+structure Bolt {
+    param length : Length = 5mm
+}
+structure E {
+    param width : Length = 20mm
+    sub bolt = Bolt(length: auto)
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(source, "auto_sub_arg")
+        .expect("load_from_source should succeed");
+    let displayed: Vec<String> = state.values.iter().map(|v| v.cell_id.clone()).collect();
+    assert!(
+        displayed.iter().any(|id| id == "E.bolt.length"),
+        "fixture must display the auto sub-arg cell under its dotted entity; \
+         displayed: {displayed:?}"
+    );
+
+    session.sync_observed_demand(&[], &displayed, &[]);
+
+    let engine = session.core_state_for_test().engine();
+    assert!(
+        !engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "bolt.length"))),
+        "the auto sub-arg cell must be skipped, not registered as (E, bolt.length)"
+    );
+    assert!(
+        engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "width"))),
+        "a well-formed displayed cell in the same sync must still be registered"
+    );
+}
+
 // ── Production-demand sync (selective ENFORCEMENT, task 4737 α) ───────────────
 
 /// step-9 (task 4737 α, RED until step-10): `EngineSession::sync_demand`
