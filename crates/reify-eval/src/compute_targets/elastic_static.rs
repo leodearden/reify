@@ -207,9 +207,9 @@ use reify_solver_elastic::{
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
     GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
     StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
-    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    apply_patch_resultant, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    element_stress_p1, free_faces_within, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
     resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
     solve_cg_with_warm_state_progress, tet_volume_p1,
@@ -555,8 +555,9 @@ pub fn solve_elastic_static_trampoline(
     // Two load kinds are bridged here (task 4264), read in a single pass by
     // `extract_loads`:
     //
-    //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
-    //                 loads across the tip-face nodes via apply_point_load).
+    //   PointLoad   — `force: Real` → scalar tip_force (a -Z resultant spread
+    //                 as a uniform traction over the tip face via
+    //                 apply_patch_resultant).
     //
     //   PressureLoad — `magnitude: Real, face: String, direction: String` →
     //                 face-traction assembled via apply_traction_load(f,
@@ -3053,21 +3054,14 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load over the tip-face nodes ────────
+    // ── Build load vector; spread the tip resultant over the tip face ─────────
     //
-    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
-    // both the synthetic and realized paths). Force is distributed equally across
-    // them — the bending (-Z) direction for the canonical cantilever tip load.
+    // The tip resultant is the uniform traction over the free faces of
+    // `tip_nodes`, so its total and line of action (the face centroid) do not
+    // depend on the mesh — the adaptive lanes re-derive `tip_nodes` on every
+    // remesh (task 7448).
     let mut f = vec![0.0f64; 3 * n_nodes];
-    let n_tip = tip_nodes.len().max(1) as f64;
-    let force_per_tip = [
-        tip_force[0] / n_tip,
-        tip_force[1] / n_tip,
-        tip_force[2] / n_tip,
-    ];
-    for &tn in &tip_nodes {
-        apply_point_load(&mut f, tn, force_per_tip);
-    }
+    apply_patch_resultant(&mut f, &coords, &tet_connectivity, &tip_nodes, tip_force);
 
     // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
@@ -5278,10 +5272,10 @@ fn box_face_plane(
 /// - `extent` — physical coordinate of the plane.
 /// - `eps`    — point-on-plane tolerance (1e-9 recommended).
 ///
-/// For each tet's 4 triangular faces, a face is included if all 3 of its nodes
-/// satisfy the plane predicate (`coord[axis] >= extent - eps` for at_max,
-/// `coord[axis] <= eps` for lower).  A boundary face belongs to exactly one tet
-/// so there is no double-counting.
+/// Returns the free (boundary) tet faces whose 3 nodes all satisfy the plane
+/// predicate (`coord[axis] >= extent - eps` for at_max, `coord[axis] <= eps`
+/// for lower), via `free_faces_within`, so a face shared by two tets is never
+/// included.
 fn collect_box_face_triangles(
     coords: &[[f64; 3]],
     tets: &[[usize; 4]],
@@ -5290,9 +5284,6 @@ fn collect_box_face_triangles(
     extent: f64,
     eps: f64,
 ) -> Vec<[usize; 3]> {
-    // Four triangular faces of a tet [a, b, c, d]:
-    const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-
     // NOTE: `eps` is an **absolute** tolerance. For the current fixtures
     // (SI-metre beams, node spacing >> 1e-9 m) this is safe. If sub-millimetre
     // or sub-micron FEA geometries are ever supported, consider scaling eps
@@ -5306,19 +5297,7 @@ fn collect_box_face_triangles(
             coord <= eps
         }
     };
-
-    let mut result = Vec::new();
-    for tet in tets {
-        for fi in &FACE_IDX {
-            let n0 = tet[fi[0]];
-            let n1 = tet[fi[1]];
-            let n2 = tet[fi[2]];
-            if on_plane(n0) && on_plane(n1) && on_plane(n2) {
-                result.push([n0, n1, n2]);
-            }
-        }
-    }
-    result
+    free_faces_within(tets, on_plane)
 }
 
 /// Apply face-pressure tractions from `pressures` into the global force vector `f`.
@@ -5330,7 +5309,7 @@ fn collect_box_face_triangles(
 ///
 /// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
 /// is supported in v1; other direction strings are treated as `"normal"`.
-/// Accumulates additively into `f` — composable with the existing tip point loads.
+/// Accumulates additively into `f` — composable with the tip load.
 ///
 /// **Performance note:** the full tet mesh is scanned once per `PressureSpec`
 /// (O(|pressures| × n_tets)).  For the current fixtures (≤ 2 specs, small meshes)
@@ -8041,8 +8020,10 @@ mod tests {
 
     /// Task 7448: a tip resultant `F` is the uniform traction `F / A` on the
     /// tip face, which is exactly what an x_max pressure `p` with
-    /// `F = -p·W·H·x̂` assembles — same P1 triangles, tractions equal to ~1 ulp —
-    /// so the two solves agree to deterministic-CG rounding (~1e-13 ≪ 1e-9).
+    /// `F = -p·W·H·x̂` assembles — same P1 triangles, tractions equal to ~1 ulp.
+    /// The two solves then differ only by CG stopping noise, bounded by the
+    /// solve's own relative tolerance (1e-6; measured ≤ 8e-9, one iteration
+    /// apart), while the pre-7448 equal split missed by ~3e-2.
     /// Checked at the default grid and at a non-default grid of the kind the
     /// uniform adaptive lane (`CantileverAdaptiveProblem::refine`) produces.
     #[test]
@@ -8091,7 +8072,7 @@ mod tests {
                 .zip(u_pressure.iter())
                 .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
             assert!(
-                gap <= 1e-9 * scale,
+                gap <= 1e-6 * scale,
                 "grid {grid_override:?}: tip-force and x_max-pressure solves differ by \
                  {gap:e} (max |u| = {scale:e})",
             );
