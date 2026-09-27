@@ -5,11 +5,12 @@
 //! user-fn body, an `if` branch, a builtin arg) with a let-bound reference form of
 //! the same value. Before #7875 every nested form evaluated its selector to
 //! `undef`, silently dropping e.g. an inline `PressureLoad(face: face(..))` from
-//! an FEA solve.
+//! an FEA solve. A nested ctor that cannot build reports its warning exactly once.
 
-use reify_core::VersionId;
 use reify_core::identity::ValueCellId;
-use reify_ir::{Value, ValueMap};
+use reify_core::ty::SelectorKind;
+use reify_core::{Diagnostic, Severity, Type, VersionId};
+use reify_ir::{CompiledExprKind, Value, ValueMap};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 const SOURCE: &str = r#"
@@ -156,4 +157,72 @@ fn nested_forms_equal_on_eval_cached() {
     let nested = probe(&values, "nested");
     assert_selector("nested[0].target", field(only_item(nested), "target"));
     assert_eq!(nested, probe(&values, "listed"));
+}
+
+/// `[union(faces(body), edges(body))]` as hand-built IR: the compiler rejects the
+/// mixed-kind source form (`E_SELECTOR_KIND_MISMATCH`), so the valid all-faces form
+/// is compiled and its second operand re-kinded to `edges`.
+fn compile_nested_mixed_kind_union() -> reify_compiler::CompiledModule {
+    let mut compiled = parse_and_compile_with_stdlib(
+        r#"
+structure def Probe {
+    param length : Length = 100mm
+    let body = box(length, length, length)
+    let mixed = [union(faces(body), faces(body))]
+}
+"#,
+    );
+    let cell = compiled
+        .templates
+        .iter_mut()
+        .flat_map(|t| t.value_cells.iter_mut())
+        .find(|c| c.id == ValueCellId::new("Probe", "mixed"))
+        .expect("Probe.mixed is a value cell");
+    let Some(CompiledExprKind::ListLiteral(items)) =
+        cell.default_expr.as_mut().map(|e| &mut e.kind)
+    else {
+        panic!("Probe.mixed must compile to a list literal");
+    };
+    let CompiledExprKind::FunctionCall { args, .. } = &mut items[0].kind else {
+        panic!("Probe.mixed[0] must compile to the union call");
+    };
+    let CompiledExprKind::FunctionCall { function, .. } = &mut args[1].kind else {
+        panic!("union's second operand must compile to the faces call");
+    };
+    function.name = "edges".to_string();
+    function.qualified_name = "std::edges".to_string();
+    args[1].result_type = Type::Selector(SelectorKind::Edge);
+    compiled
+}
+
+fn kind_closure_warnings(diagnostics: &[Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("kind-closure violation"))
+        .count()
+}
+
+#[test]
+fn nested_kind_closure_violation_warns_exactly_once() {
+    let compiled = compile_nested_mixed_kind_union();
+
+    let mut engine = make_simple_engine();
+    let evaluated = engine.eval(&compiled);
+    assert_eq!(
+        probe(&evaluated.values, "mixed"),
+        &Value::List(vec![Value::Undef])
+    );
+    assert_eq!(kind_closure_warnings(&evaluated.diagnostics), 1, "eval");
+
+    let edited = engine
+        .edit_param(ValueCellId::new("Probe", "length"), Value::length(0.2))
+        .expect("edit_param must succeed after eval");
+    assert_eq!(kind_closure_warnings(&edited.diagnostics), 1, "edit_param");
+
+    let cached = make_simple_engine().eval_cached(&compiled, VersionId(1));
+    assert_eq!(
+        kind_closure_warnings(&cached.eval_result.diagnostics),
+        1,
+        "eval_cached"
+    );
 }
