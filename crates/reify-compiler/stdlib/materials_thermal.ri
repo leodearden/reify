@@ -44,32 +44,9 @@ trait ThermallyCharacterized : MaterialSpec {
     param glass_transition : Temperature = undef
 }
 
-// ── Declared-only ruling (task #5801) ────────────────────────────────────────
-
-// The three required scalars above have no production reader anywhere in the
-// repo. Task #5801 ratified keeping them and rejected retiring them: they are
-// deliberately inert, but live, data-carrying members of a material datasheet.
-//
-// Landing a consumer instead is not available — there is no thermal solver to
-// read them, and building one is out of scope for PRD 5
-// (docs/prds/v0_6/dimension-checked-readers.md §10). Retiring them is worse than
-// unattractive: thermal_expansion is required here, so deleting it breaks every
-// conformer (examples/drivebelt_trait_bounds.ri, the reify-test-support
-// fixtures, the materials_thermal_tests.rs conformers) and drops a contract
-// documented at docs/reify-stdlib-reference.md §6.3.
-//
-// These are not INV-SF-5 placeholders. Each is fully typed, dimensioned, and
-// carries a real value end to end — enforced rather than asserted, by
-// crates/reify-eval/tests/stdlib_prelude_tests.rs, which pins that
-// thermal_expansion reaches eval as 8.1e-6 K^-1.
-//
-// The ruling is trait-scoped: inertness here follows from what
-// ThermallyCharacterized is — a datasheet characterization surface — not from any
-// one param, so no per-param owner is needed. The §6.3 register lists only
-// thermal_expansion under #5801. ThermallyConductive.thermal_conductivity
-// (structural_physical.ri) merely shares the name, carries its own
-// `constraint thermal_conductivity > 0W/(m*K)` — a live DSL reader — and is out
-// of scope. Registered under INV-SF-3 declared-intent-consumed-or-diagnosed.
+// The three required scalars are declared-only, kept deliberately inert (#5801).
+// Ruling and rationale: docs/reify-stdlib-reference.md §6.3 "Declared-only material
+// properties".
 
 // ── Refractory ───────────────────────────────────────────────────────────────
 

@@ -101,27 +101,8 @@ trait Elastic {
     constraint 0 < poissons_ratio < 0.5
 }
 
-// ── Declared-only ruling (task #5801) ────────────────────────────────────────
-
-// shear_modulus has no production reader anywhere in the repo. Task #5801
-// ratified keeping it and rejected retiring it: it is a deliberately inert, but
-// live, data-carrying member of a material datasheet.
-//
-// Landing a consumer instead is not available — nothing consumes G on its own,
-// there is no orthotropic-shear path that would, and building one is out of
-// scope for PRD 5 (docs/prds/v0_6/dimension-checked-readers.md §10). Retiring it
-// is not merely unattractive: conformers already supply it
-// (reify-test-support/src/fixtures.rs, the geometry_traits and
-// materials_param_surface test conformers at 77GPa), and #5801's own capability
-// gate requires this declaration to stay present. Its optionality — rationale
-// above — is what makes the inertness cost conformers nothing.
-//
-// This is not an INV-SF-5 placeholder. It is fully typed, dimensioned, and
-// carries a real value end to end — enforced rather than asserted, by
-// eval_with_prelude_trait_conformance in
-// crates/reify-eval/tests/stdlib_prelude_tests.rs, which pins that a conformer's
-// 77GPa reaches eval as 7.7e10 Pa. Registered under
-// INV-SF-3 declared-intent-consumed-or-diagnosed.
+// shear_modulus is declared-only, kept deliberately inert (#5801). Ruling and
+// rationale: docs/reify-stdlib-reference.md §6.3 "Declared-only material properties".
 
 // ── Strength ─────────────────────────────────────────────────────────────────
 

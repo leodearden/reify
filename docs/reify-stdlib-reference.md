@@ -1263,19 +1263,27 @@ properties below; none of them is a reader.
 | `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
 | `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
 
-Both rows record a CLOSED decision rather than an open tracking cite; the
-rationale for each — why no consumer is landed, and why retirement was rejected
-— lives at its declaration site, immediately below the owning trait.
+Both rows record a CLOSED decision (#5801), not an open tracking cite. This
+subsection is the single home for that ruling and its rationale; each declaration
+site carries only a pointer back here.
 
-The rows also call these properties *data-carrying*. That is a runtime claim, so
-it is pinned in code rather than only here:
-`crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that `shear_modulus`
-reaches eval as 7.7e10 Pa (`eval_with_prelude_trait_conformance`) and that
-`thermal_expansion` reaches it as 8.1e-6 K⁻¹
-(`eval_carries_thermal_expansion_value_in_si`). Neither property has a reader
-that would otherwise notice a value going missing; if one stopped arriving that
-suite goes red, so the ruling has to be revisited rather than quietly becoming
-false.
+- **No consumer is landed.** Nothing consumes either value: there is no thermal
+  solver to read `thermal_expansion`, and no orthotropic-shear path that would read
+  `shear_modulus` on its own. Building either is out of scope for
+  `docs/prds/v0_6/dimension-checked-readers.md` §10.
+- **Neither is retired.** `thermal_expansion` is a *required* member of
+  `ThermallyCharacterized`, so deleting it would break every conformer and drop the
+  trait contract shown above. `shear_modulus` is optional (`= undef`), so keeping
+  it inert costs conformers nothing, and the conformers that do supply it keep a
+  real datasheet value.
+- **Neither is an INV-SF-5 placeholder.** Each is fully typed, dimensioned and
+  *data-carrying*. That is a runtime claim, so it is pinned in code rather than
+  only here: `crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that
+  `shear_modulus` reaches eval in SI (`eval_with_prelude_trait_conformance`), and
+  that all three required `ThermallyCharacterized` scalars do
+  (`eval_carries_thermally_characterized_scalars_in_si`). With no reader to notice
+  a value going missing, that suite is what goes red if one stops arriving, so the
+  ruling must then be revisited rather than quietly becoming false.
 
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
