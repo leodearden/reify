@@ -1,75 +1,16 @@
 //! Placement contract for the Ring-1 language-spec conformance fixture tree
-//! (PRD `docs/prds/v0_6/spec-conformance-suite.md`, D2; leaf beta #6759).
+//! (PRD `docs/prds/v0_6/spec-conformance-suite.md`, D2). Charter:
+//! `../fixtures/README.md`.
 //!
-//! The charter for this tree — why must-reject fixtures are chartered residents,
-//! what `fixtures/_*/` means, and the full sentinel arrangement these tests
-//! implement — is normative in `../fixtures/README.md`. Only what a reader of
-//! THIS file needs in order to edit it correctly is repeated below.
+//! Pinned here: the tree exists; no loose `*.ri` sits directly at its root
+//! (per-section DEPTH is leaf gamma's, #6761); at least one `*.ri` exists
+//! beneath it. These tests glob and never name a fixture, so adding, renaming
+//! or removing one stays inert to every tracked `.rs` source.
 //!
-//! What is pinned here, and nothing more:
-//!   * the tree exists and is a directory;
-//!   * no loose `*.ri` sits directly at its root — strictly weaker than D2's
-//!     one-directory-per-section shape, because section-directory naming and
-//!     therefore per-section DEPTH belong to leaf gamma (#6761);
-//!   * at least one `*.ri` exists somewhere beneath (non-vacuity);
-//!   * the placement-probe sentinel is present and is still a live violator of
-//!     the corpus-cleanliness guard it exists to keep honest;
-//!   * that guard still exists and still names this tree.
-//!
-//! These tests glob and deliberately never name a *conformance fixture's*
-//! basename, so adding, renaming or removing a fixture stays inert to every
-//! tracked `.rs` source. `_placement-probe/placement_probe.ri` is the ONE
-//! documented exception: it is a sentinel rather than a conformance fixture, so
-//! its identity is precisely the thing that must be pinned.
-//!
-//! Anti-vacuity (PRD D14): a scan written inline in a test body can only ever be
-//! observed passing, so both directory scans are factored into named helpers and
-//! fired against a synthetic violator tree in `helper_self_tests`.
-//!
-//! EDITING THIS FILE: it lives under `crates/**/*.rs` and is NOT covered by any
-//! exclusion arm of `corpus_no_bare_scalar.rs` (only this crate's `fixtures/`
-//! tree is), so a literal bare `Scalar` annotation on a non-comment line here
-//! would red that guard for real. That guard's own unit tests are the place for
-//! violating literals — its file is self-excluded from the scan.
+//! Anti-vacuity (PRD D14): both directory scans are named helpers, fired
+//! against a synthetic violator tree in `helper_self_tests`.
 
 use std::path::{Path, PathBuf};
-
-/// The corpus guard's detection predicate, included from its single source so
-/// this crate re-runs the REAL predicate rather than a mirror of it.
-///
-/// By `#[path]` and never by a Cargo dependency edge — see `src/lib.rs`,
-/// Obligation 1.
-#[path = "../../reify-cli/tests/common/bare_scalar_predicate.rs"]
-mod bare_scalar_predicate;
-
-use bare_scalar_predicate::line_has_bare_scalar;
-
-/// Repo-relative path of the corpus-cleanliness guard this tree is registered
-/// with. Spelled once; used by the sentinel and registration tests.
-const CORPUS_GUARD_REL: &str = "crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs";
-
-/// The path segment the guard's exclusion arm must spell for this tree to be
-/// excluded at all — an executable spelling, not a comment token placed to be
-/// grepped.
-///
-/// NECESSARY but not sufficient, deliberately: the guard-side sentinel names
-/// this crate too, so deleting the `retain` alone leaves the pin green. That
-/// case needs no help — it reds `corpus_has_zero_bare_scalar` on the probe
-/// immediately. What this catches is the case nothing else would: the guard
-/// kept, but this tree unregistered from it entirely, leaving the sentinel
-/// below standing watch over nothing.
-const CORPUS_GUARD_TREE_REF: &str = "reify-spec-conformance";
-
-/// Resolve the workspace root from `CARGO_MANIFEST_DIR`.
-///
-/// This crate lives at `<root>/crates/reify-spec-conformance`, so the workspace
-/// root is two levels up — the same idiom as the guard's own `workspace_root()`.
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root must be accessible")
-}
 
 /// Resolve the fixture tree root and assert it exists, returning it.
 ///
@@ -88,10 +29,8 @@ fn require_fixtures_root() -> PathBuf {
     root
 }
 
-/// Walk `dir` recursively, appending every `*.ri` file to `out`.
-///
-/// Silently skips unreadable entries — mirrors `collect_files` in
-/// `corpus_no_bare_scalar.rs`.
+/// Walk `dir` recursively, appending every `*.ri` file to `out`. Silently
+/// skips unreadable entries.
 fn collect_ri(dir: &Path, out: &mut Vec<PathBuf>) {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
@@ -140,14 +79,6 @@ fn is_non_section_resident(root: &Path, path: &Path) -> bool {
         .is_some_and(|first| first.starts_with('_'))
 }
 
-/// The placement-probe sentinel — see the module doc for why this one basename
-/// is spelled out while conformance fixtures deliberately are not.
-fn placement_probe() -> PathBuf {
-    require_fixtures_root()
-        .join("_placement-probe")
-        .join("placement_probe.ri")
-}
-
 #[test]
 fn fixture_tree_exists() {
     let _ = require_fixtures_root();
@@ -193,16 +124,10 @@ fn fixture_tree_is_not_vacuous() {
         .filter(|p| !is_non_section_resident(&root, p))
         .count();
 
-    // WHAT THIS ASSERTS AT BETA, HONESTLY: `found` is non-empty today because
-    // of `_placement-probe/placement_probe.ri` and nothing else. That resident
-    // is a sentinel, NOT a conformance fixture — so this test currently
-    // establishes only that the no-loose-`.ri`-at-root contract above has SOME
-    // resident to be non-vacuous over, not that any spec section is populated.
-    // Authoring the corpus is leaf eta's (#6765), not beta's, so asserting on
-    // `section_residents` here would red for a reason nobody could fix at beta.
-    // The count is computed anyway, and reported below, so that when eta lands
-    // its first real section wave the tightening is a one-line change:
-    // assert on `section_residents > 0` instead of `!found.is_empty()`.
+    // At beta the only resident is the `_placement-probe/` sentinel, not a
+    // conformance fixture, so this pins "not an empty tree" rather than "a
+    // section is populated". Leaf eta (#6765) authors the corpus; its first
+    // section wave tightens this to `section_residents > 0`.
     assert!(
         !found.is_empty(),
         "The fixture tree {} contains no `*.ri` files anywhere beneath it. \
@@ -219,87 +144,6 @@ fn fixture_tree_is_not_vacuous() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Sentinel: the placement probe must stay a LIVE violator of the corpus guard,
-// and that guard must still register this tree. Rationale: `fixtures/README.md`.
-//
-// This crate-local half runs the guard's predicate from its single source, so
-// it carries no drift surface; its distinct value over the guard-side half is
-// that it still fires under a `.ri`-only scope narrowing that never builds
-// `reify-cli`.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn placement_probe_sentinel_still_violates_the_corpus_guard() {
-    let probe = placement_probe();
-
-    let content = std::fs::read_to_string(&probe).unwrap_or_else(|e| {
-        panic!(
-            "The placement-probe sentinel {} must exist and be readable ({e}).\n\n\
-             It is the permanently committed live violator sitting under the \
-             registered exclusion arm for this tree in \
-             `{CORPUS_GUARD_REL}`. \
-             Delete it and that arm excludes a directory with nothing left in it \
-             to exclude — vacuous, and no other test in the repo would notice. \
-             Restore the probe, or retire the exclusion arm in the same change. \
-             See crates/reify-spec-conformance/fixtures/README.md.",
-            probe.display()
-        )
-    });
-
-    assert!(
-        content.lines().any(line_has_bare_scalar),
-        "The placement-probe sentinel {} no longer carries a bare `Scalar` \
-         annotation on a non-comment line, so it no longer trips the \
-         corpus-cleanliness predicate in `{CORPUS_GUARD_REL}`.\n\n\
-         That guard's registered exclusion arm for this tree is now vacuous: it \
-         would stay green even if the arm were deleted, so the arm's stated \
-         rationale (\"can never silently go vacuous\") no longer holds.\n\n\
-         Do NOT \"fix\" the probe — its bare annotation is deliberate. Restore \
-         it, or retire the exclusion arm in the same change. \
-         See crates/reify-spec-conformance/fixtures/README.md.",
-        probe.display()
-    );
-}
-
-#[test]
-fn corpus_guard_still_registers_this_tree() {
-    let guard = workspace_root().join(CORPUS_GUARD_REL);
-
-    let source = std::fs::read_to_string(&guard).unwrap_or_else(|e| {
-        panic!(
-            "The corpus-cleanliness guard {} is gone or unreadable ({e}).\n\n\
-             It is the ONE repo-wide walker that reaches `crates/**/*.ri`, and \
-             the whole purpose of this crate's `_placement-probe/` sentinel is \
-             to keep that guard's registered exclusion arm for this tree \
-             honest. With the guard retired, the probe guards nothing and \
-             every test here would happily stay green over it.\n\n\
-             The guard's own header anticipates this: it \"becomes \
-             compiler-redundant once gamma adds E_BARE_SCALAR\". If that has \
-             happened, retire the probe and these two sentinel tests in the \
-             SAME change (and drop the exclusion note from \
-             crates/reify-spec-conformance/fixtures/README.md) — do not leave \
-             a sentinel standing watch over nothing.",
-            guard.display()
-        )
-    });
-
-    assert!(
-        source.contains(CORPUS_GUARD_TREE_REF),
-        "The corpus-cleanliness guard {} no longer mentions \
-         `{CORPUS_GUARD_TREE_REF}` anywhere, so it neither excludes this tree \
-         nor watches its probe: this crate is fully unregistered from the one \
-         repo-wide walker that reaches `crates/**/*.ri`.\n\n\
-         If that was deliberate — the guard's header anticipates becoming \
-         compiler-redundant once gamma adds `E_BARE_SCALAR` — retire the probe \
-         and this file's two sentinel tests in the SAME change. Otherwise the \
-         exclusion arm was lost: restore it, and expect that guard to be RED on \
-         `_placement-probe/placement_probe.ri` until you do. \
-         See docs/prds/v0_6/spec-conformance-suite.md D2.",
-        guard.display()
-    );
-}
-
 // ── Anti-vacuity self-tests for the directory scans (PRD D14) ───────────────
 
 #[cfg(test)]
@@ -307,17 +151,10 @@ mod helper_self_tests {
     use super::{collect_ri, is_non_section_resident, loose_ri_at_root};
     use std::path::{Path, PathBuf};
 
-    /// A private scratch directory that deletes itself on drop.
-    ///
-    /// RAII rather than a trailing `remove_dir_all` after the assertion: a
-    /// failing assertion unwinds past a trailing cleanup and leaks the tree
-    /// under `CARGO_TARGET_TMPDIR`, which is exactly the accretion the warm-lane
-    /// disk guards exist to catch — and a red test is when it would happen.
-    ///
-    /// Dependency-free on purpose: this crate's empty `[dependencies]` /
-    /// `[dev-dependencies]` is load-bearing (it is what keeps it off the
-    /// occt-touching set — see `src/lib.rs`), so reaching for `tempfile` here
-    /// would be a real cost, not a convenience.
+    /// A private scratch directory that deletes itself on drop, so a failing
+    /// assertion cannot leak it. Hand-rolled rather than `tempfile`: the
+    /// dependency-free manifest is what keeps this crate off the occt-touching
+    /// set (`src/lib.rs`, Obligation 1).
     struct Scratch(PathBuf);
 
     impl Scratch {

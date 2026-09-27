@@ -8,9 +8,9 @@
 //! (#6761), together with the code that consumes them.
 //!
 //! **The fixture tree's charter is `fixtures/README.md`** — what may live there,
-//! why must-reject fixtures are chartered residents, and the sentinel
-//! arrangement that keeps its corpus-guard exclusion arm non-vacuous. This
-//! header carries only the two obligations that must travel with the *code*.
+//! why must-reject fixtures are chartered residents, and the sentinel that
+//! keeps its corpus-guard exclusion arm non-vacuous. This header carries only
+//! the two obligations that must travel with the *code*.
 //!
 //! Not to be confused with two false friends already in the tree:
 //!   * `reify-compiler/src/conformance/` — struct-ctor / GD&T field conformance.
@@ -28,12 +28,6 @@
 //! diff — `tests/infra/test_occt_gated_scope.sh` Test 3 asserts the declared
 //! set EQUALS the cargo-metadata-derived set in BOTH directions, so updating
 //! one file only is a merge-gate failure.
-//!
-//! `tests/fixture_tree.rs` reaches a `reify-cli` test source by `#[path]`
-//! inclusion, which is NOT such a dependency: it adds no edge to `cargo
-//! metadata`, so the property above is preserved. Keep it that way — reach for
-//! source inclusion, never a `[dev-dependencies]` entry, when this crate needs
-//! to share logic with a heavier one.
 //!
 //! # Obligation 2: `fixtures/_*/` is not a spec section — γ must skip it
 //!
