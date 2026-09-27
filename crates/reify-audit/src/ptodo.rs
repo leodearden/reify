@@ -1057,19 +1057,38 @@ pub fn is_swept_ext(path: &str) -> bool {
 // §8.3 per-file classification
 // -----------------------------------------------------------------------
 
-/// The four structural-lane finding kinds α emits (all Medium severity). The
-/// §8.3 `kind` token is carried as a stable summary prefix under the single
-/// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A TODO-family marker with no task citation at all.
-    Untracked,
-    /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
-    MalformedCite,
-    /// Prose claiming the work is tracked elsewhere, with no canonical cite.
-    PhantomTracking,
-    /// A bare `#[ignore]` attribute (no reason string).
-    BareIgnore,
+/// Declares a fieldless enum together with its `ALL` list from ONE variant
+/// list, so a variant cannot exist without being in `ALL`.
+macro_rules! enum_with_all {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident { $($(#[$variant_meta:meta])* $variant:ident,)+ }
+    ) => {
+        $(#[$enum_meta])*
+        enum $name { $($(#[$variant_meta])* $variant,)+ }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            const ALL: &'static [$name] = &[$($name::$variant),+];
+        }
+    };
+}
+
+enum_with_all! {
+    /// The structural-lane finding kinds α emits (severity per
+    /// [`Kind::severity`]). The §8.3 `kind` token is carried as a stable summary prefix under the single
+    /// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// A TODO-family marker with no task citation at all.
+        Untracked,
+        /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
+        MalformedCite,
+        /// Prose claiming the work is tracked elsewhere, with no canonical cite.
+        PhantomTracking,
+        /// A bare `#[ignore]` attribute (no reason string).
+        BareIgnore,
+    }
 }
 
 impl Kind {
@@ -1100,13 +1119,17 @@ impl Kind {
 }
 
 /// The §8.3 kind tokens the structural lane emits — the only kinds a §6.6
-/// baseline may carry (PRD §19).
-pub const STRUCTURAL_KINDS: [&str; 4] = [
-    Kind::Untracked.as_str(),
-    Kind::MalformedCite.as_str(),
-    Kind::PhantomTracking.as_str(),
-    Kind::BareIgnore.as_str(),
-];
+/// baseline may carry (PRD §19). One token per [`Kind`], derived from
+/// `Kind::ALL`, so a new variant joins it without a second edit.
+pub const STRUCTURAL_KINDS: [&str; Kind::ALL.len()] = {
+    let mut tokens = [""; Kind::ALL.len()];
+    let mut i = 0;
+    while i < tokens.len() {
+        tokens[i] = Kind::ALL[i].as_str();
+        i += 1;
+    }
+    tokens
+};
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
 /// is either *structurally* offending (no canonical cite → α's domain) or

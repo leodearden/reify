@@ -67,10 +67,18 @@ fn baseline_path() -> std::path::PathBuf {
     Path::new(manifest_dir).join("ptodo-baseline.txt")
 }
 
+/// A `REIFY_PTODO_TASKS_DB` override that can never resolve: no path beneath a
+/// character device can exist.
+const TASKS_DB_ABSENT: &str = "/dev/null/tasks.db";
+
 /// The one command that regenerates the baseline DB-absent (PRD §19).
-const REGEN_DB_ABSENT: &str = "REIFY_PTODO_TASKS_DB=/dev/null/tasks.db cargo run --release \
-     -p reify-audit --bin ptodo-baseline-gen -- --project-root . \
-     > crates/reify-audit/ptodo-baseline.txt";
+fn regen_db_absent() -> String {
+    format!(
+        "REIFY_PTODO_TASKS_DB={TASKS_DB_ABSENT} cargo run --release \
+         -p reify-audit --bin ptodo-baseline-gen -- --project-root . \
+         > crates/reify-audit/ptodo-baseline.txt"
+    )
+}
 
 // -----------------------------------------------------------------------
 // (A) Always-on well-formedness test
@@ -105,7 +113,8 @@ fn check_baseline_line(line: &str) -> Result<(), String> {
         return Err(format!(
             "kind {fp_kind:?} is not a structural kind {STRUCTURAL_KINDS:?}; the \
              baseline is structural-only by construction (PRD §19), so liveness and \
-             inverse kinds never enter it. Regenerate it DB-absent: {REGEN_DB_ABSENT}"
+             inverse kinds never enter it. Regenerate it DB-absent: {}",
+            regen_db_absent()
         ));
     }
     // path has a swept extension …
@@ -164,7 +173,8 @@ fn baseline_is_well_formed() {
     assert!(
         path.exists(),
         "ptodo-baseline.txt not found at {path:?}.\n\
-         Generate it DB-absent with the canonical generator:\n{REGEN_DB_ABSENT}"
+         Generate it DB-absent with the canonical generator:\n{}",
+        regen_db_absent()
     );
 
     let content = std::fs::read_to_string(&path)
@@ -330,10 +340,6 @@ fn untracked_marker(body: &str) -> String {
 fn cited_marker(id: u32, body: &str) -> String {
     format!("// {}{}(#{id}): {body}\n", "TO", "DO")
 }
-
-/// A `REIFY_PTODO_TASKS_DB` override that can never resolve: no path beneath a
-/// character device can exist.
-const TASKS_DB_ABSENT: &str = "/dev/null/tasks.db";
 
 /// A `git` command targeting the fixture repo at `root`.
 ///
