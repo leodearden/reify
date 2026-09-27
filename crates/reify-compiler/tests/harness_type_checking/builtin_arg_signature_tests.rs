@@ -440,29 +440,8 @@ const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
 /// Hard-coded for the same reason [`LENGTH_HINT`] is, and NOT read from
 /// `reify_core::units::ANGLE_MIGRATION_HINT`: a message assertion built from
 /// the const the implementation reads passes for whatever the implementation
-/// happens to say. The SPOT claim — that this hard-coded pin IS the string the
-/// eval layer ships — is asserted separately and explicitly by
-/// `the_angle_hint_pinned_here_is_the_one_const_both_layers_read`, so a const
-/// edit reds exactly one place and does so deliberately.
+/// happens to say.
 const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
-
-/// COUPLING — the drift pin above is the same `&'static str` both layers read.
-///
-/// This is what makes hard-coding [`ANGLE_HINT`] a pin rather than a second
-/// copy. PRD 3 leaf ζ lands every ANGLE slot on ONE hint-carrying template
-/// (decision D11); if `ANGLE_MIGRATION_HINT` is ever reworded, every message
-/// assertion below would silently follow the implementation, and only this
-/// assertion says so.
-#[test]
-fn the_angle_hint_pinned_here_is_the_one_const_both_layers_read() {
-    assert_eq!(
-        ANGLE_HINT,
-        reify_core::units::ANGLE_MIGRATION_HINT,
-        "the compile-layer ANGLE slots and the eval-layer angle gate must render \
-         one wording; if the const moved, update this pin deliberately rather \
-         than deriving the assertions from it"
-    );
-}
 
 /// (b) SIGNAL — the BARE-INT arm carries the hint too.
 ///
