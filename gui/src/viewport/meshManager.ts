@@ -15,10 +15,49 @@ import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from '../types';
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
+import { UNDERLAY_RENDER_ORDER } from './renderOrder';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
 (BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
+
+/**
+ * BVH build options. `indirect: true` is LOAD-BEARING, not a tuning knob —
+ * removing it silently reintroduces #6813.
+ *
+ * three-mesh-bvh's README, under `MeshBVH` > `.constructor`, states verbatim:
+ * "The geometry's index attribute array is modified in order to build the
+ * bounds tree unless `indirect` is set to `true`." The options list directly
+ * above that note gives the default as `indirect: false`, i.e. the builder
+ * permutes the index array in place.
+ *
+ * Our index attribute *aliases* store-owned `MeshData.indices` rather than
+ * copying it — see the `indices` doc comment on the `MeshData` interface in
+ * `gui/src/types.ts`, the alias sites at
+ * `geometry.setIndex(new BufferAttribute(data.indices, 1))` in
+ * `createMeshFromData` and `indexAttr.array = data.indices` in
+ * `updateMeshGeometry` below, and the store's retention of that same object in
+ * `applyMeshUpdate` (`setState('meshes', mesh.entity_path, mesh)` in
+ * `stores/engineStore.ts`). So under the default the BVH writes back into the
+ * store, permuting face order while every per-face side array keyed to it —
+ * `element_index`, `element_kind`, `region_tags` — stays in the original order.
+ * Measured consequences: `feaDiagnosticOverlay`'s precise outline
+ * (`problemElementOutlinePositions`) emits the wrong faces for the requested
+ * element ids, and a raycast `intersection.faceIndex` no longer denotes the
+ * store's face (57 rather than 7 on the reproduction fixture), corrupting
+ * persisted `probe.face_id` re-sampling.
+ *
+ * Indirect mode keeps the caller's buffer untouched by routing the BVH through
+ * its own permutation buffer, and resolves triangle indices back to geometry
+ * order on both the plain-THREE and `acceleratedRaycast` paths. The cost is one
+ * extra indirection per BVH triangle lookup; reify's raycasts are per-pointer
+ * and set `firstHitOnly = true` on the raycaster (see `selection.ts` and
+ * `ProbeSystem.tsx`), so traversal stays O(log n) and this is not a hot bulk
+ * path.
+ *
+ * Pinned by gui/src/__tests__/viewport/meshManager.indexAliasing.test.ts.
+ */
+const BVH_OPTIONS = { indirect: true } as const;
 
 /** Catppuccin accent palette for deterministic mesh coloring. */
 const ACCENT_PALETTE = [
@@ -410,7 +449,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
 
     try {
-      (geometry as any).computeBoundsTree();
+      // BVH_OPTIONS.indirect is required: the index attribute aliases
+      // store-owned data.indices (set just above), which the default
+      // non-indirect builder would permute in place (#6813).
+      (geometry as any).computeBoundsTree(BVH_OPTIONS);
     } catch (err) {
       geometry.dispose();
       material.dispose();
@@ -600,9 +642,13 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       }
     }
 
-    // Rebuild BVH for the updated geometry
+    // Rebuild BVH for the updated geometry.
+    // BVH_OPTIONS.indirect is required: the index attribute aliases store-owned
+    // data.indices on both branches above (re-aliased into the existing
+    // BufferAttribute, or wrapped by a fresh setIndex), which the default
+    // non-indirect builder would permute in place (#6813).
     try {
-      (geometry as any).computeBoundsTree();
+      (geometry as any).computeBoundsTree(BVH_OPTIONS);
     } catch (err) {
       console.error(`Failed to rebuild BVH for mesh '${mesh.name}'`, err);
       removeMesh(mesh.name);
@@ -706,7 +752,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
     const overlay = new Mesh(overlayGeom, undeformedMaterial);
     overlay.name = `undeformed:${entityPath}`;
-    overlay.renderOrder = -1; // draw behind the deformed mesh (renderOrder=0 default)
+    overlay.renderOrder = UNDERLAY_RENDER_ORDER; // draw behind the deformed mesh (renderOrder=0 default)
 
     undeformedMeshMap.set(entityPath, overlay);
     undeformedGroup.add(overlay);

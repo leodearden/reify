@@ -481,18 +481,20 @@ the user — `report_eval_output` (`main.rs:3508`) prints every diagnostic to st
    checker's misattributed `operator undefined for these operand kinds: StructureInstance`.
    The non-assertion hot path must keep its zero-allocation shape (tactical: a precomputed
    per-check boolean).
-2. Two production call sites share one helper,
-   `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and emit an
+2. Three production call sites share one helper,
+   `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and refuse on its
    **Error**-severity coded diagnostic when the module declares a bound the export path cannot
-   demonstrate it honours: `engine_build.rs`'s `build_outputs` / `build_outputs_with_result`
-   (the occurrence-driven Mode-B export path); and `cmd_build`'s Mode-A `-o` path
-   (`crates/reify-cli/src/main.rs`), which calls the helper directly ahead of the write rather
-   than relying only on the pre-existing `Severity::Error` gate for its exit code. A third
-   export surface — the GUI (`gui/src-tauri/src/engine.rs`'s `Engine::export()` → `build()`) —
-   is a **known bypass, not a third enforcing site**: `build()` never calls the helper, only
-   `build_outputs`/`build_outputs_with_result` do. Task **6190** closes it (fix committed on
-   branch `task/6190`, not yet landed on `main`); this line records the as-shipped state, not
-   the post-6190 one.
+   demonstrate it honours — the two CLI/eval sites by propagating the typed `Diagnostic` itself,
+   the GUI by returning its message verbatim as `Err(String)` (leading `E_*` token preserved,
+   pinned by `starts_with` in `gui/src-tauri/src/tests/{engine,commands}_tests.rs`):
+   `engine_build.rs`'s `build_outputs` / `build_outputs_with_result` (the occurrence-driven
+   Mode-B export path); `cmd_build`'s Mode-A `-o` path (`crates/reify-cli/src/main.rs`), which
+   calls the helper directly ahead of the write rather than relying only on the pre-existing
+   `Severity::Error` gate for its exit code; and the GUI's `EngineSession::export`
+   (`gui/src-tauri/src/engine.rs`), which calls the helper directly ahead of `engine.build`,
+   mirroring the CLI Mode-A *siting* — helper ahead of the build, so the write is never reached —
+   though the refusal is delivered as an `Err` return rather than through `report_eval_output`
+   plus an exit code (task **6190**, landed on `main`). All three surfaces are enforcing sites.
 
    Mode A and Mode B are also empirically asymmetric in what they report **on success**, independent
    of the refusal wiring above: Mode A (`reify build -o <path>`) prints a `Triangles: N` line that
@@ -666,8 +668,7 @@ with an export (§3.1(f)), so nothing regresses.
 *Modules:* three call sites (§5 C-SURFACE (2) has the full contract and the Mode-A/Mode-B reporting
 asymmetry): `crates/reify-eval/src/engine_build.rs` (`build_outputs`, `build_outputs_with_result` —
 Mode B); `crates/reify-cli/src/main.rs`'s `cmd_build` Mode-A `-o` path; and
-`gui/src-tauri/src/engine.rs` (still a bypass as of this writing — task 6190 closes it, not yet
-landed on `main`).
+`gui/src-tauri/src/engine.rs` (`EngineSession::export`, task 6190, landed on `main`).
 *Lock note:* `crates/reify-cli/src/main.rs` **is** touched — an earlier version of this note said "no
 CLI file is touched," which was stale: Mode A calls `unenforced_representation_bound_diagnostic`
 directly ahead of the write rather than relying only on `cmd_build`'s pre-existing
@@ -698,7 +699,7 @@ not the feature name finds `RepresentationWithin` from the chunks in intent term
 layout, stating the anti-pattern it replaces (bound on the geometry-owning structure, which replaces
 `#precision` outright per §3.1(c)). Plus its `INDEX.md` line and a one-line index entry in
 `.claude/skills/reify-design/SKILL.md` pointing at the corpus file (not an inline playbook).
-*Signal:* the file compiles under the corpus gate (`crates/reify-compiler/tests/examples_smoke.rs`)
+*Signal:* the file compiles under the corpus gate (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`)
 and `best_practices_index_matches_corpus_directory` stays green.
 *Modules:* `examples/best_practices/representation_bound.ri`, `examples/best_practices/INDEX.md`,
 `.claude/skills/reify-design/SKILL.md`.

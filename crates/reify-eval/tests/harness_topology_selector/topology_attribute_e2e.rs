@@ -594,11 +594,24 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
 /// always exercised regardless of OCCT's history-emission quirks for
 /// aligned fuses.
 ///
-/// Geometry: a 30×10×10 mm slab along X centred at origin fused with a
-/// 10×30×10 mm slab along Y centred at origin produces a "+"-shape
-/// extruded in Z. Each slab's top face (at z=10mm) is split where the
-/// other slab crosses it, giving us at least one parent face with
-/// `count > 1` across `face_modified ∪ face_generated`.
+/// Geometry: a 30×10×10 mm slab along X fused with a 10×30×**30** mm slab
+/// along Y, both centred on the XY origin — a cross whose upright arm
+/// PROTRUDES through the flat arm's top and bottom faces. The X-slab's top
+/// face is therefore divided into two DISJOINT coplanar rectangles, giving at
+/// least one parent face with `count > 1` across
+/// `face_modified ∪ face_generated`.
+///
+/// The Z protrusion is load-bearing (task 7054). The original fixture made
+/// both slabs 10 mm tall, so the cross was flush and its top was a single
+/// PLUS-SHAPED planar region that OCCT happened to return as three coplanar
+/// fragments. Since every boolean result is now run through
+/// `ShapeUpgrade_UnifySameDomain`, those same-domain fragments are merged back
+/// into the one face they always were, and the flush fixture stopped splitting
+/// anything at all — `split_exercised` went false. That is the fix working as
+/// intended, not a regression in the propagation path this test covers, so the
+/// fixture was tightened exactly as the assertion message below prescribes.
+/// Two DISJOINT coplanar faces cannot be unified (they share no edge), so this
+/// split is a real one and survives.
 ///
 /// PRD reference: docs/prds/v0_2/persistent-naming-v2.md task 3 / line 64
 /// (modification-history postfix).
@@ -611,8 +624,11 @@ fn mod_history_threading_with_orthogonal_slabs() {
 
     let kernel = OcctKernelHandle::spawn();
 
-    // X-axis slab: 30×10×10 mm. Box anchors at origin (min-corner), so
-    // translate by (-15mm, -5mm, 0) to centre on the XY origin.
+    // X-axis slab: 30×10×10 mm. NOTE: `make_box` CENTRES its output on the
+    // origin (the previous "anchors at origin (min-corner)" note here was
+    // wrong), so this translate offsets the slab to x∈[-30,0], y∈[-10,0],
+    // z∈[-5,5] rather than centring it. Kept as-is; the Y-slab below is
+    // positioned relative to these measured extents.
     let slab_x_anchored = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(3.0 * BOX_SIDE_M),
@@ -631,20 +647,30 @@ fn mod_history_threading_with_orthogonal_slabs() {
         .expect("X-slab translate should build")
         .id;
 
-    // Y-axis slab: 10×30×10 mm. Translate by (-5mm, -15mm, 0).
+    // Y-axis slab: 10×30×30 mm.
+    //
+    // The Z extent is 3× the X-slab's (task 7054): it must PROTRUDE through
+    // the X-slab's top and bottom planes rather than stop flush with them.
+    // See the fn doc for why a flush cross no longer splits anything.
     let slab_y_anchored = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(BOX_SIDE_M),
             height: Value::Real(3.0 * BOX_SIDE_M),
-            depth: Value::Real(BOX_SIDE_M),
+            depth: Value::Real(3.0 * BOX_SIDE_M),
         })
         .expect("Y-slab box should build")
         .id;
+    // Place the upright arm through the MIDDLE of the flat arm (measured
+    // bboxes: slab_x spans x∈[-30,0] y∈[-10,0] z∈[-5,5]), so its 30mm y-extent
+    // covers the flat arm's full width and its 30mm z-extent protrudes above
+    // and below. Centring it at (-15mm, -5mm) is what divides the flat arm's
+    // top face into two DISJOINT rectangles rather than shaving a strip off
+    // one end (task 7054).
     let slab_y = kernel
         .execute(&GeometryOp::Translate {
             target: slab_y_anchored,
-            dx: -0.5 * BOX_SIDE_M,
-            dy: -1.5 * BOX_SIDE_M,
+            dx: -1.5 * BOX_SIDE_M,
+            dy: -0.5 * BOX_SIDE_M,
             dz: 0.0,
         })
         .expect("Y-slab translate should build")

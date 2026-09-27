@@ -365,6 +365,18 @@ structure S {
         (type_expr
           (identifier))))))
 
+; ── #7094 / INV-SF-7: the CST below is UNCHANGED; the SOURCE is now rejected ──
+; #7094 does not touch grammar.js, so the joined tree pinned below is still
+; exactly what tree-sitter produces here — the join is real and this row keeps
+; documenting it. What changed is the DIAGNOSTIC set: reify-syntax's post-parse
+; member-continuation check (crates/reify-syntax/src/member_continuation.rs)
+; now reports the `(` that opens the third line, because it starts at or left
+; of the member column of the predicate it silently continues.
+; This join was committed here on purpose, as a CST pin with no verdict
+; attached; #7094 supplied the verdict — REJECT, rather than let a reading that
+; changes the parsed value stay silent (INV-SF-7 `parse-is-value-faithful`).
+; Owned by `constraint_def_body_item_boundary_join_is_rejected` in
+; crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs.
 ================================================================================
 namespaced_ref item boundary: a predicate ending `.name` JOINS a following `(` predicate
 ================================================================================
@@ -389,6 +401,14 @@ constraint def C {
             (identifier)))
         right: (number_literal)))))
 
+; ── #7094 / INV-SF-7: the CST below is UNCHANGED; the SOURCE is now rejected ──
+; Same disposition as the row above, and for the same reason: the tree is still
+; what the grammar produces, and the `(` opening the third line is now reported
+; by the member-continuation check. Keeping the control row rejected too is the
+; point — the verdict is about the LAYOUT, not about whether the absorbed
+; callee happened to be `a` or `a.b`.
+; Owned by `constraint_def_bare_ident_control_join_is_rejected` in
+; crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs.
 ================================================================================
 namespaced_ref item boundary control: a predicate ending in a BARE ident joins the same way
 ================================================================================
@@ -411,6 +431,15 @@ constraint def C {
             (identifier)))
         right: (number_literal)))))
 
+; ── #7094 / INV-SF-7: the CST below is UNCHANGED; the SOURCE is now rejected ──
+; The `relate` body demonstrates that the join is not a constraint-def quirk:
+; every brace-delimited member-list body in the grammar is a separator-free
+; `repeat(...)`, so all of them absorb a following line the same way. The
+; member-continuation check therefore runs over the whole container set
+; (`reify_syntax::member_continuation::MEMBER_LIST_CONTAINERS`), and reports the
+; `(` opening `(x)` here just as it does in the two rows above.
+; Owned by `relate_body_item_boundary_join_is_rejected` in
+; crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs.
 ================================================================================
 namespaced_ref item boundary: relate's relation_member repeat joins the same way
 ================================================================================

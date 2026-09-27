@@ -15,6 +15,22 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/occt_flock_gate_lib.sh" ] || { echo "ERROR: occt_flock_gate_lib.sh not found at $SCRIPT_DIR/occt_flock_gate_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
 
+# plan_capture_lib.sh (task 6426) — `plan_capture_complete` certifies a
+# --print-plan capture is not truncated, and `capture_print_plan` retries until
+# it is.  Every plan-string assertion in this file depends on both: without the
+# completeness certification a capture truncated under load reads as "pattern
+# absent" and fires a misleading failure instead of a retry (task 6247).
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
+# release-scope-lib.sh (task 7580): provides release_declared_set(), the single
+# source of truth for the declared release-sensitive crate set (also used by
+# scripts/verify.sh itself), so the T17-AMB non-vacuity guard below cannot
+# drift from scripts/release-sensitive-crates.txt via a second, independent
+# grep over that file.
+[ -f "$REPO_ROOT/scripts/release-scope-lib.sh" ] || { echo "ERROR: release-scope-lib.sh not found at $REPO_ROOT/scripts/release-scope-lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/release-scope-lib.sh"
+
 WRAPPER="$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 
 echo "=== OCCT flock gate tests ==="
@@ -113,11 +129,28 @@ assert "wrapper exit code is 42 (got $_EC)" \
 # -- verify.sh plan integration tests ------------------------------------------
 # These formerly grepped dark-factory-orchestrator.yaml's test_command. Since task 3766 the
 # orchestrator calls scripts/verify.sh, so the canonical command list is taken
-# from verify.sh --print-plan (--scope all → full plan, index-independent; env
-# lines stripped via `grep -v '^#'`). The gated passes are plain `cargo test`
-# under the flock wrapper regardless of the nextest/cargo-test choice for the
-# ungated tail, so the gated assertions below stay exact-match.
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+# from verify.sh --print-plan (--scope all → full plan, index-independent). The
+# gated passes are plain `cargo test` under the flock wrapper regardless of the
+# nextest/cargo-test choice for the ungated tail, so the gated assertions below
+# stay exact-match.
+#
+# CAPTURE SHAPE (task 6247), used identically at every --print-plan site below:
+# capture into a _RAW variable via capture_print_plan (which retries until the
+# dump is complete), assert plan_capture_complete on that RAW dump, and only
+# THEN reduce it to command lines with plan_strip_comments. The order is forced:
+# the completeness markers verify.sh emits are themselves comment lines, so the
+# former single-shot `... --print-plan | grep -v '^#'` destroyed the evidence of
+# truncation and a short capture read as "pattern absent" — a misleading
+# contract failure instead of a retry.
+TEST_PLAN_SEGS_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan TEST_PLAN_SEGS_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan || true
+assert "TEST_PLAN_SEGS: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$TEST_PLAN_SEGS_RAW"
+TEST_PLAN_SEGS="$(plan_strip_comments "$TEST_PLAN_SEGS_RAW")"
 export TEST_PLAN_SEGS
 
 echo ""
@@ -160,11 +193,17 @@ echo "--- Test 14: REIFY_OCCT_LOCK_WAIT=1 fires within budget, exits non-zero wi
 _LOCK14="$(mktemp)"
 _ERR14="$(mktemp)"
 
-# Spawn a background holder that acquires slot-1 and holds it for 10s.
-# The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
-# target the slot file to actually block the wrapper.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
-_HOLDER14=$!
+# Spawn a background holder that acquires slot-1 and holds it until THIS TEST
+# releases it (task 6247).  The wrapper uses ${LOCK}.slot-1 (not $LOCK
+# directly), so the holder must target the slot file to actually block it.
+#
+# The hold used to be a fixed `sleep 10`, which is a race in the OVERRUN
+# direction: on a saturated host the wrapper's preamble plus retry cycle can
+# outlast the hold, so the wrapper acquires the slot it was supposed to be
+# blocked on and the test's premise silently disappears.  A test-released hold
+# strictly CONTAINS the wrapper invocation however long it takes.
+_HOLD14="$(mktemp -d)"
+_HOLDER14="$(holder_spawn_gated "${_LOCK14}.slot-1" "$_HOLD14/ready" "$_HOLD14/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
 # saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
@@ -172,7 +211,7 @@ _HOLDER14=$!
 # `assert` so a transient confirm-failure yields a clear FAIL naming the root
 # cause instead of tripping `set -e` and aborting the whole suite.
 assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK14}.slot-1"
+    holder_wait_until_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -186,8 +225,8 @@ REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeo
 _END14="$(date +%s)"
 _ELAPSED14=$(( _END14 - _START14 ))
 
-kill "$_HOLDER14" 2>/dev/null || true
-wait "$_HOLDER14" 2>/dev/null || true
+holder_release "$_HOLD14/release" "$_HOLDER14" || true
+rm -rf "$_HOLD14"
 
 # Discriminators: exit==75 (EX_TEMPFAIL) and stderr pattern are the NON-VACUOUS
 # proof that the deadline logic fired correctly.  The elapsed guard is a generous
@@ -218,12 +257,19 @@ _LOCK15="$(mktemp)"
 # + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
 # (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
 # ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+# NOT migrated to holder_spawn_gated (task 6247), unlike the Test 14 and Test 22
+# holders: those must OUTLIVE the wrapper, whereas here the wrapper must outlive
+# the HOLDER.  This test proves the internal timer starts after the lock is
+# acquired, so the holder has to release itself mid-wait while the wrapper is
+# still blocked.  The 6s is a test INPUT, not a synchronization grace, and a
+# test-released hold cannot express it: the wrapper would block until LOCK_WAIT
+# expired and exit 75 instead of 124.
 ( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
 # Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
 # Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK15}.slot-1"
+    holder_wait_until_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
@@ -350,9 +396,17 @@ echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 #     distinguishable. RED against current code: the release pass currently follows the unified
 #     base knob → would render 95m.
 _T1_ERR="$(mktemp)"
-_T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
+_T1_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T1_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T1_ERR" || true
+assert "T1: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T1_RAW"
+_T1_PLAN="$(plan_strip_comments "$_T1_RAW")"
 export _T1_PLAN
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
@@ -370,8 +424,16 @@ assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses its own d
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
 _T3_ERR="$(mktemp)"
-_T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
+_T3_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T3_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T3_ERR" || true
+assert "T3: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T3_RAW"
+_T3_PLAN="$(plan_strip_comments "$_T3_RAW")"
 export _T3_PLAN
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
@@ -381,8 +443,16 @@ rm -f "$_T3_ERR"
 #     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
 #     RED: current code always emits 45m.
 _T4_ERR="$(mktemp)"
-_T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T4_ERR" | grep -v '^#')"
+_T4_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T4_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T4_ERR" || true
+assert "T4: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T4_RAW"
+_T4_PLAN="$(plan_strip_comments "$_T4_RAW")"
 export _T4_PLAN
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
@@ -392,8 +462,16 @@ rm -f "$_T4_ERR"
 
 # T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
 _T5_ERR="$(mktemp)"
-_T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T5_ERR" | grep -v '^#')"
+_T5_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T5_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T5_ERR" || true
+assert "T5: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T5_RAW"
+_T5_PLAN="$(plan_strip_comments "$_T5_RAW")"
 export _T5_PLAN
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
@@ -403,8 +481,16 @@ rm -f "$_T5_ERR"
 #     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
 #     RED: current code always emits 30m.
 _T6_ERR="$(mktemp)"
-_T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T6_ERR" | grep -v '^#')"
+_T6_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T6_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T6_ERR" || true
+assert "T6: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T6_RAW"
+_T6_PLAN="$(plan_strip_comments "$_T6_RAW")"
 export _T6_PLAN
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
@@ -412,8 +498,16 @@ rm -f "$_T6_ERR"
 
 # T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
 _T7_ERR="$(mktemp)"
-_T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T7_ERR" | grep -v '^#')"
+_T7_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T7_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T7_ERR" || true
+assert "T7: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T7_RAW"
+_T7_PLAN="$(plan_strip_comments "$_T7_RAW")"
 export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
@@ -434,9 +528,17 @@ echo "--- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob
 #     default 60m (REIFY_VERIFY_TEST_TIMEOUT explicitly unset). Proves the release knob is
 #     release-only. RED against current code: no release knob exists, so release renders 60m.
 _T8_ERR="$(mktemp)"
-_T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
+_T8_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T8_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T8_ERR" || true
+assert "T8: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T8_RAW"
+_T8_PLAN="$(plan_strip_comments "$_T8_RAW")"
 export _T8_PLAN
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
@@ -448,9 +550,17 @@ rm -f "$_T8_ERR"
 #     90m default (mirrors T3's malformed-fallback guard through the shared
 #     _resolve_timeout_knob validator). RED against current code: release renders 60m.
 _T9_ERR="$(mktemp)"
-_T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
+_T9_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T9_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T9_ERR" || true
+assert "T9: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T9_RAW"
+_T9_PLAN="$(plan_strip_comments "$_T9_RAW")"
 export _T9_PLAN
 assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
@@ -523,19 +633,31 @@ assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner
 # that knob is consulted ONLY when DF_VERIFY_ROLE=merge (scripts/verify.sh, the
 # _RELEASE_DELTA_SKIP decision block), and when it is 1 on a delta-clean tree the release
 # nextest pass is replaced by the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker —
-# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. It is
-# default-OFF today but is slated for activation in the orchestrator's verify_env by the
-# sibling sweep task (#5280), so pinning the plan shape here is a live concern, not a
-# hypothetical. T1/T2/T8/T9 need no such pin: they do not set the merge role.
+# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. The
+# knob is ACTIVE today, not hypothetical: dark-factory-orchestrator.yaml's verify_env sets it
+# to "1" unconditionally (the sibling sweep task #5280 has landed), so pinning the plan shape
+# here is a live concern. THE RULE (#7580, replacing a now-stale enumeration that predated
+# T14-T17): every capture in this file that sets DF_VERIFY_ROLE=merge pins
+# REIFY_RELEASE_DELTA_SKIP — T11, T12, T13, T17 and T17-AMB today. Captures that set no role
+# (T1-T10) or role=offline (T14-T16) need no pin, because verify.sh:2237 consults the knob
+# only under role=merge.
 echo ""
 echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
 
 # T11: default → both release pre-builds render the 45m pre-build budget (was a fixed 10m).
 _T11_ERR="$(mktemp)"
-_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
-    DF_VERIFY_ROLE=merge \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
+_T11_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T11_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
+        DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T11_ERR" || true
+assert "T11: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T11_RAW"
+_T11_PLAN="$(plan_strip_comments "$_T11_RAW")"
 export _T11_PLAN
 assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
@@ -546,11 +668,19 @@ rm -f "$_T11_ERR"
 # T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
 #      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
 _T12_ERR="$(mktemp)"
-_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
+_T12_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T12_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T12_ERR" || true
+assert "T12: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T12_RAW"
+_T12_PLAN="$(plan_strip_comments "$_T12_RAW")"
 export _T12_PLAN
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
@@ -563,14 +693,305 @@ rm -f "$_T12_ERR"
 # T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 45m default via the
 #      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
 _T13_ERR="$(mktemp)"
-_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
+_T13_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T13_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T13_ERR" || true
+assert "T13: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T13_RAW"
+_T13_PLAN="$(plan_strip_comments "$_T13_RAW")"
 export _T13_PLAN
 assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
+
+# -- Tests T14–T17 (task 6485): role-scoped OFFLINE release wall ------------------
+# INVARIANT: the offline release wall must strictly EXCEED the heavy per-test
+# ceiling in .config/nextest.toml, so nextest SIGTERMs the offending test BY NAME
+# before the outer `timeout` can fire exit 124 with zero attribution. Tiers and
+# rationale: docs/prds/offline-deep-test-lane.md DA6.
+#
+# SCOPE SPLIT, so neither guard grows the other's job:
+# test_nextest_slow_priority.sh Assertion L guards the numeric RELATIONSHIP
+# (wall > ceiling, every operand derived from a file); these four guard the
+# RENDERING — that the role default reaches the command line at all.
+#
+# Each case invokes verify.sh with NO --profile flag on purpose: the offline role
+# forces PROFILE=release itself (verify.sh ~:702), and that is part of what is
+# under test. Captures reuse the T8/T9 idiom verbatim (capture_print_plan +
+# plan_capture_complete + plan_strip_comments + occt_plan_grep_or_dump), each
+# guarded with `|| true` for the same task 6247 retry-on-truncation reason.
+#
+# NOTE these are the T-series (T1–T17, the --print-plan timeout-knob tests), which
+# is a DIFFERENT series from this file's `Test 14`–`Test 17` flock-wrapper tests.
+echo ""
+echo "--- Tests T14–T17 (task 6485): role-scoped offline release wall (13h) ---"
+
+# T14: DF_VERIFY_ROLE=offline with BOTH timeout knobs unset → the release nextest
+#      pass renders the 13h role default. RED against current code: verify.sh has
+#      no role-scoped release default, so offline renders the 90m base default.
+_T14_ERR="$(mktemp)"
+_T14_RAW=""
+capture_print_plan _T14_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=offline \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T14_ERR" || true
+assert "T14: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T14_RAW"
+_T14_PLAN="$(plan_strip_comments "$_T14_RAW")"
+export _T14_PLAN _T14_RAW
+assert "T14: DF_VERIFY_ROLE=offline (knobs unset): release nextest pass uses the 13h offline wall" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T14_PLAN" "$_T14_ERR"
+# Cheap misconfiguration canary: if the role or profile did not take, the wall
+# assertion above would be testing something other than what it claims to.
+# Asserted against the RAW capture — plan_strip_comments drops the `#` header line.
+assert "T14: plan header confirms role=offline (the assertion above really is exercising the offline role)" \
+    occt_plan_grep_or_dump 'role=offline' "$_T14_RAW" "$_T14_ERR"
+assert "T14: plan header confirms profile=release (offline forces release with no --profile flag)" \
+    occt_plan_grep_or_dump 'profile=release' "$_T14_RAW" "$_T14_ERR"
+rm -f "$_T14_ERR"
+
+# T15: GREEN-ON-ARRIVAL companion — an EXPLICIT VALID knob still wins verbatim
+#      under offline (renders 100m, not 13h). Pins that the role default is a
+#      DEFAULT, not an override; a future implementation that force-set 13h
+#      unconditionally under offline would fail here.
+_T15_ERR="$(mktemp)"
+_T15_RAW=""
+capture_print_plan _T15_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T15_ERR" || true
+assert "T15: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T15_RAW"
+_T15_PLAN="$(plan_strip_comments "$_T15_RAW")"
+export _T15_PLAN
+assert "T15: DF_VERIFY_ROLE=offline + explicit REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: the explicit value wins verbatim (role default is a default, not an override)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T15_PLAN" "$_T15_ERR"
+rm -f "$_T15_ERR"
+
+# T16: a MALFORMED knob under offline must fall back to 13h, NOT to the 90m base
+#      default. This is the assertion that forbids the cheaper-looking "apply the
+#      offline default only when the knob is unset" implementation: that form
+#      leaves a malformed value sitting on 90m, i.e. the offline lane running a 12h
+#      ceiling under a 5400s wall — precisely the unreachable-ceiling /
+#      zero-attribution shape this task removes, arrived at SILENTLY. RED today.
+_T16_ERR="$(mktemp)"
+_T16_RAW=""
+capture_print_plan _T16_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T16_ERR" || true
+assert "T16: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T16_RAW"
+_T16_PLAN="$(plan_strip_comments "$_T16_RAW")"
+export _T16_PLAN
+assert "T16: DF_VERIFY_ROLE=offline + malformed REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana: falls back to the 13h offline default, NOT the 90m base default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T16_PLAN" "$_T16_ERR"
+rm -f "$_T16_ERR"
+
+# T17: GREEN-ON-ARRIVAL companion — role scoping must not LEAK. Under
+#      DF_VERIFY_ROLE=merge the release pass still renders 90m and the debug pass
+#      still renders 60m. T2/Test 17b already cover the unset-role case; merge is
+#      pinned explicitly here because it is the role whose release budget feeds
+#      T10's outer-wall relationship guard, so a leak would silently invalidate T10.
+# _MERGE_PLAN_ENV is the merge-role capture env, shared verbatim with T17-AMB
+# and T17-AMB-CTRL below (#7580) so those captures cannot silently drift from
+# this one: removing this array's `-u REIFY_RELEASE_DELTA_SKIP` reds T17-AMB
+# too, not just this assertion.
+_MERGE_PLAN_ENV=(env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge)
+_T17_ERR="$(mktemp)"
+_T17_RAW=""
+capture_print_plan _T17_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        "${_MERGE_PLAN_ENV[@]}" \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17_ERR" || true
+assert "T17: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17_RAW"
+_T17_PLAN="$(plan_strip_comments "$_T17_RAW")"
+export _T17_PLAN
+assert "T17: DF_VERIFY_ROLE=merge: release nextest pass still renders the 90m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17_PLAN" "$_T17_ERR"
+assert "T17: DF_VERIFY_ROLE=merge: debug nextest pass still renders the 60m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T17_PLAN" "$_T17_ERR"
+rm -f "$_T17_ERR"
+
+# -- Test T17-AMB (task 7580): T17's capture must stay ambient-hermetic --------
+# T17's env line above now pins `-u REIFY_RELEASE_DELTA_SKIP` (via the shared
+# _MERGE_PLAN_ENV array defined there); this companion proves that pin is
+# load-bearing by running T17's own env under a hostile ambient
+# REIFY_RELEASE_DELTA_SKIP=1. In production, dark-factory-orchestrator.yaml's
+# verify_env sets that knob to "1" unconditionally, so on a delta-clean merge
+# — were the pin ever dropped — it would silently replace the 90m release
+# nextest pass with the frozen `RELEASE-PASS: skipped (delta-clean)` marker
+# (scripts/verify.sh _RELEASE_DELTA_SKIP block). T17 alone cannot exercise
+# that path: its capture carries no ambient REIFY_RELEASE_DELTA_SKIP, and
+# _derive_merge_delta() is underivable on a task lane's linear HEAD anyway, so
+# the leak reaches only a real merge commit's delta. This companion reproduces
+# the hostile ambient directly, forcing the delta-clean decision via
+# REIFY_AFFECTED_CRATES_OVERRIDE (verify.sh short-circuits delta derivation
+# entirely when it is set), so the guard is deterministic on any HEAD shape.
+echo ""
+echo "--- Test T17-AMB (task 7580): T17's capture stays hermetic against an ambient REIFY_RELEASE_DELTA_SKIP=1 ---"
+
+# Non-vacuity guard: reify-cli must genuinely be absent from the declared
+# release-sensitive set, or the override below would force delta-clean for a
+# reason unrelated to what this test intends to prove (mirrors
+# tests/infra/test_verify_release_delta_skip.sh:73-81). Goes through the
+# shared release_declared_set() (scripts/release-scope-lib.sh) — the same
+# single source of truth verify.sh itself consults — rather than a second raw
+# grep over release-sensitive-crates.txt.
+_T17AMB_NONSENSITIVE_CRATE="reify-cli"
+_t17amb_crate_not_sensitive() { ! release_declared_set | grep -qxF "$1"; }
+assert "T17-AMB: chosen non-sensitive crate ($_T17AMB_NONSENSITIVE_CRATE) is genuinely absent from the declared release-sensitive set (guards against a vacuous pass)" \
+    _t17amb_crate_not_sensitive "$_T17AMB_NONSENSITIVE_CRATE"
+
+# Fork-free negation predicates for the marker/pass-absence asserts below
+# (mirror tests/infra/test_verify_release_delta_skip.sh's _lacks_skip_marker).
+# Both must run in THIS shell via assert's "$@" — never through `bash -c`,
+# which would not see plan_match: plan_match is defined in plan_capture_lib.sh
+# and is not `export -f`'d, so a `bash -c` child shell would not see it.
+_t17amb_lacks_skip_marker() { ! plan_match "$1" 'RELEASE-PASS: skipped \(delta-clean\)'; }
+_t17amb_lacks_release_pass() { ! plan_match "$1" 'timeout --kill-after=60 90m .*cargo nextest run .*--release'; }
+
+_T17AMB_ERR="$(mktemp)"
+_T17AMB_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+#
+# Reuses _MERGE_PLAN_ENV (T17's own env, defined above) verbatim, wrapped in a
+# hostile ambient REIFY_RELEASE_DELTA_SKIP=1 + REIFY_AFFECTED_CRATES_OVERRIDE=
+# <non-sensitive>, so this capture cannot silently drift from T17's own:
+# removing T17's `-u REIFY_RELEASE_DELTA_SKIP` reds this assertion too.
+capture_print_plan _T17AMB_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
+        "${_MERGE_PLAN_ENV[@]}" \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17AMB_ERR" || true
+assert "T17-AMB: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17AMB_RAW"
+_T17AMB_PLAN="$(plan_strip_comments "$_T17AMB_RAW")"
+export _T17AMB_PLAN
+assert "T17-AMB: DF_VERIFY_ROLE=merge under an ambient REIFY_RELEASE_DELTA_SKIP=1 (delta forced clean): release nextest pass still renders the 90m default (T17's capture is ambient-hermetic, not merely default-hermetic)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17AMB_PLAN" "$_T17AMB_ERR"
+assert "T17-AMB: the frozen 'RELEASE-PASS: skipped (delta-clean)' marker is ABSENT from the plan (the leak this companion guards against)" \
+    _t17amb_lacks_skip_marker "$_T17AMB_PLAN"
+rm -f "$_T17AMB_ERR"
+
+# T17-AMB-CTRL: positive control — the IDENTICAL hostile ambient, but with
+# T17's `-u REIFY_RELEASE_DELTA_SKIP` pin removed (i.e. exactly the plan.json
+# step-1 RED capture). Proves the hostile ambient above is genuinely hostile —
+# not a no-op — so T17-AMB's two asserts above cannot be passing vacuously
+# because REIFY_AFFECTED_CRATES_OVERRIDE silently stopped forcing delta-clean.
+_T17AMBCTRL_ERR="$(mktemp)"
+_T17AMBCTRL_RAW=""
+capture_print_plan _T17AMBCTRL_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17AMBCTRL_ERR" || true
+assert "T17-AMB-CTRL: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17AMBCTRL_RAW"
+_T17AMBCTRL_PLAN="$(plan_strip_comments "$_T17AMBCTRL_RAW")"
+export _T17AMBCTRL_PLAN
+assert "T17-AMB-CTRL: same hostile ambient WITHOUT the -u REIFY_RELEASE_DELTA_SKIP pin: the skip marker IS present (the ambient is genuinely hostile, not a no-op)" \
+    occt_plan_grep_or_dump 'RELEASE-PASS: skipped \(delta-clean\)' "$_T17AMBCTRL_PLAN" "$_T17AMBCTRL_ERR"
+assert "T17-AMB-CTRL: same hostile ambient WITHOUT the pin: the 90m release nextest pass is ABSENT (the marker replaces it rather than coexisting)" \
+    _t17amb_lacks_release_pass "$_T17AMBCTRL_PLAN"
+rm -f "$_T17AMBCTRL_ERR"
+
+# -- Test T18-BG (task 7552): the background role's rendered walls and its heavy --
+#    membership.
+#
+# T14-T17 above pin that the OFFLINE role's 13h release default reaches the
+# command line and does not leak to merge. This case pins the OTHER heavy-running
+# role. It exists because task 7552 re-sized .config/nextest.toml's heavy per-test
+# ceiling to fit UNDER this role's walls, and that decision rests on two facts
+# about `background` that nothing in either guard file rendered:
+#   - its walls are the BASE defaults (60m debug, 90m release) — offline's
+#     role-scoping must not leak here either, the same non-leak property T17 pins
+#     for merge. The 60m debug wall is the tighter of the two and is therefore
+#     the wall the new ceiling was sized against;
+#   - it really does RUN the heavy members. verify.sh scopes the
+#     `-E "not (<heavy>)"` exclusion to task|merge, so setting
+#     REIFY_GATE_EXCLUDE_HEAVY=1 — which dark-factory-orchestrator.yaml's
+#     verify_env does unconditionally, for every role — excludes nothing here.
+#     A ceiling sized for a role that turned out not to run heavy members would
+#     be sized against nothing.
+# test_nextest_slow_priority.sh Assertion L DERIVES both facts from verify.sh's
+# source; this is the independent check that the derivation matches what the
+# script actually emits. Same scope split as T14-T17: L guards the numeric
+# relationship, this guards the RENDERING.
+#
+# THE KNOB IS SET, NOT UNSET, and that is load-bearing. The timeout knobs are
+# `-u`'d so the wall assertions stay ambient-hermetic, but REIFY_GATE_EXCLUDE_HEAVY
+# is pinned to its PRODUCTION value of 1. Under `-u` the exclusion fragment would
+# be absent because the knob is unset, and the premise assertion would pass
+# whatever _GATE_HEAVY_EXCLUDE's role scope said — vacuous in exactly the
+# direction it exists to check. `-u REIFY_RELEASE_DELTA_SKIP` is pinned for the
+# reason T17-AMB documents: background shares merge's `--profile both` branch, so
+# a hostile ambient value can replace the release pass with a skip marker.
+#
+# GREEN ON ARRIVAL, like T15 and T17 — it pins pre-existing behaviour that task
+# 7552's ceiling now depends on, so it is validated BY MUTATION (widen
+# _GATE_HEAVY_EXCLUDE to name `background` in a scratch verify.sh and confirm the
+# premise assertion reds), not by expecting a RED first.
+#
+# No --profile flag, on purpose: background forces PROFILE="both" itself, and
+# that is part of what is under test.
+#
+# THE `-BG` SUFFIX IS NOT DECORATION — do not "tidy" it back to a bare T18. This
+# file carries TWO independently-numbered series that share the same integers
+# (the file's own comment at the top says so), and plain `Test 18` already exists
+# ~70 lines below — about fd 9 leaking into BACKGROUND DAEMONS, so both sections
+# match a grep for `18` AND for `background`. Suffixing follows the T17-AMB
+# precedent and keeps `grep -n "Test 18"` pointing at exactly one case, which is
+# how anyone triaging a failure finds the right section to edit.
+echo ""
+echo "--- Test T18-BG (task 7552): background renders the base 60m/90m walls and runs the heavy members ---"
+
+_t18bg_lacks_heavy_exclusion() { ! plan_match "$1" 'cargo nextest run.*-E "not \('; }
+
+_T18BG_ERR="$(mktemp)"
+_T18BG_RAW=""
+capture_print_plan _T18BG_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_RELEASE_DELTA_SKIP \
+        REIFY_GATE_EXCLUDE_HEAVY=1 DF_VERIFY_ROLE=background \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T18BG_ERR" || true
+assert "T18-BG: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T18BG_RAW"
+_T18BG_PLAN="$(plan_strip_comments "$_T18BG_RAW")"
+export _T18BG_PLAN _T18BG_RAW
+
+# Misconfiguration canaries first: if the role or the profile did not take, every
+# assertion below would be exercising something other than what it names.
+# Asserted against the RAW capture — plan_strip_comments drops the `#` header.
+assert "T18-BG: plan header confirms role=background (the assertions below really are exercising the background role)" \
+    occt_plan_grep_or_dump 'role=background' "$_T18BG_RAW" "$_T18BG_ERR"
+assert "T18-BG: plan header confirms profile=both (background forces both passes with no --profile flag, so the tighter DEBUG wall is the one that binds it)" \
+    occt_plan_grep_or_dump 'profile=both' "$_T18BG_RAW" "$_T18BG_ERR"
+
+assert "T18-BG: DF_VERIFY_ROLE=background: debug nextest pass renders the base 60m wall — the tighter of its two, and the wall .config/nextest.toml's heavy ceiling is sized under" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T18BG_PLAN" "$_T18BG_ERR"
+assert "T18-BG: DF_VERIFY_ROLE=background: release nextest pass renders the base 90m wall, NOT offline's 13h (the role-scoping does not leak here either)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T18BG_PLAN" "$_T18BG_ERR"
+
+# The premise assertion — the real point of this case.
+assert "T18-BG: DF_VERIFY_ROLE=background with REIFY_GATE_EXCLUDE_HEAVY=1 (its production value): NO -E \"not (<heavy>)\" fragment on any nextest line, so the role genuinely runs all 8 heavy members and the ceiling sized under its wall is sized against something real" \
+    _t18bg_lacks_heavy_exclusion "$_T18BG_PLAN"
+rm -f "$_T18BG_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
@@ -641,35 +1062,29 @@ _LOCK19="$(mktemp)"
 _LOG19="$(mktemp)"
 _BARRIER19="$(mktemp -d)"
 
-# Each wrapper: acquire slot → emit ACQUIRE to log → touch ready-$$ → wait
-# (bounded ~20s) for go signal → exit → emit RELEASE to log.
+# Each wrapper: acquire slot → emit ACQUIRE to log → run occt_hold_until_go
+# (touch ready-$$, hold until the test touches `go`) → exit → emit RELEASE to
+# log.  The payload is THE shared one in occt_flock_gate_lib.sh, reached through
+# OCCT_BARRIER_DIR, so its budget and this test's barrier budget scale together.
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19A=$!
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19B=$!
 
-# Wait (bounded ~20s) for BOTH ready files — proves both ACQUIREd concurrently.
-# Under N→1 regression only 1 ready file appears; wait elapses → go → serial.
-_w19=0
-while [ "$(ls "$_BARRIER19"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w19" -lt 100 ]; do
-    sleep 0.2; _w19=$(( _w19 + 1 ))
-done
+# Wait for BOTH ready files — proves both ACQUIREd concurrently.  Under an N→1
+# regression only 1 ready file appears; the bounded wait elapses, `go` is
+# touched, and the two run serially → max=1 → clean RED, never a hang.
+# This was a fourth hand-rolled copy of occt_wait_for_ready_count, and the only
+# one whose budget was NOT load-scaled.
+occt_wait_for_ready_count "$_BARRIER19" 2 || true
 touch "$_BARRIER19/go"
 wait "$_PID19A" "$_PID19B"
 
-_MAX19="$(occt_max_concurrent_holders "$_LOG19")"
+_MAX19="$(holder_max_concurrent "$_LOG19")"
 rm -rf "$_BARRIER19"
 rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2" "$_LOG19"
 
@@ -678,50 +1093,76 @@ assert "Test 19: ≥2 slots held simultaneously with N=2 (causal R-proof; max_co
 
 # -- Test 20: N=2, three concurrent invocations serializes the third ----------
 # With only 2 slots, a third concurrent wrapper invocation must wait until one
-# slot is released. Measured elapsed must be >= 700ms (two parallel rounds of
-# ~400ms — proves serialization) and <= 2000ms (load-tolerant sanity ceiling,
-# raised 1200->2000 per esc-3939-94: verify-pipeline load inflated the
-# serialized 3rd invocation to 1473ms in one run with no logic defect).
-# At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
-# N=1 (~1200ms); the >=700ms lower bound guards against under-serialization only.
-# COVERAGE GAP (accepted tradeoff per esc-3939-94): a fully-serial regression
-# (N->1) produces ~1200ms for three invocations — inside [700,2000], undetected.
-# Test 19 does NOT guard this: two fully-serial invocations complete in ~800ms,
-# below Test 19's <900ms threshold (both pass under a fully-serial regression).
-# This validates that the acquire-loop bounds N strictly (not ">=N" slots).
+# slot is released.  This validates that the acquire-loop bounds N strictly
+# (not ">=N" slots).
+#
+# HOW IT IS PROVED (task 6247, PRD infra-test-wallclock-deflake.md D1): by
+# reading the slot event log, not the clock.  The retired form asserted total
+# wall-clock inside [700,5000]ms, a ceiling ratcheted 1200->2000->5000 and still
+# observed at 5791ms, which also could not see the very regression it was aimed
+# at — three FULLY SERIAL invocations land ~1200ms, inside the band.
+#
+# BARRIER SHAPE — deliberately TWO ready files, not three.  Each payload touches
+# ready-$$ once it holds a slot, then waits for `go`.  With 2 slots the third
+# invocation cannot enter its critical section until one of the first two exits,
+# so waiting for all three would deadlock.  Waiting for exactly two, then
+# touching `go`, MAKES the two-way contention happen rather than hoping for it:
+# the first two are pinned holding until the test says otherwise, the third then
+# acquires, finds `go` already present and exits.  Max concurrency is therefore
+# exactly 2, with 3 ACQUIRE and 3 RELEASE events.
+#
+# Under an N->1 regression only one ready file ever appears; the bounded wait
+# elapses, `go` is touched, all three run serially, max concurrency is 1 and the
+# assertion goes cleanly RED — a clean RED, never a hang.
 echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
 
 _LOCK20="$(mktemp)"
-_START20_NS="$(date +%s%N)"
+_LOG20="$(mktemp)"
+_BARRIER20="$(mktemp -d)"
 
-# Spawn three concurrent invocations each sleeping 0.4s with N=2 slots.
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+# Three concurrent invocations, each pinned holding its slot until `go` appears.
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20A=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20B=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20C=$!
+
+occt_wait_for_ready_count "$_BARRIER20" 2 || true
+touch "$_BARRIER20/go"
 wait "$_PID20A" "$_PID20B" "$_PID20C"
 
-_END20_NS="$(date +%s%N)"
-_ELAPSED20_MS=$(( (_END20_NS - _START20_NS) / 1000000 ))
-
+rm -rf "$_BARRIER20"
 rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 
-# Two slots: two run in parallel (~400ms), third waits and runs (~800ms total).
-# Lower bound >= 700ms proves the third was serialized (all-parallel ~400ms).
-# Upper bound <= 2000ms is a load-tolerant sanity ceiling (esc-3939-94).
-assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED20_MS"
+# CAUSAL serialization proof (task 6247, PRD infra-test-wallclock-deflake.md
+# D1/T3), read off the slot event log instead of the clock: exactly 2 of the
+# three invocations may hold a slot at any instant. An N->1 over-serialization
+# regression gives 1 and a lost cap gives 3, both of which the retired
+# millisecond band accepted.
+_ACQ20="$(grep -c ' ACQUIRE ' "$_LOG20" 2>/dev/null || true)"
+_REL20="$(grep -c ' RELEASE' "$_LOG20" 2>/dev/null || true)"
+assert "Test 20: exactly 2 slots held at once across the three N=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG20"
+# NON-VACUITY CONTROL: a bypassed or DISABLEd wrapper records no events at all,
+# and an empty log must not read as success. Counted facts, not magnitudes.
+assert "Test 20: the event log records 3 ACQUIRE events (got ${_ACQ20}) — no invocation was bypassed" \
+    test "$_ACQ20" -eq 3
+assert "Test 20: the event log records 3 RELEASE events (got ${_REL20}) — every slot was given back" \
+    test "$_REL20" -eq 3
+rm -f "$_LOG20"
 
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → R-proof ≥2 slots simultaneously held
 #   (causal event-log, same technique as Test 19; replaces vacuous <2000ms ceiling).
-# Sub-test B: three concurrent wrappers → third serialized ([700,5000]ms,
-#   load-tolerant ceiling per esc-3939-94; raised 2000→5000 after 3317ms observed
-#   under task/3443 load; shared with Test 20 via occt_flock_gate_lib.sh).
+# Sub-test B: three concurrent wrappers → third serialized (causal event-log
+#   proof, max concurrency exactly 2; shared with Test 20 via
+#   occt_flock_gate_lib.sh, task 6247).
 #
 # Historical note: a prior implementation auto-detected N as
 # clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)
@@ -735,57 +1176,63 @@ _LOCK21A="$(mktemp)"
 _LOG21A="$(mktemp)"
 _BARRIER21A="$(mktemp -d)"
 _LOCK21B="$(mktemp)"
+_LOG21B="$(mktemp)"
 
 # Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → R-proof ≥2 slots simultaneously.
 # Barrier: each wrapper touches ready-$$ after ACQUIRE, waits bounded for go signal.
 # Test waits for both ready files (proves concurrent holding) then touches go.
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A2=$!
-_w21a=0
-while [ "$(ls "$_BARRIER21A"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w21a" -lt 100 ]; do
-    sleep 0.2; _w21a=$(( _w21a + 1 ))
-done
+occt_wait_for_ready_count "$_BARRIER21A" 2 || true
 touch "$_BARRIER21A/go"
 wait "$_PID21A1" "$_PID21A2"
-_MAX21A="$(occt_max_concurrent_holders "$_LOG21A")"
+_MAX21A="$(holder_max_concurrent "$_LOG21A")"
 rm -rf "$_BARRIER21A"
 rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 
-# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → third must wait.
-_START21B_NS="$(date +%s%N)"
+# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → the third must wait.
+# Same causal proof and same two-ready-file barrier as Test 20 (see the note
+# there for why exactly two, and why the millisecond band was retired).
+_BARRIER21B="$(mktemp -d)"
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B2=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B3=$!
+
+occt_wait_for_ready_count "$_BARRIER21B" 2 || true
+touch "$_BARRIER21B/go"
 wait "$_PID21B1" "$_PID21B2" "$_PID21B3"
-_END21B_NS="$(date +%s%N)"
-_ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
+rm -rf "$_BARRIER21B"
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
 assert "Test 21A: ≥2 slots held simultaneously with MAX_CONCURRENCY=2 (causal R-proof; max_concurrent=${_MAX21A})" \
     test "$_MAX21A" -ge 2
 
-assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
+# CAUSAL serialization proof — the exact twin of Test 20's, on the
+# MAX_CONCURRENCY path.
+_ACQ21B="$(grep -c ' ACQUIRE ' "$_LOG21B" 2>/dev/null || true)"
+_REL21B="$(grep -c ' RELEASE' "$_LOG21B" 2>/dev/null || true)"
+assert "Test 21B: exactly 2 slots held at once across the three MAX_CONCURRENCY=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG21B"
+assert "Test 21B: the event log records 3 ACQUIRE events (got ${_ACQ21B}) — no invocation was bypassed" \
+    test "$_ACQ21B" -eq 3
+assert "Test 21B: the event log records 3 RELEASE events (got ${_REL21B}) — every slot was given back" \
+    test "$_REL21B" -eq 3
+rm -f "$_LOG21B"
 
 # -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
 # Mirrors Test 14's pattern but with N=2 (full contention across all slots).
@@ -801,19 +1248,20 @@ echo "--- Test 22: LOCK_WAIT fires within budget when ALL N=2 slots are external
 _LOCK22="$(mktemp)"
 _ERR22="$(mktemp)"
 
-# Spawn two background holders: one pins slot-1, one pins slot-2.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-1" &
-_HOLDER22A=$!
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
-_HOLDER22B=$!
+# Spawn two background holders, one per slot, each holding until THIS TEST
+# releases it (task 6247 — see the Test 14 note for why a fixed hold is a race
+# the wrapper can win on a saturated host).
+_HOLD22="$(mktemp -d)"
+_HOLDER22A="$(holder_spawn_gated "${_LOCK22}.slot-1" "$_HOLD22/ready-a" "$_HOLD22/release")"
+_HOLDER22B="$(holder_spawn_gated "${_LOCK22}.slot-2" "$_HOLD22/ready-b" "$_HOLD22/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
 # host can outrun.  Two calls reuse the single-slot helper (one per slot); each
 # is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+    holder_wait_until_held "${_LOCK22}.slot-1"
 assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-2"
+    holder_wait_until_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0
@@ -827,8 +1275,9 @@ REIFY_OCCT_LOCK="$_LOCK22" REIFY_OCCT_CONCURRENCY=2 REIFY_OCCT_LOCK_WAIT=1 \
 _END22="$(date +%s)"
 _ELAPSED22=$(( _END22 - _START22 ))
 
-kill "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
-wait "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
+holder_release "$_HOLD22/release" "$_HOLDER22A" || true
+holder_release "$_HOLD22/release" "$_HOLDER22B" || true
+rm -rf "$_HOLD22"
 
 assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $_EXIT22)" \
     test "$_EXIT22" -eq 75

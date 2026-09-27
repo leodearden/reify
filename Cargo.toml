@@ -34,6 +34,7 @@ members = [
     "crates/reify-ir",
     "crates/reify-build-utils",
     "crates/reify-test-support",
+    "crates/reify-builtins",
     "tree-sitter-reify",
     "gui/src-tauri",
 ]
@@ -74,6 +75,7 @@ reify-ast = { path = "crates/reify-ast" }
 reify-ir = { path = "crates/reify-ir" }
 reify-build-utils = { path = "crates/reify-build-utils" }
 reify-test-support = { path = "crates/reify-test-support" }
+reify-builtins = { path = "crates/reify-builtins" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 strum = { version = "0.26", features = ["derive"] }

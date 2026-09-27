@@ -1,0 +1,44 @@
+module dwr_qoi_readback
+
+// PRD docs/prds/v0_6/goal-oriented-error-estimation.md §5.6 / leaf ζ — the
+// READ-BACK substrate, pinned against today's tree (a PASSING fixture).
+//
+// Measured 2026-09-11 at main 191d6c85ba (`reify check` exit 0, `reify eval`
+// exit 0, tip = 0.003 m, rel = 0, requested = false):
+//   - a plain enum with a unit variant is matched by the shipped
+//     data-carrying-enum patterns: a full-binding arm, a BARE-variant arm
+//     (payload ignored) and the unit arm; a bare-variant VALUE must be
+//     type-qualified (`QoIEstimateProbe.NoQoi`) while patterns stay unqualified;
+//   - an `Option<Real>` is read with `unwrap_or` / `is_some` (option_recovery.ri).
+// What does NOT parse, and is why `ElasticResult.qoi` is an enum rather than an
+// `Option<enum>`: `match o { some(e) => ..., none => ... }` — tree-sitter-reify's
+// `match_pattern` has no call-form pattern, and `Option` is the built-in
+// `Value::Option`, not an enum. (Probe recorded by the decompose-time
+// verification workflow, 2026-09-11.)
+//
+// The enum here is a LOCAL mirror of the `QoIEstimate` leaf γ declares in the
+// stdlib; the field shape is the PRD §5.6 one.
+
+enum QoIEstimateProbe {
+    NoQoi,
+    DisplacementEstimate { value: Length, error: Length },
+    NormalStressEstimate { value: Pressure, error: Pressure },
+}
+
+structure def ProbeResult {
+    param qoi : QoIEstimateProbe = QoIEstimateProbe.NoQoi
+    param qoi_relative_error : Option<Real> = none
+}
+
+structure Probe {
+    let r = ProbeResult(qoi: DisplacementEstimate { value: 3mm, error: 1mm })
+    let tip : Length = match r.qoi {
+        DisplacementEstimate { value: v, error: e } => v,
+        NormalStressEstimate => 0mm,
+        NoQoi => 0mm
+    }
+    let rel : Real = unwrap_or(r.qoi_relative_error, 0.0)
+    let requested : Bool = is_some(r.qoi_relative_error)
+    constraint tip == 3mm
+    constraint rel == 0.0
+}

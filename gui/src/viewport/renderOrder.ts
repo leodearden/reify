@@ -1,25 +1,24 @@
 /**
- * The viewport's draw-order ladder, and the source of truth for its HELPER tier.
+ * The viewport's draw-order ladder, and the source of truth for every tier this
+ * codebase sets.
  *
  * three.js sorts a render list by `renderOrder` BEFORE `z` — in both
  * `painterSortStable` (opaque pass) and `reversePainterSortStable` (transparent
  * pass) — so this ladder is authoritative and not depth-dependent:
  *
- *   -1      undeformed-geometry underlay        (meshManager.ts, literal)
+ *   -1      undeformed-geometry underlay        (this module — UNDERLAY_RENDER_ORDER)
  *    0      model meshes                        (three.js default)
- *    1..9   scene-content overlays              (feaDiagnosticOverlay.ts, literal: 1)
+ *    1..9   scene-content overlays              (this module — OVERLAY_RENDER_ORDER)
  *   10..12  viewport helper tier                (this module — the constants below)
  *
- * ## What this module does and does not own
+ * ## What this module owns
  *
- * Only the helper tier is declared here. The underlay (-1) and scene-content
- * overlay (1) values are still module-private literals at their use sites —
- * `meshManager.ts` (`overlay.renderOrder = -1`) and `feaDiagnosticOverlay.ts`
- * (`const OVERLAY_RENDER_ORDER = 1`) — so the table above is a DESCRIPTION of
- * those tiers, not their definition. Migrating them into this module is tracked
- * follow-up work; until it lands, `renderOrder.test.ts` scans both declarations
- * and fails if either drifts into or above the helper tier, so the ladder above
- * cannot silently stop being true.
+ * Every tier this codebase controls is defined here — the mesh tier at 0 is
+ * three.js's default, not one of ours — and each is imported at its use site:
+ * `meshManager.ts` imports `UNDERLAY_RENDER_ORDER` and `feaDiagnosticOverlay.ts`
+ * imports `OVERLAY_RENDER_ORDER`, so this module is the single source of truth
+ * for every renderOrder the viewport sets — `renderOrder.test.ts` asserts
+ * directly against the real symbols, not a scan of the modules that use them.
  *
  * ## The invariant this tier exists to enforce (#6587, #4214)
  *
@@ -45,6 +44,12 @@
  * depthTest=true / depthWrite=false rule, or the coplanar-tie guarantee above
  * stops holding for the helpers below it.
  */
+
+/** Undeformed-geometry underlay — drawn behind the deformed mesh (renderOrder=0 default). */
+export const UNDERLAY_RENDER_ORDER = -1;
+
+/** FEA diagnostic overlay Group — above the default mesh layer (renderOrder 0). */
+export const OVERLAY_RENDER_ORDER = 1;
 
 /** Ground-plane GridHelper — first in the helper tier, after all model geometry. */
 export const GRID_RENDER_ORDER = 10;

@@ -23,10 +23,12 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: dependent_cells:\s*Vec::new\(\)
+      # #7739. Accepted gap: proves the field init, not the fold contents; behavioural cover is
+      # crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs (`single_component_subproblem_still_receives_the_full_dependent_cells_list`).
+      pattern: dependent_cells:\s*sub_dependent_cells
       paths:
       - crates/reify-constraints/src/registry.rs
-      expect: absent
+      expect: present
   - name: let-indirection-baseline-bug-real
     binding: 'signal premise — probe 2026-07-24: reify eval fixtures/discrete_let_cont.ri
       exit 0, W_UNDERDETERMINED "not touched by any constraint", all undef'

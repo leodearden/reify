@@ -14,11 +14,22 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
+// The shared size-option read-back is declared by path rather than through
+// `common/mod.rs`, which #6387 reduced to a re-export shim over
+// `reify_test_support::fixtures` and which is scheduled for deletion; see
+// `common/clamp_probe.rs` for why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
+use std::collections::BTreeMap;
+
 use reify_ir::{
     ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment,
 };
 use reify_ir::geometry::MeshInvariant;
-use reify_kernel_gmsh::GmshKernel;
+use reify_kernel_gmsh::{
+    EntityAttribution, GmshKernel, MeshingOptions, mesh_surface_to_volume_with_attribution,
+};
 
 fn h(n: u64) -> GeometryHandleId {
     GeometryHandleId(n)
@@ -84,6 +95,26 @@ fn subdivided_unit_cube_surface() -> Mesh {
     Mesh { vertices, indices, normals: None }
 }
 
+/// The six unit-cube face centroids, one distinct handle each, in
+/// `-Z, +Z, -Y, +Y, -X, +X` order (h(101)..h(106)). Every test in this file
+/// attributes [`subdivided_unit_cube_surface`] (or a derivative of it)
+/// against this exact list, so it is spelled once here.
+///
+/// The tolerance every caller pairs with it is 0.3: generous against the unit
+/// side length, yet tight enough to reject gmsh's spurious seam points, which
+/// sit 0.5 from any face centroid. No edge or vertex anchors are supplied, so
+/// only dim-2 face entities are attributed.
+fn six_face_anchors() -> Vec<(GeometryHandleId, [f64; 3])> {
+    vec![
+        (h(101), [0.0, 0.0, -0.5]),
+        (h(102), [0.0, 0.0, 0.5]),
+        (h(103), [0.0, -0.5, 0.0]),
+        (h(104), [0.0, 0.5, 0.0]),
+        (h(105), [-0.5, 0.0, 0.0]),
+        (h(106), [0.5, 0.0, 0.0]),
+    ]
+}
+
 /// Per-face-explode [`subdivided_unit_cube_surface`]: duplicate every
 /// triangle-corner reference into a fresh raw vertex slot, so
 /// `Mesh::weldedness(_).raw_welded` is `false` (the raw index buffer no
@@ -124,15 +155,7 @@ fn mesh_surface_to_volume_attributed_welds_unwelded_surface_and_attributes() {
     let kernel = GmshKernel::new();
     let unwelded = unwelded_subdivided_unit_cube_surface();
 
-    // Same 6 face anchors as the watertight-cube sibling test below.
-    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
-        (h(101), [0.0, 0.0, -0.5]),
-        (h(102), [0.0, 0.0, 0.5]),
-        (h(103), [0.0, -0.5, 0.0]),
-        (h(104), [0.0, 0.5, 0.0]),
-        (h(105), [-0.5, 0.0, 0.0]),
-        (h(106), [0.5, 0.0, 0.0]),
-    ];
+    let face_anchors = six_face_anchors();
 
     let vm = kernel
         .mesh_surface_to_volume_attributed(&unwelded, ElementOrderTag::P1, &face_anchors, 0.3)
@@ -197,14 +220,7 @@ fn mesh_surface_to_volume_attributed_rejects_surface_with_genuine_hole() {
     // Anchors are irrelevant here — the preflight rejects before any
     // entity-attribution matching runs — but reuse the sibling tests'
     // 6-anchor list for consistency.
-    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
-        (h(101), [0.0, 0.0, -0.5]),
-        (h(102), [0.0, 0.0, 0.5]),
-        (h(103), [0.0, -0.5, 0.0]),
-        (h(104), [0.0, 0.5, 0.0]),
-        (h(105), [-0.5, 0.0, 0.0]),
-        (h(106), [0.5, 0.0, 0.0]),
-    ];
+    let face_anchors = six_face_anchors();
 
     let err = kernel
         .mesh_surface_to_volume_attributed(&holey, ElementOrderTag::P1, &face_anchors, 0.3)
@@ -250,19 +266,9 @@ fn gmsh_mesh_surface_to_volume_attributed_threads_boundary_onto_volume_mesh() {
     let kernel = GmshKernel::new();
     let surface = subdivided_unit_cube_surface();
 
-    // 6 unit-cube face centroids with distinct handles. +Z (top) face is h(102).
-    // Tolerance 0.3 is generous vs the unit side length yet rejects gmsh's
-    // spurious seam points (0.5 from any face centroid). No edge/vertex anchors
-    // are supplied, so only dim-2 face entities are attributed.
+    // The locus check below keys on the +Z (top) face handle.
     let h_top_z = h(102);
-    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
-        (h(101), [0.0, 0.0, -0.5]),   // bottom (−Z)
-        (h_top_z, [0.0, 0.0, 0.5]),   // top (+Z)
-        (h(103), [0.0, -0.5, 0.0]),   // front
-        (h(104), [0.0, 0.5, 0.0]),    // back
-        (h(105), [-0.5, 0.0, 0.0]),   // left
-        (h(106), [0.5, 0.0, 0.0]),    // right
-    ];
+    let face_anchors = six_face_anchors();
 
     let vm = kernel
         .mesh_surface_to_volume_attributed(&surface, ElementOrderTag::P1, &face_anchors, 0.3)
@@ -303,5 +309,222 @@ fn gmsh_mesh_surface_to_volume_attributed_threads_boundary_onto_volume_mesh() {
     assert!(
         top_z_nodes > 0,
         "expected at least one node attributed to the +Z face handle h(102)"
+    );
+}
+
+/// The attributed producer must return a BIT-IDENTICAL mesh — and an
+/// identical boundary association — for repeated calls on the same surface,
+/// not merely a mesh of similar size.
+///
+/// # Why bit-identity is the right contract here
+///
+/// This producer is the morph arm's SOURCE-mesh supplier. `reify-eval`'s
+/// `engine_build` stashes whatever `VolumeMesh` a realization produced as the
+/// next tick's `MorphSource::source_mesh` — the stash itself accepts any
+/// produced mesh — but `decide_morph_or_remesh` (`reify-eval`'s
+/// `morph_producer`) then remeshes unless that source carries the task-4092
+/// `BoundaryAssociation`, which only this attributed branch attaches. So in
+/// practice this producer's output is the only mesh ever morphed.
+/// `reify-mesh-morph` judges the MORPHED mesh against ABSOLUTE quality floors
+/// (`MorphOptions::default`'s `quality_floor_min_scaled_jacobian` and
+/// `quality_floor_pct_below_025`, both 0.01), so a source that varies
+/// run-to-run makes the morph-or-remesh verdict a function of thread
+/// scheduling rather than of the fixture. A count-tolerance contract would not
+/// catch that; bit-identity does.
+///
+/// The boundary assertion is not implied by the two mesh ones. Attribution is
+/// a separate post-`mesh_generate` gmsh entity-membership pass matched on
+/// centroids within `match_tolerance`, so identical vertices and tets do not
+/// by construction give an identical node→handle map — and it is that map,
+/// not the buffers, that the morph projects each boundary node through.
+///
+/// MEASURED (task 7411): with `MeshingOptions::default()` at this file's
+/// subject — `GmshKernel::mesh_surface_to_volume_attributed`, in
+/// `reify-kernel-gmsh`'s `kernel_real` — this test is deterministically RED:
+/// 3/3 separate processes failed on `tet_indices`, with per-rep tet counts
+/// ranging 1187..1258 and every rep distinct. With `deterministic: true`
+/// pinned there it is GREEN in 3/3 processes, all reps identical at verts=889
+/// tets=1212 and identical ACROSS processes too. `MeshingOptions`'
+/// `deterministic` field is deliberately excluded from the mesh cache key (see
+/// its own doc, and `cache_key`), so the pin cannot alter cache-hit behaviour.
+///
+/// Deliberately takes no `MeshingOptions` parameter: the trait method has
+/// none, which is the point. This exercises the production frame exactly as
+/// `reify-eval`'s realization edge does, so it cannot pass by configuring
+/// something production leaves unconfigured.
+#[test]
+fn attributed_producer_output_is_reproducible_across_repeated_calls() {
+    /// One call's full observable output: both mesh buffers, plus the
+    /// boundary association the morph arm actually consumes.
+    struct Rep {
+        vertices: Vec<f32>,
+        tets: Vec<u32>,
+        boundary: Vec<(u32, NodeAttachment)>,
+    }
+
+    /// Attributed-node count per B-rep handle — the coarse, legible boundary
+    /// signal, next to which the full node→handle map is hundreds of pairs.
+    fn nodes_per_handle(boundary: &[(u32, NodeAttachment)]) -> BTreeMap<u64, usize> {
+        let mut counts: BTreeMap<u64, usize> = BTreeMap::new();
+        for (_, attachment) in boundary {
+            let handle = match attachment {
+                NodeAttachment::OnFace(handle)
+                | NodeAttachment::OnEdge(handle)
+                | NodeAttachment::OnVertex(handle) => handle.0,
+            };
+            *counts.entry(handle).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    let kernel = GmshKernel::new();
+    let surface = subdivided_unit_cube_surface();
+    let face_anchors = six_face_anchors();
+
+    const REPS: usize = 4;
+    let mut reps: Vec<Rep> = Vec::with_capacity(REPS);
+    for rep in 0..REPS {
+        let vm = kernel
+            .mesh_surface_to_volume_attributed(&surface, ElementOrderTag::P1, &face_anchors, 0.3)
+            .unwrap_or_else(|e| {
+                panic!("attributed producer must succeed on the watertight unit cube (rep {rep}): {e:?}")
+            });
+        let tets = vm
+            .tet_indices()
+            .expect("P1 tet mesh must have tet_indices")
+            .to_vec();
+        let boundary = vm
+            .boundary
+            .as_ref()
+            .expect("attributed producer must set VolumeMesh.boundary = Some")
+            .iter()
+            .collect();
+        reps.push(Rep { vertices: vm.vertices.clone(), tets, boundary });
+    }
+
+    let first = &reps[0];
+    assert!(
+        !first.boundary.is_empty(),
+        "premise: the producer must attribute SOME nodes on this fixture, else the \
+         boundary comparisons below are vacuous"
+    );
+    for (rep, this) in reps.iter().enumerate().skip(1) {
+        // tet_indices first: the coarser, more legible signal.
+        assert_eq!(
+            this.tets.len() / 4,
+            first.tets.len() / 4,
+            "tet COUNT differs between rep 0 ({} tets) and rep {rep} ({} tets) — the \
+             attributed producer is not reproducible; check that \
+             `GmshKernel::mesh_surface_to_volume_attributed` still pins \
+             `deterministic: true` in the `MeshingOptions` it injects",
+            first.tets.len() / 4,
+            this.tets.len() / 4
+        );
+        assert_eq!(
+            this.tets, first.tets,
+            "tet_indices differ between rep 0 and rep {rep} at equal tet count ({} tets) — \
+             the attributed producer is not bit-reproducible",
+            first.tets.len() / 4
+        );
+        assert_eq!(
+            this.vertices, first.vertices,
+            "vertices differ between rep 0 and rep {rep} ({} verts) despite identical \
+             tet_indices — the attributed producer is not bit-reproducible",
+            first.vertices.len() / 3
+        );
+
+        // Boundary last, and asserted separately from the buffers: what the
+        // morph arm consumes is the node→handle map.
+        assert_eq!(
+            nodes_per_handle(&this.boundary),
+            nodes_per_handle(&first.boundary),
+            "per-handle attributed-node COUNTS differ between rep 0 and rep {rep} — \
+             `decide_morph_or_remesh` requires this association and the morph projects \
+             every boundary node through it, so an unstable attribution flips the \
+             morph-or-remesh verdict even on an otherwise identical mesh"
+        );
+        let divergence = this
+            .boundary
+            .iter()
+            .zip(&first.boundary)
+            .find(|(this_pair, first_pair)| this_pair != first_pair);
+        assert!(
+            divergence.is_none(),
+            "boundary node→handle attribution differs between rep 0 and rep {rep} despite \
+             identical per-handle counts and identical mesh buffers; first divergence \
+             (rep {rep} pair, rep 0 pair): {divergence:?}. The morph projects each \
+             boundary node through this map, so a reshuffle flips the morph-or-remesh \
+             verdict `decide_morph_or_remesh` reaches"
+        );
+    }
+}
+
+/// The attributed producer leaves every mesh-size process-global at gmsh's
+/// default.
+///
+/// One of the four per-entry-point outbound guards task #6968 added — all four
+/// now share one read-back loop,
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
+/// naming options, so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
+///
+/// This guard is OUTBOUND only. The inbound direction for this producer is
+/// covered by `mesh_size_option_hermeticity.rs`'s pair sweep, which owns its
+/// process and serialises its test bodies — a poison-then-call sequence cannot
+/// live in THIS binary, whose many unserialised meshing siblings would erase
+/// the poison in the `GMSH_LOCK` gap and make it pass for the wrong reason.
+///
+/// RED before the fix: `run_meshing_with_entity_queries` (`mesh_boundary.rs`)
+/// writes `Mesh.MeshSizeMin`/`MeshSizeMax` behind
+/// `if let Some(s) = options.mesh_size && s > 0.0` and restores neither, so
+/// both read back as the requested size. gmsh's option table survives
+/// `gmshClear()`, so that size then decided the density of every later
+/// defaults-relying call in the process.
+///
+/// Goes through the free producer rather than the `GeometryKernel` trait
+/// method: `mesh_surface_to_volume_attributed` builds its own
+/// `MeshingOptions { deterministic: true, ..Default::default() }`, whose
+/// `mesh_size` is `None`, which is exactly the path that writes NO clamp — so
+/// the trait method could not make this guard fire at all.
+///
+/// Needs no whole-body serialising mutex, for the reason
+/// `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`
+/// gives: the asserted property is one every sibling in this binary also
+/// leaves behind once the fix is in, so a sibling interleaving between the
+/// call and the read cannot flip the result. Before the fix a sibling leaves
+/// its OWN size in the table, which is still not a default — so the guard is
+/// order-independent in both states.
+#[test]
+fn mesh_surface_to_volume_with_attribution_leaves_every_size_option_at_gmsh_defaults() {
+    /// Unequal to every gmsh size default, so the read cannot pass by accident
+    /// on a table nobody wrote.
+    const REQUESTED: f64 = 0.375;
+
+    let surface = subdivided_unit_cube_surface();
+    let attribution = EntityAttribution {
+        faces: six_face_anchors(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+        match_tolerance: 0.3,
+    };
+    mesh_surface_to_volume_with_attribution(
+        &surface,
+        &MeshingOptions {
+            mesh_size: Some(REQUESTED),
+            deterministic: true,
+            ..Default::default()
+        },
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .expect("mesh_surface_to_volume_with_attribution must succeed on a watertight unit cube");
+
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        &format!("mesh_surface_to_volume_with_attribution(mesh_size: Some({REQUESTED}))"),
+        "`MeshSizeScope` in mesh_boundary.rs",
     );
 }

@@ -182,6 +182,15 @@ header):**
 
 ### 4.2 STL + 3MF serializers (tasks β, γ)
 
+**Export length regime:** reify model space is SI **metres**; every export format here (STL, 3MF,
+STEP) emits **millimetres**. STL and 3MF convert at the vertex-emit site; STEP instead declares its
+units to OCCT (`SetLocalLengthUnit`/`SetWriteLengthUnit`, cited below). STL carries no unit field,
+so a re-parsed STL reads millimetre coordinates — any bound asserted against a re-exported STL must
+be denominated in mm. Authority: `MM_PER_METRE_F32` in `crates/reify-ir/src/geometry.rs`, applied
+by `write_stl_binary` / `write_stl_ascii` / `write_3mf` (which additionally declares
+`unit="millimeter"`), and `export_step`'s `SetLocalLengthUnit(1000.0)` /
+`SetWriteLengthUnit(1.0)` in `reify-kernel-occt`'s `occt_wrapper.cpp` — landed with task #6187.
+
 Both are **pure functions over the existing `Mesh`** — no kernel change beyond an `export()` arm:
 - `write_stl_binary(&Mesh, &mut dyn Write)` (default) + `write_stl_ascii(&Mesh, …)` in
   `reify-ir` (sibling of `Mesh`). Binary STL = 80-byte header + u32 count + 50·N bytes.
@@ -275,9 +284,9 @@ for AP242 — NOT the 'AP2xx' shorthand; the `write.step.schema` *input selector
 | δ driver | DSL occurrence drives **format+path** with no `-o`/extension | requires α (surface) + β (STL) + the value-map/`surface_export_bodies` substrate — all upstream/existing. **No** capability owned by a downstream task. |
 | δ relative path | output at `<design-dir>/o.stl`, not CWD | path join is deterministic; the design-file dir is known at build. |
 | ε STEP version | written `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) | OCCT `write.step.schema` is a real static param; AP203/AP214 first-class, AP242 best-effort w/ fallback warning. FILE_SCHEMA carries the EXPRESS schema name, not the AP2xx shorthand. |
-| ζ STEP import | re-exported AABB matches fixture dims within **1e-6 m** | OCCT reader is standard; bound is on bounding-box (a B-rep-stable quantity), **not** byte/topology equality — avoids the round-trip-exactness trap. |
+| ζ STEP import | re-exported AABB matches fixture dims within **1e-3 mm** | OCCT reader is standard; bound is on bounding-box (a B-rep-stable quantity), **not** byte/topology equality — avoids the round-trip-exactness trap. `fixture.step` is a planar-faced solid (e.g. a box), so the re-exported STL's tessellation contributes zero AABB error — a flat face's mesh vertices land exactly on its B-rep corners regardless of the linear-deflection parameter (`DEFAULT_STL_TESSELLATION_TOLERANCE`), which is the term that would otherwise dominate on a curved-face fixture. The residual is the millimetre-emitting STL's own worst-case f32 quantization (§4.2): ~3.6e-6 mm on a 30 mm part, measured on `MM_PER_METRE_F32` — ~280x inside the 1e-3 mm bound, while the naive **1e-6 mm** reading would sit *below* that residual. |
 
-No numeric-method *floor* is asserted (no FEA/solver bound). The only tolerance, ζ's 1e-6 m AABB
+No numeric-method *floor* is asserted (no FEA/solver bound). The only tolerance, ζ's 1e-3 mm AABB
 match, is a geometric round-trip stability bound, comfortably above OCCT's STEP read/write precision.
 
 ---
@@ -318,7 +327,7 @@ Invariants: one artifact per `: Output` occurrence instance (except `DisplayOutp
 
 | # | Scenario | Precondition | Postcondition (asserted) |
 |---|---|---|---|
-| B1 | STL binary | `box(10,20,5)` realizes | `export().Stl` → 84+50·N bytes; N>0; AABB ≈ (10,20,5) within tess tol |
+| B1 | STL binary | `box(10,20,5)` realizes | `export().Stl` → 84+50·N bytes; N>0; AABB ≈ (10, 20, 5) mm within tess tol (§4.2) |
 | B2 | STL ascii | ascii requested | `solid … endsolid` with N facets |
 | B3 | 3MF valid | box | unzip → `3D/3dmodel.model`; `<triangle>` count = N |
 | B4 | 3MF materials gate | `include_materials=true`, no material | `W_3MF_NO_MATERIALS`; geometry still written |
@@ -326,7 +335,7 @@ Invariants: one artifact per `: Output` occurrence instance (except `DisplayOutp
 | B6 | **Driver multi-output** | `.ri` w/ `STLOutput` + `STEPOutput` | both `o.stl` and `o2.step` written in one build |
 | B7 | **Driver relative path** | design at `sub/foo.ri`, `path:"o.stl"` | output at `sub/o.stl`, **not** `cwd/o.stl` |
 | B8 | STEP version | `STEPOutput(version: AP203)` | written STEP `FILE_SCHEMA` contains `CONFIG_CONTROL_DESIGN` (AP203's EXPRESS schema name) |
-| B9 | STEP import round-trip | committed `fixture.step` (known dims) | `step_import` → re-export STL; AABB matches within 1e-6 m |
+| B9 | STEP import round-trip | committed `fixture.step`, a planar-faced solid (e.g. a box) with known dims | `step_import` → re-export STL; AABB matches within 1e-3 mm |
 | B10 | Back-compat `-o` | `reify build box.ri -o x.stl` | single STL; imperative path unchanged |
 
 ---
@@ -376,7 +385,7 @@ Greek labels → task IDs at decompose. **Active batch (flip to pending): α β 
 - **β — STL writer + kernel `export()` wiring.** *Modules:* `reify-ir/src/geometry.rs`,
   `reify-kernel-occt/src/lib.rs`, `reify-kernel-manifold/src/kernel.rs`. *Leaf.* *Signal:*
   `reify build <box>.ri -o /tmp/b.stl` exits 0 and writes a valid binary STL (`84 + 50·N` bytes,
-  `N>0`); re-parsing the AABB ≈ box dims. *Prereqs:* —.
+  `N>0`); re-parsing the AABB ≈ box dims, in mm (§4.2). *Prereqs:* —.
 - **γ — 3MF writer + `ExportFormat::ThreeMF`.** *Modules:* `reify-ir/src/geometry.rs`,
   `reify-eval/src/engine_build.rs` (demanded-repr arm), `reify-kernel-occt`, `reify-kernel-manifold`,
   `reify-cli/src/main.rs` (`.3mf` ext), `Cargo.toml` (`zip`). *Leaf.* *Signal:*
@@ -397,9 +406,9 @@ Greek labels → task IDs at decompose. **Active batch (flip to pending): α β 
 - **ζ — STEP import: OCCT reader FFI + `step_import` builtin + `STEPInput`.** *Modules:*
   `reify-kernel-occt/cpp/occt_wrapper.cpp` + `src/lib.rs`, `reify-stdlib` (`eval_builtin`),
   `reify-eval` (geometry-import seam), `reify-compiler` (STEPInput wiring). *Leaf.* *Signal:* a
-  committed `fixture.step` (known dims) imported via `let g = step_import("fixture.step")`;
-  `reify build` re-exports `g` to STL whose AABB matches the fixture dims within `1e-6 m` (round-trip,
-  not byte-exact). *Prereqs:* α.
+  committed `fixture.step`, a planar-faced solid (e.g. a box) with known dims, imported via
+  `let g = step_import("fixture.step")`; `reify build` re-exports `g` to STL whose AABB matches the
+  fixture dims within `1e-3 mm` (round-trip, not byte-exact). *Prereqs:* α.
 - **ι — [DEFERRED tracker] PointCloud import.** Stub PRD `io-import-pointcloud.md`. *Stays deferred.*
 - **κ — [DEFERRED tracker] `DisplayOutput` → viewport drive.** Stub PRD `io-display-output-viewport.md`.
   *Stays deferred.*

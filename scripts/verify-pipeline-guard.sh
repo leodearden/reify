@@ -54,8 +54,8 @@
 #                                   on this subcommand's exit code.
 #                                   MATCHED SETS: the static load-bearing set
 #                                   (clauses 1/2/3/4a/5 below) UNION the
-#                                   open-ended tests/infra/*.sh glob UNION the
-#                                   ACTIVE-ROW KEYS of
+#                                   open-ended tests/infra/*.{sh,py} glob UNION
+#                                   the ACTIVE-ROW KEYS of
 #                                   scripts/verify-pipeline-infra-tests.txt.
 #                                   Deliberately WIDER than the two registries:
 #                                   a path load-bearing by any existing route
@@ -105,13 +105,18 @@
 #             TRADEOFF BREADCRUMB: exit-0 here is the safe-default full-gate
 #             route; a cheaper citing-test-subset alternative is supplied
 #             separately via scripts/verify-pipeline-infra-tests.txt)
-#   infra-tests: ANY tests/infra/*.sh path (open-ended glob, matched in code —
-#             not enumerable in --list; not a manifest line, since the
+#   infra-tests: ANY tests/infra/*.{sh,py} path (open-ended glob, matched in
+#             code — not enumerable in --list; not a manifest line, since the
 #             literal-per-file manifest cannot cover not-yet-existent infra
 #             tests). A new/renamed infra test changes the merge-gate suite
 #             itself, so it is definitionally never config-only (task 5256;
 #             recurrence prevention for the 2026-07-19 5247/5249 incident,
-#             PRD docs/prds/merge-gate-health.md W3a).
+#             PRD docs/prds/merge-gate-health.md W3a). The `.py` half is task
+#             7626: under Arm 2 of the bash-to-Python migration policy a
+#             member's body moves into a `.py` sibling behind a thin `.sh`
+#             wrapper, so the language of the file no longer tracks whether it
+#             is load-bearing — only the directory does. The regex, and why the
+#             extension set is CLOSED and not `test_`-prefixed: _INFRA_GLOB_ERE.
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
@@ -265,6 +270,31 @@ _extract_sh_paths() {
     grep -oE "$_SH_PATH_ERE" | sed -E "$_SH_PATH_NORMALIZE_SED"
 }
 
+# INFRA-TEST GLOB — the open-ended clause's ONE regex, consulted by BOTH the
+# `requires-full-gate` and the `is-registered` arm of the dispatch below. It
+# used to live inline in each, the second carrying only a comment saying "same
+# regex requires-full-gate carries"; a comment is not an enforcement, and task
+# 7626's review found precisely the drift that invites. One constant now, two
+# consumers — a widening applied here cannot reach one arm and miss the other.
+#
+# '[^/]*' is a SINGLE-DIRECTORY anchor: tests/infra/sub/nested.sh is not a
+# member of the infra-test suite and must not route to the full gate.
+#
+# '(sh|py)' AND NOT '.sh' (task 7626). Arm 2 of the bash-to-Python migration
+# policy (docs/notes/infra-test-bash-to-python-migration-policy.md) moves an
+# EXISTING gate member's body into a `.py` sibling behind a thin
+# `test_<name>.sh` wrapper, so the assertions that make a member load-bearing
+# came to live in a file the `.sh`-only form could not match: the wrapper
+# routed to the full gate while an edit to the hundreds of lines it delegates
+# to classified as config-only. The extension set is deliberately CLOSED —
+# "any file under tests/infra" would drag every fixture and .manifest into the
+# gate — and deliberately NOT restricted to a `test_` prefix, because
+# tests/infra/cpu_gov_instrument.py is a live load-bearing Python helper driven
+# directly by test_cpu_load_governance.sh, the exact analogue of test_helpers.sh
+# on the bash side. Pinned by Pair D (k)-(r) in
+# tests/infra/test_verify_pipeline_guard.sh.
+_INFRA_GLOB_ERE='^tests/infra/[^/]*\.(sh|py)$'
+
 # 4. Live emitted-gate derivation (task 6320): append every repo-relative
 #    *.sh path invoked by verify.sh's EMITTED plan lines (add()/add_tool(),
 #    the only two PLAN+= sites). These gate scripts are never `source`d, so
@@ -347,7 +377,10 @@ fi
 #
 #    HOW MUCH IT BUYS TODAY: NOTHING — and that is the honest reading, not a
 #    defect. Measured on this tree, `--list-plan-derived` is BYTE-IDENTICAL to
-#    clause 4a's source-text set (12 paths). verify.sh has no live plan line
+#    clause 4a's source-text set (13 paths; re-measured by task 6296 after
+#    scripts/tree-sitter-freshness.sh joined the plan with #5629 — the
+#    byte-identity itself still holds, only the count moved). verify.sh has no
+#    live plan line
 #    that names a *.sh path from behind a variable. (The `_gui_cmd` /
 #    `_sidecar_cmd` / `_ts_cmd` triple — grep `_gui_cmd=` in scripts/verify.sh
 #    — IS variable-assembled, but its value is a pure npm shell snippet
@@ -382,8 +415,8 @@ fi
 #    verify-pipeline-paths.txt row (or a rewrite to a literal path, or to a
 #    branch the canonical invocation reaches). The five widenings in that
 #    invocation are load-bearing precisely because they shrink this residual:
-#    measured, dropping --include-infra and role=merge takes the derived set
-#    from 12 gates to 6.
+#    measured (task 6296), dropping --include-infra and role=merge takes the
+#    derived set from 13 gates to 7.
 #
 #    Shares the $_verify_sh resolved at clause 3 — one knob, three clauses, no
 #    second env var. NOTE that the knob's semantics WIDEN here from READ to
@@ -438,8 +471,11 @@ derive_plan_paths() {
     # action=all, --scope all, --profile both, --include-infra,
     # DF_VERIFY_ROLE=merge. Every one of those five widenings is load-bearing
     # rather than decoration. Measured on this tree: plain
-    # `all --scope all --profile both` derives only 6 of the 12 gates; adding
-    # --include-infra reaches 11; role=merge is what adds tests/infra/run_all.sh.
+    # `all --scope all --profile both` derives only 7 of the 13 gates; adding
+    # --include-infra reaches 12; role=merge is what adds tests/infra/run_all.sh.
+    # (Counts re-measured by task 6296; every one moved by exactly +1 when
+    # scripts/tree-sitter-freshness.sh joined the plan, and each claim about
+    # WHICH widening buys what still holds as written.)
     # With all five, the derived set is byte-identical BOTH to clause 4a's
     # source-text set AND to the union over a 4-action x 3-scope x 4-role,
     # 48-invocation matrix — so ONE fork is the exact superset today, and an
@@ -450,7 +486,7 @@ derive_plan_paths() {
     # to export. verify.sh reads ~38 REIFY_*/DF_* knobs and several of them
     # narrow the plan, so an inherited one silently shrinks this clause. That is
     # not hypothetical: MEASURED on this tree, an ambient
-    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 12 paths to 11 (it
+    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 13 paths to 12 (it
     # is verify.sh's re-entrancy sentinel — see its RE-ENTRANCY GUARD comment —
     # and suppresses the very tests/infra/run_all.sh line that role=merge is
     # here to add). Monotonicity means such a loss can never fail OPEN, but
@@ -463,7 +499,7 @@ derive_plan_paths() {
     # -u REIFY_VERIFY_PREBUILD_TIMEOUT` in test_occt_flock_gate.sh, a shorter
     # one in test_run_all_ambient_isolation.sh), and the two knobs most likely
     # to be named first — REIFY_AFFECTED_CRATES_OVERRIDE and
-    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (12 -> 12), while
+    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (13 -> 13), while
     # the one that does narrow is neither. Scrubbing the whole REIFY_*/DF_*
     # prefix is self-healing in the same way clauses 3/4a/4b are: a future
     # narrowing knob is neutralized with no edit here.
@@ -706,12 +742,18 @@ case "$_subcmd" in
             exit 0
         fi
         # Infra-test glob clause (task 5256; PRD merge-gate-health.md W3a):
-        # ANY tests/infra/*.sh path is definitionally load-bearing — a new/renamed
-        # infra test changes the merge-gate suite itself, so an infra-test diff is
-        # never config-only. Open-ended glob (matches infra tests that don't exist
-        # yet), hence a special-case here rather than a fixed-string manifest line.
+        # ANY tests/infra source path is definitionally load-bearing — a
+        # new/renamed infra test changes the merge-gate suite itself, so an
+        # infra-test diff is never config-only. Open-ended glob (matches infra
+        # tests that don't exist yet), hence a special-case here rather than a
+        # fixed-string manifest line. That rationale never depended on the
+        # language, only on the directory, which is why task 7626 could widen
+        # the set to `.py` (Arm 2 of the migration policy) by extending the
+        # extension alternation and leaving every word above unchanged.
+        # The regex itself — and why it is CLOSED at {sh, py} and not
+        # `test_`-prefixed — is _INFRA_GLOB_ERE, shared with `is-registered`.
         _infra_match=$(printf '%s\n' "$_normalized" \
-                       | grep -m1 -E '^tests/infra/[^/]*\.sh$' 2>/dev/null \
+                       | grep -m1 -E "$_INFRA_GLOB_ERE" 2>/dev/null \
                        || true)
         if [ -n "$_infra_match" ]; then
             echo "$_infra_match"
@@ -805,11 +847,12 @@ case "$_subcmd" in
             printf 'is-registered: %s — registered via the static load-bearing set (--list)\n' "$_query" >&2
             exit 0
         fi
-        # (ii) The open-ended infra-test glob clause, same regex
-        #      requires-full-gate carries (task 5256).
-        _hit=$(printf '%s\n' "$_query" | grep -m1 -E '^tests/infra/[^/]*\.sh$' 2>/dev/null || true)
+        # (ii) The open-ended infra-test glob clause, the SAME CONSTANT
+        #      requires-full-gate consults (task 5256; widened to `.py` by
+        #      7626) — shared, not restated, so the two arms cannot drift.
+        _hit=$(printf '%s\n' "$_query" | grep -m1 -E "$_INFRA_GLOB_ERE" 2>/dev/null || true)
         if [ -n "$_hit" ]; then
-            printf 'is-registered: %s — registered via the tests/infra/*.sh glob clause\n' "$_query" >&2
+            printf 'is-registered: %s — registered via the tests/infra/*.{sh,py} glob clause\n' "$_query" >&2
             exit 0
         fi
         # (iii) ACTIVE-ROW KEYS of the infra-tests map — the SURGICAL registry.
@@ -821,7 +864,7 @@ case "$_subcmd" in
         fi
         printf 'is-registered: %s — NOT registered. Searched: the static load-bearing set\n' "$_query" >&2
         printf '  (scripts/doc-sync-paths.txt, scripts/verify-pipeline-paths.txt and the live\n' >&2
-        printf '  verify.sh derivations — see --list), the tests/infra/*.sh glob, and the\n' >&2
+        printf '  verify.sh derivations — see --list), the tests/infra/*.{sh,py} glob, and the\n' >&2
         printf '  active rows of scripts/verify-pipeline-infra-tests.txt.\n' >&2
         exit 1
         ;;
