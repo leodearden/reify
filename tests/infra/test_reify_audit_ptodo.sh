@@ -388,6 +388,54 @@ assert "vacuity floor ignores an additive third counter and stays silent + rc0" 
     bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_SCAN_EXTRA_OUT" "$_SCAN_EXTRA_RC"
 
 # -----------------------------------------------------------------------
+# DB-ABSENT FLOOR meta-test (task #7001) — pins what
+# _ratchet_check_db_absent_evidence DOES.  Why scenario (a) must run DB-absent
+# and prove it: PRD §19.  Its WIRING into scenario (a), which this hermetic
+# block cannot see, is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+#
+# Same properties as the VACUITY-FLOOR block above: unconditional, hermetic,
+# synthetic generator-stderr strings, no temp files, placed before binary
+# resolution.  Asserts go through the rc, the machine token
+# @@RATCHET_DB_ABSENT_UNPROVEN@@ and input-derived values, never the prose.
+# -----------------------------------------------------------------------
+_assert_db_absent_fires() {
+    local _desc="$1" _stderr="$2" _echoed="${3:-}" _diag _rc=0
+    _diag="$(_ratchet_check_db_absent_evidence "$_stderr" 2>&1 1>/dev/null)" || _rc=$?
+    assert "$_desc" \
+        bash -c '[ "$2" -eq 1 ] || exit 1
+                 [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_DB_ABSENT_UNPROVEN@@" ] || exit 1
+                 case "$1" in *"$3"*) exit 0 ;; *) exit 1 ;; esac' \
+        -- "$_diag" "$_rc" "$_echoed"
+}
+_assert_db_absent_silent() {
+    local _desc="$1" _stderr="$2" _out _rc=0
+    _out="$(_ratchet_check_db_absent_evidence "$_stderr" 2>&1)" || _rc=$?
+    assert "$_desc" bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_out" "$_rc"
+}
+
+# (i) The generator proved it ran DB-absent.
+_assert_db_absent_silent "DB-absent floor is silent + rc0 on tasks_db=absent" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=absent'
+# (ii) The DB-dependent lanes RAN, so liveness could reach the ratchet.
+_assert_db_absent_fires "DB-absent floor fires on tasks_db=present" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=present' 'present'
+# (iii) No mode token at all: the pre-#7001 generator shape.
+_assert_db_absent_fires "DB-absent floor fires when the scan line carries no tasks_db token" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0'
+# (iv) A value outside the two-valued grammar fails loud.
+_assert_db_absent_fires "DB-absent floor fires on a malformed tasks_db value" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 tasks_db=maybe' 'maybe'
+# (v) Whole-token parse: a token whose name merely ENDS WITH tasks_db= is not
+# the mode token.  A substring parse would read `absent` here and pass.
+_assert_db_absent_fires "DB-absent floor reads the tasks_db token by whole name, not by suffix" \
+    '@@PTODO_SCAN@@ files_scanned=7 markers_examined=0 stale_tasks_db=absent'
+# (vi) No scan line at all is the VACUITY floor's failure, not this one's:
+# single attribution keeps one RED per cause.
+_assert_db_absent_silent "DB-absent floor defers (silent + rc0) when there is no scan line at all" \
+    'ptodo-baseline-gen: 0 fingerprint(s) emitted'
+
+# -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
@@ -396,9 +444,14 @@ assert "vacuity floor ignores an additive third counter and stays silent + rc0" 
 # Testability seam (task #4624): REIFY_AUDIT_BIN and REIFY_PTODO_GEN_BIN can
 # be overridden by environment variables for hermetic meta-tests that need to
 # exercise the budget-safe skip path without a real binary on disk.
+# REIFY_PTODO_BASELINE (task #7001) is the same kind of seam for the baseline
+# scenario (a) compares against, so the ratchet meta-tests can drive it with
+# synthetic baselines instead of the committed file.  All three are inert
+# when unset.
 # -----------------------------------------------------------------------
 REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-$REPO_ROOT/target/release/reify-audit}"
 GEN="${REIFY_PTODO_GEN_BIN:-$REPO_ROOT/target/release/ptodo-baseline-gen}"
+BASELINE="${REIFY_PTODO_BASELINE:-$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt}"
 
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 
@@ -539,8 +592,6 @@ if [ "${REIFY_PTODO_RATCHET_REQUIRED:-0}" = "1" ] && [ "$RATCHET_SKIP" != "0" ];
     echo "test_reify_audit_ptodo.sh: REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped (RATCHET_SKIP=$RATCHET_SKIP, freshness guard rc=$_guard_rc); refusing to report green with the ratchet unrun. Remedy: ${_ratchet_remedy}, or unset REIFY_PTODO_RATCHET_REQUIRED to accept the skip." >&2
     exit 1
 fi
-
-BASELINE="$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt"
 
 # -----------------------------------------------------------------------
 # Single EXIT trap covers all temp paths.  Registering two separate traps
