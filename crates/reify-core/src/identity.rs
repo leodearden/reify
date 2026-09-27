@@ -138,21 +138,18 @@ impl ValueCellId {
 /// families hit that case, and they disagree about which dot is the separator:
 ///
 /// * INSTANCE PATHS carry the dots in the ENTITY half (`Rig.bolts` +
-///   `line_cost`), minted over composed descendant prefixes by
-///   `apply_cost_aggregation` in reify-eval/src/structural_query.rs.
+///   `line_cost`).
 /// * PORT COMPOSITE MEMBERS carry a dot in the MEMBER half (`Bracket` +
-///   `mount.width`), minted by the port `composite_name` mint in
-///   `compile_entity`, reify-compiler/src/entity.rs.
+///   `mount.width`).
 /// * KEYED MEMBERS carry the key in the MEMBER half (`Widget` +
-///   `vents["intake"]`), minted by `keyed_member_cell` in
-///   reify-ir/src/value.rs; a key containing a dot lands here too.
+///   `vents["intake"]`), so a key containing a dot lands there too.
 ///
 /// `ValueCellId::new("Rig.bolts", "line_cost")` and
 /// `ValueCellId::new("Rig", "bolts.line_cost")` are distinct cells that render
 /// to the identical string, so Display is not injective and NO positional split
 /// inverts it. [`FromStr`](std::str::FromStr) is therefore only a PARTIAL
 /// inverse: it round-trips the unambiguous single-dot case and refuses the rest
-/// rather than guessing. Do not hand-roll a fourth split — route through it.
+/// rather than guessing. Do not hand-roll a split — route through it.
 impl fmt::Display for ValueCellId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.entity, self.member)
@@ -175,22 +172,10 @@ pub enum ValueCellIdParseError {
     /// See [`ValueCellId`]'s [`Display`](fmt::Display) docs for the three
     /// families that collide here.
     ///
-    /// KNOWN LIMITATION — this refusal is SYNTACTIC, decided from the string
-    /// alone, so it also refuses ids that name exactly one real cell. A port
-    /// composite member (`Bracket` + `mount.width`) and a keyed member whose
-    /// key holds a dot (`Widget` + `vents["a.b"]`) are both unambiguous ONCE
-    /// the compiled cell set is in hand: enumerate the split points, and
-    /// accept when exactly one candidate appears in that set. reify-core sees
-    /// no cell set, so the context-free layer cannot make that call, and it
-    /// refuses rather than guess. Neither family reaches a string-addressed
-    /// boundary today: the GUI's existence gate (`resolve_known_cell_type` in
-    /// gui/src-tauri/src/engine.rs, reached from both `preview_parameter` and
-    /// `commit_parameter`) and the CLI MCP `set_parameter` in
-    /// reify-cli/src/mcp_context.rs both look ids up in `template.value_cells`,
-    /// where neither is reachable. So nothing is observably lost — but the
-    /// door is closed until the ids stop being joined into one string. #7717
-    /// reopens it at the source by carrying `{entity, member}` structurally
-    /// over the GUI wire.
+    /// KNOWN LIMITATION: the refusal is SYNTACTIC, decided from the string
+    /// alone, so it also refuses an id that a lookup against a compiled cell
+    /// set could resolve to exactly one cell (e.g. `Widget` + `vents["a.b"]`).
+    /// #7717 tracks making such cells addressable.
     Ambiguous,
 }
 
@@ -833,18 +818,11 @@ mod tests {
         // the split belongs:
         //
         //   1. INSTANCE PATHS put the dots in the ENTITY half
-        //      (`Rig.bolts` + `line_cost`) — `apply_cost_aggregation` in
-        //      reify-eval/src/structural_query.rs mints
-        //      `ValueCellId::new(path, "line_cost")` over composed descendant
-        //      prefixes. Splitting these needs the LAST dot.
+        //      (`Rig.bolts` + `line_cost`). Splitting these needs the LAST dot.
         //   2. PORT COMPOSITE MEMBERS put a dot in the MEMBER half
-        //      (`Bracket` + `mount.width`) — the port `composite_name` mint in
-        //      `compile_entity`, reify-compiler/src/entity.rs, builds
-        //      `ValueCellId::new(entity, format!("{port}.{param}"))`.
-        //      Splitting these needs the FIRST dot.
-        //   3. KEYED MEMBERS also put the member's structure in the MEMBER half
-        //      (`Widget` + `vents["intake"]`) — `keyed_member_cell` in
-        //      reify-ir/src/value.rs. A key containing a dot needs the FIRST dot
+        //      (`Bracket` + `mount.width`). Splitting these needs the FIRST dot.
+        //   3. KEYED MEMBERS put the key in the MEMBER half
+        //      (`Widget` + `vents["a.b"]`). A dotted key needs the FIRST dot
         //      too, and a last-dot split would cut INSIDE the quoted key.
         //
         // So `rsplit_once('.')` is not "the correct inverse" of Display: it
@@ -853,46 +831,22 @@ mod tests {
         // render to one identical string, and the information needed to choose
         // between them is simply not present in that string:
         let instance_path = ValueCellId::new("Rig.bolts", "line_cost");
-        let dotted_member = ValueCellId::new("Rig", "bolts.line_cost");
+        let port_composite = ValueCellId::new("Rig", "bolts.line_cost");
         assert_ne!(
-            instance_path, dotted_member,
+            instance_path, port_composite,
             "these are two DIFFERENT cells"
         );
         assert_eq!(
             instance_path.to_string(),
-            dotted_member.to_string(),
+            port_composite.to_string(),
             "… yet they render to ONE string, so no parser can tell them apart"
         );
 
-        // The only correct answer is therefore to refuse, naming ambiguity as
-        // the reason rather than silently picking a side.
+        // The only correct answer for that one string is therefore to refuse,
+        // naming ambiguity as the reason rather than silently picking either
+        // family's split.
         assert_eq!(
             instance_path.to_string().parse::<ValueCellId>(),
-            Err(ValueCellIdParseError::Ambiguous)
-        );
-        assert_eq!(
-            dotted_member.to_string().parse::<ValueCellId>(),
-            Err(ValueCellIdParseError::Ambiguous)
-        );
-    }
-
-    #[test]
-    fn value_cell_id_from_str_rejects_instance_path() {
-        assert_eq!(
-            "Rig.bolts.line_cost".parse::<ValueCellId>(),
-            Err(ValueCellIdParseError::Ambiguous)
-        );
-    }
-
-    #[test]
-    fn value_cell_id_from_str_rejects_port_composite_member() {
-        // A port param really is minted with a dotted member name (the port
-        // `composite_name` mint in `compile_entity`, reify-compiler/src/entity.rs),
-        // so this is not a synthetic case.
-        assert_eq!(
-            ValueCellId::new("Bracket", "mount.width")
-                .to_string()
-                .parse::<ValueCellId>(),
             Err(ValueCellIdParseError::Ambiguous)
         );
     }
