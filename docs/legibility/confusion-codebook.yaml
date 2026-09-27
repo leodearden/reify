@@ -2177,6 +2177,12 @@ entries:
     manifested_phase: ops
     invariant_violated: After watcher-rearm.sh CEILING timeout (exit 124), agent should check rotation limits before retrying; instead it re-issues the identical command.
     note: 7 Bash calls to identical watcher-rearm.sh command (timeout 3600s); 3 return exit 124 as designed outcome (turns 84, 89, 123); subsequent retries continue despite ceiling signal without checking ROTATION_ESCALATIONS or ROTATION_HOURS limits injected by supervisor.
+  - date: '2026-09-26'
+    project: reify
+    session: 0cdbce49-fe8a-422f-a59a-b580c2ed84e4
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 6 Bash retries of watcher-rearm.sh with 2 explicit CEILING (exit 124) outcomes; only cosmetic timeout-value changes between retries
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -2452,6 +2458,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Exit 124 (CEILING) from watcher-rearm.sh forces agent into redundant polling loop; 7 Bash invocations of same script across turns 84–171 indicate the ceiling outcome did not terminate retry logic as intended.
+  - date: '2026-09-26'
+    project: reify
+    session: 0cdbce49-fe8a-422f-a59a-b580c2ed84e4
+    origin_phase: unknown
+    manifested_phase: ops
+    note: After CEILING outcomes, session continues with 3x mcp__escalation__get_pending_escalations retries, suggesting forced polling fallback
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -3760,6 +3772,12 @@ entries:
     manifested_phase: ops
     invariant_violated: watcher-rearm must complete within ceiling timeout
     note: 'Turn 507: ''Heartbeat lease and re-arm L2 watcher'' failed with exit code 124 (hard timeout). Direct match to bounded-wait watcher timeout pattern.'
+  - date: '2026-09-26'
+    project: reify
+    session: 0cdbce49-fe8a-422f-a59a-b580c2ed84e4
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bounded-wait timeout (exit 124) recurring across turns 174 and 189
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4116,6 +4134,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Bounded rearm wait (timeout=3600s) re-issued identically across 7 Bash calls after hitting its own ceiling; 3 calls return exit 124 (designed outcome), but further retries follow instead of rotation-limit check or clean exit.
+  - date: '2026-09-26'
+    project: reify
+    session: 0cdbce49-fe8a-422f-a59a-b580c2ed84e4
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Rearm re-issued identically after first CEILING: turn 174 (3600s) and turn 189 (1172s timeout only change), both hit CEILING'
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -5208,6 +5232,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Similar: .task/metadata.json assumed at worktree root but does not exist; possible path at wrong location in warm-lane structure'
+  - date: '2026-09-26'
+    project: reify
+    session: 2fe3e033-b280-45ae-ba35-6e933443be7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Orchestrated-task agent in warm-lanes worktree (_lane-50) encountered 5 not_found errors; consistent with .task-meta path assumption at warm-lanes root instead of under worktrees/
 - id: entry-cand-20260728-8
   title: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)
   severity: medium
@@ -5707,6 +5737,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent in warm-lanes worktree _lane-31 probed for .task/metadata.json and got ENOENT; warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees) evident
+  - date: '2026-09-26'
+    project: reify
+    session: 2fe3e033-b280-45ae-ba35-6e933443be7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Multiple sequential not_found errors suggest path ambiguity between sibling and nested-under-worktrees directory structures
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -7086,6 +7122,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Same undocumented-path probe pattern (.task-meta/<lane>/iterations.jsonl); this session's probe exits 1 via a Python FileNotFoundError traceback rather than exit code 2, but the underlying confusion (probing an undocumented iteration-log path) is identical.
+  - date: '2026-09-26'
+    project: reify
+    session: 2fe3e033-b280-45ae-ba35-6e933443be7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes undocumented .task-meta/<lane>/iterations.jsonl or similar structured path; exit code 2 (not_found) aligns with path/IO errors
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -7814,6 +7856,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Two not_found signals in warm-lanes worktree (_lane-23) context suggests per-lane task-meta iterations.jsonl file was missing at expected path during orchestrated-task agent execution
+  - date: '2026-09-26'
+    project: reify
+    session: 468ad689-3569-403f-97d0-91a8ba7aab9b
+    origin_phase: architect
+    manifested_phase: unknown
+    note: Agent probed for iterations.jsonl at ../.task-meta/_lane-10/ in a warm-lanes task worktree. ls confirmed the .task-meta/_lane-10/ directory exists with 6 files (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts) but iterations.jsonl was not present. The tail -3 command failed silently due to 2>/dev/null redirection, resulting in exit 1.
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -8217,6 +8265,12 @@ entries:
     origin_phase: architect
     manifested_phase: verify
     note: .task/plan.json fails to be accessed in turn 55; diagnostic in turn 62 shows directory exists with plan.json listed, suggesting bootstrap artifact missing, inaccessible, or a broken symlink
+  - date: '2026-09-26'
+    project: reify
+    session: 2fe3e033-b280-45ae-ba35-6e933443be7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lanes task bootstrap context; plan.json may be missing from task directory structure
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -8523,6 +8577,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'mcp__fused-memory__get_task({"id": "6591", "project_root": "/home/leo/src/reify"}) -> The operation timed out.'
+  - date: '2026-09-26'
+    project: reify
+    session: 5ff55d04-4e9d-4a01-bb2e-0704d3a837d2
+    origin_phase: unknown
+    manifested_phase: architect
+    note: Cross-repo fused-memory get_task() timeout from reify task to dark-factory MCP server. Generic 'The operation timed out' message with no server-side diagnostic context caused architect to misattribute the issue, requiring task rerouting. Evidence explicitly cites this entry from session c455234a; current session demonstrates the same codebook pattern manifesting in wrong-repo misidentification and task refiling.
 - id: entry-cand-20260823-13
   title: Redundant duplicate full-suite test invocation to extract two derived metrics
   severity: medium
@@ -9001,6 +9061,12 @@ entries:
     origin_phase: ops
     manifested_phase: verify
     evidence_quote: find . -path ./node_modules -prun...  ./fused-memory/tests/test_lock_charter_guard.py\n./.worktrees-orphaned/4754-20260826T100044Z/fused-memory/tests/test_lock_charter_guard.py\n./.worktrees-orphaned/3051-20260826T012200Z/... ./.eval-worktrees/df_task_1993/run-28c4780a/... [12+ duplicate matches] -> [exit 143] Command timed out after 2m 0s
+  - date: '2026-09-26'
+    project: reify
+    session: 60d10e8b-3c5f-4cfc-ba2f-2a08f7ac63bc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent escalates from scoped search (~/.claude/projects, exit 1) to filesystem-wide find / when session transcript not located, hits timeout (exit 143)
 - id: entry-cand-20260911-22
   title: add_memory content field carries a leaked tool-call envelope closing tag, rejected by mcp_markup_detected guard
   severity: medium
@@ -9123,6 +9189,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 7 not_found signals in a nested warm-lane worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-9); pattern consistent with repo-root-relative path guesses resolving to 404 due to nesting depth.
+  - date: '2026-09-26'
+    project: reify
+    session: 2fe3e033-b280-45ae-ba35-6e933443be7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Worktree cwd nested at worktrees/_lane-50 below expected repo root; 5 not_found errors consistent with repo-root-relative path resolution failures
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -9233,6 +9305,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     evidence_quote: 'One gotcha up front: `module <name>` MUST match the file basename or eval fails with `error: E_MODULE_PATH_MISMATCH: declared module path ''probe01'' does not match expected path ''probe_01_wall_named_cut'' (derived from file location)`.'
+  - date: '2026-09-26'
+    project: reify
+    session: 20a561b6-9bd4-4b1d-ac31-66316aa1b348
+    origin_phase: implement
+    manifested_phase: verify
+    note: 'Turn 174: Agent copied .ri fixture to /tmp/dk7902.ri, but internal module declaration remained ''dim_kinded_length_slot''. Reify compiler rejected with E_MODULE_PATH_MISMATCH. Exact reproduction of the documented Reify module path—file basename mismatch.'
 - id: entry-cand-20260904-15
   title: Orchestrator config key discussed and acted on before confirming it exists
   severity: medium
@@ -25158,3 +25236,55 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'Glob({"pattern": "crates/reify-compiler/src/**/hoist_nested_selector*.rs"}) -> Ripgrep search timed out after 20 seconds. The search may have matched files but did not complete in time. Try searching a more specific path or pattern. [Preceded by two ''does not exist'' errors at turns 82, 97]'
+- id: cand-20260926-1
+  title: Hook invocation in task worktree fails with OAuth authentication error
+  cause: Task agent attempts to invoke GitKraken AI hook in subprocess within worktree, but hook execution fails with '401 OAuth access token is invalid', then retries with different token variable; unclear whether token environment was properly passed to subprocess or whether hook execution context lost auth state
+  area: hook-execution
+  first_seen: '2026-09-26'
+  disposition: pending
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: 20a561b6-9bd4-4b1d-ac31-66316aa1b348
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Turn 230: ''SessionEnd hook [...ai hook run --host claude-code] failed: Hook cancelled''; Turn 242: ''CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_OAUTH_TOKEN_A"...401 OAuth access token is invalid''; suggests hook subprocess invocation in worktree lost or received invalid auth context'
+- id: cand-20260926-2
+  title: Task filed in wrong repository without cross-repo validation or deduplication
+  cause: 'Task 7901 was filed in warm-lanes/reify to fix an issue (add_memory timeout handling) that only exists in dark-factory/fused-memory server code (tools.py:3266, services/memory_service.py:6174) and is already owned by upstream task DF #4872. No validation prevented this misfiling despite the task having empty FILES_TO_MODIFY and demonstrably no fix surface in the target repo.'
+  area: task-filing
+  first_seen: '2026-09-26'
+  disposition: pending
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: f0660a84-09bd-467d-b44a-13c9dc4ece30
+    origin_phase: decompose
+    manifested_phase: implement
+    evidence_quote: 'Wrong repo and a duplicate: the add_memory timeout gap can only be fixed in dark-factory''s fused-memory server, where pending task DF #4872 already owns it. Reify has no fix surface... The add_memory tool is /home/leo/src/dark-factory/fused-memory/src/fused_memory/server/tools.py:3266 and its service is services/memory_service.py:6174, both in the dark-factory repo. None of reify''s .claude/skills... The task''s FILES_TO_MODIFY is empty.'
+- id: cand-20260926-3
+  title: Warm-lanes task agent escalates to filesystem-wide find when session transcript location unknown
+  cause: Task agent (warm-lanes orchestrated-task) needs to locate a previous session's transcript file but lacks environment configuration or explicit path context for where to find it
+  area: warm-lanes / session context retrieval
+  first_seen: '2026-09-26'
+  disposition: pending
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: 60d10e8b-3c5f-4cfc-ba2f-2a08f7ac63bc
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Turn 138: scoped find ~/.claude/projects returns FILE= (exit 1); Turn 145: escalates to timeout 60 find / -xdev on same UUID pattern, killed at exit 143'
+- id: cand-20260926-4
+  title: Type-system behavior assumed working before direct verification against evaluator
+  cause: Implementation assumes heterogeneous type literals can be correctly declared. Tests were written to expect them to pass ('stays_clean'). The premise was never verified by running heterogeneous literals through the actual evaluator before implementation. During review, evaluator testing revealed all such literals fail at runtime.
+  area: Type system / dimension analysis
+  first_seen: '2026-09-26'
+  disposition: pending
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: bff7d402-3092-4ded-b9ee-c1c074f20344
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: Every heterogeneous literal the new tests pin as 'stays_clean' fails to evaluate. The language cannot represent any such literal, and the removed compile-time rejection was a correct early diagnostic for a program that is guaranteed undef at runtime. The branch converts it into compile-time silence plus a runtime undef.
