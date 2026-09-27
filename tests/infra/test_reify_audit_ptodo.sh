@@ -358,6 +358,35 @@ assert "ratchet check is silent + rc0 when live set is empty" \
     bash -c '[ -z "$1" ]' -- "$_EMPTY"
 
 # -----------------------------------------------------------------------
+# STALE-BASELINE meta-test (task #7001) — pins
+# _ratchet_check_no_stale_baseline, the converse oracle (baseline ⊆ live,
+# PRD §19).  Same properties as the ITEM 3 block above.  The lines are
+# synthetic, under crates/does-not-exist/, with the marker assembled from $M
+# so this source stays clean; the remedy is checked against the constant it
+# is built from, not against prose.
+# -----------------------------------------------------------------------
+M="TODO"
+_STALE_A="crates/does-not-exist/a.rs :: untracked :: // $M: stale grandfather a"
+_STALE_B="crates/does-not-exist/b.rs :: untracked :: // $M: stale grandfather b"
+_STALE_RC=0
+_STALE_DIAG="$(_ratchet_check_no_stale_baseline "$_STALE_A"$'\n'"$_STALE_B" 2>&1 1>/dev/null)" \
+    || _STALE_RC=$?
+assert "stale-baseline check fires (rc1 + machine token) and names every stale line" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_STALE_BASELINE_FIRED@@" ] || exit 1
+             case "$1" in *"$3"*) ;; *) exit 1 ;; esac
+             case "$1" in *"$4"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_STALE_DIAG" "$_STALE_RC" "$_STALE_A" "$_STALE_B"
+assert "stale-baseline remedy is the one-command DB-absent regen" \
+    bash -c 'case "$1" in *"REIFY_PTODO_TASKS_DB=$2"*) ;; *) exit 1 ;; esac
+             case "$1" in *"--project-root"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_STALE_DIAG" "$PTODO_TASKS_DB_ABSENT"
+_STALE_EMPTY_RC=0
+_STALE_EMPTY_OUT="$(_ratchet_check_no_stale_baseline "" 2>&1)" || _STALE_EMPTY_RC=$?
+assert "stale-baseline check is silent + rc0 when every baseline line is live" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_STALE_EMPTY_OUT" "$_STALE_EMPTY_RC"
+
+# -----------------------------------------------------------------------
 # VACUITY-FLOOR meta-test (task #6241) — pins what
 # _ratchet_check_scan_evidence DOES.  Why the floor exists at all, and why it
 # keys on generator-emitted SCAN EVIDENCE rather than on the live fingerprint
