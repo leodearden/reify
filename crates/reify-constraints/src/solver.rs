@@ -1455,13 +1455,15 @@ struct DerivedInterval {
 impl DerivedInterval {
     /// Record a candidate lower bound, keeping the tightest (largest) value.
     ///
-    /// On an exact tie a non-strict candidate displaces a strict one: a non-strict
-    /// bound survives [`StrictBound::Dropped`] and is usable as a clamp target,
-    /// whereas a strict one is dropped there.
+    /// On an exact tie the STRICT candidate wins: `{p > c}` is a proper subset of
+    /// `{p ≥ c}`, so it is the tighter bound. Under [`StrictBound::Dropped`] the
+    /// side is then dropped rather than clamped to `c`, a value the strict twin
+    /// rejects; under [`StrictBound::SteppedInside`] it becomes `next_up(c)`,
+    /// where both hold; under [`StrictBound::Kept`] the value is `c` either way.
     fn push_lo(&mut self, value: f64, strict: bool) {
         let tighter = match self.lo {
             None => true,
-            Some((cur, cur_strict)) => value > cur || (value == cur && cur_strict && !strict),
+            Some((cur, cur_strict)) => value > cur || (value == cur && strict && !cur_strict),
         };
         if tighter {
             self.lo = Some((value, strict));
@@ -1469,11 +1471,11 @@ impl DerivedInterval {
     }
 
     /// Record a candidate upper bound, keeping the tightest (smallest) value.
-    /// Same non-strict tie preference as [`DerivedInterval::push_lo`].
+    /// Same strict-wins tie rule as [`DerivedInterval::push_lo`].
     fn push_hi(&mut self, value: f64, strict: bool) {
         let tighter = match self.hi {
             None => true,
-            Some((cur, cur_strict)) => value < cur || (value == cur && cur_strict && !strict),
+            Some((cur, cur_strict)) => value < cur || (value == cur && strict && !cur_strict),
         };
         if tighter {
             self.hi = Some((value, strict));
