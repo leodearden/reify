@@ -1441,6 +1441,36 @@ fn production_registry_ranks_the_bool_balance_by_its_objective() {
     }
 }
 
+/// B11 (PRD2 D4): CP-SAT searches the autos in the order it receives them, so
+/// a multi-model component is only reproducible if that order is declaration
+/// order. The balance's two models differ in `up1`; true-first search in
+/// declaration order finds (T,F,T,F,T,F). Many in-process solves are needed
+/// because a hash-ordered leak picks each model about half the time.
+#[test]
+fn production_registry_resolves_a_multi_model_bool_component_identically_every_time() {
+    const DECLARATION_ORDER_FIRST_MODEL: [bool; 6] = [true, false, true, false, true, false];
+    const SOLVES: usize = 16;
+
+    let registry = SolverRegistry::production();
+    let problem = bool_balance_problem(true, None);
+    let observed: Vec<[bool; 6]> = (0..SOLVES)
+        .map(|_| match registry.solve(&problem) {
+            SolveResult::Solved { values, .. } => balance_bools(&values),
+            other => panic!("expected the balance to solve; got {other:?}"),
+        })
+        .collect();
+
+    let deviating = observed
+        .iter()
+        .filter(|ups| **ups != DECLARATION_ORDER_FIRST_MODEL)
+        .count();
+    assert_eq!(
+        deviating, 0,
+        "{deviating}/{SOLVES} solves did not return the declaration-order model \
+         {DECLARATION_ORDER_FIRST_MODEL:?}; observed {observed:?}"
+    );
+}
+
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.
 ///
 /// Two independent sub-problems:

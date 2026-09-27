@@ -79,3 +79,27 @@ fn discrete_balance_lets_fixture_resolves_to_exact_balancing_bools() {
         "horizontal balance for {ups:?}"
     );
 }
+
+/// B11 end to end (PRD2 D4): the engine hands the solver its autos in
+/// declaration order, so every fresh eval returns the same balance model —
+/// the true-first one, (T,F,T,F,T,F). The registry-seam twin in
+/// `reify-constraints`' `registry_tests` is the reliable detector of an order
+/// leak; this locks that the engine layer adds none of its own.
+#[test]
+fn discrete_balance_lets_fixture_resolves_identically_across_evals() {
+    const DECLARATION_ORDER_FIRST_MODEL: [bool; 6] = [true, false, true, false, true, false];
+    const EVALS: usize = 6;
+
+    let source = balance_fixture_source();
+    let observed: Vec<[bool; 6]> = (0..EVALS)
+        .map(|_| resolved_ups(&eval_through_production_registry(&source, WHAT)))
+        .collect();
+
+    assert!(
+        observed
+            .iter()
+            .all(|ups| *ups == DECLARATION_ORDER_FIRST_MODEL),
+        "every eval must return the declaration-order model \
+         {DECLARATION_ORDER_FIRST_MODEL:?}; observed {observed:?}"
+    );
+}
