@@ -94,6 +94,7 @@ test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
 test_event_inventory_wired.sh pool
+test_fd_probe_self_reference.sh pool
 test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_flake_density_report.sh pool
