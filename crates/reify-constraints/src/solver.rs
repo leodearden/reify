@@ -10451,6 +10451,32 @@ mod tests {
         );
     }
 
+    /// (d′) On an exact tie the STRICT bound wins, in either insertion order:
+    /// `{q > c}` is a proper subset of `{q ≥ c}`, so it is the tighter bound. A
+    /// non-strict twin must never hide a strict bound from a clamp box.
+    #[test]
+    fn derive_intervals_strict_bound_wins_an_exact_tie() {
+        use reify_ir::BinOp;
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        for (strict_op, non_strict_op) in [(BinOp::Gt, BinOp::Ge), (BinOp::Lt, BinOp::Le)] {
+            let strict = || cmp_ref_lit(strict_op, &q, 1.0);
+            let non_strict = || cmp_ref_lit(non_strict_op, &q, 1.0);
+            for (order, exprs) in [
+                ("strict first", vec![strict(), non_strict()]),
+                ("non-strict first", vec![non_strict(), strict()]),
+            ] {
+                let iv = derive_one(&q, exprs);
+                let side = if strict_op == BinOp::Gt { iv.lo } else { iv.hi };
+                assert_eq!(
+                    side,
+                    Some((1.0, true)),
+                    "`q {strict_op:?} 1.0` ∧ `q {non_strict_op:?} 1.0` ({order}): the strict \
+                     bound must win the tie"
+                );
+            }
+        }
+    }
+
     /// (e) SKIP rules — a far operand that references another auto param, a
     /// multi-auto shape, an `Eq`/`Ne` op, and a non-finite/Undef far operand all
     /// yield no bound. A bound that cannot be evaluated must never become a clamp.

@@ -110,6 +110,16 @@ fn gt_expr(x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
     CompiledExpr::binop(BinOp::Gt, x_ref, bound, Type::Bool)
 }
 
+/// Builds `x_id >= bound_si_m` as a `CompiledExpr`.
+fn ge_expr(x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    CompiledExpr::binop(
+        BinOp::Ge,
+        length_ref(x_id),
+        length_literal(bound_si_m),
+        Type::Bool,
+    )
+}
+
 /// Builds `x_id < bound_si_m` as a `CompiledExpr`.
 fn lt_expr(x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
     let length_dim = DimensionVector::LENGTH;
@@ -408,6 +418,49 @@ fn lambda_one_on_a_strict_upper_bound_stops_inside_it() {
         "the model's own strict `t < 4mm` must hold at the λ=1 value: `reify check` \
          compares exactly (reify-expr `eval_cmp` is a bare f64 `<`); got t = {t_si:.17e} m"
     );
+}
+
+/// A redundant non-strict twin (`t >= 1mm` beside `t > 1mm`) must not hide the
+/// strict bound from the γ clamp box: both constraints hold only strictly above
+/// 1mm, so the λ=1 value must still satisfy `t > 1mm` exactly. Run in both
+/// constraint orders, because the tie between the two bounds must not depend
+/// on which one the derivation meets first.
+#[test]
+fn lambda_one_with_a_redundant_non_strict_twin_still_satisfies_the_strict_bound() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let lower_pairs = [
+        (
+            "strict first",
+            [gt_expr(&t_id, 0.001), ge_expr(&t_id, 0.001)],
+        ),
+        (
+            "non-strict first",
+            [ge_expr(&t_id, 0.001), gt_expr(&t_id, 0.001)],
+        ),
+    ];
+    for (order, [first, second]) in lower_pairs {
+        let mut problem = seeded_free_problem(&t_id, money_expr_x_per_mm(&t_id), 1.0, None);
+        problem.constraints = vec![
+            (constraint_id("CostRobustnessTradeoff", 0), first),
+            (constraint_id("CostRobustnessTradeoff", 1), second),
+            (
+                constraint_id("CostRobustnessTradeoff", 2),
+                lt_expr(&t_id, 0.004),
+            ),
+        ];
+
+        let t_si = solve_t(&problem, &t_id);
+
+        assert!(
+            (t_si - 0.001).abs() < ANCHOR_TOL_M,
+            "{order}: λ=1 must reach the TRUE lower boundary (1mm); got t = {t_si:.6e} m"
+        );
+        assert!(
+            t_si > 0.001,
+            "{order}: the strict `t > 1mm` must hold at the λ=1 value even beside its \
+             non-strict twin `t >= 1mm`; got t = {t_si:.17e} m"
+        );
+    }
 }
 
 // ── γ + STRICT auto (task #5711 amendment 2) ──────────────────────────────
