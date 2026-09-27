@@ -519,9 +519,10 @@ fn non_auto_ad_hoc_selector_produces_no_gate_error() {
 // mean `clamp(auto(5mm))` compiles to something arbitrary with no diagnostic.
 //
 // It costs nothing to implement. Because `auto(5mm)` lowers to the EXISTING
-// `ExprKind::Auto` (α introduced no new `Expr` variant), the gate at
-// `crates/reify-compiler/src/expr.rs:644-686` — which matches `ExprKind::Auto`
-// in raw call args and short-circuits through `make_poison_literal` — fires on
+// `ExprKind::Auto` (α introduced no new `Expr` variant), the gate
+// `reject_auto_in_arg_list` in `crates/reify-compiler/src/expr.rs` — which
+// matches `ExprKind::Auto` in raw call args and short-circuits through
+// `make_poison_literal` — fires on
 // the new surface unchanged. These tests are what make that inheritance
 // load-bearing rather than incidental.
 //
