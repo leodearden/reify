@@ -161,7 +161,8 @@ export function createEngineStore(options?: EngineStoreOptions) {
     solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
-  function initFromState(guiState: GuiState) {
+  /** The store fields a whole-state snapshot replaces. */
+  function snapshotFields(guiState: GuiState): Partial<EngineState> {
     const meshes: Record<string, MeshData> = {};
     for (const m of guiState.meshes) {
       meshes[m.entity_path] = m;
@@ -177,23 +178,22 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    reload({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null });
+    return { meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires, tensegritySurfaces: guiState.tensegrity_surfaces, displayPanes: guiState.display_panes ?? [], displayAppearance: guiState.display_appearance ?? [], feaDiagnostics: guiState.fea_diagnostics ?? [], feaConvergence: guiState.fea_convergence ?? null };
   }
 
   /**
-   * One whole-state reload, written atomically: `snapshot`'s fields, plus the
-   * reset every reload owes.
-   *
-   * `autoResolve` resets alongside the snapshot: a completed loop now persists
-   * (the panel is data-gated, not `active`-gated), so without this the previous
-   * file's resolved parameters and constraint rows would stay mounted after
-   * opening a new one. Safe because reloads come ONLY from whole-state replies
-   * (`applyPublishedState`: file-open / initial-load) and debug
-   * fixture-injection (debug/bridge.ts), never from a per-re-eval path — so it
-   * cannot clobber a loop that is mid-flight.
+   * Replace the whole state with `guiState`, clearing any auto-resolve loop:
+   * a completed loop persists (the panel is data-gated, not `active`-gated), so
+   * without the clear the previous file's resolved parameters and constraint
+   * rows would stay mounted after opening a new one.
    */
-  function reload(snapshot: Partial<EngineState>) {
-    setState({ ...snapshot, autoResolve: freshAutoResolve() });
+  function initFromState(guiState: GuiState) {
+    reload({ ...snapshotFields(guiState), autoResolve: freshAutoResolve() });
+  }
+
+  /** Write one whole-state reload atomically, then report the reinitialization. */
+  function reload(fields: Partial<EngineState>) {
+    setState(fields);
     options?.onEngineReinitialized?.();
   }
 
@@ -201,23 +201,33 @@ export function createEngineStore(options?: EngineStoreOptions) {
   // applied under (task 7853). Backend generations start at 1.
   let newestGeneration = 0;
 
+  // The newest generation when the current auto-resolve loop began: the
+  // generation whose re-eval fired it, since every event of a generation
+  // follows its announcement.
+  let autoResolveGeneration = 0;
+
   function noteGeneration(generation: number) {
     newestGeneration = Math.max(newestGeneration, generation);
   }
 
   /**
-   * Apply a whole-state reply, unless a newer generation already reached the
-   * store: every event of that generation followed its announcement, so the
-   * reply is older than state events have applied since, and none of its
-   * fields is written. The reload's reset and callback run either way.
+   * Apply a whole-state reply under its generation. Its fields are written
+   * unless a newer generation already reached the store — every event of that
+   * generation followed its announcement, so the reply is older than state
+   * events have applied since. The auto-resolve loop is cleared iff an older
+   * generation began it; a loop the reply's own or a newer generation began
+   * describes the reply's state or a newer one. The reinitialized callback
+   * fires either way.
    */
   function applyPublishedState(published: PublishedState) {
-    if (published.generation < newestGeneration) {
-      reload({});
-      return;
+    const { generation } = published;
+    const fresh = generation >= newestGeneration;
+    const fields: Partial<EngineState> = fresh ? snapshotFields(published.state) : {};
+    if (autoResolveGeneration < generation) {
+      fields.autoResolve = freshAutoResolve();
     }
-    newestGeneration = published.generation;
-    initFromState(published.state);
+    newestGeneration = Math.max(newestGeneration, generation);
+    reload(fields);
   }
 
   function applyMeshUpdate(mesh: MeshData) {
@@ -325,6 +335,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * Clearing here would blink the data-gated panel on every re-eval.
    */
   function beginAutoResolveLoop() {
+    autoResolveGeneration = newestGeneration;
     setState('autoResolve', { active: true, pendingReset: true });
   }
 
@@ -393,8 +404,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
    * with them — it is what labels the chart's y-axis.
    *
    * The samples are dropped later, by whichever comes first: the next loop's
-   * first accepted iteration (the deferred reset), or a full-state
-   * `initFromState` reload.
+   * first accepted iteration (the deferred reset), or a whole-state reload
+   * that clears the loop (`initFromState`, or `applyPublishedState` of a newer
+   * generation than the loop's).
    */
   function endAutoResolveLoop() {
     // A loop that produced no iteration never discharged its owed clear — do it

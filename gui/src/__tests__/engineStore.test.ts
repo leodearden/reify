@@ -2867,9 +2867,6 @@ describe('engineStore publish-generation guard', () => {
       const { store, onEngineReinitialized, announce, valueUpdate, feaDiagnosticsChanged } =
         await subscribedStore();
       store.applyPublishedState({ generation: 3, state: snapshot('50') });
-      store.beginAutoResolveLoop();
-      store.applyAutoResolveIteration(sampleIteration);
-      expect(store.state.autoResolve.iterations).toHaveLength(1);
       onEngineReinitialized.mockClear();
 
       announce(5);
@@ -2883,8 +2880,60 @@ describe('engineStore publish-generation guard', () => {
 
       expect(shownWidth(store)).toBe('120');
       expect(store.state.feaDiagnostics).toEqual(live);
-      expect(store.state.autoResolve).toEqual({ active: false, iterations: [] });
       expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  /** Run one whole auto-resolve loop, as the engine fires it on a re-eval. */
+  function runAutoResolveLoop(store: ReturnType<typeof createEngineStore>) {
+    store.beginAutoResolveLoop();
+    store.applyAutoResolveIteration(sampleIteration);
+    store.endAutoResolveLoop();
+  }
+
+  it('a reply clears an auto-resolve loop an older generation began, even when it is stale', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      runAutoResolveLoop(store);
+
+      announce(5);
+      store.applyPublishedState({ generation: 4, state: snapshot('80') });
+
+      expect(store.state.autoResolve).toEqual({ active: false, iterations: [] });
+      dispose();
+    });
+  });
+
+  it('a stale reply keeps the auto-resolve loop a newer generation began', async () => {
+    await createRoot(async (dispose) => {
+      const { store, onEngineReinitialized, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 3, state: snapshot('50') });
+      onEngineReinitialized.mockClear();
+
+      announce(5);
+      runAutoResolveLoop(store);
+      store.applyPublishedState({ generation: 4, state: snapshot('80') });
+
+      expect(store.state.autoResolve.iterations).toEqual([sampleIteration]);
+      expect(store.state.autoResolve.canonicalDrivingMetric).toBe('max_von_mises');
+      expect(onEngineReinitialized).toHaveBeenCalledOnce();
+      dispose();
+    });
+  });
+
+  it('a reply keeps the auto-resolve loop its own generation began', async () => {
+    await createRoot(async (dispose) => {
+      const { store, announce } = await subscribedStore();
+      store.applyPublishedState({ generation: 1, state: snapshot('50') });
+
+      announce(2);
+      runAutoResolveLoop(store);
+      store.applyPublishedState({ generation: 2, state: snapshot('80') });
+
+      expect(shownWidth(store)).toBe('80');
+      expect(store.state.autoResolve.iterations).toEqual([sampleIteration]);
       dispose();
     });
   });
