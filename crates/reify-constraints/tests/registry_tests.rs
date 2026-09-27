@@ -1184,6 +1184,263 @@ fn production_registry_routes_geometric_to_solvespace() {
     assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
 }
 
+// ---- PRD2 γ (task #5469): production() installs the discrete solvers ----
+//
+// Logical components go to `CpSatSolver`; CrossDomain components go to the
+// fallback, which answers an all-discrete component with CP-SAT and anything
+// else with `DimensionalSolver` (PRD2 §4.1). Driven through the public factory.
+
+/// `N2.up<i>`, one of the balance's six Bool autos.
+fn up_id(i: usize) -> reify_core::ValueCellId {
+    vcid("N2", &format!("up{i}"))
+}
+
+fn real_lit(v: f64) -> CompiledExpr {
+    literal(Value::Real(v))
+}
+
+/// The PRD2 §5 n2 hexagon balance in its let-indirected shape: six Bool autos
+/// `N2.up<i>`, each naming a force `N2.f<i> = if up<i> then 1.0 else -1.0`
+/// through a dependent cell, and three equilibrium constraints over the forces.
+///
+/// Exactly two models. The sum and the vertical balance force
+/// f2+f3 = f5+f6 = f1+f4 = 0, and the horizontal balance then leaves
+/// 2·f1 + f2 − f5 = 0: (T,F,T,F,T,F) and (F,T,F,T,F,T). Every sum is exact in
+/// f64 for ±1 operands.
+fn bool_balance_problem(free: bool, objective: Option<ObjectiveSense>) -> ResolutionProblem {
+    let f = |i: usize| value_ref_typed("N2", &format!("f{i}"), Type::dimensionless_scalar());
+    let add = |l, r| binop(BinOp::Add, l, r);
+    let sub = |l, r| binop(BinOp::Sub, l, r);
+    let half = |e| binop(BinOp::Mul, real_lit(0.5), e);
+
+    let sum = (2..=6).fold(f(1), |acc, i| add(acc, f(i)));
+    let vertical = binop(
+        BinOp::Mul,
+        real_lit(0.8660254),
+        sub(sub(add(f(2), f(3)), f(5)), f(6)),
+    );
+    let horizontal = add(
+        sub(
+            sub(sub(add(f(1), half(f(2))), half(f(3))), f(4)),
+            half(f(5)),
+        ),
+        half(f(6)),
+    );
+
+    ResolutionProblem {
+        auto_params: (1..=6)
+            .map(|i| AutoParam {
+                id: up_id(i),
+                param_type: Type::Bool,
+                bounds: None,
+                free,
+            })
+            .collect(),
+        constraints: (0u32..)
+            .zip([sum, vertical, horizontal])
+            .map(|(k, e)| (cnid("N2", k), eq(e, real_lit(0.0))))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: objective.map(|sense| ObjectiveSet::single(sense, f(1))),
+        functions: vec![].into(),
+        dependent_cells: (1..=6)
+            .map(|i| {
+                let up = value_ref_typed("N2", &format!("up{i}"), Type::Bool);
+                let force = conditional_expr(up, real_lit(1.0), real_lit(-1.0));
+                (vcid("N2", &format!("f{i}")), force)
+            })
+            .collect(),
+    }
+}
+
+/// The six `N2.up<i>` of a balance solution, each required to be an exact Bool.
+fn balance_bools(values: &std::collections::HashMap<reify_core::ValueCellId, Value>) -> [bool; 6] {
+    std::array::from_fn(|k| match values.get(&up_id(k + 1)) {
+        Some(Value::Bool(up)) => *up,
+        other => panic!(
+            "N2.up{} must resolve to an exact Bool; got {other:?}",
+            k + 1
+        ),
+    })
+}
+
+/// The three equilibrium equations hold EXACTLY for these bools.
+fn assert_balanced(ups: [bool; 6]) {
+    let [f1, f2, f3, f4, f5, f6] = ups.map(|up| if up { 1.0 } else { -1.0 });
+    assert_eq!(f1 + f2 + f3 + f4 + f5 + f6, 0.0, "force sum for {ups:?}");
+    assert_eq!(
+        0.8660254 * (f2 + f3 - f5 - f6),
+        0.0,
+        "vertical balance for {ups:?}"
+    );
+    assert_eq!(
+        f1 + 0.5 * f2 - 0.5 * f3 - f4 - 0.5 * f5 + 0.5 * f6,
+        0.0,
+        "horizontal balance for {ups:?}"
+    );
+}
+
+/// The domain of the problem's single component — the non-vacuity check that
+/// a test really exercises the registry slot it names.
+fn sole_component_domain(problem: &ResolutionProblem) -> reify_ir::ConstraintDomain {
+    let components = reify_constraints::decompose_into_components(
+        &problem.auto_params,
+        &problem.constraints,
+        None,
+        &problem.dependent_cells,
+    );
+    assert_eq!(components.len(), 1, "expected exactly one component");
+    components[0].domain
+}
+
+/// Strict Bool autos `L.<member>` under `constraints`.
+fn strict_bool_problem(members: &[&str], constraints: Vec<CompiledExpr>) -> ResolutionProblem {
+    ResolutionProblem {
+        auto_params: members
+            .iter()
+            .map(|m| AutoParam {
+                id: vcid("L", m),
+                param_type: Type::Bool,
+                bounds: None,
+                free: false,
+            })
+            .collect(),
+        constraints: (0u32..)
+            .zip(constraints)
+            .map(|(k, c)| (cnid("L", k), c))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+        dependent_cells: Vec::new(),
+    }
+}
+
+fn logical_ref(member: &str) -> CompiledExpr {
+    value_ref_typed("L", member, Type::Bool)
+}
+
+fn bool_lit(b: bool) -> CompiledExpr {
+    literal(Value::Bool(b))
+}
+
+/// B3. The Bool reach sits behind dependent cells, so the balance is a
+/// CrossDomain component: it is answered by the fallback slot, and must come
+/// back as exact balancing Bools.
+#[test]
+fn production_registry_solves_the_let_indirected_bool_balance_with_exact_bools() {
+    let problem = bool_balance_problem(true, None);
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::CrossDomain,
+        "precondition: the let-indirected balance must reach the CrossDomain slot"
+    );
+
+    let result = SolverRegistry::production().solve(&problem);
+    let SolveResult::Solved { values, unique } = &result else {
+        panic!("expected the balance to solve through production(); got {result:?}");
+    };
+    assert_balanced(balance_bools(values));
+    assert!(
+        !unique,
+        "the balance has exactly two models, so it is not unique"
+    );
+}
+
+#[test]
+fn production_registry_routes_a_pure_bool_logical_component_to_cpsat() {
+    let problem = strict_bool_problem(
+        &["a", "b"],
+        vec![
+            eq(logical_ref("a"), bool_lit(true)),
+            ne(logical_ref("a"), logical_ref("b")),
+        ],
+    );
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::Logical,
+        "precondition: a pure-Bool component must reach the Logical slot"
+    );
+
+    match SolverRegistry::production().solve(&problem) {
+        SolveResult::Solved { values, unique } => {
+            assert_eq!(values.get(&vcid("L", "a")), Some(&Value::Bool(true)));
+            assert_eq!(values.get(&vcid("L", "b")), Some(&Value::Bool(false)));
+            assert!(unique, "exactly one model, proven by complete enumeration");
+        }
+        other => panic!("expected the Logical component to solve; got {other:?}"),
+    }
+}
+
+/// B4 at the registry seam only: an honest `unique: false` from one component
+/// survives the merge with a unique one. Whether a strict auto then warns or
+/// errors is the engine's policy (#6554), not the registry's.
+#[test]
+fn production_registry_keeps_a_multi_model_bool_component_non_unique_through_the_merge() {
+    let c_is_true = eq(logical_ref("c"), bool_lit(true));
+
+    let two_models = strict_bool_problem(
+        &["a", "b", "c"],
+        vec![ne(logical_ref("a"), logical_ref("b")), c_is_true.clone()],
+    );
+    match SolverRegistry::production().solve(&two_models) {
+        SolveResult::Solved { unique, .. } => {
+            assert!(
+                !unique,
+                "a != b has two models; the merge must not hide that"
+            )
+        }
+        other => panic!("expected Solved; got {other:?}"),
+    }
+
+    let one_model = strict_bool_problem(
+        &["a", "b", "c"],
+        vec![
+            eq(logical_ref("a"), bool_lit(true)),
+            eq(logical_ref("b"), bool_lit(false)),
+            c_is_true,
+        ],
+    );
+    match SolverRegistry::production().solve(&one_model) {
+        SolveResult::Solved { unique, .. } => {
+            assert!(unique, "every component has exactly one model")
+        }
+        other => panic!("expected Solved; got {other:?}"),
+    }
+}
+
+/// B5 at the registry seam: the objective picks WHICH balance model comes
+/// back, and flipping its sense flips the configuration.
+#[test]
+fn production_registry_ranks_the_bool_balance_by_its_objective() {
+    for (sense, expected_up1) in [
+        (ObjectiveSense::Minimize, false),
+        (ObjectiveSense::Maximize, true),
+    ] {
+        let problem = bool_balance_problem(true, Some(sense));
+        match SolverRegistry::production().solve_ranked(&problem) {
+            RankedSolveResult::Ranked {
+                candidates,
+                optimality,
+            } => {
+                assert!(
+                    matches!(optimality, reify_ir::OptimalityStatus::ProvenOptimal),
+                    "{sense:?}: complete enumeration must prove optimality; got {optimality:?}"
+                );
+                let ups = balance_bools(&candidates[0].values);
+                assert_balanced(ups);
+                assert_eq!(ups[0], expected_up1, "{sense:?} f1 picks N2.up1");
+                assert_eq!(
+                    candidates[0].objective_score,
+                    Some(-1.0),
+                    "{sense:?}: the best f1 scores -1 once normalised to minimisation"
+                );
+            }
+            other => panic!("{sense:?}: expected a ranking; got {other:?}"),
+        }
+    }
+}
+
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.
 ///
 /// Two independent sub-problems:
@@ -2114,4 +2371,68 @@ fn registry_forwards_compute_dispatch_to_inner_solver() {
              is Undef for every t without the hook; got {other:?}"
         ),
     }
+}
+
+/// LOCK (task #5469), GREEN on write by design: `production()`'s CrossDomain
+/// fallback must forward `dispatch` on its continuous arm. The trait default
+/// drops it, which would leave `stress(t)` `Undef` and the solve `Infeasible`.
+///
+/// The `&& true` conjunct is what makes the component CrossDomain. It is
+/// spelled as a conjunct, not `== true`, because DimensionalSolver sums a
+/// conjunction's residuals but scores a Bool equality as a flat 0/1 step it
+/// cannot descend.
+#[test]
+fn production_registry_forwards_compute_dispatch_through_the_cross_domain_fallback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (t_id, mut problem) = fea_binding_problem();
+    let (id, stress_below_limit) = problem.constraints.pop().expect("one constraint");
+    problem
+        .constraints
+        .push((id, and(stress_below_limit, literal(Value::Bool(true)))));
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::CrossDomain,
+        "precondition: `stress(t) < 4 && true` must reach the CrossDomain slot"
+    );
+    let registry = SolverRegistry::production();
+    let assert_interior = |t: Option<f64>, what: &str| {
+        let t = t.unwrap_or_else(|| panic!("{what}: t must resolve to a number"));
+        assert!(
+            t > 0.001 && t < 1.0,
+            "{what}: expected an interior t; got {t}"
+        );
+    };
+
+    let mock = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_with_dispatch(&problem, Some(&mock)) {
+        SolveResult::Solved { values, .. } => assert_interior(
+            values.get(&t_id).and_then(Value::as_f64),
+            "solve_with_dispatch",
+        ),
+        other => panic!("expected Solved with the dispatch hook forwarded; got {other:?}"),
+    }
+    assert!(
+        mock.calls.load(Ordering::SeqCst) > 0,
+        "the hook must be reached"
+    );
+
+    let mock_ranked = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_ranked_with_dispatch(&problem, Some(&mock_ranked)) {
+        RankedSolveResult::Ranked { candidates, .. } => assert_interior(
+            candidates[0].values.get(&t_id).and_then(Value::as_f64),
+            "solve_ranked_with_dispatch",
+        ),
+        other => panic!("expected Ranked with the dispatch hook forwarded; got {other:?}"),
+    }
+    assert!(
+        mock_ranked.calls.load(Ordering::SeqCst) > 0,
+        "the hook must be reached on the ranked path"
+    );
 }
