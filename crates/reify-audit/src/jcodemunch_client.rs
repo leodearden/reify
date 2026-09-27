@@ -1201,8 +1201,8 @@ fn is_attr_or_comment(line: &str) -> bool {
 
 /// Extract a `// G-allow: <reason>` marker from a comment line.
 ///
-/// Requires non-blank reason text (mirrors `scripts/audit-orphan-producers.sh:150`
-/// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` is non-empty).
+/// Requires non-blank reason text (mirrors `scripts/audit-orphan-producers.sh`'s
+/// `G_ALLOW_RE` pattern, `//\s*G-allow:\s*(.+)`, where `(.+)` is non-empty).
 fn extract_g_allow(line: &str) -> Option<String> {
     // Match `//\s*G-allow:\s*(.+)` — non-blank capture
     let rest = line.strip_prefix("//")?;

@@ -112,10 +112,10 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 
 /// Resolve the git work tree that a child process spawned with
 /// `.current_dir(repo_root)` would itself compute via `git rev-parse
-/// --show-toplevel` — i.e. what `audit-orphan-producers.sh:66`'s own
-/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` will resolve to for this
-/// child. Routed through the SAME [`sanitize`] the script spawn uses, so this
-/// probe faithfully reproduces the child's exact view.
+/// --show-toplevel` — i.e. what `audit-orphan-producers.sh`'s own
+/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` line will resolve to for
+/// this child. Routed through the SAME [`sanitize`] the script spawn uses,
+/// so this probe faithfully reproduces the child's exact view.
 ///
 /// This does NOT re-test that [`sanitize`] works — it tests the premise
 /// [`sanitize`] is supposed to establish: that the child resolves the SAME
@@ -489,9 +489,10 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
         Err(e) => panic!("unexpected error probing python3: {e}"),
     }
 
-    // Graceful skip: check git is available (audit-orphan-producers.sh:59-64
-    // probes for both python3 AND git; missing git causes exit 3 which would
-    // surface as a confusing JSON-parse panic without this probe).
+    // Graceful skip: check git is available (audit-orphan-producers.sh's own
+    // `for tool in python3 git; do ... done` loop probes for both python3
+    // AND git; missing git causes exit 3 which would surface as a confusing
+    // JSON-parse panic without this probe).
     match Command::new("git").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
