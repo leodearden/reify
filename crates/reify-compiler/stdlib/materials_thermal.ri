@@ -8,7 +8,7 @@
 // dimensioned scalar types (ThermalConductivity, SpecificHeat, ThermalExpansion)
 // by task #3115.
 //
-// Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
+// Spec reference: docs/reify-stdlib-reference.md §6.3.
 // Audit reference: docs/notes/stdlib-trait-breadth-audit-v01.md §6.3 (CLOSED via task 2354).
 //
 // Note on parent trait name: the spec text says `: Material` but `Material` was
@@ -56,8 +56,7 @@ trait ThermallyCharacterized : MaterialSpec {
 // unattractive: thermal_expansion is required here, so deleting it breaks every
 // conformer (examples/drivebelt_trait_bounds.ri, the reify-test-support
 // fixtures, the materials_thermal_tests.rs conformers) and drops a contract
-// documented at docs/reify-stdlib-reference.md §6.3 against spec §6.3 lines
-// 680-694.
+// documented at docs/reify-stdlib-reference.md §6.3.
 //
 // These are not INV-SF-5 placeholders. Each is fully typed, dimensioned, and
 // carries a real value end to end — enforced rather than asserted, by
