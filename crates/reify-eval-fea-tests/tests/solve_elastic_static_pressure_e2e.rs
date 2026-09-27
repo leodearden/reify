@@ -8,7 +8,7 @@
 // and multi-case delegation (solve_load_cases → solve_elastic_static_trampoline)
 // paths are exercised here.
 
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -273,35 +273,31 @@ structure def LetBoundPressureBeam {
 }
 "#;
 
-/// Eval `source`; return every eval diagnostic message and `<entity>.result`.
-fn eval_solve_result(source: &str, entity: &str) -> (Vec<String>, Value) {
+/// Eval `source`; return every eval diagnostic and `<entity>.result`.
+fn eval_solve_result(source: &str, entity: &str) -> (Vec<Diagnostic>, Value) {
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
     reify_eval::compute_targets::register_compute_fns(&mut engine);
-    let eval_result = engine.eval(&compiled);
-    let messages = eval_result
-        .diagnostics
-        .iter()
-        .map(|d| d.message.clone())
-        .collect();
+    let mut eval_result = engine.eval(&compiled);
     let result = eval_result
         .values
         .get(&ValueCellId::new(entity, "result"))
         .cloned()
         .unwrap_or_else(|| panic!("cell {entity}.result not found in eval result"));
-    (messages, result)
+    (std::mem::take(&mut eval_result.diagnostics), result)
 }
 
 #[test]
 fn e2e_inline_pressure_load_in_solve_call_is_applied() {
-    let (inline_messages, inline) = eval_solve_result(INLINE_PRESSURE_SOURCE, "InlinePressureBeam");
+    let (inline_diagnostics, inline) =
+        eval_solve_result(INLINE_PRESSURE_SOURCE, "InlinePressureBeam");
     let (_, let_bound) = eval_solve_result(LET_BOUND_PRESSURE_SOURCE, "LetBoundPressureBeam");
 
     assert!(
-        !inline_messages
+        !inline_diagnostics
             .iter()
-            .any(|m| m.contains("No loads applied")),
-        "the inline PressureLoad must reach the solver; diagnostics: {inline_messages:?}"
+            .any(|d| d.code == Some(DiagnosticCode::FeaNoLoads)),
+        "the inline PressureLoad must reach the solver; diagnostics: {inline_diagnostics:?}"
     );
     assert_eq!(extract_field(&inline, "converged"), Some(Value::Bool(true)));
 
