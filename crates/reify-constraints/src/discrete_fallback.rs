@@ -1,3 +1,60 @@
+//! The CrossDomain fallback strategy of PRD2 §4.1: an all-discrete component is
+//! answered by CP-SAT, anything else by `DimensionalSolver` exactly as before.
+//! The routing table lives in `docs/prds/v0_6/discrete-cost-minimisation.md` §4.1.
+
+use crate::{CpSatSolver, DimensionalSolver};
+use reify_ir::{
+    ComputeDispatch, ConstraintSolver, RankedSolveResult, ResolutionProblem, SolveResult,
+};
+
+pub(crate) struct DiscreteFirstFallback;
+
+/// The one routing decision every trait method forwards through, so the four
+/// entry points cannot disagree about which solver owns a component.
+fn route(problem: &ResolutionProblem) -> &'static dyn ConstraintSolver {
+    if is_all_discrete(problem) {
+        &CpSatSolver
+    } else {
+        &DimensionalSolver
+    }
+}
+
+/// Discreteness is CP-SAT's enumeration CAPABILITY, judged against this
+/// component's own constraints — the same authority decompose routes on.
+fn is_all_discrete(problem: &ResolutionProblem) -> bool {
+    !problem.auto_params.is_empty()
+        && problem
+            .auto_params
+            .iter()
+            .all(|ap| crate::cpsat::can_enumerate(ap, &problem.constraints))
+}
+
+impl ConstraintSolver for DiscreteFirstFallback {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        route(problem).solve(problem)
+    }
+
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        route(problem).solve_with_dispatch(problem, dispatch)
+    }
+
+    fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        route(problem).solve_ranked(problem)
+    }
+
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> RankedSolveResult {
+        route(problem).solve_ranked_with_dispatch(problem, dispatch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::DiscreteFirstFallback;
@@ -62,7 +119,10 @@ mod tests {
     ) -> ResolutionProblem {
         ResolutionProblem {
             auto_params,
-            constraints: (0u32..).zip(constraints).map(|(i, c)| (cnid(ENTITY, i), c)).collect(),
+            constraints: (0u32..)
+                .zip(constraints)
+                .map(|(i, c)| (cnid(ENTITY, i), c))
+                .collect(),
             current_values: ValueMap::new(),
             objective,
             functions: Vec::new().into(),
@@ -125,7 +185,10 @@ mod tests {
                     optimality: format!("{optimality:?}"),
                 },
                 RankedSolveResult::Infeasible { diagnostics } => Outcome::Infeasible(
-                    diagnostics.into_iter().map(|d| (d.code, d.message)).collect(),
+                    diagnostics
+                        .into_iter()
+                        .map(|d| (d.code, d.message))
+                        .collect(),
                 ),
                 RankedSolveResult::NoProgress { reason } => Outcome::NoProgress(reason),
             }
@@ -159,12 +222,19 @@ mod tests {
     #[test]
     fn an_all_bool_component_is_answered_by_cpsat() {
         let balance = eq(binop(BinOp::Add, sign_of("a"), sign_of("b")), real(0.0));
-        let p = problem(vec![bool_auto("a"), bool_auto("b")], vec![balance.clone()], None);
+        let p = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![balance.clone()],
+            None,
+        );
 
         let solved = DiscreteFirstFallback.solve(&p);
         match &solved {
             SolveResult::Solved { values, unique } => {
-                assert!(!unique, "a != b has two models, so the answer is not unique");
+                assert!(
+                    !unique,
+                    "the balance has two models (a != b), so the answer is not unique"
+                );
                 assert!(
                     values.values().all(|v| matches!(v, Value::Bool(_))),
                     "every auto must resolve to an exact Bool; got {values:?}"
@@ -179,7 +249,11 @@ mod tests {
         );
 
         let minimise_a = ObjectiveSet::single(ObjectiveSense::Minimize, sign_of("a"));
-        let p = problem(vec![bool_auto("a"), bool_auto("b")], vec![balance], Some(minimise_a));
+        let p = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![balance],
+            Some(minimise_a),
+        );
         for ranked in [
             DiscreteFirstFallback.solve_ranked(&p),
             DiscreteFirstFallback.solve_ranked_with_dispatch(&p, None),
@@ -202,7 +276,10 @@ mod tests {
     #[test]
     fn a_mixed_bool_real_component_falls_through_to_dimensional_unchanged() {
         let autos = || vec![bool_auto("up"), real_auto("t")];
-        let floor = ge(real_ref("t"), conditional_expr(bool_ref("up"), real(3.0), real(5.0)));
+        let floor = ge(
+            real_ref("t"),
+            conditional_expr(bool_ref("up"), real(3.0), real(5.0)),
+        );
         let ceiling = le(real_ref("t"), real(10.0));
         let p = problem(autos(), vec![floor.clone(), ceiling.clone()], None);
 
@@ -229,7 +306,11 @@ mod tests {
     fn an_all_continuous_component_falls_through_to_dimensional_unchanged() {
         let sum = eq(binop(BinOp::Add, real_ref("a"), real_ref("b")), real(10.0));
         let difference = eq(binop(BinOp::Sub, real_ref("a"), real_ref("b")), real(2.0));
-        let p = problem(vec![real_auto("a"), real_auto("b")], vec![sum, difference], None);
+        let p = problem(
+            vec![real_auto("a"), real_auto("b")],
+            vec![sum, difference],
+            None,
+        );
 
         assert_cpsat_cannot_answer(&p);
         assert_same_outcome(DiscreteFirstFallback.solve(&p), DimensionalSolver.solve(&p));
