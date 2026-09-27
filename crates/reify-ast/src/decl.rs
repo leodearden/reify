@@ -1007,7 +1007,13 @@ where
 ///
 /// The sketch-body column is `no` for every lookup/scope set because
 /// sketch-local names are invisible outside the block (PRD
-/// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+/// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1). That argument covers
+/// lookups from OUTSIDE the block only: `NAMED_MEMBER_LOOKUP`'s `no` also
+/// leaves hover/goto-definition on a sketch-local name used inside its own
+/// sketch unresolved, although reify-lsp's references and outline already
+/// treat the body as a child scope. Closing that needs a scope-aware lookup,
+/// not a flipped cell — `yes` would let a name used outside the block
+/// resolve to a sketch-local declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemberRecursionSet {
     sub_overrides: bool,
