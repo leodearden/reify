@@ -501,7 +501,7 @@ pub(crate) fn build_scoring_values(
 /// seed at `0.01` — outside the synthesised robustness floor's window, which made
 /// Nelder-Mead approach the feasible region from the wrong side and report a false
 /// `RobustnessFloorInfeasible`. Strict comparisons DO contribute here
-/// (`include_strict = true`): a start point may sit anywhere, unlike a clamp target.
+/// ([`StrictBound::Kept`]): a start point may sit anywhere, unlike a clamp target.
 fn extract_initial_point(
     problem: &ResolutionProblem,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -533,7 +533,9 @@ fn extract_initial_point(
                 return (lo + hi) / 2.0;
             }
             // Fall back to the constraint-derived box (task #5618).
-            if let Some((box_lo, box_hi)) = compose_interval(param, &intervals[i], true) {
+            if let Some((box_lo, box_hi)) =
+                compose_interval(param, &intervals[i], StrictBound::Kept)
+            {
                 let nudge = |v: f64| (SEED_NUDGE_REL * v.abs()).max(SEED_NUDGE_ABS);
                 match (intervals[i].lo, intervals[i].hi) {
                     (Some(_), Some(_)) => return (box_lo + box_hi) / 2.0,
@@ -1410,25 +1412,27 @@ fn floor_infeasible_diagnostic(
 // and reported a false `RobustnessFloorInfeasible`.
 //
 // These helpers recover a usable box from the inequality constraints themselves.
-// Three consumers, with different obligations:
+// Three consumers, with different obligations — one [`StrictBound`] variant each:
 //
-//   - the SEED box, derived from `problem.constraints` with `include_strict = true`
+//   - the SEED box, derived from `problem.constraints` under [`StrictBound::Kept`]
 //     (a start point may sit anywhere, so every inequality contributes);
 //   - the CLAMP box, derived from `effective_constraints` — i.e. INCLUDING the
-//     synthesised floor — with `include_strict = false`.  A clamp target is a value
+//     synthesised floor — under [`StrictBound::Dropped`].  A clamp target is a value
 //     the solver will actually return, so a `Gt`-sourced bound must never become
 //     one: clamping `x > 5mm` to exactly 5mm violates the strict comparison and
 //     would trade a false Infeasible for a different false Infeasible.  This costs
 //     nothing in the case above: `synthesise_floor_constraints` emits its slack
 //     constraints as `Ge`, and the floored bound is strictly interior to the
 //     original `>`/`>=` bound by construction, so the clamp still gets it.
-//   - the γ CLAMP box (task #6465), under [`SolveRegime::TradeoffBlend`] only,
-//     with `include_strict = true`.  γ is floor-free by PRD §2.4/§8.1, so there
-//     is no strictly-interior floored bound for the rule above to fall back on —
-//     and γ does not want one: PRD §8.1's λ=1 answer IS the value on the strict
-//     bound.  This is a THIRD named case, not a widening of the second; see
-//     `SolveRegime::TradeoffBlend`'s variant doc and the `bounds` match arm in
-//     `solve_core_with_sd_tolerance`.
+//   - the γ CLAMP box (tasks #6465, #7883), under [`SolveRegime::TradeoffBlend`]
+//     only, with [`StrictBound::SteppedInside`].  γ is floor-free by PRD
+//     §2.4/§8.1, so there is no strictly-interior floored bound for the rule above
+//     to fall back on — and γ does not want one: PRD §8.1's λ=1 answer IS the
+//     boundary.  For a strict bound that infimum is not attained, so the box stops
+//     one representable value inside it, and the λ=1 answer SATISFIES the model's
+//     own strict comparison (`reify check` compares exactly).  This is a THIRD
+//     named case, not a widening of the second; see `SolveRegime::TradeoffBlend`'s
+//     variant doc and the `bounds` match arm in `solve_core_with_sd_tolerance`.
 //
 // The clamp is load-bearing, not just the seed.  Minimising `q + PENALTY_WEIGHT ·
 // (1.02 − q)²` places the penalty method's unconstrained minimiser ~5e-7 BELOW the
@@ -1452,7 +1456,7 @@ impl DerivedInterval {
     /// Record a candidate lower bound, keeping the tightest (largest) value.
     ///
     /// On an exact tie a non-strict candidate displaces a strict one: a non-strict
-    /// bound survives `include_strict = false` and is usable as a clamp target,
+    /// bound survives [`StrictBound::Dropped`] and is usable as a clamp target,
     /// whereas a strict one is dropped there.
     fn push_lo(&mut self, value: f64, strict: bool) {
         let tighter = match self.lo {
@@ -1473,6 +1477,44 @@ impl DerivedInterval {
         };
         if tighter {
             self.hi = Some((value, strict));
+        }
+    }
+}
+
+/// What a composed box does with a derived side whose tightest bound is STRICT
+/// (`>`/`<`). One variant per consumer named in the section comment above; a
+/// non-strict side is used at its own value under every variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictBound {
+    /// SEED boxes: the bound's own value — a start point may sit on it.
+    Kept,
+    /// The general CLAMP box: the side is dropped — a clamp target must never be a
+    /// value the strict comparison rejects.
+    Dropped,
+    /// The γ CLAMP box: one representable value inside (`f64::next_up` on a low
+    /// side, `f64::next_down` on a high side) — the closest value at which a
+    /// direct `p OP c` / `c OP p` comparison holds, since the checker compares
+    /// exactly.
+    ///
+    /// That guarantee is exact for the DIRECT shape only. For the shifted shapes
+    /// `p − k OP c` / `k − p OP c` the derived bound is itself an f64
+    /// rearrangement (`c + k`, `k − c`), rounded once already, so the edge is not
+    /// guaranteed to satisfy the model's own leaf. The same holds for a
+    /// non-strict side there: it is a pre-existing property of the derivation,
+    /// not of this policy.
+    SteppedInside,
+}
+
+impl StrictBound {
+    /// The value one derived side contributes to a composed box, or `None` when
+    /// the side is dropped. `inward` moves a value one representable step into
+    /// the interval from this side.
+    fn side_value(self, side: Option<(f64, bool)>, inward: fn(f64) -> f64) -> Option<f64> {
+        let (value, strict) = side?;
+        match (strict, self) {
+            (false, _) | (true, StrictBound::Kept) => Some(value),
+            (true, StrictBound::Dropped) => None,
+            (true, StrictBound::SteppedInside) => Some(inward(value)),
         }
     }
 }
@@ -1647,7 +1689,7 @@ impl<'a> DerivationCtx<'a> {
 /// found ZERO models of that shape, so the loss is latent; the fallback is the
 /// documented pre-#5618 behaviour rather than a new defect; and a second
 /// seed/clamp axis here would cross the one [`resolve_bounds`] already carries
-/// (`include_strict`), leaving two independent switches for a future reader to
+/// ([`StrictBound`]), leaving two independent switches for a future reader to
 /// keep aligned. If a real model ever pays this cost, the split is a
 /// `snapshot_operands_ok` flag on [`DerivationCtx`] and the test above is the
 /// assertion that should flip.
@@ -1836,18 +1878,22 @@ fn record_bound(iv: &mut DerivedInterval, value: f64, lower: bool, strict: bool)
 /// `AutoParam.bounds` is intersected rather than widened.  The two coincide on
 /// every production path (`bounds` is always `None` there), so this only ever
 /// tightens behaviour relative to the plain default box.
+///
+/// Each strict side is mapped through `policy` BEFORE the intersection, so a box
+/// that inverts after [`StrictBound::SteppedInside`] (`p > c ∧ p < next_up(c)`,
+/// empty in representable floats) takes the same wholesale fallback.
 fn compose_interval(
     param: &AutoParam,
     interval: &DerivedInterval,
-    include_strict: bool,
+    policy: StrictBound,
 ) -> Option<(f64, f64)> {
     let (base_lo, base_hi) = effective_bounds(param);
-    let usable = |side: Option<(f64, bool)>| {
-        side.filter(|&(_, strict)| include_strict || !strict)
-            .map(|(v, _)| v)
-    };
-    let lo = usable(interval.lo).map_or(base_lo, |v| v.max(base_lo));
-    let hi = usable(interval.hi).map_or(base_hi, |v| v.min(base_hi));
+    let lo = policy
+        .side_value(interval.lo, f64::next_up)
+        .map_or(base_lo, |v| v.max(base_lo));
+    let hi = policy
+        .side_value(interval.hi, f64::next_down)
+        .map_or(base_hi, |v| v.min(base_hi));
     (lo.is_finite() && hi.is_finite() && lo < hi).then_some((lo, hi))
 }
 
@@ -1855,13 +1901,14 @@ fn compose_interval(
 /// with the param's [`effective_bounds`] and falling back to those bounds
 /// wholesale when the composition is degenerate.
 ///
-/// `include_strict = false` for the general CLAMP box, `true` for SEED boxes and
-/// for the γ [`SolveRegime::TradeoffBlend`] clamp box — see the section comment
-/// above for all three consumers and why the distinction is load-bearing.
+/// `policy` is [`StrictBound::Dropped`] for the general CLAMP box,
+/// [`StrictBound::Kept`] for SEED boxes and [`StrictBound::SteppedInside`] for the
+/// γ [`SolveRegime::TradeoffBlend`] clamp box — see the section comment above for
+/// all three consumers and why the distinction is load-bearing.
 fn resolve_bounds(
     auto_params: &[AutoParam],
     intervals: &[DerivedInterval],
-    include_strict: bool,
+    policy: StrictBound,
 ) -> Vec<(f64, f64)> {
     auto_params
         .iter()
@@ -1869,7 +1916,7 @@ fn resolve_bounds(
         .map(|(i, param)| {
             intervals
                 .get(i)
-                .and_then(|iv| compose_interval(param, iv, include_strict))
+                .and_then(|iv| compose_interval(param, iv, policy))
                 .unwrap_or_else(|| effective_bounds(param))
         })
         .collect()
@@ -1877,17 +1924,18 @@ fn resolve_bounds(
 
 /// The #5618 constraint-derived SEED box for every `problem.auto_params`
 /// entry: composes each param's [`derive_param_intervals`] interval with its
-/// [`effective_bounds`] via [`resolve_bounds`], with `include_strict = true`
+/// [`effective_bounds`] via [`resolve_bounds`], under [`StrictBound::Kept`]
 /// since a seed point may sit anywhere a start vector can legally begin —
-/// unlike a CLAMP target (`resolve_bounds`'s `include_strict = false`
-/// callers), which must never cross a strict inequality boundary.
+/// unlike a CLAMP target ([`StrictBound::Dropped`] /
+/// [`StrictBound::SteppedInside`]), which must never be a value a strict
+/// comparison rejects.
 ///
 /// Used by [`multistart_points`] (the multistart corner/midpoint anchors);
 /// `verify_uniqueness` (the perturbation anchor) produces the SAME box, but
 /// derives its intervals itself — it needs them raw for its γ branch too — and
 /// composes them through this function's [`seed_box_from_intervals`] half. Per
 /// task #5711 the two boxes must not diverge: a future change to which
-/// constraint set feeds the derivation, or to the `include_strict` choice, has
+/// constraint set feeds the derivation, or to the [`StrictBound`] choice, has
 /// exactly one place to land for both call sites.
 fn derived_seed_box(
     problem: &ResolutionProblem,
@@ -1912,7 +1960,7 @@ fn derived_seed_box(
 /// through [`resolve_bounds`] would erase).
 ///
 /// The split exists so that caller can derive ONCE instead of twice while the
-/// `include_strict = true` decision — the thing that actually distinguishes a
+/// [`StrictBound::Kept`] decision — the thing that actually distinguishes a
 /// SEED box from a CLAMP box, and the divergence [`derived_seed_box`]'s doc
 /// warns about — still lives in exactly one place. Deriving separately at each
 /// call site is what would let the two boxes drift; re-COMPOSING from the same
@@ -1921,7 +1969,7 @@ fn seed_box_from_intervals(
     auto_params: &[AutoParam],
     intervals: &[DerivedInterval],
 ) -> Vec<(f64, f64)> {
-    resolve_bounds(auto_params, intervals, true)
+    resolve_bounds(auto_params, intervals, StrictBound::Kept)
 }
 
 /// Auto-param indices that appear in at least one constraint conjunct the bound
@@ -2260,7 +2308,7 @@ enum Determinedness {
 ///
 /// Bound STRICTNESS is deliberately irrelevant — a `>`/`<` bound supplies its
 /// side just as a `>=`/`<=` one does, mirroring [`derived_seed_box`]'s
-/// `include_strict = true`. The question here is "did the user's constraints
+/// [`StrictBound::Kept`]. The question here is "did the user's constraints
 /// supply this side", not "is it a legal clamp target".
 ///
 /// Takes `intervals` rather than deriving them, so the caller can pass
@@ -2698,7 +2746,7 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
 /// that is `(-1e6, 1e6)`, and every corner anchor landed ~10⁶ away from a bracket
 /// like `q ∈ [1, 100]`. Only start #0 (which [`extract_initial_point`] already
 /// derives) could reach the feasible region, so best-of-K silently degenerated to
-/// best-of-one. `include_strict = true`: these are SEED points, and a start point
+/// best-of-one. [`StrictBound::Kept`]: these are SEED points, and a start point
 /// may sit anywhere — unlike a clamp target (see [`resolve_bounds`]).
 ///
 /// The derived box comes from `problem.constraints`, i.e. WITHOUT the synthesised
@@ -2769,7 +2817,7 @@ enum SolveRegime {
     ///
     /// - MARGIN: synthesises the α robustness floor (task #4789) when the
     ///   objective is Money-dimensioned.
-    /// - CLAMP: the constraint-derived box with `include_strict = false` when
+    /// - CLAMP: the constraint-derived box under [`StrictBound::Dropped`] when
     ///   that synthesis fired, else `effective_bounds` — see the gate comment
     ///   at the `bounds` binding for why a floor-free solve keeps the raw
     ///   default box (esc-5618-1).
@@ -2781,11 +2829,12 @@ enum SolveRegime {
     /// - MARGIN: none. The tradeoff form REPLACES the α floor rather than
     ///   composing with it (PRD §2.4/§8.1), so `effective_constraints ==
     ///   problem.constraints` under this regime.
-    /// - CLAMP: the constraint-derived box with `include_strict = true`.
-    ///   Landing exactly ON a strict bound is this regime's CONTRACT, not a
-    ///   violation of it — PRD §8.1's λ=1 answer is the TRUE constraint
-    ///   boundary, floor-free. See the `bounds` match arm for the soundness
-    ///   half of the argument.
+    /// - CLAMP: the constraint-derived box under [`StrictBound::SteppedInside`].
+    ///   Reaching the boundary is this regime's CONTRACT — PRD §8.1's λ=1
+    ///   answer is the TRUE constraint boundary, floor-free — and for a strict
+    ///   bound the closest representable value that satisfies it IS that
+    ///   boundary answer, made checkable. See the `bounds` match arm for the
+    ///   soundness half of the argument.
     TradeoffBlend,
     /// [`constraints_witness`]' rung-2 probe: one floor-free, objective-free
     /// re-solve looking for a concrete feasible point.
@@ -2898,7 +2947,7 @@ fn solve_core_with_sd_tolerance(
     // instead yields a feasible-but-badly-suboptimal answer (the seed, returned
     // via the drift fallback).
     //
-    // `include_strict = false`: a clamp target is a value the solver will actually
+    // `StrictBound::Dropped`: a clamp target is a value the solver will actually
     // return, so a `Gt`-sourced bound must never become one.  The floor's slack
     // constraints are `Ge`, and the floored bound is strictly interior to the
     // original `>`/`>=` bound by construction, so the clamp still receives it.
@@ -2934,10 +2983,10 @@ fn solve_core_with_sd_tolerance(
     // semantics rationale above, is the standing reason the gate stays; neither
     // ground depends on the other, and #5711 leaves no open coupling between them.
     //
-    // The `include_strict` choice is per-REGIME, and the derivation itself is
+    // The `StrictBound` choice is per-REGIME, and the derivation itself is
     // shared: deriving separately per arm is what would let the two clamp boxes
     // drift apart, exactly as `derived_seed_box`'s doc warns for the seed pair.
-    let derived_clamp_box = |include_strict: bool| {
+    let derived_clamp_box = |policy: StrictBound| {
         resolve_bounds(
             &problem.auto_params,
             &derive_param_intervals(
@@ -2948,14 +2997,14 @@ fn solve_core_with_sd_tolerance(
                 &problem.functions,
                 dispatch,
             ),
-            include_strict,
+            policy,
         )
     };
     let bounds = match regime {
         // Unchanged from #5618: the FLOORED window, strict bounds excluded.
-        SolveRegime::RobustnessFloor if floor_applied => derived_clamp_box(false),
+        SolveRegime::RobustnessFloor if floor_applied => derived_clamp_box(StrictBound::Dropped),
 
-        // γ: the constraint-derived box WITH strict bounds.
+        // γ: the constraint-derived box, strict bounds stepped one value inside.
         //
         // SOUNDNESS — the derived box is an OUTER approximation of the feasible
         // region, so clamping into it can never exclude a feasible point.
@@ -2965,19 +3014,22 @@ fn solve_core_with_sd_tolerance(
         // doc names the CLAMP box as one of the consumers requiring exactly
         // this property.
         //
-        // CONTRACT — `include_strict = true` here is not a relaxation of the
-        // general rule above it ("a clamp target must never be a value at which
-        // the strict comparison is violated"), which stands for every other
-        // regime. A value landing exactly on a strict `>` bound IS PRD §8.1's
-        // stated λ=1 answer: pure-cost, floor-free minimisation reaches the TRUE
-        // constraint boundary. On the production `bounds: None` shape
-        // `effective_bounds` is only `default_bounds_for(Length) = [1µm, 10m]`,
-        // so without this box nothing snaps the penalty minimiser's finite
-        // undershoot past the strict bound back: `final_max_residual` exceeds
-        // `FEASIBILITY_THRESHOLD`, the `initially_feasible` fallback below fires,
-        // and the blend reports THE SEED. Pinned by
+        // CONTRACT — `StrictBound::SteppedInside` here KEEPS the general rule
+        // above it ("a clamp target must never be a value at which the strict
+        // comparison is violated") while still reaching PRD §8.1's stated λ=1
+        // answer: pure-cost, floor-free minimisation reaches the TRUE constraint
+        // boundary. For a strict `>` bound that infimum is not attained, so the
+        // nearest representable value inside it is the boundary answer that
+        // satisfies the model — `reify check` compares exactly (task #7883).
+        // Dropping the side instead is not an option here: on the production
+        // `bounds: None` shape `effective_bounds` is only
+        // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
+        // snaps the penalty minimiser's finite undershoot past the strict bound
+        // back: `final_max_residual` exceeds `FEASIBILITY_THRESHOLD`, the
+        // `initially_feasible` fallback below fires, and the blend reports THE
+        // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
-        SolveRegime::TradeoffBlend => derived_clamp_box(true),
+        SolveRegime::TradeoffBlend => derived_clamp_box(StrictBound::SteppedInside),
 
         // No derived clamp: the floor-free general path (the esc-5618-1 gate
         // above) and the witness probe, whose doc rules out answering from a
@@ -3980,8 +4032,9 @@ fn score_solution(
 /// a FIXED seed, never seed-invariance.
 ///
 /// A blend whose argmin sits ON a constraint boundary is seed-invariant: the
-/// [`SolveRegime::TradeoffBlend`] clamp box includes strict bounds, so λ=1
-/// resolves the boundary from every seed on the production `bounds: None` shape
+/// [`SolveRegime::TradeoffBlend`] clamp box stops one representable value inside
+/// strict bounds, so λ=1 resolves the boundary from every seed on the production
+/// `bounds: None` shape
 /// (`gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`).
 ///
 /// What grounds this branch is the FLAT blend: where the blend is flat over a
@@ -4103,7 +4156,7 @@ fn verify_uniqueness(
     // end of its bounds range from the solution.  #5711 step-5: this is now
     // the #5618 constraint-derived SEED box (the same box `multistart_points`
     // gets from `derived_seed_box`, composed here through that function's
-    // shared `seed_box_from_intervals` half; include_strict = true since an
+    // shared `seed_box_from_intervals` half; `StrictBound::Kept` since an
     // anchor is a seed point, not a clamp target) rather than the
     // unconstrained effective_bounds box — see the header note above for the
     // measured mechanism this fixes.
@@ -6289,7 +6342,7 @@ mod tests {
 
         let params = vec![bracketed_test_param("t", false)];
         // BOTH sides strict (`>` / `<`) — mirroring `derived_seed_box`'s
-        // `include_strict = true`. The question this function answers is "did
+        // `StrictBound::Kept`. The question this function answers is "did
         // the USER's constraints supply this side", NOT "is it a legal clamp
         // target", so bound strictness is irrelevant.
         let strict_both = DerivedInterval {
@@ -9704,7 +9757,7 @@ mod tests {
         use reify_test_support::{cnid, gt, literal, lt, mm, value_ref, vcid, warn_capturing_subscriber};
 
         use super::{
-            UniquenessVerdict, build_perturbation_anchors, build_scoring_values,
+            StrictBound, UniquenessVerdict, build_perturbation_anchors, build_scoring_values,
             classify_uniqueness, derive_param_intervals, eval_objective_set, resolve_bounds,
             solve_core, verify_uniqueness,
         };
@@ -9778,7 +9831,7 @@ mod tests {
                 &problem.functions,
                 None,
             ),
-            true,
+            StrictBound::Kept,
         );
         let (anchor, missing) =
             build_perturbation_anchors(&problem.auto_params, &solved, &derived_box);
@@ -10294,39 +10347,82 @@ mod tests {
         assert_eq!(upper.lo, None, "no lower bound in this constraint set");
     }
 
-    /// (c) A strict `q > 1.0` derives lo = 1.0 flagged strict; `resolve_bounds`
-    /// DROPS it under `include_strict = false` (a clamp target must never be a
-    /// value at which the strict comparison is violated) and KEEPS it under
-    /// `include_strict = true` (a seed has no such obligation).
+    /// (c) A strict `q > 1.0` derives lo = 1.0 flagged strict, and each
+    /// [`super::StrictBound`] consumer composes it differently: the general clamp
+    /// DROPS it (a clamp target must never be a value at which the strict
+    /// comparison is violated), a seed KEEPS it (a seed has no such obligation),
+    /// and the γ clamp steps one representable value INSIDE it (the closest value
+    /// the exact comparison accepts). The mirrored `q < 5.0` pins the high side.
     #[test]
-    fn resolve_bounds_strict_excluded_from_clamp_kept_for_seed() {
+    fn resolve_bounds_strict_side_policy_per_consumer() {
+        use super::StrictBound;
         use reify_ir::BinOp;
         let q = reify_core::ValueCellId::new("Derive", "q");
         let params = vec![real_auto_param(q.clone())];
-        let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
         let values = ValueMap::new();
-        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
+        let (default_lo, default_hi) = super::default_bounds_for(&params[0].param_type);
+
+        let lower = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
+        let intervals = super::derive_param_intervals(&params, &lower, &[], &values, &[], None);
         assert_eq!(
             intervals[0].lo,
             Some((1.0, true)),
             "`q > 1.0` must derive lo = 1.0 flagged STRICT"
         );
+        for (policy, expected, why) in [
+            (
+                StrictBound::Dropped,
+                (default_lo, default_hi),
+                "must DROP the Gt-sourced bound",
+            ),
+            (
+                StrictBound::Kept,
+                (1.0, default_hi),
+                "must KEEP the Gt-sourced bound as-is",
+            ),
+            (
+                StrictBound::SteppedInside,
+                (1.0_f64.next_up(), default_hi),
+                "must step the Gt-sourced bound one representable value UP",
+            ),
+        ] {
+            assert_eq!(
+                super::resolve_bounds(&params, &intervals, policy)[0],
+                expected,
+                "{policy:?} {why}"
+            );
+        }
 
-        let (default_lo, default_hi) = super::default_bounds_for(&params[0].param_type);
-
-        let clamp = super::resolve_bounds(&params, &intervals, false);
+        let upper = as_constraints(vec![cmp_ref_lit(BinOp::Lt, &q, 5.0)]);
+        let intervals = super::derive_param_intervals(&params, &upper, &[], &values, &[], None);
         assert_eq!(
-            clamp[0],
-            (default_lo, default_hi),
-            "include_strict = false must DROP the Gt-sourced bound and keep the default low side"
+            intervals[0].hi,
+            Some((5.0, true)),
+            "`q < 5.0` must derive hi = 5.0 flagged STRICT"
         );
-
-        let seed = super::resolve_bounds(&params, &intervals, true);
-        assert_eq!(
-            seed[0],
-            (1.0, default_hi),
-            "include_strict = true must KEEP the Gt-sourced bound as a seed bound"
-        );
+        for (policy, expected, why) in [
+            (
+                StrictBound::Dropped,
+                (default_lo, default_hi),
+                "must DROP the Lt-sourced bound",
+            ),
+            (
+                StrictBound::Kept,
+                (default_lo, 5.0),
+                "must KEEP the Lt-sourced bound as-is",
+            ),
+            (
+                StrictBound::SteppedInside,
+                (default_lo, 5.0_f64.next_down()),
+                "must step the Lt-sourced bound one representable value DOWN",
+            ),
+        ] {
+            assert_eq!(
+                super::resolve_bounds(&params, &intervals, policy)[0],
+                expected,
+                "{policy:?} {why}"
+            );
+        }
     }
 
     /// (d) Tightest wins when two constraints bound the same side.
@@ -10443,7 +10539,7 @@ mod tests {
         let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
         let iv = super::derive_param_intervals(&params, &lower_only, &[], &values, &[], None);
         assert_eq!(
-            super::resolve_bounds(&params, &iv, false)[0],
+            super::resolve_bounds(&params, &iv, super::StrictBound::Dropped)[0],
             (1.0, default_hi),
             "a derived low side replaces the default low; the absent high side keeps the default"
         );
@@ -10452,7 +10548,7 @@ mod tests {
         let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
         let iv = super::derive_param_intervals(&params, &upper_only, &[], &values, &[], None);
         assert_eq!(
-            super::resolve_bounds(&params, &iv, false)[0],
+            super::resolve_bounds(&params, &iv, super::StrictBound::Dropped)[0],
             (default_lo, 100.0),
             "a derived high side replaces the default high; the absent low side keeps the default"
         );
@@ -10460,7 +10556,7 @@ mod tests {
         // Neither.
         let iv = super::derive_param_intervals(&params, &[], &[], &values, &[], None);
         assert_eq!(
-            super::resolve_bounds(&params, &iv, false)[0],
+            super::resolve_bounds(&params, &iv, super::StrictBound::Dropped)[0],
             (default_lo, default_hi),
             "no derived side → the default box verbatim"
         );
@@ -10486,7 +10582,7 @@ mod tests {
         ]);
         let iv = super::derive_param_intervals(&params, &inverted, &[], &values, &[], None);
         assert_eq!(
-            super::resolve_bounds(&params, &iv, false)[0],
+            super::resolve_bounds(&params, &iv, super::StrictBound::Dropped)[0],
             (default_lo, default_hi),
             "an inverted composed box must fall back to the default bounds WHOLESALE"
         );
@@ -10498,7 +10594,7 @@ mod tests {
         ]);
         let iv = super::derive_param_intervals(&params, &degenerate, &[], &values, &[], None);
         assert_eq!(
-            super::resolve_bounds(&params, &iv, false)[0],
+            super::resolve_bounds(&params, &iv, super::StrictBound::Dropped)[0],
             (default_lo, default_hi),
             "a zero-width composed box (!(lo < hi)) must fall back to the default bounds"
         );
