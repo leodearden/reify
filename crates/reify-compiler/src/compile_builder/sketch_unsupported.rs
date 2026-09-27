@@ -20,7 +20,7 @@ use super::specialization_scope_check::for_each_specialization_member;
 
 /// The rejection for one sketch block, labelled across `span`.
 pub(crate) fn diagnostic(span: SourceSpan) -> Diagnostic {
-    Diagnostic::error(
+    Diagnostic::error( // pdiag:allow — α mints no code; γ (#5508) owns the E_SKETCH_* surface and deletes this module
         "sketch blocks are not yet supported \
          (compile lowering lands in constrained-2d-sketch task γ)",
     )
