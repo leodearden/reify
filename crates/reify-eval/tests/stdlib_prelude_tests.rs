@@ -3,7 +3,10 @@
 use reify_compiler::stdlib_loader;
 use reify_core::{DiagnosticCode, ModulePath, ValueCellId};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
+use reify_test_support::{
+    assert_no_eval_errors, cell_value, collect_errors, make_engine, parse_and_compile_with_stdlib,
+    scalar_si, steel_elastic_source, steel_material_elastic_source,
+};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
@@ -88,23 +91,19 @@ fn eval_with_prelude_trait_conformance() {
     }
 }
 
-/// `ThermallyCharacterized.thermal_expansion` carries its declared value all the
-/// way through eval, in SI (K⁻¹).
+/// `ThermallyCharacterized`'s three required scalars carry their declared values
+/// all the way through eval, as resolved SI scalars.
 ///
-/// This pins the *data-carrying* half of task #5801's ruling that the property is
-/// kept as a deliberately-inert but live member: it has no production reader, so
-/// nothing else would notice if its value stopped arriving. The sibling
+/// None of the three has a production reader, so nothing else would notice if a
+/// value stopped arriving; this pins the *data-carrying* half of task #5801's
+/// declared-only ruling (docs/reify-stdlib-reference.md §6.3). The sibling
 /// `eval_with_prelude_trait_conformance` above plays the same role for `Elastic`'s
 /// equally reader-free `shear_modulus`.
 ///
-/// The conformer supplies `MaterialSpec`'s `density`/`name` plus all three required
-/// thermal scalars; the three `= undef` Temperature params are omitted deliberately,
-/// since optionality is not what is under test here.
+/// The three `= undef` Temperature params are omitted deliberately, since
+/// optionality is not what is under test here.
 #[test]
-fn eval_carries_thermal_expansion_value_in_si() {
-    // 0.0000081 / 1K is the literal spelling proven by the compiler-side
-    // Refractory conformer; in SI that is 8.1e-6 K⁻¹.
-    const EXPECTED_SI: f64 = 8.1e-6;
+fn eval_carries_thermally_characterized_scalars_in_si() {
     let source = r#"
 structure def Alumina : ThermallyCharacterized {
     param density : Density = 3900kg/m^3
@@ -114,56 +113,27 @@ structure def Alumina : ThermallyCharacterized {
     param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
 }
 "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let result = make_engine().eval(&compiled);
+    assert_no_eval_errors(&result);
 
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, stdlib_loader::load_stdlib());
-    let compile_errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        compile_errors.is_empty(),
-        "compile errors: {:?}",
-        compile_errors
-    );
-
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
-    let result = engine.eval(&compiled);
-
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no error diagnostics, got: {:?}",
-        eval_errors
-    );
-
-    let cell_id = ValueCellId::new("Alumina", "thermal_expansion");
-    let value = result.values.get(&cell_id).unwrap_or_else(|| {
-        panic!(
-            "eval should produce a value for 'thermal_expansion', but it was missing. \
-             Available values: {:?}",
-            result
-                .values
-                .iter()
-                .map(|(k, _)| k.to_string())
-                .collect::<Vec<_>>()
-        )
-    });
-    let actual = value
-        .as_f64()
-        .unwrap_or_else(|| panic!("'thermal_expansion' should be numeric, got: {:?}", value));
-
-    // Relative tolerance: an absolute one borrowed from the Pressure tests would be
-    // meaningless against a 1e-6-magnitude quantity.
-    assert!(
-        (actual - EXPECTED_SI).abs() <= EXPECTED_SI * 1e-12,
-        "'thermal_expansion' should reach eval as {} K^-1 (SI), got {}",
-        EXPECTED_SI,
-        actual
-    );
+    // Relative tolerance: an absolute one would be meaningless across magnitudes
+    // spanning 1e-6 (thermal_expansion) to 1e3 (specific_heat).
+    let expected_si: &[(&str, f64)] = &[
+        ("thermal_conductivity", 30.0), // W/(m·K)
+        ("specific_heat", 880.0),       // J/(kg·K)
+        ("thermal_expansion", 8.1e-6),  // K⁻¹
+    ];
+    for &(param, expected) in expected_si {
+        let actual = scalar_si(&cell_value(&result, "Alumina", param), param);
+        assert!(
+            (actual - expected).abs() <= expected * 1e-12,
+            "'{}' should reach eval as {} (SI), got {}",
+            param,
+            expected,
+            actual
+        );
+    }
 }
 
 // ─── step-1: Shadowing regression ────────────────────────────────────
