@@ -2410,10 +2410,18 @@ fn format_undef_cause(cause: &UndefCause) -> String {
 /// Usage line printed to stderr for any `reify doc` usage error.
 const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
+/// Report a `reify doc` usage error: the `Error:` line naming the guard, then
+/// the [`DOC_USAGE`] banner that tells it apart from a genuine exit-1 failure.
+fn doc_usage_error(msg: impl std::fmt::Display) -> ExitCode {
+    eprintln!("Error: {msg}");
+    eprintln!("{DOC_USAGE}");
+    ExitCode::FAILURE
+}
+
 /// Output format for `reify doc`.
 ///
 /// Default is `Html` per the PRD; the `--format` flag accepts `html`,
-/// `markdown`, or `json`.  Bad values exit 2 with a usage error written to
+/// `markdown`, or `json`.  Bad values exit 1 with a usage error written to
 /// stderr; the match is inline in `cmd_doc` since it has only one call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -2423,11 +2431,6 @@ enum Format {
 }
 
 fn cmd_doc(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("{}", DOC_USAGE);
-        return ExitCode::from(2u8);
-    }
-
     // Mirrors `cmd_gui`'s explicit-flag pattern: walk args, accept the
     // documented flags, and reject any other `--`-prefixed token with a
     // usage error.  The first non-flag positional is the input path; a
@@ -2457,32 +2460,26 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             }
             "--format" => {
                 if i + 1 >= args.len() {
-                    eprintln!("Error: --format requires a value");
-                    eprintln!("{}", DOC_USAGE);
-                    return ExitCode::from(2u8);
+                    return doc_usage_error("--format requires a value");
                 }
                 format = Some(args[i + 1].clone());
                 i += 2;
             }
             "-o" | "--out" => {
                 if i + 1 >= args.len() {
-                    eprintln!("Error: {} requires a path", a);
-                    eprintln!("{}", DOC_USAGE);
-                    return ExitCode::from(2u8);
+                    return doc_usage_error(format_args!("{a} requires a path"));
                 }
                 output = Some(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
-                eprintln!("Error: unknown flag for `doc`: {}", flag);
-                eprintln!("{}", DOC_USAGE);
-                return ExitCode::from(2u8);
+                return doc_usage_error(format_args!("unknown flag for `doc`: {flag}"));
             }
             _ => {
                 if input.is_some() {
-                    eprintln!("Error: unexpected extra positional argument: {}", a);
-                    eprintln!("{}", DOC_USAGE);
-                    return ExitCode::from(2u8);
+                    return doc_usage_error(format_args!(
+                        "unexpected extra positional argument: {a}"
+                    ));
                 }
                 input = Some(a);
                 i += 1;
@@ -2494,29 +2491,19 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     // flags before doing any compilation work.
     if stdlib {
         if output.is_none() {
-            eprintln!("Error: --stdlib requires --out <dir>");
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+            return doc_usage_error("--stdlib requires --out <dir>");
         }
         if input.is_some() {
-            eprintln!("Error: --stdlib does not accept an input file positional");
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+            return doc_usage_error("--stdlib does not accept an input file positional");
         }
         if split {
-            eprintln!("Error: --split is not valid with --stdlib");
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+            return doc_usage_error("--split is not valid with --stdlib");
         }
         if compact {
-            eprintln!("Error: --compact is not valid with --stdlib");
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+            return doc_usage_error("--compact is not valid with --stdlib");
         }
-        if matches!(format.as_deref(), Some("json") | Some("markdown")) {
-            eprintln!("Error: --stdlib only supports --format html (the default)");
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+        if !matches!(format.as_deref(), None | Some("html")) {
+            return doc_usage_error("--stdlib only supports --format html (the default)");
         }
         // Build the stdlib doc model, render multi-page HTML, and write files.
         let model = reify_doc_build::build_stdlib_doc_model();
@@ -2545,27 +2532,20 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let input = match input {
-        Some(s) => s,
-        None => {
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
-        }
+    let Some(input) = input else {
+        return doc_usage_error("missing input file");
     };
 
     // Resolve `--format` (default `html`) into a typed `Format`.  Bad values
-    // exit 2 with a usage-error on stderr.
+    // exit 1 with a usage-error on stderr.
     let format = match format.as_deref() {
         Some("html") => Format::Html,
         Some("markdown") => Format::Markdown,
         Some("json") => Format::Json,
         Some(other) => {
-            eprintln!(
-                "Error: unknown --format value: {} (expected html|markdown|json)",
-                other
-            );
-            eprintln!("{}", DOC_USAGE);
-            return ExitCode::from(2u8);
+            return doc_usage_error(format_args!(
+                "unknown --format value: {other} (expected html|markdown|json)"
+            ));
         }
         None => Format::Html,
     };
@@ -2574,25 +2554,19 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     // expensive parse/compile work so usage errors are fast and stderr stays
     // crisp.
     if split && format != Format::Markdown {
-        eprintln!("Error: --split is only valid with --format markdown");
-        eprintln!("{}", DOC_USAGE);
-        return ExitCode::from(2u8);
+        return doc_usage_error("--split is only valid with --format markdown");
     }
 
     // `--compact` is json-only.  Mirror the `--split` guard.
     if compact && format != Format::Json {
-        eprintln!("Error: --compact is only valid with --format json");
-        eprintln!("{}", DOC_USAGE);
-        return ExitCode::from(2u8);
+        return doc_usage_error("--compact is only valid with --format json");
     }
 
     // `--split` requires `-o <dir>` so we know where to write the per-item
     // files.  Hoisted above `parse_and_compile` so usage errors don't pay for parsing.
     // Reachable only when format == Markdown thanks to the guard above.
     if split && output.is_none() {
-        eprintln!("Error: --split requires -o <directory>");
-        eprintln!("{}", DOC_USAGE);
-        return ExitCode::from(2u8);
+        return doc_usage_error("--split requires -o <directory>");
     }
 
     let compiled = match parse_and_compile(input) {
