@@ -10626,6 +10626,24 @@ mod tests {
             (default_lo, default_hi),
             "a zero-width composed box (!(lo < hi)) must fall back to the default bounds"
         );
+
+        // Inverted only AFTER stepping: q > 1.0 AND q < next_up(1.0) is a valid
+        // raw box, but no representable value lies strictly inside it.
+        let one_ulp_wide = as_constraints(vec![
+            cmp_ref_lit(BinOp::Gt, &q, 1.0),
+            cmp_ref_lit(BinOp::Lt, &q, 1.0_f64.next_up()),
+        ]);
+        let iv = super::derive_param_intervals(&params, &one_ulp_wide, &[], &values, &[], None);
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, super::StrictBound::Kept)[0],
+            (1.0, 1.0_f64.next_up()),
+            "the raw one-ULP-wide box is non-empty, so Kept must use it as-is"
+        );
+        assert_eq!(
+            super::resolve_bounds(&params, &iv, super::StrictBound::SteppedInside)[0],
+            (default_lo, default_hi),
+            "a box that inverts only after SteppedInside must fall back to the default bounds WHOLESALE"
+        );
     }
 
     // ---- extract_initial_point derived seeding (task #5618, step-3/step-4) ----
