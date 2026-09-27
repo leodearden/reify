@@ -3,16 +3,14 @@
 #
 # Infra gate for the PTODO detector (task e / #4557):
 #   (a) RATCHET  — the generator runs explicitly DB-ABSENT over the repo, then
-#                  THREE assertions, in this order: a RUN-EVIDENCE floor and a
-#                  DB-ABSENT floor on the generator's stderr, then the subset
-#                  check — live ptodo-baseline-gen fingerprints must be a
-#                  subset of the committed crates/reify-audit/ptodo-baseline.txt
-#                  (live - baseline = empty).  Subset-of alone is trivially
-#                  satisfied by the empty set; see RATCHET VACUITY FLOOR and
+#                  FOUR assertions, in this order: a RUN-EVIDENCE floor and a
+#                  DB-ABSENT floor on the generator's stderr, then the
+#                  TWO-DIRECTIONAL oracle against the committed
+#                  crates/reify-audit/ptodo-baseline.txt — live ⊆ baseline
+#                  (comm -23 empty) and baseline ⊆ live (comm -13 empty), per
+#                  PRD §19.  An empty live set satisfies that oracle whenever
+#                  the baseline is empty too; see RATCHET VACUITY FLOOR and
 #                  DB-ABSENT FLOOR below.
-#                  Subset-of BY RULING, not by omission: the converse
-#                  assertion (comm -13, baseline ⊆ live) was considered and
-#                  DECLINED — PRD §18.
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
@@ -90,10 +88,10 @@
 # RATCHET VACUITY FLOOR (task #6127, rebased onto scan evidence by #6241).  The
 # scenario-(a)-level analogue of the block above: that floor stops a run which
 # executed no SCENARIOS from reporting green; this one stops a scenario whose
-# DETECTOR NEVER RAN from doing the same, since subset-of is trivially
-# satisfied by the empty set.  _ratchet_check_scan_evidence below is that floor,
-# asserted BEFORE the subset check so the precondition is reported before the
-# thing it conditions.
+# DETECTOR NEVER RAN from doing the same, since an empty live set satisfies the
+# oracle whenever the baseline is empty too.  _ratchet_check_scan_evidence
+# below is that floor, asserted BEFORE the oracle so the precondition is
+# reported before the thing it conditions.
 #
 # It keys on the generator's own `@@PTODO_SCAN@@ files_scanned=<N> …` stderr
 # line — evidence the sweep RAN — not on how many findings it produced, so a
@@ -158,15 +156,12 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
-# ORACLE DIRECTION — subset-of BY RULING (task #6859, PRD §18).  Two KNOWN
-# LIMITATIONS are accepted here rather than overlooked: there is no drain
-# forcing function (a grandfathered entry may sit in the baseline forever), and
-# a grandfathered fingerprint is a re-entry permit for that text ANYWHERE in
-# the same file (fingerprints erase line numbers).  Adding the converse
-# `comm -13` assertion does not fix either and reds every DB-less context; the
-# measurements, the alternatives and the revisit condition are in §18, not
-# here.  Pinned in BOTH directions by
-# tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.
+# ORACLE DIRECTION — TWO-DIRECTIONAL (task #7001, PRD §19).  Scenario (a)
+# asserts live ⊆ baseline (_ratchet_check_subset, below) AND baseline ⊆ live
+# (_ratchet_check_no_stale_baseline, after it) over an explicitly DB-absent
+# run.  Neither is a drain forcing function: PRD §18.1 still stands, and §19
+# says when its line-number-erasure caveat re-arms.  Both directions are
+# pinned by tests/infra/test_reify_audit_ptodo_ratchet_superset.sh.
 #
 # Pure ratchet-regression checker (task 5260, ITEM 3). When the live-minus-
 # baseline fingerprint set ($1) is non-empty, print the offending fingerprints
@@ -188,10 +183,38 @@ _ratchet_check_subset() {
 }
 
 # -----------------------------------------------------------------------
-# Vacuity floor, scan-evidence form (task #6241).  _ratchet_check_subset above
-# can only ever report "no NEW fingerprints"; it says nothing about whether the
-# generator RAN at all, and the empty set is a subset of everything.  This is
-# the precondition that makes that subset assertion meaningful.
+# The converse oracle (task #7001, PRD §19): every committed baseline line must
+# still be live.  Same contract as _ratchet_check_subset above: $1 is the
+# baseline-minus-live set (`comm -13`); empty → rc0, byte-for-byte silent;
+# otherwise rc1 with a stderr diagnostic whose FIRST line is the machine token
+# @@RATCHET_STALE_BASELINE_FIRED@@ (grep for the token, never the prose),
+# followed by a count header, the stale lines, and the one-command remedy.
+# No kind list and no fingerprint derivation here: the structural partition
+# is the generator's own §6.7 degrade path, so the PRD 6.6 invariant in this
+# file's header holds in full.
+# -----------------------------------------------------------------------
+_ratchet_check_no_stale_baseline() {
+    local _stale="$1"
+    [ -n "$_stale" ] || return 0
+    {
+        printf '@@RATCHET_STALE_BASELINE_FIRED@@\n'
+        printf 'STALE BASELINE — %s committed baseline line(s) are no longer live:\n' \
+            "$(printf '%s\n' "$_stale" | grep -c .)"
+        printf '%s\n' "$_stale" | sed 's/^/  - /'
+        printf '  Remedy: regenerate DB-absent (~2 s, valid in any worktree), hand-inspect, and commit:\n'
+        printf '    REIFY_PTODO_TASKS_DB=%s target/release/ptodo-baseline-gen --project-root . > crates/reify-audit/ptodo-baseline.txt\n' \
+            "$PTODO_TASKS_DB_ABSENT"
+        printf '  Why the baseline must match the DB-absent live set: PRD §19\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
+# Vacuity floor, scan-evidence form (task #6241).  The oracle above says
+# nothing about whether the generator RAN at all, and an empty live set
+# satisfies it whenever the baseline is empty too.  This is the precondition
+# that makes that oracle meaningful.
 # WHY it keys on run evidence rather than on the live finding count, and what
 # it does not cover: PRD §6.6 (section number, not a paragraph title — the
 # latter is not a stable anchor) — the single home
@@ -276,8 +299,8 @@ _ratchet_check_scan_evidence() {
     {
         printf '@@RATCHET_VACUITY_FIRED@@\n'
         printf 'RATCHET VACUITY — no usable scan evidence from ptodo-baseline-gen: %s.\n' "$_shape"
-        printf '  NOT a pass: the oracle below is subset-of and the empty set is a subset\n'
-        printf '  of everything, so without proof the detector RAN it would observe nothing.\n'
+        printf '  NOT a pass: an empty live set satisfies the oracle below whenever the\n'
+        printf '  baseline is empty too, so without proof the detector RAN it observes nothing.\n'
         printf '  A generator that ran over a clean tree still emits the line (with\n'
         printf '  files_scanned >= 1), so zero fingerprints alone is NOT this failure.\n'
         printf '  Most likely cause: target/release/ptodo-baseline-gen is STALE or reverted\n'
@@ -810,11 +833,12 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
 
     # -----------------------------------------------------------------------
     # (a) RATCHET: the live fingerprints of an explicitly DB-absent run must
-    #     be a subset of the committed baseline.
-    #     comm -23 <(sorted live) <(sorted baseline) = lines in live NOT in baseline.
+    #     EQUAL the committed baseline, checked in both directions (PRD §19):
+    #     comm -23 <(sorted live) <(sorted baseline) = live NOT in baseline;
+    #     comm -13 <(sorted live) <(sorted baseline) = baseline NOT live.
     # -----------------------------------------------------------------------
     echo ""
-    echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
+    echo "--- (a) Ratchet: DB-absent live fingerprints match the committed baseline ---"
 
     # Run the generator DB-ABSENT: the override names a path that cannot exist,
     # so it beats §6.7's default path wherever a tasks.db exists (PRD §19).
@@ -826,15 +850,15 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     REIFY_PTODO_TASKS_DB="$PTODO_TASKS_DB_ABSENT" "$GEN" --project-root "$REPO_ROOT" \
         >"$LIVE_TMP" 2>"$GEN_ERR_TMP"
 
-    # VACUITY FLOOR (task #6241) — the precondition that makes the subset
-    # assertion below meaningful (PRD §6.6).
-    # Reported FIRST, deliberately: a reader who saw only the subset assert fail
+    # VACUITY FLOOR (task #6241) — the precondition that makes the oracle
+    # below meaningful (PRD §6.6).
+    # Reported FIRST, deliberately: a reader who saw only an oracle assert fail
     # would draw the wrong conclusion about why.  The wiring here (not just the
     # helper) is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh,
     # in BOTH directions.
     # $(cat ...) strips trailing newlines — correct and irrelevant, since the
     # helper reads one field off one line.
-    assert "generator emitted scan evidence (subset oracle is not vacuous)" \
+    assert "generator emitted scan evidence (the ratchet oracle is not vacuous)" \
         _ratchet_check_scan_evidence "$(cat "$GEN_ERR_TMP")"
 
     # DB-ABSENT FLOOR (task #7001) — the second precondition, also reported
@@ -849,6 +873,12 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
 
     assert "live fingerprints are a subset of committed baseline (no ratchet regression)" \
         _ratchet_check_subset "$NEW_IN_LIVE"
+
+    # CONVERSE (task #7001, PRD §19): a committed line that is no longer live
+    # is a stale grandfather entry, and reds instead of lingering.
+    STALE_IN_BASELINE="$(comm -13 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
+    assert "every committed baseline line is still live (no stale grandfather entry)" \
+        _ratchet_check_no_stale_baseline "$STALE_IN_BASELINE"
 
     # -----------------------------------------------------------------------
     # (b) SCENARIO 13 (hermetic): a fresh untracked marker in a temp git
