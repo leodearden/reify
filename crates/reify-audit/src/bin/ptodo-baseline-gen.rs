@@ -35,7 +35,7 @@
 //! Every run emits exactly one machine-readable line to STDERR:
 //!
 //! ```text
-//! @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>
+//! @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M> tasks_db=<absent|present>
 //! ```
 //!
 //! The counters come straight from `ptodo::check_with_stats` (counted inside
@@ -50,6 +50,13 @@
 //! is in `docs/prds/reify-audit-ptodo-detector.md` §6.6 and is not restated here.
 //! A binary predating this contract emits no such line, so a stale/reverted
 //! generator fails the floor on evidence rather than on a freshness heuristic.
+//!
+//! `tasks_db` is `ScanStats::tasks_db`: `present` iff the task DB opened and
+//! the DB-dependent lanes (β, ζ, G-allow) resolved, `absent` iff the §6.7
+//! degrade path fired. It is an ADDITIVE field under §6.6's extensibility
+//! rule, so the vacuity floor and `parse_scan_line`'s required-field check
+//! ignore it. Scenario (a)'s DB-absent floor in the same shell test requires
+//! `tasks_db=absent` (PRD §19).
 //!
 //! The human-readable `N fingerprint(s) emitted` line is kept alongside it as
 //! the operator-facing diagnostic; nothing keys on that one.
@@ -167,8 +174,10 @@ fn main() {
     // MACHINE CONTRACT (§6.6) — emitted on STDERR every run, before the human
     // diagnostic. Grammar and consumer are documented in the module doc above.
     eprintln!(
-        "@@PTODO_SCAN@@ files_scanned={} markers_examined={}",
-        stats.files_scanned, stats.markers_examined
+        "@@PTODO_SCAN@@ files_scanned={} markers_examined={} tasks_db={}",
+        stats.files_scanned,
+        stats.markers_examined,
+        stats.tasks_db.as_token()
     );
     eprintln!("ptodo-baseline-gen: {} fingerprint(s) emitted", fingerprints.len());
 }

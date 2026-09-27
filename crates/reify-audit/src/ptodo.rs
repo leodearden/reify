@@ -1908,6 +1908,30 @@ pub struct ScanStats {
     pub files_scanned: usize,
     /// [`scan_file`]-classified marker lines across those files.
     pub markers_examined: usize,
+    /// Whether the DB-dependent lanes ran. It exists so the §6.6 ratchet can
+    /// PROVE it ran DB-absent (PRD §19).
+    pub tasks_db: TasksDbMode,
+}
+
+/// Whether [`check_with_stats`] resolved the task DB.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TasksDbMode {
+    /// The §6.7 degrade path fired (the DB is missing, unreadable, or failed to
+    /// resolve), so no DB-dependent lane (β, ζ, G-allow) contributed.
+    #[default]
+    Absent,
+    /// The DB opened and all three DB-dependent lanes resolved.
+    Present,
+}
+
+impl TasksDbMode {
+    /// The token the scan-evidence line carries for this mode.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            TasksDbMode::Absent => "absent",
+            TasksDbMode::Present => "present",
+        }
+    }
 }
 
 /// PTODO sweep (§5/§8) — see [`check_with_stats`], of which this is the
@@ -2025,6 +2049,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         Ok((live, inv, g_allow))
     }) {
         Ok((live, inv, g_allow)) => {
+            stats.tasks_db = TasksDbMode::Present;
             keyed.extend(live);
             inverse_findings = inv;
             // Insert G-allow findings into keyed so they sort with the other
