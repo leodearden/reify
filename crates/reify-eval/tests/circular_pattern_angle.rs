@@ -68,6 +68,10 @@ fn circular_pattern_bare_360_is_rejected() {
     // Observed independently of the eval assertions below: PRD decision D3
     // says the compile slots COMPLEMENT the eval gate, never replace it, so
     // each layer's verdict is asserted on its own module.
+    //
+    // The hint's WORDING is pinned by the hard-coded `ANGLE_HINT` in
+    // `reify-compiler`'s `builtin_arg_signature_tests.rs`. Built from the shared
+    // const here, this assertion checks only that both layers agree.
     let compile_rejections: Vec<&str> = compiled
         .diagnostics
         .iter()

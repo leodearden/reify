@@ -260,6 +260,10 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     // "got Real", not "got Int": `1.5707963267948966` types as a dimensionless
     // Real, so this also exercises a different arm of `check_builtin_arg_types`
     // than the bare-`45` integration test does.
+    //
+    // The hint's WORDING is pinned by the hard-coded `ANGLE_HINT` in
+    // `reify-compiler`'s `builtin_arg_signature_tests.rs`. Built from the shared
+    // const here, this assertion checks only that both layers agree.
     let compile_rejection = compiled
         .diagnostics
         .iter()

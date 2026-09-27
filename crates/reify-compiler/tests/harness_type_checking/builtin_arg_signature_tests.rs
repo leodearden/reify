@@ -512,19 +512,12 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 
 /// (d) SIGNAL — an ANGLE slot's message carries the hint, on ONE template.
 ///
-/// INVERTED by PRD 3 leaf ζ (task 5782), deliberately. This previously asserted
-/// the OPPOSITE — that an ANGLE slot renders the un-hinted form — and its job
-/// was to keep FAILING for anyone who added the hint early, so the compile and
-/// eval halves would move in one deliberate step rather than drifting apart a
-/// second time. ζ IS that step: it lands every ANGLE slot (the four selector
-/// `tol` arguments plus every producer angle position) on one hint-carrying
-/// construction site, so the gap this pin held open is closed and the pin's job
-/// flips from holding it open to holding the reconciliation CLOSED. Anyone
-/// reverting an ANGLE slot to `migration_hint: None` now reds here.
+/// Every ANGLE slot — the four selector `tol` arguments and every producer
+/// angle position — renders the full C1 template with [`ANGLE_HINT`], so the
+/// compile and eval layers say one thing for one authoring mistake.
 ///
 /// `faces_by_normal`'s `tol` is the fixture because it is the OLDEST ANGLE slot
-/// — task 4493's, predating the PRD entirely. If the reconciliation reached
-/// only the new producer slots, this is where that would show.
+/// (task 4493's): a hint that reached only the producer slots would show here.
 #[test]
 fn angle_slot_rejection_carries_the_migration_hint() {
     let compiled = compile_struct_body(
@@ -548,14 +541,10 @@ fn angle_slot_rejection_carries_the_migration_hint() {
 
 /// (d2) LAYER ATTRIBUTION for ANGLE — the twin of the LENGTH pin above.
 ///
-/// The LENGTH pin's doc forecloses reading "give it β's `DiagnosticCode`"
-/// literally, but it forecloses it for ONE dimension. This leaf's own task text
-/// carries the same ambiguous phrasing about ANGLE, and without a copy keyed on
-/// an ANGLE slot a future leaf could borrow `DimensionedArgRejected` here while
-/// the LENGTH pin stayed green — leaving "which layer rejected this?"
-/// unanswerable from the code alone for exactly the dimension this PRD owns.
-///
-/// GREEN on arrival: a regression pin, not a RED.
+/// The LENGTH pin forecloses the compile layer borrowing β's
+/// `DimensionedArgRejected` for ONE dimension only. Without a copy keyed on an
+/// ANGLE slot, an ANGLE slot could borrow it while the LENGTH pin stayed green,
+/// leaving "which layer rejected this?" unanswerable from the code alone.
 #[test]
 fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
     let compiled = compile_struct_body(
@@ -1536,10 +1525,9 @@ fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
 
 /// SIGNAL — a bare 5-arg `rotate` angle is rejected, naming `angle`.
 ///
-/// The exact string this leaf's acceptance criterion names. `rotate` is the
-/// headline case because it is the one producer whose angle was already
-/// user-visible as a wrong-by-default hazard: `rotate(b, 0, 0, 1, 45)` read the
-/// `45` as RADIANS, i.e. roughly seven full turns.
+/// `rotate` is the headline case because a bare angle there is a
+/// wrong-by-default hazard: `rotate(b, 0, 0, 1, 45)` reads the `45` as
+/// RADIANS, i.e. roughly seven full turns.
 ///
 /// Exactly ONE error: the axis DIRECTION `0, 0, 1` is a dimensionless unit
 /// vector and must stay silent, so a count of four would mean the arm gated the
