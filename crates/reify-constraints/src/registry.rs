@@ -4,6 +4,7 @@
 //! to domain-specific solvers.
 
 use crate::decompose::SubProblem;
+use crate::discrete_fallback::DiscreteFirstFallback;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -317,25 +318,27 @@ impl SolverRegistry {
         }
     }
 
-    /// Production solver set: Dimensional + geometric SolveSpace.
+    /// Production solver set: Dimensional + geometric SolveSpace + discrete CP-SAT.
     ///
     /// This is the **single source of truth** for the constraint solver set
     /// installed by the CLI and GUI engines.  Both binaries call this factory
     /// rather than constructing their own registry, which prevents CLI/GUI
     /// solver-set drift.
     ///
-    /// Slot assignments:
+    /// Slot assignments (discrete routing: PRD2 §4.1,
+    /// `docs/prds/v0_6/discrete-cost-minimisation.md`):
     /// - Dimensional: `DimensionalSolver` (Nelder-Mead; handles length/angle/scalar)
     /// - Geometric: `SolveSpaceSolver` (SolveSpace; handles `std::distance`,
     ///   `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`)
-    /// - Logical: `None` — falls back to `DimensionalSolver`
-    /// - CrossDomain fallback: `None` — falls back to `DimensionalSolver`
+    /// - Logical: `CpSatSolver`
+    /// - CrossDomain fallback: `DiscreteFirstFallback` — an all-discrete
+    ///   component goes to CP-SAT, anything else to `DimensionalSolver`
     pub fn production() -> Self {
         Self::with_solvers(
             Box::new(crate::DimensionalSolver),
             Some(Box::new(crate::SolveSpaceSolver)),
-            None,
-            None,
+            Some(Box::new(crate::CpSatSolver)),
+            Some(Box::new(DiscreteFirstFallback)),
         )
     }
 
