@@ -470,10 +470,6 @@ impl SolverRegistry {
             );
         }
 
-        // Build a lookup for auto params by ID
-        let param_lookup: HashMap<&ValueCellId, &AutoParam> =
-            problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
-
         // Determine which component gets the objective (if any) — `Some(_)`
         // exactly when an objective is declared, matching the previous
         // `obj_refs.as_ref().map(..)` shape byte-for-byte.
@@ -499,11 +495,15 @@ impl SolverRegistry {
         let mut other_unique = true;
 
         for (ci, component) in components.iter().enumerate() {
-            // Build sub-ResolutionProblem for this component
-            let sub_auto_params: Vec<AutoParam> = component
+            // Build sub-ResolutionProblem for this component. Autos keep
+            // DECLARATION order, never the component's hash order: CP-SAT
+            // searches in this order, so it decides which model comes back
+            // (PRD2 D4).
+            let sub_auto_params: Vec<AutoParam> = problem
                 .auto_params
                 .iter()
-                .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
+                .filter(|ap| component.auto_params.contains(&ap.id))
+                .cloned()
                 .collect();
 
             // Attach objective only to the designated component
