@@ -1444,7 +1444,7 @@ fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
 ///
 /// All five behaviours above — the accept, the A2 post-state, and the three
 /// narrowness fences — are pinned by name in the γ D4-5 section of
-/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`.
+/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`.
 fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
     matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
 }
@@ -7716,9 +7716,9 @@ mod tests {
     /// param's is exactly one `ArgTypeMismatch`.
     ///
     /// Constructed as a direct `Type` so the probe reaches the walker without
-    /// depending on `math_fn_result_type`'s first-argument quantity inference
-    /// (task 5889's to change) — NOT because a `.ri` source cannot produce a
-    /// dimensioned `Type::Point` arg. That older premise expired when task 5344
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
     /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
     /// family; it must not be re-asserted.
     ///
@@ -8059,11 +8059,11 @@ mod tests {
     /// [`emit_if_quantity_conflict`] is shared by all three shape arms, but the
     /// ruling's new cell was pinned only at the `Vector` one, and
     /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
-    /// a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can
-    /// now be rejected on cell `[0][0]` alone, where before only a dimensioned
-    /// param slot could trip it. That claim is only true if this arm actually
-    /// reaches the STRICT param-side predicate — the arm's one other quantity
-    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
+    /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
+    /// rejected, where before only a dimensioned param slot could trip it. That
+    /// claim is only true if this arm actually reaches the STRICT param-side
+    /// predicate — the arm's one other quantity fixture
+    /// (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
     /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
     /// already green under task 5766's symmetric rule, so it cannot tell the two
     /// predicates apart. Without this probe, routing the arm through the
@@ -8098,11 +8098,12 @@ mod tests {
     /// closing the third of the three arms [`emit_if_quantity_conflict`] serves.
     ///
     /// Constructed as a direct `Type` so the probe reaches the walker without
-    /// depending on `math_fn_result_type`'s first-argument quantity inference —
-    /// NOT because a `.ri` source cannot produce a dimensioned `Type::Point` arg.
-    /// That older premise expired when task 5344 (`3c4ee5e9ac`) claimed
-    /// `point3` / `point2` into the math construction family; it must not be
-    /// re-asserted. Rule and the measured `.ri`-level cells: the "Point / Vector
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    /// Rule and the measured `.ri`-level cells: the "Point / Vector
     /// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. The
     /// stale sites that section used to point at were corrected by task 6436;
     /// there are none outstanding.
@@ -8178,7 +8179,12 @@ mod tests {
     /// `Type::Int` mapping applies to a BARE type position, `param n : Int`, not
     /// to a dimension slot.) `Type::Int` quantity slots arise on the ARG side
     /// only, via `math_fn_result_type`'s `vec3`/`point3` arm — which is what
-    /// fence (b) directly above covers.
+    /// fence (b) directly above covers. That survives task 5889's narrowing of
+    /// that arm because its heterogeneity check compares DIMENSIONS, not
+    /// `Type`s: `Int` and `Real` are both dimensionless, so they agree and the
+    /// `Type::Int` slot is kept rather than degraded away. Pinned by
+    /// `vec_result_type_int_and_real_elements_agree_and_keep_int_quantity`
+    /// (`math_signatures.rs`).
     ///
     /// Note what this does NOT say: the param-side strictness ruling is about a
     /// dimensionless `Type::Scalar` ONLY. `Int` is a different type, not a
@@ -8364,9 +8370,11 @@ mod tests {
     /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
     /// direct-`Type` seam of the same pair the cross-dimension probe above
     /// describes: constructed directly so it reaches the walker without
-    /// depending on `math_fn_result_type`'s name-suffix `n` inference (task
-    /// 5889's to change), while the `.ri` fixture is the one that would notice
-    /// that inference ceasing to produce a `Type::Point { n: 2, .. }` at all.
+    /// depending on `math_fn_result_type`'s name-suffix `n` inference, while the
+    /// `.ri` fixture is the one that would notice that inference ceasing to
+    /// produce a `Type::Point { n: 2, .. }` at all. (Task 5889 narrowed that
+    /// arm's QUANTITY slot and deliberately left `n` alone — it still comes from
+    /// the name suffix.)
     ///
     /// Sibling of `vector_param_rejects_wrong_arity_vector_arg`, which is also a
     /// direct-`Type` arity probe — note its own doc claims no erasure premise,

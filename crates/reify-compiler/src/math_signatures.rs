@@ -181,21 +181,10 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         //   vec2(x,y)     → Vector{n:2, quantity}
         //   point3(x,y,z) → Point {n:3, quantity}
         //   point2(x,y)   → Point {n:2, quantity}
-        // `n` is fixed from the NAME; only the quantity slot comes from the
-        // first variadic scalar component.
-        //
-        // Component [0] decides the WHOLE vector's/point's quantity — the same
-        // first-element inference `list_shape` / `matrix_shape` carry, but
-        // reached INLINE here rather than through either, so a fix to those two
-        // would not cover this arm. Concretely: `vec3(1m, 0, 0)` at a
-        // `Vec3<Dimensionless>` param is REJECTED while `vec3(0, 1m, 0)` at the
-        // same param stays SILENT.
-        //
-        // First-element quantity inference; load-bearing for a REJECTION
-        // diagnostic since tasks 5766/6159. Rule, residual and fix: the "Point /
-        // Vector quantity-slot convention" section of
-        // `crates/reify-core/src/ty.rs`, owned by task 5889 — whose scope covers
-        // this inline arm alongside the two shape helpers.
+        // `n` is fixed from the NAME; the quantity slot is the one the variadic
+        // scalar components agree on, via `homogeneous_quantity` — the same rule
+        // `list_shape` / `matrix_shape` apply, reached inline here because this
+        // arm routes through neither.
         //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
@@ -205,11 +194,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // in `units.rs`).
         "vec3" | "vec2" | "point3" | "point2" => {
             let n = if name.ends_with('3') { 3 } else { 2 };
-            let quantity = Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            );
+            let quantity = Box::new(homogeneous_quantity(args.iter().map(|a| &a.result_type)));
             if name.starts_with("point") {
                 Type::Point { n, quantity }
             } else {
@@ -538,27 +523,39 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
     }
 }
 
+/// The quantity a literal's elements agree on: element `[0]`'s `Type` when every
+/// element has the same [`arg_dimension`] (so `Int` beside `Real` agrees), else
+/// `Type::dimensionless_scalar()` — also for no elements. Why that degrade
+/// target silences the quantity rule: `reify_core::ty`'s module doc, *What the
+/// arg side infers from a literal*.
+fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
+    let mut elems = elems.into_iter();
+    let Some(first) = elems.next() else {
+        return Type::dimensionless_scalar();
+    };
+    let dim = arg_dimension(first);
+    if elems.all(|e| arg_dimension(e) == dim) {
+        first.clone()
+    } else {
+        Type::dimensionless_scalar()
+    }
+}
+
 /// Recover `(n, element_quantity)` from a single list argument (`vec` / `diag`).
 ///
-/// - `ListLiteral(elems)` → `(elems.len(), elems[0].result_type)` — exact.
+/// - `ListLiteral(elems)` → `(elems.len(), <the quantity the elements agree on>)`.
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
 ///
-/// Element `[0]` decides the WHOLE literal's quantity — the same weakness as
-/// [`matrix_shape`] one rank down, here feeding `vec` / `diag`.
-///
-/// First-element quantity inference; load-bearing for a REJECTION diagnostic
-/// since tasks 5766/6159. Rule, residual and fix: the "Point / Vector
-/// quantity-slot convention" section of `crates/reify-core/src/ty.rs`, owned by
-/// task 5889.
+/// Every element is inspected, via [`homogeneous_quantity`]; `n` is the element
+/// count either way.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
-        let quantity = elems
-            .first()
-            .map(|e| e.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        (elems.len(), quantity)
+        (
+            elems.len(),
+            homogeneous_quantity(elems.iter().map(|e| &e.result_type)),
+        )
     } else {
         (0, innermost_list_element(&arg.result_type))
     }
@@ -567,25 +564,42 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 /// Recover `(ncols, cell_quantity)` from a depth-2 list argument (`matrix`).
 ///
 /// - outer `ListLiteral` whose first row is itself a `ListLiteral(cells)` →
-///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
-///   projects to `n = N`, per design decision D5).
+///   `(cells.len(), <the quantity every cell of every row agrees on>)`.
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
 ///
-/// Cell `[0][0]` decides the WHOLE matrix's quantity, so the inference is sound
-/// only for dimension-HOMOGENEOUS literals.
+/// ALL cells of ALL rows are inspected, via [`homogeneous_quantity`]. Scanning
+/// row 0 alone would miss the heterogeneity a block-structured matrix actually
+/// has — a stiffness/compliance matrix or a screw-theory spatial Jacobian is
+/// uniform WITHIN a row block and differs ACROSS blocks.
 ///
-/// First-cell quantity inference; load-bearing for a REJECTION diagnostic since
-/// tasks 5766/6159. Rule, residual and fix: the "Point / Vector quantity-slot
-/// convention" section of `crates/reify-core/src/ty.rs`, owned by task 5889.
+/// Two shapes leave the literal un-inspectable and degrade the quantity as
+/// well — the conservative direction D7 already takes at this function: a row
+/// that is not itself a `ListLiteral`, and an EMPTY row 0. The empty row 0 pins
+/// `n = 0`, which discards every later row, so inferring a quantity from those
+/// rows would reject `matrix([[], [1m, 2m]])` at a `Matrix<M, N, Dimensionless>`
+/// param on the strength of cells the `n` projection threw away.
+///
+/// `n` is unchanged: still row 0's column count, so an M×N matrix still projects
+/// to `n = N` (design decision D5).
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
     {
-        let quantity = cells
-            .first()
-            .map(|c| c.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        return (cells.len(), quantity);
+        let ncols = cells.len();
+        let row_cells: Option<Vec<&Vec<CompiledExpr>>> = rows
+            .iter()
+            .map(|r| match &r.kind {
+                CompiledExprKind::ListLiteral(row_cells) => Some(row_cells),
+                _ => None,
+            })
+            .collect();
+        let quantity = match row_cells {
+            Some(row_cells) if ncols > 0 => {
+                homogeneous_quantity(row_cells.into_iter().flatten().map(|c| &c.result_type))
+            }
+            _ => Type::dimensionless_scalar(),
+        };
+        return (ncols, quantity);
     }
     (0, innermost_list_element(&arg.result_type))
 }
@@ -936,17 +950,27 @@ mod tests {
         CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
-    /// A `Scalar<Length>` element expression.
-    fn length_elem(v: f64) -> CompiledExpr {
+    /// A `Scalar<dimension>` element expression at an arbitrary dimension.
+    fn scalar_elem(v: f64, dimension: DimensionVector) -> CompiledExpr {
         CompiledExpr::literal(
             Value::Scalar {
                 si_value: v,
-                dimension: DimensionVector::LENGTH,
+                dimension,
             },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
+            Type::Scalar { dimension },
         )
+    }
+
+    /// A `Scalar<Length>` element expression.
+    fn length_elem(v: f64) -> CompiledExpr {
+        scalar_elem(v, DimensionVector::LENGTH)
+    }
+
+    /// A `Scalar<Mass>` element expression — a SECOND concrete dimension, so a
+    /// literal can disagree with [`length_elem`] on dimension without either
+    /// side being dimensionless.
+    fn mass_elem(v: f64) -> CompiledExpr {
+        scalar_elem(v, DimensionVector::MASS)
     }
 
     /// A `ListLiteral` of `elems` whose own `result_type` is `List(elem_ty)`.
@@ -955,6 +979,20 @@ mod tests {
     /// realistically anyway.
     fn list_lit(elems: Vec<CompiledExpr>, elem_ty: Type) -> CompiledExpr {
         CompiledExpr::list_literal(elems, Type::List(Box::new(elem_ty)))
+    }
+
+    /// A depth-2 `matrix` `ListLiteral` laid out row-major — the module's single
+    /// matrix-literal builder. Each row's own `result_type` is immaterial for
+    /// the same reason [`list_lit`]'s is, so it stays dimensionless throughout;
+    /// only the CELL expressions carry the types under test. A row that is
+    /// deliberately NOT a well-formed cell list (the un-inspectable-row case)
+    /// cannot be expressed here and is built inline at its one call site.
+    fn matrix_lit(rows: Vec<Vec<CompiledExpr>>) -> CompiledExpr {
+        let rows = rows
+            .into_iter()
+            .map(|cells| list_lit(cells, Type::dimensionless_scalar()))
+            .collect();
+        list_lit(rows, Type::List(Box::new(Type::dimensionless_scalar())))
     }
 
     /// (a) `vec` over a 3-element dimensionless `ListLiteral` →
@@ -990,10 +1028,121 @@ mod tests {
         );
     }
 
+    // ── Heterogeneous literals degrade the quantity slot (task 5889) ─────────
+    //
+    // The homogeneous half: `vec_result_type_length_preserves_quantity` above.
+
+    /// A `vec` literal mixing a dimensioned element with dimensionless ones
+    /// infers NO dimension: the quantity degrades to `Type::dimensionless_scalar()`
+    /// while `n` still counts every element.
+    #[test]
+    fn vec_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 0, 0]) must infer no dimension — its elements disagree — while \
+             keeping n = 3"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, not just dimensioned
+    /// mixed with bare: the rule is "the elements agree", not "no element is
+    /// dimensionless".
+    #[test]
+    fn vec_result_type_cross_dimension_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), mass_elem(2.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 2kg]) must infer no dimension — Length and Mass disagree"
+        );
+    }
+
+    /// `diag` is `list_shape`'s SECOND consumer, so the degrade is pinned at
+    /// both call sites and not just at `vec`.
+    #[test]
+    fn diag_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("diag", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "diag([1m, 0, 0]) must degrade its quantity exactly as `vec` does — both \
+             route through `list_shape`"
+        );
+    }
+
+    /// FENCE — `Int` and `Real` elements AGREE (both dimensionless), so nothing
+    /// degrades and element `[0]`'s `Type::Int` survives verbatim: agreement is
+    /// by dimension, not `Type`.
+    #[test]
+    fn vec_result_type_int_and_real_elements_agree_and_keep_int_quantity() {
+        let arg = list_lit(
+            vec![
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+                real_elem(2.0),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Int)
+            },
+            "Int and Real are both DIMENSIONLESS, so they agree and element [0]'s \
+             Type::Int must survive — the heterogeneity check compares dimensions, \
+             not Types"
+        );
+    }
+
+    /// FENCE, MIRRORED — the same dimensionless pair in the other ORDER keeps
+    /// element `[0]`'s `Type` too, and so yields `Real` rather than `Int`.
+    #[test]
+    fn vec_result_type_real_and_int_elements_agree_and_keep_real_quantity() {
+        let arg = list_lit(
+            vec![
+                real_elem(2.0),
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([2.0, 1]) must keep element [0]'s Real, mirroring vec([1, 2.0]) \
+             keeping Int — the retained Type follows the order, the inferred \
+             dimension does not"
+        );
+    }
+
     // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
 
     /// (c-4622a) `vec3` over 3 dimensionless Real args →
-    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from the
+    /// dimension the components agree on).
     ///
     /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
     #[test]
@@ -1010,7 +1159,8 @@ mod tests {
     }
 
     /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
-    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from the dimension the
+    /// components agree on).
     ///
     /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
     #[test]
@@ -1026,6 +1176,59 @@ mod tests {
                 quantity: Box::new(len_ty)
             },
             "vec2(1m, 2m) must type as Vector{{n:2, quantity:Scalar<Length>}}"
+        );
+    }
+
+    // ── Heterogeneous components degrade the quantity slot (task 5889) ───────
+    //
+    // The homogeneous half: `vec2_result_type_length_is_vector_n2_length` above,
+    // `point3_result_type_length_is_point_n3_length` below.
+
+    /// `vec3` whose components DISAGREE on dimension infers no dimension. `n`
+    /// still comes from the NAME suffix, never from the arguments — asserting
+    /// the whole `Type` pins both at once.
+    #[test]
+    fn vec3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(1m, 0, 0) must infer no dimension — its components disagree — while \
+             n stays 3, fixed from the name"
+        );
+    }
+
+    /// The `point` twin, which shares this one collapsed arm: the degrade must
+    /// not be `Vector`-only.
+    #[test]
+    fn point3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "point3(1m, 0, 0) must degrade exactly as its vec3 twin does — one arm \
+             serves both"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, and `vec2` is covered:
+    /// the rule is "the components agree", not "no component is dimensionless".
+    #[test]
+    fn vec2_result_type_cross_dimension_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), mass_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec2(1m, 2kg) must infer no dimension — Length and Mass disagree"
         );
     }
 
@@ -1078,9 +1281,10 @@ mod tests {
     }
 
     /// `point3` over dimensionless args → `Point{n:3, quantity:Real}`: `n` is
-    /// fixed from the NAME, the quantity slot tracks the first argument. Pins
-    /// that the quantity is argument-DERIVED (not hard-coded to Length), which
-    /// is the whole reason this family needs the args-aware resolver shape.
+    /// fixed from the NAME, the quantity slot tracks the dimension the arguments
+    /// agree on. Pins that the quantity is argument-DERIVED (not hard-coded to
+    /// Length), which is the whole reason this family needs the args-aware
+    /// resolver shape.
     ///
     /// RED until the `"point3"` arm is added to `math_fn_result_type`.
     #[test]
@@ -1093,7 +1297,8 @@ mod tests {
                 quantity: Box::new(Type::dimensionless_scalar())
             },
             "point3(0, 0, 1) must type as Point{{n:3, quantity:Real}} — the quantity \
-             slot is derived from the first argument, not fixed to Length"
+             slot is derived from the dimension the arguments agree on, not fixed to \
+             Length"
         );
     }
 
@@ -1136,18 +1341,10 @@ mod tests {
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
     #[test]
     fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(3.0), real_elem(4.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -1155,6 +1352,132 @@ mod tests {
                 n: 2,
                 quantity: Box::new(Type::dimensionless_scalar())
             }
+        );
+    }
+
+    // ── Heterogeneous matrix literals degrade the quantity slot (task 5889) ──
+
+    /// Heterogeneity WITHIN row 0 degrades the quantity, while `n` stays row
+    /// 0's COLUMN count (D5 is untouched by this narrowing).
+    #[test]
+    fn matrix_result_type_heterogeneous_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a matrix whose cells disagree must infer no dimension, while n stays the \
+             row-0 column count (3)"
+        );
+    }
+
+    /// Every row is internally homogeneous and the rows disagree with EACH
+    /// OTHER — the block-structured stiffness shape (`N/m` rows beside `N·m/rad²`
+    /// rows). A row-0-only check would pass this literal through.
+    #[test]
+    fn matrix_result_type_heterogeneous_across_rows_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![
+                scalar_elem(1.0, DimensionVector::STIFFNESS),
+                scalar_elem(2.0, DimensionVector::STIFFNESS),
+            ],
+            vec![
+                scalar_elem(1.0, DimensionVector::ROTATIONAL_STIFFNESS),
+                scalar_elem(2.0, DimensionVector::ROTATIONAL_STIFFNESS),
+            ],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "rows that are each internally homogeneous but disagree ACROSS rows must \
+             still degrade — row 0 alone is not evidence about the matrix"
+        );
+    }
+
+    /// A later row that is not itself a `ListLiteral` is not inspectable, so the
+    /// literal is not fully known and the quantity degrades — the conservative
+    /// direction D7 already established at this function. `n` is still row 0's
+    /// column count.
+    #[test]
+    fn matrix_result_type_uninspectable_later_row_degrades_quantity_to_dimensionless() {
+        let row0 = list_lit(
+            vec![length_elem(1.0), length_elem(0.0)],
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let row1 = CompiledExpr::value_ref(
+            ValueCellId::new("S", "r"),
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        let arg = list_lit(
+            vec![row0, row1],
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a row that cannot be inspected leaves the literal unknown, so the quantity \
+             degrades rather than being inferred from the rows that happen to be visible"
+        );
+    }
+
+    /// An EMPTY row 0 pins `n = 0`, which discards every later row — so the
+    /// quantity must not be read out of those rows either.
+    #[test]
+    fn matrix_result_type_empty_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![vec![], vec![length_elem(1.0), length_elem(2.0)]]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 0,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "an empty row 0 leaves the shape unrecoverable, so neither n nor the \
+             quantity may be taken from the rows that follow it"
+        );
+    }
+
+    /// FENCE — a fully homogeneous dimensioned matrix KEEPS its precise
+    /// quantity. The change narrows when the inference applies; it is not a
+    /// blanket degrade of every dimensioned `matrix(…)`.
+    #[test]
+    fn matrix_result_type_homogeneous_dimensioned_keeps_quantity() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), length_elem(0.0)],
+            vec![length_elem(0.0), length_elem(1.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "every cell is Length, so the cells AGREE and the precise quantity survives"
         );
     }
 
@@ -1326,18 +1649,10 @@ mod tests {
     #[test]
     fn matrix_result_type_non_square_projects_to_column_count() {
         // 2 rows, 3 columns.
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
