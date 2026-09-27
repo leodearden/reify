@@ -4159,9 +4159,13 @@ structure S {
         // --- (a) outer param `slot_w`: its decl and its sketch-body use. ---
         let slot = occurrences(source, "slot_w");
         assert_eq!(slot.len(), 2, "slot_w: decl + the sketch-body use");
-        let slot_refs =
-            collect_references(source, &parsed, offset_to_position(source, slot[0] as u32), true)
-                .expect("slot_w declaration resolves");
+        let slot_refs = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, slot[0] as u32),
+            true,
+        )
+        .expect("slot_w declaration resolves");
         assert_eq!(slot_refs.kind, RefSymbolKind::Param);
         assert_eq!(
             slot_refs.references,
@@ -4172,11 +4176,19 @@ structure S {
         // --- (b) `anchor`: a[0]=outer decl, a[1]=outer use (before),
         // a[2]=sketch-local decl, a[3]/a[4]=sketch-body uses, a[5]=outer use (after).
         let a = occurrences(source, "anchor");
-        assert_eq!(a.len(), 6, "outer decl, 2 outer uses, sketch decl, 2 sketch uses");
+        assert_eq!(
+            a.len(),
+            6,
+            "outer decl, 2 outer uses, sketch decl, 2 sketch uses"
+        );
 
-        let outer =
-            collect_references(source, &parsed, offset_to_position(source, a[0] as u32), true)
-                .expect("outer anchor declaration resolves");
+        let outer = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[0] as u32),
+            true,
+        )
+        .expect("outer anchor declaration resolves");
         assert_eq!(outer.kind, RefSymbolKind::Let);
         assert_eq!(
             outer.references,
@@ -4188,9 +4200,13 @@ structure S {
             "the outer anchor owns its decl and the uses outside the sketch only"
         );
 
-        let local =
-            collect_references(source, &parsed, offset_to_position(source, a[2] as u32), true)
-                .expect("sketch-local anchor declaration resolves");
+        let local = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[2] as u32),
+            true,
+        )
+        .expect("sketch-local anchor declaration resolves");
         assert_eq!(local.kind, RefSymbolKind::Let);
         assert_eq!(
             local.references,
@@ -4202,9 +4218,13 @@ structure S {
             "the sketch-local anchor owns its decl and the uses inside the sketch only"
         );
 
-        let from_body_use =
-            collect_references(source, &parsed, offset_to_position(source, a[4] as u32), false)
-                .expect("sketch-body use resolves");
+        let from_body_use = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[4] as u32),
+            false,
+        )
+        .expect("sketch-body use resolves");
         assert_eq!(
             from_body_use.declaration,
             span_of(a[2], "anchor"),
