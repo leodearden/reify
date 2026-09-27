@@ -83,6 +83,7 @@ Default per PRD §5:
 - **Malformed payload:** `console.warn('[eval-generation] malformed payload; dropping event', p)` + drop in `onEvalGeneration` (inline shape guard, see §4). Covered payloads: a non-object, a missing `generation`, and a non-number `generation`.
 - **Emit failure:** `tracing::warn!` and continue. `TauriEvalObserver::started` logs `"eval-generation emit failed: {}"`, and the queue keeps running.
 - **Observer panic:** `EvalQueue::notify` contains a panicking `started`, as it does for `activity`. The entry still runs, publishes and replies.
+- **Snapshot not published:** if the `SnapshotPublisher` refuses a snapshot's state (its generation is not newer than the last one published), `SnapshotJob::run` replies `Err("the state was not published, so it has no generation")` instead of a `PublishedState`, so File→Open / the initial load surfaces an error. The reply must not be `Ok`: a `PublishedState` claims its `state` is exactly what the queue published under `generation`, and the frontend's guard trusts that claim. The branch is defensive and unreachable through `EvalQueue`: generations are issued in enqueue order and one drainer runs entries in that order, so every snapshot's generation is newer than the last one published. That is also why no test drives it — reaching it would mean calling the private `SnapshotJob` directly.
 
 ---
 
