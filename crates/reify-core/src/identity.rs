@@ -138,13 +138,14 @@ impl ValueCellId {
 /// families hit that case, and they disagree about which dot is the separator:
 ///
 /// * INSTANCE PATHS carry the dots in the ENTITY half (`Rig.bolts` +
-///   `line_cost`), minted over composed descendant prefixes in
-///   reify-eval/src/structural_query.rs:686.
+///   `line_cost`), minted over composed descendant prefixes by
+///   `apply_cost_aggregation` in reify-eval/src/structural_query.rs.
 /// * PORT COMPOSITE MEMBERS carry a dot in the MEMBER half (`Bracket` +
-///   `mount.width`), minted at reify-compiler/src/entity.rs:2263.
+///   `mount.width`), minted by the port `composite_name` mint in
+///   `compile_entity`, reify-compiler/src/entity.rs.
 /// * KEYED MEMBERS carry the key in the MEMBER half (`Widget` +
 ///   `vents["intake"]`), minted by `keyed_member_cell` in
-///   reify-ir/src/value.rs:4665; a key containing a dot lands here too.
+///   reify-ir/src/value.rs; a key containing a dot lands here too.
 ///
 /// `ValueCellId::new("Rig.bolts", "line_cost")` and
 /// `ValueCellId::new("Rig", "bolts.line_cost")` are distinct cells that render
@@ -182,11 +183,14 @@ pub enum ValueCellIdParseError {
     /// accept when exactly one candidate appears in that set. reify-core sees
     /// no cell set, so the context-free layer cannot make that call, and it
     /// refuses rather than guess. Neither family reaches a string-addressed
-    /// boundary today (the GUI and MCP `set_parameter` paths gate on
-    /// `template.value_cells`, where neither is reachable), so nothing is
-    /// observably lost — but the door is closed until the ids stop being
-    /// joined into one string. #7717 reopens it at the source by carrying
-    /// `{entity, member}` structurally over the GUI wire.
+    /// boundary today: the GUI's existence gate (`resolve_known_cell_type` in
+    /// gui/src-tauri/src/engine.rs, reached from both `preview_parameter` and
+    /// `commit_parameter`) and the CLI MCP `set_parameter` in
+    /// reify-cli/src/mcp_context.rs both look ids up in `template.value_cells`,
+    /// where neither is reachable. So nothing is observably lost — but the
+    /// door is closed until the ids stop being joined into one string. #7717
+    /// reopens it at the source by carrying `{entity, member}` structurally
+    /// over the GUI wire.
     Ambiguous,
 }
 
@@ -790,14 +794,16 @@ mod tests {
             ValueCellId::new("Bracket", "width"),
             // FIELD_ENTITY_PREFIX form: fields are top-level, not members.
             ValueCellId::new(FIELD_ENTITY_PREFIX, "gravity"),
-            // Compiler-synthesized member (reify-compiler/src/guards.rs:295).
+            // Compiler-synthesized member, minted by `compile_block_guard` in
+            // reify-compiler/src/guards.rs.
             ValueCellId::new("Part", "__guard_0"),
             // No strict identifier charset, mirroring
             // `realization_node_id_from_str_hyphenated_entity_roundtrips`.
             ValueCellId::new("my-part_2", "hole_diameter"),
-            // Keyed member (reify-ir/src/value.rs:4665 `keyed_member_cell`,
-            // asserted at :4796-4798). Brackets and quotes must round-trip:
-            // the rendered id still has exactly one dot.
+            // Keyed member, minted by `keyed_member_cell` in reify-ir/src/value.rs
+            // and asserted by its `keyed_member_cell_carries_key_in_nodeid_path`
+            // test. Brackets and quotes must round-trip: the rendered id still
+            // has exactly one dot.
             ValueCellId::new("Widget", r#"vents["intake"]"#),
         ];
         for id in cases {
@@ -827,16 +833,18 @@ mod tests {
         // the split belongs:
         //
         //   1. INSTANCE PATHS put the dots in the ENTITY half
-        //      (`Rig.bolts` + `line_cost`) — reify-eval/src/structural_query.rs:686
-        //      mints `ValueCellId::new(path, "line_cost")` over composed
-        //      descendant prefixes. Splitting these needs the LAST dot.
+        //      (`Rig.bolts` + `line_cost`) — `apply_cost_aggregation` in
+        //      reify-eval/src/structural_query.rs mints
+        //      `ValueCellId::new(path, "line_cost")` over composed descendant
+        //      prefixes. Splitting these needs the LAST dot.
         //   2. PORT COMPOSITE MEMBERS put a dot in the MEMBER half
-        //      (`Bracket` + `mount.width`) — reify-compiler/src/entity.rs:2263
-        //      mints `ValueCellId::new(entity, format!("{port}.{param}"))`.
+        //      (`Bracket` + `mount.width`) — the port `composite_name` mint in
+        //      `compile_entity`, reify-compiler/src/entity.rs, builds
+        //      `ValueCellId::new(entity, format!("{port}.{param}"))`.
         //      Splitting these needs the FIRST dot.
         //   3. KEYED MEMBERS also put the member's structure in the MEMBER half
-        //      (`Widget` + `vents["intake"]`) — reify-ir/src/value.rs:4665
-        //      `keyed_member_cell`. A key containing a dot needs the FIRST dot
+        //      (`Widget` + `vents["intake"]`) — `keyed_member_cell` in
+        //      reify-ir/src/value.rs. A key containing a dot needs the FIRST dot
         //      too, and a last-dot split would cut INSIDE the quoted key.
         //
         // So `rsplit_once('.')` is not "the correct inverse" of Display: it
@@ -878,8 +886,9 @@ mod tests {
 
     #[test]
     fn value_cell_id_from_str_rejects_port_composite_member() {
-        // A port param really is minted with a dotted member name
-        // (reify-compiler/src/entity.rs:2263), so this is not a synthetic case.
+        // A port param really is minted with a dotted member name (the port
+        // `composite_name` mint in `compile_entity`, reify-compiler/src/entity.rs),
+        // so this is not a synthetic case.
         assert_eq!(
             ValueCellId::new("Bracket", "mount.width")
                 .to_string()

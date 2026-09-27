@@ -216,12 +216,13 @@ pub fn resolve_entity_at_source_position(
 /// The `Entity.member` grammar is DELEGATED to reify-core, not restated here.
 /// It is subtle enough to get wrong twice: the refusal is not "members never
 /// contain dots" (they do — a port body member is minted as
-/// `ValueCellId(entity, "<port>.<param>")` at reify-compiler/src/entity.rs:2263,
-/// and a keyed member carries its key in the same slot,
-/// reify-ir/src/value.rs:4665). It is that an instance-path id renders to the
-/// identical string, so the input cannot say which reading was meant. Two
-/// copies of that rule is how the GUI and MCP splits came to disagree (#6405);
-/// keeping one parser is the fix, so route new callers through `FromStr` too.
+/// `ValueCellId(entity, "<port>.<param>")` by the port `composite_name` mint in
+/// `compile_entity`, reify-compiler/src/entity.rs, and a keyed member carries
+/// its key in the same slot, via `keyed_member_cell` in reify-ir/src/value.rs).
+/// It is that an instance-path id renders to the identical string, so the
+/// input cannot say which reading was meant. Two copies of that rule is how the
+/// GUI and MCP splits came to disagree (#6405); keeping one parser is the fix,
+/// so route new callers through `FromStr` too.
 ///
 /// Returns `None` when the entity or member is not found, or when the input
 /// does not match either accepted form (e.g., bare member name, empty string).

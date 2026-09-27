@@ -3023,7 +3023,8 @@ impl EngineSession {
         // warn line per cell per sync: `build_values` emits EVERY cell in
         // `template.value_cells` verbatim, and the compiler mints auto-arg
         // cells under a dotted entity (`ValueCellId("<entity>.<sub>", arg)` —
-        // reify-compiler/src/entity.rs:3613/3710). Any model with an `auto` sub
+        // the auto-arg `scoped_entity` mints in `compile_entity`,
+        // reify-compiler/src/entity.rs). Any model with an `auto` sub
         // arg therefore displays a steady population of ids the wire format
         // cannot address (#7717), and syncs fire on every state change. So:
         // per-cell detail at debug, and ONE warn per sync carrying the count —
