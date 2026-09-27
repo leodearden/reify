@@ -690,26 +690,23 @@ fn stdlib_out_dir(suffix: &str) -> reify_test_support::TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify-test-stdlib-doc-{suffix}-"))
 }
 
-/// `--out` for the `--stdlib` guard tests: a path *inside* an auto-cleaned
-/// tempdir that every one of those guards rejects before creating.
-///
-/// That nothing is created is the property under test, so the path must not be
-/// a literal at the filesystem root: a regressed guard would then behave by
-/// ambient privilege — `Error writing /...: Permission denied` masking the
-/// missing guard line as an ordinary user, a stray directory left at `/` as
-/// root.  Under a tempdir a regressed guard just renders into storage that is
-/// cleaned up either way, leaving the exit-code assertion as the only failure.
-///
-/// Bind the returned guard as the FIRST binding in the test body, per
-/// [`stdlib_out_dir`].
-fn untouched_out_dir(suffix: &str) -> (reify_test_support::TempDir, String) {
+/// The whole `--stdlib` guard contract: `reify doc --stdlib --out <dir>
+/// {extra_args}` is a usage error reported by `guard_line`, and `<dir>` is
+/// never created.
+#[track_caller]
+fn assert_stdlib_guard_rejects(suffix: &str, extra_args: &[&str], guard_line: &str) {
     let guard = stdlib_out_dir(suffix);
-    let path = guard
-        .path()
-        .join("never-written")
-        .to_string_lossy()
-        .into_owned();
-    (guard, path)
+    let out_dir = guard.path().join("never-written");
+    let dir_str = out_dir.to_string_lossy().into_owned();
+    let mut args = vec!["--stdlib", "--out", dir_str.as_str()];
+    args.extend_from_slice(extra_args);
+    let (status, _stdout, stderr) = run_doc(&args);
+
+    assert_usage_error(status, &stderr, guard_line);
+    assert!(
+        !out_dir.exists(),
+        "a rejected --stdlib invocation must not create {out_dir:?}"
+    );
 }
 
 /// The whole `--stdlib` success contract: exit 0, a `<dir>/index.html` whose
@@ -777,12 +774,7 @@ fn doc_stdlib_produces_html_pages() {
     assert_stdlib_render_succeeds("produces", &[]);
 }
 
-/// Explicit `--format html` is the one value the exclusion-form `--stdlib`
-/// format guard has to keep OPEN, and the default arm above cannot cover it
-/// because it passes no `--format` at all.  Without this case a typo in the
-/// allow-list (`Some("htm")`, or dropping `Some("html")`) would turn a valid
-/// invocation into a usage error with the whole suite still green — the
-/// regression direction the exclusion rewrite introduced.
+/// The explicit `--format html` arm of the `--stdlib` renderer.
 #[test]
 fn doc_stdlib_explicit_html_format_produces_html_pages() {
     assert_stdlib_render_succeeds("explicit-html", &["--format", "html"]);
@@ -817,12 +809,9 @@ fn doc_stdlib_without_out_exits_one() {
 /// --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_json_format() {
-    let (_guard, out_dir) = untouched_out_dir("rejects-json");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--format", "json"]);
-
-    assert_usage_error(
-        status,
-        &stderr,
+    assert_stdlib_guard_rejects(
+        "rejects-json",
+        &["--format", "json"],
         "Error: --stdlib only supports --format html (the default)",
     );
 }
@@ -831,13 +820,10 @@ fn doc_stdlib_rejects_json_format() {
 /// the standard library, so an input positional is a usage error.
 #[test]
 fn doc_stdlib_with_input_positional_exits_one() {
-    let (_guard, out_dir) = untouched_out_dir("with-input");
     let path = common::fixture_path("bracket.ri");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, &path]);
-
-    assert_usage_error(
-        status,
-        &stderr,
+    assert_stdlib_guard_rejects(
+        "with-input",
+        &[path.as_str()],
         "Error: --stdlib does not accept an input file positional",
     );
 }
@@ -846,38 +832,31 @@ fn doc_stdlib_with_input_positional_exits_one() {
 /// writes one page per symbol, so --split is a usage error.
 #[test]
 fn doc_stdlib_rejects_split() {
-    let (_guard, out_dir) = untouched_out_dir("rejects-split");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--split"]);
-
-    assert_usage_error(status, &stderr, "Error: --split is not valid with --stdlib");
+    assert_stdlib_guard_rejects(
+        "rejects-split",
+        &["--split"],
+        "Error: --split is not valid with --stdlib",
+    );
 }
 
 /// `reify doc --stdlib --out <dir> --compact` must exit 1: --compact is a
 /// json-only knob and --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_compact() {
-    let (_guard, out_dir) = untouched_out_dir("rejects-compact");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--compact"]);
-
-    assert_usage_error(
-        status,
-        &stderr,
+    assert_stdlib_guard_rejects(
+        "rejects-compact",
+        &["--compact"],
         "Error: --compact is not valid with --stdlib",
     );
 }
 
-/// `reify doc --stdlib --out <dir> --format xml` must exit 1.  The --stdlib
-/// format guard rejects by exclusion (anything that is not the default or
-/// `html`), not by enumerating the known-bad values; an unknown value must
-/// not fall through into a silent HTML render exiting 0.
+/// An unknown `--format` under `--stdlib` is a usage error, not a silent HTML
+/// render.
 #[test]
 fn doc_stdlib_rejects_unknown_format() {
-    let (_guard, out_dir) = untouched_out_dir("rejects-xml");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--format", "xml"]);
-
-    assert_usage_error(
-        status,
-        &stderr,
+    assert_stdlib_guard_rejects(
+        "rejects-xml",
+        &["--format", "xml"],
         "Error: --stdlib only supports --format html (the default)",
     );
 }
