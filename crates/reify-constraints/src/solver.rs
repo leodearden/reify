@@ -1503,7 +1503,7 @@ enum StrictBound {
     /// rearrangement (`c + k`, `k − c`), rounded once already, so the edge is not
     /// guaranteed to satisfy the model's own leaf. The same holds for a
     /// non-strict side there: it is a pre-existing property of the derivation,
-    /// not of this policy.
+    /// not of this policy (task #7959).
     SteppedInside,
 }
 
