@@ -8,23 +8,11 @@
 //!   non-empty line against the `path :: kind :: text` grammar. This test
 //!   asserts existence + grammar, not emptiness either way.
 //!
-//!   The committed baseline was EMPTY (the §6.4 zero-residual-debt end state)
-//!   until task #6087 added the §8.1 lane δ-A recognizer — an
-//!   `#[allow(…dead_code…)]` attribute whose trailing rationale defers the
-//!   work. That lane surfaced a pre-existing population of 14 findings which
-//!   fingerprint (line-number-erased, deduped) to 5 entries, seeded in the same
-//!   diff as a SHRINK-ONLY grandfather set. Every seeded entry was
-//!   hand-inspected as a genuine deferral; none is a false positive.
-//!
-//!   §6.6's ratchet cannot grow under ordinary work, so an entry can only be
-//!   burned down: when its underlying comment is re-pointed at a live task or
-//!   the deferred work lands, its baseline line is deleted. The one sanctioned
-//!   growth is §6.6's same-diff seeding rule — a NEW LANE seeds its
-//!   pre-existing population in the commit that adds the lane, as #6103 did for
-//!   δ-B. So today's composition is NOT the seed's minus removals; read it from
-//!   the file, never reconstructed from this paragraph. It currently holds 6
-//!   entries, every one `orphaned` — #6934 burned the last `malformed-cite` and
-//!   `untracked` entries down at source.
+//!   The baseline is STRUCTURAL-ONLY by construction: it is generated
+//!   DB-absent, so it carries only kinds the structural lane emits
+//!   (`reify_audit::ptodo::STRUCTURAL_KINDS`), and any liveness or inverse
+//!   kind is rejected here. Rationale: PRD §19. Read its contents from the
+//!   file, never from this doc.
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
@@ -57,26 +45,22 @@
 //!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′ + C + D)
 //!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B + C + D)
 //!
-//! On (B) failure — regenerate the baseline with the canonical generator
-//! (`src/bin/ptodo-baseline-gen.rs`). It is the SINGLE source of truth: it maps
-//! `ptodo::check` findings through the SAME `ptodo::fingerprint` this test uses,
-//! so generation and the ratchet check can never drift (PRD §6.6). Do NOT hand-
-//! derive fingerprints with `sed`/`jq` — a second derivation reintroduces the
-//! drift this design exists to prevent.
+//! Regenerating the baseline — use the canonical generator
+//! (`src/bin/ptodo-baseline-gen.rs`), DB-absent, in any worktree. It is the
+//! SINGLE source of truth: it maps `ptodo::check` findings through the SAME
+//! `ptodo::fingerprint` the ratchet uses, so generation and the ratchet check
+//! can never drift (PRD §6.6). Do NOT hand-derive fingerprints with `sed`/`jq`.
 //!   ```text
-//!   REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \
-//!     cargo run -p reify-audit --bin ptodo-baseline-gen -- \
-//!       --project-root /home/leo/src/reify \
-//!     > crates/reify-audit/ptodo-baseline.txt
+//!   REIFY_PTODO_TASKS_DB=/dev/null/tasks.db \
+//!     cargo run --release -p reify-audit --bin ptodo-baseline-gen -- \
+//!       --project-root . > crates/reify-audit/ptodo-baseline.txt
 //!   ```
-//!   `REIFY_PTODO_TASKS_DB` must point at the real `tasks.db` so the β liveness
-//!   lane runs and orphaned/unknown-id residue is captured as a SUPERSET (a task
-//!   worktree's `.taskmaster/` is untracked, so without it the lane degrades to
-//!   structural-only).
 
 mod common;
 
-use reify_audit::ptodo::{fingerprint, is_allowlisted, is_g_allow_finding, is_swept_ext};
+use reify_audit::ptodo::{
+    STRUCTURAL_KINDS, fingerprint, is_allowlisted, is_g_allow_finding, is_swept_ext,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
@@ -100,9 +84,10 @@ fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// Valid `kind` tokens per the §8.3 finding taxonomy.
-const VALID_KINDS: &[&str] =
-    &["untracked", "malformed-cite", "phantom-tracking", "bare-ignore", "orphaned", "unknown-id"];
+/// The one command that regenerates the baseline DB-absent (PRD §19).
+const REGEN_DB_ABSENT: &str = "REIFY_PTODO_TASKS_DB=/dev/null/tasks.db cargo run --release \
+     -p reify-audit --bin ptodo-baseline-gen -- --project-root . \
+     > crates/reify-audit/ptodo-baseline.txt";
 
 // -----------------------------------------------------------------------
 // (A) Always-on well-formedness test
@@ -133,9 +118,12 @@ fn check_baseline_line(line: &str) -> Result<(), String> {
         // here is what keeps such a finding out of the committed baseline.
         return Err("empty text field".to_string());
     }
-    // kind ∈ §8.3 taxonomy.
-    if !VALID_KINDS.contains(&fp_kind) {
-        return Err(format!("unknown kind {fp_kind:?}; valid kinds={VALID_KINDS:?}"));
+    if !STRUCTURAL_KINDS.contains(&fp_kind) {
+        return Err(format!(
+            "kind {fp_kind:?} is not a structural kind {STRUCTURAL_KINDS:?}; the \
+             baseline is structural-only by construction (PRD §19), so liveness and \
+             inverse kinds never enter it. Regenerate it DB-absent: {REGEN_DB_ABSENT}"
+        ));
     }
     // path has a swept extension …
     if !is_swept_ext(fp_path) {
@@ -153,11 +141,10 @@ fn check_baseline_line(line: &str) -> Result<(), String> {
 /// are strictly sorted ascending (which also forbids duplicates). Returns
 /// `Err(reason)` on the first violation.
 ///
-/// An EMPTY input remains valid — it is the §6.4 zero-residual end state, and
-/// the shrink-only ratchet's goal. It is no longer the CURRENT state: task
-/// #6087 seeded 5 grandfathered lane δ-A entries. Because this is pure, the
-/// grammar/taxonomy/sort rules have real, permanent coverage via the
-/// `validate_*` unit tests below regardless of the committed content.
+/// A line's `kind` must be one of `STRUCTURAL_KINDS` (PRD §19). An EMPTY input
+/// is valid — the §6.4 zero-residual end state. Because this is pure, the
+/// grammar/taxonomy/sort rules have permanent coverage via the `validate_*`
+/// unit tests below regardless of the committed content.
 fn validate_baseline_content(content: &str) -> Result<(), String> {
     let mut prev: Option<&str> = None;
     for (lineno, line) in content.lines().enumerate() {
@@ -181,14 +168,12 @@ fn validate_baseline_content(content: &str) -> Result<(), String> {
 
 /// Asserts that `ptodo-baseline.txt` EXISTS and is well-formed
 /// (`validate_baseline_content`): every non-empty line is a `path :: kind ::
-/// text` triple with a §8.3-taxonomy `kind` on a swept, non-allowlisted source
+/// text` triple with a structural `kind` on a swept, non-allowlisted source
 /// `path`, and the lines are strictly sorted ascending with no duplicates.
 ///
 /// An empty baseline PASSES — it is the §6.4 "zero residual debt" success state,
 /// not a failure. This test asserts existence + well-formedness, NOT emptiness
-/// in either direction; the grammar rules themselves stay covered, whatever the
-/// committed file contains, by the `validate_*` unit tests below. The committed
-/// file currently carries the 5 lane δ-A entries seeded by task #6087.
+/// in either direction.
 #[test]
 fn baseline_is_well_formed() {
     let path = baseline_path();
@@ -196,11 +181,7 @@ fn baseline_is_well_formed() {
     assert!(
         path.exists(),
         "ptodo-baseline.txt not found at {path:?}.\n\
-         Generate it with the canonical generator:\n\
-         REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \\\n\
-           cargo run -p reify-audit --bin ptodo-baseline-gen -- \\\n\
-             --project-root /home/leo/src/reify \\\n\
-           > crates/reify-audit/ptodo-baseline.txt"
+         Generate it DB-absent with the canonical generator:\n{REGEN_DB_ABSENT}"
     );
 
     let content = std::fs::read_to_string(&path)
@@ -215,16 +196,14 @@ fn baseline_is_well_formed() {
 }
 
 // NOTE (task #6087, amendment): there is deliberately NO test here asserting
-// that a specific lane δ-A entry is PRESENT in the committed baseline. Such a
-// test cannot provide the recognizer-regression coverage it would appear to —
-// it reads a static file the same commit authored, and the §6.6 ratchet is a
-// SUBSET oracle (`live ⊆ baseline`), so a recognizer that stops firing shrinks
-// the live set and leaves both green. The only state it detects is someone
-// editing the baseline, which is exactly the shrink-only burn-down flow the
-// ratchet exists to allow. Real regression coverage for the δ-A user-observable
-// signal lives in `check_allow_dead_code_deferral_lane` (tests/ptodo.rs), which
-// drives `ptodo::check` end-to-end against a seeded `done` cite and asserts the
-// High `orphaned:` summary.
+// that a specific lane δ-A entry is PRESENT in the committed baseline. It would
+// read a static file the same commit authored, so the only state it could
+// detect is someone editing the baseline. Recognizer regressions are caught
+// elsewhere: scenario (a) of tests/infra/test_reify_audit_ptodo.sh is
+// two-directional (PRD §19), so a baseline line whose recognizer stops firing
+// reds there as stale; and `check_allow_dead_code_deferral_lane`
+// (tests/ptodo.rs) drives `ptodo::check` end-to-end against a seeded `done`
+// cite and asserts the High `orphaned:` summary.
 
 // -----------------------------------------------------------------------
 // (A′) Synthetic-content coverage for the well-formedness rules

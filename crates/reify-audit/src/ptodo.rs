@@ -1074,7 +1074,7 @@ enum Kind {
 
 impl Kind {
     /// The §8.3 kind token, used as the finding summary prefix.
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Kind::Untracked => "untracked",
             Kind::MalformedCite => "malformed-cite",
@@ -1098,6 +1098,15 @@ impl Kind {
         }
     }
 }
+
+/// The §8.3 kind tokens the structural lane emits — the only kinds a §6.6
+/// baseline may carry (PRD §19).
+pub const STRUCTURAL_KINDS: [&str; 4] = [
+    Kind::Untracked.as_str(),
+    Kind::MalformedCite.as_str(),
+    Kind::PhantomTracking.as_str(),
+    Kind::BareIgnore.as_str(),
+];
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
 /// is either *structurally* offending (no canonical cite → α's domain) or
@@ -4109,9 +4118,9 @@ mod tests {
     ///
     /// Rationale for the exclusion: g-allow-orphaned / g-allow-unknown-id are a
     /// distinct orphan-suppression-provenance taxonomy (path-keyed, .rs files).
-    /// Including them in the baseline would (a) make the on-demand (B) ratchet
-    /// RED against the intentionally-empty baseline and (b) make a future regen
-    /// emit lines whose `kind` fails `VALID_KINDS` in `baseline_is_well_formed`.
+    /// Including them in the baseline would make a regen emit lines whose
+    /// `kind` is outside [`STRUCTURAL_KINDS`], which `baseline_is_well_formed`
+    /// rejects.
     /// The `fingerprint()` check below documents WHY the exclusion is necessary.
     ///
     /// RED until step-6 adds `pub fn is_g_allow_finding`.
@@ -4158,25 +4167,16 @@ mod tests {
         );
 
         // Demonstrate WHY exclusion is needed: fingerprint() extracts the kind
-        // segment "g-allow-orphaned", which is NOT in the source-marker VALID_KINDS
-        // taxonomy {untracked, malformed-cite, phantom-tracking, bare-ignore,
-        // orphaned, unknown-id}.  A regen including it would fail
+        // segment "g-allow-orphaned", which is NOT one of the STRUCTURAL_KINDS a
+        // baseline may carry. A regen including it would fail
         // baseline_is_well_formed's kind check — so it must be excluded upstream.
         let fp = fingerprint(&g_allow_orphaned);
         let kind_segment = fp.split(" :: ").nth(1).unwrap_or("");
-        const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
-            "untracked",
-            "malformed-cite",
-            "phantom-tracking",
-            "bare-ignore",
-            "orphaned",
-            "unknown-id",
-        ];
         assert!(
-            !SOURCE_MARKER_VALID_KINDS.contains(&kind_segment),
-            "fingerprint kind {kind_segment:?} must NOT be in the source-marker \
-             VALID_KINDS — this documents why g-allow findings must be excluded \
-             from the baseline ratchet"
+            !STRUCTURAL_KINDS.contains(&kind_segment),
+            "fingerprint kind {kind_segment:?} must NOT be in STRUCTURAL_KINDS — \
+             this documents why g-allow findings must be excluded from the \
+             baseline ratchet"
         );
     }
 }
