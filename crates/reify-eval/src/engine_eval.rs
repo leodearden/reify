@@ -15,7 +15,7 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
+    AutoParam, CompiledExpr, CompiledExprKind, CompiledFunction,
     DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveCombination,
     ObjectiveProvenance, ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap,
     RankedSolveResult, ResolutionProblem, SampledField, SampledGridKind, SelectorKind,
@@ -2956,6 +2956,28 @@ fn objective_unconsumed_finding(
     }
 
     Some(objective_unconsumed_diagnostic(scope, objective, &unconsumed))
+}
+
+/// `W_SOLVER_OPTIMALITY_UNPROVEN` (γ, task #4804) for one objective solve, or `None`.
+///
+/// Fires on a `BestFound` solve whose reason [`reify_ir::BestFoundReason::stopped_at_budget`];
+/// branching on the variant, not the message, keeps the gate immune to rewording
+/// (task #4871, S2). The per-template objective branch of `eval` and
+/// `dispatch_merged_cluster_solve` both call this, so the two cannot drift apart.
+fn optimality_unproven_finding(optimality_status: Option<&OptimalityStatus>) -> Option<Diagnostic> {
+    let Some(OptimalityStatus::BestFound { reason }) = optimality_status else {
+        return None;
+    };
+    if !reason.stopped_at_budget() {
+        return None;
+    }
+    Some(
+        Diagnostic::warning(format!(
+            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove optimality ({})",
+            reason.describe()
+        ))
+        .with_code(DiagnosticCode::SolverOptimalityUnproven),
+    )
 }
 
 /// Structure name → its SINGLE non-collection instance path, for the
@@ -6504,23 +6526,8 @@ impl Engine {
                     }
                 }
 
-                // γ (task #4804): surface W_SOLVER_OPTIMALITY_UNPROVEN when the
-                // objective solve hit the iteration limit.  Gate: BestFound AND
-                // reason == BestFoundReason::IterationLimit — converged solves share
-                // the BestFound variant but carry ConvergedWithinBudget, which does
-                // NOT match the gate (B6 no-false-positive).  Variant match is
-                // structurally immune to rewording (task #4871, S2).
-                if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-                    && matches!(reason, BestFoundReason::IterationLimit)
-                {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                             optimality ({})",
-                            reason.describe()
-                        ))
-                        .with_code(DiagnosticCode::SolverOptimalityUnproven),
-                    );
+                if let Some(diag) = optimality_unproven_finding(optimality_status.as_ref()) {
+                    diagnostics.push(diag);
                 }
 
                 // DIC γ (task #5417): surface E_OBJECTIVE_UNCONSUMED when this
@@ -7958,20 +7965,8 @@ impl Engine {
             }
         }
 
-        // γ (task #4804), generalized to the merged problem: surface
-        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve hit
-        // the iteration limit. Mirrors the per-template gate above verbatim.
-        if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-            && matches!(reason, BestFoundReason::IterationLimit)
-        {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                     optimality ({})",
-                    reason.describe()
-                ))
-                .with_code(DiagnosticCode::SolverOptimalityUnproven),
-            );
+        if let Some(diag) = optimality_unproven_finding(optimality_status.as_ref()) {
+            diagnostics.push(diag);
         }
 
         // DIC γ (task #5417): the MERGED-CLUSTER arm of
