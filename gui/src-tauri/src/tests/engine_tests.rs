@@ -20274,14 +20274,17 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
     // a structured error. The outcome predates the refusal: the id used to be
     // split on the FIRST '.' and then miss the ParamDecl lookup, reaching the
     // same None by accident rather than on purpose.
-    let mut session = instance_path_session();
+    let session = instance_path_session();
 
     // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
     // below cannot be blamed on the entity or the source failing to load.
     let own = session
         .resolve_param_default_span("Holder.width")
         .expect("Holder.width is a plain param with a default");
-    assert_eq!(&INSTANCE_PATH_SRC[own.start as usize..own.end as usize], "10mm");
+    assert_eq!(
+        &INSTANCE_PATH_SRC[own.start as usize..own.end as usize],
+        "10mm"
+    );
 
     assert_eq!(
         session.resolve_param_default_span("Holder.child.width"),
@@ -20291,7 +20294,7 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
 }
 
 #[test]
-fn set_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
+fn preview_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
     // "Holder.child.width" renders identically to a hypothetical cell
     // (entity "Holder", member "child.width"), so the string cannot say which
     // is meant. It USED to be rejected only by ACCIDENT: the first-dot split
@@ -20305,11 +20308,11 @@ fn set_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
     // Positive control first: the bare-member cell on the same entity is
     // settable, so a failure below cannot be blamed on the fixture.
     session
-        .set_parameter("Holder.width", "50mm")
+        .preview_parameter("Holder.width", "50mm")
         .expect("Holder.width is a plain settable param");
 
     let err = session
-        .set_parameter("Holder.child.width", "50mm")
+        .preview_parameter("Holder.child.width", "50mm")
         .expect_err("an instance path names no single cell, so it must be refused");
 
     // Substrings, not exact prose — the taxonomy is the contract, the wording
@@ -20347,19 +20350,19 @@ fn apply_param_to_source_str_refuses_an_instance_path_cell_id() {
     }
     assert!(
         !err.contains("Unknown parameter"),
-        "write-back must refuse for the same reason set_parameter does: {err}"
+        "write-back must refuse for the same reason preview_parameter does: {err}"
     );
 }
 
 #[test]
-fn set_parameter_still_reports_unknown_parameter_for_a_well_formed_unknown_two_segment_id() {
+fn preview_parameter_still_reports_unknown_parameter_for_a_well_formed_unknown_two_segment_id() {
     // The new ambiguity refusal must not swallow the pre-existing, DISTINCT
     // category. A two-segment id names exactly one cell; that the cell does not
     // exist is a different complaint with a different remedy.
     let mut session = instance_path_session();
 
     let err = session
-        .set_parameter("Nope.width", "50mm")
+        .preview_parameter("Nope.width", "50mm")
         .expect_err("Nope is not a declared entity");
 
     assert!(
