@@ -4678,8 +4678,6 @@ version = "9.9.9"
     /// Fails RED before the `tracing::info!` site is added in step-2.
     #[test]
     fn evict_over_cap_emits_info_summary_with_expected_fields() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "dddddddddddddddddddddddddddddd00";
@@ -4786,7 +4784,6 @@ version = "9.9.9"
     /// Fails RED before the `tracing::debug!` site is added in step-4.
     #[test]
     fn evict_over_cap_debug_count_equals_evicted_count() {
-        reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -4855,7 +4852,6 @@ version = "9.9.9"
     /// only.
     #[test]
     fn evict_over_cap_silent_on_under_cap_and_absent_subdir() {
-        reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 

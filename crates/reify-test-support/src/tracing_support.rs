@@ -2073,10 +2073,7 @@ mod tests {
     /// events; asserts count==1 and messages contains only "captured".
     #[test]
     fn capturing_subscriber_captures_target_level_rejects_others() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) =
             CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
@@ -2103,10 +2100,7 @@ mod tests {
     /// asserts count==1 and messages contains only the matching event.
     #[test]
     fn capturing_subscriber_filters_by_target_prefix() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("reify_constraints")
@@ -2144,10 +2138,7 @@ mod tests {
     /// the shared `MessageVisitor` would fail here.
     #[test]
     fn capturing_subscriber_captures_structured_fields() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) =
             CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
@@ -2205,10 +2196,7 @@ mod tests {
     /// the level gate in `enabled()` applies regardless of the target.
     #[test]
     fn capturing_subscriber_level_dominates_over_target_prefix() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("foo")
@@ -2247,10 +2235,7 @@ mod tests {
     /// into `enabled()`, `dispatch_count` stays 0 (GREEN).
     #[test]
     fn capturing_subscriber_target_prefix_rejected_at_enabled() {
-        use crate::prime_tracing_callsite_cache;
         use crate::CapturingSubscriberBuilder;
-
-        prime_tracing_callsite_cache();
 
         let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
             .target_prefix("reify_constraints")

@@ -6294,10 +6294,6 @@ mod tests {
         use reify_ir::OpaqueState;
         use reify_test_support::warn_capturing_subscriber;
 
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let (subscriber, capture) = warn_capturing_subscriber();
 
         tracing::subscriber::with_default(subscriber, || {
