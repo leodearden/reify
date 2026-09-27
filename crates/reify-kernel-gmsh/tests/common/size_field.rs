@@ -51,6 +51,6 @@ pub fn uniform_unit_cube_size_field(size: f64) -> BackgroundSizeField {
         normals: None,
         boundary: None,
     };
-    BackgroundSizeField::from_tet_mesh(&vm, &vec![size; 8])
+    BackgroundSizeField::from_tet_mesh(&vm, &[size; 8])
         .unwrap_or_else(|e| panic!("uniform size field must be constructible: {e:?}"))
 }

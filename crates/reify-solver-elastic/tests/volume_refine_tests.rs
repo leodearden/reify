@@ -836,7 +836,7 @@ fn mid_span_size_reduction_refines_the_mid_span_band() {
         .expect("refine_with_size_field must succeed");
 
     let (mid_count, mid_mean) = mean_tet_edge_where(&refined, |cx| (0.42..0.58).contains(&cx));
-    let (end_count, end_mean) = mean_tet_edge_where(&refined, |cx| cx < 0.15 || cx > 0.85);
+    let (end_count, end_mean) = mean_tet_edge_where(&refined, |cx| !(0.15..=0.85).contains(&cx));
 
     // Non-vacuity first: an empty band would make the ratio below meaningless.
     assert!(
