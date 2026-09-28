@@ -1478,8 +1478,9 @@ pub struct DeclSuppression {
     pub has_cfg_test: bool,
     /// The reason text of a `// G-allow:` marker on the declaration, if any.
     /// A `Some` with non-blank content suppresses the finding; `Some("")` /
-    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh:150`
-    /// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` requires content).
+    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh`'s
+    /// `G_ALLOW_RE` pattern, `//\s*G-allow:\s*(.+)`, where `(.+)` requires
+    /// content).
     pub g_allow_marker: Option<String>,
 }
 
