@@ -1266,12 +1266,12 @@ pub fn solve_elastic_static_trampoline(
     //     `run_adaptive_refinement` live in `reify_solver_elastic::adaptive`,
     //     outside this task's locked scope, and cannot accept a pre-computed
     //     first estimate.
-    //  2. Serialized remeshes: `RealizedAdaptiveProblem` forces
-    //     `deterministic: true`, which sets `General.NumThreads = 1` in
-    //     `refine_volume_with_size_field`, and every remesh additionally
-    //     serializes on the process-global `reify_kernel_gmsh::init::GMSH_LOCK`.
-    //     Load-bearing, not incidental: it is what makes the loop's
-    //     per-iteration output bit-stable.
+    //  2. Serialized remeshes: since task #7447 `refine_volume_with_size_field`
+    //     pins `General.NumThreads = 1` unconditionally (gmsh deadlocks
+    //     evaluating a background size field from several mesher threads), and
+    //     every remesh additionally serializes on the process-global
+    //     `reify_kernel_gmsh::init::GMSH_LOCK`. Load-bearing, not incidental:
+    //     it is what makes the loop's per-iteration output bit-stable.
     //  3. `max_dofs` bounds whether a FURTHER refine happens, not how large a
     //     single remesh may grow the mesh — `run_adaptive_refinement` evaluates
     //     it only after `solve_and_estimate` returns. A sliver element yields a
@@ -1282,11 +1282,12 @@ pub fn solve_elastic_static_trampoline(
     //     meaning of the size field handed to gmsh and would need its own RED
     //     test against a real sliver mesh; deliberately NOT done as a
     //     drive-by amendment.
-    //  4. Each refine is a FULL remesh from the extracted boundary surface, not
-    //     an incremental subdivision, and the size field's surface projection
-    //     (`project_volume_to_surface_vertices`) is O(n_surf x n_vol). Both are
-    //     properties of the landed `reify-solver-elastic` primitive and are
-    //     surfaced to callers in the lane's post-loop Info diagnostic.
+    //  4. Each refine is a FULL remesh from the extracted boundary surface,
+    //     not an incremental subdivision — a property of the landed
+    //     `reify-solver-elastic` primitive, surfaced to callers in the lane's
+    //     post-loop Info diagnostic. (The second cost this note used to list,
+    //     an O(n_surf x n_vol) projection of the size field onto the surface,
+    //     is gone: task #7447 hands gmsh the volume field directly.)
     //
     // Cancellation IS handled: `RealizedAdaptiveProblem::solve_and_estimate`
     // polls the ambient cancel handle on every CG iteration and the post-loop
@@ -1442,12 +1443,11 @@ pub fn solve_elastic_static_trampoline(
                             // of elements is the observable signature of
                             // mark-driven local refinement — something the
                             // uniform fallback structurally cannot report,
-                            // since it never remeshes. Also records the two
-                            // costs inherited from the reify-solver-elastic
-                            // primitive so a caller can see them: each refine
-                            // is a FULL remesh from surface (not an
-                            // incremental subdivision), and the size field's
-                            // surface projection is O(n_surf x n_vol).
+                            // since it never remeshes. Also records the cost
+                            // inherited from the reify-solver-elastic primitive
+                            // so a caller can see it: each refine is a FULL
+                            // remesh from surface, not an incremental
+                            // subdivision.
                             //
                             // Phrased on `refine_count`, NOT on lane selection
                             // (reviewer_comprehensive amendment):
@@ -1478,9 +1478,7 @@ pub fn solve_elastic_static_trampoline(
                                      iteration(s)): elements {n_elements_before} -> \
                                      {n_elements_after}. Cost note: each refinement iteration \
                                      is a FULL remesh from the extracted boundary surface, not \
-                                     an incremental subdivision, and the per-element size field \
-                                     is projected onto that surface by an O(n_surf x n_vol) \
-                                     nearest-vertex scan",
+                                     an incremental subdivision",
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
@@ -1488,8 +1486,8 @@ pub fn solve_elastic_static_trampoline(
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
-                            // or non-manifold surface, zero classified corner
-                            // entities, ...). An `adaptive: true` request must
+                            // or non-manifold surface, no volume elements
+                            // produced, ...). An `adaptive: true` request must
                             // never regress from "an answer with
                             // uniform-fallback a-posteriori fields" to Failed,
                             // so re-run on the uniform lane.
@@ -3741,10 +3739,8 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// # Inherited costs
 ///
 /// Each `refine` is a FULL remesh from surface, not an incremental
-/// subdivision; and `project_volume_to_surface_vertices` is O(n_surf × n_vol)
-/// (its own comment notes a spatial index would be needed at production
-/// scale). Both are properties of the landed `reify-solver-elastic` primitive,
-/// not of this wiring, and are surfaced to callers in the post-loop Info
+/// subdivision — a property of the landed `reify-solver-elastic` primitive,
+/// not of this wiring, and surfaced to callers in the post-loop Info
 /// diagnostic.
 ///
 /// Confined to isotropic materials for the same reason as
@@ -3797,8 +3793,8 @@ impl RealizedAdaptiveProblem {
     /// initial mesh; that was inert and is removed rather than documented as
     /// future-proofing. `refine_marked_elements` →
     /// `refine_with_size_field_validated` →
-    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads ONLY
-    /// `options.deterministic` and `options.threads`; the per-vertex size field
+    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads NO field of
+    /// `options` at all since task #7447; the background volume size field
     /// supersedes any baseline, and that function's own comment says its
     /// `Mesh.MeshSizeMax` is "deliberately NOT `options.mesh_size`". Two things
     /// must be settled before any future revision wires it through: the units
@@ -3809,9 +3805,9 @@ impl RealizedAdaptiveProblem {
     /// against. This struct's `meshing_options` therefore carries only
     /// `deterministic`/`threads` to the remesher today.
     ///
-    /// `deterministic: true` is load-bearing, not decorative — it forces
-    /// `General.NumThreads = 1` in the remesher, which is what makes the
-    /// loop's per-iteration output bit-stable.
+    /// `deterministic: true` is kept as a statement of intent, but it is no
+    /// longer what buys bit-stability: since #7447 the remesher pins
+    /// `General.NumThreads = 1` unconditionally and reads the flag no more.
     ///
     /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
     /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
@@ -3866,7 +3862,7 @@ impl RealizedAdaptiveProblem {
 
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// zero classified corner entities, or libgmsh absent from this build —
+    /// a gmsh FFI error, or libgmsh absent from this build —
     /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
     /// distinct, already-modelled variants). The wiring site catches this and
     /// re-runs on the uniform lane rather than failing the solve.
@@ -3977,10 +3973,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// # Cost
     ///
-    /// A FULL remesh from surface, not an incremental subdivision, and
-    /// `project_volume_to_surface_vertices` is O(n_surf × n_vol). Both are
-    /// properties of the `reify-solver-elastic` primitive; the wiring site
-    /// surfaces them to callers in its post-loop diagnostic.
+    /// A FULL remesh from surface, not an incremental subdivision — a
+    /// property of the `reify-solver-elastic` primitive; the wiring site
+    /// surfaces it to callers in its post-loop diagnostic.
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
         let refined = reify_solver_elastic::refine_marked_elements(
             &self.surface,
