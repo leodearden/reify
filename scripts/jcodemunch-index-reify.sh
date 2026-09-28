@@ -109,6 +109,9 @@ done
 
 say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
 die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
+# Non-fatal degradation. stderr, like die/refuse, so it can never be mistaken
+# for one of the machine-read summary fields on stdout.
+warn() { printf 'jcodemunch-index-reify: WARNING: %s\n' "$*" >&2; }
 
 # ── Identity resolution ──────────────────────────────────────────────────────
 #
@@ -137,6 +140,19 @@ sha1_hex() {
     fi
 }
 
+# derive_repo_id_inline <resolved-root> — the formula above, in bash, for a
+# checkout with no reify-audit built yet.
+derive_repo_id_inline() {
+    local name sha
+    name="$(basename -- "$1")"
+    # `basename -- /` prints `/`, but `Path('/').name` (and the Rust side) is empty.
+    if [ "$name" = "/" ]; then
+        name=""
+    fi
+    sha="$(sha1_hex "$1" | cut -c1-8)" || return
+    printf 'local/%s-%s\n' "$name" "$sha"
+}
+
 # Expand a leading `~` ourselves: the path may arrive quoted (from a config or
 # another script), in which case the caller's shell never expanded it, and
 # readlink -f would resolve a literal './~' relative to cwd.
@@ -147,8 +163,88 @@ esac
 PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
     || die "could not resolve --project-root to an absolute path"
 
-REPO_NAME="$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
-REPO_ID="local/$REPO_NAME"
+# ── One derivation, not two (task #6459) ─────────────────────────────────────
+#
+# The formula above is implemented once, in Rust (jcodemunch_index.rs::
+# resolve_repo_id, exposed as `reify-audit --print-repo-id`), the same
+# derivation the gate probes. Producers, first answer wins:
+#   1. $REIFY_JC_REPO_ID_BIN, when set;
+#   2. the newer of target/{release,debug}/reify-audit in the checkout this
+#      script lives in (not $PROJECT_ROOT, which may be another tree);
+#   3. derive_repo_id_inline, so a cold checkout still resolves an identity.
+# The one that answered is reported as `repo-id-from`. The inline copy is held
+# to the Rust one by cli.rs::index_script_repo_id_agrees_between_the_rust_and_bash_producers.
+
+# pick_repo_id_bin — the reify-audit to ask, or nothing on a cold checkout.
+pick_repo_id_bin() {
+    if [ -n "${REIFY_JC_REPO_ID_BIN:-}" ]; then
+        printf '%s\n' "$REIFY_JC_REPO_ID_BIN"
+        return 0
+    fi
+    local own_root rel dbg
+    own_root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)" \
+        || return 0
+    rel="$own_root/target/release/reify-audit"
+    dbg="$own_root/target/debug/reify-audit"
+    # Newer wins, not release: dev/test builds debug, and a stale release
+    # build still answers --print-repo-id with exit 0.
+    if [ -x "$rel" ] && { [ ! -x "$dbg" ] || [ "$rel" -nt "$dbg" ]; }; then
+        printf '%s\n' "$rel"
+    elif [ -x "$dbg" ]; then
+        printf '%s\n' "$dbg"
+    fi
+}
+
+# repo_id_bin_origin <bin> — how <bin> was chosen and when it was built.
+repo_id_bin_origin() {
+    local how="binary built in this checkout"
+    if [ -n "${REIFY_JC_REPO_ID_BIN:-}" ]; then
+        how="env REIFY_JC_REPO_ID_BIN"
+    fi
+    if [ -e "$1" ]; then
+        how="$how, built $(date -r "$1" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || printf 'at an unreadable mtime')"
+    fi
+    printf '%s\n' "$how"
+}
+
+# ask_repo_id_bin <bin> <resolved-root> — <bin>'s --print-repo-id answer, or a
+# warning and non-zero exit when it gave none. Only stdout is captured, so the
+# child's own diagnostics reach the operator verbatim.
+ask_repo_id_bin() {
+    local id rc=0
+    id="$("$1" --print-repo-id --project-root "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$id" ]; then
+        printf '%s\n' "$id"
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        warn "'$1' --print-repo-id exited 0 but printed no repo id"
+    else
+        warn "'$1' --print-repo-id exited $rc (any diagnostics of its own are above)"
+    fi
+    warn "the single Rust derivation did NOT answer; the identity below comes from this script's inline fallback instead"
+    return 1
+}
+
+REPO_ID_BIN="$(pick_repo_id_bin)"
+if [ -z "$REPO_ID_BIN" ]; then
+    REPO_ID="$(derive_repo_id_inline "$PROJECT_ROOT")"
+    REPO_ID_SOURCE="inline bash fallback (no reify-audit binary found)"
+elif REPO_ID="$(ask_repo_id_bin "$REPO_ID_BIN" "$PROJECT_ROOT")"; then
+    REPO_ID_SOURCE="$REPO_ID_BIN --print-repo-id ($(repo_id_bin_origin "$REPO_ID_BIN"))"
+else
+    REPO_ID="$(derive_repo_id_inline "$PROJECT_ROOT")"
+    REPO_ID_SOURCE="inline bash fallback ($(repo_id_bin_origin "$REPO_ID_BIN") '$REPO_ID_BIN' did not answer)"
+fi
+case "$REPO_ID" in
+    # A slash in the NAME half cannot round-trip through `local-<name>.db`, and
+    # `local/?*` alone would let `local//-abc` through.
+    local/*/*) die "resolved a jcodemunch repo id whose name contains a slash, '$REPO_ID', from $REPO_ID_SOURCE — it has no representable local-<name>.db path" ;;
+    local/?*) ;;
+    *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from $REPO_ID_SOURCE" ;;
+esac
+
+REPO_NAME="${REPO_ID#local/}"
 CODE_INDEX_DIR="${CODE_INDEX_PATH:-$HOME/.code-index}"
 DB_PATH="$CODE_INDEX_DIR/local-$REPO_NAME.db"
 
@@ -239,6 +335,7 @@ esac
 
 say "project-root  $PROJECT_ROOT"
 say "repo-id       $REPO_ID"
+say "repo-id-from  $REPO_ID_SOURCE"
 say "db-path       $DB_PATH"
 say "file-cap      $FILE_CAP ($FILE_CAP_SOURCE)"
 
