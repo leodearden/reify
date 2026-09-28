@@ -79,19 +79,6 @@ Caveat: commits made before a writer adopted W3 still read `Leo Dawn`. That
 includes review-readme's four earlier commits (04dfeef85f, bff70cede5,
 8a12ead605, 96596df36f) and every dark-factory writer until #7968 lands.
 
-## Corrections to #7790's premises
-
-- The review-readme commit was already hook-gated. The 2026-06-04 and
-  2026-06-08 run logs show `verify.sh: nothing to verify (action=all
-  scope=staged)` followed by a sanctioned main-gate move. Only the push skipped
-  a gate. Refusal has been a live outcome since #7831:
-  `verify.sh::select_cited_test_path_gate` now runs the cited-test-path gate on
-  every non-empty staged commit. Before W4, a refusal aborted the script and
-  left `README.md` modified in the main checkout.
-- review-readme was not the only writer that reached a remote. The merge
-  worker's `push_main` already published `main` after every advance, which is
-  why `origin/main` equalled `main` (39a2151a23) when this was measured.
-
 ## Residuals
 
 - The claude session runs with `--dangerously-skip-permissions` in the shared
