@@ -77,7 +77,7 @@ fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geomet
     build_against_mock_kernel(parse_and_compile(source))
 }
 
-/// The BARE-source counterpart of [`build_capturing_ops`] (task 5750).
+/// Compile a BARE modify/sweep-magnitude `source`.
 ///
 /// Task η gave every modify and sweep magnitude a compile-layer LENGTH slot, so
 /// the bare sources in this file no longer compile clean and the strict
@@ -87,11 +87,15 @@ fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geomet
 /// in the lenient `compile_source` and re-asserts both halves of what the
 /// strict helper used to guarantee.
 #[track_caller]
+fn compile_bare_magnitude(source: &str) -> reify_compiler::CompiledModule {
+    compile_expecting_only_arg_type_mismatch(source, "modify/sweep magnitude")
+}
+
+/// The BARE-source counterpart of [`build_capturing_ops`] (task 5750),
+/// compiled through [`compile_bare_magnitude`].
+#[track_caller]
 fn build_capturing_ops_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_against_mock_kernel(compile_expecting_only_arg_type_mismatch(
-        source,
-        "modify/sweep magnitude",
-    ))
+    build_against_mock_kernel(compile_bare_magnitude(source))
 }
 
 /// The rejection half: assert `source` produces at least one `Severity::Error`
@@ -261,9 +265,8 @@ fn bare_fillet_source_carries_both_layers_with_distinct_codes() {
         "#;
 
     // (a) COMPILE layer: exactly the ArgTypeMismatch, and nothing else at
-    //     Error severity. `compile_expecting_only_arg_type_mismatch` asserts
-    //     both halves.
-    let compiled = compile_expecting_only_arg_type_mismatch(SRC, "modify/sweep magnitude");
+    //     Error severity. `compile_bare_magnitude` asserts both halves.
+    let compiled = compile_bare_magnitude(SRC);
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()

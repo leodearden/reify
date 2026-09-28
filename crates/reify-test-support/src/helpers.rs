@@ -837,10 +837,6 @@ pub fn run_modify_pipeline(
 ///    wrong reason — compilation having broken, rather than a later eval gate
 ///    having dropped the op.
 ///
-/// Shared by the bare-argument e2e suites; each supplies its `what` noun
-/// through a thin per-file wrapper (`build_capturing_ops_bare`,
-/// `compile_bare_spacing`, `compile_bare_origin`).
-///
 /// # Panics
 /// Panics if no compile-layer Error diagnostic is produced, or if any
 /// compile-layer Error diagnostic carries a code other than
@@ -883,13 +879,9 @@ pub fn compile_expecting_only_arg_type_mismatch(
 /// — never the incoming compile-layer ones — and every
 /// [`reify_ir::GeometryOp`] that reached the kernel.
 ///
-/// `operations_ref()` is captured BEFORE the kernel moves into the `Engine`
-/// — the only ordering that lets the emitted ops be inspected afterwards.
-///
 /// Those two slots are deliberately NARROWER than [`run_modify_pipeline`]'s
-/// `(BuildResult, Vec<GeometryOpRecord>)`: every caller here wants exactly
-/// this pair, and neither `geometry_output` nor a record's result handle
-/// answers a question a units-gate e2e asks.
+/// `(BuildResult, Vec<GeometryOpRecord>)`: neither `geometry_output` nor a
+/// record's result handle answers a question a units-gate e2e asks.
 #[cfg(feature = "eval-helpers")]
 #[track_caller]
 pub fn build_against_mock_kernel(
@@ -2001,8 +1993,8 @@ mod tests {
     // ── compile_expecting_only_arg_type_mismatch ──────────────────────────
 
     /// A source whose ONLY compile-layer Error is the bare-length
-    /// `ArgTypeMismatch` — the shape every call site of
-    /// [`super::compile_expecting_only_arg_type_mismatch`] feeds it. Measured:
+    /// `ArgTypeMismatch` — the shape
+    /// [`super::compile_expecting_only_arg_type_mismatch`] exists to accept. Measured:
     /// exactly one Error diagnostic, code `Some(DiagnosticCode::ArgTypeMismatch)`.
     const BARE_FILLET_SRC: &str = r#"
         structure def BareFillet {
@@ -2026,11 +2018,10 @@ mod tests {
     /// Error is the `ArgTypeMismatch` does not panic, AND the module comes back
     /// with its diagnostics INTACT.
     ///
-    /// The returned-unchanged half is the property every call site depends on:
-    /// each goes on to inspect the module it got back rather than recompiling,
-    /// so a helper that swallowed the diagnostics it had just asserted on — or
-    /// re-ran the STRICT path — would break them all while still passing the
-    /// assertions above it.
+    /// The returned-unchanged half is part of the contract: a caller inspects
+    /// the module it got back rather than recompiling, so a helper that
+    /// swallowed the diagnostics it had just asserted on — or re-ran the STRICT
+    /// path — would break that caller while still passing its own assertions.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_returns_the_lenient_module() {
         let compiled = super::compile_expecting_only_arg_type_mismatch(
@@ -2057,8 +2048,8 @@ mod tests {
     /// Error diagnostic at all (what a regressed compile-layer length slot would
     /// look like) panics, and the panic interpolates the caller's `what` noun
     /// verbatim. That interpolation is the only behavioural claim `what` makes,
-    /// and it is what lets a failure name the family under test rather than a
-    /// shared helper six call sites deep.
+    /// and it is what lets a failure name the family under test rather than
+    /// only the shared helper.
     #[test]
     fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
         let message = panic_message(|| {
@@ -2082,7 +2073,7 @@ mod tests {
     ///
     /// Driven by the MIXED source deliberately. Weaken the helper's second
     /// assertion from `all` to `any` and it would ACCEPT this module, at which
-    /// point every call site's "no op reached the kernel" assertion starts
+    /// point a caller's "no op reached the kernel" assertion starts
     /// passing VACUOUSLY — the op absent because compilation broke, not because
     /// the eval gate dropped it. That silent-vacuity failure is the whole
     /// reason the assertion exists, and only a mixed fixture can see it.
@@ -2107,9 +2098,8 @@ mod tests {
         );
         assert!(
             message.contains("a bare pattern spacing"),
-            "BOTH arms must interpolate the caller's `what` noun — with six call sites \
-             funnelling through one helper, a family-agnostic arm reports only that \
-             SOMETHING has a second compile Error; got: {message}"
+            "BOTH arms must interpolate the caller's `what` noun — a family-agnostic \
+             arm reports only that SOMETHING has a second compile Error; got: {message}"
         );
     }
 
@@ -2120,9 +2110,7 @@ mod tests {
     ///
     /// Non-empty ops PAIRED with empty errors is what discriminates here: two
     /// slots sourced from the same place, or returned the wrong way round,
-    /// cannot satisfy both halves at once. The ops half also pins the one
-    /// non-obvious line in the helper — `operations_ref()` captured BEFORE the
-    /// kernel moves into the `Engine`; capture it after and slot 2 is empty.
+    /// cannot satisfy both halves at once.
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_build_against_mock_kernel_returns_build_diagnostics_and_the_emitted_ops() {
@@ -2147,17 +2135,17 @@ mod tests {
     }
 
     /// build_against_mock_kernel: composed with
-    /// [`super::compile_expecting_only_arg_type_mismatch`] — the way all call
-    /// sites use it — slot 1 carries the EVAL layer's `DimensionedArgRejected`
-    /// and NOT the COMPILE layer's `ArgTypeMismatch`.
+    /// [`super::compile_expecting_only_arg_type_mismatch`], slot 1 carries the
+    /// EVAL layer's `DimensionedArgRejected` and NOT the COMPILE layer's
+    /// `ArgTypeMismatch`.
     ///
     /// This is what proves slot 1 is `BuildResult.diagnostics` rather than the
     /// incoming `compiled.diagnostics` forwarded through. The test above passes
     /// either way, since a clean source has nothing at either layer; only a
-    /// fixture that is rejected at BOTH layers separates them. Every call site
-    /// filters on `DimensionedArgRejected` alone, so a helper that returned the
-    /// compile diagnostics would leave each of them unable to find its needle —
-    /// and PRD decision D2's two-layer observability unobservable from here.
+    /// fixture that is rejected at BOTH layers separates them. A caller that
+    /// filters on `DimensionedArgRejected` would find no needle in a helper that
+    /// returned the compile diagnostics — leaving PRD decision D2's two-layer
+    /// observability unobservable from here.
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_build_against_mock_kernel_returns_eval_layer_diagnostics_not_compile_layer_ones() {
@@ -2170,8 +2158,8 @@ mod tests {
         assert!(
             diagnostics.iter().any(|d| d.severity == Severity::Error
                 && d.code == Some(DiagnosticCode::DimensionedArgRejected)),
-            "slot 1 must be BuildResult.diagnostics — the EVAL-layer gate every call site \
-             filters on; got: {diagnostics:?}"
+            "slot 1 must be BuildResult.diagnostics — the EVAL-layer gate's \
+             DimensionedArgRejected; got: {diagnostics:?}"
         );
         assert!(
             !diagnostics
