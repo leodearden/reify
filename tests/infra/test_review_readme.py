@@ -286,5 +286,30 @@ class LandingPathTest(ReviewReadmeFixture):
         self.assert_still_staged(UNRELATED, human_content)
 
 
+class RefusalTest(ReviewReadmeFixture):
+    MARKER = "REFUSED-EDIT-MARKER"
+
+    def test_a_refused_commit_restores_the_targets_and_quarantines_the_edit(self):
+        self.hook_rc.write_text("1\n")
+        human_content = self.stage_human_change_to_unrelated()
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_APPEND=self.MARKER)
+
+        self.assertNotEqual(result.returncode, 0, _diag(result))
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertEqual(self.origin_main(), self.origin_main_at_setup, _diag(result))
+
+        self.assertEqual(self.git("hash-object", README), self.git("rev-parse", f"HEAD:{README}"),
+                         _diag(result))
+        self.assertEqual(self.git("diff", "--name-only", "HEAD", "--", *TARGETS), "", _diag(result))
+        self.assertEqual(self.git("diff", "--cached", "--name-only", "--", *TARGETS), "",
+                         _diag(result))
+        self.assert_still_staged(UNRELATED, human_content)
+
+        patches = sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
+        self.assertEqual(len(patches), 1, f"{patches}{_diag(result)}")
+        self.assertIn(self.MARKER, patches[0].read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
