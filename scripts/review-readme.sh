@@ -3,13 +3,19 @@
 # ~/.config/systemd/user/reify-readme-review.timer every 4 days.
 #
 # Invokes Claude Code in non-interactive mode to compare the docs against
-# the current state of the repo and patch any drift. The wrapper handles
-# the git plumbing — claude only edits files.
+# the current state of the repo and patch any drift; claude only edits files.
+# The edit lands as a hook-gated commit by the review-readme machine identity
+# and is never pushed: docs/notes/unattended-writers-of-main.md.
 #
 # Manual invocation (for testing):
 #   scripts/review-readme.sh
 #
 # Logs to logs/readme-review-<timestamp>.log.
+#
+# Exit status:
+#   0   no drift, or the edit was committed
+#   1   refused: off main, a target untracked at HEAD, no claude CLI, or the commit was refused (edit kept in <log>.refused.patch)
+#   75  deferred: a target already differs from HEAD (human WIP), so claude was not run
 
 set -euo pipefail
 
