@@ -100,7 +100,7 @@ includes review-readme's four earlier commits (04dfeef85f, bff70cede5,
   edit cannot be attributed to claude, and restoring it could destroy someone
   else's work. Follow-up: #7967 (run the session in a disposable worktree).
 - The timer and service units are untracked host files, and the service's
-  comment still says the network is needed for "git push". Follow-up filed from
-  #7790 as ticket `tkt_0RV5C38E5BV0QXTJ4TAHY4YPE5`.
+  comment still says the network is needed for "git push". Follow-up: #7971
+  (track them under `deploy/systemd/`).
 - The dark-factory writers have not adopted W3, and the flip script violates
   W1. Follow-up: #7968.
