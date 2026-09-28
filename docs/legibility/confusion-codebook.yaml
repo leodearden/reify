@@ -460,6 +460,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Turn 363: grep -rn exits code 2 on .claude/skills/audit/ path (IO/path error); path likely missing or inaccessible in warm-lanes worktree context; grep command uses multiple alternated patterns, consistent with confusion pattern of varying search strings rather than fixing root cause'
+  - date: '2026-09-27'
+    project: reify
+    session: 31fd2c65-dd09-45d0-9745-406933d97a18
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 26: grep -rn ... --include=*.rs . returned exit 2 (path/IO error). Turn 288 repeats with different search string, demonstrating retry pattern.'
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -1198,6 +1204,18 @@ entries:
     origin_phase: unknown
     manifested_phase: architect
     note: Retry-loop signal shows Read x4 on /tmp/claude-1000/.../tasks/b117c7sab.output, a background task's output file — matches the blocked-sleep+tail-then-repeated-Read fallback pattern; agent_id 'claude-task-6327-architect' anchors the phase.
+  - date: '2026-09-27'
+    project: reify
+    session: 43106bd4-3524-40a5-848d-0661be0b209f
+    origin_phase: implement
+    manifested_phase: verify
+    note: Read tool called 3x on background task output file /tmp/claude-1000/.../bk97hmy7b.output; suggests polling fallback (sleep+tail guard blocked, agent retried with Read instead of Monitor)
+  - date: '2026-09-27'
+    project: reify
+    session: 68b1a9f5-5c23-48e6-9954-1dce597af782
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Retry loop: Read invoked 3x identically on /tmp/.../b1wjx8m2f.output, polling for background task output without Monitor/run_in_background'
 - id: entry-cand-20260729-3
   title: Warm-lane task-meta iteration state assumed present but absent
   severity: medium
@@ -1719,6 +1737,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'turn 165: `grep -rn --include=*.ri -E ''safety_factor\s*\('' . 2>/dev/null && ...` exits 2 despite the 2>/dev/null suppression — the redirect hides the real path/argument error, leaving the empty-looking output indistinguishable from a genuine no-match.'
+  - date: '2026-09-27'
+    project: reify
+    session: 31fd2c65-dd09-45d0-9745-406933d97a18
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 288: grep with 2>/dev/null redirected stderr, conflating exit 2 path/IO error with pattern-not-found by suppressing diagnostic output'
 - id: entry-cand-20260730-4
   title: watcher-rearm.sh CEILING timeout retried 5x with only cosmetic changes, ending in user interrupt
   severity: medium
@@ -4332,6 +4356,24 @@ entries:
     origin_phase: ops
     manifested_phase: implement
     note: In warm-lane worktree _lane-35, `ls -la .task/plan.json 2>/dev/null && head -50 .task/plan.json 2>/dev/null` lists the plan.json entry but yields no content (stderr suppressed hid the read failure); the very next turn's unredirected `wc -c .task/plan.json` then surfaces 'No such file or directory', confirming plan.json exists as a directory entry (likely a dangling symlink) but is unreadable, with the first probe's suppressed stderr masking the real error.
+  - date: '2026-09-27'
+    project: reify
+    session: 43106bd4-3524-40a5-848d-0661be0b209f
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Symlink at .task/plan.json exists but target /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-15/plan.json is completely missing; agent encounters 'No such file or directory' when reading through symlink
+  - date: '2026-09-27'
+    project: reify
+    session: 5e847e11-5b0a-4fee-a26e-42f351c6d68a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Symlink at .task/plan.json is broken: points to /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-37/plan.json which does not exist. Multiple Read and stat calls fail with ''no such file or directory''.'
+  - date: '2026-09-27'
+    project: reify
+    session: 68b1a9f5-5c23-48e6-9954-1dce597af782
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 70: .task/plan.json exists in ls output but cat fails with os error 2 (ENOENT), diagnostic of broken symlink to inaccessible target'
 - id: entry-cand-20260722-4
   title: Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired
   severity: medium
@@ -5743,6 +5785,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Multiple sequential not_found errors suggest path ambiguity between sibling and nested-under-worktrees directory structures
+  - date: '2026-09-27'
+    project: reify
+    session: 43106bd4-3524-40a5-848d-0661be0b209f
+    origin_phase: architect
+    manifested_phase: implement
+    note: 'Path structure ambiguity manifest: symlink assumes .task-meta nesting under worktrees/, but directory/file never created at that location'
+  - date: '2026-09-27'
+    project: reify
+    session: 0c9b29c2-818d-4a5c-bd6f-c167ce5b690e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Warm-lane task-meta path ambiguity: orchestrated agent probing wrong location for task-meta structure (sibling vs nested-under-worktrees)'
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -7128,6 +7182,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent probes undocumented .task-meta/<lane>/iterations.jsonl or similar structured path; exit code 2 (not_found) aligns with path/IO errors
+  - date: '2026-09-27'
+    project: reify
+    session: 0c9b29c2-818d-4a5c-bd6f-c167ce5b690e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 4 not_found signals at turns 42, 146, 214, 332 suggest repeated probes of undocumented .task-meta/<lane>/iterations.jsonl or similar missing task-meta file in worktree _lane-37
+  - date: '2026-09-27'
+    project: reify
+    session: 2d7affea-966e-4613-97c4-237b6262c9ca
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Autonomous warm-lane worktree session with 4 'not found' signals across turns; agent likely probing undocumented .task-meta or bootstrap paths; insufficient digest detail to confirm specific missing file
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -7862,6 +7928,12 @@ entries:
     origin_phase: architect
     manifested_phase: unknown
     note: Agent probed for iterations.jsonl at ../.task-meta/_lane-10/ in a warm-lanes task worktree. ls confirmed the .task-meta/_lane-10/ directory exists with 6 files (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts) but iterations.jsonl was not present. The tail -3 command failed silently due to 2>/dev/null redirection, resulting in exit 1.
+  - date: '2026-09-27'
+    project: reify
+    session: 0c9b29c2-818d-4a5c-bd6f-c167ce5b690e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Per-lane task-meta iterations.jsonl missing from expected path, causing repeated not_found failures across multiple turns
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -8271,6 +8343,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Warm-lanes task bootstrap context; plan.json may be missing from task directory structure
+  - date: '2026-09-27'
+    project: reify
+    session: 43106bd4-3524-40a5-848d-0661be0b209f
+    origin_phase: unknown
+    manifested_phase: implement
+    note: 'Task bootstrap failed to create or populate plan.json at expected target location (net effect: agent cannot access plan.json despite symlink existing)'
+  - date: '2026-09-27'
+    project: reify
+    session: 5e847e11-5b0a-4fee-a26e-42f351c6d68a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: plan.json file not present at expected warm-lane task bootstrap location (symlink target missing at .task-meta/_lane-37/plan.json).
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -8626,6 +8710,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'Read({"file_path": ".../reify-core/src/diagnostics.rs"}) -> File content (345.5KB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.'
+  - date: '2026-09-27'
+    project: reify
+    session: 0c9b29c2-818d-4a5c-bd6f-c167ce5b690e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Read tool rejected 1500-token chunk request (offset 680) from 32262-token file; hard cap at 25000 tokens applies even with limit parameter. Agent followed documented workaround (offset/limit) but error still occurred.
 - id: entry-cand-20260910-15
   title: Agent's own free-text tool-call field (design-decision rationale) contains literal MCP envelope closing tags, rejected by mcp_markup_detected guard, and recurs later in the same session
   severity: medium
@@ -9080,6 +9170,12 @@ entries:
     origin_phase: architect
     manifested_phase: architect
     evidence_quote: 'Tool call rejected: it carries raw MCP envelope markup in ''content'', which means the caller serialized part of its own tool-call envelope into the payload. ... matched_pattern: "</content>"'
+  - date: '2026-09-27'
+    project: reify
+    session: 31fd2c65-dd09-45d0-9745-406933d97a18
+    origin_phase: implement
+    manifested_phase: verify
+    note: 'Turn 376: update_memory content field contained leaked MCP envelope closing tag </content>, rejected by mcp_markup_detected guard'
 - id: entry-cand-20260918-14
   title: Digest mislabels injected escalation notification as a User Correction
   severity: medium
