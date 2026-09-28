@@ -109,7 +109,7 @@ v1 scopes catalogs to the stdlib surface (PRD §2.3/§3.7/§9).
 | Inner continuous solve + Money machinery landed | `grep`: robustness floor `solver.rs:487` (#4789) in `DimensionalSolver` assembly → inherited by construction on the inner solve (PRD §3.8) | **PASS** |
 | CrossDomain dispatch slot exists | `grep`: `fallback` slot + `registry.rs:90` CrossDomain arm | **PASS** |
 | Always-`BestFound` honesty on mixed (never `ProvenOptimal`) | design invariant D2 (F-result I3 refinement) — asserted by ζ's boundary tests B9/B10; no substrate claim | **PASS** (in-set) |
-| Expected optimum `(up=true, t≈3.0)` is correct | hand-check: up=true ⇒ t∈[3,10], min t → 3; up=false ⇒ t∈[5,10] → 5; argmin = (true, 3.0). Combinatorial + linear, no floor exposure | **PASS** |
+| ~~Expected optimum `(up=true, t≈3.0)` is correct~~ Discrete choice `up=true` is reachable through the unchanged inner solve (re-scoped 2026-09-28, Leo, esc-5472-2) | hand-check: up=true ⇒ t∈[3,10], min t → 3; up=false ⇒ t∈[5,10] → 5; argmin = (true, 3.0). Combinatorial + linear, no floor exposure. **Amended 2026-09-28:** the arithmetic is right, but the check never asked whether the unchanged `DimensionalSolver` *reaches* it, and it does not: pinned-leaf probes give `up=true`→`t=6.5`, `up=false`→`t=7.5` (seed-box midpoints, the #6756 defect; root fix #6678 κ, not a ζ prereq). The leaf ordering survives (6.5 < 7.5), so B9 asserts `up=true` + `score(up=true) < score(up=false)` + `BestFound` and does not assert `t` until #6678 lands. `t≈3` is observed on the Money twin instead (B10: `up=true`→3.06, `up=false`→5.1) | **PASS** as re-scoped (the original `t≈3.0` premise failed at ζ's architect gate) |
 
 ### η — companion docs
 
@@ -157,7 +157,9 @@ failures**. Dispositions:
    (`No constraints violated (1 indeterminate)` — indeterminate because
    nothing solves the auto yet: exactly the δ baseline).
 5. **ζ — no blocking findings** (all premises PASS, including the mixed
-   baseline `exit 1` residual failure).
+   baseline `exit 1` residual failure). *Later falsified (2026-09-28,
+   esc-5472-2):* the `t≈3.0` expected-optimum premise failed at ζ's architect
+   gate — see the ζ table's re-scoped row and PRD §5's B9 amendment note.
 
 Adversary value adds folded in: `harness_engine.rs` confirmed tracked on main
 (C1 consolidated harness, #5056, last change `ff6874fcbe`); δ polarity trap

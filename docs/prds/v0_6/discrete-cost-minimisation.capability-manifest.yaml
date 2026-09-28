@@ -189,7 +189,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: post-fix (up=true, t≈3.0, BestFound) asserted by ζ tests B9/B10
+      reason: 'post-fix asserted by ζ tests B9/B10 — amended 2026-09-28 (Leo, esc-5472-2):
+        up=true, score(up=true) < score(up=false), BestFound, no residual failure;
+        t not asserted until #6678 lands, t=6.5 never pinned; t≈3.06 on the Money twin
+        (B10)'
   - name: inner-solve-machinery-landed
     binding: substrate — DimensionalSolver + robustness floor solver.rs:487 (#4789)
       + cost_robustness_tradeoff (#4791); floor composes by construction on the inner
@@ -199,13 +202,19 @@ tasks:
       kind: manual
       reason: landed substrate fact; composition asserted by B10
   - name: expected-optimum-hand-checked
-    binding: 'floor:none — combinatorial+linear: up=true ⇒ min t = 3.0 < up=false
-      branch 5.0; solver-tolerance assertion only, no accuracy-bound premise (G6 branch
-      1 N/A)'
+    binding: 'RE-SCOPED 2026-09-28 (Leo, esc-5472-2) — the arithmetic optimum (up=true,
+      t=3.0) is right, but the unchanged DimensionalSolver does not reach it: pinned
+      leaves give up=true→t=6.5, up=false→t=7.5 (seed-box midpoints, #6756; root fix
+      #6678 κ, not a ζ prereq). The leaf ordering survives, so the premise is now the
+      discrete choice up=true with score(up=true) < score(up=false); t is not asserted
+      until #6678 lands. Original binding (FAILED as a solver-reach premise): floor:none
+      — combinatorial+linear: up=true ⇒ min t = 3.0 < up=false branch 5.0; solver-tolerance
+      assertion only, no accuracy-bound premise (G6 branch 1 N/A)'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: arithmetic identity recorded in the manifest
+      reason: arithmetic identity recorded in the manifest; solver-reach premise re-scoped
+        by esc-5472-2 (B9 asserts the discrete choice, not t)
 - label: η
   task_id: 5473
   title: 'PRD2 η: companion docs — spec deferred-capabilities row + F-result/M-WHOLE
