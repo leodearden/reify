@@ -16,8 +16,8 @@ const DRAFT_ANGLE: f64 = 0.1;
 const TILT_TOLERANCE_RAD: f64 = 1e-9;
 const VOLUME_TOLERANCE: f64 = 1e-6;
 
-fn plus_x_wall(kernel: &mut OcctKernel, cube: GeometryHandleId) -> GeometryHandleId {
-    let faces = kernel.extract_faces(cube).expect("extract_faces(cube)");
+fn plus_x_wall(kernel: &mut OcctKernel, solid: GeometryHandleId) -> GeometryHandleId {
+    let faces = kernel.extract_faces(solid).expect("extract_faces(solid)");
     let normal_x = |face: GeometryHandleId| {
         kernel
             .face_outward_unit_normal_for_test(face)
@@ -26,25 +26,7 @@ fn plus_x_wall(kernel: &mut OcctKernel, cube: GeometryHandleId) -> GeometryHandl
     faces
         .into_iter()
         .max_by(|a, b| normal_x(*a).total_cmp(&normal_x(*b)))
-        .expect("cube has faces")
-}
-
-fn wall_tilt(
-    kernel: &mut OcctKernel,
-    original_wall: GeometryHandleId,
-    drafted: GeometryHandleId,
-) -> f64 {
-    let faces = kernel
-        .extract_faces(drafted)
-        .expect("extract_faces(drafted)");
-    faces
-        .into_iter()
-        .map(|face| {
-            kernel
-                .surface_angle(original_wall, face)
-                .expect("surface_angle(original_wall, drafted face)")
-        })
-        .fold(f64::INFINITY, f64::min)
+        .expect("solid has faces")
 }
 
 fn volume(kernel: &OcctKernel, solid: GeometryHandleId) -> f64 {
@@ -85,7 +67,10 @@ fn draft_angle_magnitude_is_read_as_radians() {
         .expect("single-wall draft of the cube must succeed")
         .id;
 
-    let tilt = wall_tilt(&mut kernel, wall, drafted);
+    let drafted_wall = plus_x_wall(&mut kernel, drafted);
+    let tilt = kernel
+        .surface_angle(wall, drafted_wall)
+        .expect("surface_angle(original wall, drafted wall)");
     assert!(
         (tilt - DRAFT_ANGLE).abs() < TILT_TOLERANCE_RAD,
         "drafted +X wall tilt = {tilt:.16} rad; radians reading predicts {DRAFT_ANGLE:.16}, \
