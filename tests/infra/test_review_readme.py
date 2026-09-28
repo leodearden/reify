@@ -311,5 +311,49 @@ class RefusalTest(ReviewReadmeFixture):
         self.assertIn(self.MARKER, patches[0].read_text())
 
 
+class PreflightTest(ReviewReadmeFixture):
+    EX_TEMPFAIL = 75
+
+    def assert_claude_never_invoked(self, result):
+        self.assertIsNone(self.stub_invoked_in(), _diag(result))
+
+    def test_human_wip_on_a_target_defers_with_75(self):
+        with (self.main / README).open("a") as readme:
+            readme.write("HUMAN-WIP\n")
+        before = self.head()
+        result = self.run_script()
+        self.assertEqual(result.returncode, self.EX_TEMPFAIL, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assertTrue((self.main / README).read_text().endswith("HUMAN-WIP\n"))
+        self.assertEqual(self.head(), before, _diag(result))
+
+    def test_staged_human_wip_on_a_target_defers_with_75(self):
+        content = "# Getting started\nhuman staged WIP\n"
+        (self.main / GETTING_STARTED).write_text(content)
+        self.git("add", "--", GETTING_STARTED)
+        before = self.head()
+        result = self.run_script()
+        self.assertEqual(result.returncode, self.EX_TEMPFAIL, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assert_still_staged(GETTING_STARTED, content)
+        self.assertEqual(self.head(), before, _diag(result))
+
+    def test_off_main_checkout_refuses(self):
+        main_before = self.head()
+        self.git("switch", "-q", "-c", "feature")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assertEqual(self.git("rev-parse", "refs/heads/main"), main_before, _diag(result))
+        self.assertEqual(self.git("rev-parse", "refs/heads/feature"), main_before, _diag(result))
+
+    def test_target_missing_at_HEAD_refuses(self):
+        self.git("rm", "-q", "--", GETTING_STARTED)
+        self.fixture_commit("fixture: drop a target")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1, _diag(result))
+        self.assert_claude_never_invoked(result)
+
+
 if __name__ == "__main__":
     unittest.main()
