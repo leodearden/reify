@@ -551,9 +551,10 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// it. The saving survives that correction (an O(1) map op in place of an
 /// expression eval), but the `remove` is mandatory, not an optimisation detail.
 ///
-/// Not done here: CP-SAT is landed-but-unwired — unreachable in production
-/// until PRD2 γ — so nothing pays this cost yet, and the change needs its own
-/// unwind-safety units rather than a rider on an amendment pass.
+/// Not done here: CP-SAT is reachable in production since #5469, so this cost
+/// is now paid there. The `remove`-based saving is filed as a follow-up
+/// (planning ticket tkt_0RV530QM659ANFS65B8ZB6JFQ8) and needs its own
+/// unwind-safety units rather than a rider on another change.
 fn backtrack_all(
     ctx: &SearchContext<'_>,
     var_index: usize,
@@ -1317,9 +1318,8 @@ fn verdict_from_enumeration(
             // `Infeasible { ConstraintNonUnique }`. The engine's
             // non-unique warning is gated on `ap.free`
             // (engine_eval.rs:3355/5975), so nothing user-visible turns
-            // on the strict case yet, and CP-SAT is unreachable in
-            // production until the γ wiring — so the demotion POLICY
-            // belongs with the step that first makes it observable. See
+            // on the strict case yet, and the demotion POLICY belongs
+            // with the step that first makes it observable. See
             // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
             // and task #6554, which owns that observable half.
             //
@@ -1692,10 +1692,10 @@ mod cpsat_test_fixtures {
 // ---------------------------------------------------------------------------
 // REGRESSION LOCKS for the CP-SAT forward-check's two dependent-cell hazards
 // (task #5467 / PRD2 α, §3 decision 9). Both are FIXED above; these units are
-// what keeps them fixed. CP-SAT is landed-but-unwired — unreachable in
-// production until PRD2 γ — so this module is the ONLY behavioural pin on
-// either, which is why every assertion names an expected VALUE or VARIANT
-// rather than settling for "did not panic".
+// what keeps them fixed. CP-SAT is reachable in production since #5469, and
+// `tests/registry_tests.rs` pins its routed behaviour, but this module is the
+// only pin on either hazard in isolation, which is why every assertion names
+// an expected VALUE or VARIANT rather than settling for "did not panic".
 //
 // LOCK 1 — the per-trial fold at the top of `backtrack`'s value loop.
 // `backtrack` computes `auto_refs = refs ∩ auto_param_ids`. For a constraint
@@ -2862,9 +2862,10 @@ mod solve_all_enumeration_tests {
 // second model absent and must not claim it did.
 //
 // Every unit here asserts a VALUE or a VARIANT alongside the flag, never the
-// flag alone: CP-SAT is landed-but-unwired until PRD2 γ, so these units are the
-// only thing standing between the flag and a silent regression, and a unit that
-// only checked `unique` would pass on a solver that returned the wrong model.
+// flag alone: these units, with the production-seam tests in
+// `tests/registry_tests.rs`, are what stand between the flag and a silent
+// regression, and a unit that only checked `unique` would pass on a solver that
+// returned the wrong model.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod unique_honesty_tests {
@@ -2875,8 +2876,7 @@ mod unique_honesty_tests {
     /// Unwrap `Solved`, or panic naming what actually came back.
     ///
     /// Returning BOTH halves is the point: a unit that read only `unique` would
-    /// pass on a solver that reported the right flag about the wrong model, and
-    /// with cpsat unwired nothing downstream would notice.
+    /// pass on a solver that reported the right flag about the wrong model.
     fn solved(result: SolveResult) -> (HashMap<ValueCellId, Value>, bool) {
         match result {
             SolveResult::Solved { values, unique } => (values, unique),
@@ -3050,8 +3050,8 @@ mod unique_honesty_tests {
     /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
     /// this task: the engine's non-unique warning is gated on `ap.free`
     /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
-    /// case yet; and CP-SAT is unreachable in production until the γ wiring, so
-    /// the demotion POLICY belongs with the step that first makes it observable.
+    /// case yet; and the demotion POLICY belongs with the step that first makes
+    /// it observable (task #6554).
     ///
     /// If a later step adds that demotion, this unit fails — which is the
     /// correct outcome. It asserts today's contract, not a wish.

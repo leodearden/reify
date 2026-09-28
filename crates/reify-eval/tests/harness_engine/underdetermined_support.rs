@@ -1,5 +1,6 @@
 //! Shared scaffolding for the two task #5467 (PRD2 α) end-to-end modules —
-//! `let_tracing_transitive_e2e` and `instance_path_underdetermined_e2e`.
+//! `let_tracing_transitive_e2e` and `instance_path_underdetermined_e2e` — and
+//! for task #5469's (PRD2 γ) `discrete_default_on_e2e`.
 //!
 //! Registered from `harness_engine.rs` with an explicit `#[path]`, like every
 //! other module in this binary — see the anti-re-accretion rationale there.
@@ -25,6 +26,16 @@
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{Engine, EvalResult};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+
+/// Workspace root, two levels above `crates/reify-eval` — where the modules
+/// that read a PRD fixture from disk resolve its repo-relative path.
+pub fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf()
+}
 
 /// Compile + eval `src` through the REAL `SolverRegistry::production()`, and
 /// assert the eval produced zero `Severity::Error` diagnostics.

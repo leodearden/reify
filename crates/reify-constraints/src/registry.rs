@@ -4,6 +4,7 @@
 //! to domain-specific solvers.
 
 use crate::decompose::SubProblem;
+use crate::discrete_fallback::DiscreteFirstFallback;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -317,25 +318,27 @@ impl SolverRegistry {
         }
     }
 
-    /// Production solver set: Dimensional + geometric SolveSpace.
+    /// Production solver set: Dimensional + geometric SolveSpace + discrete CP-SAT.
     ///
     /// This is the **single source of truth** for the constraint solver set
     /// installed by the CLI and GUI engines.  Both binaries call this factory
     /// rather than constructing their own registry, which prevents CLI/GUI
     /// solver-set drift.
     ///
-    /// Slot assignments:
+    /// Slot assignments (discrete routing: PRD2 §4.1,
+    /// `docs/prds/v0_6/discrete-cost-minimisation.md`):
     /// - Dimensional: `DimensionalSolver` (Nelder-Mead; handles length/angle/scalar)
     /// - Geometric: `SolveSpaceSolver` (SolveSpace; handles `std::distance`,
     ///   `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`)
-    /// - Logical: `None` — falls back to `DimensionalSolver`
-    /// - CrossDomain fallback: `None` — falls back to `DimensionalSolver`
+    /// - Logical: `CpSatSolver`
+    /// - CrossDomain fallback: `DiscreteFirstFallback` — an all-discrete
+    ///   component goes to CP-SAT, anything else to `DimensionalSolver`
     pub fn production() -> Self {
         Self::with_solvers(
             Box::new(crate::DimensionalSolver),
             Some(Box::new(crate::SolveSpaceSolver)),
-            None,
-            None,
+            Some(Box::new(crate::CpSatSolver)),
+            Some(Box::new(DiscreteFirstFallback)),
         )
     }
 
@@ -467,10 +470,6 @@ impl SolverRegistry {
             );
         }
 
-        // Build a lookup for auto params by ID
-        let param_lookup: HashMap<&ValueCellId, &AutoParam> =
-            problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
-
         // Determine which component gets the objective (if any) — `Some(_)`
         // exactly when an objective is declared, matching the previous
         // `obj_refs.as_ref().map(..)` shape byte-for-byte.
@@ -496,11 +495,15 @@ impl SolverRegistry {
         let mut other_unique = true;
 
         for (ci, component) in components.iter().enumerate() {
-            // Build sub-ResolutionProblem for this component
-            let sub_auto_params: Vec<AutoParam> = component
+            // Build sub-ResolutionProblem for this component. Autos keep
+            // DECLARATION order, never the component's hash order: CP-SAT
+            // searches in this order, so it decides which model comes back
+            // (PRD2 D4).
+            let sub_auto_params: Vec<AutoParam> = problem
                 .auto_params
                 .iter()
-                .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
+                .filter(|ap| component.auto_params.contains(&ap.id))
+                .cloned()
                 .collect();
 
             // Attach objective only to the designated component
