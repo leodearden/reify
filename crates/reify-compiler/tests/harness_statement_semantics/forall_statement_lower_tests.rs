@@ -2953,3 +2953,110 @@ structure def U {
             .collect::<Vec<_>>()
     );
 }
+
+/// `chain_hops`' own spec §6.2 diagnostics (task #7376, `connect.rs`) duplicate
+/// the same way `compile_connection`'s direction error did, and need the same
+/// per-declaration collapse (task 7195) — but only for the diagnostics that
+/// are actually identical across elements.
+///
+/// `hub` (the non-bound chain element) has no `in` port at all, so its
+/// "no port usable as 'in'" error is element-independent and byte-identical
+/// every iteration — it must collapse to one. `vents[i]` (the bound element)
+/// has two `out` ports, so its "has several ports usable as 'out'" error is
+/// ambiguous but NAMES the element — the message differs per iteration even
+/// though the label (the collection expression's span) is shared, so all
+/// three copies must survive.
+///
+/// MEASURED before the fix: 3 `'hub'` errors, 3 `'vents['`-prefixed errors.
+/// AFTER: 1 `'hub'` error, still 3 `'vents['`-prefixed errors.
+#[test]
+fn forall_chain_inference_error_reported_once_per_declaration() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Splitter {
+    port inlet : in Air { param d : Length = 5mm }
+    port outA : out Air { param d : Length = 5mm }
+    port outB : out Air { param d : Length = 5mm }
+}
+occurrence def Exhaust {
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Splitter>
+    constraint vents.count == 3
+    sub hub = Exhaust()
+    forall v in vents: chain v -> hub
+}
+"#;
+    let module = compile_source(source);
+
+    use reify_core::DiagnosticCode;
+    let port_errors: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ChainPortNotUnique))
+        .collect();
+
+    let hub_errors: Vec<&&reify_core::Diagnostic> = port_errors
+        .iter()
+        .filter(|d| d.message.contains("'hub'"))
+        .collect();
+    let vents_errors: Vec<&&reify_core::Diagnostic> = port_errors
+        .iter()
+        .filter(|d| d.message.contains("'vents["))
+        .collect();
+    assert_eq!(
+        hub_errors.len(),
+        1,
+        "expected the element-independent 'hub' inference error exactly once \
+         per declaration (3 byte-identical copies before the fix, one per \
+         collection element), got {} hub, {} vents[..]: hub={:?} vents={:?}",
+        hub_errors.len(),
+        vents_errors.len(),
+        hub_errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        vents_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let hub_span = hub_errors[0].labels[0].span;
+    let hub_slice = &source[hub_span.start as usize..hub_span.end as usize];
+    assert_eq!(
+        hub_slice, "hub",
+        "expected the surviving 'hub' error's label to slice to \"hub\", got {:?}",
+        hub_slice
+    );
+
+    assert_eq!(
+        vents_errors.len(),
+        3,
+        "expected all 3 name-bearing 'vents[i]' inference errors to survive \
+         (they differ in message despite sharing a label span), got {}: {:?}",
+        vents_errors.len(),
+        vents_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let undefined_port_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("undefined port"))
+        .count();
+    assert_eq!(
+        undefined_port_count, 0,
+        "expected no 'undefined port' diagnostics for this fixture, got {:?}",
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert!(
+        template.connections.is_empty(),
+        "expected no connections — every hop's endpoint failed to resolve \
+         (hub has no 'in' port, so chain_hops drops every pair), got {:?}",
+        template.connections
+    );
+}
