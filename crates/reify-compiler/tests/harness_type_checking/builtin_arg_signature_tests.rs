@@ -435,6 +435,14 @@ fn moment_of_inertia_via_material_density_gives_no_arg_type_mismatch() {
 /// tautology — it would pass for whatever the implementation happened to say.
 const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
 
+/// The exact C1 hint clause both layers append to an ANGLE rejection.
+///
+/// Hard-coded for the same reason [`LENGTH_HINT`] is, and NOT read from
+/// `reify_core::units::ANGLE_MIGRATION_HINT`: a message assertion built from
+/// the const the implementation reads passes for whatever the implementation
+/// happens to say.
+const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
+
 /// (b) SIGNAL — the BARE-INT arm carries the hint too.
 ///
 /// Not a duplicate of `linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch`:
@@ -502,17 +510,16 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
     );
 }
 
-/// (d) NEGATIVE CONTROL — an ANGLE slot's message carries NO hint.
+/// (d) SIGNAL — an ANGLE slot's message carries the hint, on ONE template.
 ///
-/// This is the one slot kind where the compile layer does NOT mirror eval, and
-/// the asymmetry is scheduled rather than accidental. `angle_spec()` gained
-/// `ANGLE_MIGRATION_HINT` with PRD 3 leaf β, which owns the eval half only;
-/// PRD 3 leaf ζ (task 5782) brings these compile slots onto the hint-carrying
-/// template. Until ζ lands this test is what holds the line: it must keep
-/// FAILING for anyone who adds a hint to the ANGLE slot early, so the two
-/// halves move in one deliberate step instead of drifting apart a second time.
+/// Every ANGLE slot — the four selector `tol` arguments and every producer
+/// angle position — renders the full C1 template with [`ANGLE_HINT`], so the
+/// compile and eval layers say one thing for one authoring mistake.
+///
+/// `faces_by_normal`'s `tol` is the fixture because it is the OLDEST ANGLE slot
+/// (task 4493's): a hint that reached only the producer slots would show here.
 #[test]
-fn angle_slot_rejection_carries_no_migration_hint() {
+fn angle_slot_rejection_carries_the_migration_hint() {
     let compiled = compile_struct_body(
         "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
     );
@@ -525,15 +532,43 @@ fn angle_slot_rejection_carries_no_migration_hint() {
         compiled.diagnostics
     );
     assert_eq!(
-        errors[0].message, "faces_by_normal: tol argument expects Angle, got Int",
-        "an ANGLE slot must render the un-hinted template — eval's angle path \
-         carries a hint since PRD 3 leaf β, but bringing these slots onto that \
-         template is leaf ζ's (task 5782), not this layer's to anticipate"
+        errors[0].message,
+        format!("faces_by_normal: tol argument expects Angle, got Int; {ANGLE_HINT}"),
+        "an ANGLE slot must render the full C1 template, hint included — the \
+         compile and eval layers read one const and must say one thing"
     );
+}
+
+/// (d2) LAYER ATTRIBUTION for ANGLE — the twin of the LENGTH pin above.
+///
+/// The LENGTH pin forecloses the compile layer borrowing β's
+/// `DimensionedArgRejected` for ONE dimension only. Without a copy keyed on an
+/// ANGLE slot, an ANGLE slot could borrow it while the LENGTH pin stayed green,
+/// leaving "which layer rejected this?" unanswerable from the code alone.
+#[test]
+fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
+    let compiled = compile_struct_body(
+        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "the compile layer must keep its own code for ANGLE too"
+    );
+
+    let eval_layer_coded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionedArgRejected))
+        .collect();
     assert!(
-        !errors[0].message.contains("pass a dimensioned"),
-        "no migration hint may leak onto an ANGLE slot: {}",
-        errors[0].message
+        eval_layer_coded.is_empty(),
+        "DimensionedArgRejected is the EVAL layer's code. Sharing it at an ANGLE \
+         slot would make the two layers indistinguishable from the code alone \
+         (PRD decision D2) — the one thing the hint reconciliation must NOT \
+         also collapse. Got: {eval_layer_coded:#?}"
     );
 }
 
@@ -971,13 +1006,16 @@ fn nested_primitive_keeps_one_diagnostic_per_axis() {
 /// SIGNAL — a bare `revolve` axis ORIGIN is rejected, naming `ox`/`oy`/`oz`.
 ///
 /// The straddle row: the origin is a point in space (gated), while the axis
-/// DIRECTION `0, 0, 1` and the `90` angle in this same call are legitimately
-/// bare and must stay silent. Three errors, not six or seven.
+/// DIRECTION `0, 0, 1` in this same call is legitimately bare and must stay
+/// silent. The `90deg` angle is written DIMENSIONED so this row isolates the
+/// origin triple — the angle has its own gated slot and its own test, and
+/// leaving it bare here would silently turn `errors.len() == 3` into 4 while
+/// the assertion message still claimed three. Three errors, not six or seven.
 #[test]
 fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
     let compiled = compile_struct_body(
         "    let profile = rectangle(10mm, 10mm)\n\
-         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90)\n",
+         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90deg)\n",
     );
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
@@ -990,8 +1028,8 @@ fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
             "revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the axis ORIGIN is gated — the direction and the angle must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "only the axis ORIGIN is gated here — the axis direction must stay silent \
+         and the angle is already dimensioned.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -999,10 +1037,12 @@ fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
 /// SIGNAL — a bare `rotate_around` PIVOT is rejected, naming `px`/`py`/`pz`.
 ///
 /// Same straddle shape as `revolve`'s, on the TRANSFORM row: the pivot is
-/// gated, the axis direction and the angle are not.
+/// gated and the axis direction is not. The angle is written dimensioned for
+/// the same reason — it carries its own slot, and this row's `errors.len()`
+/// must stay a statement about the pivot alone.
 #[test]
 fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
-    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90)\n");
+    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90deg)\n");
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
         .map(|d| d.message.as_str())
@@ -1014,8 +1054,8 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
             "rotate_around: py argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "rotate_around: pz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the PIVOT is gated — the axis direction and the angle must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "only the PIVOT is gated here — the axis direction must stay silent and \
+         the angle is already dimensioned.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1055,9 +1095,9 @@ fn mirror_bare_origin_is_rejected_naming_the_origin_components() {
 /// `ox`/`oy`/`oz`.
 ///
 /// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
-/// the `60deg` angle in this same call must all stay silent. The angle belongs
-/// to `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
-/// decree, so its silence here is a scope boundary, not an oversight.
+/// the `60deg` angle in this same call must all stay silent. The direction and
+/// count are never slotted; the angle IS slotted (PRD 3 leaf ζ), and is silent
+/// here because `60deg` SATISFIES its slot.
 #[test]
 fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
     let compiled =
@@ -1073,8 +1113,9 @@ fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
             "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the axis ORIGIN is gated — the direction, the count and the angle \
-         must stay silent.\nAll diagnostics: {:#?}",
+        "only the bare axis ORIGIN may fire — the direction and count are \
+         unslotted and the dimensioned angle satisfies its slot.\n\
+         All diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1101,14 +1142,15 @@ fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
 }
 
 /// BOUNDARY ok — the task-5745 decoded-VALUE forms produce NO
-/// `ArgTypeMismatch`, because their arities expose no slots at all.
+/// `ArgTypeMismatch`, because their arities expose no ORIGIN slot.
 ///
 /// Also a no-error guard holding both before and after — but the one that
 /// matters most, because index 1 EXISTS in both of these calls, holding a
 /// `Plane` / an `Axis`. It is the arity guard on each arm, not the
 /// `compiled_args.get(index)` bounds check, that keeps them quiet; an
 /// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
-/// correct code.
+/// correct code. `circular_pattern`'s value form does slot its angle@3 (PRD 3
+/// leaf ζ), which `60deg` satisfies.
 #[test]
 fn pattern_value_forms_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
@@ -1118,8 +1160,8 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
-        "the decoded-value forms expose no slots, so no ArgTypeMismatch may \
-         fire.\nAll diagnostics: {:#?}",
+        "the decoded-value forms expose no origin slot and the angle is \
+         dimensioned, so no ArgTypeMismatch may fire.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1470,4 +1512,240 @@ fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
         "the rejection must name the call it rejected: {:#?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+}
+
+// ── PRD 3 leaf ζ (task 5782): the ANGLE producer slots, end to end ───────────
+//
+// PRD `docs/prds/v0_6/angle-units-surface-convergence.md`. The unit tests in
+// `builtin_signatures::tests` pin WHICH index each arm exposes; these pin the
+// user-facing MESSAGE and the count, which is where a wrong template or a
+// mis-firing arity guard actually shows up. Every expected message is built
+// from `ANGLE_HINT` — the hard-coded drift pin above, not the implementation's
+// const — so a reworded hint reds here rather than sliding through.
+
+/// SIGNAL — a bare 5-arg `rotate` angle is rejected, naming `angle`.
+///
+/// `rotate` is the headline case because a bare angle there is a
+/// wrong-by-default hazard: `rotate(b, 0, 0, 1, 45)` reads the `45` as
+/// RADIANS, i.e. roughly seven full turns.
+///
+/// Exactly ONE error: the axis DIRECTION `0, 0, 1` is a dimensionless unit
+/// vector and must stay silent, so a count of four would mean the arm gated the
+/// direction as well.
+#[test]
+fn rotate_bare_angle_is_rejected_naming_the_angle() {
+    let compiled = compile_struct_body("    let r = rotate(b, 0, 0, 1, 45)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the axis DIRECTION must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("rotate: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// BOUNDARY (PRD row B4) — the 2-arg Orientation overload must NOT mis-fire.
+///
+/// The other half of the arity guard, and the half a slot table gets wrong
+/// silently. `rotate(target, orientation)` is task 4166's overload: index 4
+/// does not exist and index 1 holds an `Orientation` VALUE. An arity-agnostic
+/// `angle@4` arm would be rescued here only by `compiled_args.get(4)` returning
+/// None — an accident of the SHORT call that says nothing about an arm's
+/// correctness, per the HAZARD block in `builtin_signatures.rs`.
+#[test]
+fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let r = rotate(b, orient_identity())\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "`rotate(b, orient_identity())` is correct code — the ANGLE slot must be \
+         keyed to arity 5 and expose nothing here.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `revolve` angle is rejected, naming `angle`.
+///
+/// The origin triple is written dimensioned so the count isolates the angle:
+/// exactly one error means the ANGLE slot fired and nothing else did.
+#[test]
+fn revolve_bare_angle_is_rejected_naming_the_angle() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the origin is dimensioned and the \
+         axis DIRECTION must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("revolve: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// SIGNAL — a bare `rotate_around` angle is rejected, naming `angle`.
+///
+/// Same shape on the TRANSFORM row; the pivot is dimensioned so the count
+/// isolates the angle.
+#[test]
+fn rotate_around_bare_angle_is_rejected_naming_the_angle() {
+    let compiled =
+        compile_struct_body("    let r = rotate_around(b, 0mm, 0mm, 0mm, 0, 0, 1, 90)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the pivot is dimensioned and the \
+         axis DIRECTION must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("rotate_around: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// BOUNDARY (PRD row B2b) — `revolve_full` must gain NO angle slot.
+///
+/// The two-way test of the PRD-1/PRD-3 seam. `revolve_full`'s call arity is 7
+/// and its 2π is SYNTHESIZED at lowering, so there is no user-written position
+/// to gate. This fails loudly if the split is written as an arity-agnostic
+/// shared `"revolve" | "revolve_full"` arm that happens to be saved by
+/// `compiled_args.get(7)` returning None — because then any `revolve_full` call
+/// reaching index 7 by some other route would fire, and because the arm would
+/// be stating a layout it does not have.
+#[test]
+fn revolve_full_yields_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "`revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)` is correct code — its \
+         angle is injected by the compiler, not written by the author.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `arc` reports BOTH angles in one pass, not just the first.
+///
+/// Asserted as a pair on the same reasoning `chamfer_asymmetric` records for
+/// its `d1`/`d2` setbacks, and that task 6924 applied at the eval layer when it
+/// made `arc` report both bare angles together: stopping at the first would
+/// degrade the fix to two edit-build cycles for one authoring mistake.
+///
+/// The centre and radius are dimensioned here so the count is a statement about
+/// the ANGLE slots alone — they are Length-semantic but deliberately unslotted,
+/// which the unit test states positively.
+#[test]
+fn arc_bare_angles_are_both_rejected_in_one_pass() {
+    let compiled = compile_struct_body("    let c = arc(0mm, 0mm, 0mm, 5mm, 0, 90, 0, 0, 1)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            format!("arc: start_angle argument expects Angle, got Int; {ANGLE_HINT}"),
+            format!("arc: end_angle argument expects Angle, got Int; {ANGLE_HINT}"),
+        ],
+        "both angles must be reported together, and the axis DIRECTION must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `draft` angle is rejected at BOTH arity forms, naming
+/// `angle`.
+///
+/// Two separate compiles, so each form is attributed on its own: the angle is
+/// arg1 in the 3-arg form and arg2 in the 4-arg curated form, and a guard keyed
+/// to the wrong arity would pass one half and fail the other.
+#[test]
+fn draft_bare_angle_is_rejected_at_both_arity_forms() {
+    for body in [
+        "    let d = draft(b, 5, plane_xy(0mm))\n",
+        "    let sel = faces(b)\n    let d = draft(b, sel, 5, plane_xy(0mm))\n",
+    ] {
+        let compiled = compile_struct_body(body);
+        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            vec![format!(
+                "draft: angle argument expects Angle, got Int; {ANGLE_HINT}"
+            )],
+            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+    }
+}
+
+/// BOUNDARY ok — `draft`'s curated form does NOT slot its face SELECTOR.
+///
+/// Twin of `fillet_curated_form_does_not_reject_its_edge_selector`. The angle
+/// moves from index 1 to index 2 between the two overloads, so an
+/// arity-agnostic arm fires on correct code at one form or the other. Every
+/// angle here is dimensioned, so the ONLY thing that could fire is that false
+/// positive.
+#[test]
+fn draft_curated_form_does_not_reject_its_face_selector() {
+    let compiled = compile_struct_body(
+        "    let sel = faces(b)\n\
+         \x20   let d4 = draft(b, sel, 5deg, plane_xy(0mm))\n\
+         \x20   let d3 = draft(b, 5deg, plane_xy(0mm))\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "both draft forms are correct code — neither the face selector nor the \
+         neutral plane may be slotted; got: {:#?}",
+        errors
+    );
+}
+
+/// SIGNAL — a bare `circular_pattern` angle is rejected at BOTH forms, naming
+/// `angle`.
+///
+/// Two separate compiles, each keyed independently (PRD row B4's third
+/// clause): the angle is arg8 of the 9-arg scalar form and arg3 of the 4-arg
+/// value form. Exactly one error each — the dimensioned origin, the axis
+/// DIRECTION, the decoded `Axis` value and the Int `count` must all stay
+/// silent.
+#[test]
+fn circular_pattern_bare_angle_is_rejected_at_both_forms() {
+    for body in [
+        "    let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)\n",
+        "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n",
+    ] {
+        let compiled = compile_struct_body(body);
+        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            vec![format!(
+                "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
+            )],
+            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+    }
 }
