@@ -5761,8 +5761,14 @@ mod tests {
     //    DOF self-check cannot run at all); the residual exposure is
     //    out-of-repo models, bounded by `compile_builder::reserved_name_lint`,
     //    whose predicate is `resolve_type_name(name).is_some()` — so this arm
-    //    also WIDENED that lint onto those three declaration forms. Both halves
-    //    are pinned below, being a behaviour change rather than an accident.
+    //    also WIDENED that lint onto those three declaration forms. The
+    //    use-site half is pinned below
+    //    (`builtin_orientation_shadows_same_named_alias_and_structure`); the
+    //    declaration-site half and end-to-end annotation coverage are pinned
+    //    in `tests/harness_modules_ports/reserved_name_lint_tests.rs`
+    //    (`orientation_declaration_draws_reserved_type_name_warning`,
+    //    `orientation_annotations_compile_clean`). Both halves are pinned,
+    //    being a behaviour change rather than an accident.
     //
     // Arity: bare `Orientation` takes 3 per the `"Frame" => Type::Frame(3)`
     // precedent. Parameterised `Orientation<N>` is not DISTINGUISHED — the
@@ -5821,8 +5827,9 @@ mod tests {
     }
 
     /// (d) The use-site half of trade 2 above; the declaration-site half is
-    /// `orientation_declaration_draws_reserved_type_name_warning` below. Same
-    /// shape as `builtin_dimension_shadows_same_named_alias_with_different_dimension`
+    /// `orientation_declaration_draws_reserved_type_name_warning` in
+    /// `tests/harness_modules_ports/reserved_name_lint_tests.rs`. Same shape
+    /// as `builtin_dimension_shadows_same_named_alias_with_different_dimension`
     /// (task #5892).
     #[test]
     fn builtin_orientation_shadows_same_named_alias_and_structure() {
@@ -5880,229 +5887,6 @@ mod tests {
             Some(Type::StructureRef("Rotor".to_string())),
             "a non-builtin name must still resolve FROM the structure-name arm; \
              got: {from_struct:?}"
-        );
-    }
-
-    /// Compile `source` through the crate's OWN stdlib entry points.
-    ///
-    /// Deliberately NOT `reify_test_support::compile_source_with_stdlib`: the
-    /// crate's `[dev-dependencies]` self-pull puts two `reify_compiler`
-    /// instances in the unit-test graph and that helper returns the *external*
-    /// instance's `CompiledModule` (see the same note on
-    /// `relation_signatures.rs`'s `compile_module`).
-    fn compile_orientation_probe(source: &str) -> crate::CompiledModule {
-        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
-        crate::compile_with_stdlib(&parsed)
-    }
-
-    /// The resolved `cell_type` of `param o` in the probe's `structure S`.
-    ///
-    /// Panics with the available cells listed rather than a bare `unwrap`, so a
-    /// compile that silently dropped the declaration is attributable.
-    fn probe_param_o_type(module: &crate::CompiledModule) -> &Type {
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == "S")
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected template `S` in the probe module; templates: {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        template
-            .value_cells
-            .iter()
-            .find(|vc| vc.kind == crate::types::ValueCellKind::Param && vc.id.member == "o")
-            .map(|vc| &vc.cell_type)
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected `param o` in template `S`; value_cells: {:?}",
-                    template
-                        .value_cells
-                        .iter()
-                        .map(|vc| &vc.id)
-                        .collect::<Vec<_>>()
-                )
-            })
-    }
-
-    /// (f) The declaration-site half of trade 2 above: each row asserts BOTH
-    /// that the declaration draws exactly one `ReservedTypeName` warning AND
-    /// that the annotation still resolves to the builtin — the lint is
-    /// advisory, so it must not let the user declaration win in type position.
-    ///
-    /// HOME. This test and `orientation_annotations_compile_clean` below are
-    /// full-prelude COMPILE tests in a unit-test module, and their two helpers
-    /// re-derive `reserved_name_lint_tests.rs`'s `find_template` /
-    /// `find_param_cell`. Both belong in that file beside
-    /// `structure_named_frame_emits_reserved_type_name_warning` and
-    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`,
-    /// which pin these same contracts for `Frame` / `Direction`; they are here
-    /// only because that file was outside task 6384's module locks. The
-    /// fold-over, including deleting both helpers, is task #7196.
-    #[test]
-    fn orientation_declaration_draws_reserved_type_name_warning() {
-        for (label, source) in [
-            (
-                "structure def Orientation",
-                "structure def Orientation {}\n\
-                 structure S {\n    param o : Orientation = orient_identity()\n}",
-            ),
-            (
-                "type Orientation = Bool",
-                "pub type Orientation = Bool\n\
-                 structure S {\n    param o : Orientation = orient_identity()\n}",
-            ),
-            // The enum row is NOT redundant with the two above: an enum name
-            // reaches type position through `resolve_enum_type`, a chain
-            // separate from the alias-registry / structure-name arms, so its
-            // shadowing is only assertable here (the arm comment claims all
-            // three declaration forms; this is what stops the enum third of
-            // that claim from being prose alone).
-            (
-                "enum Orientation { A, B }",
-                "enum Orientation { A, B }\n\
-                 structure S {\n    param o : Orientation = orient_identity()\n}",
-            ),
-            (
-                "structure def Orientation3 (Display spelling)",
-                "structure def Orientation3 {}\n\
-                 structure S {\n    param o : Orientation3 = orient_identity()\n}",
-            ),
-        ] {
-            let module = compile_orientation_probe(source);
-            let reserved: Vec<&Diagnostic> = module
-                .diagnostics
-                .iter()
-                .filter(|d| {
-                    d.code == Some(reify_core::DiagnosticCode::ReservedTypeName)
-                        && d.severity == Severity::Warning
-                })
-                .collect();
-            assert_eq!(
-                reserved.len(),
-                1,
-                "{label}: declaring a type named after the new builtin must draw \
-                 exactly one W_RESERVED_TYPE_NAME warning (the predicate is \
-                 `resolve_type_name(name).is_some()`).\nsource:\n{source}\n\
-                 reserved: {reserved:#?}"
-            );
-
-            // The lint is ADVISORY: the builtin must still win in type position.
-            let errors: Vec<&Diagnostic> = module
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .collect();
-            assert!(
-                errors.is_empty(),
-                "{label}: a shadowing declaration must stay Warning-only (programs \
-                 keep compiling); got errors: {errors:#?}"
-            );
-            assert_eq!(
-                probe_param_o_type(&module),
-                &Type::Orientation(3),
-                "{label}: the annotation must still resolve to the BUILTIN \
-                 Type::Orientation(3) despite the same-named user declaration"
-            );
-        }
-
-        // NON-VACUITY control: a structure whose name has no builtin arm must
-        // draw NO ReservedTypeName warning, so the assertions above cannot pass
-        // by the lint firing indiscriminately.
-        let control = compile_orientation_probe("structure def Rotor {}");
-        let control_reserved: Vec<&Diagnostic> = control
-            .diagnostics
-            .iter()
-            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ReservedTypeName))
-            .collect();
-        assert!(
-            control_reserved.is_empty(),
-            "control: `structure def Rotor` binds no builtin name and must draw NO \
-             ReservedTypeName warning; got: {control_reserved:#?}"
-        );
-    }
-
-    /// (e) Annotation-surface coverage end to end through a real compile:
-    /// (a)–(d) call the resolver directly and the integration companions reach
-    /// it only through a joint's `with` DOF record, so a regression confined to
-    /// ordinary annotation positions would otherwise go unnoticed.
-    ///
-    /// The resolved-type oracle is what makes the alias and `Orientation<3>`
-    /// rows mean anything: zero-errors alone stays green if either resolves to
-    /// some wrong-but-compatible type. (`Undef` / unused-binding warnings are
-    /// irrelevant and not filtered on.)
-    #[test]
-    fn orientation_annotations_compile_clean() {
-        for (label, source) in [
-            (
-                "bare param annotation",
-                "structure S {\n    param o : Orientation = orient_identity()\n}",
-            ),
-            (
-                "Display-spelling param annotation",
-                "structure S {\n    param o : Orientation3 = orient_identity()\n}",
-            ),
-            (
-                "param annotation via a type alias bound to the name",
-                "pub type Rot = Orientation\n\
-                 structure S {\n    param o : Rot = orient_identity()\n}",
-            ),
-            // The documented spelling: docs/reify-language-spec.md and
-            // docs/reify-stdlib-reference.md both write `Orientation<3>` /
-            // `Orientation<N>`, so a user copying either lands on the
-            // argument-discarding path (Arity, header above) rather than on a
-            // diagnostic. On record here, not left emergent.
-            (
-                "documented parameterised spelling — the arg is discarded",
-                "structure S {\n    param o : Orientation<3> = orient_identity()\n}",
-            ),
-            (
-                "any arity discards identically — no arity check exists",
-                "structure S {\n    param o : Orientation<7> = orient_identity()\n}",
-            ),
-        ] {
-            let module = compile_orientation_probe(source);
-            let errors: Vec<&Diagnostic> = module
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .collect();
-            assert!(
-                errors.is_empty(),
-                "{label}: `Orientation` must be usable in an ordinary annotation \
-                 position and compile with zero Error-severity diagnostics.\n\
-                 source:\n{source}\nerrors: {errors:#?}"
-            );
-            assert_eq!(
-                probe_param_o_type(&module),
-                &Type::Orientation(3),
-                "{label}: the annotation must RESOLVE to Type::Orientation(3), not \
-                 merely fail to error — for the alias row this is the only \
-                 assertion that exercises the alias→builtin hop at all.\n\
-                 source:\n{source}"
-            );
-        }
-
-        // NON-VACUITY control: a zero-errors oracle proves something only where
-        // an UNRESOLVABLE name in the same position is loud. It is, in `param`
-        // position — but not in the joint `with` DOF position (fact 1 above).
-        let control = compile_orientation_probe(
-            "structure S {\n    param o : Blorp = orient_identity()\n}",
-        );
-        let control_errors: Vec<&Diagnostic> = control
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            control_errors
-                .iter()
-                .any(|d| d.message.contains("unresolved type: Blorp")),
-            "control: an unresolvable param type MUST draw an Error-severity \
-             `unresolved type: …` diagnostic, or the zero-errors assertions above \
-             prove nothing; got: {control_errors:#?}"
         );
     }
 
