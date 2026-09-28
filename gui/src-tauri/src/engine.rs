@@ -2791,8 +2791,11 @@ impl EngineSession {
     /// opposite responses from the caller. The categories, in the order they
     /// are checked:
     ///
-    /// 1. **Malformed cell id** — no `.` at all, so it never denoted a cell.
-    ///    Propagated verbatim from `parse_cell_id`.
+    /// 1. **Malformed OR ambiguous cell id** — it never denoted exactly one
+    ///    cell: either no `.` at all, or a member half that still contains a
+    ///    `.` and so admits more than one reading (an instance path, a port
+    ///    composite member, a dotted key). Propagated verbatim from
+    ///    `parse_cell_id`.
     /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
     ///    in `compiled.templates[].value_cells`. Checked through the SHARED
     ///    [`Self::require_known_cell`] rather than a second copy of the
@@ -2992,7 +2995,9 @@ impl EngineSession {
     /// observed demand therefore cannot perturb `EvalResult` / `last_eval_set`
     /// (locked by the engine test
     /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
-    /// Unparseable entries are skipped with a warning, never a panic. See
+    /// Unparseable entries are skipped, never a panic: realization and
+    /// constraint keys warn, while unaddressable cell ids — a standing
+    /// population, not an event (see the loop) — log at debug. See
     /// `docs/prds/v0_6/selective-demand.md` §G6.
     pub fn sync_observed_demand(
         &mut self,
@@ -3014,13 +3019,18 @@ impl EngineSession {
                 ),
             }
         }
+        // An unaddressable displayed cell is a standing state, not an anomaly:
+        // `build_values` displays every template cell verbatim, including auto
+        // sub-arg cells minted under a dotted entity (`"E.bolt.length"`), and
+        // syncs fire on every state change. So it is skipped at debug — never
+        // mis-split into a bogus demand root — until #7717 makes it addressable.
         for cell in displayed_cells {
             match parse_cell_id(cell) {
                 Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
-                Err(e) => warn!(
+                Err(e) => tracing::debug!(
                     cell = %cell,
                     error = %e,
-                    "sync_observed_demand: skipping unparseable cell"
+                    "sync_observed_demand: skipping unaddressable cell"
                 ),
             }
         }
@@ -4915,21 +4925,19 @@ impl EngineSession {
     /// caller's cue to emit a structured error rather than to guess (PRD §6.1,
     /// §7 B7). It covers every non-resolving case:
     ///
-    /// * the cell id is malformed (no `.`),
+    /// * the cell id does not name exactly one `(entity, member)` pair — no
+    ///   `.` at all, or a second `.` as in an INSTANCE path
+    ///   (`Parent.childinst.member`),
     /// * no module is loaded, so there is no parse to read,
     /// * the entity is neither a `structure def` nor an `occurrence def` in the
     ///   loaded module,
     /// * the member is not a param, has no default, or is declared more than
     ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
-    /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
     /// * the member names a param inside a PORT body.
     ///
-    /// The instance-path case is worth stating outright: `parse_cell_id` splits
-    /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
-    /// `"childinst.height"`, which matches no `ParamDecl.name` because a member
-    /// name never contains a `.`. That `None` is correct rather than a gap — a
-    /// shared structure's default literal is not one instance's value, and
-    /// rewriting it would change every instance.
+    /// The instance-path case is worth stating outright: its `None` is correct
+    /// rather than a gap — a shared structure's default literal is not one
+    /// instance's value, and rewriting it would change every instance.
     ///
     /// The port-body case is likewise correct rather than a gap. The compiler
     /// registers a port member under the COMPOSITE name
@@ -7529,16 +7537,23 @@ impl EngineSession {
     }
 }
 
-/// Parse a "Entity.member" string into a ValueCellId.
+/// Parse a `"Entity.member"` string into a [`ValueCellId`], rendering any
+/// refusal in this boundary's vocabulary.
+///
+/// The GRAMMAR is not defined here — it is owned by `ValueCellId`'s `FromStr`
+/// in reify-core, which is sited next to the `Display` it inverts so the two
+/// cannot drift. This function only supplies the wording, and every gui entry
+/// point funnels through it, so the reason a cell id is refused is decided in
+/// exactly one place for the whole GUI.
+///
+/// Note that the accepted language is NARROWER than "anything Display can
+/// emit": Display is not injective, so an id whose member half still contains a
+/// `'.'` (an instance path, a port composite member, a dotted key) names no
+/// single cell and is refused as ambiguous. See the `FromStr` docs for why no
+/// positional split could do better.
 fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
-    let parts: Vec<&str> = s.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Err(format!(
-            "Invalid cell ID '{}': expected 'Entity.member' format",
-            s
-        ));
-    }
-    Ok(ValueCellId::new(parts[0], parts[1]))
+    s.parse::<ValueCellId>()
+        .map_err(|e| format!("Invalid cell ID '{s}': {e}"))
 }
 
 /// Parse a realization mesh key of the form `Entity#realization[N]` — the
