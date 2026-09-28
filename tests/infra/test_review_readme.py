@@ -190,6 +190,23 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
     def files_in_commit(self, rev):
         return set(self.git("show", "--name-only", "--format=", rev).split())
 
+    def stage_human_change_to_unrelated(self):
+        """A human's staged WIP on a non-target file; returns its content."""
+        content = "unrelated line\nhuman staged work\n"
+        (self.main / UNRELATED).write_text(content)
+        self.git("add", "--", UNRELATED)
+        return content
+
+    def assert_still_staged(self, path, content):
+        self.assertIn(path, self.git("diff", "--cached", "--name-only").split())
+        self.assertEqual(self.git("show", f":{path}") + "\n", content)
+
+    def hook_saw_staged(self):
+        """Paths the pre-commit hook was shown, or None if it never ran."""
+        if not self.hook_log.exists():
+            return None
+        return set(self.hook_log.read_text().split())
+
     def stub_invoked_in(self):
         """The directory the stub claude ran in, or None if it never ran."""
         if not self.stub_marker.exists():
@@ -250,6 +267,23 @@ class IdentityTest(ReviewReadmeFixture):
                           self.MACHINE_NAME, self.MACHINE_EMAIL), _diag(result))
         for email in (ae, ce):
             self.assertNotIn(email, {self.AMBIENT_EMAIL, HUMAN_EMAIL})
+
+
+class LandingPathTest(ReviewReadmeFixture):
+    def test_never_pushes_to_origin(self):
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_APPEND="REVIEWED-LINE")
+        self.assertEqual(result.returncode, 0, _diag(result))
+        self.assertEqual(self.git("rev-list", "--count", f"{before}..HEAD"), "1", _diag(result))
+        self.assertEqual(self.origin_main(), self.origin_main_at_setup, _diag(result))
+
+    def test_commit_is_hook_gated_and_scoped_to_the_targets(self):
+        human_content = self.stage_human_change_to_unrelated()
+        result = self.run_script(REVIEW_README_STUB_APPEND="REVIEWED-LINE")
+        self.assertEqual(result.returncode, 0, _diag(result))
+        self.assertEqual(self.hook_saw_staged(), {README}, _diag(result))
+        self.assertEqual(self.files_in_commit("HEAD"), {README}, _diag(result))
+        self.assert_still_staged(UNRELATED, human_content)
 
 
 if __name__ == "__main__":
