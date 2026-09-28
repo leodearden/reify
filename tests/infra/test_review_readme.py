@@ -232,5 +232,25 @@ class CheckoutSeamTest(ReviewReadmeFixture):
         self.assertEqual(self.head(), before, _diag(result))
 
 
+class IdentityTest(ReviewReadmeFixture):
+    MACHINE_NAME = "review-readme"
+    MACHINE_EMAIL = "review-readme@automation.reify.invalid"
+    AMBIENT_EMAIL = "leo@leodearden.org"
+
+    def test_the_commit_carries_the_machine_identity_not_a_human_one(self):
+        result = self.run_script(
+            REVIEW_README_STUB_APPEND="REVIEWED-LINE",
+            GIT_AUTHOR_NAME="Leo Dawn", GIT_AUTHOR_EMAIL=self.AMBIENT_EMAIL,
+            GIT_COMMITTER_NAME="Leo Dawn", GIT_COMMITTER_EMAIL=self.AMBIENT_EMAIL,
+        )
+        self.assertEqual(result.returncode, 0, _diag(result))
+        an, ae, cn, ce = self.git("log", "-1", "--format=%an|%ae|%cn|%ce").split("|")
+        self.assertEqual((an, ae, cn, ce),
+                         (self.MACHINE_NAME, self.MACHINE_EMAIL,
+                          self.MACHINE_NAME, self.MACHINE_EMAIL), _diag(result))
+        for email in (ae, ce):
+            self.assertNotIn(email, {self.AMBIENT_EMAIL, HUMAN_EMAIL})
+
+
 if __name__ == "__main__":
     unittest.main()
