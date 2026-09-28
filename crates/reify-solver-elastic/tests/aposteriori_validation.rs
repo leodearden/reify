@@ -960,9 +960,11 @@ fn seed_volume_from_surface(
 /// A uniform [`BackgroundSizeField`] of `size` over `surface`'s axis-aligned
 /// bounding box, as the 6-tet Kuhn decomposition of that box.
 ///
-/// The box is what guarantees the field is DEFINED everywhere gmsh meshes —
-/// a background field only sizes the region its sizing mesh covers. A uniform
-/// field needs no more resolution than six tets.
+/// The box covers everything gmsh meshes, so every size comes from the field
+/// itself rather than from gmsh extending the sizing mesh by its nearest node,
+/// which is what it does outside one (pinned by reify-kernel-gmsh's
+/// `the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`).
+/// A uniform field needs no more resolution than six tets.
 fn uniform_field_over_aabb(surface: &Mesh, size: f64) -> BackgroundSizeField {
     let mut lo = [f32::INFINITY; 3];
     let mut hi = [f32::NEG_INFINITY; 3];

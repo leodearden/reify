@@ -306,11 +306,10 @@ fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
 ///
 /// Deliberately NOT a unit cube. Gmsh's mesher is scale-invariant here, so what
 /// matters is `SCALE / COARSE` — how many coarse-hint-sized elements span the
-/// domain, i.e. how much interior there is for the mesher to coarsen into.
-/// Measured: at `SCALE/COARSE = 2` (the old unit-cube fixture) the boundary
-/// triangulation constrains every interior tet and the capped and uncapped runs
-/// are indistinguishable to any assertion this test could make; at 4 they
-/// separate cleanly. See the "measured" section on the test below.
+/// domain, i.e. how much interior there is for the mesher to coarsen into, which
+/// is what lets the non-uniform test's no-coarsening assertion fail at all. At
+/// `SCALE/COARSE = 2` (the old unit-cube fixture) the boundary triangulation
+/// constrained every interior tet.
 const SCALE: f64 = 4.0;
 /// Hint on the marked half (`x < SPLIT_X`).
 const FINE: f64 = 0.25;
@@ -319,20 +318,15 @@ const FINE: f64 = 0.25;
 const COARSE: f64 = 1.0;
 /// The marked/unmarked boundary — the box's mid-plane.
 const SPLIT_X: f64 = SCALE / 2.0;
-/// How far a realized element may exceed the cap before the test calls it
-/// uncapped.
+/// How far a realized unmarked element may exceed `COARSE` before the test
+/// calls the unmarked region coarsened.
 ///
-/// `Mesh.MeshSizeMax` bounds gmsh's *size field*, not the edge lengths it
-/// actually emits; Delaunay insertion overshoots the target where the interior
-/// is under-constrained, so some slack is unavoidable and a threshold at
-/// exactly `COARSE` would be a false-failure generator. Re-measured under the
-/// background size field (task #7447): the largest unmarked element is
-/// `1.6230 * COARSE`, leaving `2.0` with ~19% margin.
-///
-/// The second half of that basis is GONE, and deliberately not papered over:
-/// the capped and uncapped readings are now identical (see the measured note
-/// on the test below), so this factor no longer straddles a separation. It is
-/// a plain overshoot allowance now.
+/// A size field sets the size gmsh *targets*, not the edge lengths it emits;
+/// Delaunay insertion overshoots the target where the interior is
+/// under-constrained, so some slack is unavoidable and a threshold at exactly
+/// `COARSE` would be a false-failure generator. Measured under the background
+/// size field (task #7447): the largest unmarked element is `1.6230 * COARSE`,
+/// leaving `2.0` with ~19% margin.
 const UNMARKED_MAX_SIZE_SLACK: f64 = 2.0;
 
 /// A NON-uniform size field refines only the marked region and leaves the
@@ -350,43 +344,28 @@ const UNMARKED_MAX_SIZE_SLACK: f64 = 2.0;
 /// 3. the marked half's mean element size is strictly smaller than the
 ///    unmarked half's — localization, not a uniformly-finer mesh.
 ///
-/// # Measured: this assertion no longer pins `Mesh.MeshSizeMax`
+/// # Assertion 2 is about the field, not about `Mesh.MeshSizeMax`
 ///
-/// It used to. Under the 0D-corner-anchor path this fixture separated capped
-/// from uncapped by 1.9x on the max-edge column (`1.66` vs `3.12` at N=4,
-/// widening to `1.89` vs `4.82` at N=6), and assertion 2 was the thing that
-/// failed if the cap were reverted to gmsh's default.
-///
-/// Re-measured under the background size field (task #7447), capped vs
-/// `Mesh.MeshSizeMax` forced to `1.0e22`, on a forced rebuild of both legs:
+/// It used to guard the cap. Under the 0D-corner-anchor path this fixture
+/// separated capped from uncapped by 1.9x on the max-edge column (`1.66` vs
+/// `3.12` at N=4), and assertion 2 failed if the cap were reverted to gmsh's
+/// default. Re-measured under the background size field (task #7447), capped vs
+/// `Mesh.MeshSizeMax` forced to `1.0e22`:
 ///
 /// | leg      | mean edge       | max edge  | counts       |
 /// |----------|-----------------|-----------|--------------|
 /// | capped   | 0.3711 / 1.1307 | 1.6230    | 5160 / 231   |
 /// | uncapped | 0.3711 / 1.1307 | 1.6230    | 5160 / 231   |
 ///
-/// Bit-identical. The cap cannot bind any more, and not merely on this
-/// fixture: `Mesh.MeshSizeMax` is `size_field.max_size()`, and a field's values
-/// are everywhere `<=` its own maximum, so the cap is redundant WHEREVER the
-/// background field is defined. It can only reach the region gmsh extrapolates
-/// outside the sizing mesh, which a volume-spanning sizing mesh does not have.
-///
-/// Two consequences, stated rather than papered over:
-///
-/// * Assertion 2 still holds and is still worth asserting — the unmarked half
-///   tracking its requested size is the property a reader cares about — but it
-///   is NO LONGER a guard on the cap. Deleting the `Mesh.MeshSizeMax` write
-///   would not fail this test. Task #6211's cap is, on this path, unguarded.
-/// * The cap's old cost is gone with its old effect. It used to add unmarked
-///   tets (61 -> 85 at N=2, 105 -> 225 at N=4, 150 -> 584 at N=6); it now adds
-///   none, because the field already asks for those elements directly.
-///
-/// The cap is kept as a cheap backstop for the extrapolation region above, not
-/// because this fixture demonstrates it doing anything.
+/// Bit-identical: the field itself now asks for the unmarked elements, so the
+/// cap has nothing left to bound here. Why it cannot bind anywhere — outside
+/// the sizing mesh included — is stated once, at the `Mesh.MeshSizeMax` write
+/// in `refine_volume.rs`; the region outside the sizing mesh is pinned by
+/// [`the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`].
 ///
 /// Run under a poisoned clamp for the same reason as the test above.
 #[test]
-fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
+fn non_uniform_size_field_refines_marked_region_and_does_not_coarsen_the_rest() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
     let cube = scaled_cube_mesh(SCALE as f32);
@@ -430,9 +409,9 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
         "the unmarked half's largest element {} must not exceed {max_allowed} \
          ({UNMARKED_MAX_SIZE_SLACK}x the coarsest requested hint {COARSE}): the unmarked \
          region must track the size the field gave it rather than coarsening away from it. \
-         Measured {} under the background size field, identical capped and uncapped — see \
-         this test's \"no longer pins Mesh.MeshSizeMax\" note before reading a failure here \
-         as a cap regression. Mean edge lengths {mean_edge:?}, counts {counts:?}",
+         Measured {} under the background size field, identical capped and uncapped — a \
+         failure here is a sizing regression, not a cap regression. Mean edge lengths \
+         {mean_edge:?}, counts {counts:?}",
         max_edge[1],
         1.6230 * COARSE,
     );
@@ -443,6 +422,105 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
          uniformly rather than locally",
         mean_edge[0],
         mean_edge[1],
+    );
+}
+
+/// Edge length of the sub-box `[0, SIZING_SPAN]^3` the partial sizing mesh
+/// covers: one eighth of the `[0, SCALE]^3` box it sizes.
+const SIZING_SPAN: f64 = SCALE / 2.0;
+/// Lower bound, in centroid `x`, of the band the partial-sizing-mesh test
+/// reads. Every tet there lies at least `SCALE / 4` beyond the sizing mesh.
+const OUTSIDE_BAND_MIN_X: f64 = 3.0 * SCALE / 4.0;
+/// How far the outside band's mean edge may stray from the nearest-hint
+/// reference, as a fraction of it: the ±25% the solver-elastic localization
+/// test uses for its far band.
+const NEAREST_HINT_TOLERANCE: f64 = 0.25;
+
+/// Outside the region its sizing mesh covers, the background field takes the
+/// NEAREST node's hint. It does not fall back to the coarsest hint, which is
+/// the value of the `Mesh.MeshSizeMax` cap.
+///
+/// The sizing mesh covers only `[0, SIZING_SPAN]^3`, and its hints are laid out
+/// so the nearest one and the coarsest one disagree: `COARSE` on
+/// `x < SIZING_SPAN / 2`, `FINE` on the rest, so its face nearest the band read
+/// here carries `FINE` while `max_size()`, and so the cap, is `COARSE`. The band
+/// `x >= OUTSIDE_BAND_MIN_X` lies wholly outside the sizing mesh.
+///
+/// Its mean tet edge is compared with the same band remeshed under two
+/// whole-box uniform references, `FINE` and `COARSE`. It must sit within
+/// `NEAREST_HINT_TOLERANCE` of the `FINE` one, and the test first asserts that
+/// the `COARSE` one falls outside that window, so this outcome cannot be
+/// confused with the cap's. Measured (task #7447, libgmsh 4.15.2):
+///
+/// | remesh                                  | outside band mean edge (tets) |
+/// |-----------------------------------------|-------------------------------|
+/// | partial sizing mesh                     | 0.3380 (4440)                 |
+/// | uniform `FINE` reference                | 0.3377 (4437)                 |
+/// | uniform `COARSE` reference              | 1.1247 (111)                  |
+/// | partial, field's `UseClosest` forced 0  | 1.1471 — this test fails      |
+///
+/// The partial reading is identical with `Mesh.MeshSizeMax` forced to
+/// `1.0e22`: the cap does not bind here either. That is gmsh's `PostView`
+/// field extending its view by the nearest node (its `UseClosest` option,
+/// which `refine_volume_with_size_field` leaves at gmsh's default), and it is
+/// half of why the cap can never bind. The last row is the mutation check:
+/// with the extension off, the band falls to the cap and reads next to the
+/// `COARSE` reference. The whole argument is stated once, at the
+/// `Mesh.MeshSizeMax` write in `refine_volume.rs`; this test is what goes red
+/// if a gmsh upgrade stops extending the view that way.
+#[test]
+fn the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let cube = scaled_cube_mesh(SCALE as f32);
+    let opts = MeshingOptions {
+        mesh_size: Some(COARSE),
+        deterministic: true,
+        ..Default::default()
+    };
+    let outside_band_mean_edge = |size_field: &BackgroundSizeField, what: &str| -> f64 {
+        let vm = refine_volume_with_size_field(&cube, size_field, &opts, ElementOrderTag::P1)
+            .unwrap_or_else(|e| {
+                panic!("{what}: refine_volume_with_size_field must succeed: {e:?}")
+            });
+        let stats = split_by_centroid_x(&vm, OUTSIDE_BAND_MIN_X);
+        assert!(
+            stats.counts[1] > 0,
+            "{what}: the band x >= {OUTSIDE_BAND_MIN_X} must contain tets, counts {:?}",
+            stats.counts,
+        );
+        stats.mean_edge[1]
+    };
+
+    let partial = box_size_field(SIZING_SPAN, |x, _, _| {
+        if x < SIZING_SPAN / 2.0 { COARSE } else { FINE }
+    });
+    assert_eq!(
+        partial.max_size(),
+        COARSE,
+        "fixture: the coarsest hint, and so the cap, must be COARSE, away from the band",
+    );
+
+    let fine_reference = outside_band_mean_edge(&box_size_field(SCALE, |_, _, _| FINE), "FINE");
+    let coarse_reference =
+        outside_band_mean_edge(&box_size_field(SCALE, |_, _, _| COARSE), "COARSE");
+    let window = (1.0 - NEAREST_HINT_TOLERANCE) * fine_reference
+        ..=(1.0 + NEAREST_HINT_TOLERANCE) * fine_reference;
+    assert!(
+        !window.contains(&coarse_reference),
+        "fixture: the uniform COARSE reference ({coarse_reference}) must fall outside the \
+         nearest-hint window {window:?}, or this test cannot tell the nearest hint from the cap",
+    );
+
+    let observed = outside_band_mean_edge(&partial, "partial sizing mesh");
+    assert!(
+        window.contains(&observed),
+        "outside the sizing mesh the remesh must follow the NEAREST hint ({FINE}): band \
+         x >= {OUTSIDE_BAND_MIN_X} mean edge {observed}, window {window:?} around the uniform \
+         {FINE} reference {fine_reference}; the uniform {COARSE} reference reads \
+         {coarse_reference}. A reading near that means gmsh stopped extending the view by its \
+         nearest node, and the cap now decides these sizes: revisit the Mesh.MeshSizeMax note \
+         in refine_volume.rs (measured 0.3380 against a 0.3377 reference, task #7447)",
     );
 }
 

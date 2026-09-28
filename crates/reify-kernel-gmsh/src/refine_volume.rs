@@ -37,8 +37,8 @@
 //! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
 //! can rot into a comment: inbound is
 //! `uniform_size_field_refines_monotonically_under_leaked_global_clamp`
-//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_caps_
-//! the_rest`; outbound is
+//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_does_
+//! not_coarsen_the_rest`; outbound is
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
@@ -356,12 +356,31 @@ pub fn refine_volume_with_size_field(
     // going finer than the finest hint anywhere in the domain — a new, untested
     // constraint on the localized-refinement path for no measured benefit.
     //
-    // Max = the COARSEST requested hint, because with
-    // `Mesh.MeshSizeExtendFromBoundary = 0` (set above) the 3D mesher is
-    // otherwise free to grow interior elements arbitrarily coarser than
-    // anything the caller asked for. Deliberately not `options.mesh_size`:
-    // that is the baseline target the per-vertex field exists to supersede, and
-    // feeding it back in would re-create the very clamp this defends against.
+    // Max = the COARSEST requested hint. It was written for the 0D corner-anchor
+    // path, where nothing sized the interior and, with
+    // `Mesh.MeshSizeExtendFromBoundary = 0`, the 3D mesher was free to grow
+    // interior elements arbitrarily coarser than anything the caller asked for.
+    // Under the background field the cap CANNOT BIND, measured (task #7447,
+    // libgmsh 4.15.2). Inside the sizing mesh the field interpolates vertex
+    // sizes that are all `<= max_size()`. Outside it, gmsh's `PostView` field
+    // takes the NEAREST node's size (its `UseClosest` option, left at gmsh's
+    // default) instead of falling back to an unsized value.
+    // `tests/refine_volume_tests.rs::the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`
+    // pins the outside half. Forcing the cap to gmsh's default leaves both of
+    // that file's non-uniform fixtures bit-identical, and every test in
+    // reify-kernel-gmsh and in reify-solver-elastic's refinement suites green.
+    //
+    // It is kept anyway because removing it is still a behaviour change: on a
+    // UNIFORM field it moves the mesh by a few tets (17484 -> 17412 for 0.25 on
+    // `[0,4]^3`). Every uniform-field seed mesh in the solver-elastic
+    // calibrations was produced with it, and their recorded figures move with
+    // it (the L-shaped gate's localization ratio reads 5.33 capped, 5.24
+    // uncapped). Deleting the write means re-measuring those figures, which is
+    // a change of its own, not a side effect of this one.
+    //
+    // Deliberately not `options.mesh_size`: that is the baseline target the
+    // per-vertex field exists to supersede, and feeding it back in would
+    // re-create the very clamp this defends against.
     //
     // No degenerate-input fallback is needed: `BackgroundSizeField` validates
     // every emitted size at construction, so `max_size()` is finite and
