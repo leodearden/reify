@@ -1443,12 +1443,11 @@ pub fn solve_elastic_static_trampoline(
                             // of elements is the observable signature of
                             // mark-driven local refinement — something the
                             // uniform fallback structurally cannot report,
-                            // since it never remeshes. Also records the two
-                            // costs inherited from the reify-solver-elastic
-                            // primitive so a caller can see them: each refine
-                            // is a FULL remesh from surface (not an
-                            // incremental subdivision), and the size field's
-                            // surface projection is O(n_surf x n_vol).
+                            // since it never remeshes. Also records the cost
+                            // inherited from the reify-solver-elastic primitive
+                            // so a caller can see it: each refine is a FULL
+                            // remesh from surface, not an incremental
+                            // subdivision.
                             //
                             // Phrased on `refine_count`, NOT on lane selection
                             // (reviewer_comprehensive amendment):
