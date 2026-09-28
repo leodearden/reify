@@ -1280,8 +1280,8 @@ mod tests {
     /// `local_index: 0`, and no label or modification history.
     ///
     /// Shared by the provenance-walk tests in this module.  A companion copy
-    /// lives in `provenance.rs` tests; full consolidation into `test_fixtures`
-    /// is deferred because `test_fixtures.rs` is outside this task's scope lock.
+    /// lives in `provenance.rs` tests; the two have not been consolidated
+    /// into `test_fixtures` yet.
     #[cfg(feature = "test-fixtures")]
     fn make_attr(name: &str) -> reify_ir::TopologyAttribute {
         reify_ir::TopologyAttribute {
