@@ -247,7 +247,7 @@ tasks:
       reason: the hazard is a property of ctor lowering owned by PRD 4; PRD 5's mitigation
         is the completeness assertion, checked by the leaf's own signal.
   - name: two-tests-assert-on-literal-source-text
-    binding: grep:crates/reify-compiler/tests/multi_load_bracket_example_tests.rs:217/:222
+    binding: grep:crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs:217/:222
       — `src.contains("PointLoad(")`. A textual codemod that reflows those call sites
       breaks them; named in the task text so the implementer checks them explicitly.
     verdict: PASS
@@ -255,7 +255,7 @@ tasks:
       kind: grep
       pattern: PointLoad\(
       paths:
-      - crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
+      - crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs
       expect: present
 - label: γ3
   task_id: 5802
