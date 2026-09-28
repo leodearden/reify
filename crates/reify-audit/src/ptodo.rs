@@ -1057,24 +1057,43 @@ pub fn is_swept_ext(path: &str) -> bool {
 // §8.3 per-file classification
 // -----------------------------------------------------------------------
 
-/// The four structural-lane finding kinds α emits (all Medium severity). The
-/// §8.3 `kind` token is carried as a stable summary prefix under the single
-/// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A TODO-family marker with no task citation at all.
-    Untracked,
-    /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
-    MalformedCite,
-    /// Prose claiming the work is tracked elsewhere, with no canonical cite.
-    PhantomTracking,
-    /// A bare `#[ignore]` attribute (no reason string).
-    BareIgnore,
+/// Declares a fieldless enum together with its `ALL` list from ONE variant
+/// list, so a variant cannot exist without being in `ALL`.
+macro_rules! enum_with_all {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident { $($(#[$variant_meta:meta])* $variant:ident,)+ }
+    ) => {
+        $(#[$enum_meta])*
+        enum $name { $($(#[$variant_meta])* $variant,)+ }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            const ALL: &'static [$name] = &[$($name::$variant),+];
+        }
+    };
+}
+
+enum_with_all! {
+    /// The structural-lane finding kinds α emits (severity per
+    /// [`Kind::severity`]). The §8.3 `kind` token is carried as a stable summary prefix under the single
+    /// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// A TODO-family marker with no task citation at all.
+        Untracked,
+        /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
+        MalformedCite,
+        /// Prose claiming the work is tracked elsewhere, with no canonical cite.
+        PhantomTracking,
+        /// A bare `#[ignore]` attribute (no reason string).
+        BareIgnore,
+    }
 }
 
 impl Kind {
     /// The §8.3 kind token, used as the finding summary prefix.
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Kind::Untracked => "untracked",
             Kind::MalformedCite => "malformed-cite",
@@ -1098,6 +1117,19 @@ impl Kind {
         }
     }
 }
+
+/// The §8.3 kind tokens the structural lane emits — the only kinds a §6.6
+/// baseline may carry (PRD §19). One token per [`Kind`], derived from
+/// `Kind::ALL`, so a new variant joins it without a second edit.
+pub const STRUCTURAL_KINDS: [&str; Kind::ALL.len()] = {
+    let mut tokens = [""; Kind::ALL.len()];
+    let mut i = 0;
+    while i < tokens.len() {
+        tokens[i] = Kind::ALL[i].as_str();
+        i += 1;
+    }
+    tokens
+};
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
 /// is either *structurally* offending (no canonical cite → α's domain) or
@@ -1284,8 +1316,8 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // `Untracked`; δ-B has only the comment, so the cite IS the anchor
             // — which is what stops the lane firing on every prose comment
             // containing "pending". It emits only `Cited` and reaches ONLY the
-            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
-            // and the §8.4 severity map untouched.
+            // unchanged β liveness lane, leaving §8.3's taxonomy,
+            // `STRUCTURAL_KINDS` and the §8.4 severity map untouched.
             //
             // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
             // `// G-allow:` register to its owner lane, which has its own
@@ -1816,14 +1848,14 @@ fn fold_whitespace(s: &str) -> String {
 /// hard gate in both the engine-seam primitive and the repo-wide lane; task
 /// η #4559 analogue) and `g-allow-unknown-id` (Medium).
 ///
-/// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
-/// G-allow advisory lane from the source-marker baseline, mirroring the ζ
-/// inverse-lane exclusion: G-allow findings are a distinct
-/// orphan-suppression-provenance taxonomy (path-keyed, `.rs` files) whose kind
-/// strings (`g-allow-*`) are outside `baseline_is_well_formed`'s `VALID_KINDS`
-/// set — including them in the baseline would make a regen fail the kind check.
-// G-allow: pub for external callers (tests/ptodo_baseline.rs, src/bin/ptodo-baseline-gen.rs —
-// separate crates / bins that cannot see crate-private items). Mirrors the
+/// Used by `ptodo-baseline-gen` to exclude the G-allow advisory lane from the
+/// source-marker baseline, mirroring the ζ inverse-lane exclusion: G-allow
+/// findings are a distinct orphan-suppression-provenance taxonomy (path-keyed,
+/// `.rs` files) whose kind strings (`g-allow-*`) are outside
+/// [`STRUCTURAL_KINDS`] — including them in the baseline would make a regen
+/// fail `baseline_is_well_formed`'s kind check.
+// G-allow: pub for an external caller (src/bin/ptodo-baseline-gen.rs — a
+// separate bin that cannot see crate-private items). Mirrors the
 // resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn is_g_allow_finding(f: &Finding) -> bool {
     f.summary.starts_with("g-allow-")
@@ -1899,6 +1931,30 @@ pub struct ScanStats {
     pub files_scanned: usize,
     /// [`scan_file`]-classified marker lines across those files.
     pub markers_examined: usize,
+    /// Whether the DB-dependent lanes ran. It exists so the §6.6 ratchet can
+    /// PROVE it ran DB-absent (PRD §19).
+    pub tasks_db: TasksDbMode,
+}
+
+/// Whether [`check_with_stats`] resolved the task DB.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TasksDbMode {
+    /// The §6.7 degrade path fired (the DB is missing, unreadable, or failed to
+    /// resolve), so no DB-dependent lane (β, ζ, G-allow) contributed.
+    #[default]
+    Absent,
+    /// The DB opened and all three DB-dependent lanes resolved.
+    Present,
+}
+
+impl TasksDbMode {
+    /// The token the scan-evidence line carries for this mode.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            TasksDbMode::Absent => "absent",
+            TasksDbMode::Present => "present",
+        }
+    }
 }
 
 /// PTODO sweep (§5/§8) — see [`check_with_stats`], of which this is the
@@ -2016,6 +2072,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         Ok((live, inv, g_allow))
     }) {
         Ok((live, inv, g_allow)) => {
+            stats.tasks_db = TasksDbMode::Present;
             keyed.extend(live);
             inverse_findings = inv;
             // Insert G-allow findings into keyed so they sort with the other
@@ -3418,7 +3475,7 @@ mod tests {
     /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
     /// and reaches only the unchanged β liveness lane. Pinned as its own
     /// assertion because it is the property that keeps §8.3's taxonomy (and
-    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// therefore `STRUCTURAL_KINDS`, `fingerprint` and the §8.4 severity map)
     /// byte-unchanged by this lane.
     #[test]
     fn scan_file_delta_b_emits_no_structural_kind() {
@@ -4109,9 +4166,9 @@ mod tests {
     ///
     /// Rationale for the exclusion: g-allow-orphaned / g-allow-unknown-id are a
     /// distinct orphan-suppression-provenance taxonomy (path-keyed, .rs files).
-    /// Including them in the baseline would (a) make the on-demand (B) ratchet
-    /// RED against the intentionally-empty baseline and (b) make a future regen
-    /// emit lines whose `kind` fails `VALID_KINDS` in `baseline_is_well_formed`.
+    /// Including them in the baseline would make a regen emit lines whose
+    /// `kind` is outside [`STRUCTURAL_KINDS`], which `baseline_is_well_formed`
+    /// rejects.
     /// The `fingerprint()` check below documents WHY the exclusion is necessary.
     ///
     /// RED until step-6 adds `pub fn is_g_allow_finding`.
@@ -4158,25 +4215,16 @@ mod tests {
         );
 
         // Demonstrate WHY exclusion is needed: fingerprint() extracts the kind
-        // segment "g-allow-orphaned", which is NOT in the source-marker VALID_KINDS
-        // taxonomy {untracked, malformed-cite, phantom-tracking, bare-ignore,
-        // orphaned, unknown-id}.  A regen including it would fail
+        // segment "g-allow-orphaned", which is NOT one of the STRUCTURAL_KINDS a
+        // baseline may carry. A regen including it would fail
         // baseline_is_well_formed's kind check — so it must be excluded upstream.
         let fp = fingerprint(&g_allow_orphaned);
         let kind_segment = fp.split(" :: ").nth(1).unwrap_or("");
-        const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
-            "untracked",
-            "malformed-cite",
-            "phantom-tracking",
-            "bare-ignore",
-            "orphaned",
-            "unknown-id",
-        ];
         assert!(
-            !SOURCE_MARKER_VALID_KINDS.contains(&kind_segment),
-            "fingerprint kind {kind_segment:?} must NOT be in the source-marker \
-             VALID_KINDS — this documents why g-allow findings must be excluded \
-             from the baseline ratchet"
+            !STRUCTURAL_KINDS.contains(&kind_segment),
+            "fingerprint kind {kind_segment:?} must NOT be in STRUCTURAL_KINDS — \
+             this documents why g-allow findings must be excluded from the \
+             baseline ratchet"
         );
     }
 }

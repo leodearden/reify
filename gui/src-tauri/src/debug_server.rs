@@ -1189,11 +1189,11 @@ struct DebugServerState {
     #[allow(dead_code)]
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
-    /// Shared delta baseline — the SAME `Arc` as `AppState::last_state`
-    /// (INV-GUI-2, task 5035 L6). Refreshed by
-    /// `open_source_into_engine_and_refresh_baseline` /
-    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent normal
-    /// Tauri command diffs against the post-debug-mutation state.
+    /// Shared delta baseline — the SAME `Arc` the evaluation queue publishes
+    /// against (`eval_queue::SnapshotPublisher`; INV-GUI-2, task 5035 L6).
+    /// Refreshed by `open_source_into_engine_and_refresh_baseline` /
+    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent queued
+    /// evaluation diffs against the post-debug-mutation state.
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 }
 
@@ -1552,13 +1552,13 @@ async fn open_path_into_engine(
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
     // Load into engine, build GUI state, and refresh the delta baseline
-    // (INV-GUI-2, task 5035 L6) through the same compute_delta choke-point
-    // main.rs's normal command path uses. NOTE: the baseline is refreshed
-    // here, BEFORE the query_frontend push below lands S1 on the frontend —
-    // a normal command interleaved in that window would diff against S1
-    // while the frontend is still at S0. Safe only because debug sessions
-    // (the e2e visual-regression harness) run serially and never overlap a
-    // debug op with a normal command; see PRD §4 D7.
+    // (INV-GUI-2, task 5035 L6) through `diff::advance_baseline`, the same
+    // choke-point the evaluation queue publishes through. NOTE: the baseline
+    // is refreshed here, BEFORE the query_frontend push below lands S1 on the
+    // frontend — a normal command interleaved in that window would diff
+    // against S1 while the frontend is still at S0. Safe only because debug
+    // sessions (the e2e visual-regression harness) run serially and never
+    // overlap a debug op with a normal command; see PRD §4 D7.
     let gui_state =
         open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;

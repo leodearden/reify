@@ -871,6 +871,11 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Thicken / Shell / Offset Solid ---
+        /// Offset a solid: every face moves |distance| along its outward
+        /// normal (inward when `distance` is negative), and sharp edges stay
+        /// sharp (adjacent faces are extended/trimmed to meet). Errs on a zero
+        /// distance, a non-solid input, a collapse (inward offset past the
+        /// inradius), or an invalid/degenerate result.
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         /// Offset a surface (open face/shell) by `distance` along its normal via
         /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).

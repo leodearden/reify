@@ -14,8 +14,8 @@ use reify_fdm::{
     effective_transverse_isotropic, parse_prusaslicer_gcode,
 };
 use reify_fdm::r0::{
-    R0Options, RasterMesostructure, halpin_tsai_modulus, lumped_cooling_z_ratio,
-    r0_region_materials, rodriguez_orthotropic,
+    FALLBACK_NOMINAL_TEMP_C, R0Options, RasterMesostructure, halpin_tsai_modulus,
+    lumped_cooling_z_ratio, r0_region_materials, rodriguez_orthotropic,
 };
 
 // ── step-7 helpers ───────────────────────────────────────────────────────────
@@ -258,6 +258,95 @@ G1 X10 Y1 E1.0
     assert_eq!(
         regions.wall.bead_direction, regions.infill.bead_direction,
         "uniform toolpath: all zone frame x-axes must match"
+    );
+}
+
+/// The two parallel +X solid-infill beads of
+/// `r0_region_materials_uniform_toolpath_is_constant`, with an optional
+/// temperature command before the first bead (`lead_temp`) and another after
+/// the travel that ends bead 1 (`mid_temp`). Every stat but temperature is
+/// identical across calls by construction.
+fn two_solid_infill_beads(lead_temp: Option<&str>, mid_temp: Option<&str>) -> Toolpath {
+    let src = format!(
+        "\
+M83
+{lead}
+;LAYER_CHANGE
+;Z:0.2
+;HEIGHT:0.2
+G1 Z0.2 F7200
+;TYPE:Solid infill
+;WIDTH:0.45
+G1 X0 Y0 F9000
+G1 X10 Y0 E1.0
+G1 X0 Y1 F9000
+{mid}
+G1 X10 Y1 E1.0
+",
+        lead = lead_temp.unwrap_or(""),
+        mid = mid_temp.unwrap_or(""),
+    );
+    parse_prusaslicer_gcode(&src).expect("two-bead snippet must parse")
+}
+
+/// A toolpath with no temperature command is modelled at the fallback
+/// deposition temperature, not at 0 °C (which would sit below ambient and
+/// collapse the cooling-derived build-Z modulus).
+#[test]
+fn r0_region_materials_reads_an_unobserved_temperature_as_the_fallback() {
+    let at_fallback_line = format!("M104 S{FALLBACK_NOMINAL_TEMP_C}");
+    let unobserved = two_solid_infill_beads(None, None);
+    let at_fallback = two_solid_infill_beads(Some(&at_fallback_line), None);
+    assert!(
+        unobserved.beads.iter().all(|b| b.nominal_temp.is_none()),
+        "premise: no bead of the temperature-less snippet observed a temperature"
+    );
+
+    let opts = R0Options::default();
+    let unobserved_regions = r0_region_materials(&unobserved, pla(), &opts);
+    assert_eq!(
+        unobserved_regions,
+        r0_region_materials(&at_fallback, pla(), &opts),
+        "an unobserved temperature must be modelled at FALLBACK_NOMINAL_TEMP_C"
+    );
+
+    let wall = &unobserved_regions.wall.constants;
+    assert!(
+        wall.e3 > 0.0,
+        "build-Z modulus must be positive, got {}",
+        wall.e3
+    );
+    assert!(
+        wall.e3 < wall.e2,
+        "build-Z E3 ({}) < transverse E2 ({})",
+        wall.e3,
+        wall.e2
+    );
+}
+
+/// A bead with no observed temperature contributes nothing to its zone's mean
+/// temperature: a toolpath whose first bead precedes `M104 S220` models the
+/// same material as one where `M104 S220` precedes both beads.
+#[test]
+fn r0_region_materials_averages_only_observed_temperatures() {
+    let set_220 = Some("M104 S220");
+    let first_bead_unobserved = two_solid_infill_beads(None, set_220);
+    let both_observed = two_solid_infill_beads(set_220, None);
+    assert_eq!(
+        first_bead_unobserved
+            .beads
+            .iter()
+            .map(|b| b.nominal_temp)
+            .collect::<Vec<_>>(),
+        vec![None, Some(220.0)],
+        "premise: only the second bead observed a temperature"
+    );
+
+    let opts = R0Options::default();
+    assert_eq!(
+        r0_region_materials(&first_bead_unobserved, pla(), &opts),
+        r0_region_materials(&both_observed, pla(), &opts),
+        "the unobserved bead must not drag the mean temperature toward 0 °C"
     );
 }
 

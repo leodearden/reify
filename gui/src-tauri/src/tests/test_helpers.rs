@@ -362,3 +362,287 @@ pub(crate) fn visible_realization_keys(state: &crate::types::GuiState) -> Vec<St
         .map(|m| m.entity_path.clone())
         .collect()
 }
+
+// ── Task 7442: observing the evaluation queue ────────────────────────────────
+
+/// A `GuiState` with nothing in it.
+pub(crate) fn empty_gui_state() -> crate::types::GuiState {
+    crate::types::GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    }
+}
+
+/// A `GuiState` holding only the given `(cell_id, value)` parameter values —
+/// enough to tell snapshots apart through their deltas.
+pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::GuiState {
+    let value = |(cell_id, value): &(&str, &str)| crate::types::ValueData {
+        cell_id: cell_id.to_string(),
+        name: cell_id.rsplit('.').next().unwrap_or(cell_id).to_string(),
+        value: value.to_string(),
+        unit: "mm".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: cell_id.split('.').next().unwrap_or("").to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+        reason: None,
+        last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
+    };
+    crate::types::GuiState {
+        values: values.iter().map(value).collect(),
+        ..empty_gui_state()
+    }
+}
+
+/// One call an [`crate::eval_queue::EvalObserver`] received.
+#[derive(Debug, Clone)]
+pub(crate) enum Observed {
+    Activity(crate::eval_queue::EvalActivity),
+    Delta(Box<crate::diff::StateDelta>),
+}
+
+/// An [`Observed`] call and the name of the thread that made it.
+#[derive(Debug, Clone)]
+pub(crate) struct Observation {
+    pub(crate) observed: Observed,
+    pub(crate) thread: Option<String>,
+}
+
+/// An [`crate::eval_queue::EvalObserver`] that records every call, in order.
+#[derive(Default)]
+pub(crate) struct RecordingObserver {
+    observations: Mutex<Vec<Observation>>,
+}
+
+impl RecordingObserver {
+    pub(crate) fn observations(&self) -> Vec<Observation> {
+        self.observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn activities(&self) -> Vec<crate::eval_queue::EvalActivity> {
+        self.observations()
+            .into_iter()
+            .filter_map(|o| match o.observed {
+                Observed::Activity(activity) => Some(activity),
+                Observed::Delta(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn deltas(&self) -> Vec<crate::diff::StateDelta> {
+        self.observations()
+            .into_iter()
+            .filter_map(|o| match o.observed {
+                Observed::Delta(delta) => Some(*delta),
+                Observed::Activity(_) => None,
+            })
+            .collect()
+    }
+
+    /// The newest published value of `cell_id`, if any delta carried one.
+    pub(crate) fn published_value(&self, cell_id: &str) -> Option<crate::types::ValueData> {
+        self.deltas().iter().rev().find_map(|delta| {
+            delta
+                .changed_values
+                .iter()
+                .find(|value| value.cell_id == cell_id)
+                .cloned()
+        })
+    }
+
+    fn record(&self, observed: Observed) {
+        let thread = std::thread::current().name().map(str::to_owned);
+        self.observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Observation { observed, thread });
+    }
+}
+
+impl crate::eval_queue::EvalObserver for RecordingObserver {
+    fn activity(&self, activity: crate::eval_queue::EvalActivity) {
+        self.record(Observed::Activity(activity));
+    }
+
+    fn delta(&self, delta: &crate::diff::StateDelta) {
+        self.record(Observed::Delta(Box::new(delta.clone())));
+    }
+}
+
+/// A queue whose drainers run on the test thread, when the test says.
+pub(crate) struct ManualQueue {
+    pub(crate) queue: std::sync::Arc<crate::eval_queue::EvalQueue>,
+    pub(crate) executor: std::sync::Arc<ManualExecutor>,
+    pub(crate) observer: std::sync::Arc<RecordingObserver>,
+}
+
+impl ManualQueue {
+    pub(crate) fn new() -> Self {
+        let executor = ManualExecutor::new();
+        let observer = std::sync::Arc::new(RecordingObserver::default());
+        let queue = crate::eval_queue::EvalQueue::with_executor(
+            executor.executor(),
+            std::sync::Arc::new(Mutex::new(None)),
+            observer.clone(),
+        );
+        Self {
+            queue,
+            executor,
+            observer,
+        }
+    }
+}
+
+/// Poll `future` once without waiting: `Some` if it has already resolved.
+pub(crate) fn poll_now<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::Pin::new(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => Some(output),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// The reply of a ticket that must already have settled.
+pub(crate) fn settled<T>(mut ticket: crate::eval_queue::EvalTicket<T>) -> Result<T, String> {
+    poll_now(&mut ticket).expect("the ticket must have settled")
+}
+
+/// An [`crate::eval_queue::Executor`] that runs nothing until told: posted jobs
+/// wait until [`ManualExecutor::run_pending`] runs them on the calling thread.
+#[derive(Default)]
+pub(crate) struct ManualExecutor {
+    jobs: Mutex<std::collections::VecDeque<Box<dyn FnOnce() + Send>>>,
+    refusing: std::sync::atomic::AtomicBool,
+}
+
+impl ManualExecutor {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::default()
+    }
+
+    pub(crate) fn executor(self: &std::sync::Arc<Self>) -> crate::eval_queue::Executor {
+        let this = std::sync::Arc::clone(self);
+        std::sync::Arc::new(move |job| this.post(job))
+    }
+
+    /// Make every later post fail (`true`) or succeed again (`false`).
+    pub(crate) fn refuse(&self, refusing: bool) {
+        self.refusing
+            .store(refusing, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many posted jobs have not run yet.
+    pub(crate) fn pending(&self) -> usize {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Run posted jobs in order on this thread, including jobs posted while
+    /// they run, until none are left.
+    pub(crate) fn run_pending(&self) {
+        loop {
+            let next = self
+                .jobs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front();
+            let Some(job) = next else { return };
+            job();
+        }
+    }
+
+    fn post(&self, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test executor refused the job"));
+        }
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(job);
+        Ok(())
+    }
+}
+
+// ── Large-stack probes, shared by the lane and queue tests ───────────────────
+
+/// Bound on every wait for work handed to another thread. It is NOT a timing
+/// assertion: it only turns a wedged lane into a failing test instead of a hung
+/// test binary.
+pub(crate) const ANTI_WEDGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A recursive frame that pins ~8 KiB of live stack per call and USES the
+/// recursive result (non-tail), defeating tail-call optimization and dead-frame
+/// elision. `#[inline(never)]` keeps each level a real call frame; the
+/// `black_box`ed 8 KiB buffer forces the optimizer to materialize the frame.
+///
+/// `deep_recurse(n) == n + 1` (base case returns 1, each of the `n` recursive
+/// frames adds `buf[8191] == 1`), so callers get a deterministic sentinel proving
+/// the recursion ran to completion rather than being elided.
+#[inline(never)]
+pub(crate) fn deep_recurse(depth: u32) -> u64 {
+    // 8 KiB per frame. Touch both ends so the whole buffer is committed and the
+    // frame cannot be elided.
+    let mut buf = [0u8; 8192];
+    buf[0] = 1;
+    buf[8191] = 1;
+    let buf = std::hint::black_box(buf);
+    if depth == 0 {
+        return u64::from(buf[0]); // sentinel base == 1
+    }
+    // Use the recursive result (non-tail) so the frame stays live across the call.
+    let below = deep_recurse(depth - 1);
+    std::hint::black_box(below + u64::from(buf[8191]))
+}
+
+/// Depth for the deep-recursion survival tests: ~8 KiB/frame x 2048 ≈ 16 MiB,
+/// i.e. 8x the 2 MiB default stack (a no-`stack_size` impl overflows) and 16x
+/// under the 256 MiB `COMPILE_STACK_SIZE` constant (GREEN is reliable).
+pub(crate) const DEEP_RECURSION_DEPTH: u32 = 2048;
+
+/// Recurse ~16 MiB ONLY if we genuinely landed on the expected large-stack
+/// thread; otherwise report where we actually are, without recursing.
+///
+/// "Submitted to a lane" does NOT by itself imply "runs on a large stack": each
+/// lane documents a degraded arm that runs the work on a DEFAULT-size stack when
+/// the OS refuses the 256 MiB mapping — `post` on a spawned default-stack
+/// thread, `dispatch_async` inline on the awaiting frame. Recursing there
+/// overflows and SIGABRTs the whole test binary, taking every other test's
+/// result with it (observed while driving task 5772's step-3 RED, where a
+/// panicking job had killed the worker).
+///
+/// Checking first is what makes `large_stack_tests`' "no violent RED" claim true
+/// by CONSTRUCTION rather than by assumption: a degraded helper now yields a
+/// clean assertion failure naming the thread it ran on.
+pub(crate) fn deep_recurse_if_on_thread(
+    expected_name: &'static str,
+    depth: u32,
+) -> Result<u64, String> {
+    let actual = std::thread::current().name().map(str::to_owned);
+    if actual.as_deref() != Some(expected_name) {
+        return Err(format!(
+            "refusing to recurse ~16 MiB on thread {actual:?}: expected the \
+             large-stack thread {expected_name:?}. The helper degraded to an \
+             inline call, so recursing here would overflow a default-size stack \
+             and abort the entire test binary."
+        ));
+    }
+    Ok(deep_recurse(depth))
+}

@@ -337,9 +337,9 @@ Angle producer is a named site, never a bare quotient.
 (`crates/reify-stdlib/src/orientation.rs:203`) as the ruled-pending
 exemplar (#6080) — a 2·atan2 arc-measure primitive, not a quotient, not
 yet Angle-tagged at eval; and #6164's `ElasticResult.rotation` = curl/2
-channel, cited as RULED, PENDING (#6164) — confirmed absent from
-`crates/reify-compiler/stdlib/solver_elastic.ri` today, so never
-describe it as shipped.
+channel, shipped (merge 850fd36f36) as `param rotation` in
+`crates/reify-compiler/stdlib/solver_elastic.ri`, wrapped by
+`sampled_rotation_field` in `crates/reify-eval/src/compute_targets/mod.rs`.
 
 ## INV-AD-2 `quotient-pure-derivative-algebra`
 
@@ -381,9 +381,12 @@ no in-language tensor component access (`IndexAccess` and member access
 both reject tensors), so a named extractor is structurally forced, not
 merely a style preference.
 
-**House pattern**: `ElasticResult.shear_angles` (chartered, PRD leaf σ)
-beside `.rotation`, both built on the `sampled_curl_field` mechanics
-(`crates/reify-eval/src/compute_targets/mod.rs:166`).
+**House pattern**: `ElasticResult.shear_angles` (shipped, PRD leaf σ,
+#6183) beside `.rotation`: named `Vector3<Angle>` channels derived from the
+`gradient` / `curl` Sampled Fields at wrap time
+(`sampled_shear_angles_field` / `shear_angles_sf_from_gradient` in
+`crates/reify-eval/src/compute_targets/mod.rs`), while `gradient` keeps its
+single `Tensor<2,3,Real>` quantity slot.
 
 ## INV-AD-4 `boundaries-declare-angle-convention`
 
@@ -430,8 +433,8 @@ status:
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
 | geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
-| `ElasticResult.rotation` = curl/2 | named channel | #6164 | ruled, pending |
-| `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | chartered |
+| `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
+| `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
 | joint-DOF unwrap; unit literals (`45deg`, `1rad`) | literal/decode sites | unit-literal lowering + joint-DOF decode sites | shipped |
 | hand-rolled `.ri` crossings | `expr * 1rad` (and `expr / 1rad` to leave) | unit arithmetic (probed) | shipped, undocumented (corpus example → leaf γ) |

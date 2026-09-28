@@ -31,11 +31,9 @@
 //! the third a geometric-relations worked example, the last two annotations and display
 //! style — so this root is a partial catch-all until they move. That move is TRACKED, not
 //! merely disclosed: follow-up ticket `tkt_0RTJNNBDJAP0F0WVG8NGGR42MZ` (filed against
-//! #5695) relocates all five to the diagnostics / annotations harness leaf CMP-6 creates,
-//! and deletes this paragraph with them. It is the sibling of #5694's
-//! `tkt_0RT273RG27CPVNCQXPBHHJEQCA`, which routes `harness_physical_modeling`'s
-//! `m9_error_cases` and `m11_annotations_solver_hint_tests` to that same destination; the
-//! two are expected to land as one change. Landing it is a correction, not a regression.
+//! #5695) relocates all five to `harness_diagnostics_robustness` and deletes this
+//! paragraph with them; size that destination with `harness_layout_unit_lines`
+//! (tests/infra/harness-layout-lib.sh) before making the move.
 //!
 //! Routing vs. the two sibling roots added by this same leaf — the line is subsystem, not
 //! filename. `harness_type_checking` asks whether an EXPRESSION type-checks and

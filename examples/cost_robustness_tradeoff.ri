@@ -34,17 +34,25 @@ module cost_robustness_tradeoff
 // INTERIOR to the feasible region, so the constraint penalty is identically
 // zero around it.
 //
-// That interiority is the point. A MONOTONE Money cost's pure-cost optimum sits
-// an infinitesimal distance PAST a strict `>` boundary — any nonzero cost
-// gradient does, since the constraint penalty has zero slope exactly at its own
-// root (the same characteristic that originally motivated the α robustness
-// floor, task #4789). `.ri`-compiled auto params always get `bounds: None`
-// (`engine_eval.rs::build_auto_param_list`), so `effective_bounds` here is the
-// wide Length default `[1µm, 10m]` and nothing else pins the anchor down;
-// `solve_core_with_sd_tolerance`'s "optimizer drifted infeasible → fall back to
-// the initially-feasible seed" safety net then reports THE SEED rather than a
-// boundary-adjacent value. A cost with a reachable interior optimum removes
-// that failure mode outright.
+// That interiority is the point, and its justification does not depend on any
+// solver behaviour: an interior λ=1 optimum is a DIFFERENT POINT from the λ=0
+// centrality argmax, so the sweep below can tell the two anchors apart at all.
+//
+// A MONOTONE Money cost's pure-cost optimum instead lands ON a strict `>`
+// boundary — any nonzero cost gradient pushes it there, and the constraint
+// penalty has zero slope exactly at its own root (the same characteristic that
+// originally motivated the α robustness floor, task #4789). `.ri`-compiled auto
+// params always get `bounds: None` (`engine_eval.rs::build_auto_param_list`), so
+// `effective_bounds` here is the wide Length default `[1µm, 10m]`; until task
+// #6465 nothing else pinned the anchor down and
+// `solve_core_with_sd_tolerance`'s "optimizer drifted infeasible
+// → fall back to the initially-feasible seed" safety net reported THE SEED. The
+// γ regime now derives its own clamp box from the constraints with
+// `include_strict = true` (`SolveRegime::TradeoffBlend`, solver.rs), because a
+// value ON the boundary IS this regime's contracted λ=1 answer — so a monotone
+// cost's λ=1 reaches that boundary and is seed-invariant. MEASURED at the EVAL
+// layer, monotone `5USD · (t/1mm)` under `1mm < t < 4mm`: λ=1 resolves 1.000mm
+// (identically for `auto` and `auto(free)`), λ=0 the 2.5mm centre.
 //
 // # Lever 2 — why the third constraint (`thickness * 2 < 30mm`) exists
 //

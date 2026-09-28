@@ -2626,20 +2626,28 @@ mod cli {
     /// EMPTY — deliberately the fail-loud direction: every code-less file
     /// surfaces as a `NewFile` High rather than passing vacuously.
     ///
-    /// Three claims, in order of what would break first:
+    /// Five claims, in order of what would break first:
     ///
     /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
     ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
     ///    literal "the detector is reachable from the binary" claim.
     /// 2. The exit code is the count of High FINDINGS — one per code-less
-    ///    file, not one per site. The fixture tree holds 4 code-less sites
-    ///    across 3 files, so exit 3 (not 4) is what pins the ratchet as
+    ///    file, not one per site. The fixture tree holds 6 code-less sites
+    ///    across 4 files, so exit 4 (not 6) is what pins the ratchet as
     ///    per-file.
     /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
     /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
-    ///    code-less site immediately above a reviewed `pdiag:allow`, so it is
-    ///    the end-to-end proof that an opt-out cannot reach backwards over the
+    ///    code-less site immediately above a reviewed opt-out, so it is the
+    ///    end-to-end proof that an opt-out cannot reach backwards over the
     ///    site above it — the hard-gate bypass no other test in this suite saw.
+    /// 5. `scenario07_code_absorption.rs` is counted, TWICE over. It holds one
+    ///    code-less site directly ABOVE a coded one and one to the LEFT of a
+    ///    coded one on a single line, so it is the end-to-end proof that a
+    ///    NEIGHBOURING constructor's code cannot absorb a brand-new site —
+    ///    the other bypass no other fixture sees, and the only one reachable
+    ///    without an opt-out anywhere in the file. Its summary is asserted to
+    ///    name BOTH code-less lines, so the two halves are distinguished here
+    ///    rather than one of them passing on the other's back.
     ///
     /// RED until the dispatch arm and the `--pattern` token validator are
     /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
@@ -2688,17 +2696,18 @@ mod cli {
         // (2) Exit code = High-severity finding count = one per code-less FILE.
         assert_eq!(
             out.status.code(),
-            Some(3),
-            "PDIAG fixture sweep must exit 3 — one NewFile High per code-less file \
+            Some(4),
+            "PDIAG fixture sweep must exit 4 — one NewFile High per code-less file \
              (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
-             above its reviewed escape; 4 sites but 3 files)\nstderr: {stderr}"
+             above its reviewed escape, scenario07 has 2 sites a neighbouring \
+             constructor's code used to absorb; 6 sites but 4 files)\nstderr: {stderr}"
         );
 
         let findings = parse_findings_from_stderr(&stderr);
         assert_eq!(
             findings.len(),
-            3,
-            "PDIAG fixture sweep must emit exactly 3 findings; got:\n{:#}",
+            4,
+            "PDIAG fixture sweep must emit exactly 4 findings; got:\n{:#}",
             serde_json::Value::Array(findings.clone())
         );
 
@@ -2715,9 +2724,9 @@ mod cli {
             );
         }
 
-        // (3) Exactly the two code-less files, keyed by path. Membership is
+        // (3) Exactly the code-less files, keyed by path. Membership is
         // asserted as a set, so the coded / escaped / `tests`-segment fixtures
-        // being absent is the same assertion as these two being present.
+        // being absent is the same assertion as these being present.
         let mut keyed: Vec<&str> =
             findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
         keyed.sort_unstable();
@@ -2727,12 +2736,31 @@ mod cli {
                 "crates/reify-compiler/src/scenario05_codeless_pair.rs",
                 "crates/reify-eval/src/scenario01_codeless.rs",
                 "crates/reify-eval/src/scenario06_escape_leak.rs",
+                "crates/reify-eval/src/scenario07_code_absorption.rs",
             ],
             "only the code-less swept files may be keyed — the coded, escaped and \
              `tests`-segment fixtures must each contribute nothing, while scenario06 \
-             MUST be keyed: its unreviewed site sits inside the forward window of the \
-             reviewed opt-out below it, and an escape that reaches backwards over it is \
-             a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+             and scenario07 MUST be keyed: scenario06's unreviewed site sits inside the \
+             forward window of the reviewed opt-out below it, and scenario07's two sites \
+             sit where a neighbouring constructor's code used to reach them. Either \
+             absorption is a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+        );
+
+        // (5) Both of scenario07's sites are named, so a fix that closed only
+        // one half of the probe cannot pass here on the other half's back.
+        // `format_site_lines` spells them into the High summary.
+        let absorption = findings
+            .iter()
+            .find(|f| {
+                f["task_id"].as_str() == Some("crates/reify-eval/src/scenario07_code_absorption.rs")
+            })
+            .expect("scenario07 must be keyed");
+        let summary = absorption["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("at lines 19, 23"),
+            "scenario07's summary must name BOTH code-less lines — 19 (the site above \
+             a coded one) and 23 (the site left of a coded one on one line); got: \
+             {summary:?}"
         );
 
         // Every hard-gate summary must route the reader to the policy doc;

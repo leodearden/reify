@@ -1550,12 +1550,17 @@ fn guard_state_fingerprint(
 ///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
 ///   to the `Value::String` declared for `<entity>.<key>` in the source module's
 ///   `meta {}` blocks (or `Value::Undef` if no such entry exists).
+///
+/// Every engine eval ctx therefore resolves kernel-free selector ctors at ANY
+/// expression depth (#7875), not only as a whole cell default.
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
 ) -> reify_expr::EvalContext<'a> {
-    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+    reify_expr::EvalContext::new(values, functions)
+        .with_meta(meta_map)
+        .with_symbolic_selector_ctor(crate::geometry_ops::try_eval_symbolic_topology_selector)
 }
 
 /// Build the per-template meta-map consumed by `eval_ctx_with_meta`.

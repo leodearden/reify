@@ -15,7 +15,7 @@
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 /// Assert that `errors` contains at least one diagnostic whose `code` is `code`
 /// and whose message contains every string in `msg_contains`.  That same
@@ -173,13 +173,14 @@ structure def Top { sub h = Host(m: Plain()) }
 "#;
 
     let module = compile_source(source);
-    // task 5302 α (Option A uniform downgrade): the sub `=` ctor-conformance path
-    // now emits at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY), not Error.
-    let errors = warnings_only(&module);
+    // The sub `=` ctor-conformance path emits at CTOR_FIELD_CONFORMANCE_SEVERITY.
+    // Task 5302 α downgraded that knob to Warning and this line moved to
+    // `warnings_only`; task 5306 δ flipped it back to Error, so it reverts.
+    let errors = errors_only(&module);
 
     assert!(
         !errors.is_empty(),
-        "expected at least one warning for non-conforming trait arg, got: {:?}",
+        "expected at least one error for non-conforming trait arg, got: {:?}",
         module.diagnostics
     );
     assert_has_diagnostic(
@@ -209,12 +210,13 @@ structure def Top {
 "#;
 
     let module = compile_source(source);
-    // task 5302 α (Option A uniform downgrade): sub `=` ctor conformance is Warning.
-    let errors = warnings_only(&module);
+    // Sub `=` ctor conformance is knob-governed: task 5302 α downgraded it to
+    // Warning, task 5306 δ flipped it back to Error.
+    let errors = errors_only(&module);
 
     assert!(
         !errors.is_empty(),
-        "expected at least one warning for incompatible trait-object arg, got: {:?}",
+        "expected at least one error for incompatible trait-object arg, got: {:?}",
         module.diagnostics
     );
     assert_has_diagnostic(
@@ -246,12 +248,13 @@ structure def Top {
 "#;
 
     let module = compile_source(source);
-    // task 5302 α (Option A uniform downgrade): sub `=` ctor conformance is Warning.
-    let errors = warnings_only(&module);
+    // Sub `=` ctor conformance is knob-governed: task 5302 α downgraded it to
+    // Warning, task 5306 δ flipped it back to Error.
+    let errors = errors_only(&module);
 
     assert!(
         !errors.is_empty(),
-        "expected at least one warning for dimensional-value-as-trait-arg, got: {:?}",
+        "expected at least one error for dimensional-value-as-trait-arg, got: {:?}",
         module.diagnostics
     );
     assert_has_diagnostic(

@@ -7,7 +7,12 @@ description = "Engine facade and evaluation loop for Reify"
 
 [dependencies]
 reify-ast.workspace = true
-reify-core.workspace = true
+# Task 7245: the persistent compute cache persists `DiagnosticCode` by its serde
+# name (src/persistent_cache.rs), and reify-core gates those derives behind its
+# `serde` feature. Declared here, in the same form reify-lsp and reify-mcp use,
+# rather than relying on feature unification from them, which would break under
+# `cargo check -p reify-eval`.
+reify-core = { workspace = true, features = ["serde"] }
 reify-config.workspace = true
 reify-ir.workspace = true
 reify-expr.workspace = true
@@ -53,6 +58,9 @@ bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
+# Task 7245: the codec that reaches `DiagnosticCode`'s stable serde name for the
+# persistent cache; `DiagnosticCode` has no mnemonic/`FromStr` round-trip.
+serde_json.workspace = true
 tracing.workspace = true
 xxhash-rust = { workspace = true }
 rustc-hash = "2"

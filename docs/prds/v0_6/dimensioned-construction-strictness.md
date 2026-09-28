@@ -80,7 +80,7 @@ negation of the PRD decision, added deliberately*. **Four** such tests exist (al
 
 | Test | Anchor |
 |---|---|
-| `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:172` |
+| `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:172` |
 | `param_negative_literal_on_dimensioned_scalar_does_not_error` | `param_default_type_mismatch_tests.rs:203` |
 | `let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:173` |
 | `port_member_let_annotation_numeric_literal_on_dimensioned_scalar_do_not_error` | `let_annotation_type_mismatch_tests.rs:578` |
@@ -584,7 +584,7 @@ gate 1.
 Two findings that reshape δ₁'s scope:
 
 - **Trait-lets are already strict.** `let score : Mass = 1.5` inside a trait already errors
-  via the `TypeMismatchForTraitMember` path (`crates/reify-compiler/tests/m9_error_cases.rs:276`).
+  via the `TypeMismatchForTraitMember` path (`crates/reify-compiler/tests/harness_diagnostics_robustness/m9_error_cases.rs:276`).
   So structure params/lets are permissive while trait lets are strict — δ₁ **removes an
   existing inconsistency** rather than introducing strictness.
 - **One fixture's doc comment is a rationale that dies with the tolerance.**
@@ -1154,7 +1154,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 ### δ₁ — Remove the literal `param`/`let` default tolerance; reinstate D5 in code *(§2.1 gates 3+4; task 5646's "gate 1")*
 
 - **Modules:** `crates/reify-compiler/src/entity.rs`,
-  `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs`,
+  `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs`,
   `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs`,
   `crates/reify-compiler/src/conformance/mod.rs` (D4-4 de-dup), plus the 27 measured sites.
 - **Work:** delete the literal early-returns at `entity.rs:479-485` (params) and `:563-569`

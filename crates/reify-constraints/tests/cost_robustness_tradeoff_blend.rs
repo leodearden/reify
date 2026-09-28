@@ -25,8 +25,8 @@
 use reify_constraints::{DimensionalSolver, build_centrality_objective};
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSet, ResolutionProblem,
-    SolveResult, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
+    ResolutionProblem, SolveResult, Value, ValueMap,
 };
 
 /// Absolute tolerance (metres) for anchor-convergence checks below. The
@@ -234,6 +234,126 @@ fn lambda_half_strictly_between_anchors() {
     );
 }
 
+// ── γ seed-invariance at a BOUNDARY optimum (task #6465 item 1) ───────────
+//
+// A blend whose argmin sits AT a constraint boundary was MEASURED to return
+// the SEED rather than the boundary, on the PRODUCTION `AutoParam` shape
+// (`bounds: None`). The three anchor tests above miss this because
+// `base_problem` hands the solver explicit `bounds: Some((1mm, 5mm))`, which
+// makes `effective_bounds` a mm-scale box; production autos get
+// `default_bounds_for(Length) = [1µm, 10m]` instead, and a floor-free
+// penalty solve whose optimum sits infinitesimally past a strict bound drifts
+// outside it, trips `solve_core_with_sd_tolerance`'s initially-feasible
+// fallback, and reports the initial point verbatim.
+
+/// `base_problem`'s constraints and objective on the PRODUCTION auto shape
+/// (`bounds: None`), with the Nelder-Mead SEED under the caller's control.
+///
+/// `seed_si_m` is threaded through `current_values`, which is the sanctioned —
+/// and the only — way for a test to move the seed: `extract_initial_point`'s
+/// arm 1 is "the current value, when present and numeric", and it outranks
+/// every other arm. With `seed_si_m = None` the seed is DERIVED instead (arm 3,
+/// the constraint-derived box's midpoint) and is unreachable from here, which
+/// is why `None` is one of the cases under test rather than an omission.
+///
+/// `free: true` deliberately: this fixture measures the BLEND's answer, not
+/// `verify_uniqueness`' verdict, so `finalise_uniqueness` must stay out of the
+/// way. The strict-auto verdict is the subject of the next section.
+fn seeded_free_problem(
+    t_id: &ValueCellId,
+    lambda: f64,
+    seed_si_m: Option<f64>,
+) -> ResolutionProblem {
+    let mut current_values = ValueMap::new();
+    if let Some(seed) = seed_si_m {
+        current_values.insert(
+            t_id.clone(),
+            Value::Scalar {
+                si_value: seed,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+    }
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
+            bounds: None,
+            free: true,
+        }],
+        constraints: vec![
+            (constraint_id("CostRobustnessTradeoff", 0), gt_expr(t_id, 0.001)),
+            (constraint_id("CostRobustnessTradeoff", 1), lt_expr(t_id, 0.004)),
+        ],
+        current_values,
+        objective: Some(ObjectiveSet::cost_robustness_tradeoff(
+            money_expr_x_per_mm(t_id),
+            lambda,
+        )),
+        functions: vec![].into(),
+    }
+}
+
+/// Both ANCHOR λ values resolve the same point from every seed, on the
+/// production `bounds: None` shape — and at λ=1 that point is the TRUE lower
+/// constraint boundary (1mm), PRD §8.1's floor-free λ=1 contract.
+///
+/// Assertion (b) is what stops (a) being satisfiable by a solver that is merely
+/// consistently WRONG: seed-invariance alone is satisfied by any fixed point,
+/// including the 2.5mm centre or the 10m default ceiling.
+///
+/// λ=1 is the arm that regressed: MEASURED on the linear `5 USD × (t/1mm)` cost
+/// over `1mm < t < 4mm`, it returned 2.5mm / 1.5mm / 2.0mm / 3.5mm for the four
+/// seeds below — exactly the seed each time. λ=0 is GREEN on arrival and is
+/// here deliberately, as a regression guard: the centrality anchor has a strict
+/// INTERIOR maximum, never reaches the drift fallback, and must not be
+/// disturbed by making the cost anchor boundary-aware.
+///
+/// λ ∈ (0,1) is deliberately EXCLUDED, and not as an oversight. On this LINEAR
+/// cost both normalised blend terms equal `(t − 1mm)/1.5mm` over the lower half
+/// of the bracket, so the λ=0.5 blend is identically zero on [1mm, 2.5mm]: its
+/// argmin is a SET, not a point, and no seed-invariance assertion is
+/// satisfiable there without a tie-break policy. See
+/// `default_bounded_strict_autos`' "Known, ACCEPTED gap" section.
+#[test]
+fn gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    // Three explicit seeds spanning the bracket plus the DERIVED seed (`None`).
+    // None of the three coincides with the λ=1 target (1mm) or the λ=0 target
+    // (2.5mm), so agreement cannot come from a seed/target coincidence.
+    let seeds = [None, Some(0.0015), Some(0.002), Some(0.0035)];
+
+    for lambda in [1.0_f64, 0.0] {
+        let resolved: Vec<f64> = seeds
+            .iter()
+            .map(|seed| solve_t(&seeded_free_problem(&t_id, lambda, *seed), &t_id))
+            .collect();
+
+        let first = resolved[0];
+        for (seed, t_si) in seeds.iter().zip(&resolved) {
+            assert!(
+                (t_si - first).abs() < ANCHOR_TOL_M,
+                "λ={lambda}: the blend's answer must not depend on the seed, but seed \
+                 {seed:?} resolved t = {t_si:.6e} m against {first:.6e} m for the derived \
+                 seed. All seeds: {resolved:?}"
+            );
+        }
+
+        if lambda == 1.0 {
+            for (seed, t_si) in seeds.iter().zip(&resolved) {
+                assert!(
+                    (t_si - 0.001).abs() < ANCHOR_TOL_M,
+                    "λ=1 must reach the TRUE constraint boundary (1mm, floor-free — PRD \
+                     §8.1) on the production `bounds: None` shape, not just the \
+                     explicit-bounds shape `lambda_one_reaches_true_boundary_floor_free` \
+                     covers; seed {seed:?} resolved t = {t_si:.6e} m"
+                );
+            }
+        }
+    }
+}
+
 // ── γ + STRICT auto (task #5711 amendment 2) ──────────────────────────────
 //
 // COVERAGE GAP, verified before writing these: γ + a STRICT auto had ZERO
@@ -285,24 +405,25 @@ fn strict_problem(t_id: &ValueCellId, lambda: f64, upper: Option<f64>) -> Resolu
 /// (`1mm < t < 4mm`) must solve `unique: true` under γ, for EVERY λ.
 ///
 /// Asserted across λ ∈ {0.0, 0.5, 1.0} rather than one value: MEASURED, all
-/// three regress identically, and λ=1 regressing is what identifies the
+/// three regressed identically, and λ=1 regressing is what identified the
 /// mechanism. At λ=1 the blend is a positive-affine transform of cost alone, so
-/// "λ<1 pulls the blend off the min-cost point" cannot explain it; the real
-/// cause is that `solve_cost_robustness_tradeoff` is SEED-DEPENDENT by
-/// construction (all three of its solves share one deterministic seed for
-/// reproducibility, never seed-invariance, and a floor-free cost-minimise whose
-/// optimum sits infinitesimally past the boundary hits
-/// `solve_core_with_sd_tolerance`'s drift-fallback and returns THE SEED). A
-/// perturbation-based uniqueness check therefore compares f(seed_A) against
-/// f(seed_B) for a seed-dependent f — structurally inapplicable on this path.
+/// "λ<1 pulls the blend off the min-cost point" cannot explain it; the cause is
+/// that `solve_cost_robustness_tradeoff` is not SEED-INVARIANT (all three of its
+/// solves share one deterministic seed for reproducibility, never
+/// seed-invariance). A perturbation-based uniqueness check therefore compares
+/// f(seed_A) against f(seed_B) for an f that is not, there, a function of the
+/// model — structurally inapplicable on this path. A blend whose argmin sits ON
+/// the boundary is seed-invariant
+/// (`gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`); the
+/// FLAT-blend case is not — its argmin is a SET and the seed picks a member —
+/// and that is still not a perturbation question.
 ///
-/// RED today: all three λ return `Infeasible` carrying
+/// RED when written: all three λ returned `Infeasible` carrying
 /// `ConstraintNonUnique` ("strict auto parameter resolution is not uniquely
-/// determined"). On main all three return `Solved { unique: true }` with
-/// t = 2.5mm.
-///
-/// The assertion pins the Solved/unique/in-bracket CONTRACT rather than 2.5mm
-/// exactly: the precise point is a blend/seed artifact, not a PRD invariant.
+/// determined"). MEASURED: λ=0 and λ=0.5 resolve 2.5mm, λ=1 resolves 1.000mm.
+/// The assertion below pins the Solved/unique/in-bracket CONTRACT, not a point
+/// value, so a clamp-policy change that moves a λ point inside the bracket does
+/// not red it.
 #[test]
 fn gamma_strict_auto_two_sided_bracket_is_solved() {
     let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
@@ -345,8 +466,8 @@ fn gamma_strict_auto_two_sided_bracket_is_solved() {
 ///
 /// This test is GREEN today and must STAY green — its already-green status is
 /// DELIBERATE, not accidental. It is the guard that stops a future maintainer
-/// "simplifying" `strict_autos_constraint_bracketed` into a blanket
-/// `return true` for γ: that was MEASURED on the prd-gate fixture above to
+/// "simplifying" `default_bounded_strict_autos` into a blanket
+/// empty result for γ: that was MEASURED on the prd-gate fixture above to
 /// convert an existing loud `error: strict auto parameter resolution is not
 /// uniquely determined` into a silent `thickness = 10 m` — 10 m being
 /// `default_bounds_for(Length)`'s ceiling, i.e. a value pinned by a
@@ -376,9 +497,140 @@ fn gamma_strict_auto_one_sided_stays_non_unique() {
     }
 }
 
+// ── γ diagnostic PRECISION for a default-bounds-determined model (#6465 (2)) ─
+//
+// `gamma_strict_auto_one_sided_stays_non_unique` above pins that the VERDICT
+// stays `ConstraintNonUnique`. These arms pin what the message SAYS: the γ
+// branch of `verify_uniqueness` already measures which side of each strict
+// auto's interval came from `default_bounds_for` rather than from a user
+// constraint, and collapsing that to a bool is why `finalise_uniqueness` could
+// emit only one generic sentence for three different causes.
+
+/// Returns the sole `ConstraintNonUnique` diagnostic's message, asserting there
+/// is EXACTLY one — an aggregate verdict, never one-per-offender.
+fn sole_non_unique_message(problem: &ResolutionProblem, what: &str) -> String {
+    match DimensionalSolver.solve(problem) {
+        SolveResult::Infeasible { diagnostics } => {
+            let non_unique: Vec<_> = diagnostics
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique))
+                .collect();
+            assert_eq!(
+                non_unique.len(),
+                1,
+                "{what}: expected exactly one ConstraintNonUnique diagnostic; got \
+                 {diagnostics:?}"
+            );
+            non_unique[0].message.clone()
+        }
+        other => panic!("{what}: expected Infeasible{{ConstraintNonUnique}}; got {other:?}"),
+    }
+}
+
+/// A default-bounds-determined γ model's `ConstraintNonUnique` message must
+/// report the MEASURED cause — which param, which side, and the bound the solve
+/// fell back to — while a model with no such evidence keeps today's sentence.
+///
+/// Three arms, because the three are three different obligations:
+///
+///  1. ONE unbounded side (`t > 1mm`, the shape of
+///     `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`). The param,
+///     the side and the unit-bearing bound are pinned as ONE clause, so the
+///     right bound cannot pass on the wrong side.
+///  2. TWO unbounded params. Exactly ONE diagnostic naming BOTH — the verdict is
+///     about the model, not about an arbitrary first offender.
+///  3. CONTROL, non-γ. The evidence-free branch has no per-param measurement to
+///     report and must not pretend otherwise: its sentence stays byte-identical,
+///     which is what four existing non-γ tests elsewhere substring-match.
+///
+/// RED at authoring time for arms 1 and 2, MEASURED: the message is exactly
+/// `strict auto parameter resolution is not uniquely determined — consider
+/// using auto(free) for exploration`, naming neither param, side, nor bound.
+/// Arm 3 is GREEN on arrival and is here to pin what must NOT change.
+#[test]
+fn gamma_default_bounds_determined_diagnostic_names_the_missing_bound() {
+    // ── arm 1: one param, upper side unbounded ────────────────────────────
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let message = sole_non_unique_message(
+        &strict_problem(&t_id, 0.5, None),
+        "one strict auto, unbounded above",
+    );
+
+    assert!(
+        message.contains("not uniquely determined"),
+        "the diagnosis phrase must stay ONE phrase across both branches — four \
+         non-γ tests substring-match it. Got: {message}"
+    );
+    // One clause pins all three facts TOGETHER — the param (`ValueCellId`'s
+    // Display is `entity.member`), the SIDE the model left open (`t > 1mm`
+    // bounds t below, so ABOVE), and the bound the solve FELL BACK TO with its
+    // unit (`default_bounds_for(Length)`'s 10 m ceiling). Separate substring
+    // checks could not tell the right bound on the wrong side from the answer.
+    // The result is demoted to Infeasible, so that bound is visible NOWHERE
+    // else: the value the user sees is `undef`.
+    assert!(
+        message.contains(
+            "no constraint bounds `CostRobustnessTradeoff.t` above (solver default 10 m)"
+        ),
+        "the message must name the param, the missing side, and the fallback \
+         bound in its unit, as one clause. Got: {message}"
+    );
+    assert!(
+        !message.contains("below"),
+        "`t > 1mm` bounds t below, so the lower side must NOT be reported as \
+         default-bounded. Got: {message}"
+    );
+
+    // ── arm 2: two params, both unbounded above → ONE aggregate verdict ───
+    let x_id = ValueCellId::new("CostRobustnessTradeoff", "x");
+    let y_id = ValueCellId::new("CostRobustnessTradeoff", "y");
+    let both = strict_problem_with(
+        &[x_id.clone(), y_id.clone()],
+        &x_id,
+        0.5,
+        vec![gt_expr(&x_id, 0.001), gt_expr(&y_id, 0.001)],
+    );
+    let message = sole_non_unique_message(&both, "two strict autos, both unbounded above");
+    for id in [&x_id, &y_id] {
+        assert!(
+            message.contains(&id.to_string()),
+            "one aggregate diagnostic must name EVERY default-bounds-determined \
+             param, not just the first; `{id}` is missing from: {message}"
+        );
+    }
+
+    // ── arm 3: CONTROL — non-γ keeps the generic sentence byte-identical ──
+    //
+    // Same under-determined shape, differing ONLY in the objective form: a plain
+    // `Minimize` over the same Money expression carries no
+    // `cost_robustness_lambda`, so `verify_uniqueness` takes the perturbation
+    // path, which measures no per-param evidence.
+    let mut control = strict_problem_with(
+        &[x_id.clone(), y_id.clone()],
+        &x_id,
+        0.5,
+        vec![gt_expr(&x_id, 0.001), gt_expr(&y_id, 0.001)],
+    );
+    control.objective = Some(ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        money_expr_x_per_mm(&x_id),
+    ));
+    let message = sole_non_unique_message(&control, "non-γ control");
+    assert_eq!(
+        message,
+        "strict auto parameter resolution is not uniquely determined \u{2014} \
+         consider using auto(free) for exploration",
+        "the evidence-free branch has no measured cause to report and must keep \
+         its sentence byte-identical — `reify-eval/tests/resolution.rs`, \
+         `auto_binding_sites_remaining_resolution.rs` and \
+         `auto_sub_override_resolution.rs` all substring-match it, and the \
+         solution-set-completeness capability manifest greps for it"
+    );
+}
+
 // ── γ + a bound the DERIVATION cannot read (task #5711, esc-5711-3) ───────
 //
-// `strict_autos_constraint_bracketed` reads its evidence out of
+// `default_bounded_strict_autos` reads its evidence out of
 // `derive_param_intervals`, which recognises only three syntactic shapes
 // (`p OP c`, `p - k OP c`, `k - p OP c`) on `Ge`/`Gt`/`Le`/`Lt` with a
 // CONSTANT, auto-free far operand. Every other legitimate way to bound a
@@ -563,7 +815,7 @@ fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
     assert_not_non_unique(&problem, "coupled multi-param bound");
 }
 
-/// The KNOWN, ACCEPTED gap in `strict_autos_constraint_bracketed`: a γ blend
+/// The KNOWN, ACCEPTED gap in `default_bounded_strict_autos`: a γ blend
 /// that is FLAT with respect to a bracketed strict auto still reports
 /// `unique: true`.
 ///
@@ -578,7 +830,7 @@ fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
 /// The non-γ path gives the OPPOSITE verdict for the analogous shape
 /// (`solver.rs`'s `flat_objective_over_inequality_bracket_reports_non_unique`,
 /// via `classify_uniqueness`'s tie arm). That divergence is accepted, not
-/// overlooked — see `strict_autos_constraint_bracketed`'s "Known, ACCEPTED gap"
+/// overlooked — see `default_bounded_strict_autos`' "Known, ACCEPTED gap"
 /// section for the reasoning (the widening is monotone: γ reported
 /// `ConstraintNonUnique` for EVERY strict auto before #5711 amendment 2, so no
 /// previously-`Solved` model changes verdict).
@@ -611,7 +863,7 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
                 unique,
                 "ACCEPTED GAP: the γ predicate decides §11.6 test (2) from constraint \
                  bracketing alone, so a blend that is flat in `u` still reports unique. \
-                 If this flipped deliberately, update `strict_autos_constraint_bracketed`'s \
+                 If this flipped deliberately, update `default_bounded_strict_autos`' \
                  \"Known, ACCEPTED gap\" section rather than just this assertion"
             );
             let u_si = values
@@ -637,8 +889,8 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 /// `params_in_underivable_constraints` is deliberately general: a strict auto
 /// mentioned by ANY constraint the derivation cannot read abstains, including
 /// one whose missing side really is `default_bounds_for`'s. The unit tests
-/// pin the set-building half and `strict_autos_constraint_bracketed_abstains_
-/// for_underivable_param` pins the predicate, but nothing pinned the COMPOSED
+/// pin the set-building half and `default_bounded_strict_autos_abstains_for_
+/// underivable_param` pins the evidence function, but nothing pinned the COMPOSED
 /// verdict for a model that is genuinely unbounded on a side AND carries one
 /// unreadable conjunct. This is that model.
 ///
@@ -655,22 +907,21 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 ///   it, `t` lands in the abstention set, and the missing upper side stops
 ///   counting as evidence. Every λ now reports `Solved { unique: true }`.
 ///
-/// MEASURED at the same commit as this test, and this is the safety loss:
-/// λ=0 resolves `t = 10.0 m` — literally `default_bounds_for(Length)`'s ceiling,
-/// a value pinned by a solver-internal default the user never authored, for a
-/// mm-scale part. λ=0.5 and λ=1 resolve `t = 1.1 mm` (cost pulls to the lower
-/// bound). That is the SAME regression class `gamma_strict_auto_one_sided_
-/// stays_non_unique` exists to block — a loud error becoming a silent 10 m —
-/// reached through the abstention door rather than through a blanket
-/// `return true`.
+/// MEASURED, and this is the safety loss: λ=0 resolves `t = 10.0 m` — literally
+/// `default_bounds_for(Length)`'s ceiling, a value pinned by a solver-internal
+/// default the user never authored, for a mm-scale part. λ=0.5 resolves
+/// `t = 1.328859 mm` and λ=1 resolves `t = 1.000 mm` exactly (cost pulls to the
+/// lower bound, which the γ clamp box now reaches). That is the SAME regression
+/// class `gamma_strict_auto_one_sided_stays_non_unique` exists to block — a loud
+/// error becoming a silent 10 m — reached through the abstention door rather
+/// than through a blanket abstention.
 ///
 /// It is accepted rather than fixed because the alternative direction of error
 /// is worse: reading a blind spot as evidence was measured to REJECT valid,
 /// bounded models (the three `..._is_not_non_unique` fixtures above). Narrowing
 /// it means teaching `derive_from_expr` the missing shapes — coefficient forms
 /// first, which would close this exact fixture — not tightening the abstention
-/// test. Tracked as task #6465 (γ quality: seed-invariance, or a precise
-/// diagnostic for default-bounds-determined γ models). Do not re-file.
+/// test.
 ///
 /// A CHARACTERISATION test: it asserts today's behaviour, not desired
 /// behaviour. If a future change makes this error again, that is progress —
@@ -737,14 +988,15 @@ fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
                 } else {
                     assert!(
                         t_si > 0.001,
-                        "λ={lambda}: cost pulls `t` to its lower bound (measured: 1.1mm); it \
-                         must still satisfy `t > 1mm`, got {t_si:.6e} m"
+                        "λ={lambda}: cost pulls `t` toward its lower bound (measured: \
+                         1.328859mm at λ=0.5, 1.000mm at λ=1); it must still satisfy \
+                         `t > 1mm`, got {t_si:.6e} m"
                     );
                 }
             }
             other => panic!(
                 "λ={lambda}: expected Solved via the abstention door (measured: \
-                 unique=true, t=10.0 m at λ=0 and t=1.1mm otherwise); got {other:?}"
+                 unique=true, t=10.0 m at λ=0 and mm-scale otherwise); got {other:?}"
             ),
         }
     }

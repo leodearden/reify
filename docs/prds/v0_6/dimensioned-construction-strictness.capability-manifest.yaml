@@ -337,7 +337,7 @@ tasks:
       kind: manual
       reason: a non-regression floor inside δ₁''s own diff; no stable ex-ante pattern.
   - name: four-deliberate-pins-to-invert-exist
-    binding: grep:crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:172
+    binding: grep:crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:172
       and :203; grep:crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:173
       and :578 — all four present at HEAD. They are the "test asserting the negation
       of the PRD decision, added deliberately" tell of a silent reversal; inverting
@@ -348,7 +348,7 @@ tasks:
       kind: grep
       pattern: do_not_error|does_not_error
       paths:
-      - crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
+      - crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs
       - crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs
       expect: absent
 - label: δ₂

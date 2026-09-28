@@ -50,7 +50,7 @@ import {
   onDisplayAppearanceUpdate,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
-import type { KernelStatus } from '../bridge';
+import type { EditOrder, KernelStatus } from '../bridge';
 import { open, ask as pluginAsk } from '@tauri-apps/plugin-dialog';
 import * as bridgeAll from '../bridge';
 
@@ -59,6 +59,8 @@ const mockPluginAsk = vi.mocked(pluginAsk);
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
+
+const ANY_EDIT_ORDER = { epoch: expect.any(Number), seq: expect.any(Number) };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -90,39 +92,77 @@ describe('bridge commands', () => {
   // The two wire names carry opposite cadences, so a swap would be silent and
   // expensive: previews would rewrite the design 60 times a second, and a
   // released slider would leave nothing behind. Pinned side by side.
-  it('setParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] };
-    mockInvoke.mockResolvedValue(rawState);
+  it('setParameter calls invoke with cellId, value and an edit order', async () => {
+    mockInvoke.mockResolvedValue(null);
 
     await setParameter('cell_001', '42.0');
 
     expect(mockInvoke).toHaveBeenCalledWith('set_parameter', {
       cellId: 'cell_001',
       value: '42.0',
+      order: ANY_EDIT_ORDER,
     });
   });
 
-  it('previewParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = {
-      meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
-      values: [],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-    };
-    mockInvoke.mockResolvedValue(rawState);
+  it('previewParameter calls invoke with cellId, value and an edit order', async () => {
+    mockInvoke.mockResolvedValue(null);
 
-    const result = await previewParameter('cell_001', '42.0');
+    await previewParameter('cell_001', '42.0');
 
     expect(mockInvoke).toHaveBeenCalledWith('preview_parameter', {
       cellId: 'cell_001',
       value: '42.0',
+      order: ANY_EDIT_ORDER,
     });
-    // Converted through `convertRawGuiState` like its sibling — a preview feeds
-    // the same viewport, so it cannot hand back a differently shaped state.
-    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
-    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
+  });
+
+  it('updateSource calls invoke with path, content and an edit order', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await updateSource('main.ri', 'updated');
+
+    expect(mockInvoke).toHaveBeenCalledWith('update_source', {
+      path: 'main.ri',
+      content: 'updated',
+      order: ANY_EDIT_ORDER,
+    });
+  });
+
+  // The backend keeps only the newest edit of each cell or buffer, judged by
+  // these stamps. One counter serves all three calls, so a slider's commit
+  // outranks every preview of its own drag.
+  it('edit orders share one epoch and a strictly increasing seq across all edit calls', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await Promise.all([
+      previewParameter('c1', '1'),
+      updateSource('main.ri', 'a'),
+      previewParameter('c1', '2'),
+      setParameter('c1', '2'),
+      previewParameter('c2', '3'),
+    ]);
+
+    const orders = mockInvoke.mock.calls.map(([, args]) => (args as { order: EditOrder }).order);
+    expect(orders).toHaveLength(5);
+    for (const { epoch, seq } of orders) {
+      // Both arrive as a Rust u64.
+      expect(Number.isSafeInteger(epoch) && epoch >= 0).toBe(true);
+      expect(Number.isSafeInteger(seq) && seq >= 0).toBe(true);
+    }
+    expect(new Set(orders.map(({ epoch }) => epoch)).size).toBe(1);
+    for (let i = 1; i < orders.length; i++) {
+      expect(orders[i].seq).toBeGreaterThan(orders[i - 1].seq);
+    }
+  });
+
+  // Tauri sends `null` for a Rust `()`. An edit's resulting state reaches the
+  // store only through delta events, so its reply is never read.
+  it('edit calls resolve to undefined without reading the reply', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(setParameter('c1', '42.0')).resolves.toBeUndefined();
+    await expect(previewParameter('c1', '42.0')).resolves.toBeUndefined();
+    await expect(updateSource('main.ri', 'updated')).resolves.toBeUndefined();
   });
 
   it('saveFile calls invoke with both path and content', async () => {
@@ -145,48 +185,6 @@ describe('bridge commands', () => {
       format: 'step',
       path: '/tmp/output.step',
     });
-  });
-
-  // S5: setParameter should return a converted GuiState (not void)
-  it('setParameter returns a GuiState with typed arrays', async () => {
-    const rawState: RawGuiState = {
-      meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
-      values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter', freshness: 'final' }],
-      constraints: [],
-      files: [],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-    };
-    mockInvoke.mockResolvedValue(rawState);
-
-    const result = await setParameter('c1', '42.0');
-
-    expect(mockInvoke).toHaveBeenCalledWith('set_parameter', { cellId: 'c1', value: '42.0' });
-    // result should be a converted GuiState with typed arrays
-    expect(result).toBeDefined();
-    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
-    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
-    expect(result.values).toHaveLength(1);
-  });
-
-  // S6: updateSource should return a converted GuiState (not void)
-  it('updateSource returns a GuiState with typed arrays', async () => {
-    const rawState: RawGuiState = {
-      meshes: [],
-      values: [],
-      constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
-      files: [{ path: 'main.ri', content: 'updated' }],
-      tessellation_diagnostics: [],
-      compile_diagnostics: [],
-    };
-    mockInvoke.mockResolvedValue(rawState);
-
-    const result = await updateSource('main.ri', 'updated');
-
-    expect(mockInvoke).toHaveBeenCalledWith('update_source', { path: 'main.ri', content: 'updated' });
-    expect(result).toBeDefined();
-    expect(result.constraints).toHaveLength(1);
-    expect(result.files).toHaveLength(1);
   });
 
   it('getEntityTree calls invoke with get_entity_tree and returns payload', async () => {

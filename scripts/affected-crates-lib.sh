@@ -20,7 +20,9 @@
 #                              An empty print means "this file list provably
 #                              touches zero crates" and is a POSITIVE answer,
 #                              not a failure to answer; see the function's own
-#                              header. Always returns 0.
+#                              header. A per-crate manifest touch additionally
+#                              contributes the crate-DAG gate's host crate.
+#                              Always returns 0.
 #   reify_is_inert_path <path> true iff the path is documentation or
 #                              configuration (docs/**, *.md, *.yaml, *.yml).
 #                              The shared definition of that class; verify.sh's
@@ -41,6 +43,17 @@ fi
 _REIFY_AFFECTED_CRATES_LIB_SOURCED=1
 
 _AFFECTED_CRATES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The crate hosting tests/crate_dag_assertion.rs, the workspace-wide crate-DAG
+# gate, which _is_crate_manifest below pulls into an otherwise narrowed
+# affected set. Rule and rationale: docs/prds/verify-scope-contract.md §3,
+# "Per-crate manifest touches also contribute the crate-DAG gate".
+# Nothing downstream validates this name — it is appended outside the closure,
+# so cargo never sees it until verify.sh expands it into `-p <crate>`. Instead
+# tests/infra/test_affected_crates_lib.sh pins it to a real workspace member
+# that hosts the gate, so relocating the gate reds that suite rather than
+# silently disarming this rule (or emitting a bogus package selector).
+_REIFY_DAG_GATE_CRATE="reify-build-utils"
 
 # Shared compile-closure primitive (_reify_compile_closure): _reverse_closure
 # below delegates to it instead of carrying its own copy of the
@@ -121,6 +134,22 @@ _is_noncrate() {
 # editing this line from memory. Each crate is declared in its own right, never
 # left to arrive transitively through another seed's dep edge.
 _RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui"
+
+# _is_crate_manifest <path> — returns 0 (true) if the path is a per-crate
+# Cargo manifest, i.e. a file whose edit can restructure the workspace crate
+# DAG. Matches the two per-crate manifest locations in this workspace:
+# crates/<name>/Cargo.toml and gui/src-tauri/Cargo.toml.
+# The crates/*/Cargo.toml glob crosses `/`, so it would also match a nested
+# manifest. There are none today, and matching more only ever WIDENS the
+# affected set — the safe direction under C5 — so no depth pinning.
+_is_crate_manifest() {
+    local path="$1"
+    case "$path" in
+        crates/*/Cargo.toml)      return 0 ;;
+        gui/src-tauri/Cargo.toml) return 0 ;;
+    esac
+    return 1
+}
 
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
 # nothing if the path is not under a known crate location.
@@ -252,6 +281,14 @@ _reverse_closure() {
     printf '%s\n' "$closure"
 }
 
+# _emit_affected <value>... — affected_crates' single stdout writer, ALL
+# sentinel included; prints sorted-unique. Must stay a pipeline ending in an
+# external command, so a closed caller pipe (`grep -q` under pipefail) kills
+# `sort`, not this shell; `|| true` keeps affected_crates' always-return-0.
+_emit_affected() {
+    printf '%s\n' "$@" | sort -u || true
+}
+
 # affected_crates <file>... — print the affected workspace crate set, one name
 # per line, sorted; or print the literal ALL if any C4/C5 condition fires; or
 # print NOTHING if every path is crate-unmappable-but-known (the non-crate
@@ -274,7 +311,7 @@ affected_crates() {
     local arg
     for arg in "$@"; do
         if _is_global "$arg"; then
-            echo ALL
+            _emit_affected ALL
             return 0
         fi
     done
@@ -284,7 +321,13 @@ affected_crates() {
     # header for why that order is the contract on both sides of the SPOT).
     local direct=()
     local crate
+    local manifest_touched=0
     for arg in "$@"; do
+        # Independent of attribution: a manifest path is also attributed to
+        # its own crate just below, like any other file that crate owns.
+        if _is_crate_manifest "$arg"; then
+            manifest_touched=1
+        fi
         crate="$(_file_to_crate "$arg")"
         if [ -n "$crate" ]; then
             direct+=("$crate")
@@ -293,7 +336,7 @@ affected_crates() {
             continue
         else
             # C5: unmappable path — fail wide.
-            echo ALL
+            _emit_affected ALL
             return 0
         fi
     done
@@ -306,6 +349,29 @@ affected_crates() {
 
     # Expand the direct crate set through the reverse-dependency closure, then
     # emit sorted-unique (one crate per line).
-    printf '%s\n' "${direct[@]}" | _reverse_closure
+    local closure
+    closure="$(printf '%s\n' "${direct[@]}" | _reverse_closure)"
+
+    # ALL is a sentinel, not a crate name, so a fail-wide closure is emitted
+    # unchanged and never reaches the union below. The empty test is a
+    # DELIBERATE second enforcement of the header's one-empty-print-producer
+    # invariant, unreachable while _reverse_closure keeps its own C5 rule (see
+    # its header). Not dead code: it stops a regression there from reaching
+    # verify.sh as "provably zero crates".
+    if [ -z "$closure" ] || [ "$closure" = "ALL" ]; then
+        _emit_affected ALL
+        return 0
+    fi
+
+    # A manifest touch additionally contributes the crate-DAG gate's host
+    # crate, unioned into the RESULT of the closure rather than seeded into it.
+    # Rule and rationale: docs/prds/verify-scope-contract.md §3, "Per-crate
+    # manifest touches also contribute the crate-DAG gate".
+    local -a emit=("$closure")
+    if [ "$manifest_touched" -eq 1 ]; then
+        emit+=("$_REIFY_DAG_GATE_CRATE")
+    fi
+
+    _emit_affected "${emit[@]}"
     return 0
 }

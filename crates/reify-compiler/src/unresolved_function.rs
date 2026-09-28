@@ -212,13 +212,10 @@ pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// Groups below are by owning registry task, and every entry has a verified one
 /// — the manifest is a ledger of live deferrals, not a graveyard.
 ///
-/// **One exception, stated rather than papered over:** `RepresentationWithin`
-/// (last group) has no owning τ task. It was surfaced by #5371's corpus sweep,
-/// it is a landed language feature, and no registry task enumerates it because
-/// every τ task enumerates value-returning builtins while this one appears only
-/// in constraint position. Assigning it an owner is filed as follow-up ticket
-/// `tkt_0RT1CF3Q06BNRBRGCS970CVB75`; #6014 needs it resolved before it can
-/// delete the fallback.
+/// `RepresentationWithin` (last group) was the last entry to get an owner: it is
+/// constraint-position only, so no value-returning τ enumeration reached it.
+/// #7035 ruled it onto τ8 as an `EnginePostProcess` row — see
+/// `docs/prds/v0_6/builtin-signature-registry.md` §3 decision 4.
 ///
 /// # Screened out — names that look eval-dispatchable but never reach a call site
 ///
@@ -375,25 +372,22 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "profile_duration",
     "profile_duration_at",
     "piecewise_polynomial",
-    // --- representation-tolerance constraint verb — NO VERIFIED REGISTRY OWNER
-    // The one entry in this manifest with no owning τ task, stated plainly
-    // rather than filed under the nearest plausible one. Assigning an owner is
-    // follow-up ticket `tkt_0RT1CF3Q06BNRBRGCS970CVB75`.
+    // --- representation-tolerance constraint verb — owner #6010 (registry τ8) / #6944 ---
+    // It lands as an `EnginePostProcess` row, per the #7035 ruling
+    // (`docs/prds/v0_6/builtin-signature-registry.md` §9 τ-queries/selectors).
     //
-    // `RepresentationWithin(subject, bound)` is a fully landed language feature
-    // (#4198 measured the metric, #4199 promoted it from a budget extractor to
-    // a three-valued assertion, #6167/#6170 built the bound pre-pass and the
-    // export refusal — all done), specified by
+    // `RepresentationWithin(subject, bound)` is a landed language feature
+    // (#4198/#4199/#6167/#6170), specified by
     // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`. It is
-    // recognised engine-side by name at
-    // `reify-eval/src/tolerance_combine::match_representation_within_shape` and
-    // reaches no compiler classification family, so its 11 corpus call sites
-    // all rode the terminal fallback silently. It is NOT a typo and NOT dead.
+    // recognised engine-side by exact name in `reify-eval`'s
+    // `tolerance_combine::match_representation_within_shape` and reaches no
+    // compiler classification family. It is NOT a typo and NOT dead.
     //
-    // It is also the only manifest entry that appears exclusively in CONSTRAINT
-    // position — it yields no value cell anyone reads — which is why the
-    // fallback's mistyping of it has never been observable, and why none of the
-    // τ tasks enumerating value-returning builtins picked it up.
+    // It is the only manifest entry that appears exclusively in CONSTRAINT
+    // position, which is why the value-returning τ enumerations missed it. The
+    // fallback's mistyping IS observable: it types the call as its StructureRef
+    // subject, so every site draws `constraint expression has type <Subject>,
+    // expected Bool`. τ8's `Const(Bool)` row removes that warning.
     //
     // Deliberately NOT snake_case: the surface spelling is PascalCase, unlike
     // every other name here. Do not "normalise" it — the engine matches this
@@ -1002,8 +996,7 @@ mod tests {
     /// * the `std.fea` MultiCaseResult accessors, name-dispatched in
     ///   `reify-stdlib/src/fea.rs`'s `eval_fea` and absent from every compiler
     ///   family. Owned by #6006 (registry τ4), which names every one of them
-    ///   explicitly — an earlier draft of this comment called them un-owned,
-    ///   which was wrong.
+    ///   explicitly.
     #[test]
     fn eval_deferred_manifest_contains_the_known_deferred_names() {
         for name in [
@@ -1011,7 +1004,7 @@ mod tests {
             "floor", "ceil", "round", "sinh", "cosh", "tanh", "log10",
             // --- #6943: dimension-transforming complex ---
             "complex_mul", "complex_div", "complex_pow",
-            // --- un-owned: std.fea MultiCaseResult accessors ---
+            // --- #6006 (registry τ4): std.fea MultiCaseResult accessors ---
             "result_for", "case_names", "worst_case", "linear_combine",
             "envelope_max", "envelope_min", "min_max_stress",
         ] {

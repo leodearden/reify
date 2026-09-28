@@ -7,6 +7,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+mod discrete_fallback;
 mod dual_jacobian;
 pub mod relate_solve;
 mod registry;

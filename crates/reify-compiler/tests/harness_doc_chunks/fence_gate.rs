@@ -147,6 +147,8 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
+use std::path::{Path, PathBuf};
+
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
 use crate::geometry_chunk_smoke::reify_tagged_fences;
@@ -157,14 +159,16 @@ use crate::geometry_chunk_smoke::reify_tagged_fences;
 
 /// One fenced code block, as this gate sees it.
 #[derive(Debug, Clone)]
-struct Fence {
+pub(crate) struct Fence {
     /// 1-based position in document order across the whole file. This, not the
     /// line number, is what a violation message leads with: a reader counting
     /// fences down a rendered chunk can find "fence #4" without a line-numbered
     /// view of the source.
     ordinal: usize,
     /// 1-based line number of the OPENING delimiter.
-    open_line: usize,
+    pub(crate) open_line: usize,
+    /// 1-based line number of the CLOSING delimiter.
+    pub(crate) close_line: usize,
     /// The info string with surrounding whitespace trimmed; `None` for a bare
     /// opening delimiter.
     tag: Option<String>,
@@ -235,7 +239,7 @@ struct Fence {
 /// Silently dropping it would be the worst outcome for an omission-drift gate:
 /// the offending block would vanish from the scan and the corpus test would go
 /// green *because* the file is malformed.
-fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
+pub(crate) fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
     /// The leading run of a single CommonMark fence character at column 0:
     /// `(character, length)`, or `None` for a line that starts with neither.
     ///
@@ -313,6 +317,7 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
             fences.push(Fence {
                 ordinal: fences.len() + 1,
                 open_line: state.line,
+                close_line: line_no,
                 tag: state.tag,
                 body: state.body.join("\n"),
             });
@@ -638,7 +643,7 @@ const LANGUAGE_CHUNKS_RS: &str = concat!(
 /// Sorted because `read_dir` order is filesystem-dependent: without this a
 /// failure list would shuffle between machines and a diff of two runs would be
 /// unreadable. Mirrors `pdoccover`'s sorted-corpus discipline.
-fn discover_chunk_stems() -> Vec<String> {
+pub(crate) fn discover_chunk_stems() -> Vec<String> {
     let entries = std::fs::read_dir(CHUNKS_DIR).unwrap_or_else(|e| {
         panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunk dir moved")
     });
@@ -661,7 +666,7 @@ fn discover_chunk_stems() -> Vec<String> {
 }
 
 /// The text of one chunk file.
-fn read_chunk_file(stem: &str) -> String {
+pub(crate) fn read_chunk_file(stem: &str) -> String {
     let path = format!("{CHUNKS_DIR}/{stem}.md");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{path} must be readable ({e})"))
@@ -669,8 +674,42 @@ fn read_chunk_file(stem: &str) -> String {
 
 /// The repo-relative label used in violation messages, so a failure reads as a
 /// path a developer can open rather than an absolute build-machine path.
-fn chunk_label(stem: &str) -> String {
+pub(crate) fn chunk_label(stem: &str) -> String {
     format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
+}
+
+/// Every chunk as `(stem, markdown)`, in stem order, for the corpus-wide check
+/// `gate` names — after asserting the scan found the whole corpus, so a check
+/// over a vacuous scan fails rather than passes.
+pub(crate) fn all_chunks(gate: &str) -> Vec<(String, String)> {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — {gate} would \
+         be vacuous",
+        stems.len()
+    );
+    stems
+        .into_iter()
+        .map(|stem| {
+            let markdown = read_chunk_file(&stem);
+            (stem, markdown)
+        })
+        .collect()
+}
+
+/// Repo root, derived from this crate's manifest dir
+/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
+/// binary resolves against.
+pub(crate) fn repo_root() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| {
+            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
+        })
+        .to_path_buf()
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,6 +1175,32 @@ fn an_empty_fence_body_parses_as_the_empty_string() {
 
     assert_eq!(fences.len(), 1, "got {fences:#?}");
     assert_eq!(fences[0].body, "");
+}
+
+/// `close_line` is the 1-based line of the CLOSING delimiter — the one line a
+/// fence's extent cannot be derived from its body without.
+#[test]
+fn close_line_is_the_one_based_line_of_the_closing_delimiter() {
+    let md = "prose\n\
+              ```reify-schematic\n\
+              ```\n\
+              between\n\
+              ```reify\n\
+              structure def S { let n = 1 }\n\
+              ````\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+
+    let extents: Vec<(usize, usize)> = fences
+        .iter()
+        .map(|fence| (fence.open_line, fence.close_line))
+        .collect();
+    assert_eq!(
+        extents,
+        vec![(2, 3), (5, 7)],
+        "an empty-bodied fence closes on the line after it opens; a longer closing run \
+         still closes its fence"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1979,7 +2044,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// test, `corpus_counts_are_exact_not_slack`, so a diff that legitimately adds
 /// a chunk or a fence gets a message telling it to re-measure rather than a
 /// vacuity warning describing a bug that did not happen.
-const CHUNK_FILE_COUNT: usize = 17;
+pub(crate) const CHUNK_FILE_COUNT: usize = 17;
 const TOTAL_FENCE_COUNT: usize = 76;
 
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
@@ -2108,7 +2173,7 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
 }
 
 /// Render an accumulated violation list as one panic message.
-fn report(check: &str, violations: &[String]) {
+pub(crate) fn report(check: &str, violations: &[String]) {
     assert!(
         violations.is_empty(),
         "{check}: {} violation(s)\n\n{}\n",

@@ -68,12 +68,32 @@ use std::time::{Duration, Instant};
 use reify_audit::jcodemunch_client::JcodemunchClient;
 use serde_json::{json, Value};
 
-/// The jcodemunch-mcp release this test pins.
-///
-/// 1.108.27 (the version some older notes cite) is no longer on PyPI — only
-/// its git tag survives — so `uvx --from jcodemunch-mcp==1.108.27` cannot
-/// resolve. 1.108.54 is on PyPI and matches the watcher pin.
+/// A MIRROR of `JC_PIN` in `scripts/lib_jcodemunch_pin.sh` (bare version, since
+/// this test builds its own `jcodemunch-mcp==…` requirement string), on the same
+/// terms as [`JCODEMUNCH_PYTHON`] below: the lib is the single definition site,
+/// `tests/infra/test_with_jcodemunch_serve.sh` cross-checks the two on the gate
+/// via `jc_pin_alpha`, and the lib carries the pin-bump rationale and checklist.
 const JCODEMUNCH_PIN: &str = "1.108.54";
+
+/// A MIRROR of `JC_PYTHON` in `scripts/lib_jcodemunch_pin.sh`, which is the
+/// single definition site for the pin, the interpreter and the identity lever.
+/// A Rust test cannot source a shell lib, so it mirrors the value in a const and
+/// `tests/infra/test_with_jcodemunch_serve.sh` cross-checks the two on the gate
+/// (`jc_python_alpha` reads this const BY NAME — renaming it reds that guard).
+/// Bump the lib, never this const alone.
+///
+/// The lib carries WHY: why the interpreter is pinned at all, the measurements
+/// that authorise this value, and the PIN-BUMP CHECKLIST. Do not restate them
+/// here — this comment is not cross-checked against the lib, so a second copy of
+/// a measurement record is a drift surface with no guard over it.
+///
+/// The one α-LOCAL consequence, recorded here because it is about THIS file's
+/// readiness check: the serve reports `result.serverInfo.version` as upstream's
+/// INTERNAL version string, NOT the PyPI wheel version — which is why
+/// [`Serve::await_ready`] asserts on `serverInfo.name` and must never be
+/// "tightened" to assert the version. It would compare the wheel pin against a
+/// number that has nothing to do with it.
+const JCODEMUNCH_PYTHON: &str = "3.13";
 
 /// Mirrors `jcodemunch_client`'s private `PROTOCOL_VERSION`. Duplicated
 /// rather than exported: this test speaks the wire protocol directly, and a
@@ -156,7 +176,7 @@ impl Serve {
         let child = Command::new(&uvx)
             .args([
                 "--python",
-                "3.12",
+                JCODEMUNCH_PYTHON,
                 "--from",
                 &format!("jcodemunch-mcp=={JCODEMUNCH_PIN}"),
                 "jcodemunch-mcp",
