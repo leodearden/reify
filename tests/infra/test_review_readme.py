@@ -338,6 +338,18 @@ class PreflightTest(ReviewReadmeFixture):
         self.assert_still_staged(GETTING_STARTED, content)
         self.assertEqual(self.head(), before, _diag(result))
 
+    def test_staged_wip_whose_worktree_copy_matches_HEAD_defers_with_75(self):
+        content = "# Fixture README\nhuman staged WIP, worktree reverted\n"
+        (self.main / README).write_text(content)
+        self.git("add", "--", README)
+        self.git("restore", "--source=HEAD", "--worktree", "--", README)
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_APPEND="REVIEWED-LINE")
+        self.assertEqual(result.returncode, self.EX_TEMPFAIL, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assert_still_staged(README, content)
+        self.assertEqual(self.head(), before, _diag(result))
+
     def test_off_main_checkout_refuses(self):
         main_before = self.head()
         self.git("switch", "-q", "-c", "feature")

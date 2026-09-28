@@ -48,7 +48,8 @@ preflight() {
             exit 1
         fi
     done
-    if ! git diff --quiet HEAD -- "${TARGET_FILES[@]}"; then
+    if ! git diff --quiet HEAD -- "${TARGET_FILES[@]}" \
+        || ! git diff --cached --quiet HEAD -- "${TARGET_FILES[@]}"; then
         echo "DEFER: uncommitted changes to target files; not overwriting human WIP"
         exit 75
     fi
