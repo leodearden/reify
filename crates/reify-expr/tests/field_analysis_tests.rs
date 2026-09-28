@@ -1391,10 +1391,10 @@ fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
 // see, and a Linear sample is a convex combination of node values.
 //
 // Every expected value below is exact in binary: the inputs are integers or
-// dyadics, `lerp(a, b, t) = a + (b − a)·t` is exact at t ∈ {0, 0.5, 1} for
-// them, and at t = 0 it returns `a` bit for bit whenever the right neighbour is
-// finite. `Value::eq` compares f64 bits, so whole values are compared with
-// `assert_eq!`; every zero here is +0.0.
+// dyadics, `lerp(a, b, t) = a + (b − a)·t` is exact at t = 0.5 for them, and
+// at a grid node the interpolator returns the node sample bit for bit (the
+// `reify_expr::interp` module doc). `Value::eq` compares f64 bits, so whole
+// values are compared with `assert_eq!`; every zero here is +0.0.
 
 /// Build `sample(<field>, <at>)`, typed as the field's codomain.
 fn sample_call((field, field_type): &(Value, Type), at: Value, at_type: Type) -> CompiledExpr {
@@ -1528,13 +1528,49 @@ fn sampled_backed_von_mises_wrapper_samples_to_its_reduction_extrema_at_their_ar
 /// matching end of the sampled List is compared.
 #[test]
 fn every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates() {
+    assert_every_wrapper_kind_samples_to_its_reduction_extrema(sampled_stress_fixture);
+}
+
+/// The peak node x = 2 borders an out-of-solid sentinel at x = 3, the
+/// surface-node case of a real solve.
+fn sampled_stress_with_peak_beside_exterior_fixture() -> (Value, Type) {
+    let sf = make_sampled_tensor_1d(
+        "stress_with_peak_beside_exterior",
+        vec![0.0, 1.0, 2.0, 3.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(175e6),
+            uniaxial_window(250e6),
+            [f64::NAN; 9], // out-of-solid sentinel
+        ],
+    );
+    wrap_sampled_stress_field(sf)
+}
+
+/// Node equality holds where the arg node borders an out-of-solid window:
+/// `sample(W, argmax(W)) == max(W)`. `argmax` of `von_mises`, `max_shear` and
+/// `principal_stresses`, and `argmin` of `safety_factor`, all land on x = 2,
+/// the finite node beside the NaN sentinel.
+#[test]
+fn every_wrapper_kind_samples_to_its_reduction_extrema_where_the_arg_node_borders_an_out_of_solid_window()
+ {
+    assert_every_wrapper_kind_samples_to_its_reduction_extrema(
+        sampled_stress_with_peak_beside_exterior_fixture,
+    );
+}
+
+/// Sample every wrapper kind over `stress_fixture()` at its own
+/// `argmax`/`argmin` and assert it equals its `max`/`min`.
+fn assert_every_wrapper_kind_samples_to_its_reduction_extrema(
+    stress_fixture: fn() -> (Value, Type),
+) {
     for kind in [
         "von_mises",
         "max_shear",
         "principal_stresses",
         "safety_factor",
     ] {
-        let wrapper = analysis_wrapper(kind, sampled_stress_fixture());
+        let wrapper = analysis_wrapper(kind, stress_fixture());
         for (arg_reduction, reduction) in [("argmax", "max"), ("argmin", "min")] {
             let (field, field_type) = wrapper.clone();
             let at = reduce(
@@ -1627,9 +1663,8 @@ fn max_shear_principal_stresses_and_safety_factor_sample_their_node_projections(
 /// window is `Undef` for every wrapper kind — never NaN — while a sample over
 /// a fully finite cell of the same field keeps its value.
 ///
-/// Nothing is asserted AT x = 2, the finite node beside the sentinel: a t = 0
-/// lerp against a NaN right neighbour yields NaN there, an interpolation
-/// artefact rather than a contract worth pinning.
+/// The finite node x = 2 beside the sentinel keeps its node value, pinned by
+/// `every_wrapper_kind_samples_to_its_reduction_extrema_where_the_arg_node_borders_an_out_of_solid_window`.
 #[test]
 fn sampled_backed_wrapper_samples_undef_where_the_stencil_touches_an_out_of_solid_window() {
     for (kind, at_node) in [

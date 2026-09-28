@@ -34,33 +34,29 @@
 //!   `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
 //! - Pointwise `sample()`, here (`sample_tensor_grid_at_point`): project every
 //!   window FIRST, then interpolate the projected node values with the grid's
-//!   own method. A sample whose interpolation stencil holds a non-finite node
-//!   value (an out-of-solid sentinel window, or a hydrostatic node's infinite
-//!   safety factor) is `Value::Undef`, and an out-of-bounds query is
+//!   own method. A sample that gives a non-finite node value (an out-of-solid
+//!   sentinel window, or a hydrostatic node's infinite safety factor) nonzero
+//!   interpolation weight is `Value::Undef`, and an out-of-bounds query is
 //!   `Value::Undef` with one `W_FIELD_OUT_OF_BOUNDS` warning per backing field
 //!   per session.
 //!
-//! The two consumers agree wherever the stencil is finite: at a grid node a
-//! sample equals the value the reductions scan, and under Linear /
-//! NearestNeighbor every sample lies within the wrapper's `[min, max]`. Each
-//! per-kind kernel is applied in both places — the `sample_*_at_point`
-//! closures here and the `project_*_sampled` functions in
+//! The two consumers agree: at every grid node the reductions count, a sample
+//! equals that node's value — a surface node beside an out-of-solid window
+//! included, because the interpolator leaves zero-weight samples out of the
+//! sum ([`crate::interp`], "Grid nodes and non-finite samples") — and under
+//! Linear / NearestNeighbor every defined sample lies within the wrapper's
+//! `[min, max]`. Each per-kind kernel is applied in both places — the
+//! `sample_*_at_point` closures here and the `project_*_sampled` functions in
 //! `field_reductions.rs` — and
 //! `every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates`
-//! (`tests/field_analysis_tests.rs`) pins the two to the same node values.
+//! and
+//! `every_wrapper_kind_samples_to_its_reduction_extrema_where_the_arg_node_borders_an_out_of_solid_window`
+//! (`tests/field_analysis_tests.rs`) pin the two to the same node values.
 //!
-//! Node equality has two exceptions:
-//!
-//! - A finite node beside a non-finite one. The interpolation stencil includes
-//!   zero-weight corners — a Linear query AT a node still reads the neighbour
-//!   across its cell, with weight 0 — and a NaN there poisons the sum anyway.
-//!   Such a node samples as `Value::Undef` although the reductions count its
-//!   value; on a real solve that is the solid's surface, where the peak often
-//!   sits, so `sample(W, argmax(W))` can be `Value::Undef` there.
-//! - A non-positive safety-factor yield. The reductions refuse it
-//!   (`project_safety_factor_sampled` → `Value::Undef`), while `sample()`
-//!   follows the pointwise `safety_factor` builtin and returns
-//!   yield / von Mises.
+//! Node equality has one exception, a non-positive safety-factor yield. The
+//! reductions refuse it (`project_safety_factor_sampled` → `Value::Undef`),
+//! while `sample()` follows the pointwise `safety_factor` builtin and returns
+//! yield / von Mises.
 //!
 //! What that makes reachable for a `Field { source: Sampled }` tensor input:
 //!
