@@ -13,7 +13,10 @@
 
 set -euo pipefail
 
-REPO="/home/leo/src/reify"
+# shellcheck source=scripts/lib_main_checkout.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib_main_checkout.sh"
+
+REPO="$(reify_main_checkout)" || { echo "ERROR: cannot resolve the main checkout" >&2; exit 1; }
 CLAUDE_BIN="${CLAUDE_BIN:-/home/leo/.local/bin/claude}"
 TARGET_FILES=(README.md docs/getting-started.md)
 
