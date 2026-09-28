@@ -21,10 +21,12 @@
 //! a behaviour change: both were layout-only moves that preserved every `<file>::<test>`
 //! module path.
 //!
-//! `common` (tests/common/mod.rs) is declared ONCE here rather than once per includer: 5
-//! of the submodules below reference it, and each carrying its own file-backed copy would
-//! multiply the compile unit's line count for no behavioral difference. Submodules reach
-//! it via `use crate::common::...`.
+//! `common` (tests/common/mod.rs) is declared ONCE here rather than once per includer:
+//! every consumer of `common::as_printed` lives in this unit, so this is the one reify-eval
+//! root that declares `mod common;`. Submodules reach it via `use crate::common...`.
+//! Task #7033 folded in the two former standalone `fdm_*` binaries (`fdm_bracket_e2e`,
+//! `fdm_progressive_refinement_e2e`): layout-only, stems preserved, so
+//! `fdm_bracket_e2e::<test>` selectors still resolve.
 mod common;
 
 #[path = "harness_fea_solver_e2e/as_printed_body_realization_e2e.rs"]
@@ -41,6 +43,10 @@ mod as_printed_trampoline;
 // (task #6630; pinned by tests/infra/test_heavy_filter_atoms.sh Assertion G).
 #[path = "harness_fea_solver_e2e/edit_path_optimized_dispatch.rs"]
 mod edit_path_optimized_dispatch;
+#[path = "harness_fea_solver_e2e/fdm_bracket_e2e.rs"]
+mod fdm_bracket_e2e;
+#[path = "harness_fea_solver_e2e/fdm_progressive_refinement_e2e.rs"]
+mod fdm_progressive_refinement_e2e;
 #[path = "harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs"]
 mod fea_bracket_minimize_mass_e2e;
 #[path = "harness_fea_solver_e2e/fea_cold_start_heuristic_e2e.rs"]

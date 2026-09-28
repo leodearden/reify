@@ -26,8 +26,8 @@
 //
 // This file is auto-covered by:
 //   - crates/reify-compiler/tests/examples_smoke.rs  (compile-clean bulk walk)
-//   - crates/reify-eval/tests/as_printed_body_realization_e2e.rs (material field gate)
-//   - crates/reify-eval/tests/fdm_bracket_e2e.rs (as-printed vs homogeneous solve gate)
+//   - crates/reify-eval/tests/harness_fea_solver_e2e/as_printed_body_realization_e2e.rs (material field gate)
+//   - crates/reify-eval/tests/harness_fea_solver_e2e/fdm_bracket_e2e.rs (as-printed vs homogeneous solve gate)
 
 structure FdmBracket {
     param length    : Length = 40mm

@@ -149,7 +149,7 @@ structure def NoDamping : DampingDescriptor { }
 // it is the arm that would go red if `modal_ops` stopped feeding 2π·f. The
 // SYMMETRY half (the two terms scale oppositely in ω, which is why α is not
 // typed `AngularVelocity`) is pinned secondarily by
-// `modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+// `reify_stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
 // — an algebraic property of the closed form only; it does NOT observe the
 // producer's ω scale.
 //

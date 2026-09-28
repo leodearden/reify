@@ -842,10 +842,13 @@ fn enum_access_lowering_unchanged() {
 /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` with `3`
 /// slid into position 1 — a silent arity corruption.
 ///
-/// It is NOT protected by "the parse errored anyway": `reify_compiler`'s
-/// `forward_parse_errors` downgrades every parse error to a WARNING, so a
-/// library consumer that compiles and reads diagnostics gets the mis-arity'd
-/// call with no error to bail on.
+/// It is NOT protected by "the parse errored anyway": the lowered AST is
+/// observable independently of the error list, so a consumer that inspects it
+/// without bailing still gets the mis-arity'd call. The guarantee is local to
+/// lowering and does not rest on how a downstream crate grades the diagnostic.
+/// (This once cited `reify_compiler`'s `forward_parse_errors` downgrading parse
+/// errors to WARNINGs; task #5392 made that path push an ERROR instead, which
+/// leaves the invariant and this test untouched.)
 #[test]
 fn a_rejected_argument_keeps_its_position_in_the_enclosing_call() {
     // Rejected by the callee-SHAPE guard (3-segment path). `first_let_value`

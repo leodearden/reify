@@ -1,0 +1,71 @@
+# tests/infra/wallclock-rust-deadline-baseline.txt
+#
+# RATCHET BASELINE for tests/infra/test_no_new_wallclock_rust_deadlines.sh
+# (task #6597). Read by that guard's Section 3 live scan, which now covers
+# every Rust TEST ROOT -- crates/*/tests, gui/src-tauri/src/tests,
+# gui/src-tauri/tests and tree-sitter-reify/tests -- recursively.
+#
+# WHAT A ROW MEANS, and the distinction a reader must not blur:
+#   * An ESCAPE comment at a site means "this is LEGITIMATE, and here is the
+#     argument, written where the next reader will find it". Exactly one
+#     exists in tree (far_future_stamp in watcher_tests.rs); adding a second
+#     also takes a diff to _ESC_ALLOWLIST_SIZE, which is the reviewable act.
+#   * A ROW HERE MEANS THE OPPOSITE: "PRE-EXISTING DEBT that must not grow".
+#     Nothing listed below is blessed. Each one is a real hand-rolled
+#     deadline or elapsed upper bound -- a flake waiting for a loaded host --
+#     that predates the guard's widened scope and was baselined rather than
+#     converted, because converting 19 sites spans 5 crates plus
+#     tree-sitter-reify and needs per-site judgement (several are subprocess
+#     reaping with no WaitClock seam available in those crates).
+#
+# THE RATCHET IS TWO-DIRECTIONAL, i.e. SHRINK-ONLY:
+#   * A live violation NOT listed here is reported `+` and REDS the gate.
+#     Do NOT simply append a row for it -- apply the detector's three fixes
+#     in order first (WaitClock seam; delete the upper bound and let
+#     nextest's slow-timeout catch a real hang; escape only if genuinely
+#     legitimate). A row is for debt that predates the ratchet, not for debt
+#     you are adding today.
+#   * A row here matching NOTHING live is reported `-` and ALSO reds the
+#     gate. So when you fix or move a site, DELETE ITS ROW IN THE SAME DIFF.
+#     That is what makes this file shrink instead of accreting dead rows.
+#
+# FORMAT: `<repo-relative-path> :: <whitespace-trimmed-line-text>`, one
+# record PER OCCURRENCE. Line numbers are deliberately erased so an edit
+# ABOVE a site does not red the gate (same rationale as ptodo.rs::fingerprint).
+# DUPLICATES ARE REAL AND REPEATED VERBATIM -- the comparison is a MULTISET,
+# not a set: `while Instant::now() < deadline {` appears 3x below and
+# `elapsed < Duration::from_secs(10),` 2x, and deduping would silently absorb
+# a 4th and a 3rd copy. Rows are sorted under LC_ALL=C (the guard pins that
+# collation on both sides; en_US.UTF-8 orders these rows differently).
+# Comment lines (^\s*#) and blank lines are ignored by the loader, following
+# tests/infra/harness-layout-baseline.manifest rather than ptodo-baseline.txt,
+# which forbids them.
+#
+# TO UPDATE: REGENERATE AND *DIFF*, NEVER REGENERATE AND REPLACE. A blind
+# overwrite launders a brand-new violation into the baseline, which is
+# precisely the failure this file exists to prevent. Read every `+` the gate
+# printed and fix it; delete every `-` row it printed.
+#
+# This file is a .txt, so it is invisible to BOTH wallclock guards -- this one
+# scans *.rs, the sibling scans *.sh -- and the verbatim forbidden shapes
+# below cannot match either.
+#
+crates/reify-audit/tests/jcodemunch_session_live.rs :: if kill.is_none() && Instant::now() >= escalate_at {
+crates/reify-audit/tests/jcodemunch_session_live.rs :: let deadline = Instant::now() + Duration::from_secs(10);
+crates/reify-audit/tests/jcodemunch_session_live.rs :: let deadline = Instant::now() + Duration::from_secs(5);
+crates/reify-audit/tests/jcodemunch_session_live.rs :: let deadline = Instant::now() + READY_TIMEOUT;
+crates/reify-audit/tests/jcodemunch_session_live.rs :: let escalate_at = Instant::now() + Duration::from_secs(5);
+crates/reify-audit/tests/jcodemunch_session_live.rs :: while Instant::now() < deadline {
+crates/reify-audit/tests/jcodemunch_session_live.rs :: while Instant::now() < deadline {
+crates/reify-audit/tests/jcodemunch_session_live.rs :: while Instant::now() < deadline {
+crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs :: Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs :: if Instant::now() >= deadline {
+crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs :: let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs :: let deadline = Instant::now() + budget;
+crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs :: elapsed < Duration::from_secs(30),
+crates/reify-eval/tests/harness_stress_scenarios/stress_large_assembly.rs :: elapsed < Duration::from_secs(15),
+crates/reify-fdm/tests/slice.rs :: elapsed < Duration::from_secs(10),
+crates/reify-fdm/tests/slice.rs :: elapsed < Duration::from_secs(10),
+tree-sitter-reify/tests/build_logic_tests.rs :: elapsed.as_secs() < 5,
+tree-sitter-reify/tests/build_logic_tests.rs :: if Instant::now() >= deadline {
+tree-sitter-reify/tests/build_logic_tests.rs :: let deadline = Instant::now() + Duration::from_secs(timeout_secs);

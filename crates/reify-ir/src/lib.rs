@@ -22,6 +22,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
+pub mod arg_acceptance;
 pub mod boundary_attachment;
 pub mod color;
 pub mod constraint;

@@ -38,6 +38,13 @@
 //! `harness_constructor_typing` the builtin constructor-family return-type ladder, and
 //! `harness_units_materials` the unit MACHINERY behind dimension mismatches — the
 //! operand guards here assert the diagnostic, not the unit algebra that produces it.
+//! `unresolved_function_tests` (task #5371) is here on the same subsystem line: it
+//! pins what the checker says, and deliberately what it still TYPES, when a callee
+//! no ladder arm claims reaches `expr.rs`'s terminal first-arg fallback — an
+//! expression-type-checking question, sibling to `builtin_arg_signature_tests`. The
+//! corpus-wide sweep that same task added is NOT here: compiling every committed
+//! `.ri` is a compilation-surface question, so it sits beside `examples_smoke` in
+//! `harness_compilation_surface`.
 #[path = "common/mod.rs"]
 mod common;
 #[path = "harness_type_checking/add_sub_operand_guard_tests.rs"]
@@ -74,6 +81,8 @@ mod self_datum_projection_tests;
 mod self_keyword_tests;
 #[path = "harness_type_checking/undef_literal_compile_tests.rs"]
 mod undef_literal_compile_tests;
+#[path = "harness_type_checking/unresolved_function_tests.rs"]
+mod unresolved_function_tests;
 #[path = "harness_type_checking/value_mod_compile_tests.rs"]
 mod value_mod_compile_tests;
 #[path = "harness_type_checking/value_pow_compile_tests.rs"]

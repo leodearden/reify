@@ -12,9 +12,19 @@
 //! `tests/infra/test_harness_kloc_cap.sh` C1.
 //!
 //! Crate-local: this harness deliberately does NOT declare the shared `common` helper — no
-//! member consumes it, and declaring it would charge this unit 363 external lines, which
-//! rule (a) counts against the C2 cap, for a module nothing references. (Of the three CMP-2
-//! roots only `harness_units_materials` includes it, for its seven real consumers.)
+//! member consumes it, and declaring it would charge this unit the whole of
+//! `tests/common/mod.rs` as external lines, which rule (a) counts against the C2 cap, for
+//! a module nothing references. That line count is computed by `harness_layout_unit_lines`
+//! (tests/infra/harness-layout-lib.sh) and deliberately NOT pinned here: the figure this
+//! note used to carry (363) had drifted, because nothing recomputes a number in prose.
+//! (Of the three CMP-2 roots only `harness_units_materials` includes it, for its seven
+//! real consumers.)
+//!
+//! It also holds the `@solver_hint` collection-payload pin
+//! (`m11_annotations_solver_hint_tests`), routed here from `harness_physical_modeling`
+//! by #5696 discharging `tkt_0RT273RG27CPVNCQXPBHHJEQCA` — an annotation payload assertion,
+//! so it sits with the annotation cluster by subject. It consumes no `common`, leaving the
+//! crate-local note above true and this unit's `external_lines` charge still zero.
 #[path = "harness_result_annotation/annotation_compile_tests.rs"]
 mod annotation_compile_tests;
 #[path = "harness_result_annotation/annotation_materialization_args_tests.rs"]
@@ -39,6 +49,8 @@ mod expected_type_arg_pushdown_tests;
 mod expected_type_pushdown_integration;
 #[path = "harness_result_annotation/expected_type_pushdown_let_tests.rs"]
 mod expected_type_pushdown_let_tests;
+#[path = "harness_result_annotation/m11_annotations_solver_hint_tests.rs"]
+mod m11_annotations_solver_hint_tests;
 #[path = "harness_result_annotation/objective_conflict.rs"]
 mod objective_conflict;
 #[path = "harness_result_annotation/objective_dimension_coherence.rs"]

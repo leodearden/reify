@@ -11,13 +11,24 @@
 //!
 //! # The units-gate MIGRATION HINTS live here for the same reason (task 5750)
 //!
-//! [`LENGTH_MIGRATION_HINT`] and [`DENSITY_MIGRATION_HINT`] are the exact
-//! clauses appended to a rejection at a LENGTH / Density argument slot. Both
-//! the EVAL layer (`reify-eval::arg_acceptance`) and the COMPILE layer
+//! [`LENGTH_MIGRATION_HINT`], [`DENSITY_MIGRATION_HINT`] and
+//! [`ANGLE_MIGRATION_HINT`] are the exact clauses appended to a rejection at a
+//! LENGTH / Density / Angle argument slot. Both the EVAL layer
+//! (`reify_ir::arg_acceptance`) and the COMPILE layer
 //! (`reify-compiler::builtin_signatures`) must render the same wording for the
 //! same authoring mistake — PRD `docs/prds/v0_6/units-length-gate-completion.md`
 //! decision D9 — so they live here, as one table with one edit site, exactly as
 //! [`unit_symbol_to_si`] does rather than as two independently-diverging copies.
+//!
+//! [`ANGLE_MIGRATION_HINT`] is the one whose two layers are KNOWINGLY out of
+//! step, and that is a schedule, not an oversight. The eval layer reads it
+//! (via `reify_ir::arg_acceptance::angle_spec`) from PRD
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` leaf β onwards; the
+//! ANGLE slots of `builtin_arg_slots` deliberately still carry
+//! `migration_hint: None`, because reconciling the compile-slot messages onto
+//! the hint-carrying template is that PRD's leaf ζ (task 5782). The const
+//! lives here from β so that ζ is a one-line read rather than a second
+//! hard-coded copy to keep in sync.
 //!
 //! ## Why a HOIST and not a copy
 //!
@@ -28,18 +39,29 @@
 //! That constraint is about the reify-eval → reify-compiler EDGE. `reify-core`
 //! sits BELOW both, so hoisting here never creates that cycle.
 //!
-//! The copy route was reconsidered and rejected on a measurement:
-//! `reify-eval/src/lib.rs` declares `pub(crate) mod arg_acceptance;`, so even
-//! though `reify-compiler` dev-depends on `reify-eval`, a drift-pin test cannot
-//! import `length_spec()` to compare against. Short of widening reify-eval's
-//! public API, sharing one const is the only structural pin available.
+//! The copy route was reconsidered and rejected on a measurement. When task
+//! 5750 made the call, `reify-eval/src/lib.rs` declared `pub(crate) mod
+//! arg_acceptance;`, so even though `reify-compiler` dev-depends on
+//! `reify-eval`, a drift-pin test could not import `length_spec()` to compare
+//! against: short of widening reify-eval's public API, sharing one const was
+//! the only structural pin available.
+//!
+//! Task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A)
+//! relocated the family to `crates/reify-ir/src/arg_acceptance.rs`, where it is
+//! `pub`, so that particular blocker is GONE — `length_spec()` is importable
+//! today and a drift-pin test IS now writable. That does not weaken the hoist;
+//! it STRENGTHENS it. The shared const is now the thing both layers can NAME
+//! rather than merely the only pin available: a hypothetical drift-pin test
+//! would compare two literals and have to be updated in lockstep with either
+//! edit, whereas one const has one edit site and cannot drift at all. The
+//! conclusion below is unchanged — hoist, not copy.
 //!
 //! And unlike the conformance hint — COMPUTED from the `NAMED_DIMENSIONS`
-//! registry, and so drift-proof by construction — these two are IRREGULAR
+//! registry, and so drift-proof by construction — these three are IRREGULAR
 //! hard-coded literals that do not follow that template. They genuinely can
 //! drift, which is what earns them the shared const.
 //!
-//! These two are NOT interchangeable with the conformance hint and must not be
+//! These three are NOT interchangeable with the conformance hint and must not be
 //! unified with it: for LENGTH that one renders "pass a dimensioned Length
 //! literal such as `1m`". Pinned by
 //! `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`
@@ -49,7 +71,7 @@ use crate::DimensionVector;
 
 /// The migration hint appended to a rejection at a LENGTH argument slot.
 ///
-/// Read by BOTH layers — `reify-eval::arg_acceptance::length_spec` and the
+/// Read by BOTH layers — `reify_ir::arg_acceptance::length_spec` and the
 /// LENGTH slots of `reify-compiler::builtin_signatures::builtin_arg_slots` — so
 /// the compile-time and runtime diagnostics for one authoring mistake read
 /// identically (PRD decision D9). See the module doc for why this is a hoist
@@ -60,10 +82,25 @@ pub const LENGTH_MIGRATION_HINT: &str = "pass a dimensioned length such as `5mm`
 /// The migration hint appended to a rejection at a Density argument slot.
 ///
 /// Mirrors [`LENGTH_MIGRATION_HINT`]; read by
-/// `reify-eval::arg_acceptance::density_spec` and by the `center_of_mass` /
+/// `reify_ir::arg_acceptance::density_spec` and by the `center_of_mass` /
 /// `moment_of_inertia` density slots in `reify-compiler::builtin_signatures`.
 pub const DENSITY_MIGRATION_HINT: &str =
     "pass a dimensioned Density literal such as `7850kg/m^3`";
+
+/// The migration hint appended to a rejection at an ANGLE argument slot.
+///
+/// Mirrors [`LENGTH_MIGRATION_HINT`]; read by
+/// `reify-eval::arg_acceptance::angle_spec`, which governs every angle-bearing
+/// argument position — the `rotate` / `rotate_around` / `revolve` angle,
+/// `arc`'s `start_angle` / `end_angle`, `draft`'s angle, `circular_pattern`'s
+/// angle, and the four directional selectors' `tol`.
+///
+/// Unlike its two siblings this is, for now, read by the EVAL layer ONLY: the
+/// ANGLE slots in `reify-compiler::builtin_signatures` still render the
+/// un-hinted form until PRD `angle-units-surface-convergence.md` leaf ζ
+/// (task 5782) reconciles them. See the module doc for why that gap is
+/// scheduled rather than accidental.
+pub const ANGLE_MIGRATION_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
 
 /// The built-in unit symbols, as DATA rather than control flow — one physical
 /// table, one edit site.

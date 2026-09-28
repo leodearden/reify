@@ -9,7 +9,7 @@
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::ComputeFn;
 use reify_ir::Value;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_dimensioned, make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── step-9: RED — trampoline registration + seam pin ──────────────────────────
 //
@@ -122,61 +122,6 @@ fn read_real_list(v: &Value) -> Vec<f64> {
     match v {
         Value::List(items) => items.iter().map(read_real).collect(),
         _ => Vec::new(),
-    }
-}
-
-/// Assert that `v` is a dimensioned `Value::Scalar` carrying exactly
-/// `expected_si` in SI base units and exactly `expected_dim` (task #6093).
-///
-/// Deliberately NOT routed through `read_real` above. That helper folds
-/// `Value::Real`, `Value::Int` and `Value::Scalar` into one `f64`, so a pin
-/// written on it passes identically before and after a dimensioned-ctor
-/// migration and is blind to the very property under test. This is the
-/// explicit-destructure discipline established by
-/// `crates/reify-eval/tests/harness_engine/dimensioned_ctor_migration_si_values.rs`
-/// (task 5758) — a wrong-dimension misparse must fail as loudly as a wrong
-/// magnitude.
-///
-/// `si_value` is compared for EXACT equality on purpose: these are
-/// literal-derived (a unit literal in a `.ri` ctor arg converted to SI at parse
-/// time), not solver-derived, so there is no float jitter to tolerate. Both `Hz`
-/// and `s` have unit factor exactly 1.0, so an inert migration must reproduce
-/// the previous bare `Real` bit-for-bit.
-///
-/// KNOWN DUPLICATION: this is a near-verbatim second copy of the task-5758
-/// helper cited above, and the two will drift. The right home is
-/// `reify-test-support` (alongside the `mm` / `kg` / `newton` dimensioned-Value
-/// family), so both crates import one copy — deliberately NOT done here because
-/// that crate is outside task #6093's locked scope. Owned by **#6323** (part A).
-fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            assert_eq!(
-                *dimension, expected_dim,
-                "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}. \
-                 The ctor arg parsed as a dimensioned Scalar but carries the wrong unit."
-            );
-            assert_eq!(
-                *si_value, expected_si,
-                "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}. \
-                 These are literal-derived values; a change here means the migrated \
-                 unit literal does not denote the same physical quantity, so the \
-                 damping results are NOT unchanged."
-            );
-        }
-        Value::Real(r) => panic!(
-            "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
-             Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
-             This ctor arg has not been migrated to a unit literal (task #6093 \
-             retyped RayleighDamping.alpha/beta to Frequency/Time)."
-        ),
-        other => panic!(
-            "{what}: expected a dimensioned Value::Scalar {{ si_value: {expected_si}, \
-             dimension: {expected_dim:?} }}, got {other:?}"
-        ),
     }
 }
 
@@ -424,6 +369,11 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         panic!("RayleighDamping.beta field not found on damping value: {damping_val:?}")
     });
 
+    // Asserted through the shared `assert_dimensioned`, deliberately NOT through
+    // `read_real` above: that helper folds Real/Int/Scalar into one f64 and is
+    // blind to the property under test — task #6093 retyped
+    // `RayleighDamping.alpha`/`beta` to Frequency/Time, and a fold would pass
+    // identically either side of that migration.
     assert_dimensioned(
         alpha_val,
         0.0,

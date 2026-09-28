@@ -211,9 +211,7 @@ positive/negative lists are in the leaf bodies):
   `damping` reader position (ε, per §9 Phase 4) when it does so.
 - **Deliberately bare** (stay dimensionless-accepting, gated to `dimensionless_spec` so a
   *dimensioned* Scalar is still rejected): `poisson_ratio`, `damping_ratio`,
-  `vibration_tolerance`, `tol`, `max_iters`, `Gravity.direction` / `PointLoad.direction`
-  (`List<Real>` unit vectors, deliberate per task 4439), `vec3` axis components (already
-  strict via `validate_dimensionless_unit_axis_vec3`), joint `ratio` (already
+  `vibration_tolerance`, `tol`, `max_iters`, joint `ratio` (already
   DIMENSIONLESS-checked by `ratio_input`), the buckling eigenvalue λ,
   `infill_gibson_ashby_c/n`, `read_location_index`, and tensegrity's bare `List<Real>`
   force/ratio inputs — `form_find`'s `force_densities` parameter, `form_find_free`'s
@@ -222,7 +220,37 @@ positive/negative lists are in the leaf bodies):
   relative ratios, documented as such in the "Dimensional bridge" paragraph of
   `tensegrity.ri`'s `FormFindResult` doc block, which also covers `FormFindResult`'s
   own `force_densities` field (a solver-constructed *output* echo, not a reader
-  input); genuinely dimensionless, not a gap.
+  input); genuinely dimensionless, not a gap. `Gravity.direction` /
+  `PointLoad.direction` (`List<Real>` unit vectors, deliberate per task 4439) are read
+  by `read_direction_or_neg_z` in `elastic_static.rs`; task #7019 Result-ified that
+  reader so a present-but-wrong-dimension component is rejected per invariant I2
+  instead of being coerced to `0.0`, while its separately-pinned shape-level `-Z`
+  fallback for an absent or mis-shaped field is retained under decision 3. `vec3` axis
+  components turned out to split across **two** distinct mechanisms, not the single
+  helper this bucket originally named — the triage hole task #7019 closed was created
+  by treating a whole position class as covered by one helper. The
+  FLEXURE/JOINT/SUPPORT axis path IS gated by `validate_dimensionless_unit_axis_vec3`
+  (`crates/reify-stdlib/src/helpers.rs:311`), whose 8 call sites are all in
+  reify-stdlib — `flexures/beam.rs:83`, `flexures/compound.rs:95` and `:274`,
+  `flexures/hinge.rs:92` and `:245`, `flexures/notch.rs:129`,
+  `flexures/prismatic.rs:104`, `supports.rs:141`, plus the `joints.rs:1321` wrapper —
+  and that helper also does MORE than dimension-check (arity, finiteness, non-zero and
+  non-overflowing squared magnitude), which is why it is not simply
+  `dimensionless_spec`. `MaterialFrame`'s three `Vector3<Dimensionless>` axes are read
+  by a SEPARATE reader in a different crate: `elastic_static.rs`'s
+  `dimensionless_component`, consumed via `extract_vec3_si` and
+  `anisotropic_material_from_value`, which `validate_dimensionless_unit_axis_vec3`
+  never reached. It was un-gated until task #7019 routed it through
+  `dimensionless_spec` and is now gated by that spec directly — but it does NOT
+  inherit the flexure helper's unit-magnitude guard: nothing on the `extract_vec3_si`
+  to `rotate_voigt` path normalises the frame, and `D_global` is homogeneous of degree
+  4 in its entries, so orthonormality remains a real but UNENFORCED precondition,
+  pinned as such by the FENCE test
+  `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`.
+  Lesson, generalisable beyond this one position class: a
+  position class is "already strict" only if the gating helper's call sites cover
+  *every* reader at that class, not merely because one helper for that shape exists
+  somewhere in the workspace.
 - **Angle-semantic positions** (`revolute` binds, planar/cylindrical θ, `ramp_profile`
   from/to on a revolute) route through `reify-stdlib`'s existing ANGLE-checked `trig_input`.
   This PRD changes **no angle policy** — it replaces ad-hoc `as_f64()` with the helper that

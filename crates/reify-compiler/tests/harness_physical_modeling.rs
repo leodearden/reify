@@ -6,7 +6,7 @@
 //! construction and projection, zone slab, curvature arg-aware typing).
 //!
 //! Task #5694 (PRD `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1, leaf CMP-4,
-//! batch 4 of 6): folds 19 former standalone `tests/*.rs` binaries into this single
+//! batch 4 of 6): folds former standalone `tests/*.rs` binaries into this single
 //! compile unit to cut the merge-gate link count.
 //!
 //! Layout contract C1 — stem-named modules, why the `#[path]` on every declaration
@@ -23,15 +23,6 @@
 //! shared `tests/common/mod.rs`, expected rather than stray. The line count itself is
 //! computed by `harness_layout_unit_lines` (tests/infra/harness-layout-lib.sh) and
 //! deliberately not pinned here, where nothing would recompute it.
-//!
-//! `m9_error_cases` and `m11_annotations_solver_hint_tests` are here BY SCOPE, not by
-//! subject: their prefixes fall inside leaf CMP-4 and no better in-scope home exists.
-//! Neither is a physical-modelling test — m9 is general type-mismatch diagnostics, m11
-//! is annotations / solver hints — so this root is a partial catch-all until they move.
-//! That move is TRACKED, not merely disclosed: follow-up ticket
-//! `tkt_0RT273RG27CPVNCQXPBHHJEQCA` (filed against #5694) relocates both to the
-//! diagnostics / annotations harness that leaf CMP-5 or CMP-6 creates, and deletes this
-//! paragraph with them. Landing that is a correction, not a regression.
 //!
 //! Routing vs. the three neighbours — the line is subsystem, not filename; do NOT fold
 //! any of these together:
@@ -55,10 +46,6 @@ mod datum_projection_tests;
 mod half_space_compile_tests;
 #[path = "harness_physical_modeling/imperial_units_tests.rs"]
 mod imperial_units_tests;
-#[path = "harness_physical_modeling/m11_annotations_solver_hint_tests.rs"]
-mod m11_annotations_solver_hint_tests;
-#[path = "harness_physical_modeling/m9_error_cases.rs"]
-mod m9_error_cases;
 #[path = "harness_physical_modeling/material_struct_tests.rs"]
 mod material_struct_tests;
 #[path = "harness_physical_modeling/nominal_marker_typing_tests.rs"]

@@ -4282,18 +4282,11 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # pool-bucket suite's C-P3 discipline requires load-independent verdicts). The
 # shim opens its own log file so the probe cannot perturb what it measures.
 #
-# fd-PROBING MECHANIC: reading a descriptor via `$(readlink /proc/self/fd/N)`
-# does NOT work here — command substitution itself runs in a subshell whose
-# OWN fd 1 is the internal pipe bash uses to capture $(...)'s output, so
-# `/proc/self/fd/1` inside that subshell always resolves to THAT capture
-# pipe, never to the shim's real, inherited fd 1 (verified empirically while
-# building this block: it read back `pipe:*` unconditionally, fix or no fix).
-# The shim instead captures `$BASHPID` — its own real PID, stable across the
-# fd redirects being probed — into a plain variable FIRST, then uses that
-# fixed value in `/proc/$BASHPID/fd/N` from inside the command substitution.
-# That decouples "what redirect does the probe's own output need" from "whose
-# fd table am I inspecting", which a self-referential `/proc/self` can never
-# do.
+# fd-PROBING MECHANIC: the shim captures its own PID (`$BASHPID`) into a
+# plain variable FIRST, outside any command substitution, and reads each
+# descriptor through that saved PID's /proc fd directory. A self-referential
+# probe spelled inside `$(...)` reads the capture pipe instead; mechanism and
+# guard: tests/infra/README.md "Self-referential fd-probe guard".
 #
 # The whole invocation deliberately mirrors the real blocking caller,
 # scripts/warm-lane-gc.sh:648-649 — `bash "$SCRIPT" ... 2>&1 | consumer` — so

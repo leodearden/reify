@@ -9,6 +9,11 @@
 // the diagnostic is a Severity::Error (Leo's severity amendment, 2026-08-19, via
 // esc-6080-6), not a Warning.
 //
+// The `angular` half is a valid ANGLE zero here on purpose: it isolates the
+// linear classifier. Eval gates `angular` before `linear` (#6080), so a
+// dimensionless angular spelling would trip the ANGLE gate first and this
+// fixture would stop covering the LINEAR gate it is named for.
+//
 // Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
 // runtime Error diagnostic and a non-zero exit.
 //
@@ -20,5 +25,5 @@
 module transform_exp_dimensionless
 
 structure def TransformExpDimensionless {
-    let t = transform_exp(map{"angular" => vec3(0.0, 0.0, 0.0), "linear" => vec3(1.0, 2.0, 3.0)})
+    let t = transform_exp(map{"angular" => vec3(0rad, 0rad, 0rad), "linear" => vec3(1.0, 2.0, 3.0)})
 }

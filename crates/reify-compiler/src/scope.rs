@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 // --- Compilation context ---
 
@@ -65,6 +66,92 @@ pub(crate) struct CompilationScope<'u> {
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
+    /// Geometry-LIST let name → its statically-unrolled element expressions
+    /// (task #5385), owned so no AST lifetime is threaded through the ~40
+    /// `compile_geometry_call` call sites.
+    ///
+    /// A `let holes = generate(3, |i| cylinder(…))` lowers to N sibling
+    /// `RealizationDecl`s rather than a value the ordinary expression compiler
+    /// can see, so `holes.count` is constant-folded from `self[name].len()`
+    /// instead of compiling to a `MethodCall` — see the fold in `expr.rs`'s
+    /// `MemberAccess` name-directed pre-pass for why.
+    ///
+    /// Expanded exactly ONCE, in entity.rs pass 1, so the element-cap
+    /// diagnostic fires once and all three consumers — the realization-emission
+    /// loop, that `.count` fold, and the `union_all`/`intersection_all` list
+    /// expansion — read the same elements. Exactly the names in
+    /// `known_geometry_list_lets`.
+    ///
+    /// THE COUNT LIVES HERE AND NOWHERE ELSE (review esc-5385-7). A sibling
+    /// name→count map was removed: it duplicated `self[name].len()` for the
+    /// sole benefit of the `.count` fold, and entity.rs's own registration
+    /// comment argues at length against exactly such a second count.
+    ///
+    /// `Rc` because `CompilationScope` is DEEP-CLONED per lambda body, per
+    /// quantifier predicate and per match arm with payload binders (expr.rs),
+    /// and a list may hold up to [`crate::geometry_list::GEOMETRY_LIST_MAX_ELEMENTS`]
+    /// fully-owned geometry subtrees. Sharing makes every one of those clones —
+    /// and both consumers' `.cloned()` — a refcount bump instead of a 256-subtree
+    /// AST copy. The elements are never mutated after pass 1, so nothing needs
+    /// `Rc::make_mut`.
+    pub(crate) geometry_list_elements: HashMap<String, Rc<Vec<reify_ast::Expr>>>,
+    /// Geometry-LIST let names that were REJECTED at classification time and
+    /// already carry their own Error (task #5385).
+    ///
+    /// Two paths land here: an over-cap expansion, and
+    /// `diagnose_unsupported_geometry_list` (a non-literal `generate` count, a
+    /// mixed-kind list literal). Both leave a name that names no elements, so a
+    /// later `union_all(<name>)` would otherwise emit a SECOND, unrelated Error
+    /// pointing at the fold rather than at the real defect — the very cascade
+    /// entity.rs's registration comment claims to avoid (review esc-5385-3).
+    ///
+    /// Disjoint from `geometry_list_elements` by construction: a let is either
+    /// expanded into that map or rejected into this set, never both.
+    pub(crate) geometry_list_rejected: HashSet<String>,
+    /// THE canonical statement of the #5371 forward-reference rationale. Every
+    /// other site that needs it points here rather than restating it.
+    ///
+    /// Names the enclosing MODULE declares that may appear as a call callee:
+    /// its `fn` declarations (local + prelude) AND its structure names, whose
+    /// constructors are called with the same syntax. Read by exactly one site —
+    /// the terminal first-arg fallback in `expr.rs` — to tell "this name exists
+    /// nowhere" from "this name is declared right here but is not resolvable
+    /// from this body yet".
+    ///
+    /// # Why the fallback needs it
+    ///
+    /// `phase_functions` compiles each `fn` body against the user-only
+    /// `functions` table it is still growing in source order, so a call to a
+    /// later-declared sibling — or either half of a mutually-referential pair,
+    /// which no reordering can fix — reaches the fallback with a name the module
+    /// plainly declares. Entity bodies do not have that problem: they compile
+    /// after `ctx.resolution_functions` is merged. Constructors are the mirror
+    /// case — wherever no template registry is set (`phase_traits`'s static fn
+    /// bodies, `compile_assoc_function`'s bodies), `Widget(w: 2mm)` is never
+    /// claimed as a `StructureInstanceCtor` and falls through carrying a
+    /// declared name (esc-5371-12).
+    ///
+    /// # What it does NOT do
+    ///
+    /// It binds NO values — an entry here does not put the name in `names` and
+    /// cannot make a forward reference resolve. It only withholds a diagnostic.
+    /// Forward references still do not resolve; that is `phase_functions`'s
+    /// documented contract and #6014's business.
+    ///
+    /// # Shape
+    ///
+    /// ONE set rather than a fn set and a structure set, because the one reading
+    /// site asks one question and never consults either half alone. The two
+    /// INPUTS stay separate on `CompilationCtx`, where fn-ness and
+    /// structure-ness genuinely differ; [`crate::functions::declared_callable_names`]
+    /// merges them at that single consumer.
+    ///
+    /// `Option<&'u _>` rather than an owned set, mirroring `unit_registry` and
+    /// `template_registry` below: the vocabulary is a module-level invariant
+    /// built once per phase, and a scope only borrows it. `None` is the honest
+    /// default for the entity and test scopes that need no such vocabulary, and
+    /// keeps the per-function cost at zero.
+    pub(crate) declared_callable_names: Option<&'u HashSet<String>>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -270,6 +357,9 @@ impl<'u> CompilationScope<'u> {
             collection_sub_names: HashSet::new(),
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
+            geometry_list_elements: HashMap::new(),
+            geometry_list_rejected: HashSet::new(),
+            declared_callable_names: None,
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
@@ -395,6 +485,64 @@ impl<'u> CompilationScope<'u> {
         self.names
             .get(name)
             .and_then(|(_, _, guard)| guard.as_ref())
+    }
+
+    /// True iff `name` still names THIS entity's geometry-LIST let — i.e. it has
+    /// not been shadowed by a binder introduced in a derived scope (task #5385).
+    ///
+    /// `geometry_list_elements` is populated exactly once,
+    /// in entity.rs pass 1, and is then inherited VERBATIM by every derived
+    /// scope: `expr.rs` clones `scope` for a lambda body, for a quantifier
+    /// predicate, and for a `match` arm carrying `VariantBind` payload binders.
+    /// Each of those registers its binder in `names` ONLY, leaving the inherited
+    /// geometry-list map intact — so a bare-name lookup in that map resolves a
+    /// SHADOWING binder to the outer let's data, yielding a silently-wrong
+    /// compile-time constant (`holes.count` folded to the outer length, or
+    /// `union_all(holes)` expanded over the outer let's elements). Every
+    /// geometry-list-keyed lookup must therefore be gated on this predicate.
+    ///
+    /// The entity comparison is the discriminator. The let itself is registered
+    /// through [`Self::register`], which mints `ValueCellId::new(&self.entity_name,
+    /// name)`; each derived binder is minted against a freshly generated entity
+    /// (`$lambdaN.<entity>`, `$quantN.<entity>`, `$matcharmN.<entity>`), and
+    /// `entity_name` is deliberately NOT rewritten when the scope is cloned. So
+    /// `id.entity == self.entity_name` holds for the declaring let and fails for
+    /// every shadowing binder.
+    ///
+    /// The `List<Geometry>` type check is a second, independent belt: entity.rs
+    /// pass 1 registers a geometry-list let at exactly that type, so a name that
+    /// resolves to anything else was never the let this map is keyed on.
+    pub(crate) fn geometry_list_binding_is_live(&self, name: &str) -> bool {
+        match self.resolve(name) {
+            Some((id, Type::List(elem))) => {
+                **elem == Type::Geometry && id.entity == self.entity_name
+            }
+            _ => false,
+        }
+    }
+
+    /// True iff `name` is a geometry-LIST let this entity already rejected with
+    /// its own Error, and has not since been shadowed (task #5385).
+    ///
+    /// Callers use this to stay SILENT rather than pile a second diagnostic on
+    /// a let the user has already been told about.
+    ///
+    /// BOTH rejection paths register the name as `List<Geometry>`, so a rejected
+    /// name always resolves. `compile_entity`'s pass 1 registers at that type
+    /// FIRST and only then attempts `expand_geometry_list_elements`, so the
+    /// over-cap path inherits that registration; the
+    /// `diagnose_unsupported_geometry_list` path registers explicitly, for the
+    /// stated reason that downstream reads should type-check rather than
+    /// cascade a second, unrelated diagnostic. "Routes the let out" therefore
+    /// means out of LOWERING — no value cell, no realizations — never out of
+    /// scope.
+    ///
+    /// Rejection alone is consequently not sufficient: a rejected name must
+    /// ALSO still be live, i.e. pass the same entity-stamp check
+    /// [`Self::geometry_list_binding_is_live`] applies, so a lambda param that
+    /// happens to reuse a rejected name gets ordinary treatment.
+    pub(crate) fn geometry_list_was_rejected(&self, name: &str) -> bool {
+        self.geometry_list_rejected.contains(name) && self.geometry_list_binding_is_live(name)
     }
 
     /// Register a match-arm `GuardedDeclGroup` under its logical name.

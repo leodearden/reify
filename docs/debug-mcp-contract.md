@@ -102,6 +102,48 @@ inside the lock cannot express. So the structural claim to anchor on is
 `*_and_refresh_baseline` seams", with `reify_open_file` the one name to
 enumerate — *not* "all five route through `write_on_engine_and_refresh_baseline`".
 
+That claim is enforced mechanically, not merely written down here:
+`gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs` (task 5100 θ)
+parses the `reify_*` dispatch arms out of `debug_server.rs` — so a sixth write
+tool is picked up automatically and must route or go red — and checks each
+handler for a seam, following at most one delegation hop (which is what
+`reify_open_file` needs). Every name the `ToolDef` registry advertises must
+appear in that arm set, a second independent enumeration of the same set, so
+a tool whose arm the scanner cannot read reds as unenumerated instead of
+vanishing from the sweep; adding a write tool means adding BOTH the registry
+entry and the dispatch arm, as §1 already requires. Only that direction is
+checked — a tool dispatched with no registry entry is still swept for routing
+by the arm scan, so it is an advertising defect rather than an INV-GUI-2 hole.
+It separately asserts that every fn named `*_and_refresh_baseline` actually
+reaches `compute_delta`, so the routing check rests on behaviour rather than
+on a naming convention. The gate ASSERTS by default;
+`REIFY_INV_GUI_2_BYPASS=1` is the break-glass that downgrades it to a warning.
+
+Two properties of that scan are worth knowing before editing `debug_server.rs`
+around the write tools. First, every behavioural check reads a view of the
+source with comments AND string-literal contents blanked, so naming a seam in
+a doc comment, a tracing message or a `json!` field does not satisfy it — only
+a call does. Nor does naming one in CODE without calling it: a fn item parked
+in a binding or a handler table refreshes no baseline, so both the handler and
+the one hop it follows are matched on a call site, `seam(`. Second, the
+private-emit check follows the same one delegation hop the seam check does,
+so an emit added to a helper a handler delegates to (`open_path_into_engine`,
+say) is swept as if it were in the handler. What it sweeps FOR is a grammar —
+the `PRIVATE_EMIT_IDENTIFIERS` token set plus any `.emit(` call — of which
+`event_bus::emit_typed` and `delta_to_events` are the arms a library module
+can reach today. An emission shape named by no token in
+that set, or one a hop further out, is beyond the scan, which is why the "do
+not add one" below is written as a rule rather than left to the gate.
+
+**Coverage boundary — the AI/MCP entry point only.** INV-GUI-2 spans every
+engine-mutation entry point, but this is the only one with a structural guard.
+The GUI/debug/FS-watcher half is covered behaviourally instead, by the
+`<name>_emits_fea_diagnostics` cluster in
+`gui/src-tauri/src/tests/engine_tests.rs` — per-entry-point assertions rather
+than a sweep, so a NEW entry point there that skips the choke-point is caught
+by neither. Closing that asymmetry belongs to `gui-state-sync`, which owns the
+seam; `docs/invariants.md` records the resulting split registry status.
+
 Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
 invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `GuiState` reaches the frontend through the caller's synchronous
@@ -219,6 +261,69 @@ is close to unreachable anyway — `apply_param_to_source_str` refuses an unknow
 `cell_id` before committing anything — but a client that learned "success
 implies a value" on the other surface should read this paragraph, not infer it.
 
+**Constraint statuses ride the write-tool payload.** A write tool's push is a
+whole `GuiState`, so a constraint that CHANGED STATUS because of the edit
+travels on the same frame as the values and meshes that moved — there is no
+separate constraint channel to fall out of sync with. `GuiState.constraints` is
+declared `diffed keyed(key=node_id, item="constraint", update="constraint-update",
+changed=changed_constraints)` (`types.rs`), so it rides the same delta
+choke-point as `values` and `meshes`, and each `ConstraintData` carries
+`{node_id, expression, status, label, parameter_ids}` with `status` drawn from
+exactly `satisfied` / `violated` / `indeterminate` — LOWER-CASE; the PascalCase
+spelling names the `Satisfaction` enum variants, not the wire tokens, and
+`engine::satisfaction_token` is the sole producer (contract canonical on
+`ConstraintData.status` in `types.rs`). Prefer
+`parameter_ids` — `collect_value_refs(expr)` — over the positional `node_id`
+when naming a constraint you care about: `Printer#constraint[45]` renumbers when
+a constraint is added anywhere above it. Pinned end to end
+(serialize → `DebugTransport` → deserialize) by
+`debug_boundary_tests::write_tool_payload_carries_a_flipped_constraint_status`,
+which routes one parameter edit through `write_tool_frontend_payload` and
+asserts the flipped status and its `parameter_ids` survive the wire
+byte-identical.
+
+**`parameter_ids` and `cell_id` are TWO namespaces — only one spelling crosses.**
+A `parameter_ids` entry is an INSTANCE PATH rooted at the entity that DECLARES
+the constraint, so its shape depends on what the expression reaches for:
+
+| reference in `structure Printer` | `parameter_ids` entry | valid `reify_set_parameter` `cell_id`? |
+|---|---|---|
+| `o1_pin_slack` / `self.o1_pin_slack` (own member) | `Printer.o1_pin_slack` | YES |
+| `self.a_frame.rail_span_m` (cross-sub) | `Printer.a_frame.rail_span_m` | NO — it is `AFrame.rail_span_m` there |
+
+`build_constraints` fills `parameter_ids` from `collect_value_refs`, where a
+root binding carries `scoped_entity = scope.entity_name` for `self` but
+`format!("{}.{}", scope.entity_name, sub_name)` for a sub root
+(`member_path.rs`), so a cross-sub access names the SUB (`a_frame`).
+`build_values` — and therefore `reify_set_parameter` — instead walks
+`compiled.templates[].value_cells`, and a template is per STRUCTURE, so it keys
+on the TYPE: the same cell is `AFrame.rail_span_m` there.
+`apply_param_to_source_str` → `resolve_known_cell_type` looks the id up in that
+type-keyed table, so feeding it a cross-sub `parameter_ids` entry is rejected
+with `Unknown parameter 'Printer.a_frame.rail_span_m'`. The two coincide only in
+a flat single-structure module, where every reference is same-entity. To drive
+an edit from a constraint you selected by `parameter_ids`, re-spell the id in
+the TYPE namespace first — do not pass it through. Worked derivation, with the
+selector constants kept deliberately separate for this reason:
+`gui/test/visual/railLengtheningGate.mjs`'s `PIN_RAIL_SPAN_CELL` docblock.
+
+**The no-stale-baseline invariant is NOT observable from this surface, by
+design.** §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
+has the debug path DISCARD the `StateDelta` and push the full `GuiState`
+instead, so no tool here returns a delta or a changed-set, and none is
+missing: a client cannot ask whether the baseline advanced, and does not need
+to. The invariant (a command following an AI write diffs against the
+AI-ADVANCED baseline, not a pre-AI stale one — INV-GUI-2, survey bug #7) is
+pinned where `compute_delta` and `last_state` both are, by
+`debug_server::tests::write_tools::write_helper_refreshes_the_delta_baseline` —
+which drives the real `write_on_engine_and_refresh_baseline` seam, not
+`compute_delta` directly, and asserts both that the baseline moved to S1 and
+that a second diff against S1 emits no events at all. Driving the SEAM is what
+gives it teeth: `compute_delta` advances the baseline unconditionally, so a test
+calling it directly would stay green against the very bug this guards — a write
+wrapper that mutates the engine and forgets to refresh. Read an absent delta
+tool as this design decision, not as a gap to fill.
+
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
 `write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
@@ -298,6 +403,18 @@ entry and therefore do **not** appear in `tools/list`.
   — each entry must actually exhibit its asymmetry, so a stale allowlist cannot
   silently mask real drift.
 
+`gui/src/__tests__/sidecarPromptParity.test.ts` (task 7049) guards the in-app
+assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
+same registry:
+- Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
+- Every `tool_defs()` tool is either advertised in the prompt's tool table
+  (`ADVERTISED_DEBUG_TOOL_NAMES`) or listed in `NOT_ADVERTISED_TO_SIDECAR`.
+- That allowlist is self-checked: no stale entries, no entries the table
+  advertises anyway, and no duplicates.
+- The five AI write tools are advertised in the table.
+- The prompt mentions exactly the tools its table describes, so its prose
+  cannot name a tool the assistant has no description of.
+
 ---
 
 ## §1 Tool-def → dispatch → handler wiring
@@ -347,6 +464,14 @@ A new frontend-mediated tool requires three coordinated changes:
      building each tool's params object out of its own `input_schema`
      property names (and, separately, out of just its `required` list) and
      feeding it through the extractor the handler calls.
+
+5. **Every new `ToolDef` — frontend-mediated or write tool — is classified for
+   the in-app assistant** (task 7049). If it is design-facing, name it in the
+   tool table in `gui/sidecar/src/system-prompt.ts`; otherwise list it in
+   `NOT_ADVERTISED_TO_SIDECAR` in
+   `gui/src/__tests__/sidecarPromptParity.test.ts`, under the group that says
+   why it is withheld. That guard reds on an unclassified tool, a stale
+   withheld entry, or a withheld tool the prompt mentions.
 
 ### Dispatch flow
 

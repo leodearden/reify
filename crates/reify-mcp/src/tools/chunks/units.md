@@ -7,7 +7,7 @@ Dimensions are part of the type. Units are part of literal syntax. Two quantitie
 ## Dimension Representation
 
 A vector of rational exponents over 10 base dimensions (7 SI + Angle + SolidAngle + Money):
-```
+```reify-schematic
 [Length, Mass, Time, Current, Temperature, Amount, Luminosity, Angle, SolidAngle, Money]
 
 Length       = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -19,7 +19,7 @@ Multiplication adds exponent vectors. Division subtracts. Checked at compile tim
 
 ## Unit Declarations
 
-```
+```reify-fragment
 unit mm : Length = 0.001m
 unit USD : Money
 unit degC : Temperature offset 273.15K
@@ -27,18 +27,23 @@ unit degC : Temperature offset 273.15K
 
 ## Named Dimension Aliases
 
-```
+```reify-schematic
 type Force    = Mass * Length / Time^2
 type Pressure = Force / Length^2
 type Density  = Mass / Length^3
 ```
+
+**Notation, not source as written.** `type` aliases are real, and `*` and `/`
+compose dimensions — but v1 has no `^` exponent operator in a dimension
+expression, so all three lines above are a syntax error if you copy them.
+Repeat the factor instead: `type Pressure = Force / Length / Length`.
 
 35 standard named dimensions in `std.units.dimensions`.
 
 ## Temperature Handling
 
 `degC` and `degF` are offset units:
-```
+```reify-fragment
 param max_temp : Temperature = 150degC        // Absolute: 423.15 K
 param delta_t  : TemperatureDiff = 20degC      // Difference: 20 K
 ```
@@ -118,7 +123,7 @@ axis direction `1, 0, 0` stays exactly as it was. One call, both halves of the r
 Every rejection reads the same way — one diagnostic per offending argument, so a `box` with three
 bare dimensions reports three:
 
-```
+```text
 box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
 ```
 
@@ -215,7 +220,7 @@ When you have a geometric ratio and want an angle — or you have an angle and w
 
 **Which ratio, though.** This crossing is for an **arc-measure** ratio — `s / r`, a length over a length that *is* an angle in radians. A **trigonometric** ratio already has a named producer and needs no crossing: `atan`, `atan2`, `asin`, `acos` and the geometry `angle` / `angle_between_surfaces` queries all return `Angle` directly. Do not put `* 1rad` on a producer's result. On an *annotated* binding that is a hard error — `let bad : Angle = atan(o / a) * 1rad` declares `rad` but computes `rad^2`. Everywhere else the compiler stays quiet: unannotated, `let unann = atan(o / a) * 1rad` checks green and evaluates to `1.19… rad^2`; and on the **argument** side `atan((o / a) * 1rad)` also checks green, returning the same `1.19… rad` as `atan(o / a)` — the `rad` ignored rather than consumed. Picking the wrong one of the two readings is silent as well: for `o / a = 2.5`, `atan(o / a)` is `1.19… rad` and `(o / a) * 1rad` is `2.5 rad`, and both typecheck. `* 1rad` is one row of the crossing catalogue, not the whole of it.
 
-```
+```reify-fragment
 let s : Length     = 5mm                 // an arc measured along the rim
 let r : Length     = 2mm                 // its radius
 
@@ -232,18 +237,34 @@ it demonstrates the algebra but not the arithmetic. `arc2` is the direction an
 author usually wants: an arc length computed from an angle that was *not* derived
 from a ratio.
 
-Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error: rad`.
+Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error in structure body`.
 
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 
+```reify-invalid
+structure def MissingCrossing {
+    param s     : Length = 5mm
+    param r     : Length = 2mm
+    param known : Angle  = 2.5rad    // an angle that DID cross properly
+
+    // error: let binding 'theta' declared `Scalar[rad]` but its
+    //        initializer evaluates to `Real`
+    let theta : Angle  = s / r
+
+    // error: let binding 'arc' declared `Scalar[m]` but its
+    //        initializer evaluates to `Scalar[m·rad]`
+    let arc   : Length = r * known
+}
 ```
-let theta : Angle  = s / r      // error: declares rad, initializer is dimensionless
-let arc   : Length = r * theta  // error: declares m, initializer is m·rad
-```
+
+The sample is a complete module on purpose. Written as two bare top-level
+`let`s it is a *syntax* error, and the compiler never reaches the dimensional
+check that is the whole lesson — so the block would read as a demonstration of
+something it never demonstrates.
 
 The verbatim compiler wording for these is transcribed once, in the compile-gated exemplar `examples/best_practices/angle_crossings.ri` — treat that file as the canonical copy and this one as a paraphrase of the error *shape*.
 
-Drop the annotation and the error becomes silence instead: `let arc = r * theta` evaluates clean to `0.005 m·rad`, which is not a Length and will not compose with one.
+Drop the annotation and the error becomes silence instead: `let arc = r * known` evaluates clean to `0.005 m·rad`, which is not a Length and will not compose with one.
 
 Honest scope: this bites at annotated bindings over expressions, not universally. A bare *literal* still widens silently (`param theta : Angle = 2.5` evaluates to `2.5`, dimension erased; `sin(2.5)` is accepted). See "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md`.
 

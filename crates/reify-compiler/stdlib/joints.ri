@@ -123,7 +123,11 @@ joint planar(face_a: Plane, face_b: Plane)
 //   Σ removed                               (0 rot, 3 trans)
 //   Residual                                (3 rot, 0 trans)  = orientation:Orientation ✓
 //
-// Orientation(3) maps to (3,0) in the β DOF classifier (joint_self_check.rs::dof_kind_of).
+// The surface name `Orientation` resolves to Type::Orientation(3) via
+// resolve_type_name (type_resolution.rs), which the β DOF classifier
+// (joint_self_check.rs::dof_kind_of) maps to (3,0). Both hops are required:
+// without the resolver arm the DOF type degrades to Type::Error and the
+// count/kind verdict above is skipped entirely rather than checked (task 6384).
 
 joint spherical(c: Point3<Length>, d: Point3<Length>)
     with orientation: Orientation

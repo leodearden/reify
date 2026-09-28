@@ -181,6 +181,10 @@ fn real_literal(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
+
 /// Build a synthesised `CompiledModule` with two ops:
 /// (0) a LineSegment curve (a non-primitive whose primitive-seeding step
 ///     is a no-op, so the table only carries our injected sweep entries);
@@ -237,7 +241,7 @@ fn revolve_module() -> reify_compiler::CompiledModule {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::PI)),
+            ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     )
 }
