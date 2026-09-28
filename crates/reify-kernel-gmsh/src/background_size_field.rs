@@ -69,6 +69,13 @@ impl BackgroundSizeField {
         }
 
         let stride = volume_mesh.nodes_per_element();
+        if indices.len() % stride != 0 {
+            return Err(fail(format!(
+                "BackgroundSizeField::from_tet_mesh: {} tet indices is not a whole number of \
+                 {stride}-node elements",
+                indices.len()
+            )));
+        }
         let element_count = indices.len() / stride;
         if element_count == 0 {
             return Err(fail(

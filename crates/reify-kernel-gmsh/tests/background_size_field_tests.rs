@@ -265,6 +265,40 @@ fn a_tet_index_out_of_range_is_an_error_not_a_panic() {
     );
 }
 
+/// An index buffer that is not a whole number of elements is malformed, and
+/// the trailing partial element must be reported rather than dropped: walking
+/// whole elements only would build a field over a DIFFERENT mesh than the one
+/// the caller handed in, with no error to say so.
+#[test]
+fn a_ragged_index_buffer_is_an_error_not_a_truncation() {
+    let p1 = {
+        let mut vm = one_p1_tet_vm();
+        if let VolumeConnectivity::Tet { indices, .. } = &mut vm.connectivity {
+            indices.extend_from_slice(&[0, 1, 2]);
+        }
+        vm
+    };
+    let p2 = tet_vm(
+        vec![0.0_f32; 30],
+        vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3],
+        ElementOrderTag::P2,
+    );
+
+    for (vm, index_count, stride) in [(p1, 7_usize, 4_usize), (p2, 14, 10)] {
+        assert_eq!(vm.nodes_per_element(), stride, "fixture sanity");
+        let sizes = vec![0.1_f64; vm.vertices.len() / 3];
+        let msg = expect_err(
+            BackgroundSizeField::from_tet_mesh(&vm, &sizes),
+            "ragged index buffer",
+        );
+        assert!(
+            msg.contains(&index_count.to_string()) && msg.contains(&stride.to_string()),
+            "message must report the index count {index_count} and the stride {stride}, \
+             got: {msg}"
+        );
+    }
+}
+
 #[test]
 fn non_tet_connectivity_is_an_error() {
     let hex = VolumeMesh {
