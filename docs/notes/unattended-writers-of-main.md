@@ -64,8 +64,8 @@ refusal, restore it away.
 form: `git diff --binary HEAD` of the targets goes to
 `logs/readme-review-<ts>.refused.patch`, next to the run log (`logs/` is
 untracked). The targets are then restored with
-`git restore --source=HEAD --staged --worktree`, and the script exits with the
-commit's status. `tests/infra/test_review_readme.py` pins this behaviour.
+`git restore --source=HEAD --staged --worktree`, and the script exits 1.
+`tests/infra/test_review_readme.py` pins this behaviour.
 
 ## Audit
 

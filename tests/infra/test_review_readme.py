@@ -14,13 +14,14 @@ against a hermetic tempdir fixture:
   - `origin.git`  a bare remote that `main` has been pushed to;
   - `hooks/`      core.hooksPath, holding a pre-commit that records the staged
                   set it was shown and exits with a configurable status;
-  - `bin/claude`  a stub standing in for CLAUDE_BIN.
+  - `bin/claude`  a stub standing in for CLAUDE_BIN, with a non-executable
+                  twin for the missing-CLI case.
 
 SAFETY: the stub edits NOTHING unless `pwd -P` is the fixture root it was
-handed, and run_script ALWAYS points CLAUDE_BIN at the stub. A script that
-ignored REIFY_MAIN_CHECKOUT and cd'd into a real checkout therefore produces a
-harmless no-edit run, and the real `claude --dangerously-skip-permissions` can
-never be spawned from here.
+handed, and run_script ALWAYS points CLAUDE_BIN at the stub or its twin. A
+script that ignored REIFY_MAIN_CHECKOUT and cd'd into a real checkout
+therefore produces a harmless no-edit run, and the real
+`claude --dangerously-skip-permissions` can never be spawned from here.
 
 Assertions are on observable outcomes only — commits, identity fields, remote
 refs, index and worktree state, the hook's recorded view, exit codes, and files
@@ -112,6 +113,8 @@ class ReviewReadmeFixture(unittest.TestCase):
         self.hook_rc.write_text("0\n")
         self.stub_marker = self.tmpdir / "claude-invoked-in"
         self.stub = self._write_stub_claude()
+        self.non_executable_stub = self.stub.with_name("claude-not-executable")
+        self.non_executable_stub.write_text(self.stub.read_text())
         hooks_dir = self._write_recording_hook()
 
         self.main.mkdir()
@@ -214,14 +217,14 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
         return self.stub_marker.read_text().strip()
 
     # ── the one way to run the script ────────────────────────────────────
-    def run_script(self, **env_overrides):
+    def run_script(self, *, claude_executable=True, **env_overrides):
         refused = _PINNED_KEYS & env_overrides.keys()
         if refused:
             raise ValueError(f"run_script pins {sorted(refused)}; they cannot be overridden")
         env = self.hermetic_env()
         env.pop("REVIEW_README_STUB_APPEND", None)
         env.update(env_overrides)
-        env["CLAUDE_BIN"] = str(self.stub)
+        env["CLAUDE_BIN"] = str(self.stub if claude_executable else self.non_executable_stub)
         env["REIFY_MAIN_CHECKOUT"] = str(self.main)
         env["REVIEW_README_STUB_ROOT"] = str(self.main)
         return subprocess.run(["bash", str(SCRIPT)], env=env, cwd=self.neutral_cwd,
@@ -288,14 +291,16 @@ class LandingPathTest(ReviewReadmeFixture):
 
 class RefusalTest(ReviewReadmeFixture):
     MARKER = "REFUSED-EDIT-MARKER"
+    GATE_STATUS = 3
+    REFUSED_EXIT = 1
 
     def test_a_refused_commit_restores_the_targets_and_quarantines_the_edit(self):
-        self.hook_rc.write_text("1\n")
+        self.hook_rc.write_text(f"{self.GATE_STATUS}\n")
         human_content = self.stage_human_change_to_unrelated()
         before = self.head()
         result = self.run_script(REVIEW_README_STUB_APPEND=self.MARKER)
 
-        self.assertNotEqual(result.returncode, 0, _diag(result))
+        self.assertEqual(result.returncode, self.REFUSED_EXIT, _diag(result))
         self.assertEqual(self.head(), before, _diag(result))
         self.assertEqual(self.origin_main(), self.origin_main_at_setup, _diag(result))
 
@@ -349,6 +354,15 @@ class PreflightTest(ReviewReadmeFixture):
         self.assert_claude_never_invoked(result)
         self.assert_still_staged(README, content)
         self.assertEqual(self.head(), before, _diag(result))
+
+    def test_a_non_executable_claude_bin_refuses_with_1(self):
+        before = self.head()
+        result = self.run_script(claude_executable=False,
+                                 REVIEW_README_STUB_APPEND="REVIEWED-LINE")
+        self.assertEqual(result.returncode, 1, _diag(result))
+        self.assert_claude_never_invoked(result)
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
 
     def test_off_main_checkout_refuses(self):
         main_before = self.head()
