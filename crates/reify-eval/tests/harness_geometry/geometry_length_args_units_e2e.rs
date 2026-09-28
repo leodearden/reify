@@ -314,8 +314,9 @@ fn nurbs_bare_pole_drops_op_dimensioned_builds() {
 /// build agree on a variadic PROFILE, a shape the R2 curve rows never exercise.
 ///
 /// Six args satisfies the compiler-side precondition (">= 6 args for 3 points",
-/// even count — `reify-compiler/src/geometry.rs:1631`), and the dimensioned
-/// control is byte-identical to the call already smoked by
+/// even count — the `"polygon"` arm of `compile_geometry_call_inner` in
+/// `reify-compiler/src/geometry.rs`), and the dimensioned control is
+/// byte-identical to the call already smoked by
 /// `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs::polygon_compiles`
 /// so the doc example and this signal cannot drift.
 #[test]
