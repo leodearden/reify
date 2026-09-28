@@ -992,12 +992,10 @@ pub(crate) fn elaborate_forall_connect(
                     .map(|e| substitute_expr(e, &bindings))
                     .collect();
 
-                // TRANSIENT (task 7195 step-7): `chain_hops` still writes its
-                // own §6.2 diagnostics straight through to the sink's output,
-                // so it keeps today's per-element duplication for those
-                // diagnostics. Step-9 routes this call through
-                // `sink.collecting` too.
-                for (source, dest) in chain_hops(&ctx, &substituted_elements, sink.out) {
+                let hops = sink.collecting(|element_diagnostics| {
+                    chain_hops(&ctx, &substituted_elements, element_diagnostics)
+                });
+                for (source, dest) in hops {
                     let mut acc = ConnectAccumulator {
                         constraints,
                         constraint_index,

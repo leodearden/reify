@@ -3039,7 +3039,8 @@ structure def S {
         .filter(|d| d.message.contains("undefined port"))
         .count();
     assert_eq!(
-        undefined_port_count, 0,
+        undefined_port_count,
+        0,
         "expected no 'undefined port' diagnostics for this fixture, got {:?}",
         module
             .diagnostics
