@@ -192,6 +192,18 @@ pub enum MemberDecl {
     /// carries the same flat relation set on `SubDecl.relate_relations` instead
     /// of producing a separate `MemberDecl::Relate`.
     Relate(RelateDecl),
+    /// A member-level `sketch <name> { … }` block: a named 2D constrained
+    /// sketch (constrained-2d-sketch, PRD `docs/prds/v0_6/constrained-2d-sketch.md`
+    /// §7 C1; task α 5506).
+    ///
+    /// α carries the block FAITHFULLY from source — grammar, AST, lowering — and
+    /// deliberately supplies NO compile semantics. Every compile-side arm added
+    /// for this variant in α is a loud "not yet supported" rejection, never a
+    /// silent no-op (INV-SF-1 / PRD §5 D14); the pins live in
+    /// `crates/reify-compiler/tests/harness_langcore/sketch_member_unsupported_tests.rs`.
+    /// constrained-2d-sketch γ replaces those rejections with the real
+    /// `SketchTemplate` lowering and the coded `E_SKETCH_*` diagnostics.
+    Sketch(SketchDecl),
 }
 
 /// A `relate { concentric(…)  flush(…) }` member block (task δ 4384).
@@ -205,6 +217,51 @@ pub struct RelateDecl {
     /// The relation expressions, in source order. Each must type to
     /// `Type::Relation` (compiler enforcement, task δ step-14).
     pub relations: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A `sketch profile { aux let cl = line(a, b)  fix(a) }` member block
+/// (constrained-2d-sketch α, task 5506; PRD §7 C1).
+///
+/// # Why `Vec<MemberDecl>` and not pre-split entity/constraint vectors
+///
+/// The body is carried in DECLARATION ORDER, unclassified. PRD §7 C2's split of
+/// a sketch body into `SketchEntityDecl` / `SketchConstraintDecl` is task γ's
+/// job, and it is a SEMANTIC classification (it depends on what each call
+/// resolves to), not a syntactic one. Pre-splitting here would force α to guess
+/// that classification from syntax alone and would make the AST a lossy record
+/// of the source — the INV-SF-7 `parse-is-value-faithful` failure mode.
+///
+/// # Body shape
+///
+/// Grammar-wise a sketch body admits exactly two member kinds (`grammar.js`'s
+/// `sketch_block` rule): `let_declaration` and `relation_member`. Lowering maps
+/// them onto EXISTING `MemberDecl` variants — `Let` (whose pre-existing
+/// `is_aux` flag delivers PRD §5 D12's construction geometry with no new field)
+/// and `Relate` (a single-expression `RelateDecl`, the same bare-expression
+/// shape `relate { }` already uses, so γ can reuse `check_relate_relations`
+/// verbatim). No `sketch_member` wrapper kind is invented: a second new
+/// `MemberDecl` variant would re-open the whole exhaustiveness blast radius for
+/// zero gain.
+///
+/// # Scoping
+///
+/// Sketch-local names "are not visible outside the block in v1" (PRD §7 C1), so
+/// only the `ALL_MEMBER_BODIES` recursion set descends into `members` — see the
+/// `sketch_body` cell of `MemberRecursionSet` and the
+/// `sketch_body_is_descended_into_only_by_all_member_bodies` pin.
+#[derive(Debug, Clone)]
+pub struct SketchDecl {
+    /// The sketch's name, e.g. `profile` in `sketch profile { … }`. Required by
+    /// the grammar (an anonymous `sketch { … }` is a parse error) because γ's
+    /// downstream consumers — `extrude(profile, length)` and friends — refer to
+    /// the sketch by name.
+    pub name: String,
+    /// The body members in source order, unclassified. See the type doc above.
+    /// An empty `sketch s { }` lowers to `members: vec![]` (the `relate { }`
+    /// parity case).
+    pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -930,9 +987,9 @@ where
 /// the three independent hand-rolled recursion sets this module used to
 /// carry (one per walker). `GuardedGroupDecl.{members,else_members}` and
 /// `MatchArmDeclArmDecl.member` are recursed UNCONDITIONALLY by every caller
-/// today, so only the two cells that actually differ — a sub's specialization
-/// overrides (see [`sub_override_bodies`] for the two shapes they take) and
-/// `PortDecl.members` — are modeled as flags.
+/// today, so only the three cells that actually differ — a sub's specialization
+/// overrides (see [`sub_override_bodies`] for the two shapes they take),
+/// `PortDecl.members` and `SketchDecl.members` — are modeled as flags.
 ///
 /// This table is the module's canonical anti-drift artifact: every
 /// member-recursion set in this module is one of the consts below, and
@@ -941,16 +998,27 @@ where
 /// caller's visitor chooses — but it is listed here so one table carries the
 /// whole picture.
 ///
-/// | const | used by | sub overrides (`body` or keyed) | `PortDecl.members` | early exit |
-/// |---|---|---|---|---|
-/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no — `B = Infallible` pins it |
-/// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | yes — first match wins |
-/// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | yes — once ambiguous |
-/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | no — `B = Infallible` pins it |
+/// | const | used by | sub overrides (`body` or keyed) | `PortDecl.members` | sketch body | early exit |
+/// |---|---|---|---|---|---|
+/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no | no — `B = Infallible` pins it |
+/// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | no | yes — first match wins |
+/// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | no | yes — once ambiguous |
+/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | yes | no — `B = Infallible` pins it |
+///
+/// The sketch-body column is `no` for every lookup/scope set because
+/// sketch-local names are invisible outside the block (PRD
+/// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1). That argument covers
+/// lookups from OUTSIDE the block only: `NAMED_MEMBER_LOOKUP`'s `no` also
+/// leaves hover/goto-definition on a sketch-local name used inside its own
+/// sketch unresolved, although reify-lsp's references and outline already
+/// treat the body as a child scope. Closing that needs a scope-aware lookup,
+/// not a flipped cell — `yes` would let a name used outside the block
+/// resolve to a sketch-local declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemberRecursionSet {
     sub_overrides: bool,
     port_body: bool,
+    sketch_body: bool,
 }
 
 impl MemberRecursionSet {
@@ -961,6 +1029,7 @@ impl MemberRecursionSet {
     const SPECIALIZATION_SCOPE: Self = Self {
         sub_overrides: true,
         port_body: false,
+        sketch_body: false,
     };
     /// Used by `find_named_member_span_depth` (hover/goto-definition): a
     /// port-body param/let IS addressable by its bare name for these
@@ -969,6 +1038,7 @@ impl MemberRecursionSet {
     const NAMED_MEMBER_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: true,
+        sketch_body: false,
     };
     /// Used by `collect_param_default_candidates` (cell-id resolution):
     /// neither a port-body param (addressed only by the composite
@@ -977,14 +1047,16 @@ impl MemberRecursionSet {
     const PARAM_DEFAULT_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: false,
+        sketch_body: false,
     };
     /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
     /// E_PRIV_REDUNDANT pass, which asks "does any `let`/`constraint` anywhere
     /// under this declaration carry `priv`?" and so may skip no optional body
-    /// at all. Both cells `true`: the widest set in the table above.
+    /// at all. Every cell `true`: the widest set in the table above.
     const ALL_MEMBER_BODIES: Self = Self {
         sub_overrides: true,
         port_body: true,
+        sketch_body: true,
     };
 }
 
@@ -1033,6 +1105,14 @@ where
             MemberDecl::Port(p) => {
                 if set.port_body {
                     walk_members(&p.members, set, depth + 1, visitor)?;
+                }
+            }
+            // Sketch bodies — descended into only when `set.sketch_body`:
+            // sketch-local names are invisible to the lookup/scope sets (PRD
+            // §7 C1), while the all-bodies set exists to skip nothing.
+            MemberDecl::Sketch(s) => {
+                if set.sketch_body {
+                    walk_members(&s.members, set, depth + 1, visitor)?;
                 }
             }
             // Spec §8.7 + shadow_lint.rs:39-43: `where { … } else { … }`
@@ -2219,7 +2299,7 @@ mod has_test_annotation_tests {
 mod member_test_fixtures {
     use super::{
         Expr, GuardedGroupDecl, KeyedSubMemberEntry, LetDecl, MatchArmDeclArmDecl,
-        MatchArmDeclGroupDecl, MemberDecl, ParamDecl, PortDecl, SubDecl,
+        MatchArmDeclGroupDecl, MemberDecl, ParamDecl, PortDecl, SketchDecl, SubDecl,
     };
     use crate::ast::ExprKind;
     use reify_core::{ContentHash, PortDirection, SourceSpan};
@@ -2326,6 +2406,22 @@ mod member_test_fixtures {
                     span: SourceSpan::new(0, 1),
                 })
                 .collect(),
+            span: SourceSpan::new(0, 1),
+            content_hash: ContentHash(0),
+        })
+    }
+
+    /// `sketch <name> { members }` — a member-level sketch block
+    /// (constrained-2d-sketch α, task 5506; PRD `docs/prds/v0_6/constrained-2d-sketch.md`
+    /// §7 C1).
+    ///
+    /// Unlike `relate { … }` (which holds `Vec<Expr>`), a sketch body holds a real
+    /// `Vec<MemberDecl>`, so whether a walker descends into it is a genuine
+    /// per-set decision — see `sketch_body_is_descended_into_only_by_all_member_bodies`.
+    pub(super) fn sketch(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
+        MemberDecl::Sketch(SketchDecl {
+            name: name.to_string(),
+            members,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         })
@@ -3242,7 +3338,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::SPECIALIZATION_SCOPE,
             MemberRecursionSet {
                 sub_overrides: true,
-                port_body: false
+                port_body: false,
+                sketch_body: false
             },
             "walk_specialization_scope_members recurses a sub's specialization overrides \
              (body or keyed entries), not PortDecl.members"
@@ -3251,7 +3348,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::NAMED_MEMBER_LOOKUP,
             MemberRecursionSet {
                 sub_overrides: false,
-                port_body: true
+                port_body: true,
+                sketch_body: false
             },
             "find_named_member_span recurses PortDecl.members, not a sub's specialization \
              overrides"
@@ -3260,7 +3358,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
             MemberRecursionSet {
                 sub_overrides: false,
-                port_body: false
+                port_body: false,
+                sketch_body: false
             },
             "find_param_default_span recurses neither a sub's specialization overrides nor \
              PortDecl.members"
@@ -3269,11 +3368,12 @@ mod member_walker_contract_tests {
             MemberRecursionSet::ALL_MEMBER_BODIES,
             MemberRecursionSet {
                 sub_overrides: true,
-                port_body: true
+                port_body: true,
+                sketch_body: true
             },
             "walk_all_member_bodies (priv_redundant_lint.rs's E_PRIV_REDUNDANT walk) is the \
-             MAXIMAL set: it recurses BOTH a sub's specialization overrides and \
-             PortDecl.members, because a `let`/`constraint` can carry `priv` in either body"
+             MAXIMAL set: it recurses a sub's specialization overrides, PortDecl.members \
+             AND a sketch body, because a `let`/`constraint` can carry `priv` in any of them"
         );
         assert_ne!(
             MemberRecursionSet::SPECIALIZATION_SCOPE,
@@ -3317,6 +3417,7 @@ mod member_walker_contract_tests {
         Always,
         IfSubOverrides,
         IfPortBody,
+        IfSketchBody,
         Never,
     }
 
@@ -3340,6 +3441,7 @@ mod member_walker_contract_tests {
             MemberDecl::ForallConstraint(_) => DescendKind::Never,
             MemberDecl::MatchArmDeclGroup(_) => DescendKind::Always,
             MemberDecl::Relate(_) => DescendKind::Never,
+            MemberDecl::Sketch(_) => DescendKind::IfSketchBody,
         }
     }
 
@@ -3367,7 +3469,7 @@ mod member_walker_contract_tests {
 
     #[test]
     fn walk_members_recursion_matches_declared_classification() {
-        let nesting_variants: [NestingVariant; 5] = [
+        let nesting_variants: [NestingVariant; 6] = [
             (
                 "Sub",
                 || MemberDecl::Sub(sub_with_body("s", Some(vec![param("marker", (0, 40), None)]))),
@@ -3401,6 +3503,11 @@ mod member_walker_contract_tests {
                 || match_arm_group(vec![("A", param("marker", (0, 40), None))]),
                 DescendKind::Always,
             ),
+            (
+                "Sketch",
+                || sketch("profile", vec![param("marker", (0, 40), None)]),
+                DescendKind::IfSketchBody,
+            ),
         ];
         let recursion_sets: [(&str, MemberRecursionSet); 4] = [
             (
@@ -3430,6 +3537,7 @@ mod member_walker_contract_tests {
                     DescendKind::Always => true,
                     DescendKind::IfSubOverrides => set.sub_overrides,
                     DescendKind::IfPortBody => set.port_body,
+                    DescendKind::IfSketchBody => set.sketch_body,
                     DescendKind::Never => false,
                 };
                 let actual_reach = reaches_marker(build(), set);
@@ -3439,6 +3547,78 @@ mod member_walker_contract_tests {
                 );
             }
         }
+    }
+
+    /// A sketch body is descended into ONLY by `ALL_MEMBER_BODIES`
+    /// (constrained-2d-sketch α, task 5506).
+    ///
+    /// PRD `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1: sketch-local entity
+    /// names "are not visible outside the block in v1", so the member-lookup,
+    /// specialization-scope and param-default walkers must all stop at the
+    /// `sketch { … }` boundary. `ALL_MEMBER_BODIES` exists to skip no optional
+    /// body at all, so it must reach inside.
+    ///
+    /// Pinned by name beside the table-driven row above because a sketch body is
+    /// the one cell where three sets say "no" for a scoping reason rather than a
+    /// structural one; a future walker change could silently flip it.
+    #[test]
+    fn sketch_body_is_descended_into_only_by_all_member_bodies() {
+        let recursion_sets: [(&str, MemberRecursionSet, bool); 4] = [
+            (
+                "SPECIALIZATION_SCOPE",
+                MemberRecursionSet::SPECIALIZATION_SCOPE,
+                false,
+            ),
+            (
+                "NAMED_MEMBER_LOOKUP",
+                MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+                false,
+            ),
+            (
+                "PARAM_DEFAULT_LOOKUP",
+                MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+                false,
+            ),
+            (
+                "ALL_MEMBER_BODIES",
+                MemberRecursionSet::ALL_MEMBER_BODIES,
+                true,
+            ),
+        ];
+
+        for (set_name, set, expected_reach) in recursion_sets {
+            let member = sketch("profile", vec![param("marker", (0, 40), None)]);
+            assert_eq!(
+                reaches_marker(member, set),
+                expected_reach,
+                "{set_name}: walk_members must reach a param nested inside a sketch body \
+                 exactly when the set is ALL_MEMBER_BODIES"
+            );
+        }
+    }
+
+    /// The sketch member itself IS visited (it is a sibling in the enclosing
+    /// body); only its BODY is out of reach. Without this, the test above would
+    /// also pass if `walk_members` skipped sketch members entirely.
+    #[test]
+    fn the_sketch_member_itself_is_still_visited() {
+        let members = vec![sketch("profile", vec![param("marker", (0, 40), None)])];
+        let mut seen_sketch = false;
+        let _: ControlFlow<()> = walk_members(
+            &members,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            0,
+            &mut |m| {
+                if matches!(m, MemberDecl::Sketch(_)) {
+                    seen_sketch = true;
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        assert!(
+            seen_sketch,
+            "the sketch member must be handed to the visitor even though its body is not walked"
+        );
     }
 
     // ── (c) early-exit short-circuit ───────────────────────────────────────

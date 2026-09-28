@@ -35,6 +35,7 @@ function commonMembers($) {
     $.minimize_declaration,
     $.maximize_declaration,
     $.relate_block,
+    $.sketch_block,
     $.guarded_block,
     $.port_declaration,
     $.connect_statement,
@@ -667,6 +668,74 @@ module.exports = grammar({
       field('value', $._expression),
     ),
 
+    // ── auto(seed) in positional call-argument position ─────
+    // PRD v0.6 constrained-2d-sketch §5 D6, implementing the 2026-07-25
+    // OPTION B decision: `auto(<expr>)` is admitted grammar-generally in CALL
+    // position (any `callTail($)` consumer — function_call, namespaced_call,
+    // ad_hoc_selector, trait_method_call), so `point(auto(10mm), 0mm)` means
+    // "solve for this point, seeded at 10mm".
+    //
+    // WHY A DISTINCT NODE RATHER THAN A FOURTH `auto_keyword` ARM.
+    // `auto_keyword` includes the bare `$._auto_token` arm, so admitting
+    // `auto_keyword` into `argument_list` would ALSO admit bare `auto` as a
+    // positional argument and thereby fully reverse task 3808's
+    // operand-position rejection. The OPTION B decision authorises only the
+    // parenthesized-seed form, so only that form gets a rule. The distinct
+    // node kind is also what lets `lower_expr` route it on kind alone,
+    // without re-inspecting children to tell a seed from a modifier.
+    //
+    // WHY NO AMBIGUITY / NO `conflicts` ENTRY. The three `argument_list`
+    // alternatives have disjoint FIRST sets: `named_argument` starts
+    // `identifier ':'`; `auto_seed` starts AUTO_TOKEN; and `_expression` can
+    // never start with AUTO_TOKEN, because the external scanner emits
+    // AUTO_TOKEN regardless of valid_symbols (src/scanner.c's
+    // `auto_token_block` label — cited by LABEL, not by line range, because
+    // the previous `src/scanner.c:437-505` citation rotted within ten days:
+    // task 5784's U+00B7 unit-operator work shifted that block to 459-529) — the
+    // very mechanism that makes `auto` an ERROR at operand positions. So
+    // `auto` never lexes as an `identifier` here and the arms cannot collide.
+    // `tree-sitter generate` reports no new conflict for this rule (measured);
+    // if that ever changes, resolve it and record the ACTUAL cause here rather
+    // than leaving this claim stale.
+    //
+    // PARTIAL-REVERSAL BREADCRUMB. Task 3808 rejected `auto` at operand
+    // positions. This widens ONLY `auto( <expr> )` in positional call args.
+    // Measured on the generated parser, positionally: bare `auto` stays a
+    // parse error (`f(auto)` → ERROR) and so does the named-parameter form
+    // (`f(auto(seed = 5mm))` → ERROR, since `seed = 5mm` is not an
+    // `_expression`); and `auto(<expr>)` is still NOT admitted at a binding
+    // site in v1 (`_binding_value` is untouched, so `let x : Length =
+    // auto(5mm)` → ERROR). Pinned by tests/sketch_grammar_tests.rs's
+    // `bare_auto_stays_rejected_in_positional_operand_position`,
+    // `named_argument_auto_forms_unchanged` and
+    // `auto_seed_is_not_admitted_at_binding_sites_in_v1`.
+    //
+    // CONSEQUENCE OF THE GENERALITY, called out so no reader mistakes it for a
+    // special case: `auto(free)` in POSITIONAL argument position does NOT stay
+    // an error — it parses as an `auto_seed` whose `seed` is the plain
+    // identifier `free` (measured), NOT as `auto_keyword`'s free-modifier arm,
+    // which is unreachable there. The modifier reading is still the one that
+    // wins wherever `auto_keyword` IS reachable — a binding site, and a NAMED
+    // argument, which reaches `auto_keyword` through `_binding_value`
+    // (`f(x: auto(free))` → `named_argument` / `auto_keyword`, measured). So
+    // the two readings are position-DISJOINT: no single token sequence
+    // acquires two readings, which is what INV-SF-7 actually forbids.
+    //
+    // Admitting a form in the GRAMMAR is not accepting it in the LANGUAGE.
+    // Once `auto_seed` lowers to the existing `ExprKind::Auto` (α's lowering
+    // step), every one of these positional forms — seeded or `free` — hits
+    // `reject_auto_in_arg_list` in reify-compiler/src/expr.rs, which emits the
+    // coded E_AUTO_NOT_AT_BINDING_SITE diagnostic for the first offending arg.
+    // That is what OPTION B's "typed semantic rejection outside sketch scope,
+    // loud + coded, never silent-accept" buys, and γ/η are what relax it
+    // INSIDE sketch scope.
+    auto_seed: $ => seq(
+      $._auto_token,
+      '(',
+      field('seed', $._expression),
+      ')',
+    ),
+
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
       optional(choice('pub', 'priv')),
@@ -746,6 +815,80 @@ module.exports = grammar({
       'where',
       '{',
       repeat($.relation_member),
+      '}',
+    ),
+
+    // ── Sketch block (member-level) ─────────────────────────
+    // `sketch profile { aux let cl = line(…)  let a = point(…)  fix(a) }` — a
+    // member-level constrained 2D sketch (constrained-2d-sketch v0_6, PRD §7
+    // C1; §5 D2/D11/D12; task α 5506).  The block binds `name` as a member
+    // whose value is the assembled profile region, so `extrude(profile, …)`
+    // consumes it through the ordinary member-reference path (D11) with no
+    // new call surface.
+    //
+    // `sketch` is a PLAIN string token (contextual keyword), mirroring
+    // `relate`'s proven pattern (see relate_block above): tree-sitter makes it
+    // a lex candidate ONLY where the parse state admits a member start (via
+    // commonMembers()).  No member alternative begins with a bare identifier,
+    // so `'sketch'` and `identifier` are never both valid at one state —
+    // everywhere else (operands, names, args, let bindings) `sketch` keeps
+    // lexing as `identifier`.
+    //
+    // The body deliberately REUSES two existing node kinds rather than
+    // introducing a `sketch_member` wrapper:
+    //   • `let_declaration` — its existing `optional('aux')` already delivers
+    //     PRD §5 D12's construction geometry with ZERO new grammar, and its
+    //     `optional(seq(':', type))` gives an annotated sketch entity for free.
+    //   • `relation_member` — the same bare-expression shape as
+    //     `relate_block`/`sub_relate_block`, so `lower_relation_members` stays
+    //     single-implementation across all three blocks.
+    // Body shape therefore mirrors relate_block's: GLR separates newline- and
+    // `;`-separated members with no explicit separator token, and empty
+    // `sketch s { }` is admitted (repeat = zero-or-more), matching `relate { }`.
+    //
+    // PRD §5 D2's `on <expr>` datum-plane clause is DELIBERATELY ABSENT in v1
+    // (every sketch is implicitly on the structure's XY datum).  The slot
+    // between `name` and `{` is reserved for it: adding
+    // `optional(seq('on', field('plane', $._expression)))` there is a
+    // non-breaking widening, because no v1 source can occupy that slot.
+    //
+    // ── INV-SF-7 `parse-is-value-faithful` ──
+    // (docs/legibility/design-invariants.md:247-273.)  This body is the FIRST
+    // place in the language where a `let_declaration` and a bare expression are
+    // siblings with no separator token, so the adjacency readings were MEASURED
+    // rather than assumed.  All five are pinned by
+    // `tests/sketch_grammar_tests.rs`; each inherits an existing precedent
+    // rather than inventing a reading:
+    //
+    //   • `let d = 5mm` ⏎ `fix(a)` stays TWO members — the quantity literal
+    //     does not absorb the following line.  (The relation_member's exact
+    //     text is asserted, not just its kind.)
+    //   • `5mm` is one quantity_literal; `5 mm` is a parse ERROR and no
+    //     quantity_literal may span the whitespace.  Inherited law, pinned by
+    //     `test/corpus/unit_expr.txt` — a diagnostic, never a quiet pick.
+    //   • `let x = a.b` ⏎ `(c)` collapses into ONE member: the `(c)` becomes a
+    //     namespaced_call argument list.  This is the ITEM-BOUNDARY reading
+    //     `test/corpus/namespaced_ref.txt` already commits for `relate { a.b ⏎
+    //     (x) }` ("namespaced_ref item boundary" case).  `fix(c)` on that line
+    //     does NOT join — only a `(`-led line does.
+    //   • `fix(a)` ⏎ `horizontal(ab)` stays two relation_members (relate-block
+    //     parity).
+    //
+    // The join above, and the `let d = 5mm` ⏎ `- 3mm` leading-operator
+    // continuation, both reproduce with NO sketch block anywhere — they belong
+    // to `let_declaration`'s `value:` being a full `$._expression`, which is
+    // the seam INV-SF-7's evidence task #5392 describes.  So they are NOT
+    // narrowed here: doing so would fork this body away from every other member
+    // body in the language.  Instead
+    // `sketch_body_item_boundary_matches_a_plain_member_body` asserts this body
+    // reads them IDENTICALLY to a plain member body, so a future fix at that
+    // seam propagates here automatically and the test reds if the two diverge.
+    // Recorded at greater length in escalation esc-5506-1.
+    sketch_block: $ => seq(
+      'sketch',
+      field('name', $.identifier),
+      '{',
+      repeat(choice($.let_declaration, $.relation_member)),
       '}',
     ),
 
@@ -1836,9 +1979,20 @@ module.exports = grammar({
       callTail($),
     )),
 
+    // `$.auto_seed` is a positional-argument ALTERNATIVE, not a wrapper: an
+    // `auto(<expr>)` argument is an ordinary member of the list and keeps its
+    // position among the other arguments. It appears in BOTH choices (head and
+    // repeat) so `f(auto(1mm), x)` and `f(x, auto(1mm))` are equally admitted.
+    //
+    // Deliberately NOT added to `_expression` / `_primary_expression` /
+    // `_binding_value`: scoping the widening to this one rule is what keeps
+    // task 3808's operand-position rejection intact everywhere else. See the
+    // `auto_seed` rule for the full partial-reversal rationale and for why the
+    // three arms need no `conflicts` entry (disjoint FIRST sets — only
+    // `auto_seed` can begin with the external scanner's AUTO_TOKEN).
     argument_list: $ => seq(
-      choice($.named_argument, $._expression),
-      repeat(seq(',', choice($.named_argument, $._expression))),
+      choice($.named_argument, $.auto_seed, $._expression),
+      repeat(seq(',', choice($.named_argument, $.auto_seed, $._expression))),
       optional(','),
     ),
 

@@ -2629,6 +2629,12 @@ impl<'a> Lowering<'a> {
                 "relate block",
                 self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
+            "sketch_block" => check_and_lower!(
+                self,
+                child,
+                "sketch block",
+                self.lower_sketch_block(child).map(MemberDecl::Sketch)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
@@ -3679,6 +3685,74 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `sketch_block` CST node into a [`SketchDecl`]
+    /// (constrained-2d-sketch α, task 5506; PRD
+    /// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+    ///
+    /// Infallible-`Some` in the same shape as [`Self::lower_relate_block`]:
+    /// fallibility is carried by the `check_and_lower!` at the dispatch site, so
+    /// an ERROR-bearing block pushes a diagnostic and yields `None` rather than a
+    /// partially-lowered member.
+    ///
+    /// # Body mapping
+    ///
+    /// The grammar admits exactly two body child kinds. Each maps onto an
+    /// EXISTING `MemberDecl` variant rather than a new sketch-specific one — a
+    /// second new variant would re-open the whole exhaustiveness blast radius
+    /// (10 src + 9 test matches) for zero gain:
+    ///
+    ///   * `let_declaration` → `MemberDecl::Let` via [`Self::lower_let`]. `aux`
+    ///     detection is NOT reimplemented here: `lower_let` already calls
+    ///     `has_aux_keyword` and sets `LetDecl.is_aux`, which is exactly PRD §5
+    ///     D12's construction-geometry marking.
+    ///   * `relation_member` → a single-expression `MemberDecl::Relate`, the
+    ///     same bare-expression shape `relate { }` already uses, so γ can reuse
+    ///     `check_relate_relations` verbatim.
+    ///
+    /// Members are collected in SOURCE ORDER and left UNCLASSIFIED: PRD §7 C2's
+    /// entity/constraint split is semantic (it depends on what each call
+    /// resolves to) and belongs to γ.
+    ///
+    /// A body child that lowers to `None` is skipped rather than substituted, so
+    /// the member count is a faithful record of what actually lowered.
+    fn lower_sketch_block(&mut self, node: tree_sitter::Node) -> Option<SketchDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "let_declaration" => {
+                    if let Some(decl) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(decl));
+                    }
+                }
+                "relation_member" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        members.push(MemberDecl::Relate(RelateDecl {
+                            relations: vec![expr],
+                            span: self.span(child),
+                            content_hash: self.content_hash(child),
+                        }));
+                    }
+                }
+                // Anonymous tokens (`sketch`, the braces) and the `name`
+                // identifier. Nothing else is grammatically reachable here.
+                _ => {}
+            }
+        }
+
+        Some(SketchDecl {
+            name,
+            members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     /// Lower the `relation_member` children of a `relate_block` or
     /// `sub_relate_block` CST node into their relation expressions, in source
     /// order (task δ 4384). Each `relation_member` is `field('expr',
@@ -4165,6 +4239,28 @@ impl<'a> Lowering<'a> {
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
+            // Positional `auto(<expr>)` in call-argument position
+            // (constrained-2d-sketch α, task 5506; PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §5 D6). It IS the named
+            // form `auto(seed = <expr>)`, so it lowers to the existing
+            // `ExprKind::Auto` shape rather than a new variant, and every Auto
+            // consumer keeps working unchanged. Outside sketch scope that shape
+            // is rejected loudly by reify-compiler `expr.rs`'s
+            // `reject_auto_in_arg_list` (E_AUTO_NOT_AT_BINDING_SITE), pinned by
+            // cases (l)-(n) of `harness_auto_binding/auto_not_at_binding_site_tests.rs`.
+            // `free` is always false: the grammar's `auto_seed` rule admits only
+            // the parenthesized-expression form (rationale: that rule in
+            // grammar.js).
+            "auto_seed" => node
+                .child_by_field_name("seed")
+                .and_then(|seed_node| self.lower_expr(seed_node))
+                .map(|seed| Expr {
+                    kind: ExprKind::Auto {
+                        free: false,
+                        params: vec![("seed".to_string(), seed)],
+                    },
+                    span: self.span(node),
+                }),
             "quantity_literal" => self.lower_quantity_literal(node),
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
@@ -6078,6 +6174,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
                 MemberDecl::Relate(_) => "relate".into(),
+                MemberDecl::Sketch(sk) => format!("sketch:{}", sk.name),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -6267,6 +6364,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
                 MemberDecl::Relate(r) => r.span,
+                MemberDecl::Sketch(sk) => sk.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -6402,6 +6500,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
                 MemberDecl::Relate(_) => {}
+                MemberDecl::Sketch(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -6472,6 +6571,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
                 MemberDecl::Relate(r) => (r.span, r.content_hash),
+                MemberDecl::Sketch(sk) => (sk.span, sk.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -6588,6 +6688,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -6610,6 +6711,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };

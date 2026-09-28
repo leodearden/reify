@@ -43,6 +43,8 @@ mod priv_import_boundary_tests;
 mod priv_member_visibility_tests;
 #[path = "harness_langcore/priv_redundant_tests.rs"]
 mod priv_redundant_tests;
+#[path = "harness_langcore/sketch_member_unsupported_tests.rs"]
+mod sketch_member_unsupported_tests;
 #[path = "harness_langcore/spec_param_override_compile_tests.rs"]
 mod spec_param_override_compile_tests;
 #[path = "harness_langcore/specialization_scope_e2e_tests.rs"]
