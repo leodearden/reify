@@ -3310,7 +3310,7 @@ describe('reify.grammar snippets — a ReservedWord in call position', () => {
     expect(nodeNames(src)).toContain('LambdaExpression');
   });
 
-  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31
+  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
   // (`Steel_AISI_1045(yield_stress: some(310mm))`) — a reserved-word call nested
   // inside a NamedArgument VALUE, a third distinct position.
   it('parses a reserved-word call as a named-argument value', () => {
