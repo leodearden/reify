@@ -685,3 +685,9 @@ scripts/gui-vitest-run.sh    tests/infra/test_gui_vitest_rpc_hardening.sh
 #     of the suite reads the flake report from.
 gui/vitest.config.ts                       tests/infra/test_gui_vitest_rpc_hardening.sh
 gui/vitest-worker-rpc-flake-reporter.ts    tests/infra/test_gui_vitest_rpc_hardening.sh
+# Task 7790: scripts/review-readme.sh (the timer-driven README reviewer that
+# commits to main unwatched) is pinned by a .py suite behind a thin .sh
+# wrapper — same pair shape as flake_density_report above, so an edit to the
+# script OR the .py selects the wrapper.
+scripts/review-readme.sh    tests/infra/test_review_readme.sh
+tests/infra/test_review_readme.py    tests/infra/test_review_readme.sh

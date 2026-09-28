@@ -11,6 +11,7 @@ This file holds **invariants and pointers only**. Mechanism detail lives in the 
 - **Docs-only changes** (PRDs, capability manifests, anything under `docs/` or `*.md`/`*.yaml`) commit **directly on `main`** in project_root — *not* via the merge queue and *not* via `land.sh`. Both of those stamp `DF_VERIFY_ROLE=merge`, which forces the full `--scope all --profile both` gate; there is no docs fast path on either (dark-factory's INV-1 escalates a no-source merge diff to the full global gate rather than trivially passing it). A hook-gated `git commit` on `main` **is** sanctioned: `hooks/pre-commit` runs `project-checks` (which scopes docs to no-heavy-checks) and then marks the main-gate sentinel. Sequence + traps: `.claude/skills/prd/project.md` → "Landing PRD artifacts".
 - **Never** move `main` via `git merge --no-verify`, `git update-ref`, `git reset`, or `commit-tree` plumbing — that skips the verify gate and trips the `reference-transaction` tripwire (warn-only by default; hard-aborts under `REIFY_MAIN_GATE_ENFORCE=1`; `REIFY_MAIN_GATE_BYPASS=1` is break-glass). This includes `git commit --no-verify` on `main`: it skips `pre-commit`, so no sentinel is marked and the move is UNSANCTIONED.
 - Never commit `.task/` on main.
+- **Unattended writers** (timers/scripts that commit to `main` with no human watching) land via a hook-gated `git commit --only -- <written paths>`, **never push** (origin is published only by the merge worker's post-advance push), and commit as `<writer-id> <<writer-id>@automation.reify.invalid>` in both author and committer, never a human identity. Rules, inventory and audit queries: `docs/notes/unattended-writers-of-main.md`.
 - Claude Code's worktree feature clobbers the shared `core.hooksPath` on every worktree enter. `setup-dev.sh` wires two defenses so the gate stays live: a `<common-git-dir>/hooks → ../hooks` symlink, and per-worktree `config.worktree` overrides via `scripts/setup-main-gate-worktree-config.sh`.
 
 ### Deploying the orchestrator
@@ -87,6 +88,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | PRD `.ri` fixture location standard (4 tiers; `docs/prds/**/fixtures/` deprecated) | `tests/prd-gate/README.md` → "Where fixtures live"; `.claude/skills/prd/project.md` → "Landing PRD artifacts" |
 | PTODO grammar & violation taxonomy | `docs/prds/reify-audit-ptodo-detector.md` §8 |
 | Machine-written legibility artifacts on `main` (nightly trickle, census): who validates, refusal semantics, gate charter | `docs/legibility/landing-contract.md` |
+| Unattended writers of main: landing, identity, publication | `docs/notes/unattended-writers-of-main.md` |
 | Infra-test bash→Python migration policy, ledger evidence & the `.sh`-wrapper trap | `docs/notes/infra-test-bash-to-python-migration-policy.md`; discovery mechanics: `tests/infra/README.md` → "Auto-discovery" |
 | Flaky-ledger accounting CLI (per-member counts; density needs `--total-runs`) | `scripts/flake-density-report.py --help` |
 | sccache / cross-worktree build-cache design | `~/.claude/plans/playful-hopping-nygaard.md` |
