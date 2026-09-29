@@ -264,6 +264,7 @@ use crate::scan_util::{allow_marker_body, contains_word, find_word_boundary_toke
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 // -----------------------------------------------------------------------
 // Paths
@@ -702,7 +703,7 @@ fn code_view(units_src: &str) -> CodeView {
 /// Scope is tracked by brace depth over the same forward pass, with string and
 /// char literals blanked ([`blank_literals`]) so a `{` inside a message
 /// template cannot shift it.
-// G-allow: consumed by check()/baseline_candidates() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
+// G-allow: consumed by check()/baseline_ledger() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn extract_registries(units_src: &str) -> Vec<Registry> {
     let lines: Vec<&str> = units_src.lines().collect();
     let CodeView {
@@ -970,7 +971,7 @@ fn allow_marker_reason(line: &str) -> Option<&str> {
 /// heading, table cell, bold-prefixed prose, bare prose — counts as
 /// documented. PRD §(b) disposition 1 asks for exactly that, and it is what
 /// makes the index immune to a chunk reformat.
-// G-allow: consumed by check()/baseline_candidates() in-module and by unit tests.
+// G-allow: consumed by check()/baseline_ledger() in-module and by unit tests.
 pub fn documented_names(names: &[String], chunk_sources: &[(String, String)]) -> BTreeSet<String> {
     names
         .iter()
@@ -1851,11 +1852,54 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> LaneResults 
 // check() — entry point
 // -----------------------------------------------------------------------
 
+/// Why [`baseline_ledger`] refused to derive a ledger. Either enumeration
+/// coming back empty makes every committed row of one kind read as stale, so
+/// a shrink-only regeneration over it would silently wipe the file.
+///
+/// There is no empty-oracle variant: `units.rs` is itself in oracle scope, so
+/// a non-empty census always seeds a non-empty oracle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegenerateInputs {
+    /// No identifier-shaped registry name in a tracked, readable `units.rs`.
+    EmptyCensus,
+    /// No tracked, readable chunk under [`CHUNKS_PREFIX`].
+    NoChunks,
+}
+
+impl fmt::Display for DegenerateInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let empty = match self {
+            Self::EmptyCensus => format!("the registry census of {UNITS_PATH} is empty"),
+            Self::NoChunks => format!("no tracked chunk under {CHUNKS_PREFIX} is readable"),
+        };
+        write!(
+            f,
+            "{empty} — refusing to derive a ledger that would read every committed \
+             row of {BASELINE_PATH} as stale. Check that the run is inside the git \
+             worktree, that --project-root points at it, and that `git ls-files` \
+             succeeds there."
+        )
+    }
+}
+
 /// Both lanes over the working tree, plus the committed ledger their debt is
 /// settled against — the one computation behind [`check`] and
-/// [`baseline_candidates`].
-fn audit(ctx: &AuditContext<'_>) -> (LaneResults, Ledger) {
+/// [`baseline_ledger`].
+struct Audit {
+    lanes: LaneResults,
+    ledger: Ledger,
+    degenerate: Option<DegenerateInputs>,
+}
+
+fn audit(ctx: &AuditContext<'_>) -> Audit {
     let inputs = load_inputs(ctx);
+    let degenerate = if census_names(&inputs.registries).is_empty() {
+        Some(DegenerateInputs::EmptyCensus)
+    } else if inputs.chunk_sources.is_empty() {
+        Some(DegenerateInputs::NoChunks)
+    } else {
+        None
+    };
     let mut lanes = omission_findings(&inputs);
     let fabrication = fabrication_findings(ctx, &inputs);
     lanes.findings.extend(fabrication.findings);
@@ -1864,7 +1908,11 @@ fn audit(ctx: &AuditContext<'_>) -> (LaneResults, Ledger) {
         live: lanes.debt.keys().cloned().collect(),
         committed: committed_baseline(ctx, &inputs.tracked),
     };
-    (lanes, ledger)
+    Audit {
+        lanes,
+        ledger,
+        degenerate,
+    }
 }
 
 /// The finding for a committed row that absorbs nothing, named by the row's
@@ -1896,7 +1944,7 @@ fn stale_baseline_entry(row: &BaselineRow) -> Keyed {
 /// between runs over a changed one. Unreadable files are skipped fail-safe
 /// (no finding, no panic).
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
-    let (lanes, ledger) = audit(ctx);
+    let Audit { lanes, ledger, .. } = audit(ctx);
     let LaneResults {
         mut findings,
         mut debt,
@@ -1912,19 +1960,17 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
     findings.into_iter().map(|k| k.finding).collect()
 }
 
-/// The names [`check`] reports as `undocumented-name:`, sorted — omission
-/// debt the committed ledger lacks.
-// G-allow: consumed by tests/pdoccover.rs's shared-derivation contract tests.
-pub fn baseline_candidates(ctx: &AuditContext<'_>) -> Vec<String> {
-    let (_, ledger) = audit(ctx);
-    ledger
-        .new_debt()
-        .into_iter()
-        .filter_map(|row| match row {
-            BaselineRow::Undocumented(name) => Some(name),
-            BaselineRow::Fabricated { .. } => None,
-        })
-        .collect()
+/// The live debt and the committed ledger, for the generator — the SAME
+/// derivation [`check`] settles, so a regenerated ledger is by construction
+/// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
+/// ledger that would wipe the committed one.
+// G-allow: the pdoccover-baseline-gen bin's entry point (#6931, lands with the bin); tests/pdoccover.rs consumes it meanwhile.
+pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
+    let audit = audit(ctx);
+    match audit.degenerate {
+        Some(degenerate) => Err(degenerate),
+        None => Ok(audit.ledger),
+    }
 }
 
 // -----------------------------------------------------------------------

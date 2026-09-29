@@ -1098,7 +1098,8 @@ fn legacy_unprefixed_doccover_allow_confers_no_exemption() {
 
 /// The only registry name in the ledger fixtures, documented by every chunk
 /// below so the omission lane stays quiet unless a case says otherwise.
-const EXTRUDE_UNITS: &str = "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n";
+const EXTRUDE_UNITS: &str =
+    "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n";
 
 /// Documents `extrude` and mentions `ghost_op`, which no source declares.
 const GHOST_CHUNK: &str = "\
@@ -1240,7 +1241,11 @@ fn a_bare_row_for_a_name_no_registry_declares_is_stale() {
         "a bare row naming a name the census no longer holds absorbs nothing \
          and must be reported, not silently ignored; got {findings:?}"
     );
-    assert!(cites_baseline(&findings[0]), "got {:?}", findings[0].evidence);
+    assert!(
+        cites_baseline(&findings[0]),
+        "got {:?}",
+        findings[0].evidence
+    );
 }
 
 #[test]
