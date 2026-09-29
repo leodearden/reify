@@ -259,11 +259,11 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
-use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
+use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
 use crate::scan_util::{allow_marker_body, contains_word, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 // -----------------------------------------------------------------------
 // Paths
@@ -1456,9 +1456,6 @@ struct Inputs {
     registries: Vec<Registry>,
     /// Pre-read `(path, content)` for every tracked `chunks/*.md`, path-sorted.
     chunk_sources: Vec<(String, String)>,
-    /// Rows of the ratchet ledger; empty when the file is absent, untracked,
-    /// unreadable or empty.
-    baseline: BTreeSet<BaselineRow>,
 }
 
 /// `true` when `path` is a documentation chunk in the MCP corpus.
@@ -1472,10 +1469,8 @@ fn is_chunk_path(path: &str) -> bool {
 /// mirroring `pdssentinel::check`. Only tracked files participate, so a stray
 /// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
 ///
-/// The fabrication lane's ~8MB oracle read is split out into
-/// [`load_oracle_sources`] so [`baseline_candidates`] — whose only consumer is
-/// #5480's regenerator, and which touches nothing but `registries`,
-/// `chunk_sources` and `baseline` — does not pay for it on every run.
+/// The committed ledger is deliberately NOT an input: both lanes are blind to
+/// it, and only [`audit`] reads it, via [`committed_baseline`].
 fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
     let mut tracked: Vec<String> = ctx.git.ls_files();
     tracked.sort();
@@ -1494,20 +1489,22 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
         .filter_map(|p| ctx.read_relative(p).map(|c| (p.clone(), c)))
         .collect();
 
-    let baseline = if tracked.iter().any(|p| p == BASELINE_PATH) {
-        ctx.read_relative(BASELINE_PATH)
-            .map(|c| parse_baseline(&c))
-            .unwrap_or_default()
-    } else {
-        BTreeSet::new()
-    };
-
     Inputs {
         tracked,
         registries,
         chunk_sources,
-        baseline,
     }
+}
+
+/// The committed ledger's rows — none when the file is absent, untracked,
+/// unreadable or empty (an untracked copy is inert, like every input).
+fn committed_baseline(ctx: &AuditContext<'_>, tracked: &[String]) -> BTreeSet<BaselineRow> {
+    if !tracked.iter().any(|p| p == BASELINE_PATH) {
+        return BTreeSet::new();
+    }
+    ctx.read_relative(BASELINE_PATH)
+        .map(|c| parse_baseline(&c))
+        .unwrap_or_default()
 }
 
 /// Read the fabrication lane's existence-oracle corpus.
@@ -1564,43 +1561,41 @@ fn keyed(category: &'static str, name: &str, path: &str, detail: String) -> Keye
     }
 }
 
-/// What the three-way disposition — plus its two ratchet-honesty readings —
-/// resolves one census name to. Exactly one variant per name, by construction:
-/// making this an enum rather than a set of independent booleans is what
-/// enforces the "at most one finding per name" rule below at the type level.
+/// One lane's output, split by what the ledger can absorb: `debt` maps each
+/// ledger row to the finding it would absorb — exactly what [`check`] reports
+/// against an EMPTY baseline — and `findings` holds everything else.
+#[derive(Default)]
+struct LaneResults {
+    findings: Vec<Keyed>,
+    debt: BTreeMap<BaselineRow, Keyed>,
+}
+
+/// What one census name resolves to. Exactly one variant per name, by
+/// construction: an enum rather than independent booleans is what enforces
+/// the "at most one finding per name" rule below at the type level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Disposition {
-    /// Documented, with no suppression channel left pointing at it. Nothing to
-    /// report — the goal state.
+    /// Documented, with no allow marker left pointing at it — the goal state.
     Clean,
-    /// Undocumented, but a well-formed allow marker or a baseline entry
-    /// accounts for it. Nothing to report, and NOT a baseline candidate: it is
-    /// already suppressed.
-    Exempt,
+    /// Undocumented, but a well-formed allow marker accounts for it. Not debt.
+    Allowed,
     /// `pdoccover:allow` with no reason body. Confers no exemption, and is a
-    /// defect on its own terms. Deliberately not a baseline candidate —
-    /// baselining it would freeze a malformed marker into the ratchet instead
-    /// of prompting the one edit that fixes it.
+    /// defect on its own terms — deliberately not debt, since ledgering it
+    /// would freeze a malformed marker instead of prompting the one edit that
+    /// fixes it.
     AllowMissingReason,
     /// Documented, yet still allow-marked. Carries the now-obsolete reason so
     /// the finding can quote it back.
     StaleAllow(String),
-    /// Documented, yet still listed in the baseline file.
-    StaleBaseline,
-    /// Undocumented with no exemption channel — the offender the lane exists to
-    /// find, and the ONLY variant [`baseline_candidates`] selects.
+    /// Undocumented with no allow marker — omission debt.
     Undocumented,
 }
 
-/// Resolve every census name to exactly one [`Disposition`].
+/// Resolve every census name to exactly one [`Disposition`] — the single
+/// source of truth for the omission lane. Baseline-blind: the ledger settles
+/// [`Disposition::Undocumented`] debt afterwards, in [`check`].
 ///
-/// **The single source of truth for the omission lane.** Both consumers read
-/// it: [`omission_findings`] renders the reportable dispositions as findings,
-/// and [`baseline_candidates`] selects [`Disposition::Undocumented`]. Neither
-/// re-derives anything, which is what makes #5480's generated baseline and the
-/// ratchet that checks it structurally incapable of disagreeing.
-///
-/// ## Exemption precedence — at most ONE disposition per census name
+/// ## Precedence — at most ONE disposition per census name
 ///
 /// A name that trips several conditions is reported once, under the category
 /// naming the edit that resolves it. Emitting two findings for one defect
@@ -1612,15 +1607,11 @@ enum Disposition {
 ///    whatever the name's documentation status, and because this finding
 ///    subsumes the `undocumented-name:` the name would otherwise earn — the
 ///    one edit that adds a reason resolves both readings.
-/// 2. **Documented** → not an omission. But a suppression channel still
-///    pointed at it is now dead weight, so an allow marker yields
-///    `stale-allow-entry:` and a baseline entry yields
-///    `stale-baseline-entry:`. Allow is checked first: it is the cheaper
-///    deletion and lives next to the name. A name that is somehow both loses
-///    the allow marker first and surfaces again next run for the baseline
-///    entry — one finding, one edit, converging.
-/// 3. **Undocumented** → a well-formed allow marker or a baseline entry
-///    exempts it; otherwise `undocumented-name:`.
+/// 2. **Documented** → not an omission, but a surviving allow marker is dead
+///    weight: `stale-allow-entry:`. A baseline row for the name is equally
+///    dead, and the ledger reports it in the same run.
+/// 3. **Undocumented** → a well-formed allow marker exempts it; otherwise it
+///    is debt.
 fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
     let census = census_names(&inputs.registries);
     let names: Vec<String> = census.iter().map(|c| c.name.clone()).collect();
@@ -1629,25 +1620,15 @@ fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
     census
         .into_iter()
         .map(|c| {
-            let name = c.name.as_str();
-            let baselined = inputs
-                .baseline
-                .contains(&BaselineRow::Undocumented(c.name.clone()));
-
-            // (1) A malformed escape hatch is a defect on its own terms.
             let d = if c.allow_missing_reason {
                 Disposition::AllowMissingReason
-            } else if documented.contains(name) {
-                // (2) Documented: the name is covered, so any surviving
-                // suppression channel is stale.
-                match (&c.allow, baselined) {
-                    (Some(reason), _) => Disposition::StaleAllow(reason.clone()),
-                    (None, true) => Disposition::StaleBaseline,
-                    (None, false) => Disposition::Clean,
+            } else if documented.contains(c.name.as_str()) {
+                match &c.allow {
+                    Some(reason) => Disposition::StaleAllow(reason.clone()),
+                    None => Disposition::Clean,
                 }
-            } else if c.allow.is_some() || baselined {
-                // (3) Undocumented, but a well-formed channel exempts it.
-                Disposition::Exempt
+            } else if c.allow.is_some() {
+                Disposition::Allowed
             } else {
                 Disposition::Undocumented
             };
@@ -1656,18 +1637,15 @@ fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
         .collect()
 }
 
-/// Omission lane, including its two ratchet-honesty siblings.
-///
-/// Pure rendering of [`omission_dispositions`] — every disposition rule lives
-/// there, so this function and [`baseline_candidates`] cannot drift apart.
-fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
-    let mut out = Vec::new();
+/// Omission lane: pure rendering of [`omission_dispositions`].
+fn omission_findings(inputs: &Inputs) -> LaneResults {
+    let mut out = LaneResults::default();
     for (c, disposition) in omission_dispositions(inputs) {
         let name = c.name.as_str();
         let declared_at = format!("{} ({UNITS_PATH}:{})", c.const_name, c.line);
         match disposition {
-            Disposition::Clean | Disposition::Exempt => {}
-            Disposition::AllowMissingReason => out.push(keyed(
+            Disposition::Clean | Disposition::Allowed => {}
+            Disposition::AllowMissingReason => out.findings.push(keyed(
                 "allow-missing-reason",
                 name,
                 UNITS_PATH,
@@ -1677,7 +1655,7 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
                      document the name under {CHUNKS_PREFIX}",
                 ),
             )),
-            Disposition::StaleAllow(reason) => out.push(keyed(
+            Disposition::StaleAllow(reason) => out.findings.push(keyed(
                 "stale-allow-entry",
                 name,
                 UNITS_PATH,
@@ -1686,26 +1664,21 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
                      `{ALLOW_TOKEN} — {reason}` marker is obsolete; delete the marker",
                 ),
             )),
-            Disposition::StaleBaseline => out.push(keyed(
-                "stale-baseline-entry",
-                name,
-                BASELINE_PATH,
-                format!(
-                    "— documented under {CHUNKS_PREFIX} but still listed in \
-                     {BASELINE_PATH}; delete the line so the ratchet keeps \
-                     meaning residual debt",
-                ),
-            )),
-            Disposition::Undocumented => out.push(keyed(
-                "undocumented-name",
-                name,
-                UNITS_PATH,
-                format!(
-                    "— declared in {declared_at}, mentioned in no chunk under \
-                     {CHUNKS_PREFIX}; document it, or mark the entry line \
-                     `// {ALLOW_TOKEN} — <reason>`",
-                ),
-            )),
+            Disposition::Undocumented => {
+                out.debt.insert(
+                    BaselineRow::Undocumented(c.name.clone()),
+                    keyed(
+                        "undocumented-name",
+                        name,
+                        UNITS_PATH,
+                        format!(
+                            "— declared in {declared_at}, mentioned in no chunk under \
+                             {CHUNKS_PREFIX}; document it, or mark the entry line \
+                             `// {ALLOW_TOKEN} — <reason>`",
+                        ),
+                    ),
+                );
+            }
         }
     }
     out
@@ -1718,7 +1691,9 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// read of the corpus feeds both directions, which is the whole point of
 /// making this one detector rather than two.
 ///
-/// Deduped per (chunk file, name) at the FIRST occurrence: a name documented in
+/// Each surviving mention is fabrication DEBT keyed by its ledger row,
+/// `<chunk path>:<name>`, so it is deduped per (chunk file, name) at the
+/// FIRST occurrence: a name documented in
 /// a heading, a table and a fence is one defect, not three, and reporting the
 /// first mention keeps the reported line stable as later mentions come and go.
 /// Dedup is per-file rather than global because each chunk that repeats a
@@ -1783,10 +1758,10 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// keyed by NAME and such a line offers none. Reporting it would need a
 /// path:line-keyed channel, which is #5480's baseline-format work, not this
 /// lane's.
-fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
+fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> LaneResults {
     let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
-    let mut out = Vec::new();
+    let mut out = LaneResults::default();
     for (path, content) in &inputs.chunk_sources {
         let mentions = chunk_call_mentions(content);
 
@@ -1829,7 +1804,7 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
         // `mentions` at all. `check()` sorts the whole list, so emitting here
         // does not fix the reported order.
         for (marker_line, name) in &reasonless_lines {
-            out.push(keyed(
+            out.findings.push(keyed(
                 "allow-missing-reason",
                 name,
                 path,
@@ -1841,22 +1816,21 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
             ));
         }
 
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-
         for (name, line_no) in mentions {
             // The malformed marker was reported instead, whatever line it sits
             // on relative to this mention. Keyed on the RAW names of the marked
             // lines, so this subsumes slightly more than the marker reported —
             // a documented, self-healing false negative (doc comment, "One
             // marker, one finding — and one wider subsumption set").
-            if reasonless_names.contains(name.as_str()) {
+            if reasonless_names.contains(name.as_str()) || known.contains(&name) {
                 continue;
             }
-            if known.contains(&name) {
-                continue;
-            }
-            if seen.insert(name.clone()) {
-                out.push(keyed(
+            let row = BaselineRow::Fabricated {
+                chunk: path.clone(),
+                name: name.clone(),
+            };
+            out.debt.entry(row).or_insert_with(|| {
+                keyed(
                     "fabricated-name",
                     &name,
                     path,
@@ -1866,8 +1840,8 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
                          `{ALLOW_TOKEN} — <reason>` if it is deliberately ahead of the \
                          implementation",
                     ),
-                ));
-            }
+                )
+            });
         }
     }
     out
@@ -1877,69 +1851,79 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
 // check() — entry point
 // -----------------------------------------------------------------------
 
-/// Run both drift directions over the working tree.
-///
-/// Findings are deterministically ordered by `(category, name)` — the category
-/// prefixes sort lexicographically, so the emitted list is byte-identical
-/// between runs over an unchanged tree and diffs cleanly between runs over a
-/// changed one. Unreadable files are skipped fail-safe (no finding, no panic).
-pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
+/// Both lanes over the working tree, plus the committed ledger their debt is
+/// settled against — the one computation behind [`check`] and
+/// [`baseline_candidates`].
+fn audit(ctx: &AuditContext<'_>) -> (LaneResults, Ledger) {
     let inputs = load_inputs(ctx);
-    let mut keyed = omission_findings(&inputs);
-    keyed.extend(fabrication_findings(ctx, &inputs));
-    keyed.sort_by(|a, b| {
+    let mut lanes = omission_findings(&inputs);
+    let fabrication = fabrication_findings(ctx, &inputs);
+    lanes.findings.extend(fabrication.findings);
+    lanes.debt.extend(fabrication.debt);
+    let ledger = Ledger {
+        live: lanes.debt.keys().cloned().collect(),
+        committed: committed_baseline(ctx, &inputs.tracked),
+    };
+    (lanes, ledger)
+}
+
+/// The finding for a committed row that absorbs nothing, named by the row's
+/// own text so the line to delete is the one quoted.
+fn stale_baseline_entry(row: &BaselineRow) -> Keyed {
+    keyed(
+        "stale-baseline-entry",
+        &row.to_string(),
+        BASELINE_PATH,
+        format!(
+            "— listed in {BASELINE_PATH} but matches no live debt, so it absorbs \
+             nothing; delete the line, or regenerate with \
+             `cargo run -p reify-audit --bin pdoccover-baseline-gen`",
+        ),
+    )
+}
+
+/// Run both drift directions over the working tree and settle their debt
+/// against the committed ledger: every non-debt finding, the live debt the
+/// ledger lacks ([`Ledger::new_debt`]), and one `stale-baseline-entry:` per
+/// row no live debt matches ([`Ledger::stale`]).
+///
+/// The invariant, for both row kinds: **a baseline row is stale iff removing
+/// it would change no other finding.**
+///
+/// Findings are deterministically ordered by `(category, name, path)` — the
+/// category prefixes sort lexicographically, so the emitted list is
+/// byte-identical between runs over an unchanged tree and diffs cleanly
+/// between runs over a changed one. Unreadable files are skipped fail-safe
+/// (no finding, no panic).
+pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
+    let (lanes, ledger) = audit(ctx);
+    let LaneResults {
+        mut findings,
+        mut debt,
+    } = lanes;
+    findings.extend(ledger.new_debt().iter().filter_map(|row| debt.remove(row)));
+    findings.extend(ledger.stale().iter().map(stale_baseline_entry));
+    findings.sort_by(|a, b| {
         a.category
             .cmp(b.category)
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.path.cmp(&b.path))
     });
-    keyed.into_iter().map(|k| k.finding).collect()
+    findings.into_iter().map(|k| k.finding).collect()
 }
 
-/// The single shared derivation #5480's baseline regenerator consumes: the
-/// sorted, deduped set of names that [`check`] reports as `undocumented-name:`.
-///
-/// Exported so generation and the ratchet can never disagree (PRD §6.6's
-/// `ptodo-baseline-gen` lesson). The guarantee is structural, not a convention
-/// two functions agree to keep: this and [`check`] both read
-/// [`omission_dispositions`], selecting from one resolution rather than each
-/// re-deriving it. `tests/pdoccover.rs` pins the two outputs equal as sets AND
-/// as sequences.
-///
-/// Sorted and deduped for free — [`census_names`] is keyed by name in a
-/// `BTreeMap`, so a name declared in several registries appears once and the
-/// generated baseline file diffs cleanly against the next run.
-///
-/// Excludes, by design: documented names (not debt), allow-marked and
-/// already-baselined names (debt already accounted for), reasonless markers (a
-/// defect to fix, not debt to freeze) and fabrications (a chunk defect with no
-/// registry entry to key on).
-///
-/// ## The fabrication exclusion is a constraint on #5480's gate
-///
-/// Because this is the ONLY ratchet channel and it is name-keyed, a
-/// `fabricated-name:` finding cannot be baselined at all — only hand-marked
-/// with `pdoccover:allow`, per chunk line. #5480's hard gate must therefore key
-/// on the omission categories only, leaving `fabricated-name:` report-only
-/// until the baseline format grows `path:name` rows and
-/// [`omission_dispositions`] is generalised to cover fabrications (#5647
-/// narrowed the mention side to two residual shapes; it did not add a
-/// ratchet channel — see [`chunk_call_mentions`]). Module header, "δ's gate
-/// keys on the OMISSION categories only", has the full rationale.
-///
-/// Reads only what the omission lane needs — [`load_inputs`], not
-/// [`load_oracle_sources`] — so a regenerator run does not pay for the
-/// fabrication lane's ~8MB compiler/stdlib scan it would never consult.
-///
-/// **Scope** — this task ships NO `--emit-baseline` flag, NO
-/// `pdoccover-baseline-gen` binary and NO baseline file. All three are #5480's
-/// deliverables; this is the function they call.
-// G-allow: #5480's entry point (PRD open question 1); no in-repo caller yet by design.
+/// The names [`check`] reports as `undocumented-name:`, sorted — omission
+/// debt the committed ledger lacks.
+// G-allow: consumed by tests/pdoccover.rs's shared-derivation contract tests.
 pub fn baseline_candidates(ctx: &AuditContext<'_>) -> Vec<String> {
-    omission_dispositions(&load_inputs(ctx))
+    let (_, ledger) = audit(ctx);
+    ledger
+        .new_debt()
         .into_iter()
-        .filter(|(_, d)| *d == Disposition::Undocumented)
-        .map(|(c, _)| c.name)
+        .filter_map(|row| match row {
+            BaselineRow::Undocumented(name) => Some(name),
+            BaselineRow::Fabricated { .. } => None,
+        })
         .collect()
 }
 
