@@ -589,12 +589,14 @@ pub struct EngineSession {
     /// re-source per-case FEA channels without re-tessellating — critical for
     /// keeping case-switch latency sub-frame even with large OCCT meshes.
     tess_mesh_cache: Option<Vec<MeshData>>,
-    /// Cache of tessellation diagnostics from the last `tessellate_snapshot`.
+    /// Diagnostics of the last `tessellate_snapshot`, as it emitted them —
+    /// before any constraint re-check replaced a claim it supersedes.
     ///
-    /// Populated alongside `tess_mesh_cache` in `build_gui_state`.  Used by
-    /// `set_active_fea_case` so the returned GuiState accurately reflects the
-    /// last tessellation result (no re-tessellation → same diagnostics).
-    tess_diag_cache: Vec<DiagnosticInfo>,
+    /// Populated alongside `tess_mesh_cache` in `build_gui_state`. Both
+    /// GuiState-producing paths derive their `tessellation_diagnostics` from it
+    /// with their OWN re-check's upgrades (`Self::tessellation_diagnostics`), so
+    /// a constraint's status and the warnings beside it come from one re-check.
+    tess_diag_cache: Vec<Diagnostic>,
     /// Task #5338: last delta-resolved value per geometry-derived panel cell —
     /// the VALUE-side twin of the mesh-side retention the frontend already does.
     ///
@@ -1351,27 +1353,24 @@ impl EngineSession {
         //
         // Prune safety is unaffected: `sync_demand` has already dropped every
         // hidden entity's entries, so only demanded entities can be replayed here.
-        {
-            let cache = &mut self.geometry_derived_cache;
-            // A subset of the upgrades build_gui_state already applied to tess_diag_cache.
-            let _ = surface_geometry_derived_cells(
-                self.core.engine(),
-                self.core.compiled().unwrap(),
-                &mut values,
-                &mut constraints,
-                &ValueMap::new(),
-                &[],
-                cache,
-            );
-        }
+        let upgrades = surface_geometry_derived_cells(
+            self.core.engine(),
+            self.core.compiled().unwrap(),
+            &mut values,
+            &mut constraints,
+            &ValueMap::new(),
+            &[],
+            &mut self.geometry_derived_cache,
+        );
+
+        // The cached tessellation stream (no re-tessellation), with this pass's
+        // own upgrades replacing the Indeterminate claims they supersede.
+        let tessellation_diagnostics = self.tessellation_diagnostics(&upgrades);
 
         // Build files and compile diagnostics via shared helpers so both
         // `build_gui_state` and `set_active_fea_case` stay in sync.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
-
-        // Tessellation diagnostics from the cache (no re-tessellation → same diags).
-        let tessellation_diagnostics = self.tess_diag_cache.clone();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Passive selective-demand measurement (task 4532): mirror build_gui_state
         // so the case-switch path carries the same observational record. Reading
@@ -3570,6 +3569,33 @@ impl EngineSession {
         Some((k.as_str(), v.as_str()))
     }
 
+    /// `tess_diag_cache` as the frontend receives it: each Indeterminate claim
+    /// that `upgrades` supersede replaced by the upgrade's own diagnostics, then
+    /// mapped to `DiagnosticInfo`.
+    ///
+    /// When source is unavailable (e.g. break_*_for_test helpers), the entries
+    /// are still produced but tagged code = "unresolved-source" so frontends can
+    /// distinguish reliable from unreliable positions.
+    fn tessellation_diagnostics(&self, upgrades: &[ConstraintUpgrade]) -> Vec<DiagnosticInfo> {
+        let mut diagnostics = self.tess_diag_cache.clone();
+        reify_eval::replace_superseded_constraint_diagnostics(&mut diagnostics, upgrades);
+        if diagnostics.is_empty() {
+            return Vec::new();
+        }
+        let resolved = self.resolve_source();
+        let unresolved = resolved.is_none();
+        let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
+        let mut diags = diagnostics_to_info(&diagnostics, file_path, source);
+        if unresolved {
+            for d in &mut diags {
+                if d.code.is_none() {
+                    d.code = Some("unresolved-source".to_owned());
+                }
+            }
+        }
+        diags
+    }
+
     /// Look up source location for either a template name (e.g., `"Bracket"`) or a
     /// cell ID (e.g., `"Bracket.width"`).
     ///
@@ -3722,7 +3748,10 @@ impl EngineSession {
     /// Ordering: build-time errors are appended LAST, after the static
     /// diagnostics and the live-edit / hot-reload synthetics, so existing
     /// positional expectations over the leading entries are unaffected.
-    fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
+    fn build_compile_diagnostics(
+        &self,
+        tessellation_diagnostics: &[DiagnosticInfo],
+    ) -> Vec<DiagnosticInfo> {
         let mut compile_diagnostics = self.get_diagnostics();
         if let Some(f) = &self.compile_failure
             && f.kind == CompileFailureKind::LiveEdit
@@ -3750,17 +3779,17 @@ impl EngineSession {
         }
 
         // Fold in build/realization-time geometry ERRORS (see the doc comment
-        // above). `tess_diag_cache` is refreshed by `build_gui_state` immediately
-        // after `tessellate_snapshot` and BEFORE this helper is called, and is
-        // reset to empty on the no-tessellation branch — so it always reflects
-        // the current snapshot and cannot carry stale errors forward.
+        // above). Both callers derive `tessellation_diagnostics` from
+        // `tess_diag_cache`, which `build_gui_state` refreshes immediately after
+        // `tessellate_snapshot` and resets to empty on the no-tessellation branch
+        // — so it always reflects the current snapshot and cannot carry stale
+        // errors forward.
         //
         // The identity guard is belt-and-braces: the two sources are disjoint by
         // construction (static compile vs. build pass), so it is a no-op today.
         // It exists so that if a diagnostic ever becomes reachable from both, the
         // designer sees it once rather than twice.
-        for diag in self
-            .tess_diag_cache
+        for diag in tessellation_diagnostics
             .iter()
             .filter(|d| d.severity == "Error")
         {
@@ -3932,7 +3961,7 @@ impl EngineSession {
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         // Scoped so the mutable engine borrow is released before resolve_source()
         // is called inside the diagnostics-mapping branch below.
-        let mut tess_result = {
+        let tess_result = {
             let (compiled, engine) = self.core.split_compiled_and_engine_mut();
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
@@ -3986,53 +4015,29 @@ impl EngineSession {
         // retains the last delta-resolved value per cell and re-surfaces it on such
         // a gap. Disjoint-field borrow: the cache and the engine are distinct
         // `EngineSession` fields, so split the borrow rather than cloning.
-        if let Some(result) = &mut tess_result {
-            let cache = &mut self.geometry_derived_cache;
-            let upgrades = surface_geometry_derived_cells(
+        let upgrades = match &tess_result {
+            Some(result) => surface_geometry_derived_cells(
                 self.core.engine(),
                 self.core.compiled().unwrap(),
                 &mut values,
                 &mut constraints,
                 &result.values,
                 &result.meshes,
-                cache,
-            );
-            reify_eval::replace_superseded_constraint_diagnostics(
-                &mut result.diagnostics,
-                &upgrades,
-            );
-        }
+                &mut self.geometry_derived_cache,
+            ),
+            None => Vec::new(),
+        };
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
-                // log entries so headless/CI runs still surface these via tracing.
-                let tess_diags = if result.diagnostics.is_empty() {
-                    Vec::new()
-                } else {
-                    // Log each diagnostic before mapping so stderr/tracing output
-                    // is available even when the GUI channel is not subscribed.
-                    for diag in &result.diagnostics {
-                        warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
-                    }
-                    // Resolve source for span lookup. When source is unavailable (e.g.
-                    // break_*_for_test helpers), we still produce DiagnosticInfo but tag
-                    // code = "unresolved-source" so frontends can distinguish reliable from
-                    // unreliable positions. Borrows from `self` — no allocation on the
-                    // happy path; the "<unknown>"/"" fallback is zero-length static strs.
-                    let resolved = self.resolve_source();
-                    let unresolved = resolved.is_none();
-                    let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
-                    let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
-                    if unresolved {
-                        for d in &mut diags {
-                            if d.code.is_none() {
-                                d.code = Some("unresolved-source".to_owned());
-                            }
-                        }
-                    }
-                    diags
-                };
+                // log entries so headless/CI runs still surface these via tracing,
+                // even when the GUI channel is not subscribed.
+                self.tess_diag_cache = result.diagnostics;
+                let tess_diags = self.tessellation_diagnostics(&upgrades);
+                for diag in &tess_diags {
+                    warn!(severity = diag.severity.as_str(), message = %diag.message, "tessellation diagnostic");
+                }
                 // T6 (task 3904) complete: `default_visible` is surfaced to the
                 // GUI via the entity-tree realization nodes — NOT through MeshData.
                 // `get_entity_tree` → `build_template_node` computes
@@ -4200,7 +4205,6 @@ impl EngineSession {
                     // serve geometry from the wrong model.
                     self.tess_mesh_cache = None;
                 }
-                self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
                 // returns early when no ElasticResult is found (negligible
@@ -4247,7 +4251,7 @@ impl EngineSession {
         // synthesis logic. Both helpers are also called from `set_active_fea_case`
         // to keep the two paths consistent.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Extract tensegrity wire and surface descriptors from value cells.
         // Single scoped borrow covers both — shared precondition made explicit.
@@ -4367,7 +4371,7 @@ impl EngineSession {
     ///
     /// Saved by MOVE, not by clone — `build_gui_state` ASSIGNS both fields
     /// unconditionally on every path (the FEA-gated `Some(..)`/`None` branch and
-    /// the no-tessellation branch) and never reads them, so handing the inner call
+    /// the no-tessellation branch) before any read of them, so handing the inner call
     /// an empty pair costs nothing and the restore is free even for large OCCT
     /// meshes.
     pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
@@ -5576,22 +5580,32 @@ fn recheck_indeterminate_constraints(
     constraints: &mut [ConstraintData],
     recheck_values: &ValueMap,
 ) -> Vec<ConstraintUpgrade> {
+    use std::fmt::Write as _;
+
     let indeterminate = satisfaction_token(Satisfaction::Indeterminate);
-    let candidates: HashSet<&str> = constraints
+    let candidate_at: HashMap<&str, usize> = constraints
         .iter()
-        .filter(|c| c.status == indeterminate)
-        .map(|c| c.node_id.as_str())
+        .enumerate()
+        .filter(|(_, c)| c.status == indeterminate)
+        .map(|(at, c)| (c.node_id.as_str(), at))
         .collect();
+    let mut id_text = String::new();
     let Ok(upgrades) = engine.upgrade_indeterminate_verdicts(module, recheck_values, |id| {
-        candidates.contains(id.to_string().as_str())
+        id_text.clear();
+        write!(id_text, "{id}").expect("formatting into a String cannot fail");
+        candidate_at.contains_key(id_text.as_str())
     }) else {
         return Vec::new();
     };
-    for upgrade in &upgrades {
-        let node_id = upgrade.entry().id.to_string();
-        if let Some(c) = constraints.iter_mut().find(|c| c.node_id == node_id) {
-            c.status = satisfaction_token(upgrade.entry().satisfaction).to_string();
-        }
+    let verdicts: Vec<(usize, &'static str)> = upgrades
+        .iter()
+        .filter_map(|u| {
+            let at = *candidate_at.get(u.entry().id.to_string().as_str())?;
+            Some((at, satisfaction_token(u.entry().satisfaction)))
+        })
+        .collect();
+    for (at, status) in verdicts {
+        constraints[at].status = status.to_string();
     }
     upgrades
 }

@@ -116,19 +116,16 @@ fn geometric_conforms_is_never_upgraded_by_the_post_geometry_recheck() {
     }
 }
 
-/// The checker's Indeterminate claim for `c`, named as the label rewrite names it.
-fn claim(c: &ConstraintData) -> String {
-    let subject = c.label.clone().unwrap_or_else(|| c.node_id.clone());
-    format!("constraint {subject} indeterminate")
-}
-
+/// The tessellation warnings naming `c` as a whole word — by its label when it
+/// has one, else by its node id — independent of the checker's sentence around it.
 fn diagnostics_claiming<'a>(state: &'a GuiState, c: &ConstraintData) -> Vec<&'a str> {
-    let claim = claim(c);
+    let subject = c.label.as_deref().unwrap_or(&c.node_id);
     state
         .tessellation_diagnostics
         .iter()
+        .filter(|d| d.severity == "Warning")
         .map(|d| d.message.as_str())
-        .filter(|m| m.starts_with(&claim))
+        .filter(|m| m.split_whitespace().any(|word| word == subject))
         .collect()
 }
 
