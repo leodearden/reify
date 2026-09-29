@@ -3571,3 +3571,191 @@ mod unmeasured_reason_capability_tests {
         );
     }
 }
+
+// ── Indeterminate-verdict upgrade (task 6979) ────────────────────────────────
+//
+// Black-box tests of `Engine::upgrade_indeterminate_verdicts` against the real
+// `SimpleConstraintChecker`, driven WITHOUT a geometry kernel so a geometric
+// Conforms is deterministically Indeterminate after `check()`.
+#[cfg(test)]
+mod indeterminate_upgrade_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, ValueCellId};
+    use reify_ir::{Satisfaction, Value, ValueMap};
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use crate::{ConstraintUpgrade, Engine};
+
+    const GEOMETRIC_AND_OPEN_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    param slack : Length = auto
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+    constraint slack > 0.1mm
+}
+"#;
+
+    const THREE_OPEN_SOURCE: &str = r#"
+structure def Probe {
+    param a : Length = auto
+    param b : Length = auto
+    param c : Length = auto
+    constraint a < 1mm
+    constraint b > 0mm
+    constraint c > 0mm
+}
+"#;
+
+    fn probe_constraints(
+        module: &reify_compiler::CompiledModule,
+    ) -> &[reify_compiler::CompiledConstraint] {
+        &module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template")
+            .constraints
+    }
+
+    fn with_lengths(values: &ValueMap, cells: &[(&str, f64)]) -> ValueMap {
+        let mut v = values.clone();
+        for (member, si_value) in cells {
+            v.insert(
+                ValueCellId::new("Probe", *member),
+                Value::Scalar {
+                    si_value: *si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+            );
+        }
+        v
+    }
+
+    fn satisfaction_of(
+        entries: &[crate::ConstraintCheckEntry],
+        id: &ConstraintNodeId,
+    ) -> Satisfaction {
+        entries
+            .iter()
+            .find(|e| &e.id == id)
+            .unwrap_or_else(|| panic!("constraint {id} missing from {entries:#?}"))
+            .satisfaction
+    }
+
+    fn upgrade_for<'a>(
+        upgrades: &'a [ConstraintUpgrade],
+        id: &ConstraintNodeId,
+    ) -> Option<&'a ConstraintUpgrade> {
+        upgrades.iter().find(|u| &u.entry().id == id)
+    }
+
+    fn assert_all_definite(upgrades: &[ConstraintUpgrade]) {
+        for u in upgrades {
+            assert_ne!(
+                u.entry().satisfaction,
+                Satisfaction::Indeterminate,
+                "an upgrade is never Indeterminate: {:?}",
+                u.entry()
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_never_adopts_a_language_level_verdict_for_a_geometric_conforms() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_AND_OPEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        let geometric_id = constraints
+            .iter()
+            .find(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+            .expect("geometric Conforms (explicit actual)")
+            .id
+            .clone();
+        let slack_id = constraints
+            .iter()
+            .find(|c| c.arg_bindings.is_empty())
+            .expect("slack constraint (no arg bindings)")
+            .id
+            .clone();
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert_eq!(
+            satisfaction_of(&checked.constraint_results, &geometric_id),
+            Satisfaction::Indeterminate,
+            "precondition: no kernel, so the measure pass leaves the geometric Conforms Indeterminate"
+        );
+        assert_eq!(
+            satisfaction_of(&checked.constraint_results, &slack_id),
+            Satisfaction::Indeterminate,
+            "precondition: no solver, so `slack` stays Undef"
+        );
+
+        let values = with_lengths(&checked.values, &[("slack", 0.005)]);
+        let (language_level, _) = engine
+            .check_constraints_with_values(&values)
+            .expect("language-level re-check");
+        assert_eq!(
+            satisfaction_of(&language_level, &geometric_id),
+            Satisfaction::Satisfied,
+            "non-vacuity: the language-level predicate calls the unmeasured Conforms Satisfied"
+        );
+
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        assert_all_definite(&upgrades);
+        assert_eq!(
+            upgrade_for(&upgrades, &slack_id).map(|u| u.entry().satisfaction),
+            Some(Satisfaction::Satisfied),
+            "the now-determined slack constraint is upgraded: {upgrades:#?}"
+        );
+        assert!(
+            upgrade_for(&upgrades, &geometric_id).is_none(),
+            "a geometric Conforms verdict belongs to the measure pass (C1), never the \
+             language-level predicate: {upgrades:#?}"
+        );
+    }
+
+    #[test]
+    fn upgrade_dispatches_only_candidates_and_carries_each_constraints_own_diagnostics() {
+        let module = parse_and_compile_with_stdlib(THREE_OPEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        let [a_id, b_id, c_id] = [0, 1, 2].map(|i| constraints[i].id.clone());
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        for id in [&a_id, &b_id, &c_id] {
+            assert_eq!(
+                satisfaction_of(&checked.constraint_results, id),
+                Satisfaction::Indeterminate,
+                "precondition: every auto param stays Undef without a solver"
+            );
+        }
+        let values = with_lengths(&checked.values, &[("a", 0.005), ("b", 0.005)]);
+
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        assert_all_definite(&upgrades);
+        assert_eq!(upgrades.len(), 2, "a and b become definite, c does not: {upgrades:#?}");
+
+        let a = upgrade_for(&upgrades, &a_id).expect("a upgraded");
+        assert_eq!(a.entry().satisfaction, Satisfaction::Violated);
+        assert_eq!(a.diagnostics().len(), 1, "a carries exactly its own diagnostic");
+        assert_eq!(a.diagnostics()[0].code, Some(DiagnosticCode::ConstraintViolated));
+
+        let b = upgrade_for(&upgrades, &b_id).expect("b upgraded");
+        assert_eq!(b.entry().satisfaction, Satisfaction::Satisfied);
+        assert!(b.diagnostics().is_empty(), "a satisfied constraint says nothing");
+
+        assert!(upgrade_for(&upgrades, &c_id).is_none(), "c is still Indeterminate");
+
+        let only_b = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |id| *id == b_id)
+            .expect("candidate-filtered re-check");
+        assert_all_definite(&only_b);
+        assert_eq!(only_b.len(), 1, "only the candidate is dispatched: {only_b:#?}");
+        assert_eq!(only_b[0].entry().id, b_id);
+    }
+}
