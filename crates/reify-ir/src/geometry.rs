@@ -1075,13 +1075,12 @@ pub enum GeometryOp {
         /// way — but it is no longer what decides how an author's bare number
         /// is read.
         ///
-        /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
-        /// rather than 0.1 degrees. Both tests above prove tag-transparency,
-        /// not magnitude, and `draft_angle_on_box` is a smoke test that
-        /// tolerates `OperationFailed`. The radian-vs-degree separation is
-        /// ~57x, so a behavioural pin is achievable — it needs a measured
-        /// numeric oracle over OCCT draft geometry, and is filed as #7119
-        /// rather than guessed at here.
+        /// **Magnitude pinned:** a draft angle of `0.1` means 0.1 RADIANS, not
+        /// 0.1 degrees — pinned at real OCCT output by
+        /// `draft_angle_magnitude_is_read_as_radians`
+        /// (`crates/reify-kernel-occt/tests/harness_occt/draft_integration.rs`),
+        /// which checks the drafted wall's tilt and the swept volume against
+        /// closed forms. The two tests above pin tag-transparency only.
         ///
         /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
         /// number is REJECTED, not read silently as radians. `modify_draft`
