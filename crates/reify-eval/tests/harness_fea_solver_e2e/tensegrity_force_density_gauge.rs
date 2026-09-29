@@ -25,122 +25,50 @@
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, Value};
+use reify_test_support::point3;
+// The triplex geometry, its member index space and the `Tensegrity` assembly have
+// ONE definition, in `reify_test_support::tensegrity_fixtures`. This suite uses the
+// unit-height variant, `canonical_triplex_tensegrity`.
+use reify_test_support::tensegrity_fixtures::{
+    TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS,
+    canonical_triplex_tensegrity, tensegrity, triplex_group_ids,
+};
 
-/// A 3-component `Value::Point` of SI-metre coordinates — how `point3` lowers.
-/// Every `#[path]` sibling in this module directory carries its own copy (`node` in
-/// `tensegrity_t1b_form_find_e2e.rs`, `tensegrity_t3b_load.rs`, …) because each was
-/// written standalone and the helpers stayed private. Collapsing the family is tracked
-/// with the fixture duplication below (#6152) — see that note for what still blocks it.
-fn node(x: f64, y: f64, z: f64) -> Value {
-    let m = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
-    Value::Point(vec![m(x), m(y), m(z)])
-}
+/// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
+/// the length is taken from that list rather than written out: a member added there
+/// then fails to compile HERE instead of reaching the solver as a length mismatch.
+/// Signs honour the hard contract (struts q < 0, cables q > 0). Verticals are 2, not
+/// 1, on purpose: at q = 1 everywhere `D_ff` has zero row sums and is exactly singular.
+const BASE_Q: [f64; TRIPLEX_MEMBERS.len()] =
+    [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
 
-// DUPLICATION, tracked not silent: the prism geometry + `MEMBERS` topology below is a
-// THIRD copy of the canonical triplex (see `canonical_prism_nodes()` /
-// `triplex_tensegrity()` in `harness_fea_solver_e2e/tensegrity_t1b_form_find_e2e.rs`
-// and the combined fixture in `…/tensegrity_delta_combined_form_find_e2e.rs`), and
-// `membrane_tensegrity()` re-derives the kernel's `tent_membrane()` golden. A topology
-// or node-order change must be mirrored by hand across all three, so collapsing them
-// onto one shared fixture is tracked by task **#6152**.
-//
-// WHAT BLOCKS IT HERE — narrower than it once was. This module now sits as a `#[path]`
-// sibling of the other two INSIDE the same `harness_fea_solver_e2e` compile unit, so
-// the dedup no longer needs `reify-test-support` at all: one shared fixture module in
-// `harness_fea_solver_e2e/`, or `pub(crate)` on the helpers that already exist, reaches
-// every call site. What it does need is DELETING the two existing copies from
-// `tensegrity_t1b_form_find_e2e.rs` and `tensegrity_delta_combined_form_find_e2e.rs`,
-// and neither file is in #6095's locked module set. Adding a fourth copy in a new
-// shared file without removing those two would raise the drift surface, not lower it —
-// so #6152 owns the collapse, with both siblings in ITS scope.
-
-/// Struts-then-cables member order — the one index space `force_densities` and
-/// `member_forces` share: 3 struts, then top / bottom / vertical cable triples.
-const MEMBERS: [(usize, usize); 12] = [
-    (0, 4), (1, 5), (2, 3), (0, 1), (1, 2), (2, 0),
-    (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5),
-];
-
-/// `MEMBERS[..STRUTS]` are the struts (compression, q < 0); the rest are cables
-/// (tension, q > 0). That split is what lets `assert_bridge_holds` re-assert the
-/// documented sign contract instead of merely checking finiteness.
-const STRUTS: usize = 3;
-
-/// Bottom triangle {3,4,5} anchored; top triangle {0,1,2} free.
-const ANCHORS: [i64; 3] = [3, 4, 5];
-
-/// Base force densities in `MEMBERS` order; signs honour the hard contract
-/// (struts q < 0, cables q > 0). Verticals are 2, not 1, on purpose: at q = 1
-/// everywhere `D_ff` has zero row sums and is exactly singular.
-const BASE_Q: [f64; 12] = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
-
-/// The canonical triplex prism (R=1, height=1, twist=30°; top 0,1,2 at z=1,
-/// bottom 3,4,5 at z=0) — `canonical_prism_nodes()` in `tensegrity_t1b_…`.
-fn prism_nodes() -> Vec<Value> {
-    let ring = |i: usize, twist: f64, z: f64| {
-        let a = (120.0 * (i as f64) + twist).to_radians();
-        node(a.cos(), a.sin(), z)
-    };
-    let mut v: Vec<Value> = (0..3).map(|i| ring(i, 0.0, 1.0)).collect();
-    v.extend((0..3).map(|i| ring(i, 30.0, 0.0)));
-    v
-}
-
-/// Assemble a `Tensegrity` Value from raw node / strut / cable / surface fields.
-fn tensegrity(nodes: Vec<Value>, struts: Value, cables: Value, surfaces: Value) -> Value {
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), Value::List(nodes)),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-        ("surfaces".to_string(), surfaces),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Index-tuple list (`[[j,k], …]` / `[[i,j,k], …]`) as the DSL lowers it.
-fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
-    let row = |r: &[i64; N]| Value::List(r.iter().map(|&i| Value::Int(i)).collect());
-    Value::List(rows.iter().map(row).collect())
-}
-
-/// The triplex prism built from `MEMBERS`, carrying the given `surfaces` field.
-fn prism_tensegrity_with(surfaces: Value) -> Value {
-    let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
-    let struts: Vec<[i64; 2]> = MEMBERS[..STRUTS].iter().map(pair).collect();
-    let cables: Vec<[i64; 2]> = MEMBERS[STRUTS..].iter().map(pair).collect();
-    tensegrity(prism_nodes(), index_lists(&struts), index_lists(&cables), surfaces)
-}
-
-/// The line-only triplex prism (no surfaces).
+/// The line-only triplex prism — the canonical geometry carrying a PRESENT but
+/// EMPTY `surfaces` field, which is what this suite has always handed the
+/// anchored line-only solve.
 fn prism_tensegrity() -> Value {
-    prism_tensegrity_with(Value::List(vec![]))
+    canonical_triplex_tensegrity(Some(&[]))
 }
 
-/// Both membrane caps of the prism. The top cap spans the three FREE nodes, so it
-/// genuinely enters `D_ff` rather than sitting inertly on the anchored side.
-fn caps() -> Value {
-    index_lists(&[[0, 1, 2], [3, 4, 5]])
-}
+/// The tent's triangle fan: one triangle per anchored corner, each hinged on the
+/// free interior node 0. A const so `solve_membrane`'s per-surface σ array is sized
+/// from it rather than from a second literal that has to agree by hand.
+const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
 
 /// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
-/// fanned by 4 triangles, no struts/cables. Mirrors the kernel's `tent_membrane()`
+/// fanned by [`TENT_TRIS`], no struts/cables. Mirrors the kernel's `tent_membrane()`
 /// golden — reused solely to reach the NON-EMPTY `surface_stresses` echo branch.
+/// Stays local because it is that golden rather than the triplex; only its
+/// assembly is shared. Collapsing the mirror onto the golden is #7284.
 fn membrane_tensegrity() -> Value {
     let nodes = vec![
-        node(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
-        node(1.0, 0.0, 0.0),  // 1: anchor
-        node(0.0, 1.0, 0.0),  // 2: anchor
-        node(-1.0, 0.0, 0.0), // 3: anchor
-        node(0.0, -1.0, 0.0), // 4: anchor
+        point3(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
+        point3(1.0, 0.0, 0.0),  // 1: anchor
+        point3(0.0, 1.0, 0.0),  // 2: anchor
+        point3(-1.0, 0.0, 0.0), // 3: anchor
+        point3(0.0, -1.0, 0.0), // 4: anchor
     ];
-    let tris = index_lists(&[[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]]);
-    tensegrity(nodes, Value::List(vec![]), Value::List(vec![]), tris)
+    tensegrity(nodes, &[], &[], Some(&TENT_TRIS))
 }
 
 type Trampoline = fn(
@@ -174,14 +102,15 @@ fn ints(vs: impl IntoIterator<Item = i64>) -> Value {
 
 /// Anchored LINE-ONLY solve of the triplex prism at the given force densities.
 fn solve_at(q: &[f64]) -> PersistentMap<String, Value> {
-    let inputs = [prism_tensegrity(), reals(q), ints(ANCHORS)];
+    let inputs = [prism_tensegrity(), reals(q), ints(TRIPLEX_ANCHORS)];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
 /// Anchored SURFACES solve of the tent membrane at one isotropic σ per triangle
 /// (no struts/cables ⇒ an empty `force_densities`).
 fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
-    let inputs = [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; 4])];
+    let inputs =
+        [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; TENT_TRIS.len()])];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
@@ -192,32 +121,36 @@ fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
 /// pairing is exercised on that path. Shape mirrors the combined struts+cables+membrane
 /// fixture of `harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs`.
 fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
-    let inputs =
-        [prism_tensegrity_with(caps()), reals(q), ints(ANCHORS), reals(&[sigma; 2])];
+    let inputs = [
+        canonical_triplex_tensegrity(Some(&TRIPLEX_CAPS)),
+        reals(q),
+        ints(TRIPLEX_ANCHORS),
+        reals(&[sigma; TRIPLEX_CAPS.len()]),
+    ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
-/// Seed ratios for `solve_free`, indexed by group: struts (compression) / horizontal
-/// cables / vertical cables. Group 1 is the `reference_group`, so ITS magnitude is what
-/// fixes the free path's gauge — the covariance test below rescales all three together.
-const BASE_SEED: [f64; 3] = [-1.0, 1.0, 1.0];
-
-/// FREE-STANDING solve of the same prism at the given per-group seed ratios (GroupRatios:
-/// struts→0, the six horizontals→1, verticals→2; reference group 1) — the
+/// FREE-STANDING solve of the same prism at the given per-group seed ratios — the
 /// `build_result_free` emission site, which the anchored solves above never reach.
+///
+/// The GroupRatios partition (struts→0, the six horizontals→1, verticals→2) is the
+/// shared `triplex_group_ids()`, not a literal beside `TRIPLEX_MEMBERS`: one id per
+/// member in that same index space, so the two cannot drift. `reference_group` is 1,
+/// so the horizontals’ magnitude is what fixes this path’s gauge — which is why the
+/// covariance test below rescales all three seed ratios together rather than one.
 fn solve_free_at(seed: &[f64]) -> PersistentMap<String, Value> {
     let inputs = [
         prism_tensegrity(),
-        ints([0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]),
+        triplex_group_ids(),
         reals(seed),
         Value::Int(1), // reference_group
     ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_free_trampoline, &inputs)
 }
 
-/// The free-standing solve at the base gauge.
+/// The free-standing solve at the base gauge, [`TRIPLEX_SEEDS`].
 fn solve_free() -> PersistentMap<String, Value> {
-    solve_free_at(&BASE_SEED)
+    solve_free_at(&TRIPLEX_SEEDS)
 }
 
 fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a Vec<Value> {
@@ -288,8 +221,8 @@ fn point_xyz(v: &Value) -> [f64; 3] {
 }
 
 /// Euclidean length of a member on the returned geometry.
-fn member_length(nodes: &[Value], (j, k): (usize, usize)) -> f64 {
-    let (a, b) = (point_xyz(&nodes[j]), point_xyz(&nodes[k]));
+fn member_length(nodes: &[Value], [j, k]: [i64; 2]) -> f64 {
+    let (a, b) = (point_xyz(&nodes[j as usize]), point_xyz(&nodes[k as usize]));
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
@@ -303,10 +236,10 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
     let nodes = list_field(fields, "nodes");
     let member_forces = list_field(fields, "member_forces");
     let force_densities = list_field(fields, "force_densities");
-    assert_eq!(member_forces.len(), MEMBERS.len(), "{site}: one force per member");
-    assert_eq!(force_densities.len(), MEMBERS.len(), "{site}: one echoed density per member");
+    assert_eq!(member_forces.len(), TRIPLEX_MEMBERS.len(), "{site}: one force per member");
+    assert_eq!(force_densities.len(), TRIPLEX_MEMBERS.len(), "{site}: one echoed density per member");
 
-    for (i, &m) in MEMBERS.iter().enumerate() {
+    for (i, &m) in TRIPLEX_MEMBERS.iter().enumerate() {
         // Both extractors panic on the wrong variant / dimension.
         let q = dimensionless_echo("force_densities", &force_densities[i]);
         let n = force_si(&member_forces[i]);
@@ -318,7 +251,7 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
         // would still satisfy 0 == 0·L for every member. Signing it also pins the
         // tension/compression half of the contract for free.
         let (sign, kind) =
-            if i < STRUTS { (-1.0, "strut (compression, q < 0)") } else { (1.0, "cable (tension, q > 0)") };
+            if i < TRIPLEX_STRUTS { (-1.0, "strut (compression, q < 0)") } else { (1.0, "cable (tension, q > 0)") };
         assert!(
             n.is_finite() && q.is_finite() && l > 1e-6,
             "{site}: entry {i} {m:?} must be finite and non-degenerate: N={n} q={q} L={l}"
@@ -603,8 +536,8 @@ fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_p
 /// this path cannot meet by construction.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
-    let base = solve_free_at(&BASE_SEED);
-    let scaled_seed: Vec<f64> = BASE_SEED.iter().map(|&r| r * GAUGE_LAMBDA).collect();
+    let base = solve_free_at(&TRIPLEX_SEEDS);
+    let scaled_seed: Vec<f64> = TRIPLEX_SEEDS.iter().map(|&r| r * GAUGE_LAMBDA).collect();
     let scaled = solve_free_at(&scaled_seed);
     // The scaled FREE solve is the one result nothing else pins: the base free gauge is
     // covered by `free_standing_member_forces_are_strictly_force_dimensioned`, but a
