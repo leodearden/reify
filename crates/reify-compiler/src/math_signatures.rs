@@ -158,17 +158,17 @@ const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
 /// (`crates/reify-stdlib/src/helpers.rs:102-118`), which returns `Some`
 /// radians for exactly three shapes — `Value::Scalar { dimension: ANGLE }`,
 /// `Value::Real`, and `Value::Int` — and `None` for a scalar of ANY other
-/// dimension, which `unary_f64` turns into a silent `Value::Undef`. This check
-/// rejects statically exactly the set eval already Undefs on, so no program
-/// that works today can start failing.
+/// dimension, which `eval_trig` (`crates/reify-stdlib/src/trig.rs`) maps to a
+/// silent `Value::Undef`. This check rejects statically exactly the set eval
+/// already Undefs on, so no program that works today can start failing.
 ///
 /// # Why BOTH `Angle` and dimensionless are accepted
 ///
 /// Not a widening for convenience — both are load-bearing. `Value::Real`
 /// (== `Type::Scalar { DIMENSIONLESS }`) is the bare-radians input used by
-/// `examples/generate_bolt_circle.ri:35-36` and by `sin(pi)` / `cos(tau)` in
+/// `examples/generate_bolt_circle.ri:29-30` and by `sin(pi)` / `cos(tau)` in
 /// `crates/reify-eval/tests/stdlib_constants_e2e.rs`; the ANGLE arm is what
-/// `crates/reify-compiler/tests/math_transcendental_signatures.rs`'s
+/// `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`'s
 /// `BOUNDARY_SOURCE` depends on, feeding `sin(0.5rad)` / `cos(0.0rad)` /
 /// `tan(0.5rad)` and asserting zero Error-severity diagnostics. `Type::Int` is
 /// accepted for the same reason eval accepts `Value::Int`: overload resolution
@@ -179,7 +179,8 @@ const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
 ///
 /// Only the three [`FORWARD_TRIG_NAMES`] are gated. The remaining six
 /// transcendental names pass silently, and that non-enforcement is pinned by
-/// the scope-fence tests in `tests/math_transcendental_signatures.rs`:
+/// the scope-fence tests in
+/// `tests/harness_constructor_typing/math_transcendental_signatures.rs`:
 ///
 ///   * `exp` / `log` — owned by task **#6943**
 ///     (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b)), which
@@ -2519,7 +2520,7 @@ mod tests {
     // test module does not compile without it (the established RED idiom for a
     // new resolver arm — cf. the `RED until S2 adds the "vec3" arm` tests above).
 
-    /// The established test-span idiom (`relation_signatures.rs:1204-1205`,
+    /// The established test-span idiom (`relation_signatures.rs:1599`,
     /// `arg_check.rs:121`).
     fn trig_call_span() -> reify_core::SourceSpan {
         reify_core::SourceSpan::new(0, 10)

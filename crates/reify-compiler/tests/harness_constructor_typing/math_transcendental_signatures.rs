@@ -47,7 +47,8 @@
 //!
 //! CONTRAST — forward trig genuinely does reject dimensions at eval:
 //! `trig_input` (`crates/reify-stdlib/src/helpers.rs:102`) returns `None` for a
-//! non-ANGLE `Value::Scalar`, which `unary_f64` turns into `Value::Undef`. Task
+//! non-ANGLE `Value::Scalar`, which `eval_trig`
+//! (`crates/reify-stdlib/src/trig.rs`) maps to `Value::Undef`. Task
 //! 6249 makes that a COMPILE-time `ArgTypeMismatch` instead of a silent Undef;
 //! see the "Forward-trig argument-dimension rejection" section below.
 //!
@@ -371,8 +372,8 @@ fn sin_times_mm_cascade_is_length() {
 // "All constraints satisfied" and zero diagnostics.
 
 /// Every `ArgTypeMismatch` Error in `compiled` — mirrors the helper of the same
-/// name in `tests/builtin_arg_signature_tests.rs:214` so assertions here read
-/// the same way as the established sibling suite.
+/// name in `tests/harness_type_checking/builtin_arg_signature_tests.rs:214` so
+/// assertions here read the same way as the established sibling suite.
 fn arg_type_mismatch_errors(compiled: &CompiledModule) -> Vec<&reify_core::Diagnostic> {
     compiled
         .diagnostics
@@ -537,7 +538,7 @@ fn scope_fence_inverse_trig_stays_unchecked_pending_5809() {
 // (c) CORPUS GUARD ───────────────────────────────────────────────────────────
 
 /// The only live forward-trig call sites in the whole tracked `.ri` corpus are
-/// `examples/generate_bolt_circle.ri:35-36`. Compile both shapes here so the
+/// `examples/generate_bolt_circle.ri:29-30`. Compile both shapes here so the
 /// corpus is covered by a fast unit-level test rather than only by the slower
 /// `examples_smoke` sweep.
 ///

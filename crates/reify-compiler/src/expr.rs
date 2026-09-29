@@ -3497,8 +3497,8 @@ fn compile_expr_guarded_with_expected_inner(
                     // Type::Error / Type::TypeParam args are skipped
                     // (gradualism), and only the three forward-trig names are
                     // gated — exp/log (#6943) and inverse trig (#5809) are
-                    // deliberately untouched, pinned by the scope-fence tests
-                    // in tests/math_transcendental_signatures.rs.
+                    // deliberately untouched, pinned by the scope-fence tests in
+                    // tests/harness_constructor_typing/math_transcendental_signatures.rs.
                     // Sitting inside this `NoUserFunctions` arm also means a
                     // user-defined `fn sin(...)` still shadows the builtin AND
                     // its check, preserving the dispatch-precedence contract

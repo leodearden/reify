@@ -531,9 +531,9 @@ unrelated reasons — nothing in this family changes that:
   task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
   argument at compile time with a coded `ArgTypeMismatch`
   (`check_transcendental_arg_dimensions`,
-  `crates/reify-compiler/src/math_signatures.rs:195`, wired into
+  `crates/reify-compiler/src/math_signatures.rs:204`, wired into
   `resolve_function_overload`'s `NoUserFunctions` arm at
-  `crates/reify-compiler/src/expr.rs:3462`). `sin(5.0mm)` (LENGTH)
+  `crates/reify-compiler/src/expr.rs:3507`). `sin(5.0mm)` (LENGTH)
   therefore no longer compiles clean. But `sin(2.5)` and
   `sin(ratio * 2.0)` still do, and for the same reason as each
   other: the check accepts `Angle`, dimensionless, and `Int` alike
@@ -554,13 +554,13 @@ unrelated reasons — nothing in this family changes that:
   6(b)), and the inverse-trig names `asin`/`acos`/`atan`/`atan2`
   under task #5809 (`docs/prds/v0_6/dimension-checked-readers.md`
   leaf κ). `MATH_TRANSCENDENTAL_NAMES`
-  (`crates/reify-compiler/src/math_signatures.rs:109`) is still a
+  (`crates/reify-compiler/src/math_signatures.rs:117`) is still a
   bare name list for those six, and its "accept ANGLE-or-Real"
   comment is still intent only; `math_fn_result_type`
-  (`crates/reify-compiler/src/math_signatures.rs:532`) still fixes
+  (`crates/reify-compiler/src/math_signatures.rs:539`) still fixes
   only the RESULT type and never inspects an argument. Both
   non-enforcements are pinned by scope-fence tests in
-  `crates/reify-compiler/tests/math_transcendental_signatures.rs`
+  `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
   that name their owning task and are to be FLIPPED, not deleted,
   when that task lands.
 
