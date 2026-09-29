@@ -2463,6 +2463,10 @@ pub(crate) fn compile_entity(
                         sub.name.clone(),
                         port_direction_map_from_template(child_tmpl),
                     );
+                    scope.sub_declared_member_names.insert(
+                        sub.name.clone(),
+                        declared_member_names_from_template(child_tmpl),
+                    );
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -5303,6 +5307,37 @@ fn port_direction_map_from_template(
     tmpl.ports
         .iter()
         .map(|p| (p.name.clone(), p.direction))
+        .collect()
+}
+
+/// Collect every member name a child `TopologyTemplate` declares — ports,
+/// value cells (params and lets), `where`-guarded members, named realizations,
+/// subs and match-arm clusters — for `CompilationScope::sub_declared_member_names`.
+///
+/// A sibling of `port_direction_map_from_template` /
+/// `member_type_map_from_template`, but read to REJECT a dotted connect endpoint
+/// (#7880), so it errs wide: over-inclusion only keeps a silent pass silent,
+/// while under-inclusion is a false "undefined port" error. Fns and associated
+/// types are deliberately excluded: they are not value-bearing members a connect
+/// endpoint can denote.
+fn declared_member_names_from_template(tmpl: &TopologyTemplate) -> BTreeSet<String> {
+    let guarded_cells = tmpl
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter().chain(&g.else_members));
+    tmpl.ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .chain(
+            tmpl.value_cells
+                .iter()
+                .chain(guarded_cells)
+                .map(|vc| vc.id.member.as_str()),
+        )
+        .chain(tmpl.realizations.iter().filter_map(|r| r.name.as_deref()))
+        .chain(tmpl.sub_components.iter().map(|s| s.name.as_str()))
+        .chain(tmpl.match_arm_groups.iter().map(|g| g.name.as_str()))
+        .map(str::to_owned)
         .collect()
 }
 

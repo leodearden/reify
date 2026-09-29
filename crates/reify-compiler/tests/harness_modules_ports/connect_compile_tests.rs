@@ -2356,8 +2356,9 @@ structure def S {
 }
 
 /// Case (c): dotted ports (motor.shaft → gear.input) skip the OWN-ENTITY
-/// `CompiledPort` lookup, so they get no undefined-port check, no auto-match and
-/// empty port_mappings.
+/// `CompiledPort` lookup, so they get no auto-match and empty port_mappings.
+/// Their existence is checked against the child's declared members instead
+/// (#7880), and both are declared here, so no undefined-port error either.
 ///
 /// Their DIRECTION is a separate question and IS resolved, through
 /// `endpoint_direction` against the sub's child template (#7175) — so this
@@ -2400,8 +2401,9 @@ structure def Assembly {
         asm.connections[0].right_port, "gear.input",
         "expected dotted right_port"
     );
-    // Dotted ports: no undefined-port error, no auto-match, empty port_mappings —
-    // the own-entity lookup is what is skipped, not the direction check.
+    // Dotted ports: no auto-match, empty port_mappings — the own-entity lookup
+    // is what is skipped, not the direction check or the existence check against
+    // the child's declared members (#7880); both ports are declared here.
     let undef_errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -2421,8 +2423,9 @@ structure def Assembly {
 
 /// Case (d): mixed — one bare+found ('a'), one dotted ('motor.shaft') → no auto-match.
 /// When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
-/// never runs even though the bare side resolved successfully. The dotted side is
-/// also exempt from the undefined-port check because is_bare returns false for it.
+/// never runs even though the bare side resolved successfully. The dotted side
+/// skips the OWN-entity lookup; its existence is checked against `Motor`'s
+/// declared members instead (#7880), and `shaft` is declared there.
 #[test]
 fn hoisted_lookup_mixed_bare_dotted() {
     let source = r#"
