@@ -315,6 +315,47 @@ impl ConstraintUpgrade {
     }
 }
 
+/// Replace each upgraded constraint's superseded Indeterminate claim in
+/// `diagnostics` with that upgrade's fresh diagnostics (appended in upgrade
+/// order).
+///
+/// Only a `ConstraintIndeterminate` diagnostic opening with the checker's
+/// `constraint {subject} indeterminate` claim is retracted. A message off that
+/// grammar is KEPT: a wrongly dropped line is lost output, a wrongly kept one
+/// merely redundant. `Engine::build`'s 4229 re-check does the same
+/// retract-and-carry-over for its own upgrades.
+pub fn replace_superseded_constraint_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    upgrades: &[ConstraintUpgrade],
+) {
+    if upgrades.is_empty() {
+        return;
+    }
+    let superseded_claims: Vec<String> = upgrades
+        .iter()
+        .map(|u| {
+            let subject = diagnostic_subject(&u.entry.id, u.entry.label.as_deref());
+            format!("constraint {subject} indeterminate")
+        })
+        .collect();
+    diagnostics.retain(|d| {
+        d.code != Some(DiagnosticCode::ConstraintIndeterminate)
+            || !superseded_claims
+                .iter()
+                .any(|claim| d.message.starts_with(claim.as_str()))
+    });
+    diagnostics.extend(upgrades.iter().flat_map(|u| u.diagnostics.iter().cloned()));
+}
+
+/// How a checker message names a constraint once [`Engine::labeled_diagnostics`]
+/// has run: by its label when it has one, else by its id.
+fn diagnostic_subject<'a>(id: &ConstraintNodeId, label: Option<&'a str>) -> Cow<'a, str> {
+    match label {
+        Some(label) => Cow::Borrowed(label),
+        None => Cow::Owned(id.to_string()),
+    }
+}
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -952,10 +993,11 @@ impl Engine {
         id: &reify_core::ConstraintNodeId,
         label: Option<&str>,
     ) {
-        let Some(lbl) = label else {
+        if label.is_none() {
             return;
-        };
+        }
         let id_str = id.to_string();
+        let subject = diagnostic_subject(id, label);
         let mut replaced_any = false;
         let mut has_error = false;
         for d in messages.iter_mut() {
@@ -963,12 +1005,12 @@ impl Engine {
                 has_error = true;
             }
             if d.message.contains(&id_str) {
-                d.message = d.message.replace(&id_str, lbl);
+                d.message = d.message.replace(&id_str, &subject);
                 replaced_any = true;
             }
             for lbl_obj in d.labels.iter_mut() {
                 if lbl_obj.message.contains(&id_str) {
-                    lbl_obj.message = lbl_obj.message.replace(&id_str, lbl);
+                    lbl_obj.message = lbl_obj.message.replace(&id_str, &subject);
                     replaced_any = true;
                 }
             }
@@ -3950,9 +3992,15 @@ structure def Probe {
         let b_claim = claim_of(&checked.diagnostics, &checked.constraint_results, &b_id);
         assert_ne!(fingerprint(a_claim), fingerprint(b_claim));
 
+        let indeterminate: Vec<_> = checked
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .map(|e| e.id.clone())
+            .collect();
         let values = with_lengths(&checked.values, &[("a", 0.005)]);
         let upgrades = engine
-            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .upgrade_indeterminate_verdicts(&module, &values, |id| indeterminate.contains(id))
             .expect("upgrade re-check");
         assert_eq!(upgrades.len(), 1, "only a became definite: {upgrades:#?}");
         assert_eq!(upgrades[0].entry().id, a_id);
