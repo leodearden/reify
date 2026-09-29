@@ -3990,6 +3990,28 @@ mod queued_requests {
         assert_eq!(published_width(&rig.observer), mm("95"));
     }
 
+    /// A reload that fails is not silent: the watcher never reads the ticket,
+    /// so the job itself must log.
+    #[test]
+    fn a_failed_disk_reload_is_logged_as_a_warning() {
+        let (dir, _path, engine) = make_test_engine_on_disk();
+        let missing = dir.path().join("does_not_exist.ri");
+        let rig = ManualQueue::new();
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_gui::commands")
+            .build();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, missing));
+        tracing::subscriber::with_default(subscriber, || rig.executor.run_pending());
+
+        assert!(settled(ticket).is_err());
+        assert_eq!(
+            counters[&tracing::Level::WARN].load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+    }
+
     /// The echo of this session's own durable write recompiles nothing.
     #[test]
     fn a_queued_disk_reload_of_the_session_source_publishes_nothing() {

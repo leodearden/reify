@@ -650,9 +650,19 @@ pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> Eva
             .and_then(|content| {
                 reload_for_watch_if_changed_impl(&engine, &path.to_string_lossy(), &content)
             });
-        reloaded.map_or_else(EvalOutcome::failed, |publish| {
-            EvalOutcome::succeeded(publish, ())
-        })
+        match reloaded {
+            Ok(publish) => EvalOutcome::succeeded(publish, ()),
+            Err(message) => {
+                // The watcher does not await its ticket, so this is the only
+                // place a failed reload becomes observable.
+                tracing::warn!(
+                    path = %path.display(),
+                    %message,
+                    "disk reload failed; the engine keeps its previous source"
+                );
+                EvalOutcome::failed(message)
+            }
+        }
     })
 }
 
