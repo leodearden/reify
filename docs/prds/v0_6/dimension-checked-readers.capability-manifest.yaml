@@ -155,7 +155,12 @@ tasks:
       5139325.408614099 kg·m^-1·s^-2, iterations 719 (0.33 s); `PointLoad(force: 1000N)`
       -> max_von_mises **0**, iterations **0** (0.18 s). Same scene, EXIT 0 both times,
       zero Error diagnostics. Committed fixtures tests/prd-gate/fixtures/dcr_solver_load_dropped_{bare,dimensioned}.ri.
-      No kernel required — both solvers synthesize their own mesh.'
+      No kernel required — both solvers synthesize their own mesh. AMENDMENT 2026-09-29
+      (Leo, esc-7372-3 follow-on): since #5306 the dimensioned fixture exits 1 at compile
+      (ArgTypeMismatch against the still-Real PointLoad.force), so γ1 reads B1 below
+      the compiler (a hand-built 1000 N FORCE Scalar gives max_von_mises 5139325.408614099
+      with iterations > 0), and the end-to-end .ri check on the dimensioned fixture
+      moves to γ2 (#6941).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -875,7 +880,11 @@ tasks:
     binding: 'PROBE (D3 prover, PASS): the committed paired fixtures give max_von_mises
       5139325.408614099 Pa / 719 iterations (bare) vs 0 / 0 (dimensioned) at 0.33
       s and 0.18 s. π asserts APPLICATION of the load, not the presence of a warning.
-      Neither ElasticResult nor BucklingResult needs unfreezing.'
+      Neither ElasticResult nor BucklingResult needs unfreezing. AMENDMENT 2026-09-29
+      (Leo, esc-7372-3 follow-on): the dimensioned fixture compiles only after γ2 retypes
+      PointLoad.force (#5306 makes it a compile-time ArgTypeMismatch until then); B2
+      is asserted at the reader on a hand-built bare value, never on a .ri exit code.
+      delivered_check unchanged.'
     verdict: PASS
     delivered_check:
       kind: grep
