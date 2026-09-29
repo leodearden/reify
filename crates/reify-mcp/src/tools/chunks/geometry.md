@@ -150,6 +150,16 @@ measured start tangent. Pose the profile normal along that tangent, and bind the
 `pipe` is the contrast: it builds its circle on the path's start frame, so it needs no posing. The
 same contract is stated at the signature in `docs/reify-stdlib-reference.md` §3.6.
 
+```reify
+structure def PosedSweep {
+    // The path starts along +Y. A -90deg turn about +X takes the circle's +Z
+    // normal onto +Y; the unposed XY-plane circle would be refused.
+    let path = line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm)
+    let profile = rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg)
+    let body = sweep(profile, path)
+}
+```
+
 ### Dimensioned arguments
 <!-- LENGTH-ARGS-SECTION -->
 

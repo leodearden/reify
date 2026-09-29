@@ -59,9 +59,9 @@
 //!   the whole info string, so `reify-fragment`/`reify-schematic` can never
 //!   false-match it — and `reify_tagged_fences_in_geometry_chunk_compile`
 //!   compiles each hit VERBATIM behind its own anti-vacuity floor of
-//!   `>= 4`, the EXACT live count of geometry.md's four bare
-//!   ```` ```reify ```` fences. Retagging one therefore fails that suite
-//!   LOUDLY, not silently.
+//!   `>= 4` — that suite's floor, not geometry.md's live count of bare
+//!   ```` ```reify ```` fences, which `REIFY_FENCE_FLOORS` holds EXACTLY.
+//!   Retagging one therefore fails LOUDLY, not silently.
 //!   `geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite`
 //!   below pins the coupling anyway, so the retag is named as the cause in its
 //!   own diff instead of being diagnosed from a count in another module.
@@ -2015,7 +2015,7 @@ fn corpus() -> Vec<ChunkDoc> {
 /// the aggregate check unable to mask a loss.
 const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("enums", 2),
-    ("geometry", 4),
+    ("geometry", 5),
     ("purposes", 1),
     ("traits", 3),
     ("units", 1),
@@ -2045,7 +2045,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// a chunk or a fence gets a message telling it to re-measure rather than a
 /// vacuity warning describing a bug that did not happen.
 pub(crate) const CHUNK_FILE_COUNT: usize = 17;
-const TOTAL_FENCE_COUNT: usize = 76;
+const TOTAL_FENCE_COUNT: usize = 77;
 
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 
