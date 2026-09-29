@@ -284,6 +284,37 @@ pub struct GdtCallout {
     pub zone_shape: Option<String>,
 }
 
+/// A constraint whose Indeterminate verdict a re-check made definite, with that
+/// constraint's own label-rewritten diagnostics. Produced only by
+/// [`Engine::upgrade_indeterminate_verdicts`]; `entry().satisfaction` is never
+/// [`Satisfaction::Indeterminate`].
+#[derive(Debug, Clone)]
+pub struct ConstraintUpgrade {
+    entry: ConstraintCheckEntry,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl ConstraintUpgrade {
+    fn new(result: ConstraintResult, label: Option<&str>) -> Self {
+        debug_assert_ne!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "ConstraintUpgrade: an upgrade must carry a definite verdict ({})",
+            result.id,
+        );
+        let (entry, diagnostics) = Engine::labeled_entry(result, label);
+        Self { entry, diagnostics }
+    }
+
+    pub fn entry(&self) -> &ConstraintCheckEntry {
+        &self.entry
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+}
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -990,14 +1021,25 @@ impl Engine {
         result: ConstraintResult,
         label: Option<&str>,
     ) {
+        let (entry, msgs) = Self::labeled_entry(result, label);
+        diagnostics.extend(msgs);
+        constraint_results.push(entry);
+    }
+
+    /// Split a `ConstraintResult` into its `ConstraintCheckEntry` and its
+    /// diagnostic messages, label-rewritten by [`Self::labeled_diagnostics`].
+    fn labeled_entry(
+        result: ConstraintResult,
+        label: Option<&str>,
+    ) -> (ConstraintCheckEntry, Vec<Diagnostic>) {
         let mut msgs = result.diagnostics.messages;
         Self::labeled_diagnostics(&mut msgs, &result.id, label);
-        diagnostics.extend(msgs);
-        constraint_results.push(ConstraintCheckEntry {
+        let entry = ConstraintCheckEntry {
             id: result.id,
             label: label.map(|s| s.to_string()),
             satisfaction: result.satisfaction,
-        });
+        };
+        (entry, msgs)
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -1014,9 +1056,23 @@ impl Engine {
         &self,
         values: &ValueMap,
     ) -> Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError> {
+        let (results, mut diagnostics) = self.recheck_active_constraints(values, |_| true)?;
         let mut constraint_results = Vec::new();
-        let mut diagnostics = Vec::new();
+        for (result, label) in results {
+            Self::push_constraint_result(&mut diagnostics, &mut constraint_results, result, label);
+        }
+        Ok((constraint_results, diagnostics))
+    }
 
+    /// Re-dispatch the snapshot graph's active constraints that pass `include`
+    /// against `values` (overlaid with the active purpose let-cells). Returns
+    /// each result paired with its node's label, in graph order, plus the
+    /// dispatch-level diagnostics.
+    fn recheck_active_constraints(
+        &self,
+        values: &ValueMap,
+        include: impl Fn(&ConstraintNodeId) -> bool,
+    ) -> Result<(Vec<(ConstraintResult, Option<&str>)>, Vec<Diagnostic>), EngineError> {
         let state = self
             .eval_state
             .as_ref()
@@ -1051,53 +1107,82 @@ impl Engine {
             .constraints
             .iter()
             .map(|(_, cnode)| cnode)
-            .filter(|cnode| active_ids.contains(&cnode.id))
+            .filter(|cnode| active_ids.contains(&cnode.id) && include(&cnode.id))
             .collect();
 
-        if !constraint_nodes.is_empty() {
-            let entries: Vec<_> = constraint_nodes
-                .iter()
-                .map(|cnode| {
-                    (
-                        cnode.id.clone(),
-                        &cnode.expr,
-                        cnode.optimized_target.as_deref(),
-                    )
-                })
-                .collect();
+        if constraint_nodes.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let entries: Vec<_> = constraint_nodes
+            .iter()
+            .map(|cnode| {
+                (
+                    cnode.id.clone(),
+                    &cnode.expr,
+                    cnode.optimized_target.as_deref(),
+                )
+            })
+            .collect();
 
-            let (results, dispatch_diags) = self.dispatch_constraints(
-                entries,
-                &effective_values,
-                &self.functions,
-                Some(&state.snapshot.values),
-            );
-            diagnostics.extend(dispatch_diags);
-            // Task 846.3: `zip` silently truncates to the shorter iterator, so
-            // a length mismatch must be caught BEFORE the loop runs. These are
-            // debug-only checks — the invariants already hold today, but future
-            // refactors of `dispatch_constraints` could desync the two sequences.
-            debug_assert_eq!(
-                results.len(),
-                constraint_nodes.len(),
-                "check_constraints_with_values: results/constraint_nodes length mismatch",
-            );
-            for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
+        let (results, dispatch_diags) = self.dispatch_constraints(
+            entries,
+            &effective_values,
+            &self.functions,
+            Some(&state.snapshot.values),
+        );
+        // Task 846.3: `zip` silently truncates to the shorter iterator, so
+        // a length mismatch must be caught BEFORE the loop runs. These are
+        // debug-only checks — the invariants already hold today, but future
+        // refactors of `dispatch_constraints` could desync the two sequences.
+        debug_assert_eq!(
+            results.len(),
+            constraint_nodes.len(),
+            "recheck_active_constraints: results/constraint_nodes length mismatch",
+        );
+        let labeled = results
+            .into_iter()
+            .zip(constraint_nodes)
+            .map(|(result, cnode)| {
                 debug_assert_eq!(
                     result.id, cnode.id,
-                    "check_constraints_with_values: result.id must match cnode.id \
+                    "recheck_active_constraints: result.id must match cnode.id \
                      — dispatch_constraints reordered results or constraint_nodes changed",
                 );
-                Self::push_constraint_result(
-                    &mut diagnostics,
-                    &mut constraint_results,
-                    result,
-                    cnode.label.as_deref(),
-                );
-            }
-        }
+                (result, cnode.label.as_deref())
+            })
+            .collect();
+        Ok((labeled, dispatch_diags))
+    }
 
-        Ok((constraint_results, diagnostics))
+    /// Re-check only the `is_candidate` constraints against `values`, returning
+    /// an upgrade for each one whose verdict is now definite (a verdict that
+    /// stays Indeterminate is omitted — this never downgrades).
+    ///
+    /// A geometric Conforms (explicit `actual`) is never dispatched: its verdict
+    /// belongs to [`Self::measure_gdt_conformance`], and the language-level
+    /// predicate never reads `actual`, so it would call an unmeasured part
+    /// Satisfied (C1). Dispatch-level diagnostics are dropped: no single
+    /// constraint owns them.
+    pub fn upgrade_indeterminate_verdicts(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        is_candidate: impl Fn(&ConstraintNodeId) -> bool,
+    ) -> Result<Vec<ConstraintUpgrade>, EngineError> {
+        let geometric: HashSet<&ConstraintNodeId> = module
+            .templates
+            .iter()
+            .flat_map(template_constraints)
+            .filter(|c| is_geometric_conforms(c))
+            .map(|c| &c.id)
+            .collect();
+        let (results, _dispatch_diags) = self
+            .recheck_active_constraints(values, |id| is_candidate(id) && !geometric.contains(id))?;
+        Ok(results
+            .into_iter()
+            .filter(|(result, _)| result.satisfaction != Satisfaction::Indeterminate)
+            .map(|(result, label)| ConstraintUpgrade::new(result, label))
+            .collect())
     }
 
     /// Check constraints using the current snapshot values, without re-calling eval().
@@ -1834,15 +1919,11 @@ impl Engine {
     ) {
         // Fast no-op for non-GD&T modules (B4 / C2): keep every module without an
         // explicit-`actual` Conforms byte-identical and allocation-free.
-        let has_geometric_conforms = module.templates.iter().any(|t| {
-            let top = t.constraints.iter();
-            let guarded = t
-                .guarded_groups
-                .iter()
-                .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
-            top.chain(guarded)
-                .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
-        });
+        let has_geometric_conforms = module
+            .templates
+            .iter()
+            .flat_map(template_constraints)
+            .any(is_geometric_conforms);
         if !has_geometric_conforms {
             return;
         }
@@ -1930,10 +2011,7 @@ impl Engine {
             let mut work = Vec::new();
             for template in &module.templates {
                 for c in Self::collect_active_constraints(template, values) {
-                    // η detection signal: an EXPLICIT `actual` binding. The Conforms
-                    // predicate never references `actual`, so this binding (not the
-                    // body) is the only trace of geometric intent.
-                    if !c.arg_bindings.iter().any(|(n, _)| n == "actual") {
+                    if !is_geometric_conforms(c) {
                         continue;
                     }
                     let binding = |name: &str| {
@@ -2392,6 +2470,23 @@ impl Engine {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // ── η/4480 GD&T conformance pass helpers ─────────────────────────────────────
+
+/// Every constraint a template declares, guard-blind: top-level, then each
+/// guarded group's `constraints` and `else_constraints`.
+fn template_constraints(t: &TopologyTemplate) -> impl Iterator<Item = &CompiledConstraint> {
+    let guarded = t
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+    t.constraints.iter().chain(guarded)
+}
+
+/// η detection signal: an EXPLICIT `actual` binding. The Conforms predicate
+/// never references `actual`, so this binding (not the body) is the only trace
+/// of geometric intent.
+fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
+    c.arg_bindings.iter().any(|(n, _)| n == "actual")
+}
 
 /// Tessellation deflection forwarded to [`reify_ir::GeometryQuery::MaxDeviation`]'s
 /// `tolerance` by [`Engine::measure_gdt_conformance`]. Mirrors
@@ -3738,24 +3833,45 @@ structure def Probe {
             .upgrade_indeterminate_verdicts(&module, &values, |_| true)
             .expect("upgrade re-check");
         assert_all_definite(&upgrades);
-        assert_eq!(upgrades.len(), 2, "a and b become definite, c does not: {upgrades:#?}");
+        assert_eq!(
+            upgrades.len(),
+            2,
+            "a and b become definite, c does not: {upgrades:#?}"
+        );
 
         let a = upgrade_for(&upgrades, &a_id).expect("a upgraded");
         assert_eq!(a.entry().satisfaction, Satisfaction::Violated);
-        assert_eq!(a.diagnostics().len(), 1, "a carries exactly its own diagnostic");
-        assert_eq!(a.diagnostics()[0].code, Some(DiagnosticCode::ConstraintViolated));
+        assert_eq!(
+            a.diagnostics().len(),
+            1,
+            "a carries exactly its own diagnostic"
+        );
+        assert_eq!(
+            a.diagnostics()[0].code,
+            Some(DiagnosticCode::ConstraintViolated)
+        );
 
         let b = upgrade_for(&upgrades, &b_id).expect("b upgraded");
         assert_eq!(b.entry().satisfaction, Satisfaction::Satisfied);
-        assert!(b.diagnostics().is_empty(), "a satisfied constraint says nothing");
+        assert!(
+            b.diagnostics().is_empty(),
+            "a satisfied constraint says nothing"
+        );
 
-        assert!(upgrade_for(&upgrades, &c_id).is_none(), "c is still Indeterminate");
+        assert!(
+            upgrade_for(&upgrades, &c_id).is_none(),
+            "c is still Indeterminate"
+        );
 
         let only_b = engine
             .upgrade_indeterminate_verdicts(&module, &values, |id| *id == b_id)
             .expect("candidate-filtered re-check");
         assert_all_definite(&only_b);
-        assert_eq!(only_b.len(), 1, "only the candidate is dispatched: {only_b:#?}");
+        assert_eq!(
+            only_b.len(),
+            1,
+            "only the candidate is dispatched: {only_b:#?}"
+        );
         assert_eq!(only_b[0].entry().id, b_id);
     }
 }
