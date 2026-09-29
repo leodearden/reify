@@ -48,7 +48,8 @@
 //! the strict helper now PANICS on every bare fixture below before eval ever
 //! runs.
 //!
-//! What replaces it is NOT a loosening. `compile_bare_length` swaps in the
+//! What replaces it is NOT a loosening.
+//! `reify_test_support::compile_expecting_only_arg_type_mismatch` swaps in the
 //! lenient `compile_source` and then re-asserts both halves the strict helper
 //! used to give: that the compile-layer `ArgTypeMismatch` really IS emitted,
 //! and that it is the ONLY Error-severity compile diagnostic — which is what
@@ -64,98 +65,43 @@
 //! [`bare_fillet_source_carries_both_layers_with_distinct_codes`].
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_eval::{BuildResult, Engine};
-use reify_ir::{ExportFormat, GeometryOp};
+use reify_ir::GeometryOp;
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
 };
 
 /// Build `source` against a mock kernel, returning the build diagnostics and
 /// every `GeometryOp` that reached the kernel.
-///
-/// `operations_ref()` is captured BEFORE the kernel moves into the `Engine` —
-/// the only ordering that lets the emitted ops be inspected afterwards.
+#[track_caller]
 fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(parse_and_compile(source))
+    build_against_mock_kernel(parse_and_compile(source))
 }
 
-/// The BARE-source counterpart of [`build_capturing_ops`] (task 5750).
+/// Compile a BARE modify/sweep-magnitude `source`.
 ///
 /// Task η gave every modify and sweep magnitude a compile-layer LENGTH slot, so
 /// the bare sources in this file no longer compile clean and the strict
 /// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
-/// before eval ever ran. Same shape as the helper task 5750 introduced in
-/// `primitive_profile_length_units_e2e.rs`, itself modelled on task 5652's
-/// `compile_bare_spacing` in `crates/reify-eval/tests/pattern_spacing_units_e2e.rs`.
+/// before eval ever ran. Uses the shared
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which swaps
+/// in the lenient `compile_source` and re-asserts both halves of what the
+/// strict helper used to guarantee.
+#[track_caller]
+fn compile_bare_magnitude(source: &str) -> reify_compiler::CompiledModule {
+    compile_expecting_only_arg_type_mismatch(source, "modify/sweep magnitude")
+}
+
+/// The BARE-source counterpart of [`build_capturing_ops`] (task 5750),
+/// compiled through [`compile_bare_magnitude`].
+#[track_caller]
 fn build_capturing_ops_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(compile_bare_length(source))
-}
-
-/// Compile a source whose magnitude arguments are deliberately BARE.
-///
-/// Asserts (i) the compile-layer `ArgTypeMismatch` really is emitted, so this
-/// file cannot silently stop noticing if task η's slots regress, and (ii) it is
-/// the ONLY Error-severity compile diagnostic, so an unrelated compile Error
-/// cannot make a caller's "no op reached the kernel" assertion hold for the
-/// wrong reason.
-///
-/// The eval-layer assertions still run afterwards because
-/// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics` and
-/// never lowering, so the op is still emitted and must still be DROPPED at
-/// build by task 5744's gate.
-fn compile_bare_length(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a bare modify/sweep magnitude must ALSO be rejected at compile time \
-         (task 5750 ArgTypeMismatch), not only at eval; got no Error diagnostics \
-         in: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors
-            .iter()
-            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
-         callers' \"no op reached the kernel\" assertions could pass because \
-         compilation broke rather than because the eval gate dropped the op; \
-         unexpected errors: {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
-            .collect::<Vec<_>>()
-    );
-    compiled
-}
-
-/// The kernel half, shared by the strict and bare compile paths.
-fn build_compiled(
-    compiled: reify_compiler::CompiledModule,
-) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
-    let ops = ops_ref
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|r| r.op.clone())
-        .collect();
-    (result.diagnostics, ops)
+    build_against_mock_kernel(compile_bare_magnitude(source))
 }
 
 /// The rejection half: assert `source` produces at least one `Severity::Error`
 /// carrying `DimensionedArgRejected`, whose message contains every needle, and
 /// that NO op matching `is_target` reached the kernel.
+#[track_caller]
 fn assert_rejected(
     label: &str,
     source: &str,
@@ -319,8 +265,8 @@ fn bare_fillet_source_carries_both_layers_with_distinct_codes() {
         "#;
 
     // (a) COMPILE layer: exactly the ArgTypeMismatch, and nothing else at
-    //     Error severity. `compile_bare_length` asserts both halves.
-    let compiled = compile_bare_length(SRC);
+    //     Error severity. `compile_bare_magnitude` asserts both halves.
+    let compiled = compile_bare_magnitude(SRC);
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -525,7 +471,7 @@ fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
 ///
 /// `chamfer_asymmetric`'s `edges` argument is MANDATORY, and this harness
 /// drives a bare `MockGeometryKernel` (`build_capturing_ops` →
-/// `build_compiled`) that answers no topology query — so the inline
+/// `build_against_mock_kernel`) that answers no topology query — so the inline
 /// `edges(body)` selector cannot resolve to a concrete edge list here. The
 /// DIMENSIONED form is therefore also dropped, but for a wholly unrelated
 /// reason that carries its own distinct wording ("the edge selector did not
@@ -545,7 +491,8 @@ fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
 /// available on the current build pipeline … tasks 4360/4358") into the
 /// actionable message pinned below. What still blocks this row from the
 /// ordinary "builds one op" form is purely the bare mock kernel, not a missing
-/// capability; upgrading it needs a real-OCCT rewrite of `build_compiled`.
+/// capability; upgrading it needs a real-OCCT build helper rather than
+/// `reify_test_support::build_against_mock_kernel`.
 #[test]
 fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
     let (diagnostics, _ops) = build_capturing_ops(
