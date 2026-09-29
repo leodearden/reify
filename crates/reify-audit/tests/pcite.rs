@@ -451,6 +451,12 @@ fn real_manifest_cite_floor_guard() {
 
 /// `check()` over the real tree: every finding is well-formed and the output
 /// is deterministic. No count is pinned.
+///
+/// Determinism is proved from ONE run: the `(category, name, path)` keys are
+/// strictly increasing, so the order is total and cannot depend on hash
+/// iteration. Two-run equality is pinned hermetically by
+/// `findings_are_sorted_by_category_name_path_and_deterministic`; a second
+/// real-tree run would double the most expensive test in this binary.
 #[test]
 fn real_repo_pcite_smoke() {
     let root = repo_root();
@@ -468,12 +474,18 @@ fn real_repo_pcite_smoke() {
         now: None,
         producer_branch: None,
     };
-    let first = reify_audit::pcite::check(&ctx);
-    let second = reify_audit::pcite::check(&ctx);
-    assert_eq!(first, second, "check() must be deterministic");
+    let findings = reify_audit::pcite::check(&ctx);
+    let keys: Vec<(&str, &str, &str)> = findings
+        .iter()
+        .map(|f| (category(f), name(f), f.task_id.as_str()))
+        .collect();
+    assert!(
+        keys.windows(2).all(|pair| pair[0] < pair[1]),
+        "findings must be strictly ordered by (category, name, path): {keys:#?}"
+    );
 
     let known: BTreeSet<&str> = ["fabricated-cite", "allow-missing-reason"].into();
-    for f in &first {
+    for f in &findings {
         assert_eq!(f.pattern, Pattern::PManifestCite, "{f:#?}");
         assert_eq!(f.severity, Severity::Medium, "{f:#?}");
         assert!(known.contains(category(f)), "unknown category: {f:#?}");

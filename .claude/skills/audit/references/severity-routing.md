@@ -21,6 +21,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PDIAG` | `PDiag` | no | repo path: the swept file, or `crates/reify-audit/pdiag-baseline.txt` for baseline/census faults | §2 PDIAG |
 | `PDOCCOVER` | `PDocCover` | no | repo path: `crates/reify-compiler/src/units.rs`, `crates/reify-audit/pdoccover-baseline.txt`, or a `crates/reify-mcp/src/tools/chunks/*.md` | §2 PDOCCOVER (batched) |
 | `PDCHECK` | `PDeliveredCheckPath` | no | task id: the owning non-terminal task | §2 PDCHECK |
+| `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
 
 ---
 
@@ -97,6 +98,7 @@ mcp__fused-memory__submit_task(
 | **PDIAG** (codes-mandatory ratchet) — Medium `pdiag-baseline-stale` only | `Tighten pdiag baseline row (PDIAG pdiag-baseline-stale at <path>)` |
 | **PDOCCOVER** (registry ↔ chunk name drift) | _(High only: batched escalation, no Medium template)_ |
 | **PDCHECK** (`delivered_checks` dead path) — Medium `delivered-check-vacuous-absent-path` only | `Repair vacuous delivered_check <check_name> (PDCHECK on task <id>)` |
+| **PCITE** (capability-manifest cite) — Medium `fabricated-cite` | `Fix fabricated manifest cite (PCITE fabricated-cite <name> at <path>)` |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
@@ -129,6 +131,8 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
 
+**PCITE note:** both kinds are Medium, so PCITE never escalates and never moves the exit code. `fabricated-cite` files a follow-up with the §2 template; take `<name>` and `<path>` from the summary (`fabricated-cite: <name> — cited as grep evidence at <path>:<line>, …`). The fix is to correct the manifest row, or — when the symbol legitimately lives outside this repo (dark-factory, OCCT) — to add `<!-- pcite:allow — <reason> -->` on that line. `allow-missing-reason` files `Add pcite:allow reason (PCITE allow-missing-reason at <path>:<line>)`.
+
 ---
 
 ## §3 Dedupe contract
@@ -139,6 +143,7 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 - `audit_cluster` = `finding.pattern` (e.g. `"P1"`, `"P2"`, `"P5"`)
 - `symbol_or_path` = the primary symbol or file path from `finding.evidence` (first evidence string; use `finding.summary` as fallback)
 - For PDCHECK, `symbol_or_path` is the `DeliveredCheck` evidence's `check_name` (always its first evidence entry), so two stale rows on one task stay distinct.
+- For PCITE, `symbol_or_path` is the finding's name — the first token after its `<kind>: ` summary prefix (the cited symbol, or `<path>:<line>` for `allow-missing-reason`) — because every PCITE finding's evidence is its manifest path, so two phantom cites in one manifest would otherwise collide.
 
 **The key is kind-agnostic:** `audit_cluster` is the PATTERN (`"PTODO"`), not the finding kind, so two PTODO findings on the same task+path collide on one key regardless of kind. No change is needed for the two inverse kinds — `task-cites-deleted-path` and `task-cites-renamed-path` are mutually exclusive by construction (a cited path either resolves to a rename target still tracked at HEAD, or it does not), so they can never both be emitted for the same task+path. Stated here so a future reader does not have to re-derive it.
 

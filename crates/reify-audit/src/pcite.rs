@@ -1,6 +1,49 @@
 //! PCITE — capability-manifest cite detector.
+//!
+//! A capability manifest (`docs/prds/**/*.capability-manifest.md`) backs each
+//! row with grep evidence — `grep: \`some_fn\` at \`path:line\``. A cited
+//! symbol that occurs nowhere in the tree is a phantom cite: evidence nobody
+//! can reproduce (the #6233 class). PCITE reports each one.
+//!
+//! ## Corpus, grammar, oracle
+//!
+//! - **Corpus** — tracked files under [`MANIFEST_ROOT`] ending
+//!   [`MANIFEST_SUFFIX`].
+//! - **Grammar** — [`cited_symbols`]: backtick spans after a line's first
+//!   `grep:`, split into `::` segments. #6233's prototype over 138 manifests
+//!   measured 620 cited segments in 60 manifests with 9 unresolved (5
+//!   dark-factory symbols, 2 OCCT names, 2 unclear). Wider grammars — the
+//!   whole row, or every bare snake_case word — left 55 to 231 unresolved,
+//!   mostly planned fixture names and memory ids, and were rejected.
+//! - **Oracle** — every identifier-shaped word of every tracked file that is
+//!   neither under `docs/` nor markdown. Prose never vouches: a note quoting
+//!   a cite is not evidence that the symbol exists.
+//!
+//! The oracle is a bag of words, not a declaration index, for PDOCCOVER's
+//! asymmetry reason: a word that merely occurs in a comment lets a phantom
+//! through, while a declaration parser that missed a real symbol would
+//! accuse it. A miss is cheaper than a false accusation.
+//!
+//! ## Report-only
+//!
+//! Both categories — `fabricated-cite:` (one per manifest and name, at its
+//! first line) and `allow-missing-reason:` — are [`Severity::Medium`]. The
+//! exit code counts High findings only, so PCITE cannot move it even when a
+//! gate selects the pattern. A legitimately external cite (a dark-factory or
+//! OCCT symbol) is settled by `<!-- pcite:allow — <reason> -->` on its line;
+//! a reasonless marker exempts nothing and is itself reported. A report-only
+//! lane has nothing to ratchet, so there is no baseline.
+//!
+//! ## Limit
+//!
+//! Only backticked spans are cites. An un-backticked prose cite — the
+//! parenthesised memory id that motivated #6233 — is outside this grammar,
+//! and no precise grammar reaches it.
 
-use crate::scan_util::{is_identifier_shaped, is_word_byte};
+use crate::scan_util::{
+    allow_marker_body, find_word_boundary_token, is_identifier_shaped, is_word_byte,
+};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::collections::HashSet;
 
 /// The tree the capability manifests live under.
@@ -11,6 +54,86 @@ pub const MANIFEST_SUFFIX: &str = ".capability-manifest.md";
 
 /// A manifest line cites grep evidence only after this marker.
 const EVIDENCE_MARKER: &str = "grep:";
+
+/// The per-line escape hatch: `pcite:allow — <reason>`.
+const ALLOW_TOKEN: &str = "pcite:allow";
+
+/// Tracked prose — never evidence that a symbol exists.
+const PROSE_ROOT: &str = "docs/";
+const PROSE_SUFFIX: &str = ".md";
+
+/// Every phantom cite and malformed allow marker in the tracked manifests,
+/// sorted by `(category, name, path)`.
+pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
+    let tracked = ctx.git.ls_files();
+    let sources: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|path| !path.starts_with(PROSE_ROOT) && !path.ends_with(PROSE_SUFFIX))
+        .filter_map(|path| {
+            ctx.read_relative(path)
+                .map(|content| (path.clone(), content))
+        })
+        .collect();
+    let known = symbol_index(&sources);
+
+    let mut keyed: Vec<Keyed> = tracked
+        .iter()
+        .filter(|path| path.starts_with(MANIFEST_ROOT) && path.ends_with(MANIFEST_SUFFIX))
+        .filter_map(|path| ctx.read_relative(path).map(|content| (path, content)))
+        .flat_map(|(path, content)| manifest_findings(path, &content, &known))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.into_iter().map(|(_, finding)| finding).collect()
+}
+
+/// A finding with its `(category, name, path)` sort key.
+type Keyed = ((&'static str, String, String), Finding);
+
+fn manifest_findings(path: &str, content: &str, known: &HashSet<&str>) -> Vec<Keyed> {
+    let mut out = Vec::new();
+    let mut reported = HashSet::new();
+    for (idx, line) in content.lines().enumerate() {
+        let line_no = idx + 1;
+        if find_word_boundary_token(line, ALLOW_TOKEN).is_some() {
+            if allow_marker_body(line, ALLOW_TOKEN).is_some() {
+                continue;
+            }
+            out.push(keyed(
+                "allow-missing-reason",
+                &format!("{path}:{line_no}"),
+                path,
+                &format!("— `{ALLOW_TOKEN}` with no reason body exempts nothing; write `{ALLOW_TOKEN} — <reason>`"),
+            ));
+        }
+        for name in cited_symbols(line) {
+            if !known.contains(name) && reported.insert(name) {
+                out.push(keyed(
+                    "fabricated-cite",
+                    name,
+                    path,
+                    &format!(
+                        "— cited as grep evidence at {path}:{line_no}, but no tracked source \
+                         outside {PROSE_ROOT} and *{PROSE_SUFFIX} contains it"
+                    ),
+                ));
+            }
+        }
+    }
+    out
+}
+
+fn keyed(category: &'static str, name: &str, path: &str, detail: &str) -> Keyed {
+    let finding = Finding {
+        pattern: Pattern::PManifestCite,
+        severity: Severity::Medium,
+        task_id: path.to_string(),
+        summary: format!("{category}: {name} {detail}"),
+        evidence: vec![EvidenceRef::File {
+            path: path.to_string(),
+        }],
+    };
+    ((category, name.to_string(), path.to_string()), finding)
+}
 
 /// The symbols one capability-manifest line cites as grep evidence, in line
 /// order.
@@ -73,9 +196,26 @@ fn is_commit_sha_shaped(segment: &str) -> bool {
 fn symbol_index(sources: &[(String, String)]) -> HashSet<&str> {
     sources
         .iter()
-        .flat_map(|(_, content)| content.split(|c: char| !c.is_ascii() || !is_word_byte(c as u8)))
-        .filter(|word| is_identifier_shaped(word))
+        .flat_map(|(_, content)| word_runs(content))
+        .filter(|word| !word.starts_with(|c: char| c.is_ascii_digit()))
         .collect()
+}
+
+/// Each maximal run of [`is_word_byte`] bytes in `text`. A byte walk, not a
+/// `char` split: the oracle is ~90MB, and the split measured 4x slower.
+fn word_runs(text: &str) -> impl Iterator<Item = &str> {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        while at < bytes.len() && !is_word_byte(bytes[at]) {
+            at += 1;
+        }
+        let start = at;
+        while at < bytes.len() && is_word_byte(bytes[at]) {
+            at += 1;
+        }
+        (start < at).then(|| &text[start..at])
+    })
 }
 
 #[cfg(test)]

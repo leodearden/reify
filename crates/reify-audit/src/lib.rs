@@ -281,6 +281,19 @@ pub enum Pattern {
     ///
     /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
     PDeliveredCheckPath,
+    /// PCITE — capability-manifest cite lane: a symbol a
+    /// `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence
+    /// that no tracked source outside `docs/` and markdown contains. Two kinds,
+    /// carried as a stable summary prefix (PTODO's `kind`-as-prefix convention
+    /// above): `fabricated-cite:` (one per manifest and name) and
+    /// `allow-missing-reason:` (a `pcite:allow` marker with no reason body,
+    /// which exempts nothing).
+    ///
+    /// **Medium only** — report-only and exit-neutral, so the lane cannot gate
+    /// even when selected. Opt-in, like PDIAG/PDOCCOVER/PDCHECK. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch. Grammar, oracle and their measured basis: `pcite.rs`.
+    PManifestCite,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
