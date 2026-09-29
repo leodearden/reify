@@ -456,6 +456,43 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Assert behaviour, not source prose
+
+An infra assertion's subject is something the code **does**: an exit code,
+stdout/stderr, a constructed argv, files written, process state. It is never
+the natural-language text of a script or test: a comment, header or docstring,
+another test's description label, or the *absence* of phrasing or literals
+that a past review round removed. Such a pin is wrong in both directions.
+Rewording a comment reds the gate with no regression, and a real regression
+outside the comment (a flag leaking into a non-comment string) stays green.
+Census origin: `docs/legibility/confusion-codebook.yaml` entry
+`entry-cand-20260813-12`.
+
+**The tell** is a needle assembled from fragments (`'ex''it'`, `printf '%s'`
+pieces, `_FRAG1`/`_FRAG2`) so the check does not match its own file. Split
+literals *are* legitimate as the self-match-safety convention of a **construct
+lint**: a lint whose subject has a runtime consequence, and whose hermetic
+fixtures prove that it both flags and clears. This README's own guards are the
+examples: the wall-clock upper-bound guard, the bare holder-grace sleep guard,
+the lock-held-across-a-detached-fork guard and the self-referential fd-probe
+guard. Split literals that pin prose, or the file's own edit history, are the
+anti-pattern.
+
+**Review feedback about a comment** is fixed in the comment, with no test.
+Test-first applies to behaviour.
+
+**A real guarantee visible only in source** is tested by driving the behaviour,
+plus a hermetic fixture that must fail (a sensitivity pin). Worked example:
+`test_sync_comments_grep.sh`'s sourcing-returns-control probe replaced a pin on
+a Section 3 comment ("sourcing must stay non-fatal"). The comment pin could not
+see a top-level `exit 0`, which would let every Section 3 assert pass
+vacuously. The probe fails on it, and its `exit 0` fixture proves that.
+
+**Scope.** The rule covers comments and prose inside scripts and tests. It does
+not cover referential-integrity checks (`test_cited_test_paths_resolve.sh`) or
+doc-truth gates over operator documentation (the E-SKILL/E-CLI rows of
+`test_jcodemunch_index_units.sh`). Those are separate contracts.
+
 ## Whole-tree gates and unattended writers of `main`
 
 Dark-factory's legibility jobs commit machine-written files straight to `main`,
