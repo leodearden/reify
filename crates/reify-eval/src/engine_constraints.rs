@@ -3675,11 +3675,13 @@ mod unmeasured_reason_capability_tests {
 #[cfg(test)]
 mod indeterminate_upgrade_tests {
     use reify_constraints::SimpleConstraintChecker;
-    use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, ValueCellId};
+    use reify_core::{
+        ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, Severity, ValueCellId,
+    };
     use reify_ir::{Satisfaction, Value, ValueMap};
     use reify_test_support::parse_and_compile_with_stdlib;
 
-    use crate::{ConstraintUpgrade, Engine};
+    use crate::{ConstraintUpgrade, Engine, replace_superseded_constraint_diagnostics};
 
     const GEOMETRIC_AND_OPEN_SOURCE: &str = r#"
 structure def Probe {
@@ -3873,5 +3875,153 @@ structure def Probe {
             "only the candidate is dispatched: {only_b:#?}"
         );
         assert_eq!(only_b[0].entry().id, b_id);
+    }
+
+    /// Eleven constraints so the open ones sit at `[1]` and `[10]`: the id of
+    /// `[10]` shares the `Probe#constraint[1` prefix with `[1]`.
+    const ELEVEN_SOURCE: &str = r#"
+structure def Probe {
+    param a : Length = auto
+    param b : Length = auto
+    param k : Length = 1mm
+    constraint k > 0mm
+    constraint a < 1mm
+    constraint k < 2mm
+    constraint k >= 1mm
+    constraint k <= 1mm
+    constraint k > 0.1mm
+    constraint k < 3mm
+    constraint k > 0.2mm
+    constraint k < 4mm
+    constraint k > 0.3mm
+    constraint b > 0mm
+}
+"#;
+
+    fn fingerprint(d: &Diagnostic) -> (Severity, String, Option<DiagnosticCode>) {
+        (d.severity, d.message.clone(), d.code)
+    }
+
+    fn indeterminate_claims(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ConstraintIndeterminate))
+            .collect()
+    }
+
+    fn claim_of<'a>(
+        diags: &'a [Diagnostic],
+        entries: &[crate::ConstraintCheckEntry],
+        id: &ConstraintNodeId,
+    ) -> &'a Diagnostic {
+        let entry = entries.iter().find(|e| &e.id == id).expect("checked entry");
+        let subject = entry.label.clone().unwrap_or_else(|| id.to_string());
+        let prefix = format!("constraint {subject} indeterminate");
+        let mut hits = indeterminate_claims(diags)
+            .into_iter()
+            .filter(|d| d.message.starts_with(&prefix));
+        let claim = hits
+            .next()
+            .unwrap_or_else(|| panic!("no `{prefix}` claim in {diags:#?}"));
+        assert!(
+            hits.next().is_none(),
+            "`{prefix}` claimed twice: {diags:#?}"
+        );
+        claim
+    }
+
+    #[test]
+    fn replacement_retracts_only_the_upgraded_constraints_stale_claim_and_appends_its_fresh_diagnostics()
+     {
+        let module = parse_and_compile_with_stdlib(ELEVEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        assert_eq!(constraints.len(), 11, "fixture declares eleven constraints");
+        let (a_id, b_id) = (constraints[1].id.clone(), constraints[10].id.clone());
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert_eq!(
+            indeterminate_claims(&checked.diagnostics).len(),
+            2,
+            "precondition: only the two open constraints claim indeterminacy: {:#?}",
+            checked.diagnostics
+        );
+        let a_claim = claim_of(&checked.diagnostics, &checked.constraint_results, &a_id);
+        let b_claim = claim_of(&checked.diagnostics, &checked.constraint_results, &b_id);
+        assert_ne!(fingerprint(a_claim), fingerprint(b_claim));
+
+        let values = with_lengths(&checked.values, &[("a", 0.005)]);
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        assert_eq!(upgrades.len(), 1, "only a became definite: {upgrades:#?}");
+        assert_eq!(upgrades[0].entry().id, a_id);
+        assert_eq!(upgrades[0].entry().satisfaction, Satisfaction::Violated);
+        let fresh: Vec<_> = upgrades[0].diagnostics().iter().map(fingerprint).collect();
+        assert!(
+            fresh
+                .iter()
+                .any(|(_, _, code)| *code == Some(DiagnosticCode::ConstraintViolated)),
+            "the upgrade carries a fresh ConstraintViolated diagnostic: {fresh:#?}"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+
+        let remaining: Vec<_> = indeterminate_claims(&diags)
+            .into_iter()
+            .map(fingerprint)
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![fingerprint(b_claim)],
+            "exactly b's untouched claim survives the retraction of a's"
+        );
+        for f in &fresh {
+            assert_eq!(
+                diags.iter().filter(|d| fingerprint(d) == *f).count(),
+                1,
+                "fresh diagnostic {f:?} appears exactly once in {diags:#?}"
+            );
+        }
+        assert_eq!(
+            diags.len(),
+            checked.diagnostics.len() - 1 + upgrades[0].diagnostics().len()
+        );
+        let expected: Vec<_> = checked
+            .diagnostics
+            .iter()
+            .map(fingerprint)
+            .filter(|f| *f != fingerprint(a_claim))
+            .chain(fresh.iter().cloned())
+            .collect();
+        assert_eq!(
+            diags.iter().map(fingerprint).collect::<Vec<_>>(),
+            expected,
+            "every other diagnostic survives in its original relative order, \
+             followed by the upgrade's fresh diagnostics"
+        );
+    }
+
+    #[test]
+    fn replacement_with_no_upgrades_is_a_no_op() {
+        let module = parse_and_compile_with_stdlib(ELEVEN_SOURCE);
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert!(
+            !checked.diagnostics.is_empty(),
+            "non-vacuity: diagnostics to keep"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &[]);
+        assert_eq!(
+            diags.iter().map(fingerprint).collect::<Vec<_>>(),
+            checked
+                .diagnostics
+                .iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>()
+        );
     }
 }
