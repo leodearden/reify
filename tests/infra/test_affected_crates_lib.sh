@@ -38,6 +38,28 @@
 #      "WHAT PROVES WHAT" note on that block)
 #  16. (task 6292) argv coverage: _reverse_closure invokes cargo metadata
 #      with --offline alongside task 6277's --locked
+#  17. (task 7427) INERT-SPOT: the inert class (docs/**, *.md, *.yaml, *.yml)
+#      is ONE list shared with verify.sh's decide_scope, so a mixed
+#      crate + top-level *.md diff narrows to the crate-alone closure
+#      instead of C5-widening to ALL — while an unmappable NON-inert path
+#      still widens, and a crate-OWNED *.md/*.yaml still maps to its owning
+#      crate, because attribution outranks the inert class on both sides
+#  18. (task 7427) EXAMPLES-CORPUS: examples/**/*.ri (flat and nested) maps
+#      to the declared reader crates instead of C5-widening to ALL, while
+#      non-.ri, non-inert content under examples/ still widens; plus
+#      RI-CORPUS-DRIFT, a derived-⊆-declared guard that keeps the declared
+#      reader list honest against the repo's real Rust sources
+#  19. (task 7096) a per-crate manifest touch (crates/*/Cargo.toml,
+#      gui/src-tauri/Cargo.toml) additionally contributes the crate that
+#      hosts the workspace crate-DAG gate, a non-manifest source touch
+#      does not, and the ALL sentinel is never unioned with it; the gate
+#      crate is unioned into the closure's result, never seeded (a set
+#      equality against the crate's source-touch closure, with the premise
+#      that makes it discriminate pinned alongside); plus a drift
+#      guard pinning _REIFY_DAG_GATE_CRATE to a real workspace member that
+#      hosts the gate; and a manifest whose crate resolves to no workspace
+#      package is exactly ALL, composing with task 6268's unresolvable-seed
+#      C5 arm
 
 set -euo pipefail
 
@@ -116,6 +138,81 @@ echo "--- C5: unmappable path forces ALL ---"
 
 assert "unmappable path -> ALL" \
     test "$(affected_crates some/unknown/place.zzz)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# INERT-SPOT (task 7427): the inert class is ONE list, shared with decide_scope.
+# These assertions pin the two classifications together — the mixed
+# crate + top-level *.md diff is the shape the old two-copy version widened to
+# ALL. Contract and cost: §3 of docs/prds/verify-scope-contract.md.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- INERT-SPOT: the inert class matches decide_scope's (docs/**, *.md, *.yaml, *.yml) ---"
+
+_check_mixed_md_not_ALL() {
+    local out
+    out="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    [ "$out" != "ALL" ]
+}
+assert "crate + top-level README.md is NOT the ALL sentinel" _check_mixed_md_not_ALL
+
+_check_mixed_md_equals_crate_alone() {
+    local with_md without_md
+    with_md="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    without_md="$(affected_crates crates/reify-doc/src/lib.rs)"
+    echo "with README.md: [$with_md]"
+    echo "crate alone:    [$without_md]"
+    [ "$with_md" = "$without_md" ]
+}
+assert "an inert *.md contributes nothing: closure equals the crate-alone closure" \
+    _check_mixed_md_equals_crate_alone
+
+assert "top-level *.yaml -> empty (not ALL)" \
+    test -z "$(affected_crates dark-factory-orchestrator.yaml)"
+
+assert "top-level *.md -> empty (not ALL)" \
+    test -z "$(affected_crates CLAUDE.md)"
+
+# Fail-wide is narrowed, not weakened: an unmappable NON-inert path still
+# C5-widens. scripts/verify.sh is the sharpest case — a verify-pipeline
+# artifact whose blast radius is the whole workspace.
+assert "unmappable non-inert path still forces ALL (C5 preserved)" \
+    test "$(affected_crates scripts/verify.sh)" = "ALL"
+
+# Crate ATTRIBUTION outranks the inert class (contract §5). The two fixtures
+# below are chosen because they are real compile/test inputs rather than
+# incidental docs — crates/reify-mcp/src/tools/chunks/*.md are `include_str!`-ed
+# by crates/reify-mcp/src/tools/language_chunks.rs, and
+# crates/reify-doc/tests/snapshots/*.md are compared by
+# crates/reify-doc/tests/fmt_markdown_tests.rs; 32 of the 33 tracked
+# crates/**/*.{md,yaml,yml} are of that kind. Classifying one as "no crate"
+# drops the very crate whose tests read the edited bytes.
+_check_crate_owned_doc_maps_to_owner() {
+    # Usage: <expected-crate> <crate-owned path>
+    local expected="$1" path="$2" out
+    out="$(affected_crates "$path")"
+    echo "$path -> [$(printf '%s' "$out" | tr '\n' ' ')]"
+    grep -qx "$expected" <<< "$out"
+}
+assert "an include_str!-ed crate-owned *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-mcp crates/reify-mcp/src/tools/chunks/syntax.md
+assert "a crate-owned snapshot *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-doc crates/reify-doc/tests/snapshots/integration_full_v01.single.md
+
+# A crate-owned doc narrows like its crate — it neither vanishes nor widens
+# to ALL. Compared against the UNION of the two crates' own closures rather
+# than a hand-written crate list, so the assertion cannot rot as the
+# dependency graph moves.
+_check_crate_owned_doc_unions() {
+    local mixed expected
+    mixed="$(affected_crates crates/reify-doc/src/lib.rs crates/reify-mcp/src/tools/chunks/syntax.md | sort -u)"
+    expected="$( { affected_crates crates/reify-doc/src/lib.rs
+                   affected_crates crates/reify-mcp/src/lib.rs; } | sort -u)"
+    echo "lib + crate-owned .md: [$(printf '%s' "$mixed"    | tr '\n' ' ')]"
+    echo "union of both crates:  [$(printf '%s' "$expected" | tr '\n' ' ')]"
+    [ "$mixed" != "ALL" ] && [ "$mixed" = "$expected" ]
+}
+assert "crate + another crate's owned *.md equals the union of the two closures" \
+    _check_crate_owned_doc_unions
 
 # ---------------------------------------------------------------------------
 # Step 7: direct-set printing — crate-mapped paths emit the crate name
@@ -289,6 +386,333 @@ _check_mixed_contains_reify_doc() {
 assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
 
 # ---------------------------------------------------------------------------
+# EXAMPLES-CORPUS (task 7427): examples/**/*.ri maps to its reader crates.
+#
+# The examples/ tree is a test CORPUS: compiled Rust test targets walk it and
+# open .ri leaves by path. With no _file_to_crate rule for it, every one of the
+# 264 tracked .ri files was an unmappable path — so the C5 arm fired and an
+# .ri-only edit became the most expensive diff shape in the repo (a full
+# workspace verify for a corpus edit). Mapping it to the declared reader set
+# feeds those seeds through the normal reverse closure instead.
+#
+# Non-.ri, non-inert content under examples/ still takes C5: the mapping is a
+# claim about .ri corpus leaves specifically, not about the directory.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EXAMPLES-CORPUS: examples/**/*.ri maps to the declared reader crates ---"
+
+_check_examples_ri_not_ALL() {
+    local out
+    out="$(affected_crates examples/foo.ri)"
+    echo "closure: [$out]"
+    [ "$out" != "ALL" ] && [ -n "$out" ]
+}
+assert "examples/*.ri is NOT the ALL sentinel" _check_examples_ri_not_ALL
+
+_check_examples_ri_contains() {
+    # Usage: _check_examples_ri_contains <expected-crate>
+    affected_crates examples/foo.ri | grep -qx "$1"
+}
+assert "examples/*.ri closure contains reify-eval"           _check_examples_ri_contains reify-eval
+assert "examples/*.ri closure contains reify-compiler"       _check_examples_ri_contains reify-compiler
+assert "examples/*.ri closure contains reify-cli"            _check_examples_ri_contains reify-cli
+assert "examples/*.ri closure contains reify-eval-fea-tests" _check_examples_ri_contains reify-eval-fea-tests
+
+# NESTED is the common real shape (examples/auto/, examples/ambient_default_
+# material/, …), and a bash `case` glob's `*` matches `/`, so one arm covers
+# both depths. Asserted as EQUALITY with the flat case so a future rule that
+# accidentally keys on depth cannot pass.
+_check_examples_nested_same_as_flat() {
+    local nested flat
+    nested="$(affected_crates examples/auto/bearing_unsat.ri)"
+    flat="$(affected_crates examples/foo.ri)"
+    echo "nested: [$nested]"
+    echo "flat:   [$flat]"
+    [ "$nested" = "$flat" ]
+}
+assert "nested examples/<dir>/*.ri closure equals the flat one" _check_examples_nested_same_as_flat
+
+assert "examples/README.md -> empty (inert, not ALL)" \
+    test -z "$(affected_crates examples/README.md)"
+
+# Fail-wide PRESERVED for the two real non-.ri, non-inert tracked shapes.
+assert "examples/**/*.gcode still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/trajectory/test_data/printer_print_envelope.gcode)" = "ALL"
+
+assert "examples/**/.gitkeep still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/generics/.gitkeep)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# RI-CORPUS-DRIFT: the declared reader set is derived from the repo, not
+# hand-maintained (house pattern; mirrors PG-DRIFT and
+# test_release_scoped_scope.sh).
+#
+# DERIVED ⊆ DECLARED, deliberately a subset and not an equality: an extra
+# DECLARED crate only ever WIDENS the closure, which is the direction of error
+# C5 already blesses. A new corpus reader that nobody declared is the real
+# regression — that crate's tests would be narrowed AWAY by an edit to the
+# very fixture they read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- RI-CORPUS-DRIFT: every workspace member whose Rust sources read the examples/ corpus is declared ---"
+
+# _workspace_member_dirs — every workspace member's repo-relative directory and
+# package name, TAB-separated, longest directory first so the prefix match below
+# resolves a nested member to the nearest one.
+#
+# Read from `cargo metadata`, never hand-listed: a hand-kept pathspec stops
+# meaning "every member" the moment one is added outside `crates/`, which is how
+# this derivation first missed gui/src-tauri (reify-gui `include_str!`s a corpus
+# leaf at compile time) and then tree-sitter-reify. Empty output means
+# `cargo metadata` failed — see the cold-registry preflight above.
+_workspace_member_dirs() {
+    local meta
+    meta="$( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline 2>/dev/null )" || return 0
+    printf '%s\n' "$meta" | python3 -c '
+import json, os, sys
+meta = json.load(sys.stdin)
+root = os.path.realpath(sys.argv[1])
+members = set(meta["workspace_members"])
+rows = [
+    (os.path.relpath(os.path.dirname(os.path.realpath(p["manifest_path"])), root), p["name"])
+    for p in meta["packages"] if p["id"] in members
+]
+for d, name in sorted(rows, key=lambda r: (-len(r[0]), r[0])):
+    print(f"{d}\t{name}")
+' "$REPO_ROOT"
+}
+
+# _derived_ri_corpus_crates — every workspace member with a non-comment Rust
+# source line naming the examples/ corpus, one package name per line.
+#
+# TWO reader shapes are matched, because the literal one alone left this guard
+# green by coincidence rather than by construction: a named leaf
+# (`include_str!(".../examples/foo.ri")`) AND a directory walk
+# (`collect_files(&root.join("examples"), "ri", …)`, or a path assembled with
+# `format!("examples/{}.ri", …)`, which no `\.ri` pattern can see). A crate that
+# only walked the directory would otherwise be an undeclared reader.
+# OVER-derivation is the safe direction: it can only force a DECLARATION, and an
+# extra declared crate merely widens — the direction of error C5 already blesses.
+#
+# A member with no §5 mapping rule of its own (tree-sitter-reify, which
+# _is_global widens to ALL on its own edits) is still swept and still has to be
+# declared if it ever reads the corpus: an examples/*.ri edit must reach the
+# tests of every crate that opens those bytes, whatever that crate's own edits do.
+_RI_CORPUS_READ_RE='examples/|"examples"'
+
+_derived_ri_corpus_crates() {
+    local members
+    members="$(_workspace_member_dirs)"
+    [ -n "$members" ] || return 0
+
+    local -a pathspecs=()
+    local -A member_pkg=()
+    local dir pkg
+    while IFS=$'\t' read -r dir pkg; do
+        [ -n "$dir" ] || continue
+        pathspecs+=("$dir/**.rs")
+        member_pkg["$dir"]="$pkg"
+    done <<< "$members"
+
+    git -C "$REPO_ROOT" grep -nE "$_RI_CORPUS_READ_RE" -- "${pathspecs[@]}" \
+        | while IFS= read -r line; do
+            # `path:lineno:code` — split off the prefix to inspect the CODE.
+            local path="${line%%:*}"
+            local code="${line#*:}"; code="${code#*:}"
+            # A pure-comment mention is not a corpus read: skip lines whose
+            # first non-space characters are `//`.
+            local trimmed="${code#"${code%%[![:space:]]*}"}"
+            case "$trimmed" in //*) continue ;; esac
+            # Project the source path onto its owning member: walk up parents
+            # until one is a member directory (longest match wins).
+            local owner="$path"
+            while [ -n "$owner" ] && [ -z "${member_pkg[$owner]:-}" ]; do
+                case "$owner" in */*) owner="${owner%/*}" ;; *) owner="" ;; esac
+            done
+            [ -n "$owner" ] && printf '%s\n' "${member_pkg[$owner]}"
+        done | sort -u
+}
+
+_check_derived_subset_of_declared() {
+    local derived missing=""
+    derived="$(_derived_ri_corpus_crates)"
+    echo "derived:  [$(printf '%s' "$derived" | tr '\n' ' ')]"
+    echo "declared: [${_RI_CORPUS_CRATES:-<unset>}]"
+    [ -n "$derived" ] || { echo "derivation produced NOTHING — cargo metadata, the grep or the projection broke"; return 1; }
+    local c
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        case " ${_RI_CORPUS_CRATES:-} " in
+            *" $c "*) ;;
+            *) missing+=" $c" ;;
+        esac
+    done <<< "$derived"
+    [ -z "$missing" ] || { echo "UNDECLARED corpus readers:$missing"; return 1; }
+    return 0
+}
+assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
+    _check_derived_subset_of_declared
+
+# ---------------------------------------------------------------------------
+# GV-PREMISE (task 7427): the two crates the vitest-gate fixtures are built on.
+#
+# tests/infra/test_verify_scope.sh's GV-1/GV-2 drive AFFECTED_CLOSURE through
+# REIFY_AFFECTED_CRATES_OVERRIDE, because their throwaway fixture repo has no
+# cargo workspace. Those hand-written override values are only meaningful while
+# they describe reality — so pin the two facts they encode against the REAL
+# repo here, where a real `cargo metadata` runs.
+#
+# The negative holds because the reify-doc -> reify-eval edge is a DEV-dep and
+# the compile-closure model is dev-dep non-transitive — the property the task
+# 4938 section above already covers. If that model ever changes, GV-1 becomes
+# fiction silently; this assertion is what makes it fail loudly instead.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- GV-PREMISE: the reify-doc / reify-eval closures the vitest-gate fixtures assume ---"
+
+assert "reify-doc closure EXCLUDES reify-gui (GV-1's skip premise)" \
+    _check_not_contains reify-gui crates/reify-doc/src/lib.rs
+
+assert "reify-eval closure INCLUDES reify-gui (GV-2's run premise)" \
+    _check_contains reify-gui crates/reify-eval/src/lib.rs
+
+# ---------------------------------------------------------------------------
+# Task 7096: a per-crate manifest touch pulls in the crate-DAG gate.
+#
+# Rule and rationale — why a per-crate Cargo.toml edit can restructure the
+# crate DAG with no Cargo.lock delta (so C4 never fires), and why the gate's
+# host crate is unioned into the closure's result rather than seeded into it:
+# docs/prds/verify-scope-contract.md §3, "Per-crate manifest touches also
+# contribute the crate-DAG gate".
+#
+# The non-manifest assertion is the discrimination half: it refuses a
+# degenerate "always append the gate crate" implementation, which would
+# permanently widen every narrowed verify.
+#
+# Real-cargo assertions, so they share the placement constraint the Fix #1
+# block above documents: they must sit BEFORE the stub sections at the end of
+# this file, each of which redefines cargo() for the rest of this shell and
+# never unsets it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 7096: per-crate manifest touch pulls in the crate-DAG gate ---"
+
+assert "crates/*/Cargo.toml touch pulls in reify-build-utils, so the workspace DAG gate runs at task-verify time" \
+    _check_contains reify-build-utils crates/reify-expr/Cargo.toml
+
+assert "gui/src-tauri/Cargo.toml touch pulls in reify-build-utils (the second per-crate manifest location in this workspace)" \
+    _check_contains reify-build-utils gui/src-tauri/Cargo.toml
+
+assert "a non-manifest source touch does NOT pull in reify-build-utils — the rule keys on the manifest, not on the crate" \
+    _check_not_contains reify-build-utils crates/reify-expr/src/lib.rs
+
+# Unioned into the RESULT, never seeded. Compared as SETS against the public
+# seam's own answers rather than a hand-written crate list, so it cannot rot as
+# the graph moves. The fixture is reify-cli because it is a leaf (#4): its own
+# closure is just itself, so the gate crate's reverse dependents, which seeding
+# would drag in, cannot hide inside it.
+_reify_cli_closure_plus_gate() {
+    { affected_crates crates/reify-cli/src/main.rs
+      printf '%s\n' "$_REIFY_DAG_GATE_CRATE"; } | sort -u
+}
+
+_check_manifest_unions_gate_into_result() {
+    local manifest unioned
+    manifest="$(affected_crates crates/reify-cli/Cargo.toml)"
+    unioned="$(_reify_cli_closure_plus_gate)"
+    echo "manifest touch:            [$(printf '%s' "$manifest" | tr '\n' ' ')]"
+    echo "source touch + gate crate: [$(printf '%s' "$unioned"  | tr '\n' ' ')]"
+    [ "$manifest" = "$unioned" ]
+}
+assert "a manifest touch = its crate's source-touch closure + the DAG-gate crate, as sets (unioned into the result, never seeded)" \
+    _check_manifest_unions_gate_into_result
+
+# Premise of the equality above: for this fixture, seeding and unioning differ.
+# A source touch of reify-cli AND the gate crate is exactly what a seeding
+# implementation would compute for the manifest; were it ever equal to the
+# union, a regression to seeding would pass the equality unseen.
+_check_seeding_differs_from_union() {
+    local seeded unioned
+    seeded="$(affected_crates crates/reify-cli/src/main.rs "crates/$_REIFY_DAG_GATE_CRATE/src/lib.rs")"
+    unioned="$(_reify_cli_closure_plus_gate)"
+    echo "seeded (source touch of both): [$(printf '%s' "$seeded"  | tr '\n' ' ')]"
+    echo "unioned:                       [$(printf '%s' "$unioned" | tr '\n' ' ')]"
+    [ "$seeded" != "ALL" ] && [ "$seeded" != "$unioned" ]
+}
+assert "premise: seeding the DAG-gate crate would yield a different set than unioning it for the reify-cli fixture, so the equality above discriminates" \
+    _check_seeding_differs_from_union
+
+_check_manifest_mixed_not_ALL() {
+    local out
+    out="$(affected_crates docs/x.md crates/reify-expr/Cargo.toml)"
+    [ "$out" != "ALL" ]
+}
+assert "mixed docs + manifest diff is NOT the ALL sentinel (manifest rule composes with the non-crate allowlist)" \
+    _check_manifest_mixed_not_ALL
+
+_check_manifest_mixed_contains_gate() {
+    affected_crates docs/x.md crates/reify-expr/Cargo.toml | grep -qx reify-build-utils
+}
+assert "mixed docs + manifest diff still contains reify-build-utils (the allowlist does not short-circuit the manifest rule)" \
+    _check_manifest_mixed_contains_gate
+
+# SPOT drift guard: scripts/affected-crates-lib.sh hardcodes the gate's host
+# crate name in _REIFY_DAG_GATE_CRATE, and nothing downstream validates it —
+# the name is appended OUTSIDE the reverse closure, so cargo never sees it
+# until verify.sh expands it into `-p <crate>`. Both assertions below READ the
+# constant rather than restating its value, so they pin it in the direction
+# that has teeth: a stale constant (gate relocated, crate renamed) reds here
+# instead of hard-failing every branch verify that touches a manifest with
+# "package ID specification did not match any packages".
+assert "_REIFY_DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<crate>/tests/crate_dag_assertion.rs)" \
+    test -f "$REPO_ROOT/crates/$_REIFY_DAG_GATE_CRATE/tests/crate_dag_assertion.rs"
+
+# Workspace membership is a fact distinct from directory layout: the root
+# Cargo.toml lists members explicitly, and a package name need not equal its
+# directory name. --no-deps restricts `packages` to the workspace members
+# exactly — the set a `-p` selector resolves against. Matched on that package
+# list rather than by grepping the raw JSON, because each member's nested
+# `dependencies` array carries `name` keys too, so a name still referenced as
+# a dependency would pass a plain grep after being dropped from `members`.
+# python3 is already a hard dependency of this suite via _reify_compile_closure.
+_check_gate_crate_is_workspace_member() {
+    echo "_REIFY_DAG_GATE_CRATE=[$_REIFY_DAG_GATE_CRATE]"
+    local meta
+    if ! meta="$(cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline --no-deps)" \
+        || [ -z "$meta" ]; then
+        echo "cargo metadata failed — workspace membership was never checked"
+        return 1
+    fi
+    printf '%s\n' "$meta" \
+        | python3 -c 'import json,sys; meta=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in {p["name"] for p in meta["packages"]} else 1)' \
+            "$_REIFY_DAG_GATE_CRATE"
+}
+assert "_REIFY_DAG_GATE_CRATE is a real workspace member, so the -p selector verify.sh emits for it resolves" \
+    _check_gate_crate_is_workspace_member
+
+# Composition with the unresolvable-seed C5 arm (task 6268). A manifest path
+# attributes to its crate DIRECTORY's name, and nothing pins that name to a
+# workspace package — a typo'd or not-yet-declared crate directory resolves to
+# none. That is a failure to attribute, so it must fail wide to exactly ALL:
+# never the empty print verify.sh reads as "provably zero crates", and never
+# ALL unioned with the DAG-gate crate. Needs the REAL, succeeding cargo
+# metadata so the seed reaches the closure and resolves to nothing; a stubbed
+# cargo would exercise the cargo-failure C5 arm instead. Captured and dumped
+# per the _sentinel_manifest_report convention below.
+_UNRESOLVED_MANIFEST_OUT=""
+_unresolved_manifest_report() {
+    echo "unresolvable crate's manifest: affected_crates -> [$_UNRESOLVED_MANIFEST_OUT]"
+}
+
+_check_unresolvable_manifest_is_exactly_ALL() {
+    _UNRESOLVED_MANIFEST_OUT="$(affected_crates crates/reify-no-such-crate/Cargo.toml)"
+    _unresolved_manifest_report
+    [ "$_UNRESOLVED_MANIFEST_OUT" = "ALL" ]
+}
+assert "C5 integrity: a manifest whose crate resolves to no workspace package -> exactly ALL (never empty, never unioned with the DAG-gate crate)" \
+    _check_unresolvable_manifest_is_exactly_ALL
+
+# ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.
 #
 # --locked's whole purpose is refusing to rewrite Cargo.lock rather than
@@ -460,6 +884,52 @@ assert "cargo metadata failure -> ALL" _check_cargo_fail_all
 
 assert "global anywhere in list -> ALL" \
     test "$(affected_crates crates/reify-cli/src/main.rs Cargo.lock)" = "ALL"
+
+# Sentinel integrity (task 7096). The manifest rule must never union anything
+# ONTO the ALL sentinel: ALL is a sentinel, not a crate name. verify.sh's
+# NARROW_ACTIVE assignment reads any non-empty value other than exactly `ALL`
+# as a narrowed -p list, so a two-line `ALL\nreify-build-utils` would expand to
+# `-p ALL -p reify-build-utils` — converting a deliberate C5 fail-WIDE into a
+# false NARROW carrying a bogus package selector, which is precisely the
+# under-approximation docs/prds/verify-scope-contract.md §3 calls shipped
+# breakage.
+#
+# Both checkers compare with `=` against the WHOLE captured value. A grep or
+# substring check would pass on exactly the corrupt `ALL\nreify-build-utils`
+# value and so would assert nothing.
+#
+# Each dumps the captured value from inside the checker, per the
+# _cold_cache_report convention above: assert() discards a passing checker's
+# output, so a corrupt sentinel stays legible from the FAIL line alone.
+
+_SENTINEL_MANIFEST_OUT=""
+_sentinel_manifest_report() {
+    echo "cargo-failure on a manifest path: affected_crates -> [$_SENTINEL_MANIFEST_OUT]"
+}
+
+# Same local failing-cargo stub idiom as _check_cargo_fail_all above, so this
+# does not depend on that checker's stub having leaked into this shell.
+_check_manifest_cargo_failure_is_exactly_ALL() {
+    cargo() { return 1; }
+    _SENTINEL_MANIFEST_OUT="$(affected_crates crates/reify-expr/Cargo.toml)"
+    _sentinel_manifest_report
+    [ "$_SENTINEL_MANIFEST_OUT" = "ALL" ]
+}
+assert "C5 integrity: cargo failure on a MANIFEST path -> exactly ALL, never ALL unioned with the DAG-gate crate" \
+    _check_manifest_cargo_failure_is_exactly_ALL
+
+_SENTINEL_C4_OUT=""
+_sentinel_c4_report() {
+    echo "global alongside a manifest path: affected_crates -> [$_SENTINEL_C4_OUT]"
+}
+
+_check_manifest_plus_global_is_exactly_ALL() {
+    _SENTINEL_C4_OUT="$(affected_crates crates/reify-expr/Cargo.toml Cargo.lock)"
+    _sentinel_c4_report
+    [ "$_SENTINEL_C4_OUT" = "ALL" ]
+}
+assert "C4 precedence: a global path alongside a MANIFEST path -> exactly ALL (global short-circuits ahead of the manifest rule)" \
+    _check_manifest_plus_global_is_exactly_ALL
 
 # ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277; extended by task 6292): argv

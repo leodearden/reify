@@ -5,8 +5,11 @@
 #![allow(clippy::mutable_key_type)]
 
 mod analysis;
+mod branch_signature;
 mod calculus;
 mod complex;
+mod dual;
+mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
@@ -14,6 +17,23 @@ mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// modules are PRIVATE and these flat re-exports are the only path to them, so
+// `reify_expr::Tangent` is not merely the preferred spelling over
+// `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
+// #6675, μ #6680, λ #6679) cannot drift into using both for the same type.
+// Same reasoning, and the same shape, as `reify_constraints`' private
+// `dual_jacobian`.
+pub use branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER,
+    RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
+};
+pub use dual::{DualValue, Tangent};
+pub use dual_eval::{
+    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
+    jacobian_row_with_env,
+};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +62,19 @@ const MAX_RECURSION_DEPTH: u32 = 256;
 pub trait ContainmentQuery {
     fn contains(&self, region: &Value, point: &Value) -> Option<bool>;
 }
+
+/// Kernel-free selector-constructor capability (task #7875).
+///
+/// Probed by the `FunctionCall` arm only after `reify_stdlib::eval_builtin` returned
+/// `Value::Undef`, with the call expression and the CURRENT scope's values:
+/// - `Some(v)` — the call is a selector ctor this hook builds; `v` replaces the Undef
+///   (`Some(Value::Undef)` is allowed and leaves the call Undef).
+/// - `None` — not a selector ctor the hook can build; the call stays Undef.
+///
+/// Diagnostics pushed into the `Vec` are forwarded to the runtime diagnostics sink.
+/// `reify-eval` attaches `try_eval_symbolic_topology_selector` in `eval_ctx_with_meta`.
+pub type SymbolicSelectorCtorFn =
+    fn(&CompiledExpr, &ValueMap, &mut Vec<Diagnostic>) -> Option<Value>;
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
@@ -105,6 +138,10 @@ pub struct EvalContext<'a> {
     /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
     /// call sites that invoke the constraint solver.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    /// Optional kernel-free selector-ctor capability (task #7875); see
+    /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
+    /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
+    pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -120,6 +157,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -135,6 +173,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -151,6 +190,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -216,6 +256,15 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach the kernel-free selector-ctor capability (task #7875).
+    ///
+    /// See [`SymbolicSelectorCtorFn`] for the contract. Inherited by every child scope
+    /// (user-fn bodies, lambdas, let-blocks, quantifier predicates).
+    pub fn with_symbolic_selector_ctor(mut self, f: SymbolicSelectorCtorFn) -> Self {
+        self.symbolic_selector_ctor = Some(f);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -231,6 +280,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: self.undef_causes,
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
+            symbolic_selector_ctor: self.symbolic_selector_ctor,
         }
     }
 }
@@ -590,9 +640,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // arm — inside `apply_lambda`, with captures already cloned
                     // into `ctx.values` — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
-                    // path. Builtins are matched in earlier arms, so they are
-                    // never shadowed; non-field names yield `Undef` from the
-                    // cell lookup and fall through to `eval_builtin` unchanged.
+                    // path. Builtins intercepted by the NAMED arms above (whole-
+                    // field `max`/`min`/`argmax`/`argmin`, `flat_map`,
+                    // `worst_case`, `generate`, `from_samples`, `restrict`,
+                    // `von_mises`, …) never reach this arm, so they are never
+                    // shadowed by a field cell. A stdlib builtin resolved by the
+                    // `eval_builtin` call below IS shadowable, because this
+                    // field-cell lookup runs first; non-field names yield
+                    // `Undef` from the cell lookup and fall through to
+                    // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
                     let candidate = ctx.values.get_or_undef(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
@@ -600,12 +656,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         return apply_lambda_with_point_unpacking(lambda, &evaluated_args[0], ctx);
                     }
-                    let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
+                    let result = resolve_symbolic_selector_on_undef(
+                        reify_stdlib::eval_builtin(&function.name, &evaluated_args),
+                        expr,
+                        ctx,
+                    );
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor / inverse-
-                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
-                    // classify and emit its specific diagnostic into the ctx sink.
-                    // The five name families are disjoint, so at most one diagnose
+                    // case (`linear_combine`) / AffineMap-constructor or
+                    // transform_exp / inverse-dynamics / iso_it_tolerance /
+                    // orient_exp builtin returns `Value::Undef`, classify and emit
+                    // its specific diagnostic into the ctx sink.
+                    // The six name families are disjoint, so at most one diagnose
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
@@ -1564,6 +1625,29 @@ fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalConte
     ctx.compute_dispatch?.dispatch(target, args)
 }
 
+/// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
+/// call the builtins left `Undef`. Any non-Undef `result`, or a context without the
+/// capability, passes through unchanged. See [`SymbolicSelectorCtorFn`] for the
+/// contract. The hook's diagnostics are forwarded to the runtime sink.
+///
+/// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn resolve_symbolic_selector_on_undef(
+    result: Value,
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+) -> Value {
+    let Some(mint) = ctx.symbolic_selector_ctor.filter(|_| result.is_undef()) else {
+        return result;
+    };
+    let mut diags = Vec::new();
+    let minted = mint(expr, ctx.values, &mut diags);
+    if let Some(sink) = ctx.diagnostics {
+        sink.borrow_mut().extend(diags);
+    }
+    minted.unwrap_or(result)
+}
+
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
@@ -1833,6 +1917,7 @@ fn eval_pred_for_value_elem<'a>(
                 undef_causes: ctx.undef_causes,
                 containment: ctx.containment,
                 compute_dispatch: ctx.compute_dispatch,
+                symbolic_selector_ctor: ctx.symbolic_selector_ctor,
             },
         )
     } else {
@@ -1879,9 +1964,10 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
-/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
-/// `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
+/// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
+/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
+/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1892,11 +1978,12 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The five name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
-/// disjoint, so at most one of the five classifiers returns `Some` for any
-/// single `Undef`; each returns `None` for every other name or for valid input,
-/// making this a cheap no-op for ordinary builtins.
+/// The six name families (stackup math builtins / `"linear_combine"` / the
+/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
+/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// for every other name or for valid input, making this a cheap no-op for
+/// ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -1913,8 +2000,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
-    // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
-    // dimensioned scale factor (the linear part of an affine map is dimensionless).
+    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
+    // severity split by fault class, disjoint from the sibling hooks here.
+    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
@@ -1927,6 +2015,14 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     // Severity::Error instead of a silent Undef. Post-Undef-only, same
     // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
     if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+    // spelling, so this Severity::Error is the migration mechanism for that
+    // breaking change rather than a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as the five above.
+    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -2673,7 +2769,7 @@ fn eval_from_samples(
     // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
     // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
     // and handles Value::Scalar { si_value, .. } consistently with how
-    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs).
     let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
@@ -3024,20 +3120,6 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
-/// Apply a lambda to a point or vector, handling multi-param unpacking.
-///
-/// Accept both `Value::Point` and `Value::Vector` — they share structural
-/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
-/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
-/// and `compute_numerical_curl_at_point`.
-///
-/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
-/// with matching length, unpacks the components into individual scalar arguments
-/// so the arity check in `apply_lambda` passes.  A single-param lambda
-/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
-/// unpacking), preserving the single-param binding contract.
-///
-/// See also: `calculus.rs::extract_point_coords`.
 /// Sample `field` at `at`, dispatching over the stored lambda form.
 ///
 /// This is the shared core of the `"sample"` builtin arm extracted from the
@@ -3049,8 +3131,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// | any + `Value::Lambda`                      | apply lambda directly (point unpacking if needed)   |
 /// | `Sampled`/`Imported` + `Value::SampledField` | grid interpolation via `sampled::sample_at_point`  |
 /// | `Gradient`/`Divergence`/`Curl`/`Laplacian` + inner `Value::Field` | numerical calculus helpers |
-/// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
-/// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
+/// | `VonMises`/`PrincipalStresses`/`MaxShear`/`SafetyFactor` (any lambda) | `analysis::sample_*_at_point` — callable or Sampled tensor backing |
 /// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
 /// | `Restricted` + `Value::List[inner, region]`| `ContainmentQuery` hook → inner value or `Value::Undef` |
 fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
@@ -3134,36 +3215,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                 codomain_type,
                 ctx,
             ),
-            // Analysis field wrappers: sample the inner field, then apply the
-            // analysis builtin pointwise.
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::VonMises,
-            ) => analysis::sample_von_mises_at_point(inner_lambda, at, codomain_type, ctx),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::PrincipalStresses,
-            ) => analysis::sample_principal_stresses_at_point(
-                inner_lambda,
-                at,
-                codomain_type,
-                ctx,
-            ),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::MaxShear,
-            ) => analysis::sample_max_shear_at_point(inner_lambda, at, codomain_type, ctx),
-            // SafetyFactor: lambda slot is List[field, yield_val],
-            // not a nested Field — match on the source kind directly.
+            // Analysis field wrappers: forward the WHOLE lambda slot — the
+            // original tensor field, or List[field, yield_val] for SafetyFactor
+            // — keyed on the source kind alone. `analysis` classifies the tensor
+            // field's backing (callable or Sampled grid) and samples it
+            // pointwise, so the Sampled backing's SampledField is not lost here.
+            (_, FieldSourceKind::VonMises) => {
+                analysis::sample_von_mises_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::PrincipalStresses) => {
+                analysis::sample_principal_stresses_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::MaxShear) => {
+                analysis::sample_max_shear_at_point(lambda, at, codomain_type, ctx)
+            }
             (_, FieldSourceKind::SafetyFactor) => {
                 analysis::sample_safety_factor_at_point(lambda, at, codomain_type, ctx)
             }
@@ -3220,6 +3285,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
     }
 }
 
+/// Apply a lambda to a point or vector, handling multi-param unpacking.
+///
+/// Accept both `Value::Point` and `Value::Vector` — they share structural
+/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
+/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// and `compute_numerical_curl_at_point`.
+///
+/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
+/// with matching length, unpacks the components into individual scalar arguments
+/// so the arity check in `apply_lambda` passes.  A single-param lambda
+/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
+/// unpacking), preserving the single-param binding contract.
+///
+/// See also: `calculus.rs::extract_point_coords`.
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,
@@ -4043,7 +4122,7 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
 /// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
 /// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+pub(crate) fn negate_value(v: Value) -> Value {
     match v {
         Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
             neg_scalar(v)
@@ -4143,7 +4222,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
     }
 }
 
-fn eval_add(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
@@ -4247,7 +4326,7 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_sub(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
@@ -4429,7 +4508,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
     }
 }
 
-fn eval_mul(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
@@ -4706,7 +4785,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_div(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
         && (denom == 0.0 || denom.is_nan())
@@ -4857,7 +4936,7 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_mod(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => {
             if *b == 0 {
@@ -4877,7 +4956,7 @@ fn eval_mod(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_pow(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // Compute the raw result, then sanitize NaN/Inf → Undef.
     //
     // Rationale: the value-level `^` operator must satisfy the same
@@ -4928,7 +5007,7 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-fn eval_eq(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -4996,14 +5075,14 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_ne(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     match eval_eq(lv, rv) {
         Value::Bool(b) => Value::Bool(!b),
         other => other,
     }
 }
 
-fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     match (lv, rv) {
         // Scalar-vs-Scalar: compare dimensions first
         (
@@ -9899,6 +9978,188 @@ mod tests {
             "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
             result,
         );
+    }
+
+    // ── SymbolicSelectorCtorFn hook tests (step-1 RED / step-2 GREEN, task #7875) ─
+
+    /// Stand-in for reify-eval's `try_eval_symbolic_topology_selector`: builds only
+    /// calls named `stub_sel`. A `ValueRef` first arg is echoed from the `values`
+    /// the hook was handed, so a test can tell WHICH scope the hook saw.
+    fn stub_mint(
+        expr: &CompiledExpr,
+        values: &ValueMap,
+        _diags: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+            return None;
+        };
+        if function.name != "stub_sel" {
+            return None;
+        }
+        match args.first().map(|a| &a.kind) {
+            Some(CompiledExprKind::ValueRef(id)) => values.get(id).cloned(),
+            _ => Some(Value::Int(7)),
+        }
+    }
+
+    fn stub_sel_call(arg: CompiledExpr, tag: &[u8]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: ContentHash::of(tag),
+            result_type: Type::Int,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "stub_sel".to_string(),
+                    qualified_name: "std::stub_sel".to_string(),
+                },
+                args: vec![arg],
+            },
+        }
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_resolves_undef_call_nested_in_list() {
+        let list = CompiledExpr::list_literal(
+            vec![stub_sel_call(
+                lit(Value::Int(1), Type::Int),
+                b"stub_sel_in_list",
+            )],
+            Type::List(Box::new(Type::Int)),
+        );
+        let values = ValueMap::new();
+
+        let hooked = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        assert_eq!(eval_expr(&list, &hooked), Value::List(vec![Value::Int(7)]));
+
+        let unhooked = EvalContext::simple(&values);
+        assert_eq!(
+            eval_expr(&list, &unhooked),
+            Value::List(vec![Value::Undef]),
+            "without a hook the unknown call keeps its legacy Undef",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_user_fn_body_scope() {
+        let params = vec![("x".to_string(), Type::Int)];
+        let f = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Int,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: stub_sel_call(vref("f", "x", Type::Int), b"stub_sel_of_param"),
+            },
+            content_hash: ContentHash::of(b"f_stub_sel_body"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let call = CompiledExpr {
+            content_hash: ContentHash::of(b"call_f_stub_sel"),
+            result_type: Type::Int,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "f".to_string(),
+                args: vec![lit(Value::Int(5), Type::Int)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [f];
+        let ctx = EvalContext::new(&values, &functions).with_symbolic_selector_ctor(stub_mint);
+
+        assert_eq!(
+            eval_expr(&call, &ctx),
+            Value::Int(5),
+            "the hook must be inherited by the fn-body scope and see the param binding",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_not_consulted_when_builtin_resolves() {
+        fn mint_anything(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            _diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            Some(Value::Int(99))
+        }
+        let abs_call = CompiledExpr {
+            content_hash: ContentHash::of(b"abs_with_hook"),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![lit(Value::Real(-3.0), Type::dimensionless_scalar())],
+            },
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values).with_symbolic_selector_ctor(mint_anything);
+
+        assert_eq!(eval_expr(&abs_call, &ctx), Value::Real(3.0));
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_diagnostics_reach_runtime_sink() {
+        fn mint_nothing_but_warn(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            diags.push(Diagnostic::warning("stub-mint"));
+            None
+        }
+        let call = stub_sel_call(lit(Value::Int(1), Type::Int), b"stub_sel_warns");
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values)
+            .with_runtime_diagnostics(&sink)
+            .with_symbolic_selector_ctor(mint_nothing_but_warn);
+
+        assert_eq!(eval_expr(&call, &ctx), Value::Undef);
+        let drained = sink.into_inner();
+        assert_eq!(
+            drained.len(),
+            1,
+            "exactly the hook's warning; got {:?}",
+            drained
+        );
+        assert_eq!(drained[0].message, "stub-mint");
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_quantifier_predicate_scope() {
+        let loop_var = ValueCellId::new("__quant_stub_sel", "m");
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var.clone(),
+            CompiledExpr::list_literal(
+                vec![lit(Value::Bool(true), Type::Bool); 2],
+                Type::List(Box::new(Type::Bool)),
+            ),
+            stub_sel_call(
+                CompiledExpr::value_ref(loop_var, Type::Bool),
+                b"stub_sel_of_loop_var",
+            ),
+        );
+        let values = ValueMap::new();
+        let det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+
+        let plain = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        let with_determinacy = EvalContext::simple(&values)
+            .with_determinacy(&det_map)
+            .with_symbolic_selector_ctor(stub_mint);
+        for (label, ctx) in [("plain", plain), ("with determinacy", with_determinacy)] {
+            assert_eq!(
+                eval_expr(&quant, &ctx),
+                Value::Bool(true),
+                "{label}: the predicate scope must inherit the hook and bind the loop var",
+            );
+        }
     }
 
     /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`

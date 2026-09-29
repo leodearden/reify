@@ -1,0 +1,13 @@
+// orient_rotvec_round_trip.ri — CLI fixture for the #6080 coupled-change guard.
+//
+// `orient_exp` is the inverse of `orient_log`, so `orient_exp(orient_log(q))`
+// must recover `q`. That identity holds only if BOTH ends agree on the
+// rotation vector's dimension: once orient_log emits ANGLE, orient_exp's gate
+// has to accept ANGLE. Evaluating this fixture is what proves they moved
+// together rather than one at a time.
+
+module orient_rotvec_round_trip
+
+structure def RotVecRoundTrip {
+    let rt = orient_exp(orient_log(orient_axis_angle(vec3(0,0,1), 90deg)))
+}

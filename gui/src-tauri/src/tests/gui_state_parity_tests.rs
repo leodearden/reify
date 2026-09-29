@@ -177,7 +177,7 @@ fn fully_populated_gui_state() -> GuiState {
     GuiState {
         meshes: vec![sample_mesh("Bracket.body", vec![1.0, 2.0, 3.0])],
         values: vec![sample_value("Bracket.width", "120")],
-        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        constraints: vec![sample_constraint("Bracket.0", "satisfied")],
         files: vec![FileData {
             path: "main.ri".to_string(),
             content: "structure Bracket {}".to_string(),
@@ -417,20 +417,20 @@ fn changed_values_follow_new_states_vector_order_when_multiple_change() {
 fn changed_constraints_follow_new_states_vector_order_when_multiple_change() {
     let old = GuiState {
         constraints: vec![
-            sample_constraint("Bracket.0", "Satisfied"),
-            sample_constraint("Bracket.1", "Satisfied"),
-            sample_constraint("Bracket.2", "Satisfied"),
+            sample_constraint("Bracket.0", "satisfied"),
+            sample_constraint("Bracket.1", "satisfied"),
+            sample_constraint("Bracket.2", "satisfied"),
         ],
         ..empty_gui_state()
     };
     let new = GuiState {
         constraints: vec![
             // Reordered relative to `old` (1 before 0) *and* both changed.
-            sample_constraint("Bracket.1", "Violated"),
-            sample_constraint("Bracket.0", "Violated"),
+            sample_constraint("Bracket.1", "violated"),
+            sample_constraint("Bracket.0", "violated"),
             // Unchanged: must be excluded from the delta even though it
             // shares the collection with the reordered, changed items.
-            sample_constraint("Bracket.2", "Satisfied"),
+            sample_constraint("Bracket.2", "satisfied"),
         ],
         ..empty_gui_state()
     };

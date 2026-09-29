@@ -61,10 +61,9 @@ pub enum NodeCommitmentOverride {
 
 /// Per-node commitment policy overrides, settable per instance and per type.
 ///
-/// Implements the precedence chain from architecture §7.3:
-///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
-///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
-///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
+/// Stores the level-1 (instance) and level-2 (type) slots of the precedence
+/// chain; [`resolve_with_traits`](Self::resolve_with_traits) is the sole
+/// resolution entry point and documents the chain in full.
 #[derive(Clone, Debug, Default)]
 pub struct NodePolicyOverrides {
     instance_overrides: HashMap<NodeId, NodeCommitmentOverride>,
@@ -91,27 +90,6 @@ impl NodePolicyOverrides {
         self.type_overrides.insert(kind, override_);
     }
 
-    /// Resolve the effective [`NodeCommitmentOverride`] for `node_id`.
-    ///
-    /// Precedence (highest → lowest):
-    /// 1. Instance override (if set for this exact node)
-    /// 2. Type override (if set for the node's [`NodeKind`])
-    /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
-    ///
-    /// Has no production consumer today: the concurrent scheduler was
-    /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
-    /// remaining caller is a test.
-    // G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see doc above
-    pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
-        if let Some(o) = self.instance_overrides.get(node_id) {
-            return *o;
-        }
-        if let Some(o) = self.type_overrides.get(&NodeKind::from(node_id)) {
-            return *o;
-        }
-        NodeCommitmentOverride::default()
-    }
-
     /// Resolve the effective [`NodeCommitmentOverride`] for `node_id` using the
     /// full kind+traits-aware five-level precedence chain (PRD §6).
     ///
@@ -122,9 +100,12 @@ impl NodePolicyOverrides {
     ///    (reserved slot; owned by GR-007 task 3578, depends_on this task)
     /// 4. **Kind+traits default** — [`default_overrides(kind, traits)`](default_overrides)
     ///    (absent [`NodeTraits::COMMITTABLE`] → `AlwaysCancelWhenStale`; present → `CommitIfSlow`)
-    /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
+    /// 5. **Hard default** — PRD §6's floor, `NodeCommitmentOverride::CommitIfSlow`
     ///
-    /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
+    /// Neither level 3 nor level 5 has a branch here: level 3 is reserved for
+    /// task 3578, and level 4 always returns, so nothing reaches the level-5
+    /// floor — this resolver never calls `NodeCommitmentOverride::default()`.
+    ///
     /// Its only production consumer is `render_inspection` in the `reify` CLI
     /// binary (the `reify dev inspect-node` subcommand, δ step); unit tests in
     /// this module also exercise it directly.
@@ -199,7 +180,8 @@ impl NodePolicyOverrides {
     ///
     /// These config selectors fill the "Level 3" slot in the five-level
     /// precedence chain (`docs/prds/v0_3/node-traits-unification.md` §6):
-    /// they populate the same instance/type maps that `resolve()` already reads.
+    /// they populate the same instance/type maps that
+    /// [`resolve_with_traits`](Self::resolve_with_traits) already reads.
     pub fn from_config_overrides(
         entries: &[reify_config::NodePolicyOverride],
     ) -> Result<Self, NodeOverrideConfigError> {
@@ -787,81 +769,24 @@ mod tests {
         NodeId::Compute(reify_core::ComputeNodeId::new(entity, idx))
     }
 
+    /// The traits a node carries absent a `NodeTraitMap` entry — i.e. what
+    /// level 4 actually sees for it. Tests whose claim is about the level-4
+    /// default derive traits this way rather than hardcoding a set, so they
+    /// cannot pin a kind/traits pair that never occurs (e.g. a `Value` node
+    /// bearing `COMMITTABLE`, whose real default traits are `IMMEDIATE`).
+    fn kind_default_traits(node: &NodeId) -> NodeTraits {
+        NodeKind::from(node).default_traits()
+    }
+
     // --- NodePolicyOverrides tests ---
 
-    #[test]
-    fn node_policy_overrides_default_resolves_to_commit_if_slow() {
-        let overrides_new = NodePolicyOverrides::new();
-        let overrides_default = NodePolicyOverrides::default();
-        let node = make_node("x");
-
-        // Both constructors resolve to the default CommitIfSlow
-        assert_eq!(
-            overrides_new.resolve(&node),
-            NodeCommitmentOverride::CommitIfSlow
-        );
-        assert_eq!(
-            overrides_default.resolve(&node),
-            NodeCommitmentOverride::CommitIfSlow
-        );
-        // It should also equal NodeCommitmentOverride::default()
-        assert_eq!(
-            overrides_new.resolve(&node),
-            NodeCommitmentOverride::default()
-        );
-    }
-
-    #[test]
-    fn precedence_instance_wins_over_type_wins_over_default() {
-        let mut overrides = NodePolicyOverrides::new();
-        let n = make_node("n");
-        let m = make_node("m"); // same kind (Value), different node
-
-        // (a) Set a type override for Value kind and an instance override for n
-        overrides.set_type(
-            NodeKind::Value,
-            NodeCommitmentOverride::OnlyRunOnFinalInputs,
-        );
-        overrides.set_instance(n.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
-
-        // instance override wins over type override for n
-        assert_eq!(
-            overrides.resolve(&n),
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-            "instance override must win over type override"
-        );
-        // m has no instance override → type override wins over default
-        assert_eq!(
-            overrides.resolve(&m),
-            NodeCommitmentOverride::OnlyRunOnFinalInputs,
-            "type override must win over default when no instance is set"
-        );
-
-        // (b) Constraint node with no type or instance override → default wins
-        let c = make_constraint_node("E", 0);
-        assert_eq!(
-            overrides.resolve(&c),
-            NodeCommitmentOverride::CommitIfSlow,
-            "default must win when no instance and no matching type override"
-        );
-
-        // (c) set_type last-write-wins: overwriting a type override takes effect
-        overrides.set_type(NodeKind::Value, NodeCommitmentOverride::CommitIfSlow);
-        assert_eq!(
-            overrides.resolve(&m),
-            NodeCommitmentOverride::CommitIfSlow,
-            "last-write wins: second set_type call must overwrite the first"
-        );
-
-        // (d) instance override is unaffected when set_type is updated for the same kind
-        // n still has instance=AlwaysCancelWhenStale; type for Value was just changed to CommitIfSlow
-        assert_eq!(
-            overrides.resolve(&n),
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-            "instance override must persist after a subsequent set_type call for the same kind"
-        );
-    }
-
+    /// A type override reaches every node of its kind and no node of another
+    /// kind; an unmatched kind falls through to its own level-4 default.
+    ///
+    /// Every override value here is `OnlyRunOnFinalInputs` or `CommitIfSlow`,
+    /// chosen to differ from each node's level-4 default
+    /// (`AlwaysCancelWhenStale` for both `IMMEDIATE` Value nodes and
+    /// trait-less Constraint nodes), so no assertion can pass vacuously.
     #[test]
     fn set_type_override_resolves_to_type_value_and_isolates_other_kinds() {
         let mut overrides = NodePolicyOverrides::new();
@@ -875,58 +800,78 @@ mod tests {
 
         // Value node should pick up the type override
         assert_eq!(
-            overrides.resolve(&value_node),
+            overrides.resolve_with_traits(&value_node, kind_default_traits(&value_node)),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
         );
-        // Constraint node should still be the default (kind isolation)
+        // Constraint node should still be its level-4 default (kind isolation)
         assert_eq!(
-            overrides.resolve(&constraint_node),
-            NodeCommitmentOverride::CommitIfSlow
+            overrides.resolve_with_traits(&constraint_node, kind_default_traits(&constraint_node)),
+            NodeCommitmentOverride::AlwaysCancelWhenStale
         );
 
         // Set a different override for Constraint kind
-        overrides.set_type(
-            NodeKind::Constraint,
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-        );
+        overrides.set_type(NodeKind::Constraint, NodeCommitmentOverride::CommitIfSlow);
         assert_eq!(
-            overrides.resolve(&constraint_node),
-            NodeCommitmentOverride::AlwaysCancelWhenStale
+            overrides.resolve_with_traits(&constraint_node, kind_default_traits(&constraint_node)),
+            NodeCommitmentOverride::CommitIfSlow
         );
         // Value node should still have its own type override unchanged
         assert_eq!(
-            overrides.resolve(&value_node),
+            overrides.resolve_with_traits(&value_node, kind_default_traits(&value_node)),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
         );
     }
 
+    /// An instance override reaches exactly its own node; a same-kind sibling
+    /// falls through to the level-4 default.
     #[test]
     fn set_instance_override_resolves_to_instance_value_and_isolates_other_nodes() {
         let mut overrides = NodePolicyOverrides::new();
         let node_a = make_node("a");
         let node_b = make_node("b");
 
-        overrides.set_instance(
-            node_a.clone(),
-            NodeCommitmentOverride::AlwaysCancelWhenStale,
-        );
+        overrides.set_instance(node_a.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
         // node_a should return the set value
         assert_eq!(
-            overrides.resolve(&node_a),
+            overrides.resolve_with_traits(&node_a, kind_default_traits(&node_a)),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs
+        );
+        // node_b (unset) should still return its level-4 default
+        assert_eq!(
+            overrides.resolve_with_traits(&node_b, kind_default_traits(&node_b)),
             NodeCommitmentOverride::AlwaysCancelWhenStale
         );
-        // node_b (unset) should still return the default
+    }
+
+    /// Both maps overwrite rather than accumulate. Sole owner of this claim:
+    /// the precedence *ordering* belongs to
+    /// [`resolve_with_traits_respects_instance_then_type_precedence`], and the
+    /// level-4 branches to
+    /// [`resolve_with_traits_consults_default_overrides_at_level_4`].
+    #[test]
+    fn set_instance_and_set_type_are_last_write_wins() {
+        let mut overrides = NodePolicyOverrides::new();
+
+        let n = make_node("n");
+        overrides.set_instance(n.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        overrides.set_instance(n.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
         assert_eq!(
-            overrides.resolve(&node_b),
-            NodeCommitmentOverride::CommitIfSlow
+            overrides.resolve_with_traits(&n, kind_default_traits(&n)),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "last write wins: second set_instance must overwrite the first"
         );
 
-        // Re-setting node_a: last-write semantics
-        overrides.set_instance(node_a.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        let c = make_constraint_node("E", 0);
+        overrides.set_type(
+            NodeKind::Constraint,
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+        );
+        overrides.set_type(NodeKind::Constraint, NodeCommitmentOverride::CommitIfSlow);
         assert_eq!(
-            overrides.resolve(&node_a),
-            NodeCommitmentOverride::OnlyRunOnFinalInputs
+            overrides.resolve_with_traits(&c, kind_default_traits(&c)),
+            NodeCommitmentOverride::CommitIfSlow,
+            "last write wins: second set_type must overwrite the first"
         );
     }
 

@@ -93,10 +93,11 @@ fn eval_container_example_b2() {
 /// eval-output substring "0.03 m".
 ///
 /// The PRESSURE result (`scale_q(5MPa, 2.0)`) is asserted directly as the
-/// SI-base substring "press = 10000000".  Pressure scalars display in SI-base
-/// form — "10000000 kg·m^-1·s^-2" (1e7 Pa) rather than "Pa" or "MPa" — so the
-/// assertion uses the stable SI-base magnitude.  This makes the second-dimension
-/// value gate direct rather than purely constraint-mediated.
+/// SI-base substring "press = 10000000".  Pressure scalars render their
+/// magnitude in SI base units and their unit as the curated "Pa" (task #6674)
+/// — "10000000 Pa", never rescaled to "10 MPa" — so the assertion uses the
+/// stable SI-base magnitude.  This makes the second-dimension value gate
+/// direct rather than purely constraint-mediated.
 ///
 /// RED until step-10 creates examples/generics/dim_param.ri.
 #[test]
@@ -127,7 +128,7 @@ fn eval_dim_param_example_b9() {
         "stdout should contain '0.03 m' (scale_q(10mm, 3.0)); got: {stdout}\nstderr: {stderr}"
     );
     // PRESSURE result: scale_q(5MPa, 2.0) = 1e7 Pa = 10000000 (SI-base).
-    // Pressure renders as "10000000 kg·m^-1·s^-2" — assert the SI-base magnitude
+    // Pressure renders as "10000000 Pa" — assert the SI-base magnitude
     // directly so a mis-bound Q (wrong dimension) or wrong value is caught without
     // relying solely on the constraint window.
     assert!(

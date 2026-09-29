@@ -1005,16 +1005,30 @@ fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
 ///
 /// # What this test does NOT claim — the eval-layer convergence boundary
 ///
-/// It does NOT assert the merged auto lands ON the cost argmin. A LINEAR Money
-/// objective's argmin sits exactly on a constraint boundary, where the penalty
-/// method's stationary point is offset INSIDE the penalty by
-/// `objective_gradient / (2 * PENALTY_WEIGHT)` ≈ 2.5e-7 — vastly larger than
-/// `FEASIBILITY_THRESHOLD` (1e-12) — so the converged point reads as infeasible
-/// and `solve_core` returns its `initially_feasible` fallback: the seed
-/// `extract_initial_point` supplies. That is the SAME documented eval-layer
-/// behaviour `examples/continuous_cost_min.ri`'s header records ("returns the
-/// initially-feasible SEED ... rather than a unique convergent point", PRD §9 Q2
-/// "no fix required"), and it is exactly why the house norm puts precise-argmin
+/// It does NOT assert the merged auto lands ON the cost argmin. With a Money
+/// objective and a live inequality, the converged point reads as infeasible
+/// against the raw `>= 0.0` bracket, and it is the `effective_constraints`
+/// clamp — not a seed fallback — that snaps the published figure onto the
+/// robustness-floored bound instead: `solve_core`'s `initially_feasible`
+/// early-return is gated on `effective_objective.is_none()`, which cannot
+/// fire once a user `minimize` is present, and today's seed for this model is
+/// the constraint-derived midpoint `50.0`, task #5618's arm — nowhere near
+/// the observed `1e-9`. Mechanism and constants: the robustness-floor block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`) and the
+/// `effective_constraints` clamp (`derive_param_intervals` / `resolve_bounds`)
+/// in `crates/reify-constraints/src/solver.rs`.
+///
+/// Nor is there a live seed return anywhere else to appeal to. The one
+/// account of one — `examples/continuous_cost_min.ri`'s "Why auto(free), not
+/// strict auto" section — records it in the PAST tense, as the PRE-#5618
+/// eval-layer behaviour: `solve_core` used to return its initially-feasible
+/// seed rather than a unique convergent point, and since task #5618 that
+/// example converges to `2.040mm`, its own floored bound. The only documented
+/// seed return has therefore been retired at the source, and it never
+/// described this model in the first place.
+///
+/// BT-5b, below in this file, is the test that pins this model's floored
+/// value executably, and it is exactly why the house norm puts precise-argmin
 /// assertions at the `reify-constraints` layer with explicitly bounded autos and
 /// keeps `.ri`-layer tests on ordering / off-boundary claims.
 ///
@@ -1249,6 +1263,199 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
              all and the PRESENCE/UNRESOLVED assertions above are vacuous",
         );
     }
+}
+
+/// Derive the BRACKET-SHIFTED variant from the shipped source by raising the
+/// child's LOWER BRACKET from `0.0` to `1.0` — moves the floored bound from
+/// the ABSOLUTE-floor regime into the RELATIVE-margin regime (see
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]).
+///
+/// DERIVED, never transcribed — same rationale as [`strip_inlined_minimize`]
+/// above: a standalone copy of the model body would silently stop
+/// characterising the shipped example the moment its `unit_cost`, upper
+/// bracket, or structure changed, while this anti-rot test kept passing.
+/// Deriving from `src` also means the shipped
+/// `examples/whole_model_joint_drive.ri` itself is never edited: that would
+/// perturb BT-5's hand-derived arithmetic and re-trigger the three example
+/// auto-enrolling gates (`examples_smoke`, the determinism walk, the
+/// no-bare-`Scalar` corpus check) for no benefit, since the variant exists
+/// only to exercise the second margin regime.
+///
+/// Only the constraint line is touched — matched with the `constraint `
+/// keyword prefix so the substring is unambiguous (the bare
+/// `quantity_produced >= 0.0` also appears inside a header comment). The
+/// exactly-one assertion below is the guard on that claim, mirroring
+/// [`strip_inlined_minimize`]'s shape.
+fn shift_lower_bracket(src: &str) -> String {
+    const FROM: &str = "constraint quantity_produced >= 0.0";
+    const TO: &str = "constraint quantity_produced >= 1.0";
+    assert_eq!(
+        src.matches(FROM).count(),
+        1,
+        "exactly ONE `{FROM}` constraint must be present to derive the \
+         bracket-shifted variant — if the shipped example's lower bracket \
+         changed shape or count, this substitution is no longer well-defined \
+         and the variant would silently stop tracking the model it claims to \
+         be a variant of",
+    );
+    src.replacen(FROM, TO, 1)
+}
+
+/// The floored lower bound for a `param >= bracket` constraint under the
+/// robustness floor — the closed form derived in the docstring on
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]:
+/// `bracket + max(REL_MARGIN × |bracket|, ABS_FLOOR_SI)`. Both constants are
+/// restated here BY VALUE, not imported: `solver.rs`'s `REL_MARGIN` /
+/// `ABS_FLOOR_SI` are private to that crate.
+///
+/// Used by BOTH arms of that test, so "the same rule at two brackets" is
+/// proven by construction — each arm asserts its OBSERVED value against this
+/// ONE function, rather than each carrying its own independently-typed-in
+/// expected constant.
+fn floored_lo(bracket: f64) -> f64 {
+    const REL_MARGIN: f64 = 0.02;
+    const ABS_FLOOR_SI: f64 = 1e-9;
+    bracket + (REL_MARGIN * bracket.abs()).max(ABS_FLOOR_SI)
+}
+
+/// BT-5b — the merged auto lands ON the ROBUSTNESS-FLOORED lower bound, not on
+/// the raw constraint boundary and not on a fixed seed.
+///
+/// # RED/GREEN — this test is EXPECTED TO PASS ON ARRIVAL
+///
+/// Nothing is broken here; only `examples/whole_model_joint_drive.ri`'s header
+/// prose had gone stale (task #5939). This is a characterization / anti-rot
+/// pin, not a RED-first driver — its value is prospective: it fails the moment
+/// the merged figure drifts again, which is the exact recurrence #5939 exists
+/// to prevent. The figures previously rotted silently because BT-5 above is
+/// deliberately COMPARATIVE (strict inequality) and cannot catch a drift
+/// between two sub-frozen values: both the stale `0.01` and the actual `1e-9`
+/// sit far below the frozen cascade's `50.0`, so BT-5 stayed green throughout
+/// the drift.
+///
+/// # The rule, not a magic number
+///
+/// Rule and constants: the "Robustness floor (task #4789 α)" block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`, `REL_MARGIN`,
+/// `ABS_FLOOR_SI`) in `crates/reify-constraints/src/solver.rs`; the per-side
+/// regime split (absolute floor vs. relative margin) is derived in this
+/// file's [`floored_lo`], whose doc comment carries the closed form. This
+/// docstring states the claim, not a second derivation — see the `.ri`
+/// header's "Why the merged figure is the ROBUSTNESS FLOOR, not zero"
+/// section for the full worked arithmetic, including the upper-bracket
+/// `98.0` figure this test does not exercise.
+///
+/// `line_cost = 0.50USD × quantity_produced` is strictly increasing, so the
+/// argmin sits exactly on the floored LOWER bound in both regimes below —
+/// this test pins that RELATIONSHIP across two brackets rather than a single
+/// converged value, which is what makes it durable and is the executable
+/// counterpart of the header prose:
+///
+/// (a) Shipped model (bracket `0.0`) — ABSOLUTE-floor regime,
+///     [`floored_lo`]`(0.0)`.
+/// (b) Bracket-shifted variant (bracket `1.0`, derived by
+///     [`shift_lower_bracket`]) — RELATIVE-margin regime, [`floored_lo`]`(1.0)`.
+///     Also the direct executable REFUTATION of the header's former
+///     (falsified) claim that this bracket makes the solve report
+///     `RobustnessFloorInfeasible` — [`eval_ri_with_real_solver`] already
+///     asserts zero `Severity::Error`, so that regression would fail here
+///     automatically. Cross-checked against solver.rs's own unit test
+///     `derive_intervals_floor_slack_shapes`, which covers this exact
+///     bracket pair.
+///
+/// Both arms assert their OBSERVED value against [`floored_lo`] evaluated at
+/// their OWN bracket, rather than each typing in its own expected constant —
+/// so "the same rule at two brackets" is proven by construction and needs no
+/// separate comparative assertion tying them together.
+///
+/// # Not a house-norm violation
+///
+/// The sibling BT-5 docstring's house norm forbids a precise CONVERGED value
+/// or a TUNED tolerance at the `.ri` layer (those belong at the
+/// `reify-constraints` layer with explicitly bounded autos). These assertions
+/// are different in kind: both are closed-form-margin tolerances, derived
+/// from `REL_MARGIN` / `ABS_FLOOR_SI` via the shared [`floored_lo`] helper
+/// and only THEN confirmed against observation — never tuned to match an
+/// unknown output. BT-5's own comparative assertions above are left
+/// untouched.
+#[test]
+fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
+    // ---- (a) shipped model — ABSOLUTE-floor regime (bracket 0.0). ----
+
+    // Reuses `joint_drive_halves`'s memoized solve of the shipped merged
+    // model instead of compiling and solving it a second time — its
+    // `OnceLock` guarantees this is the SAME `EvalResult` BT-5 asserts
+    // against, not a second one that could in principle diverge from it.
+    let merged = &joint_drive_halves().0;
+    let merged_q = scalar_si(
+        merged,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "merged (shipped, bracket 0.0)",
+    );
+
+    // Pinned against `floored_lo(0.0)` itself — not merely `> 0.0` — so a
+    // regression that lands the auto at ~0+eps (the floor mechanism not
+    // firing at all, e.g. `synthesise_floor_constraints` skipped or the
+    // clamp reverting to the raw `0.0` bracket) FAILS here. A merely-positive
+    // lower guard could not distinguish that from the intended `1e-9`, which
+    // is exactly the gap BT-5's own comparative assertions already missed
+    // once for the stale `0.01` (task #5939 amendment: reviewer finding).
+    // Tolerance 1e-12 has ample margin: the observed diff from `1e-9` is at
+    // f64-noise level (~1e-17), the same clamp-snaps-exactly mechanism
+    // [`floored_lo`]'s doc comment cites for arm (b).
+    let expected_merged = floored_lo(0.0);
+    assert!(
+        (merged_q - expected_merged).abs() <= 1e-12,
+        "BT-5b(a): the shipped model's merged auto must land at the \
+         ABSOLUTE-floor lower bound floored_lo(0.0) = {expected_merged} — `m \
+         = max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates to \
+         `ABS_FLOOR_SI` at a zero bracket. Got merged_q={merged_q} (diff \
+         {}).",
+        (merged_q - expected_merged).abs(),
+    );
+
+    // ---- (b) bracket-shifted variant — RELATIVE-margin regime (bracket 1.0). ----
+
+    // Only the shipped SOURCE is read here, to feed `shift_lower_bracket`'s
+    // substitution — arm (a) above already got its `EvalResult` from
+    // `joint_drive_halves`'s memoized solve, so this is a read, not a second
+    // compile+solve of the same model.
+    //
+    // `eval_ri_with_real_solver` already asserts zero `Severity::Error`, so a
+    // `RobustnessFloorInfeasible` regression on this bracket fails right here.
+    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
+    let shifted_src = shift_lower_bracket(&merged_src);
+    let shifted =
+        eval_ri_with_real_solver(&shifted_src, "bracket-shifted (`quantity_produced >= 1.0`)");
+    let shifted_q = scalar_si(
+        &shifted,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "bracket-shifted",
+    );
+
+    // Closed form: `m = max(0.02 × |1.0|, 1e-9) = 0.02`, floored lower bound
+    // `1.0 + 0.02 = 1.02`. Tolerance 1e-6 is looser than the solver's own
+    // 1e-12 unit-test tolerance for the same quantity (test
+    // `derive_intervals_floor_slack_shapes`) — derived from the closed form
+    // first, confirmed against observation second, never tuned to match an
+    // unknown output.
+    let expected_shifted = floored_lo(1.0);
+    assert!(
+        (shifted_q - expected_shifted).abs() <= 1e-6,
+        "BT-5b(b): the bracket-shifted variant's merged auto must land at the \
+         RELATIVE-margin floored lower bound floored_lo(1.0) = \
+         {expected_shifted} (1.0 + max(0.02×1.0, 1e-9)). Got \
+         shifted_q={shifted_q} (diff {}).",
+        (shifted_q - expected_shifted).abs(),
+    );
+
+    // (a) and (b) above both assert their OBSERVED value against the SAME
+    // `floored_lo` closed-form helper evaluated at their own bracket, so
+    // "the same rule at two brackets" is proven BY CONSTRUCTION — a separate
+    // `shifted_q > merged_q` comparison here would be entailed by (a)'s
+    // tolerance band and (b)'s tolerance band and would carry no independent
+    // signal (task #5939 amendment: reviewer finding).
 }
 
 /// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
@@ -1641,7 +1848,7 @@ fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
 /// Both assertions below are COMPARATIVE (strict inequality), never an
 /// absolute converged value or a tuned tolerance — the house norm for
 /// `.ri`-layer tests (see `bt5_...`'s doc comment for the full penalty-method
-/// / seed-fallback rationale this fixture inherits unchanged).
+/// / robustness-floor-clamp rationale this fixture inherits unchanged).
 ///
 /// # Achievability — DERIVED, not guessed
 ///
@@ -1666,7 +1873,8 @@ fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
 /// the DECLARING TEMPLATE (`ValueCellId::new(&structure.name, &param.name)`);
 /// the instance-path spelling (e.g. `CostAssembly.plate.quantity_produced`)
 /// is never written for a solver-resolved auto in EITHER half — the same gap
-/// `bt5_...` documents at :1014-1019.
+/// `bt5_...` documents in its own `// STRUCTURE-KEYED, not instance-path`
+/// body comment, at the top of that test.
 ///
 /// RED until `examples/whole_model_cost_min.ri` exists and both children's
 /// boxes/unit_costs are tuned to produce a live, non-degenerate gap.
@@ -1719,13 +1927,14 @@ fn mwhole_bt4_parent_objective_jointly_drives_both_child_autos_below_the_frozen_
 /// This SUM comparison, by itself, does not distinguish ONE merged cluster
 /// spanning both children from a hypothetical regression to TWO independent
 /// single-child clusters that each still carried a copy of the parent's
-/// objective: because the merged figures are the solver's `initially_feasible`
-/// SEED rather than a converged argmin (see `bt5_...`'s "eval-layer
-/// convergence boundary" note), either cluster shape would drive both autos to
-/// the same 0.01 seed and satisfy this assertion — and the sibling BT4(i) —
-/// identically. A mis-expanded or wrong-sense objective would likewise still
-/// suppress the synthesised centrality objective and still land both autos at
-/// 0.01.
+/// objective: both children's autos are bracketed `>= 0.0`, so either cluster
+/// shape drives both autos into the SAME robustness-floored lower bracket —
+/// the `effective_constraints` clamp `bt5_...`'s "eval-layer convergence
+/// boundary" note describes, not a converged argmin or a seed fallback — and
+/// satisfies this assertion, and the sibling BT4(i), identically. A
+/// mis-expanded or wrong-sense objective would likewise still suppress the
+/// synthesised centrality objective and still land both autos at that same
+/// floor.
 ///
 /// That structural claim — a parent plus TWO children sharing ONE spanning
 /// objective union into EXACTLY ONE cluster, never two — is proven at the
@@ -1765,6 +1974,84 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
          (saving {}).",
         frozen_total - merged_total,
     );
+}
+
+/// BT4b — BOTH merged autos land ON the ROBUSTNESS-FLOORED lower bound: the
+/// cost_min-fixture twin of
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`].
+///
+/// # RED/GREEN — this test is EXPECTED TO PASS ON ARRIVAL
+///
+/// Nothing is broken here; it is a characterization / anti-rot pin, not a
+/// RED-first driver, and its value is prospective. `whole_model_cost_min.ri`'s
+/// header republishes its MERGED figures as first-hand observations (task
+/// #5939), and refreshing figures while leaving them unpinned is precisely
+/// what let them rot the first time. BT4(i)/(ii) above cannot close that gap:
+/// both are purely COMPARATIVE against the frozen cascade, and both the stale
+/// `0.0275` total and the actual `2.75e-9` sit far below the frozen `70.00` —
+/// so neither can discriminate one sub-frozen value from another. That is the
+/// same blind spot BT-5b was added to close for the sibling fixture.
+///
+/// # Achievability — DERIVED, not guessed
+///
+/// Both children are bracketed `>= 0.0`, so both sit in the SAME regime: the
+/// robustness margin `m = max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates
+/// to `ABS_FLOOR_SI` at a zero bracket, putting each auto at
+/// [`floored_lo`]`(0.0)`. `line_cost = unit_cost × quantity_produced` is
+/// strictly increasing in each auto, so the cost-minimising direction drives
+/// each one onto its OWN floored lower bound rather than past it. Rule and
+/// constants: the "Robustness floor (task #4789 α)" block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`, `REL_MARGIN`,
+/// `ABS_FLOOR_SI`) in `crates/reify-constraints/src/solver.rs`; the closed
+/// form itself lives on [`floored_lo`] and is not re-derived here.
+///
+/// TWO children at ONE bracket, so — unlike BT-5b — there is no second regime
+/// to exercise. The RELATIVE-margin arm is already owned by BT-5b(b) and by
+/// solver.rs's own `derive_intervals_floor_slack_shapes`, and is not
+/// duplicated here.
+///
+/// # Not a house-norm violation
+///
+/// BT4(i)/(ii)'s house norm forbids a precise CONVERGED value or a TUNED
+/// tolerance at the `.ri` layer. These pins are different in kind, for the
+/// reason BT-5b's own "Not a house-norm violation" section gives: the expected
+/// value is DERIVED from `REL_MARGIN` / `ABS_FLOOR_SI` through the shared
+/// [`floored_lo`] helper and only THEN confirmed against observation — never
+/// tuned to match an unknown output. BT4(i)/(ii)'s comparative assertions are
+/// left untouched.
+#[test]
+fn mwhole_bt4b_both_merged_autos_land_on_the_robustness_floored_lower_bound() {
+    // Reuses `mwhole_halves`'s memoized merged solve instead of compiling and
+    // solving the example a second time — its `OnceLock` guarantees this is
+    // the SAME `EvalResult` BT4(i)/(ii) assert against, not a second one that
+    // could in principle diverge from it.
+    let merged = &mwhole_halves().0;
+
+    // ONE expected value for BOTH children, computed once: they share the
+    // `>= 0.0` bracket, so "the same rule at both children" is proven by
+    // construction rather than by two independently typed-in constants.
+    let expected = floored_lo(0.0);
+
+    for structure in ["Plate", "Spacer"] {
+        let auto_id = ValueCellId::new(structure, "quantity_produced");
+        let merged_q = scalar_si(merged, &auto_id, "merged");
+
+        // Pinned against `floored_lo(0.0)` itself — not merely `> 0.0` — so a
+        // regression landing the auto at ~0+eps (the floor mechanism not
+        // firing at all, e.g. `synthesise_floor_constraints` skipped or the
+        // clamp reverting to the raw `0.0` bracket) FAILS here. Tolerance
+        // 1e-12 has ample margin: the clamp snaps exactly onto the synthesised
+        // bound, leaving a diff at f64-noise level.
+        assert!(
+            (merged_q - expected).abs() <= 1e-12,
+            "BT4b [{structure}]: this child's merged auto must land at the \
+             ABSOLUTE-floor lower bound floored_lo(0.0) = {expected} — `m = \
+             max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates to \
+             `ABS_FLOOR_SI` at a zero bracket, and cost-min drives the auto \
+             onto it. Got merged_q={merged_q} (diff {}).",
+            (merged_q - expected).abs(),
+        );
+    }
 }
 
 /// BT3 core — the cross-scope SURFACE-SPELLING read (`self.plate.line_cost`,

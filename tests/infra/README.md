@@ -28,6 +28,38 @@ failure surfaces at that first gate entry, far from this README. The
 executable bit is *not* required: every runner path invokes the file via
 `bash <file>`.
 
+### Python members need a `.sh` wrapper — `test_*.py` is NOT discovered
+
+Discovery matches **`test_*.sh` only**. A `test_<name>.py` dropped in this
+directory matches no glob, takes no manifest row, and is **never executed** —
+it reads as coverage while asserting nothing, and no gate will tell you.
+(`scripts/test_legibility_reify_config.py` is the live casualty: no wrapper, no
+runner, red today.)
+
+New infra tests are nevertheless authored in **Python** — see
+[the migration policy](../../docs/notes/infra-test-bash-to-python-migration-policy.md)
+for the rule, the evidence, and why pytest is never used. A Python member runs
+via a thin `test_<name>.sh` wrapper:
+
+```bash
+assert "python3 is available" command -v python3
+assert "test_<name>.py exits 0" python3 "$SCRIPT_DIR/test_<name>.py"
+```
+
+**The wrapper is the discovered file and the wrapper is what takes the
+`run-all-classification.manifest` row** — not the `.py`. Copy any of
+`test_sn_gate.sh`, `test_prd_capability_check.sh`,
+`test_prd_decompose_verify.sh` or `test_reify_overlap_detector.sh`.
+
+One thing a `.py` still drops out from under, `.sh`-scoped by construction:
+the wall-clock upper-bound ratchet (`test_no_new_wallclock_upper_bounds.sh`),
+task #7445. The deadline-capable-suite derivation
+(`test_slot_timeout_marker.sh` Sections F and G) no longer does — since task
+#7626 it follows a delegating wrapper into its `.py` sibling and reads the
+two together, so a ported member keeps its roster place and its
+non-vacuity check. Making `test_*.py` discovery native — which would retire
+this wrapper idiom — is task #7445.
+
 ## Shared test helpers
 
 All test files (except `test_tree_sitter_pipeline.sh`, see below) source
@@ -282,12 +314,206 @@ held-after-exit rates are **not repeated here** — same reason as the soak
 section above: they live in the `LANE-LOCK RELEASE CONTRACT` block at the flock
 acquire in `scripts/seed-warm-lane.sh`.
 
+## Self-referential fd-probe guard (`fdprobe:allow`)
+
+Inside `$(...)`, backticks or `<(...)`, fd 1 **is** the pipe bash uses to
+capture the construct's output. So `$(readlink /proc/self/fd/1)` reads back
+`pipe:*` whatever the probed process really inherited: `/proc/self` is the
+`readlink` process itself, running inside the capture. `$BASHPID` spelled
+*inside* the substitution expands to the substitution subshell's PID, so
+`/proc/$BASHPID/fd/1` there is equally vacuous, as are the aliases `/dev/fd/1`
+and `/proc/thread-self/fd/1`. Census origin: codebook entry
+`entry-cand-20260818-22` — task #6219's Block V in `test_seed_warm_lane.sh`
+measured a memory-prescribed probe reading `pipe:*` unconditionally, fix or no
+fix. The correct idiom captures the PID **outside** any substitution:
+
+```bash
+_pid=$BASHPID
+fd1=$(readlink "/proc/$_pid/fd/1")
+```
+
+fd 0 and fd 2 are not flagged: a command substitution inherits them, so
+`test_run_gui_scripts.sh`'s `$(readlink /proc/self/fd/0 ...)` probe is
+correct. One caution the guard does **not** enforce: a probe must not redirect
+the fd it reads — `$(readlink /proc/self/fd/2 2>/dev/null)` reads `/dev/null`.
+
+`scripts/check-fd-probe-self-reference.py` flags a non-comment line on which a
+path naming the current process's fd 1 sits inside such a span; its
+`SELF_FD1` regex is the one list of spellings. The corpus is
+`git ls-files -- '*.sh' 'hooks/*'`, shared with the flock guard above. A line
+carrying `fdprobe:allow` is exempt.
+
+**Scope, honestly.** Spans are line-local, so a `$(` split across lines is not
+followed. Span ends are found by counting parentheses without regard to
+quoting, so a quoted `)` truncates a span:
+`$(echo ")"; readlink /proc/self/fd/1)` is missed. Not covered: a probe inside
+a function whose *caller* wrapped it in `$(...)`, a probe reaching fd 1
+through a pipeline or its own redirect, and bash embedded in `.py` files (a
+line scanner cannot tell code from docstring). `/dev/stdout` is deliberately
+not a `SELF_FD1` spelling: inside a substitution it is an idiomatic *write*
+target (`$(curl -so /dev/stdout ...)`) that a spelling scan cannot tell from a
+probe, so the vacuous `$(readlink -f /dev/stdout)` goes unflagged. The corpus
+is code only: the machine-written mention corpus
+(`docs/legibility/confusion-codebook.yaml`, `plans/confusion-census-*.md`)
+quotes the banned spelling but is structurally outside it, so
+`docs/legibility/landing-contract.md` §5 trigger 2 (a mention-corpus exclusion
+plus a `--scope staged` selector) does not apply.
+
+Premise, detection cases and the all-clear's liveness controls:
+`test_fd_probe_self_reference.py`.
+
+## Cited test-path resolution (`cited-test-path-baseline.manifest`)
+
+`test_cited_test_paths_resolve.sh` guards a single contract: **prose that
+names a `crates/<crate>/tests/**/*.rs` file must name a path that still
+resolves.**  The `harness_<subsystem>/` consolidation moved test units
+wholesale, and every doc comment, `.ri` prose block, corpus fixture and README
+citing a moved unit went stale at once — commit `276d32f025` was a 123-file
+manual cleanup with no gate behind it, so the next consolidation would reopen
+the same hole.  This gate closes the root cause.
+
+Derivation lives **only** in `cited-test-path-lib.sh`, which both the gate and
+the baseline generator source.  The scan is **extension-agnostic by
+construction** — there is no allowlist, just `git grep` over every tracked
+file — because the stale citations measured when the gate was written spanned
+8 extensions across `crates/`, `examples/`, `docs/`, `tests/`,
+`tree-sitter-reify/`, `gui/` and `.claude/`.
+
+### What is flagged
+
+A cited path is reported when it is **not** a tracked file **and** its
+basename resolves to some other tracked path under the **same crate's** tests
+tree — i.e. the citation is *repointable*.  The record carries the suggested
+target; when a basename resolves to more than one candidate the record is
+marked `ambiguous:<N>` and lists them all, rather than guessing one.
+
+**Scope limit, stated rather than left to inference:** a citation whose
+basename resolves to *nothing* is **not** reported.  That covers a genuinely
+DELETED test and synthetic fixture paths such as `crates/foo/tests/bar.rs`.
+Repointing those is impossible and a guessed target would be noise, so they
+are out of charter.  This gate does **not** tell you every citation is live —
+only that no citation is stale *in the repointable sense*.
+
+### What is excluded: mention, not use
+
+A file is excluded from the scan when the citation shape appears in it as the
+gate's own *subject matter* rather than as a reference a reader is meant to
+follow — repointing a mention falsifies the record carrying it, so a finding
+against one is never actionable.  The list lives in
+`cited_test_path_exclusions()` and has two kinds of member.
+
+The gate's own three artifacts (the baseline, the lib, the gate) are excluded
+**structurally** — the baseline is ~300 rows each ending in a stale cited path,
+so without exclusion regenerating it would fold it into itself.
+
+`docs/legibility/confusion-codebook.yaml` is excluded **contingently**.  It is
+dark-factory's agent-confusion registry; its `cause:` / `evidence_quote:` /
+sighting `note:` fields record agents handed a path that did not exist, so the
+stale path *is* the payload.  All 16 citation occurrences in it were measured
+as mention-not-use when the exclusion was added.  **Re-audit trigger:** the
+codebook's schema is open-world, and the v1 vocabulary its merger still admits
+includes remediation-shaped `fix` / `fix_where` fields — unpopulated today, but
+they *would* carry live references.  If either starts being written, revisit
+the exclusion.  The vacuity floor cannot signal this for you: the codebook is
+~0.83% of the citation corpus, far below anything the floor's bounds resolve.
+
+### Fingerprint grammar
+
+Baseline rows are `<containing-file> :: <cited-path>`.  Line numbers **and**
+the suggested target are deliberately erased, so moving a citation within its
+file — or a later change to where its basename resolves — does not spuriously
+red the ratchet.  Same shape as `crates/reify-audit/ptodo-baseline.txt`.
+
+### Regenerating the baseline
+
+```bash
+bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+    > tests/infra/cited-test-path-baseline.manifest
+```
+
+`--list` prints the live scan records (file, cited path, verdict, target)
+human-readably without touching the manifest.
+
+### The ratchet is ONE-DIRECTIONAL
+
+The gate asserts `live ⊆ baseline` and nothing more.  Rows may be removed
+freely as citations are repointed, and **removing a row never reds the gate** —
+the manifest is a *shrinking grandfather list*, not a lockstep mirror of the
+tree.  The converse (`comm -13`) is deliberately absent for the reason
+`test_reify_audit_ptodo.sh` records for ptodo: asserting it turns every
+citation fix into a red build, punishing exactly the cleanup the gate exists
+to encourage.  The accepted cost is that a grandfathered row may sit in the
+baseline indefinitely, with no forcing function to drain it.
+
+### Two independent signals
+
+The gate reports a **ratchet** and a **vacuity floor** as two separate
+asserts, never collapsed into one.  `comm -23` can only ever say "no NEW
+fingerprints", and the empty set is a subset of everything — so a regex typo
+or a wrong repo root would leave the ratchet permanently and invisibly green.
+The floor observes the **corpus** (index units and citation occurrences), never
+the findings and never the baseline, and fails if the scan collapses toward
+zero.  Its bounds are conservative lower bounds on *the instrument working*,
+not targets for the tree.
+
+## Assert behaviour, not source prose
+
+An infra assertion's subject is something the code **does**: an exit code,
+stdout/stderr, a constructed argv, files written, process state. It is never
+the natural-language text of a script or test: a comment, header or docstring,
+another test's description label, or the *absence* of phrasing or literals
+that a past review round removed. Such a pin is wrong in both directions.
+Rewording a comment reds the gate with no regression, and a real regression
+outside the comment (a flag leaking into a non-comment string) stays green.
+Census origin: `docs/legibility/confusion-codebook.yaml` entry
+`entry-cand-20260813-12`.
+
+**The tell** is a needle assembled from fragments (`'ex''it'`, `printf '%s'`
+pieces, `_FRAG1`/`_FRAG2`) so the check does not match its own file. Split
+literals *are* legitimate as the self-match-safety convention of a **construct
+lint**: a lint whose subject has a runtime consequence, and whose hermetic
+fixtures prove that it both flags and clears. This README's own guards are the
+examples: the wall-clock upper-bound guard, the bare holder-grace sleep guard,
+the lock-held-across-a-detached-fork guard and the self-referential fd-probe
+guard. Split literals that pin prose, or the file's own edit history, are the
+anti-pattern.
+
+**Review feedback about a comment** is fixed in the comment, with no test.
+Test-first applies to behaviour.
+
+**A real guarantee visible only in source** is tested by driving the behaviour,
+plus a hermetic fixture that must fail (a sensitivity pin). Worked example:
+`test_sync_comments_grep.sh`'s sourcing-returns-control probe replaced a pin on
+a Section 3 comment ("sourcing must stay non-fatal"). The comment pin could not
+see a top-level `exit 0`, which would let every Section 3 assert pass
+vacuously. The probe fails on it, and its `exit 0` fixture proves that.
+
+**Scope.** The rule covers comments and prose inside scripts and tests. It does
+not cover referential-integrity checks (`test_cited_test_paths_resolve.sh`) or
+doc-truth gates over operator documentation (the E-SKILL/E-CLI rows of
+`test_jcodemunch_index_units.sh`). Those are separate contracts.
+
+## Whole-tree gates and unattended writers of `main`
+
+Dark-factory's legibility jobs commit machine-written files straight to `main`,
+unattended, so a `run_all.sh` pool gate that scans inert paths repo-wide must
+exclude the machine-written confusion corpus
+(`docs/legibility/confusion-codebook.yaml`) and needs a `--scope staged`
+selector.  Why, and the existing instances:
+[`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
+§3; when to re-check them: §5.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
+| `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
+| `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
+| `test_fd_probe_self_reference.sh` | Regression guard: a /proc probe of the current process's fd 1 inside a command substitution (reads the capture pipe) |
+| `test_fd_probe_self_reference.py` | Its stdlib-unittest body, driving `scripts/check-fd-probe-self-reference.py` |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

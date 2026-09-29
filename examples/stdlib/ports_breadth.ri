@@ -65,22 +65,26 @@ structure def AsymmetricRig {
 // HydraulicPort refines both FluidPort and MechanicalPort (ζ task 4259, landed).
 // The port-p slot supplies all required params; zero Error diagnostics at
 // compile time confirms the FluidPort+MechanicalPort diamond resolves.
-// (Enum-typed params fluid_type/fitting_type omit the type annotation per the
-// documented port-param enum-type limitation; mirrors the proven ζ conformer
-// shape in ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles.)
+// (Mirrors the proven ζ conformer shape in
+// ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles.)
+// A third copy lives inline at
+// struct_ctor_field_conformance_tests.rs::migrated_hydro_conformer_port_body_stays_clean,
+// which owns the "widened param-default conformance walk stays silent" claim.
+// The enum annotations below are load-bearing for that claim; re-migrating them
+// has to move all three copies.
 
 structure def HydroConformer {
     port p : in HydraulicPort {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
-        param fluid_type = FluidType.Liquid
+        param fluid_type : FluidType = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1, 0, 0),
             y_axis: vec3(0, 1, 0),
             z_axis: vec3(0, 0, 1)
         )
-        param fitting_type = FittingStandard.NPT
+        param fitting_type : FittingStandard = FittingStandard.NPT
     }
 }

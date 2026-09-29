@@ -58,7 +58,14 @@ module angle_crossings
 //            evaluates to `Scalar[m·rad]`; declared type and initializer type
 //            must agree
 //     let   x = 2.5 * 1 rad
-//         -> Parse error: syntax error: rad
+//         -> Parse error: syntax error in structure body
+//
+// The `-> ` lines transcribe the diagnostic BODY only. Since task #5392 a real
+// `reify check` also prints a `line:col` ahead of it: on the gate's own
+// three-line fixture for the last entry — `structure S`, then the `let` line,
+// then `}` — the run prints `Parse error: 2:19: syntax error in structure
+// body`. That position is a property of where a declaration sits in a file,
+// not of the diagnostic, so it is deliberately not part of the canonical copy.
 //
 // Drop the annotation on the arc-length case and the error becomes silence
 // instead: `let arc = r * theta` evaluates clean to `0.005 m·rad` — a value

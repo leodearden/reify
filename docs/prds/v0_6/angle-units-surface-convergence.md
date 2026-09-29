@@ -292,8 +292,8 @@ surface's owner — not restated here. Pinned test-side by
 `modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping` (`modal_ops.rs:4617`),
 which recomputes `ω = 2π·f` from the emitted `Mode.frequency` and compares `damping_ratio`
 against it at `1e-12` — the arm that actually observes the producer's scale.
-`modal_ops::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
-(`:4246`) pins the algebraic symmetry only and explicitly does not observe the producer's
+`reify_stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega`
+pins the algebraic symmetry only and explicitly does not observe the producer's
 scale. **Disposition:** already dimensioned, so it needs no migration; it is a *consumer* datum
 for `Frequency`, not a migration site — but honestly, §5's contract (C1-C4) does not today
 deliver the cycles/s-vs-s⁻¹ separation this site was handed off for; that gap is tracked as

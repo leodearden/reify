@@ -2263,3 +2263,368 @@ describe('PRIMARY-selection guard integration (task #5361)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-document LSP versions (task 7118)
+// ---------------------------------------------------------------------------
+//
+// Asserted through the wire — the didOpen/didChange payloads on the invoke mock
+// — rather than any Editor internal, so the tests pin the contract the server
+// (and the rename version-skew guard) actually sees.
+
+const FILE1_URI = 'file:///project/src/bracket.ri';
+const FILE2_URI = 'file:///project/src/mount.ri';
+
+// A path with a space reaches the editor under TWO spellings: pathToUri leaves
+// the store path decoded, while every URI the backend mints comes back
+// percent-encoded from the `url` crate. They must resolve to ONE version
+// counter — an ASCII-only fixture cannot tell the two apart.
+const SPACED_PATH = '/project/src/hello world.ri';
+const SPACED_URI = 'file:///project/src/hello world.ri';
+const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
+const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
+
+type LspVersionCall = { method: string; uri?: string; version?: number };
+
+/**
+ * Record every LSP notification's method/uri/version off the invoke mock.
+ * `responses` supplies canned JSON payloads for request methods (initialize is
+ * always answered, since Editor parses its result).
+ */
+function captureLspVersionCalls(responses: Record<string, unknown> = {}): LspVersionCall[] {
+  const calls: LspVersionCall[] = [];
+  mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+    const method = (args as any)?.method as string;
+    if (!method) return undefined as any;
+    const params = JSON.parse((args as any)?.params ?? '{}');
+    calls.push({
+      method,
+      uri: params?.textDocument?.uri,
+      version: params?.textDocument?.version,
+    });
+    if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+    if (method in responses) return JSON.stringify(responses[method]);
+    return undefined as any;
+  });
+  return calls;
+}
+
+/** The most recent call of `method` for `uri` (versions are per document). */
+function lastCallFor(calls: LspVersionCall[], method: string, uri: string): LspVersionCall | undefined {
+  return [...calls].reverse().find((c) => c.method === method && c.uri === uri);
+}
+
+describe('Editor LSP per-document versions (task 7118)', () => {
+  it('each document carries its own version sequence across didOpen/didChange', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls();
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)!.version).toBe(1);
+
+    // Edit the active file and let the debounce fire → file1 advances to 2.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+
+    // Switch to file2: its didOpen opens ITS OWN sequence at 1. The single
+    // shared counter this replaces would have sent 3 here.
+    store.setActiveFile(file2.path);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)!.version).toBe(1);
+  });
+
+  it('a rename into an open-but-inactive buffer bumps only that buffer version', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({
+      'textDocument/prepareRename': {
+        range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+        placeholder: 'Mount',
+      },
+      // The server's edit lands entirely in the INACTIVE open buffer. version is
+      // null because the server never had that document opened (disk is master).
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: FILE2_URI, version: null },
+            edits: [
+              {
+                range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+                newText: 'Mounting',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Mounting';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    // The inactive buffer's didChange opens ITS sequence at 1 — the server has
+    // never seen a didOpen for it, so nothing earlier can be claimed.
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE2_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE2_URI)!.version).toBe(1);
+
+    // The active document is untouched by that bump: its next didChange is 2,
+    // the successor of its own didOpen — not a continuation of a shared counter.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+  });
+
+  it('a percent-encoded server URI resolves to the same counter the client wrote', async () => {
+    const store = setupStore([fileSpaced]);
+    store.setActiveFile(SPACED_PATH);
+    const calls = captureLspVersionCalls({
+      'textDocument/prepareRename': {
+        range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+        placeholder: 'Hello',
+      },
+      // Stamped against version 1 — and, like every URI the backend mints, in
+      // its percent-encoded spelling.
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: SPACED_URI_ENCODED, version: 1 },
+            edits: [
+              {
+                range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+                newText: 'Howdy',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)).toBeDefined();
+    });
+
+    // The client moves to version 2; the canned answer stays stamped at 1.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI)!.version).toBe(2);
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Howdy';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    // The guard must SEE the skew across the two spellings: one re-issue, then
+    // a refusal, and the stale edit never reaches the buffer. Reading the
+    // encoded URI against a decoded-only counter would find nothing, judge the
+    // edit fresh and apply it — the guard silently off for this file.
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-failed-message"]')).not.toBeNull();
+    });
+    expect(calls.filter((c) => c.method === 'textDocument/rename')).toHaveLength(2);
+    expect(view.state.doc.toString()).not.toContain('Howdy');
+  });
+
+  it("a rename into a spaced-path buffer shares that file's own didOpen counter", async () => {
+    const store = setupStore([file1, fileSpaced]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({
+      'textDocument/prepareRename': {
+        range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+        placeholder: 'Bracket',
+      },
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: SPACED_URI_ENCODED, version: null },
+            edits: [
+              {
+                range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+                newText: 'Howdy',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Howdy';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    // The inactive-buffer sink opens the spaced file's sequence at 1 …
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI_ENCODED)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI_ENCODED)!.version).toBe(1);
+
+    // … and switching to it CONTINUES that sequence rather than restarting it,
+    // which is the whole proof that both spellings hit one counter. A second
+    // counter under the encoded key would send 1 again here — and would also
+    // outlive the forget() on file switch, leaking for the session.
+    store.setActiveFile(SPACED_PATH);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)!.version).toBe(2);
+  });
+
+  it('F2 flushes the pending didChange before asking the server about the text', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({
+      'textDocument/prepareRename': {
+        range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+        placeholder: 'Bracket',
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    // Type, then hit F2 INSIDE the debounce window — the interval in which the
+    // server's text is stale while both sides still agree on the version, so
+    // nothing downstream could detect the skew.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeUndefined();
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+
+    // The didChange goes out on the keypress, with no timer advanced at all …
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+
+    // … and BEFORE the request it exists to inform.
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.method === 'textDocument/prepareRename')).toBe(true);
+    });
+    expect(calls.findIndex((c) => c.method === 'textDocument/didChange')).toBeLessThan(
+      calls.findIndex((c) => c.method === 'textDocument/prepareRename'),
+    );
+  });
+
+  it('Shift+F12 flushes the pending didChange before asking the server for references', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({ 'textDocument/references': [] });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    // A Location carries no version, so answering against pre-debounce text is
+    // undetectable downstream — the flush is the only protection references has.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeUndefined();
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.method === 'textDocument/references')).toBe(true);
+    });
+    expect(calls.findIndex((c) => c.method === 'textDocument/didChange')).toBeLessThan(
+      calls.findIndex((c) => c.method === 'textDocument/references'),
+    );
+  });
+
+  it('a key held behind its flush does not run against a file switched to meanwhile', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({ 'textDocument/references': [] });
+    // Hold the flushed didChange unanswered so a file switch lands inside its window.
+    const recordAndAnswer = mockInvoke.getMockImplementation()!;
+    let answerDidChange!: () => void;
+    const didChangeAnswered = new Promise<void>((resolve) => {
+      answerDidChange = resolve;
+    });
+    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+      const answer = recordAndAnswer(cmd, args);
+      if ((args as any)?.method === 'textDocument/didChange') await didChangeAnswered;
+      return answer;
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+
+    store.setActiveFile(file2.path);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)).toBeDefined();
+    });
+    answerDidChange();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // The key asked about file1's text; the view now shows file2, whose cursor
+    // and URI the command would read instead.
+    expect(calls.some((c) => c.method === 'textDocument/references')).toBe(false);
+  });
+});

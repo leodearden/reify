@@ -13,18 +13,17 @@
 //!
 //! Usage:
 //! ```text
-//! REIFY_PTODO_TASKS_DB=/path/to/.taskmaster/tasks/tasks.db \
-//!   cargo run -p reify-audit --bin ptodo-baseline-gen -- \
-//!     --project-root /path/to/repo \
-//!   > crates/reify-audit/ptodo-baseline.txt
+//! REIFY_PTODO_TASKS_DB=/dev/null/tasks.db \
+//!   cargo run --release -p reify-audit --bin ptodo-baseline-gen -- \
+//!     --project-root . > crates/reify-audit/ptodo-baseline.txt
 //! ```
 //!
-//! `REIFY_PTODO_TASKS_DB` must point at the real `tasks.db` so the β liveness
-//! lane runs and orphaned/unknown-id residue is captured as a SUPERSET (in a
-//! task worktree `.taskmaster/` is untracked, so without it the lane degrades
-//! to structural-only). The fingerprint set is keyed only by findings on a
-//! swept source path — the same boundary `baseline_is_well_formed` enforces —
-//! so ζ inverse-lane task-keyed findings are correctly excluded.
+//! The committed baseline is structural-only and is generated DB-absent, as
+//! above (PRD §19). With a reachable tasks.db the liveness kinds are emitted
+//! too: fine for diagnostics, never valid for the committed baseline, because
+//! `baseline_is_well_formed` rejects them. The fingerprint set is keyed only by
+//! findings on a swept source path — the same boundary `baseline_is_well_formed`
+//! enforces — so ζ inverse-lane task-keyed findings are correctly excluded.
 //!
 //! Output: one `path :: kind :: text` fingerprint per line, sorted ascending,
 //! deduplicated, with a single trailing newline (empty output → an empty
@@ -35,7 +34,7 @@
 //! Every run emits exactly one machine-readable line to STDERR:
 //!
 //! ```text
-//! @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M>
+//! @@PTODO_SCAN@@ files_scanned=<N> markers_examined=<M> tasks_db=<absent|present>
 //! ```
 //!
 //! The counters come straight from `ptodo::check_with_stats` (counted inside
@@ -50,6 +49,13 @@
 //! is in `docs/prds/reify-audit-ptodo-detector.md` §6.6 and is not restated here.
 //! A binary predating this contract emits no such line, so a stale/reverted
 //! generator fails the floor on evidence rather than on a freshness heuristic.
+//!
+//! `tasks_db` is `ScanStats::tasks_db`: `present` iff the task DB opened and
+//! the DB-dependent lanes (β, ζ, G-allow) resolved, `absent` iff the §6.7
+//! degrade path fired. It is an ADDITIVE field under §6.6's extensibility
+//! rule, so the vacuity floor and `parse_scan_line`'s required-field check
+//! ignore it. Scenario (a)'s DB-absent floor in the same shell test requires
+//! `tasks_db=absent` (PRD §19).
 //!
 //! The human-readable `N fingerprint(s) emitted` line is kept alongside it as
 //! the operator-facing diagnostic; nothing keys on that one.
@@ -101,7 +107,7 @@ fn main() {
             "-h" | "--help" => {
                 eprintln!(
                     "Usage: ptodo-baseline-gen [--project-root <path>]\n\
-                     Set REIFY_PTODO_TASKS_DB to the real tasks.db for the liveness lane.\n\
+                     For the committed baseline, run DB-absent: REIFY_PTODO_TASKS_DB=/dev/null/tasks.db.\n\
                      Emits sorted, deduplicated `path :: kind :: text` fingerprints to stdout."
                 );
                 return;
@@ -144,9 +150,10 @@ fn main() {
     //
     // G-allow advisory findings (g-allow-orphaned / g-allow-unknown-id) are
     // path-keyed (swept .rs files) so they pass the `is_swept_ext` filter, but
-    // their kind strings ("g-allow-*") are outside `baseline_is_well_formed`'s
-    // VALID_KINDS taxonomy — including them would make a future regen fail the
-    // kind check. Exclude them explicitly here, mirroring the ζ exclusion.
+    // their kind strings ("g-allow-*") are outside `ptodo::STRUCTURAL_KINDS`,
+    // which `baseline_is_well_formed` enforces — including them would make a
+    // future regen fail the kind check. Exclude them explicitly here, mirroring
+    // the ζ exclusion. (A DB-absent run emits none anyway.)
     let fingerprints: BTreeSet<String> = findings
         .iter()
         .filter(|f| {
@@ -167,8 +174,10 @@ fn main() {
     // MACHINE CONTRACT (§6.6) — emitted on STDERR every run, before the human
     // diagnostic. Grammar and consumer are documented in the module doc above.
     eprintln!(
-        "@@PTODO_SCAN@@ files_scanned={} markers_examined={}",
-        stats.files_scanned, stats.markers_examined
+        "@@PTODO_SCAN@@ files_scanned={} markers_examined={} tasks_db={}",
+        stats.files_scanned,
+        stats.markers_examined,
+        stats.tasks_db.as_token()
     );
     eprintln!("ptodo-baseline-gen: {} fingerprint(s) emitted", fingerprints.len());
 }

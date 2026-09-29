@@ -109,6 +109,56 @@ pub fn mm3(v: f64) -> Value {
     }
 }
 
+/// Assert that `v` is a dimensioned `Value::Scalar` carrying exactly
+/// `expected_si` in SI base units and exactly `expected_dim`.
+///
+/// Deliberately NOT routed through an f64-folding reader. A helper that folds
+/// `Value::Real`, `Value::Int` and `Value::Scalar` into one `f64` — the
+/// `read_real` / `num()` shape every call site has close to hand — passes
+/// IDENTICALLY before and after a dimensioned-ctor migration, and so is blind
+/// to the very property under test. Destructuring explicitly is what makes a
+/// wrong-dimension misparse fail as loudly as a wrong magnitude.
+///
+/// `si_value` is compared for EXACT equality on purpose: every value pinned
+/// through this helper is LITERAL-derived (a unit literal in a `.ri` ctor arg
+/// converted to SI at parse time), not solver-derived, so there is no float
+/// jitter to tolerate — an inert migration must reproduce the previous bare
+/// `Real` bit-for-bit. Solver-derived quantities get an explicit tolerance at
+/// their own call site instead.
+///
+/// The panic messages state the OBSERVABLE fact and stay task-neutral; `what`
+/// is where a call site supplies its own context, and is the only place a
+/// task or PRD citation belongs.
+pub fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension, expected_dim,
+                "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}. \
+                 The ctor arg parsed as a dimensioned Scalar but carries the wrong unit."
+            );
+            assert_eq!(
+                *si_value, expected_si,
+                "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}. \
+                 These are literal-derived values; a change here means the migrated \
+                 unit literal does not denote the same physical quantity."
+            );
+        }
+        Value::Real(r) => panic!(
+            "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
+             Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
+             This ctor arg has not been migrated to a unit literal."
+        ),
+        other => panic!(
+            "{what}: expected a dimensioned Value::Scalar {{ si_value: {expected_si}, \
+             dimension: {expected_dim:?} }}, got {other:?}"
+        ),
+    }
+}
+
 // --- ID constructors ---
 
 /// Create a ValueCellId from entity and member names.

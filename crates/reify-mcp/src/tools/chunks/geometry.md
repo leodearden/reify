@@ -9,7 +9,7 @@
 - `Point + Point` → type error
 
 Parameterized by dimensionality and quantity:
-```
+```reify-schematic
 Point<N: Nat, Q: Dimension>     // Position
 Vector<N: Nat, Q: Dimension>    // Displacement
 Scalar<Q: Dimension>            // Dimensioned number
@@ -35,7 +35,7 @@ Geometric traits: `Closed`, `Manifold`, `Orientable`, `Convex`, `Connected`, `Bo
 
 ## Orientation & Transform
 
-```
+```reify-schematic
 Orientation.from_quaternion(w, x, y, z)
 Orientation.from_axis_angle(axis, angle)
 Orientation.from_euler(convention, a, b, c)
@@ -53,7 +53,7 @@ Transform is always rigid (rotation + translation). Sub-structure placement uses
 
 ## Geometry Constructors (Prelude)
 
-```
+```reify-schematic
 point2(x, y)          point3(x, y, z)
 vec2(x, y)            vec3(x, y, z)
 line_segment(x1, y1, z1, x2, y2, z2)
@@ -63,7 +63,7 @@ polygon(x1, y1, x2, y2, x3, y3, ...)   rectangle(width, height)
 
 ## Solid Primitives
 
-```
+```reify-schematic
 box(width, depth, height)                          -> Solid
 box_centered(width, depth, height)                  -> Solid   // alias of box — see below
 cylinder(radius, height)                             -> Solid
@@ -74,7 +74,21 @@ torus(major_radius, minor_radius)                    -> Solid
 wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
 rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
+half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED — Bounded = false
 ```
+
+`half_space` is the one primitive that is not a finite body: `(px, py, pz)` is a point **on** the
+boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
+pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
+not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
+required; intersect it with a finite solid to get a bounded result usable for export and
+mass-property queries:
+
+```reify-fragment
+intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+```
+
+Worked example: `examples/half_space.ri`.
 
 `rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals (including constant arithmetic like `10mm + 15mm`). A param-driven `corner_r` that violates the constraint at runtime is **not** caught statically — it fails at evaluation with an opaque kernel error instead of a diagnostic.
 
@@ -82,7 +96,7 @@ rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 
 at origin (same centring as `box`); `polygon` is the exception — it is positioned by its explicit
 vertex coordinates, not auto-centred (see the Anchoring & orientation table below):
 
-```
+```reify-schematic
 rectangle(width, height)   circle(radius)
 polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)
 rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
@@ -148,7 +162,7 @@ When in doubt, prefer the `_centered` variant over a manual
      by a table row AND called by the fence — so neither half can cover for the other losing one.
      geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile compiles the ```reify
      fence below as a whole module, so the migration forms are verified rather than asserted. Both
-     scans are scoped BYTE-EXACTLY by the `<!-- LENGTH-ARGS-SECTION -->` marker on the line above,
+     scans are scoped BYTE-EXACTLY by the `LENGTH-ARGS-SECTION` marker on the line above,
      NOT by this heading's wording, which is free to change — keep the marker directly under the
      heading it opens.
 
@@ -236,6 +250,106 @@ and the residual is tracked in `docs/prds/v0_6/check-diagnostic-truthfulness.md`
 PINNED/UNPINNED inventory: the `units` chunk.
 
 
+## GD&T Tolerance Zones
+
+Constructors that build a geometric-tolerance zone as a real `Solid`, so a zone can be
+intersected, differenced and measured like any other body. Every one takes its zone extent
+as a **width**, and every one centres the zone on the geometry it is given (`±width/2`):
+
+```reify-schematic
+zone_slab(face, width)                                 -> Solid   // face offset ±width/2, capped into a slab
+zone_cylinder(axis, width)                             -> Solid   // Ø-zone about an axis wire; width is the DIAMETER
+zone_annulus(axis, nominal_radius, width, length)      -> Solid   // annular shell at nominal_radius ± width/2
+zone_profile(solid, width)                             -> Solid   // surface-profile shell, ±width/2 about the solid
+```
+
+`zone_slab` takes a **face or 2D profile** as its first argument — not a solid — and offsets it
+`±width/2`, capping the result into a centred slab. (`zone_profile` is the solid-input sibling.)
+
+`zone_cylinder`'s `width` is the zone **diameter**, not its radius: it lowers to a pipe sweep with
+`radius = width * 0.5`. There is deliberately **no length argument** — the axis wire's own length
+sets the cylinder extent, so control the zone's length by controlling the wire.
+
+`zone_annulus` lowers to the difference of two pipe sweeps along the axis: an outer sweep of
+radius `nominal_radius + width/2` minus an inner one of radius `nominal_radius − width/2`. Its
+fourth argument, `length`, is accepted and validated but does **not** drive the result: as with
+`zone_cylinder`, the swept extent comes from the axis wire. Pass it for signature completeness,
+and size the wire to size the zone.
+
+`zone_profile` lowers to the difference of two `offset_solid` results — the solid offset by
+`+width/2` minus the same solid offset by `−width/2` — giving a shell that straddles the input
+solid's surface. Every face moves along its normal and sharp edges stay sharp, so for a box of
+side `a` the zone volume is exactly `(a+w)³ − (a−w)³`. A width whose inward half reaches past the
+solid's inradius is an error. So is an input that is not one single solid bounded by planes,
+cylinders, cones, spheres and tori: a disjoint union, or a freeform face such as a loft's, is
+refused rather than offset inexactly. For general shapes, query the realized solid rather than
+computing its volume by hand.
+
+Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
+
+## Free-form & Implicit Surfaces
+
+Two constructors that build geometry from data rather than from a parametric shape —
+a NURBS patch from an explicit control net, and a marching-cubes body from a voxel grid:
+
+```reify-schematic
+nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)  -> Surface
+isosurface(grid)                                     -> Solid  // marching cubes, iso = 0.0
+isosurface(grid, iso: level)                         -> Solid
+isosurface(grid, iso: level, adaptive: flag)         -> Solid
+```
+
+`nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
+**nested** (u-major × v) list of `point3(...)`, and `weights` is a matching nested list of reals;
+but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
+integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
+
+```reify-fragment
+nurbs_surface(
+    [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+    [[1.0,1.0],[1.0,1.0]],
+    [0,0,1,1],
+    [0,0,1,1],
+    1,
+    1
+)
+```
+
+A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid profile for
+`extrude`/`revolve`/`sweep`/`loft` — passing one inline emits `GeometryProfileRequired`.
+
+`isosurface` extracts a surface by marching cubes from a Voxel-repr `grid` operand; a BRep or Mesh
+operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh.
+
+Its **type** is `Solid`, not a bare mesh handle: the compiler infers the result Bounded, Watertight
+and Connected, so it composes with the boolean operations and the export paths like any other solid
+body. A mesh is only its internal repr — the Voxel→Mesh step above is part of the lowering, not
+something you write.
+
+`iso` and `adaptive` are **optional** trailing arguments, and at most 3 arguments are accepted.
+Omitting them is not the same as passing a default at the call site: they are left unset and
+resolved during evaluation lowering to `iso = 0.0` and `adaptive = false`.
+
+`iso` is a **Length**, not a bare number — write it with a unit, as the worked example does
+(`iso: 3mm`); it is decoded to SI metres for marching cubes. `adaptive` is a **Bool**.
+
+The `iso:`/`adaptive:` labels written above are the **recommended spelling** — they name the slot at
+the call site and keep a bare `true` from reading as a mystery flag — but they are **not checked**.
+Like every geometry constructor, `isosurface` binds its arguments **positionally**, in source order:
+2nd argument → `iso`, 3rd → `adaptive`. Two consequences:
+
+- `isosurface(grid, level)` compiles to exactly the same thing as `isosurface(grid, iso: level)`.
+- **`adaptive` cannot be passed without `iso`.** `isosurface(grid, adaptive: flag)` is accepted, and
+  binds `flag` into the **iso** slot. Compilation is silent about it, but evaluation is not: a Bool
+  is not a Length, so it warns `isosurface: 'iso' argument evaluated to a non-numeric value —
+  defaulting to 0.0`, and `adaptive` stays `false` because nothing reached its slot. Pass the iso
+  level explicitly — `isosurface(grid, iso: level, adaptive: flag)` — whenever you want the adaptive
+  flag.
+
+Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
+`examples/multi_kernel/voxel_to_mesh_iso.ri`.
+
+
 ## Interference & Clearance Queries
 <!-- ORACLE-SECTION -->
 
@@ -248,7 +362,7 @@ PINNED/UNPINNED inventory: the `units` chunk.
      all) by the eval/CLI tests mapped in the SYNC block at that subsection — read it before relying
      on a trap, and before changing one of those behaviours.
 
-     The `<!-- ORACLE-SECTION -->` marker on the line above is what scopes that guard's scan, matched
+     The `ORACLE-SECTION` marker on the line above is what scopes that guard's scan, matched
      byte-exactly — NOT this heading's wording, which is free to change. Keep the marker directly
      under the heading it opens; the scan runs from it to the next `##` heading. -->
 
@@ -437,8 +551,8 @@ gate.
        geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
-     That last guard scopes the region BETWEEN `<!-- NOT-HOISTED-TRAP -->` and
-     `<!-- /NOT-HOISTED-TRAP -->` below — both markers matched byte-exactly, and a missing
+     That last guard scopes the region BETWEEN the `NOT-HOISTED-TRAP` and
+     `/NOT-HOISTED-TRAP` markers below — both matched byte-exactly, and a missing
      closing one is RED rather than a silent widening — and pins exactly ONE
      claim: the call form the arg-shape trap exhibits is drawn from OUTSIDE
      reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, so the trap cannot illustrate "an inline
@@ -461,7 +575,7 @@ gate.
      The OCCT-absence claim in "When a query yields `undef`" is UNPINNED prose — verified by
      reading the gate in crates/reify-kernel-occt/src/lib.rs, not by a test in this harness.
 
-     The `<!-- MEASUREMENT-SECTION -->` marker on the line above is what scopes the guard's scan,
+     The `MEASUREMENT-SECTION` marker on the line above is what scopes the guard's scan,
      matched byte-exactly — NOT this heading's wording. Keep it directly under the heading it
      opens; the scan runs from it to the next `##` heading. -->
 
@@ -603,7 +717,7 @@ from the compiler registry in `crates/reify-compiler/src/units.rs`.
      UNPINNED prose, and a result-type change in units.rs will not turn this table red. Re-read
      both sources before relying on a cell.
 
-     The `<!-- TOPOLOGY-SECTION -->` marker on the line above is what scopes the scan, matched
+     The `TOPOLOGY-SECTION` marker on the line above is what scopes the scan, matched
      byte-exactly — NOT this heading's wording. Keep it directly under the heading it opens; the
      scan runs from it to the next `##` heading. -->
 

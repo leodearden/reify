@@ -56,16 +56,19 @@ pub fn push_serialized_event(
     }
 }
 
-/// Compute a delta against the last known state, then store the new state.
-///
-/// If `last_state` is `None` (first call), returns a full delta.
-/// Otherwise diffs against the previous state and returns the minimal delta.
-pub fn compute_delta(last_state: &Mutex<Option<GuiState>>, new_state: &GuiState) -> StateDelta {
+/// Diff `new_state` against the last known state — a full delta when there is
+/// none yet — and move it in as the new last known state.
+pub fn advance_baseline(last_state: &Mutex<Option<GuiState>>, new_state: GuiState) -> StateDelta {
     let mut guard = last_state.lock().unwrap_or_else(|e| e.into_inner());
     let delta = match guard.as_ref() {
-        Some(old) => diff_gui_state(old, new_state),
-        None => StateDelta::full(new_state),
+        Some(old) => diff_gui_state(old, &new_state),
+        None => StateDelta::full(&new_state),
     };
-    *guard = Some(new_state.clone());
+    *guard = Some(new_state);
     delta
+}
+
+/// [`advance_baseline`] for a caller that keeps its own `new_state`.
+pub fn compute_delta(last_state: &Mutex<Option<GuiState>>, new_state: &GuiState) -> StateDelta {
+    advance_baseline(last_state, new_state.clone())
 }

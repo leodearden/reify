@@ -104,11 +104,12 @@
 //! `tests/infra/test_heavy_filter_atoms.sh` Assertion G for the mechanism and
 //! the check that enforces it.
 
-use reify_constraints::DimensionalSolver;
+use crate::fea_design_loop_support::{
+    INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
+};
 use reify_core::ValueCellId;
-use reify_eval::Engine;
 use reify_ir::Value;
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{collect_errors, compile_source_with_stdlib};
 
 /// Inline bracket-minimize-mass fixture. Small geometry (50mm x 30mm footprint) and a
 /// modest tip load (50 N) keep the per-candidate FEA solve cheap (coarse default mesh)
@@ -152,17 +153,6 @@ structure FeaOptimizedBracket {
 }
 "#;
 
-/// Lower interior threshold (0.1 mm SI): comfortably above the default `Length`
-/// auto-param lower bound (1 micron = 1e-6 m, `default_bounds_for` in
-/// `crates/reify-constraints/src/solver.rs`) where the RED (Undef-driven) optimisation
-/// parks thickness — two orders of magnitude of margin.
-const INTERIOR_LOWER_THRESHOLD_SI: f64 = 1e-4;
-
-/// Upper interior threshold (1 m SI): comfortably below the default `Length`
-/// auto-param upper bound (10 m) — any physically-sane resolved bracket thickness for
-/// this fixture lands far below this.
-const INTERIOR_UPPER_THRESHOLD_SI: f64 = 1.0;
-
 /// RED on base / GREEN after task #4880 step-10: `auto` thickness resolves FINITE and
 /// STRICTLY INTERIOR to its bounds only when the FEA stress constraint is real and
 /// binding (see module doc for the full RED/GREEN mechanics).
@@ -176,20 +166,10 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
         errors
     );
 
-    // Real FEA trampolines via the SINGLE bundler `register_production_compute_fns`
-    // (INV-FEA-1), not by hand-rolling its legs — hazard (3) in
-    // `scripts/check-compute-trampoline-registration.sh`'s header is exactly a fourth
-    // site assembling the bundle from its halves, so that a leg added to the bundler
-    // later never reaches it. That guard's SCOPE_PATHSPECS exclude `tests/`, so
-    // nothing would catch the drift here. `MorphRegistration::Unavailable` matches
-    // `build_test_engine` (test_runner.rs) — reify-mesh-morph is a dev-only dep of
-    // reify-eval and is not needed by this fixture. Plus the real `DimensionalSolver`
-    // directly (see module doc for why not `SolverRegistry::production()`).
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(DimensionalSolver));
-    engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
-        reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); this fixture needs only the FEA/shell-extract legs",
-    });
+    // Real solver + real FEA trampolines via the single bundler (INV-FEA-1) —
+    // see `fea_design_loop_support::fea_loop_engine`'s doc; `SolverRegistry::production()`
+    // is deliberately not used, see this module's doc above.
+    let mut engine = fea_loop_engine();
 
     let result = engine.eval(&compiled);
 

@@ -55,6 +55,16 @@
 //! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
 //! and `Chain` body shapes retain compile-time silent-skip semantics and
 //! emit an info diagnostic noting the follow-up task.
+//!
+//! **Duplicate diagnostics:** every diagnostic raised inside
+//! `elaborate_forall_connect`'s per-element loop goes through
+//! `ForallDiagnosticSink`, which reports each distinct diagnostic once per
+//! declaration and only ever filters — so the zero-diagnostic guarantees above
+//! are unaffected. The window covers that loop and nothing else:
+//! `elaborate_forall_constraint` below is NOT routed through a sink, so an
+//! element-independent body diagnostic (e.g. `unresolved name: <ident>` from
+//! `compile_expr`) is still reported once per element there. Extending the sink
+//! to it is filed as a follow-up.
 
 use super::*;
 use std::collections::HashMap;
@@ -309,6 +319,92 @@ fn resolve_count_cell_literal(
         }
         _ => None,
     }
+}
+
+/// Per-`forall`-declaration duplicate-diagnostic sink (task 7195).
+///
+/// Invariant: **one `forall` declaration reports each distinct diagnostic at
+/// most once**, where two diagnostics are the same when every field compares
+/// equal — see [`fields_equal`]. First occurrence wins, so the retained order is
+/// emission order minus the repeats.
+///
+/// Nothing an author or a downstream consumer can distinguish is lost: the
+/// collapsed copies come from running one check once per collection element, and
+/// each element keeps its own `connect_compat_*` constraint, so the per-element
+/// failure set stays recoverable from the compiled template.
+///
+/// Construct one immediately before a declaration's per-element loop and *after*
+/// collection resolution, so diagnostics raised by `resolve_forall_elements` and
+/// by the `ResolveForallOutcome::Deferred` arm — each already emitted exactly
+/// once — stay outside the window.
+struct ForallDiagnosticSink<'a> {
+    /// The caller's diagnostics vector; retained entries are appended here.
+    out: &'a mut Vec<Diagnostic>,
+    /// Index in `out` at which this declaration's window opens. Only entries at
+    /// or after it participate in the duplicate comparison, so a repeat raised
+    /// by an unrelated earlier declaration is never suppressed.
+    window_start: usize,
+    /// Reusable buffer lent to the closure in [`Self::collecting`].
+    scratch: Vec<Diagnostic>,
+}
+
+impl<'a> ForallDiagnosticSink<'a> {
+    fn new(out: &'a mut Vec<Diagnostic>) -> Self {
+        let window_start = out.len();
+        Self {
+            out,
+            window_start,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Run `emit` against a scratch diagnostics vector, then merge whatever it
+    /// pushed into `out`, dropping every entry equal to one already retained for
+    /// this declaration.
+    ///
+    /// The closure form makes the merge un-skippable: the buffer cannot be
+    /// obtained without the merge running on return, so a call site added later
+    /// inside the loop cannot half-use the protocol and silently lose
+    /// diagnostics. The window holds one entry per DISTINCT rendering — one for
+    /// an element-independent message (direction mismatch, invalid port
+    /// reference), N for a name-bearing one (`undefined port 'vents[i].inlet'`)
+    /// — so the linear scan is O(elements × distinct), worst case quadratic in
+    /// the collection size on a compile that is already failing.
+    fn collecting<R>(&mut self, emit: impl FnOnce(&mut Vec<Diagnostic>) -> R) -> R {
+        self.scratch.clear();
+        let result = emit(&mut self.scratch);
+        for diag in self.scratch.drain(..) {
+            let already_reported = self.out[self.window_start..]
+                .iter()
+                .any(|kept| fields_equal(kept, &diag));
+            if !already_reported {
+                self.out.push(diag);
+            }
+        }
+        result
+    }
+}
+
+/// Whether two diagnostics are equal in every field, and are therefore
+/// indistinguishable to an author and to any downstream consumer.
+///
+/// `Diagnostic` is `#[non_exhaustive]`, so a downstream crate cannot destructure
+/// it exhaustively and the compiler will not flag this function when a field is
+/// added in `reify-core`: a new field must be added to the comparison by hand.
+/// Fields are compared directly rather than through a formatted key —
+/// `Severity`, `DiagnosticCode` and `SourceSpan` already derive `PartialEq`, and
+/// `DiagnosticLabel`, which derives only `Debug, Clone`, is compared pairwise on
+/// its two fields.
+fn fields_equal(a: &Diagnostic, b: &Diagnostic) -> bool {
+    a.severity == b.severity
+        && a.message == b.message
+        && a.code == b.code
+        && a.candidates == b.candidates
+        && a.labels.len() == b.labels.len()
+        && a.labels
+            .iter()
+            .zip(b.labels.iter())
+            .all(|(x, y)| x.span == y.span && x.message == y.message)
 }
 
 /// Drive per-element constraint emission for a `forall ... : constraint ...`
@@ -784,6 +880,12 @@ pub(crate) fn elaborate_forall_connect(
         trait_registry,
     };
 
+    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
+    // HERE — after collection resolution and the `Deferred` early return — so the
+    // non-iterable-collection error and the deferred-path info diagnostics, each
+    // already emitted exactly once, stay outside it.
+    let mut sink = ForallDiagnosticSink::new(diagnostics);
+
     // PRD criterion 6 — empty-collection path: when `elements` is empty (either
     // a `ListLiteral([])` or a count-cell-zero collection sub), this loop
     // iterates zero times and emits no connections and no diagnostics. The
@@ -814,24 +916,26 @@ pub(crate) fn elaborate_forall_connect(
                     value_cells,
                     pending_connect_auto_params,
                 };
-                compile_connection(
-                    &ctx,
-                    &ConnectInput {
-                        left_expr: &left_substituted,
-                        operator: cd.operator,
-                        right_expr: &right_substituted,
-                        connector_type: cd.connector_type.as_deref(),
-                        params: &params_substituted,
-                        port_mappings: &cd.port_mappings,
-                        // Anchor the emitted connection at the source forall
-                        // declaration so per-element diagnostics cite the
-                        // forall site and the element index travels in the
-                        // synthetic compatibility constraint label.
-                        span: decl.span,
-                    },
-                    diagnostics,
-                    &mut acc,
-                );
+                sink.collecting(|element_diagnostics| {
+                    compile_connection(
+                        &ctx,
+                        &ConnectInput {
+                            left_expr: &left_substituted,
+                            operator: cd.operator,
+                            right_expr: &right_substituted,
+                            connector_type: cd.connector_type.as_deref(),
+                            params: &params_substituted,
+                            port_mappings: &cd.port_mappings,
+                            // Anchor the emitted connection at the source forall
+                            // declaration so per-element diagnostics cite the
+                            // forall site and the element index travels in the
+                            // synthetic compatibility constraint label.
+                            span: decl.span,
+                        },
+                        element_diagnostics,
+                        &mut acc,
+                    );
+                });
                 let _ = i; // element index currently encoded only via the
                 // synthetic `connect_compat_<l>_<r>` label produced
                 // by `compile_connection` (the substituted port
@@ -840,32 +944,42 @@ pub(crate) fn elaborate_forall_connect(
                 // needed for diagnostic provenance.
             }
             // Per-element chain desugaring: substitute every chain element,
-            // then emit pairwise Forward connections via `windows(2)`. Mirror
-            // the plain `MemberDecl::Chain` arm at entity.rs:1304-1342, but
-            // anchor every emitted connection's span at `decl.span` so
-            // per-element diagnostics cite the forall site.
+            // then hand the result to `chain_hops` (connect.rs), which owns
+            // the spec §6.2 element resolution this arm shares with the
+            // entity-member site. Every emitted connection is anchored at
+            // `decl.span` rather than at the chain body's own span, so
+            // `compile_connection`'s diagnostics cite the forall the designer
+            // wrote. `chain_hops`' own §6.2 diagnostics are labelled at the
+            // element instead — for the substituted bound variable, that is
+            // the span its binding carries: the collection expression's when
+            // the forall iterates a sub collection, a list item's own when it
+            // iterates a literal list.
             ForallConnectBody::Chain(cd) => {
-                // Edge case: fewer than two elements is a malformed chain.
-                // Emit the standard chain diagnostic once per element-iteration
-                // (matching the plain-Chain arm's behaviour) anchored at the
-                // forall span. The plain arm uses `chain_decl.span`; here the
-                // forall span subsumes the chain body's span and is the
-                // user-visible site.
+                // Edge case: fewer than two elements is a malformed chain. The
+                // guard is CHECKED per element; the diagnostic it raises is
+                // element-independent, so the sink reports it once per
+                // declaration. Anchored at the forall span — the plain-Chain arm
+                // uses `chain_decl.span`, but here the forall span subsumes the
+                // chain body's span and is the user-visible site. Unreachable
+                // from `.ri` source today: `ts_parser.rs::lower_chain` rejects a
+                // `<2`-element chain with a parse error and is the only
+                // constructor of `ForallConnectBody::Chain`.
                 //
                 // INTENTIONAL PLACEMENT — this guard is INSIDE the outer
                 // per-element loop. For `forall v in []: chain ...` (PRD
                 // criterion 6), the outer loop iterates zero times so this
-                // guard is never reached and no diagnostic is emitted. For a
-                // non-empty forall with a malformed chain body (e.g. only one
-                // chain element), the guard fires once per outer-loop element.
-                // Do NOT hoist this guard outside the loop for "efficiency" —
-                // doing so would fire the diagnostic for the empty-list case
-                // (breaking criterion 6) and for the undef-count deferred case.
+                // guard is never reached and no diagnostic is emitted; the sink
+                // only ever filters, never adds, so that stays true. Do NOT
+                // hoist this guard outside the loop for "efficiency" — doing so
+                // would fire the diagnostic for the empty-list case (breaking
+                // criterion 6) and for the undef-count deferred case.
                 if cd.elements.len() < 2 {
-                    diagnostics.push(
-                        Diagnostic::error("chain statement requires at least two elements")
-                            .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        element_diagnostics.push(
+                            Diagnostic::error("chain statement requires at least two elements")
+                                .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
+                        );
+                    });
                     // Skip emission for this element; without at least two
                     // elements there is no pairwise window to desugar.
                     let _ = i;
@@ -878,7 +992,10 @@ pub(crate) fn elaborate_forall_connect(
                     .map(|e| substitute_expr(e, &bindings))
                     .collect();
 
-                for pair in substituted_elements.windows(2) {
+                let hops = sink.collecting(|element_diagnostics| {
+                    chain_hops(&ctx, &substituted_elements, element_diagnostics)
+                });
+                for (source, dest) in hops {
                     let mut acc = ConnectAccumulator {
                         constraints,
                         constraint_index,
@@ -888,22 +1005,67 @@ pub(crate) fn elaborate_forall_connect(
                         value_cells,
                         pending_connect_auto_params,
                     };
-                    compile_connection(
-                        &ctx,
-                        &ConnectInput {
-                            left_expr: &pair[0],
-                            operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
-                            connector_type: None,
-                            params: &[],
-                            port_mappings: &[],
-                            span: decl.span,
-                        },
-                        diagnostics,
-                        &mut acc,
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        compile_connection(
+                            &ctx,
+                            &ConnectInput {
+                                left_expr: &source,
+                                operator: reify_ast::ConnectOp::Forward,
+                                right_expr: &dest,
+                                connector_type: None,
+                                params: &[],
+                                port_mappings: &[],
+                                span: decl.span,
+                            },
+                            element_diagnostics,
+                            &mut acc,
+                        );
+                    });
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod forall_diagnostic_sink_tests {
+    use super::*;
+
+    fn direction_error(span: SourceSpan) -> Diagnostic {
+        Diagnostic::error("incompatible port directions for connect: In -> In")
+            .with_label(DiagnosticLabel::new(span, "incompatible directions"))
+    }
+
+    /// A declaration collapses its own repeats, and only its own: a diagnostic
+    /// identical to one an EARLIER declaration already reported is still
+    /// reported, because each sink's window opens at the declaration it serves.
+    ///
+    /// Pinned here rather than by an `.ri` fixture because no fixture can reach
+    /// it: every diagnostic raised inside the per-element loop is labelled at a
+    /// span belonging to its own declaration (`decl.span`, or a substituted body
+    /// expression's span), so two declarations cannot emit field-equal
+    /// diagnostics today. Widening the window to all of `out` would therefore
+    /// pass every fixture in the suite while being wrong for the first
+    /// declaration-independent diagnostic added to the loop.
+    #[test]
+    fn window_spans_one_declaration_not_the_whole_compilation() {
+        let span = SourceSpan::new(0, 10);
+        let mut out = Vec::new();
+
+        for _ in 0..2 {
+            let mut sink = ForallDiagnosticSink::new(&mut out);
+            for _ in 0..3 {
+                sink.collecting(|element_diagnostics| {
+                    element_diagnostics.push(direction_error(span))
+                });
+            }
+        }
+
+        assert_eq!(
+            out.len(),
+            2,
+            "expected one survivor per declaration (3 identical copies each), got {:?}",
+            out
+        );
     }
 }

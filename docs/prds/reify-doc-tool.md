@@ -138,7 +138,7 @@ reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--comp
 - `--split` — markdown only; emit one file per item plus `index.md`. Errors out for `html` and `json`.
 - `--compact` — JSON only; emit single-line JSON.
 
-Exit codes: `0` if compilation succeeded, `1` if compile errors prevented doc generation (errors printed to stderr exactly as `reify check` does today), `2` for CLI usage errors.
+Exit codes: `0` if compilation succeeded, `1` otherwise — compile errors that prevented doc generation (printed to stderr exactly as `reify check` does today), I/O failures, and CLI usage errors all exit `1`, matching every other subcommand. *(Amended 2026-08-28 — driver-contract-implementation leaf τ, task #6801, per RQ-9: CLI usage errors exited `2` until then, which made `reify doc` the only subcommand with a distinct usage-error code. Normalized to `1` for uniformity; the usage message on stderr is now the discriminator between a usage error and a compile/I-O failure.)*
 
 ## Crate structure
 

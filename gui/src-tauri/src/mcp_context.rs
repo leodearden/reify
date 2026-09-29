@@ -8,6 +8,7 @@ use reify_mcp::{
 };
 
 use crate::engine::EngineSession;
+use crate::eval_queue::{EvalOutcome, EvalRequest};
 
 /// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
 type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
@@ -217,28 +218,26 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(ToolError::EngineError)
     }
 
-    /// EPHEMERAL engine-state edit — deliberately NOT the source-canonical
-    /// write path (task 5097 δ).
+    /// DURABLE parameter mutation: rewrite the cell's default literal in the
+    /// user's canonical `.ri` source (INV-GUI-3, task 5099 η).
     ///
-    /// This overrides the cell's value in the live engine session only; the
-    /// user's `.ri` on disk is untouched, exactly like dragging the
-    /// property-panel slider. The INV-GUI-3 path that rewrites the parameter's
-    /// default literal in the source is the reify-debug `reify_set_parameter`
-    /// tool (`debug_server.rs`), via `EngineSession::apply_param_to_source_str`
-    /// — which shares this method's dimension-aware value parse (#5757), so the
-    /// two can never disagree about what a value string denotes.
+    /// One mechanism, three surfaces. This Tauri-invoke MCP context, the
+    /// reify-debug `reify_set_parameter` tool (`debug_server.rs`) and the GUI
+    /// property panel all end at [`EngineSession::commit_parameter`], so an
+    /// edit made through any of them means the same thing and lands in the same
+    /// place. The alternative — an AI edit the user's file does not carry — is
+    /// the ephemeral second source of truth the invariant exists to forbid.
     ///
-    /// Re-homing this Tauri-invoke context onto the source-canonical path is
-    /// η's Phase 3, not δ's: `tests/mcp_dispatch_tests.rs` drives an in-memory
-    /// session with no on-disk `.ri` to write back to, so switching the
-    /// mechanism here would break it. No behaviour change intended here.
+    /// The value parse is shared too (#5757), so `value` is a UNIT-BEARING
+    /// literal (`"120mm"`) on any dimensioned cell, refused with the same
+    /// ladder-rung suggestion here as in the panel.
     fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
         let mut session = self
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
-            .set_parameter(cell_id, value)
+            .commit_parameter(cell_id, value)
             .map_err(ToolError::EngineError)?;
 
         // Find the updated parameter in the returned GuiState
@@ -350,4 +349,49 @@ pub fn mcp_tool_call_impl(
     registry
         .call_tool(name, params, context)
         .map_err(|e| e.to_string())
+}
+
+/// [`mcp_tool_call_impl`] as a queued evaluation. The session's state is
+/// published after every tool, even a read-only or failed one: an unchanged
+/// state publishes an empty delta.
+///
+/// This one request covers `TauriToolContext`'s WHOLE engine surface: a tool
+/// touches the engine only through [`ReifyToolContext`] methods, including
+/// `open_file`, `update_source` and `set_parameter`, which drive full
+/// recursive compiles.
+///
+/// The cost of that granularity: `reify_focus_entity`,
+/// `reify_navigate_to_source`, `reify_get_selection` and
+/// `reify_get_eval_status` touch no engine, yet queue behind every evaluation
+/// ahead of them — worst for `reify_get_eval_status`, which a client polls to
+/// learn WHETHER an evaluation is in flight. They are not bypassed here,
+/// because a tool-name predicate would be a second copy of the registry's
+/// knowledge of which tool reaches the engine, and it would rot in the
+/// dangerous direction: a tool wrongly classed non-engine would leave the
+/// ENGINE lane's large stack. #7722 tracks the bypass without that copy — the
+/// registry classifying each tool where its handler is registered.
+///
+/// The context's event emitter fires from the ENGINE lane thread, which is
+/// sound because `tauri::AppHandle` is `Send + Sync`. The job dispatches
+/// directly because it already runs on that lane, whose single consumer cannot
+/// wait on a nested submission to itself.
+pub fn mcp_tool_call_evaluation(
+    ctx: TauriToolContext,
+    engine: Arc<Mutex<EngineSession>>,
+    name: String,
+    params: serde_json::Value,
+) -> EvalRequest<serde_json::Value> {
+    EvalRequest::evaluation(move || {
+        let reply = mcp_tool_call_impl(&name, params, &ctx);
+        let publish = match crate::commands::get_initial_state_impl(&engine) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    "mcp_tool_call: delta sync failed, frontend model may be stale: {e}"
+                );
+                None
+            }
+        };
+        EvalOutcome { publish, reply }
+    })
 }

@@ -1505,48 +1505,48 @@ structure SphereCheck {
 /// ```
 ///
 /// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, below the ~2.5e-4 floor
-/// where a separate ~1.49x branch ALSO appears, per
+/// where a separate third branch ALSO appears, per
 /// `precision-nominal-representation-guarantee.md` §2 — but this row's own
 /// 2.078x reading shows it sits on the envelope, not that branch, in this
 /// regime. Do not read it as extending the envelope/tooth characterization
 /// that low: a third branch is known to exist down there too; see
-/// `dfm_with_repr_within.ri`'s header note for that branch.
+/// `docs/notes/occt-precision-deviation-staircase.md` for that branch, its
+/// ratio and its do-not-extrapolate rule.
 ///
 /// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
 /// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
 /// label this comment used to carry). Seven of these eight points sit at
 /// 2.067x-2.081x the requested deflection, but that is a sample of the upper
 /// ENVELOPE only, not linearity: this 8-point grid is too coarse to resolve the
-/// periodic downward teeth (ratio in `dfm_with_repr_within.ri`'s header note)
+/// periodic downward teeth (ratio in `occt-precision-deviation-staircase.md`)
 /// that punctuate that envelope, and
 /// the table this file's author was given had already dropped 0.44mm, 0.46mm,
 /// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
 /// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
 /// values can't swing far apart is FALSE and unsafe — do not assume that:
-/// `dfm_with_repr_within.ri`'s header note (the single source of truth for
+/// `occt-precision-deviation-staircase.md` (the single source of truth for
 /// the staircase and its mechanism) documents adjacent-neighbour swings far
 /// larger than anything in this 8-point table. 0.50mm's 0.76x reading in this
-/// table is one such tooth, not an isolated exception. The envelope trend
-/// still puts the 1e-3 m bound
-/// crossing at ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
+/// table is one such tooth (that note has the tooth ratio), not an isolated
+/// exception. The envelope trend still puts the 1e-3 m bound crossing at
+/// ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
 /// tooth elsewhere in the range can flip that reading, so re-measure the actual
 /// candidate rather than trusting the envelope. The mechanism (a sphere-face
 /// two-ladder phase collision, not per-edge integer quantization) is documented
-/// once, in `dfm_with_repr_within.ri`'s "#precision and the RepresentationWithin
-/// margin" header note — see there rather than here. BT7's pre-condition
-/// carries the recipe.
+/// once, in `docs/notes/occt-precision-deviation-staircase.md` — see there
+/// rather than here. BT7's pre-condition carries the recipe.
 ///
 /// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
 /// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
 /// machine load). Its safety margin does NOT rest on its measured neighbours —
-/// the tooth period near 0.30mm (see `dfm_with_repr_within.ri`'s header note
+/// the tooth period near 0.30mm (see `occt-precision-deviation-staircase.md`
 /// / PRD §2 for the figure) puts 0.25mm/0.35mm roughly 8 periods away, which
 /// establishes nothing about this locality; that neighbour argument is
 /// exactly the extrapolation the paragraph above labels FALSE and unsafe.
-/// The real argument — teeth deviate DOWNWARD only, so the envelope
-/// (an OBSERVED SUPREMUM, not a proven bound — it has measured as high as
-/// 2.106x in a finer regime) is the branch to size against — is
-/// `dfm_with_repr_within.ri`'s header note; see there rather than restating
+/// The real argument — teeth deviate DOWNWARD only, so the envelope (an
+/// OBSERVED SUPREMUM over the regime walked, not a proven bound, and measured
+/// higher still in a finer regime) is the branch to size against — is
+/// `occt-precision-deviation-staircase.md`; see there rather than restating
 /// the digits here. That envelope
 /// argument extends ±17% around 0.3mm: every point in that neighbourhood is
 /// likewise envelope-bounded below the bound. The faster 0.48mm/0.50mm were rejected:
@@ -1676,9 +1676,11 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     // but it would fire inside a still-PASSING test: visible solely under
     // `cargo test -- --nocapture`, which the repo's cargo output-condensation
     // wrapper (CLAUDE.md) collapses away by default. A dead signal reads as
-    // coverage that isn't there, so none is kept here; the tooth-landing
-    // interpretation and manual re-derivation guidance live on
-    // `OCCT_SOURCE_FINE`'s doc comment above.
+    // coverage that isn't there, so none is kept here; the low-side 4e-4 m
+    // threshold and the manual re-derivation guidance live on
+    // `OCCT_SOURCE_FINE`'s doc comment above, and the tooth-landing
+    // interpretation itself in
+    // `docs/notes/occt-precision-deviation-staircase.md`.
     assert!(
         achieved < 8e-4,
         "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \

@@ -2,7 +2,7 @@
 //! (task #7054, acceptance criterion (c)).
 //!
 //! The kernel-level half lives in
-//! `crates/reify-kernel-occt/tests/harness_occt/boolean_result_normalization_integration.rs`;
+//! `crates/reify-kernel-occt/tests/harness_occt_measurement/boolean_result_normalization_integration.rs`;
 //! this module pins the same defect one layer up, through the whole
 //! parse → compile → `Engine::build` pipeline, using the exact idiom a designer
 //! writes:
@@ -88,7 +88,7 @@ const MASS_REL_TOL: f64 = 1.0e-4;
 /// The EXACT count (18 = 10 unified prism faces + 8 rim-fillet faces) is pinned
 /// one layer down, on the real observable, by
 /// `rounded_box_fuse_chain_unifies_to_a_ten_face_prism` in
-/// `crates/reify-kernel-occt/tests/harness_occt/boolean_result_normalization_integration.rs`,
+/// `crates/reify-kernel-occt/tests/harness_occt_measurement/boolean_result_normalization_integration.rs`,
 /// which reads `extract_faces` directly. Repeating it here through the weaker
 /// `ADVANCED_FACE(` substring proxy — sensitive to STEP line wrapping and to
 /// anything else the export ever writes into the same file — would duplicate

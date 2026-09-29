@@ -202,12 +202,16 @@ positive/negative lists are in the leaf bodies):
   `target_frequency` → FREQUENCY · waypoint `t` → TIME · `velocity_limit` → VELOCITY ·
   `acceleration_limit`/`max_accel` → ACCELERATION · `force_limit`, `reference_load`,
   `PointLoad.force` → FORCE · `PressureLoad.magnitude`, `TractionLoad.traction` → PRESSURE ·
-  `BodyForce.force_density` → FORCE_DENSITY.
+  `BodyForce.force_density` → FORCE_DENSITY. (`density`'s registry const is named
+  `MASS_DENSITY` at the Rust level, disambiguated from the pre-existing
+  `MAGNETIC_FLUX_DENSITY` constant; its `.ri`-facing / §4 `NAMED_DIMENSIONS` name is
+  `Density` — the two spellings name the same dimension, not a drift.) §7's twelve spec
+  constructors do not include a damping spec: `translational_damping_spec` /
+  `rotational_damping_spec` are not chartered in α and are added by whichever leaf adopts a
+  `damping` reader position (ε, per §9 Phase 4) when it does so.
 - **Deliberately bare** (stay dimensionless-accepting, gated to `dimensionless_spec` so a
   *dimensioned* Scalar is still rejected): `poisson_ratio`, `damping_ratio`,
-  `vibration_tolerance`, `tol`, `max_iters`, `Gravity.direction` / `PointLoad.direction`
-  (`List<Real>` unit vectors, deliberate per task 4439), `vec3` axis components (already
-  strict via `validate_dimensionless_unit_axis_vec3`), joint `ratio` (already
+  `vibration_tolerance`, `tol`, `max_iters`, joint `ratio` (already
   DIMENSIONLESS-checked by `ratio_input`), the buckling eigenvalue λ,
   `infill_gibson_ashby_c/n`, `read_location_index`, and tensegrity's bare `List<Real>`
   force/ratio inputs — `form_find`'s `force_densities` parameter, `form_find_free`'s
@@ -216,7 +220,37 @@ positive/negative lists are in the leaf bodies):
   relative ratios, documented as such in the "Dimensional bridge" paragraph of
   `tensegrity.ri`'s `FormFindResult` doc block, which also covers `FormFindResult`'s
   own `force_densities` field (a solver-constructed *output* echo, not a reader
-  input); genuinely dimensionless, not a gap.
+  input); genuinely dimensionless, not a gap. `Gravity.direction` /
+  `PointLoad.direction` (`List<Real>` unit vectors, deliberate per task 4439) are read
+  by `read_direction_or_neg_z` in `elastic_static.rs`; task #7019 Result-ified that
+  reader so a present-but-wrong-dimension component is rejected per invariant I2
+  instead of being coerced to `0.0`, while its separately-pinned shape-level `-Z`
+  fallback for an absent or mis-shaped field is retained under decision 3. `vec3` axis
+  components turned out to split across **two** distinct mechanisms, not the single
+  helper this bucket originally named — the triage hole task #7019 closed was created
+  by treating a whole position class as covered by one helper. The
+  FLEXURE/JOINT/SUPPORT axis path IS gated by `validate_dimensionless_unit_axis_vec3`
+  (`crates/reify-stdlib/src/helpers.rs:311`), whose 8 call sites are all in
+  reify-stdlib — `flexures/beam.rs:83`, `flexures/compound.rs:95` and `:274`,
+  `flexures/hinge.rs:92` and `:245`, `flexures/notch.rs:129`,
+  `flexures/prismatic.rs:104`, `supports.rs:141`, plus the `joints.rs:1321` wrapper —
+  and that helper also does MORE than dimension-check (arity, finiteness, non-zero and
+  non-overflowing squared magnitude), which is why it is not simply
+  `dimensionless_spec`. `MaterialFrame`'s three `Vector3<Dimensionless>` axes are read
+  by a SEPARATE reader in a different crate: `elastic_static.rs`'s
+  `dimensionless_component`, consumed via `extract_vec3_si` and
+  `anisotropic_material_from_value`, which `validate_dimensionless_unit_axis_vec3`
+  never reached. It was un-gated until task #7019 routed it through
+  `dimensionless_spec` and is now gated by that spec directly — but it does NOT
+  inherit the flexure helper's unit-magnitude guard: nothing on the `extract_vec3_si`
+  to `rotate_voigt` path normalises the frame, and `D_global` is homogeneous of degree
+  4 in its entries, so orthonormality remains a real but UNENFORCED precondition,
+  pinned as such by the FENCE test
+  `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`.
+  Lesson, generalisable beyond this one position class: a
+  position class is "already strict" only if the gating helper's call sites cover
+  *every* reader at that class, not merely because one helper for that shape exists
+  somewhere in the workspace.
 - **Angle-semantic positions** (`revolute` binds, planar/cylindrical θ, `ramp_profile`
   from/to on a revolute) route through `reify-stdlib`'s existing ANGLE-checked `trig_input`.
   This PRD changes **no angle policy** — it replaces ad-hoc `as_f64()` with the helper that
@@ -504,13 +538,29 @@ pub enum FieldAcceptance { Accepted(f64), Absent, Undefined, Rejected(ArgRejecti
 
 ## 8. Boundary-test sketch (both faces of each seam)
 
+> **AMENDMENT 2026-09-29 (Leo, esc-7372-3 follow-on).** #5306 (PRD 4 leaf δ) set
+> `CTOR_FIELD_CONFORMANCE_SEVERITY` to `Severity::Error`, so a `.ri` struct-ctor argument whose
+> dimension disagrees with the declared field is a compile-time `ArgTypeMismatch`: `reify eval`
+> exits 1 before any native reader runs. A wrong-dimension ctor call in `.ri` therefore pre-empts
+> the reader, and a "`.ri` exits 1 with `DimensionedArgRejected`" signal would pass vacuously on
+> #5306's exit code without ever showing this PRD's code. Rows B1, B2, B4 and B5 and the §9
+> β / γ1 / γ2 / γ3 / ε / ζ / η / π signals are re-scoped to match. A reader rejection is asserted
+> **below the compiler**: a Rust test in an existing binary hands the reader a hand-built
+> wrong-dimension `Value` and asserts `DiagnosticCode::DimensionedArgRejected` identity. A
+> positive floor is read from a `.ri` file that carries no wrong binding. The binding records are
+> the RE-SCOPED 2026-09-29 blocks of tasks #6922 (γ1/ε/η), #6941 (β/γ2/ζ) and #5802 (γ3); they
+> win wherever this text is terser. Routing background is in
+> `docs/notes/ctor-conformance-flip-leaf-signals.md`. Dependency edges are unchanged: γ1 still
+> widens `extract_loads` before γ2 migrates call sites to `1000N`, or every migrated load would
+> be zeroed.
+
 | # | Scenario | Preconditions | Postconditions |
 |---|---|---|---|
-| B1 | solver ↔ stdlib, **positive** | one body, one support, `PointLoad(force: 5000N)` | `solve_elastic_static` and `solve_buckling` report the **same** applied force; the elastic reaction is non-zero and matches the closed-form tip deflection band. *Negative-assertion mandate: asserts the force is APPLIED, not merely that a warning appeared* |
-| B2 | solver ↔ stdlib, **negative** | same scene, `PointLoad(force: 5000.0)` (bare) | `reify eval` exits 1; one `DimensionedArgRejected` Error naming `PointLoad`/`force`; the solve does **not** silently proceed with 0 N |
+| B1 | solver ↔ stdlib, **positive** | one body, one support, a `PointLoad` whose `force` is a FORCE Scalar of 1000 N | the force is APPLIED: `max_von_mises` = 5139325.408614099 Pa with non-zero iterations, equal to the bare-number control `tests/prd-gate/fixtures/dcr_solver_load_dropped_bare.ri` (neither result type carries an applied load, so the assertion rides on `max_von_mises`). *Amended 2026-09-29:* γ1 reads it below the compiler, from a hand-built `PointLoad` Value. γ2 reads it end to end, because only the retype lets `tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri` compile: `reify eval` then exits 0 with that value. *Negative-assertion mandate: asserts the force is APPLIED, not merely that a warning appeared* |
+| B2 | solver ↔ stdlib, **negative** | same scene, a HAND-BUILT `PointLoad` Value whose `force` is a bare `Real`/`Int`, handed to the narrowed load reader. *Amended 2026-09-29:* after γ2 the `.ri` spelling `PointLoad(force: 5000.0)` never reaches the reader, because #5306's `ArgTypeMismatch` rejects it at compile | one `Severity::Error` `DimensionedArgRejected` naming `PointLoad`/`force`, asserted at the reader in a Rust test; the solve does **not** silently proceed with 0 N. No `.ri` exit code is asserted: that exit 1 is #5306's |
 | B3 | dead-wired load | `loads: [TractionLoad(traction: 5.0e6Pa)]` | `reify eval` exits 1 with `FeaLoadKindUnsupported` naming `TractionLoad`; **no** result value is produced |
-| B4 | stdlib ↔ eval, material | `prb_cantilever_beam(20mm, 5mm, 0.5mm, Material(youngs_modulus: 200mm, …), …)` | exits 1, `DimensionedArgRejected` naming `prb_cantilever_beam` / `youngs_modulus`; the `200GPa` twin yields the reference spring rate within band |
-| B5 | absent-vs-wrong | material with `yield_stress` **absent** vs `yield_stress: 310mm` | absent ⇒ the documented PRB small-deflection fallback, no diagnostic; wrong-dimension ⇒ exit 1 (decision 3) |
+| B4 | stdlib ↔ eval, material | `prb_cantilever_beam(…)` fed a HAND-BUILT `Material` whose `youngs_modulus` is a LENGTH Scalar. *Amended 2026-09-29:* the `.ri` spelling `Material(youngs_modulus: 200mm, …)` is #5306's compile-time `ArgTypeMismatch` | `DimensionedArgRejected` naming `prb_cantilever_beam` / `youngs_modulus`, with I5's specific `UndefCause`, asserted below the compiler; the `200GPa` twin `tests/prd-gate/fixtures/dcr_material_dimension_correct.ri` exits 0 with `spring_rate` 1.3802083333333335 |
+| B5 | absent-vs-wrong | material with `yield_stress` **absent** vs a HAND-BUILT value whose `yield_stress` is `Some(<LENGTH Scalar>)` (*amended 2026-09-29*, as B4) | absent ⇒ the documented PRB small-deflection fallback, no diagnostic; wrong-dimension ⇒ `DimensionedArgRejected`, asserted below the compiler (decision 3); `some(310MPa)` keeps `prb_validity_range` at ±0.08726646259971647 rad, read from a file without the wrong binding |
 | B6 | Undef transience | a load whose `force` cell is `Undef` mid-solve | quiet degradation, **no** diagnostic, exit 0 (decision 2) |
 | B7 | joint-kind polymorphism | `bind` an ANGLE to a prismatic joint and a LENGTH to a revolute, through the loop-closure path | both exit 1 with the position named — matching `joints.rs:1224`'s existing behaviour, which `loop_closure.rs:691` contradicts today |
 | B8 | override actually applied | `ElasticOptions(shell_voxel_size: 0.5mm)` vs default | the medial-axis tolerance observably differs (today byte-identical — the override is discarded) |
@@ -521,7 +571,8 @@ pub enum FieldAcceptance { Accepted(f64), Absent, Undefined, Rejected(ArgRejecti
 
 ## 9. Decomposition plan
 
-Signals are `reify eval`-phrased (PRD 2 owns check). Intra-batch prereqs by Greek label.
+Signals are `reify eval`-phrased (PRD 2 owns check), except where the 2026-09-29 amendment at
+the head of §8 moves a reader rejection below the compiler. Intra-batch prereqs by Greek label.
 G7 walk: no invariant hit is unresolved — the batch **implements** INV-SF-1/2/3/6 and defers
 INV-SF-5's `JointValue` retarget to its named owner (task 5412), which is a resolution, not a
 waiver. No G7 waivers are required.
@@ -529,29 +580,45 @@ waiver. No G7 waivers are required.
 **Phase 1 — foundation**
 
 - **α — relocate `arg_acceptance` to `reify-ir`; add the PRD-5 spec constructors,
-  `accept_field`, and the two `DiagnosticCode` variants.** *(reify-ir, reify-core, reify-eval,
+  `accept_field`, and one `DiagnosticCode` variant (`FeaLoadKindUnsupported`); reader/field
+  dimension rejections reuse `DimensionedArgRejected`.** *(reify-ir, reify-core, reify-eval,
   reify-stdlib.)* INTERMEDIATE — unlocks β…ι. Downstream consumers: every leg-B/C/D leaf.
   Includes making `helpers.rs:229` an adapter so there is one rule.
 
 **Phase 2 — vertical slice (the headline defect)**
 
-- **β — flexure reader adoption + dimension-rejection classifier arm.** Prereq α. *Signal:*
-  `reify eval` on the B4 fixture exits 1 with `DimensionedArgRejected` naming
-  `prb_cantilever_beam`/`youngs_modulus`; the `200GPa` twin reproduces the reference spring
-  rate. Consolidates `scalar_si`/`material_field_si`/`material_numeric_field`/`length_si`;
-  fixes the stale `modal_ops.rs:839` citation at `common.rs:137`.
+- **β — flexure reader adoption + dimension-rejection classifier arm.** Prereq α. *Signal
+  (amended 2026-09-29):* B4 + B5 below the compiler, as `DimensionedArgRejected` naming
+  `prb_cantilever_beam`/`youngs_modulus` (and `yield_stress`) on hand-built values. The `.ri`
+  exit 1 on the B4/B5 fixtures is #5306's and is not β's signal. The `200GPa` twin reproduces
+  the reference spring rate (`dcr_material_dimension_correct.ri`, exit 0). Consolidates
+  `scalar_si`/`material_field_si`/`material_numeric_field`/`length_si`; fixes the stale `modal_ops.rs:839` citation at `common.rs:137`.
 
 **Phase 3 — solver load integrity (three green steps; γ2 and γ3 carry hard edges)**
 
 - **γ1 — widen both solvers' load readers; one shared reader; buckling `type_name` guard.**
-  Prereq α. *Signal:* B1 — `PointLoad(force: 5000N)` produces the same applied force in
-  `solve_elastic_static` and `solve_buckling`, and a non-zero elastic reaction.
+  Prereq α. *Signal (amended 2026-09-29):* B1 below the compiler. A Rust test in an existing
+  test binary (e.g. `crates/reify-eval-fea-tests/tests/solve_elastic_static_e2e.rs`) hands the
+  shared load reader / `solve_elastic_static` path a `PointLoad` Value whose `force` is a FORCE
+  Scalar of 1000 N. It asserts `max_von_mises == 5139325.408614099` with iterations > 0, matching
+  the bare-number control, which stays numerically unchanged. The end-to-end `.ri` check moves
+  to γ2: until γ2 retypes `PointLoad.force`, `dcr_solver_load_dropped_dimensioned.ri` fails at
+  compile on #5306's `ArgTypeMismatch` against the `Real` field.
 - **γ2 — retype the four load fields in `fea_multi_case.ri`; migrate all 90 in-scope call
   sites.** Prereq γ1 (hard edge). *Signal:* `reify eval examples/fea_multi_case_bracket.ri`
   and `examples/multi_load_bracket.ri` produce byte-identical results with `force: 1000N`.
+  *Added 2026-09-29 (moved from γ1):* `reify eval
+  tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri` exits 0 with `max_von_mises`
+  5139325.408614099 Pa and non-zero iterations. In the same diff, γ2 deletes the ctor-conformance
+  residual entries the retype clears. It gives each deliberate bare spelling that now fails at
+  compile an owned entry, or migrates it. It migrates or retires the bare control
+  `dcr_solver_load_dropped_bare.ri`. Task #6941 records the details.
 - **γ3 — narrow: reject bare at load slots; delete the `0.0` density default, the `1.0` N
   sentinel and the silent unknown-`type_name` skip; `E_FeaLoadKindUnsupported` for
-  `TractionLoad`/`BodyForce`.** Prereq γ2 (hard edge). *Signal:* B2 + B3. Retargets the two
+  `TractionLoad`/`BodyForce`.** Prereq γ2 (hard edge). *Signal:* B2 + B3. *Amended
+  2026-09-29:* B2 is asserted at the reader on a hand-built bare value, never on a `.ri` exit
+  code. B3 is unchanged and needs a solver-calling scene, which
+  `dcr_load_ctor_dimension_silent.ri` is not. Retargets the two
   tests that pin the defect (`elastic_static.rs:8240`, `:8303`) and corrects `buckling.rs:741`'s
   orphaned "task θ/3457" deferral (3457 is `done`). Files the `TractionLoad`/`BodyForce`
   wire-up follow-up task cited from the diagnostic.
@@ -564,14 +631,26 @@ waiver. No G7 waivers are required.
 - **ε — dynamics `cell_f64`: consolidate three copies to one; gate mass/com/inertia/
   spring_rate/damping.** *Signal:* `mass_properties(mass: 2m, …)` exits 1 with the field named;
   today it silently reads 2.0 kg. Routes `dynamics/eval.rs:354` through the existing
-  `cell_mass_f64` (`:78`), closing an inconsistency inside one file.
+  `cell_mass_f64` (`:78`), closing an inconsistency inside one file. *Amended 2026-09-29:*
+  the builtin half is kept. `mass_properties(2m, …)` still compiles and reaches eval, and after ε
+  it carries the specific `DimensionedArgRejected` `UndefCause` and a named `Severity::Error`
+  instead of the generic `OpContractViolation`. The struct half moves below the compiler:
+  `mass_properties_from_value` fed a hand-built `MassProperties` whose `mass` is a LENGTH Scalar
+  yields `DimensionedArgRejected` naming `MassProperties`/`mass`. The 2 kg twin is unchanged.
 - **ζ — trajectory `read_scalar_si`/`field_f64`: consolidate three near-duplicates to one; gate
   `target_frequency`/`t`/limits; stop default-substitution for present-but-wrong fields.**
-  *Signal:* `ZVShaper(target_frequency: 50rad/s)` exits 1 instead of applying a silent 6.28×
-  error; `50Hz` is unchanged.
-- **η — FDM / modal / as-printed readers.** *Signal:* `AsPrintedOptions(line_width: 0.4)` and
-  `FDMCouponOverride(ex: 2mm)` each exit 1 naming the field; the dimensioned spellings are
-  unchanged.
+  *Signal (amended 2026-09-29):* the consolidated trajectory reader fed a hand-built `ZVShaper`
+  whose `target_frequency` is rad·s⁻¹ yields `DimensionedArgRejected`, asserted below the
+  compiler, instead of applying a silent 6.28× error. The `.ri` spelling
+  `ZVShaper(target_frequency: 50rad/s)` is #5306's compile-time `ArgTypeMismatch`. `50Hz`,
+  evaluated from a file without the wrong binding, stays byte-identical.
+- **η — FDM / modal / as-printed readers.** *Signal (amended 2026-09-29):* the as-printed
+  readers fed a hand-built `AsPrintedOptions` with a bare `line_width: 0.4` and a hand-built
+  `FDMCouponOverride` with `ex: Some(<LENGTH 2 mm>)` each return `ComputeOutcome::Failed`
+  carrying `DimensionedArgRejected` naming the field, asserted below the compiler. Both `.ri`
+  spellings are #5306's compile-time `ArgTypeMismatch`. From a file without the wrong bindings,
+  `line_width: 0.4mm` and `ex: 2GPa` stay numerically unchanged, and an omitted override takes
+  its declared default with no diagnostic.
 - **θ — `safety_factor` at BOTH entry points + `analysis.ri` retype.** *Signal:*
   `safety_factor(σ, 250.0)` exits 1; `safety_factor(σ, 250MPa)` evaluates to the same value it
   does today. Covers `reify-stdlib/src/analysis.rs:271` **and** the Field interception at
@@ -615,7 +694,10 @@ waiver. No G7 waivers are required.
   `yield_stress` premises are corrected in place.
 - **π — integration gate.** Prereq β, γ3, δ, ε, ζ, η, θ, ι, λ. *Signal:* the full §8
   boundary-test table runs green as a gate-resident suite, with B1/B2 asserting **application**
-  of the load rather than the presence of a warning.
+  of the load rather than the presence of a warning. *Amended 2026-09-29:* B1, B2, B4 and B5 run
+  as re-scoped in §8, on hand-built reader values below the compiler. B1 also runs end to end
+  through `dcr_solver_load_dropped_dimensioned.ri`, which compiles once γ2 has landed. No row is
+  satisfied by #5306's compile-time exit 1.
 
 ---
 

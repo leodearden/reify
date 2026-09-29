@@ -47,15 +47,24 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 4 {
                 return Some(Value::Undef);
             }
-            // Accept either a lowercase string or a qualified EulerConvention enum value.
-            // The string path is case-sensitive (String "XYZ" → Undef).
-            // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
-            let convention_owned: String;
-            let convention: &str = match &args[0] {
-                Value::String(s) => s.as_str(),
+            // A qualified `EulerConvention` enum value is the SOLE accepted
+            // convention form (task #6082, item-4 ruling). The raw lowercase
+            // string path was removed outright, taking its case-sensitivity
+            // trap ("xyz" worked, "XYZ" silently gave Undef) with it; a String
+            // convention is now rejected here and, before eval is ever reached,
+            // diagnosed statically as an ArgTypeMismatch.
+            //
+            // The dispatch table below is keyed on the variant spelling
+            // EXACTLY as declared in `stdlib/geometry_traits.ri` — uppercase —
+            // so the variant is matched directly. It used to be lowercased
+            // first, which was residue of the removed raw-string path: once
+            // that path was gone the conversion existed only to bridge two
+            // spellings of one concept, at the cost of a heap allocation on
+            // every call (this constructor runs per iteration inside the
+            // kinematic loop-closure solver).
+            let convention = match &args[0] {
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    convention_owned = variant.to_lowercase();
-                    &convention_owned
+                    variant.as_str()
                 }
                 _ => return Some(Value::Undef),
             };
@@ -72,18 +81,18 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 None => return Some(Value::Undef),
             };
             let axes: [usize; 3] = match convention {
-                "xyz" => [0, 1, 2],
-                "xzy" => [0, 2, 1],
-                "yxz" => [1, 0, 2],
-                "yzx" => [1, 2, 0],
-                "zxy" => [2, 0, 1],
-                "zyx" => [2, 1, 0],
-                "xyx" => [0, 1, 0],
-                "xzx" => [0, 2, 0],
-                "yxy" => [1, 0, 1],
-                "yzy" => [1, 2, 1],
-                "zxz" => [2, 0, 2],
-                "zyz" => [2, 1, 2],
+                "XYZ" => [0, 1, 2],
+                "XZY" => [0, 2, 1],
+                "YXZ" => [1, 0, 2],
+                "YZX" => [1, 2, 0],
+                "ZXY" => [2, 0, 1],
+                "ZYX" => [2, 1, 0],
+                "XYX" => [0, 1, 0],
+                "XZX" => [0, 2, 0],
+                "YXY" => [1, 0, 1],
+                "YZY" => [1, 2, 1],
+                "ZXZ" => [2, 0, 2],
+                "ZYZ" => [2, 1, 2],
                 _ => return Some(Value::Undef),
             };
             // Compose q = q_a * q_b * q_c (intrinsic: multiply left-to-right)
@@ -213,6 +222,13 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             }
             // log(q) = (axis * angle) where angle = 2*atan2(|v|, w), axis = v/|v|.
             // Near identity (|v| ≈ 0), use leading-order Taylor: log ≈ 2*(x,y,z).
+            //
+            // The emitted components carry ANGLE (slot 7, `rad`) — #6080. The axis
+            // is a unit dimensionless direction and the magnitude is the angle, so
+            // under reify's dimensional algebra the product is ANGLE. This is the
+            // same dimension `orient_to_axis_angle` already gives its `angle` field
+            // (`Value::angle`, below); the two spellings of the same rotation must
+            // agree.
             let v_norm = (x * x + y * y + z * z).sqrt();
             const EPS: f64 = 1e-12;
             let (lx, ly, lz) = if v_norm < EPS {
@@ -225,7 +241,11 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if !lx.is_finite() || !ly.is_finite() || !lz.is_finite() {
                 return Some(Value::Undef);
             }
-            Value::Vector(vec![Value::Real(lx), Value::Real(ly), Value::Real(lz)])
+            Value::Vector(vec![
+                Value::angle(lx),
+                Value::angle(ly),
+                Value::angle(lz),
+            ])
         }
         "orient_inverse" => {
             if args.len() != 1 {
@@ -265,20 +285,25 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
-            // Accept either a lowercase string or a qualified EulerConvention enum value.
-            // The string path is case-sensitive (String "XYZ" → Undef).
-            // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
-            let convention_owned: String;
-            let convention: &str = match &args[0] {
-                Value::String(s) => s.as_str(),
-                Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    convention_owned = variant.to_lowercase();
-                    &convention_owned
-                }
+            // SUBJECT-FIRST (task #6082, F3): args are (q, convention).
+            // This decomposer matches its siblings orient_log(q) /
+            // orient_to_axis_angle(q) / orient_inverse(q) / transform_log(t),
+            // all of which take the subject at argument 0. The sibling
+            // CONSTRUCTOR `orient_euler` stays convention-FIRST on purpose: its
+            // convention selects the meaning of the three angle arguments that
+            // follow, matching R_xyz(a, b, c) notation.
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Some(Value::Undef),
             };
-            let (w, x, y, z) = match &args[1] {
-                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            // A qualified `EulerConvention` enum value is the SOLE accepted
+            // convention form (task #6082, item-4 ruling) — see the matching
+            // note on `orient_euler` above, including why the arm table below
+            // is keyed on the uppercase variant spelling directly.
+            let convention = match &args[1] {
+                Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
+                    variant.as_str()
+                }
                 _ => return Some(Value::Undef),
             };
             if !quaternion_is_finite(w, x, y, z) {
@@ -301,7 +326,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let clamp = |v: f64| v.clamp(-1.0, 1.0);
             let (a, b, c) = match convention {
                 // ── Tait-Bryan ───────────────────────────────────────────────
-                "xyz" => {
+                "XYZ" => {
                     let s = clamp(r02);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -311,7 +336,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r12).atan2(r22), bb, (-r01).atan2(r00))
                     }
                 }
-                "xzy" => {
+                "XZY" => {
                     let s = clamp(-r01);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -320,7 +345,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r21.atan2(r11), bb, r02.atan2(r00))
                     }
                 }
-                "yxz" => {
+                "YXZ" => {
                     let s = clamp(-r12);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -329,7 +354,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r02.atan2(r22), bb, r10.atan2(r11))
                     }
                 }
-                "yzx" => {
+                "YZX" => {
                     let s = clamp(r10);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -338,7 +363,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r20).atan2(r00), bb, (-r12).atan2(r11))
                     }
                 }
-                "zxy" => {
+                "ZXY" => {
                     let s = clamp(r21);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -347,7 +372,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r01).atan2(r11), bb, (-r20).atan2(r22))
                     }
                 }
-                "zyx" => {
+                "ZYX" => {
                     let s = clamp(-r20);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -357,7 +382,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 // ── Proper Euler ─────────────────────────────────────────────
-                "xyx" => {
+                "XYX" => {
                     let bb = clamp(r00).acos();
                     if bb.sin().abs() < EPS_SING {
                         // β ≈ 0 or π → singularity. Set α = 0.
@@ -370,19 +395,19 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r10.atan2(-r20), bb, r01.atan2(r02))
                     }
                 }
-                "xzx" => {
+                "XZX" => {
                     let bb = clamp(r00).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r00 > 0.0 {
                             (0.0, bb, (-r12).atan2(r11))
                         } else {
-                            (0.0, bb, r12.atan2(r11))
+                            (0.0, bb, r12.atan2(-r11))
                         }
                     } else {
                         (r20.atan2(r10), bb, r02.atan2(-r01))
                     }
                 }
-                "yxy" => {
+                "YXY" => {
                     let bb = clamp(r11).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r11 > 0.0 {
@@ -394,37 +419,37 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r01.atan2(r21), bb, r10.atan2(-r12))
                     }
                 }
-                "yzy" => {
+                "YZY" => {
                     let bb = clamp(r11).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r11 > 0.0 {
-                            (0.0, bb, r20.atan2(r00))
-                        } else {
                             (0.0, bb, (-r20).atan2(r00))
+                        } else {
+                            (0.0, bb, (-r20).atan2(-r00))
                         }
                     } else {
                         (r21.atan2(-r01), bb, r12.atan2(r10))
                     }
                 }
-                "zxz" => {
+                "ZXZ" => {
                     let bb = clamp(r22).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r22 > 0.0 {
                             (0.0, bb, r10.atan2(r11))
                         } else {
-                            (0.0, bb, (-r10).atan2(r11))
+                            (0.0, bb, (-r10).atan2(-r11))
                         }
                     } else {
                         (r02.atan2(-r12), bb, r20.atan2(r21))
                     }
                 }
-                "zyz" => {
+                "ZYZ" => {
                     let bb = clamp(r22).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r22 > 0.0 {
                             (0.0, bb, r10.atan2(r00))
                         } else {
-                            (0.0, bb, (-r10).atan2(r00))
+                            (0.0, bb, r10.atan2(-r00))
                         }
                     } else {
                         (r12.atan2(r02), bb, r21.atan2(-r20))
@@ -532,9 +557,22 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 Some(c) if c.0.len() == 3 => c,
                 _ => return Some(Value::Undef),
             };
-            if dim != DimensionVector::DIMENSIONLESS {
+            // The rotation vector is axis * angle, so it carries ANGLE (#6080) —
+            // the exact dimension `orient_log` emits, which is what keeps
+            // exp(log(q)) == q well-typed.
+            //
+            // DIMENSIONLESS is NOT accepted as a tolerant alias: it is a
+            // SPECIFIC dimension (the zero exponent vector), not a wildcard, so
+            // admitting it would re-open the hole PRD #5747 decision D11 closed
+            // for this family. A bare radian rotation vector is spelled
+            // `1.5708rad` / `90deg`, not `1.5708`.
+            if dim != DimensionVector::ANGLE {
                 return Some(Value::Undef);
             }
+            // Below this gate the arithmetic is unchanged: `Value::angle`'s SI
+            // contract is radians, which is exactly what the sqrt / sin / cos
+            // of the half-angle already assume. This is a type gate, not a
+            // numerics change.
             let vx = comps[0];
             let vy = comps[1];
             let vz = comps[2];
@@ -685,12 +723,131 @@ fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
     normalize_vec3(v[0], v[1], v[2])
 }
 
+/// Shared constructor for the `E_RotationVectorDimension` diagnostic.
+///
+/// The token, the severity and the migration advice are stated ONCE here and
+/// reused by BOTH arms that reject a wrong-dimension rotation vector —
+/// `orientation::diagnose`'s `orient_exp` arm and `geometry::diagnose`'s
+/// `transform_exp` arm. They previously carried independently written string
+/// literals whose only cross-module pin was the CLI tests' bare
+/// `contains("E_RotationVectorDimension")`, which would have stayed green while
+/// the two drifted apart in wording or recommended fix.
+///
+/// `field` selects the noun phrase: `None` for a bare rotation-vector argument
+/// (`orient_exp`), `Some("angular")` for a `Twist` half (`transform_exp`).
+///
+/// The advice deliberately shows a WHOLE rotation vector with EVERY component
+/// dimensioned, rather than a lone `1.5708rad`. Following the lone-component
+/// form literally yields the half-migrated `vec3(0, 0, 1.5708rad)` — a
+/// MIXED-dimension container that `construct::eval_vec` collapses to
+/// `Value::Undef` *before* `orient_exp` / `transform_exp` is ever called, so
+/// this classifier never sees it and the call fails the old silent way (bare
+/// `undef`, `reify eval` exit 0). That is the exact failure mode this
+/// diagnostic exists to remove, so the advice must not steer users into it.
+/// Pinned end-to-end by `cli_orientation_rotvec_dimension`'s
+/// `eval_recommended_migration_spelling_succeeds`.
+pub(crate) fn rotation_vector_dimension_error(
+    builtin: &str,
+    field: Option<&str>,
+    got: DimensionVector,
+) -> reify_core::Diagnostic {
+    let subject = match field {
+        Some(f) => format!("a Twist whose `{f}` half carries"),
+        None => "a rotation vector with".to_string(),
+    };
+    reify_core::Diagnostic::error(format!(
+        "E_RotationVectorDimension: {builtin} expects {subject} ANGLE dimension \
+         (rad); got {got}. A rotation vector is axis * angle, so spell every \
+         component as a dimensioned literal: `vec3(0rad, 0rad, 1.5708rad)` / \
+         `vec3(0deg, 0deg, 90deg)`"
+    ))
+    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected)
+}
+
+/// Pure classifier (post-`Value::Undef` hook) for orientation-builtin calls,
+/// mirroring `tolerancing::diagnose` / `geometry::diagnose` / `stackup::diagnose`.
+/// `reify-expr`'s `FunctionCall` arm calls this (re-exported as
+/// `orientation_diagnose`) when a stdlib builtin returns `Value::Undef`, and
+/// pushes any returned `Diagnostic` into the `EvalContext` runtime sink so
+/// `reify eval` can print it and exit non-zero.
+///
+/// Only `orient_exp` is diagnosed, and only for its one user-correctable
+/// failure cause: a rotation vector whose components carry the wrong dimension.
+/// A rotation vector is `axis * angle`, so it carries ANGLE (#6080) — the exact
+/// dimension `orient_log` emits, which is what keeps `exp(log(q)) == q`
+/// well-typed. `DIMENSIONLESS` used to be the accepted spelling and is now
+/// rejected like any other wrong dimension, so this diagnostic is the migration
+/// mechanism for that breaking change: it names the offending dimension instead
+/// of leaving a bare `undef` behind.
+///
+/// Severity is `Error` (so `reify eval` exits 1), per #6126's 2026-08-19
+/// amendment via esc-6080-6, and the diagnostic carries
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`] — the shipped code
+/// for a `Severity::Error` runtime dimension rejection of a positional
+/// argument, REUSED rather than joined by a new variant. BINDING ruling A7
+/// (Leo, 2026-08-30, esc-5791-3) settles that one rejection REASON gets one
+/// code, so this arm joins `geometry::diagnose`'s three converged DIMENSION
+/// arms rather than standing outside them. The `E_RotationVectorDimension`
+/// token still rides in the message text: it names the specific fault within
+/// that reason, which is finer-grained than the code.
+///
+/// The message itself is built by `rotation_vector_dimension_error`, shared
+/// with `geometry::diagnose`'s `transform_exp` arm so the token, the severity
+/// and the recommended fix cannot drift between the two.
+///
+/// Returns `None` for any other name, and for a shape error (wrong arity,
+/// non-container argument, non-3d vector, mixed component dimensions), which
+/// keeps its existing silent-`Undef` behaviour so a shape error is never
+/// misattributed as a dimension error — the same restraint `geometry::diagnose`
+/// documents.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
+    match name {
+        "orient_exp" => {
+            if args.len() != 1 {
+                return None;
+            }
+            // `tensor_components_f64` returns `None` for every shape error —
+            // including a MIXED-dimension container, and including the
+            // already-collapsed `Value::Undef` a half-migrated
+            // `vec3(0, 0, 1.5708rad)` arrives as. Those stay silent on purpose:
+            // an arbitrary upstream `Undef` must never be misattributed to a
+            // rotation-vector dimension error. See
+            // `rotation_vector_dimension_error`'s note on why the advice text
+            // steers users away from producing one.
+            let (comps, dim) = tensor_components_f64(&args[0])?;
+            if comps.len() != 3 || dim == DimensionVector::ANGLE {
+                return None;
+            }
+            Some(rotation_vector_dimension_error("orient_exp", None, dim))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{elementary_rotation_quat, normalize_quaternion};
+    use super::{elementary_rotation_quat, normalize_quaternion, quat_mul};
     use crate::eval_builtin;
     use reify_core::DimensionVector;
     use reify_ir::Value;
+
+    /// Build a qualified `EulerConvention` enum value, exactly as the compiler
+    /// lowers `EulerConvention.<VARIANT>` (`Value::enum_unit`, uppercase
+    /// variant). Since task #6082 this is the SOLE convention form the two
+    /// Euler builtins accept — the raw lowercase-string path was removed.
+    fn conv(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "EulerConvention".to_string(),
+            variant: variant.to_string(),
+            payload: vec![],
+        }
+    }
+
+    /// The twelve declared conventions: six Tait-Bryan (three distinct axes)
+    /// followed by six proper/classic Euler (first axis repeated as third).
+    const ALL_CONVENTIONS: [&str; 12] = [
+        "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "XYX", "XZX", "YXY", "YZY", "ZXZ", "ZYZ",
+    ];
 
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
 
@@ -1189,7 +1346,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1212,7 +1369,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("zyx".into()),
+                    conv("ZYX"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1231,7 +1388,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(0.0),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1250,7 +1407,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("abc".into()),
+                    conv("ABC"),
                     Value::Real(0.0),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1260,8 +1417,10 @@ mod tests {
         );
     }
 
+    /// A convention that is neither an `EulerConvention` enum value nor
+    /// anything else the arm accepts (there is nothing else) falls to Undef.
     #[test]
-    fn orient_euler_non_string_convention_returns_undef() {
+    fn orient_euler_non_enum_convention_returns_undef() {
         assert!(
             eval_builtin(
                 "orient_euler",
@@ -1285,7 +1444,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Scalar {
                         si_value: std::f64::consts::FRAC_PI_2,
                         dimension: DimensionVector::ANGLE,
@@ -1307,7 +1466,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "orient_euler",
-                &[Value::String("xyz".into()), Value::Real(0.0),]
+                &[conv("XYZ"), Value::Real(0.0),]
             )
             .is_undef()
         );
@@ -1317,14 +1476,14 @@ mod tests {
 
     #[test]
     fn orient_euler_xyz_two_nonzero_angles() {
-        // orient_euler('xyz', π/2, π/2, 0): q_x(π/2) * q_y(π/2) * q_z(0)
+        // orient_euler(EulerConvention.XYZ, π/2, π/2, 0): q_x(π/2) * q_y(π/2) * q_z(0)
         // Two non-zero angles exercise quat_mul with non-identity operands.
         // Expected: (0.5, 0.5, 0.5, 0.5)
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
@@ -1339,14 +1498,14 @@ mod tests {
 
     #[test]
     fn orient_euler_zyx_three_nonzero_angles() {
-        // orient_euler('zyx', π/3, π/4, π/6): q_z(π/3) * q_y(π/4) * q_x(π/6)
+        // orient_euler(EulerConvention.ZYX, π/3, π/4, π/6): q_z(π/3) * q_y(π/4) * q_x(π/6)
         // Three non-zero angles exercise full three-way quat_mul composition.
         // Analytically computed via Hamilton product of elementary rotations.
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("zyx".into()),
+                    conv("ZYX"),
                     Value::Real(std::f64::consts::FRAC_PI_3),
                     Value::Real(std::f64::consts::FRAC_PI_4),
                     Value::Real(std::f64::consts::FRAC_PI_6),
@@ -1361,14 +1520,14 @@ mod tests {
 
     #[test]
     fn orient_euler_xzx_proper_euler_compound() {
-        // orient_euler('xzx', π/2, π/2, 0): q_x(π/2) * q_z(π/2) * q_x(0)
+        // orient_euler(EulerConvention.XZX, π/2, π/2, 0): q_x(π/2) * q_z(π/2) * q_x(0)
         // Proper Euler convention with compound rotation.
         // Expected: (0.5, 0.5, -0.5, 0.5)
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xzx".into()),
+                    conv("XZX"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
@@ -1495,23 +1654,11 @@ mod tests {
 
     // ── orient NaN/Inf/edge-case tests (task-359) ─────────────────────────
 
-    #[test]
-    fn orient_euler_uppercase_convention_returns_undef() {
-        // Convention matching is case-sensitive: 'XYZ' is not recognized, only 'xyz'.
-        assert!(
-            eval_builtin(
-                "orient_euler",
-                &[
-                    Value::String("XYZ".into()),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            )
-            .is_undef(),
-            "uppercase convention 'XYZ' should be rejected"
-        );
-    }
+    // (`orient_euler_uppercase_convention_returns_undef` lived here. It pinned
+    // the removed String path's case-sensitivity — 'XYZ' rejected, 'xyz'
+    // accepted. Task #6082 removed that path outright, so the guard is now
+    // `no_string_convention_is_accepted_on_either_builtin`, which subsumes it:
+    // BOTH spellings are rejected, on both builtins, for all twelve.)
 
     #[test]
     fn orient_basis_nan_component_returns_undef() {
@@ -1558,7 +1705,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(f64::NAN),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1675,7 +1822,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(f64::INFINITY),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -2099,22 +2246,101 @@ mod tests {
         assert!(eval_builtin("orient_log", &[Value::Real(1.0)]).is_undef());
     }
 
+    // ── orient_log rotation-vector DIMENSION tests (#6080) ─────────────────
+    //
+    // The `orient_log_*` tests above assert only magnitudes: they read
+    // components through `assert_vector3_approx!`, which extracts via
+    // `as_f64()` (test_macros.rs) and is therefore dimension-blind — it
+    // passes identically whether a component is `Real` or `Scalar{ANGLE}`.
+    // The tests below destructure the returned `Value::Vector` and assert the
+    // per-component dimension with `assert_scalar_approx!`, which is what
+    // actually pins the `#6080` ruling: log(q) = axis * angle, so the emitted
+    // rotation vector carries ANGLE (slot 7, `rad`), exactly as
+    // `orient_to_axis_angle`'s `angle` field already does.
+
+    /// Destructure a `Value::Vector` of exactly 3 components, panicking otherwise.
+    fn vector3_components(v: Value) -> Vec<Value> {
+        match v {
+            Value::Vector(items) if items.len() == 3 => items,
+            other => panic!("expected Vector(3), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orient_log_identity_emits_angle_dimensioned_zeros() {
+        let id = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[id]));
+        for comp in items {
+            assert_scalar_approx!(comp, 0.0, DimensionVector::ANGLE);
+        }
+    }
+
+    #[test]
+    fn orient_log_90deg_z_emits_angle_dimensioned_components() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let q90z = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[q90z]));
+        assert_scalar_approx!(items[0].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(
+            items[2].clone(),
+            std::f64::consts::FRAC_PI_2,
+            DimensionVector::ANGLE
+        );
+    }
+
+    /// The near-identity Taylor branch (|v| < 1e-12, `orient_log`'s `EPS`
+    /// short-circuit) computes its components separately from the general
+    /// branch; pin that this early path is not left dimensionless either.
+    /// `x = 1e-13` puts |v| strictly below `EPS`, so `log ≈ 2*(x,y,z)`.
+    #[test]
+    fn orient_log_near_identity_emits_angle_dimensioned_components() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 1e-13,
+            y: 0.0,
+            z: 0.0,
+        };
+        let items = vector3_components(eval_builtin("orient_log", &[q]));
+        assert_scalar_approx!(items[0].clone(), 2e-13, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(items[2].clone(), 0.0, DimensionVector::ANGLE);
+    }
+
     // ── orient_exp tests (step-7) ──────────────────────────────────────────
+    //
+    // Every `orient_exp` input below is spelled with `Value::angle(..)`: a
+    // rotation vector carries ANGLE (#6080), so a dimensionless triple is no
+    // longer an accepted spelling. The guard tests in particular MUST use
+    // ANGLE inputs — given a dimensionless one they would still return Undef,
+    // but for the dimension reason rather than the arity / shape / non-finite
+    // reason they are named for, and would silently stop testing anything.
+
+    /// Build a `Value::Vector` rotation vector with ANGLE components (radians).
+    fn rot_vec(x: f64, y: f64, z: f64) -> Value {
+        Value::Vector(vec![Value::angle(x), Value::angle(y), Value::angle(z)])
+    }
 
     #[test]
     fn orient_exp_zero_vector_is_identity() {
-        let zero = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let zero = rot_vec(0.0, 0.0, 0.0);
         assert_orientation_approx!(eval_builtin("orient_exp", &[zero]), 1.0, 0.0, 0.0, 0.0);
     }
 
     /// exp([0,0,π/2]) = (cos(π/4), 0, 0, sin(π/4)) — 90°z rotation.
     #[test]
     fn orient_exp_z_pi_half_is_90deg_z_quaternion() {
-        let v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(std::f64::consts::FRAC_PI_2),
-        ]);
+        let v = rot_vec(0.0, 0.0, std::f64::consts::FRAC_PI_2);
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
@@ -2136,11 +2362,7 @@ mod tests {
             [-0.5, 0.7, -0.3],
         ];
         for case in cases.iter() {
-            let v = Value::Vector(vec![
-                Value::Real(case[0]),
-                Value::Real(case[1]),
-                Value::Real(case[2]),
-            ]);
+            let v = rot_vec(case[0], case[1], case[2]);
             let q = eval_builtin("orient_exp", std::slice::from_ref(&v));
             let v_back = eval_builtin("orient_log", &[q]);
             match v_back {
@@ -2188,7 +2410,7 @@ mod tests {
 
     #[test]
     fn orient_exp_wrong_arg_count_returns_undef() {
-        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let v = rot_vec(0.0, 0.0, 0.0);
         assert!(eval_builtin("orient_exp", &[]).is_undef());
         assert!(eval_builtin("orient_exp", &[v.clone(), v]).is_undef());
     }
@@ -2200,28 +2422,105 @@ mod tests {
 
     #[test]
     fn orient_exp_non_3d_vector_returns_undef() {
-        let v2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let v2 = Value::Vector(vec![Value::angle(1.0), Value::angle(0.0)]);
         assert!(eval_builtin("orient_exp", &[v2]).is_undef());
     }
 
     #[test]
     fn orient_exp_nan_component_returns_undef() {
-        let nan_v = Value::Vector(vec![
-            Value::Real(f64::NAN),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let nan_v = rot_vec(f64::NAN, 0.0, 0.0);
         assert!(eval_builtin("orient_exp", &[nan_v]).is_undef());
     }
 
     #[test]
     fn orient_exp_inf_component_returns_undef() {
-        let inf_v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(f64::INFINITY),
-            Value::Real(0.0),
-        ]);
+        let inf_v = rot_vec(0.0, f64::INFINITY, 0.0);
         assert!(eval_builtin("orient_exp", &[inf_v]).is_undef());
+    }
+
+    // ── orient_exp rotation-vector DIMENSION gate (#6080) ──────────────────
+
+    #[test]
+    fn orient_exp_accepts_angle_dimensioned_rotation_vector() {
+        let v = rot_vec(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_exp", &[v]),
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
+        );
+    }
+
+    /// DIMENSIONLESS is a SPECIFIC dimension (the zero vector), not a wildcard,
+    /// so it is rejected like any other wrong dimension. This is the narrowing
+    /// half of #6080 — a bare `vec3(0, 0, 1.5708)` used to be accepted.
+    #[test]
+    fn orient_exp_rejects_dimensionless_rotation_vector() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        assert!(eval_builtin("orient_exp", &[v]).is_undef());
+    }
+
+    /// Regression pin: widening the gate to ANGLE must not make it permissive.
+    #[test]
+    fn orient_exp_rejects_length_rotation_vector() {
+        let v = Value::Vector(vec![
+            Value::length(0.001),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(eval_builtin("orient_exp", &[v]).is_undef());
+    }
+
+    /// Coupled-change guard: `orient_exp(orient_log(q)) ≈ q` holds only if the
+    /// emission and the gate agree on ANGLE. Also asserts the INTERMEDIATE is
+    /// ANGLE-dimensioned, so the round-trip cannot be satisfied by reverting
+    /// both ends to dimensionless.
+    #[test]
+    fn orient_log_then_exp_round_trip_preserves_angle() {
+        let cases: [[f64; 4]; 3] = [
+            [0.5, 0.5, 0.5, 0.5],
+            [std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2],
+            [std::f64::consts::FRAC_1_SQRT_2, 0.5, 0.5, 0.0],
+        ];
+        for case in cases.iter() {
+            let n = (case[0] * case[0] + case[1] * case[1] + case[2] * case[2] + case[3] * case[3])
+                .sqrt();
+            let q = Value::Orientation {
+                w: case[0] / n,
+                x: case[1] / n,
+                y: case[2] / n,
+                z: case[3] / n,
+            };
+            let v = eval_builtin("orient_log", std::slice::from_ref(&q));
+            for comp in vector3_components(v.clone()) {
+                match comp {
+                    Value::Scalar { dimension, .. } => {
+                        assert_eq!(
+                            dimension,
+                            DimensionVector::ANGLE,
+                            "round-trip intermediate must be ANGLE-dimensioned"
+                        );
+                    }
+                    other => panic!("expected Scalar{{ANGLE}} component, got {other:?}"),
+                }
+            }
+            let q_back = eval_builtin("orient_exp", &[v]);
+            assert_orientation_approx!(
+                q_back,
+                case[0] / n,
+                case[1] / n,
+                case[2] / n,
+                case[3] / n,
+                sign_insensitive = 1e-12
+            );
+        }
     }
 
     // ── orient_slerp tests (step-9) ────────────────────────────────────────
@@ -2637,7 +2936,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), id]);
+        let result = eval_builtin("orient_to_euler", &[id, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(angles[0].abs() < 1e-12);
@@ -2653,13 +2952,13 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(a),
                 Value::Real(b),
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(
@@ -2690,13 +2989,13 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("zyx".to_string()),
+                conv("ZYX"),
                 Value::Real(a),
                 Value::Real(b),
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[Value::String("zyx".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("ZYX")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!((angles[0] - a).abs() < 1e-10);
@@ -2712,7 +3011,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[Value::String("abc".to_string()), q]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[q, conv("ABC")]).is_undef());
     }
 
     #[test]
@@ -2724,28 +3023,44 @@ mod tests {
             z: 0.0,
         };
         assert!(eval_builtin("orient_to_euler", &[]).is_undef());
-        assert!(eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef());
+        // Subject only, convention missing.
+        assert!(eval_builtin("orient_to_euler", std::slice::from_ref(&q)).is_undef());
         assert!(
             eval_builtin(
                 "orient_to_euler",
-                &[Value::String("xyz".to_string()), q.clone(), q]
+                &[q.clone(), conv("XYZ"), q]
             )
             .is_undef()
         );
     }
 
+    /// Arg-order-sensitive negative: the convention now lives at arg 1, so a
+    /// non-`EulerConvention` value THERE is what must fall through to Undef.
     #[test]
-    fn orient_to_euler_non_string_convention_returns_undef() {
+    fn orient_to_euler_non_enum_convention_returns_undef() {
         let q = Value::Orientation {
             w: 1.0,
             x: 0.0,
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[Value::Real(1.0), q]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[q, Value::Real(1.0)]).is_undef());
     }
 
-    /// Gimbal-lock case for "xyz" Tait-Bryan: middle angle b = π/2.
+    /// The mirror of the above, and the direct regression guard for the F3
+    /// flip: the OLD (convention, q) order must no longer be accepted.
+    #[test]
+    fn orient_to_euler_legacy_convention_first_order_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[conv("XYZ"), q]).is_undef());
+    }
+
+    /// Gimbal-lock case for XYZ Tait-Bryan: middle angle b = π/2.
     /// At this singularity the decomposition is non-unique; the implementation
     /// must return a deterministic triple whose recomposition equals the
     /// original quaternion (sign-insensitive).
@@ -2755,7 +3070,7 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(0.3),
                 Value::Real(pi_2),
                 Value::Real(0.7),
@@ -2766,14 +3081,14 @@ mod tests {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("expected Orientation, got {:?}", other),
         };
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         // Recompose and verify equivalence to the original quaternion.
         let q_back = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(angles[0]),
                 Value::Real(angles[1]),
                 Value::Real(angles[2]),
@@ -2989,97 +3304,103 @@ mod tests {
         );
     }
 
-    // ── orient_euler EulerConvention enum-value tests (step-3 RED) ──────────
+    // ── EulerConvention enum-value tests ────────────────────────────────────
+    //
+    // These formerly asserted enum-vs-lowercase-string parity, one test per
+    // Tait-Bryan variant. Task #6082 removed the string path, which would make
+    // that comparison vacuous, so each now pins the enum result against an
+    // INDEPENDENTLY derived expectation: the axis triple is parsed out of the
+    // variant NAME (X→0, Y→1, Z→2) rather than read from the impl's dispatch
+    // table, so a mis-routed variant still fails. Coverage also widens from the
+    // six Tait-Bryan variants to all twelve — the six proper-Euler variants had
+    // no enum test before the declaration was widened to match eval.
 
-    /// For each Tait-Bryan variant, assert enum path matches lowercase-string path.
-    #[test]
-    fn orient_euler_enum_xyz_matches_string_xyz() {
-        let a = 0.1_f64;
-        let b = 0.2_f64;
-        let c = 0.3_f64;
-        let by_enum = eval_builtin(
-            "orient_euler",
-            &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
-                Value::Real(a), Value::Real(b), Value::Real(c),
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_euler",
-            &[Value::String("xyz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c)],
-        );
-        assert!(!by_enum.is_undef(), "EulerConvention.XYZ should not return Undef");
-        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    /// Axis indices for a convention, derived from its NAME — deliberately not
+    /// from the impl's dispatch table, so the two can disagree and be caught.
+    fn axes_of(variant: &str) -> [usize; 3] {
+        let mut out = [0usize; 3];
+        assert_eq!(variant.len(), 3, "a convention names exactly three axes");
+        for (i, ch) in variant.chars().enumerate() {
+            out[i] = match ch {
+                'X' => 0,
+                'Y' => 1,
+                'Z' => 2,
+                other => panic!("bad axis letter {other:?} in convention {variant:?}"),
+            };
+        }
+        out
     }
 
-    #[test]
-    fn orient_euler_enum_xzy_matches_string_xzy() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "XZY".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("xzy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.XZY should not return Undef");
-        assert_eq!(by_enum, by_str);
+    /// The quaternion `variant` at angles (a, b, c) must produce: the intrinsic
+    /// composition q = q_a · q_b · q_c about the axes the name spells.
+    fn expected_euler_quat(variant: &str, a: f64, b: f64, c: f64) -> (f64, f64, f64, f64) {
+        let axes = axes_of(variant);
+        let q1 = elementary_rotation_quat(axes[0], a);
+        let q2 = elementary_rotation_quat(axes[1], b);
+        let q3 = elementary_rotation_quat(axes[2], c);
+        quat_mul(quat_mul(q1, q2), q3)
     }
 
+    /// All twelve conventions must route to the axes their name spells.
     #[test]
-    fn orient_euler_enum_yxz_matches_string_yxz() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YXZ".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("yxz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.YXZ should not return Undef");
-        assert_eq!(by_enum, by_str);
+    fn orient_euler_enum_routes_every_convention_to_its_named_axes() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        for variant in ALL_CONVENTIONS {
+            let got = eval_builtin(
+                "orient_euler",
+                &[conv(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+            );
+            assert!(
+                !got.is_undef(),
+                "EulerConvention.{variant} should not return Undef"
+            );
+            let (ew, ex, ey, ez) = expected_euler_quat(variant, a, b, c);
+            let want = normalize_quaternion(ew, ex, ey, ez)
+                .unwrap_or_else(|| panic!("expected quaternion for {variant} should normalize"));
+            match (&got, &want) {
+                (
+                    Value::Orientation { w: gw, x: gx, y: gy, z: gz },
+                    Value::Orientation { w: ww, x: wx, y: wy, z: wz },
+                ) => assert!(
+                    (gw - ww).abs() < 1e-12
+                        && (gx - wx).abs() < 1e-12
+                        && (gy - wy).abs() < 1e-12
+                        && (gz - wz).abs() < 1e-12,
+                    "EulerConvention.{variant} routed to the wrong axes: expected \
+                     ({ww}, {wx}, {wy}, {wz}), got ({gw}, {gx}, {gy}, {gz})"
+                ),
+                _ => panic!("EulerConvention.{variant}: expected an Orientation, got {got:?}"),
+            }
+        }
     }
 
+    /// No two conventions may collapse onto the same rotation at these angles —
+    /// the guard that keeps the routing test above from passing on a table that
+    /// maps several variants to one axis triple.
     #[test]
-    fn orient_euler_enum_yzx_matches_string_yzx() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YZX".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("yzx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.YZX should not return Undef");
-        assert_eq!(by_enum, by_str);
-    }
-
-    #[test]
-    fn orient_euler_enum_zxy_matches_string_zxy() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZXY".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("zxy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.ZXY should not return Undef");
-        assert_eq!(by_enum, by_str);
-    }
-
-    #[test]
-    fn orient_euler_enum_zyx_matches_string_zyx() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("zyx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.ZYX should not return Undef");
-        assert_eq!(by_enum, by_str);
+    fn orient_euler_enum_twelve_conventions_are_pairwise_distinct() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        let built: Vec<(&str, Value)> = ALL_CONVENTIONS
+            .iter()
+            .map(|v| {
+                (
+                    *v,
+                    eval_builtin(
+                        "orient_euler",
+                        &[conv(v), Value::Real(a), Value::Real(b), Value::Real(c)],
+                    ),
+                )
+            })
+            .collect();
+        for (i, (vi, qi)) in built.iter().enumerate() {
+            for (vj, qj) in built.iter().skip(i + 1) {
+                assert_ne!(
+                    qi, qj,
+                    "EulerConvention.{vi} and EulerConvention.{vj} produced the same \
+                     quaternion — one of them is mis-routed"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3094,88 +3415,71 @@ mod tests {
         );
     }
 
+    /// No String is a convention any more, on either builtin, in either case
+    /// spelling. Formerly two tests pinning the removed path's case-sensitivity
+    /// ("xyz" worked, "XYZ" did not); the whole path is gone, so the guard is
+    /// now that BOTH spellings are rejected — which also closes that trap.
     #[test]
-    fn orient_euler_enum_unknown_variant_returns_undef() {
-        // Unknown variant should fall through to Undef.
-        assert!(
-            eval_builtin("orient_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ]).is_undef(),
-            "Unknown EulerConvention variant should return Undef"
-        );
+    fn no_string_convention_is_accepted_on_either_builtin() {
+        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        for variant in ALL_CONVENTIONS {
+            for spelling in [variant.to_lowercase(), variant.to_string()] {
+                assert!(
+                    eval_builtin(
+                        "orient_euler",
+                        &[
+                            Value::String(spelling.clone()),
+                            Value::Real(0.1),
+                            Value::Real(0.2),
+                            Value::Real(0.3),
+                        ]
+                    )
+                    .is_undef(),
+                    "orient_euler(String {spelling:?}, …) must return Undef — the String \
+                     convention path is removed"
+                );
+                assert!(
+                    eval_builtin(
+                        "orient_to_euler",
+                        &[q.clone(), Value::String(spelling.clone())]
+                    )
+                    .is_undef(),
+                    "orient_to_euler(q, String {spelling:?}) must return Undef — the String \
+                     convention path is removed"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn orient_euler_uppercase_string_still_returns_undef() {
-        // Regression: String "XYZ" (not enum) must still be rejected (case-sensitive).
-        // This test mirrors orient_euler_uppercase_convention_returns_undef at line 1426.
-        assert!(
-            eval_builtin("orient_euler", &[
-                Value::String("XYZ".to_string()),
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ]).is_undef(),
-            "Uppercase String 'XYZ' must still return Undef (enum path only case-folds)"
-        );
-    }
+    // ── orient_to_euler EulerConvention enum-value tests ─────────────────────
 
-    // ── orient_to_euler EulerConvention enum-value tests (step-5 RED) ────────
-
+    /// Every convention decomposes back to the angles it was built from, via
+    /// the subject-first enum-only surface. Formerly two enum-vs-string parity
+    /// tests (ZYX and XYZ); now an enum-vs-expected-angles round trip over all
+    /// twelve. Middle angle 0.2 rad clears BOTH singular loci — Tait-Bryan's at
+    /// ±90°, and proper Euler's at 0 and π.
     #[test]
-    fn orient_to_euler_enum_zyx_matches_string_zyx() {
-        // Build a known quaternion with ZYX convention, then decode with enum and string paths.
-        let q = eval_builtin(
-            "orient_euler",
-            &[
-                Value::String("zyx".to_string()),
-                Value::Real(0.3), Value::Real(0.5), Value::Real(-0.7),
-            ],
-        );
-        let by_enum = eval_builtin(
-            "orient_to_euler",
-            &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
-                q.clone(),
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("zyx".to_string()), q.clone()],
-        );
-        assert!(
-            euler_extract(&by_enum).is_some(),
-            "EulerConvention.ZYX orient_to_euler should return a 3-element Angle list, got {:?}",
-            by_enum
-        );
-        assert_eq!(by_enum, by_str, "EulerConvention.ZYX should equal string 'zyx'");
-    }
-
-    #[test]
-    fn orient_to_euler_enum_xyz_matches_string_xyz() {
-        let q = eval_builtin(
-            "orient_euler",
-            &[
-                Value::String("xyz".to_string()),
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ],
-        );
-        let by_enum = eval_builtin(
-            "orient_to_euler",
-            &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
-                q.clone(),
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("xyz".to_string()), q.clone()],
-        );
-        assert!(
-            euler_extract(&by_enum).is_some(),
-            "EulerConvention.XYZ orient_to_euler should return a 3-element Angle list, got {:?}",
-            by_enum
-        );
-        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    fn orient_to_euler_enum_roundtrips_every_convention() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        for variant in ALL_CONVENTIONS {
+            let q = eval_builtin(
+                "orient_euler",
+                &[conv(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+            );
+            let back = eval_builtin("orient_to_euler", &[q, conv(variant)]);
+            let angles = euler_extract(&back).unwrap_or_else(|| {
+                panic!(
+                    "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+                     Angle list, got {back:?}"
+                )
+            });
+            for (i, (got, want)) in angles.iter().zip([a, b, c].iter()).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "EulerConvention.{variant} round-trip angle[{i}]: expected {want}, got {got}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3183,22 +3487,268 @@ mod tests {
         let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert!(
             eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
                 q,
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
             ]).is_undef(),
             "Enum with wrong type_name should return Undef"
         );
     }
 
     #[test]
-    fn orient_to_euler_enum_unknown_variant_returns_undef() {
-        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+    fn diagnose_orient_exp_dimensionless_arg_errors() {
+        let d = super::diagnose(
+            "orient_exp",
+            &[Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+            ])],
+        )
+        .expect("a dimensionless rotation vector must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
         assert!(
-            eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
-                q,
-            ]).is_undef(),
-            "Unknown EulerConvention variant should return Undef"
+            d.message.contains("orient_exp"),
+            "message must name the builtin; got: {}",
+            d.message
+        );
+        assert!(
+            d.message
+                .contains(&DimensionVector::DIMENSIONLESS.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::DIMENSIONLESS,
+            d.message
+        );
+    }
+
+    /// A LENGTH rotation vector was never accepted, but used to fail silently.
+    #[test]
+    fn diagnose_orient_exp_length_arg_errors() {
+        let d = super::diagnose(
+            "orient_exp",
+            &[Value::Vector(vec![
+                Value::length(0.001),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])],
+        )
+        .expect("a LENGTH rotation vector must produce a diagnostic");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the wrong-dimension diagnostic must be an Error (exit 1), not a Warning"
+        );
+        assert!(
+            d.message.contains(&DimensionVector::LENGTH.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::LENGTH,
+            d.message
+        );
+    }
+
+    /// A well-typed ANGLE rotation vector never reaches the hook (it does not
+    /// return `Undef`), and must not be diagnosed even if asked directly.
+    #[test]
+    fn diagnose_orient_exp_angle_arg_returns_none() {
+        assert!(
+            super::diagnose(
+                "orient_exp",
+                &[Value::Vector(vec![
+                    Value::angle(0.0),
+                    Value::angle(0.0),
+                    Value::angle(std::f64::consts::FRAC_PI_2),
+                ])],
+            )
+            .is_none(),
+            "a valid ANGLE rotation vector must not produce a diagnostic"
+        );
+    }
+
+    /// Shape errors (wrong arity, non-vector, non-3d) keep their existing
+    /// silent-`Undef` behaviour so the message never misattributes a shape
+    /// error as a dimension error — the same restraint `geometry::diagnose`
+    /// documents.
+    #[test]
+    fn diagnose_orient_exp_shape_errors_return_none() {
+        assert!(
+            super::diagnose("orient_exp", &[]).is_none(),
+            "wrong arity must stay silent"
+        );
+        assert!(
+            super::diagnose("orient_exp", &[Value::Real(1.0)]).is_none(),
+            "a non-container argument must stay silent"
+        );
+        assert!(
+            super::diagnose(
+                "orient_exp",
+                &[Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)])],
+            )
+            .is_none(),
+            "a non-3d vector must stay silent"
+        );
+    }
+
+    /// `emit_undef_builtin_diagnostics` relies on the name families being
+    /// disjoint, so this classifier must decline every other family's names —
+    /// including its own sibling `orient_log`, which is an emitter, not a gate.
+    #[test]
+    fn diagnose_non_orientation_name_returns_none() {
+        let arg = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            super::diagnose("orient_log", std::slice::from_ref(&arg)).is_none(),
+            "orient_log is not gated by this classifier"
+        );
+        assert!(
+            super::diagnose(
+                "affine_scale",
+                &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+            )
+            .is_none(),
+            "affine_scale belongs to geometry::diagnose, not orientation::diagnose"
+        );
+        assert!(
+            super::diagnose("transform_exp", std::slice::from_ref(&arg)).is_none(),
+            "transform_exp belongs to geometry::diagnose, not orientation::diagnose"
+        );
+    }
+
+    // ── shared-message guards (#6080 amendment) ───────────────────────────────
+
+    /// The migration advice names a WHOLE rotation vector, every component
+    /// dimensioned — never a lone `1.5708rad`.
+    ///
+    /// A lone component is what a user actually types into ONE slot, leaving
+    /// `vec3(0, 0, 1.5708rad)`: a MIXED-dimension container that collapses to
+    /// `Value::Undef` at its own construction site, before `orient_exp` runs.
+    /// The classifier then never sees it and the call fails silently (exit 0) —
+    /// the exact failure mode this diagnostic exists to remove. The advice must
+    /// therefore not steer users into it. Pinned end-to-end by
+    /// `cli_orientation_rotvec_dimension`'s
+    /// `eval_recommended_migration_spelling_succeeds` /
+    /// `eval_partially_migrated_rotation_vector_stays_silently_undef`.
+    #[test]
+    fn diagnose_advice_recommends_a_fully_dimensioned_vector() {
+        let d = super::rotation_vector_dimension_error(
+            "orient_exp",
+            None,
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            d.message.contains("vec3(0rad, 0rad, 1.5708rad)")
+                && d.message.contains("vec3(0deg, 0deg, 90deg)"),
+            "advice must show a whole rotation vector with every component \
+             dimensioned; got: {}",
+            d.message
+        );
+    }
+
+    /// `orient_exp` and `transform_exp` state the token, the severity and the
+    /// recommended fix ONCE, via the shared constructor.
+    ///
+    /// Before the amendment these were independently written string literals in
+    /// two different modules, and the only cross-module pin was the CLI tests'
+    /// bare `contains("E_RotationVectorDimension")` — which would have stayed
+    /// green while the two drifted apart in wording or recommended fix.
+    #[test]
+    fn diagnose_shares_one_message_with_the_transform_exp_arm() {
+        let bare = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let mut twist = std::collections::BTreeMap::new();
+        twist.insert(Value::String("angular".to_string()), bare.clone());
+        twist.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+
+        let here = super::diagnose("orient_exp", &[bare])
+            .expect("a dimensionless rotation vector must produce a diagnostic");
+        let there = crate::geometry::diagnose("transform_exp", &[Value::Map(twist)])
+            .expect("a dimensionless angular half must produce a diagnostic");
+
+        assert_eq!(
+            here.severity, there.severity,
+            "both arms must carry the same severity"
+        );
+        // The shared TAIL — everything from the offending dimension onward — is
+        // byte-identical; only the leading noun phrase differs by builtin.
+        let tail = |m: &str| {
+            m.split_once("; got ")
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| panic!("message must carry a `; got <dim>` clause; got: {m}"))
+        };
+        assert_eq!(
+            tail(&here.message),
+            tail(&there.message),
+            "both arms must state the same token, dimension clause and fix advice"
+        );
+    }
+
+    /// BOTH carriers of `rotation_vector_dimension_error` carry
+    /// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which makes the
+    /// converged set FOUR arms sharing one code rather than three plus an
+    /// outlier: `transform_log`, `transform_exp`'s `linear` half and `bbox`
+    /// already carry it (task 5791 / task 6081), and the rotation-vector arms
+    /// here are the fourth member.
+    ///
+    /// Grounds: BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) — one rejection
+    /// REASON gets one code, and a `Severity::Error` runtime dimension
+    /// rejection of a positional argument is exactly the reason
+    /// `DimensionedArgRejected` already names. No
+    /// `DiagnosticCode::ArgDimensionMismatch` is minted; see
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block.
+    ///
+    /// Modelled on `geometry::tests::ruling_6126_dimension_arms_carry_dimensioned_arg_rejected`,
+    /// and asserted on BOTH carriers rather than one, because the code is
+    /// attached in the shared constructor: a regression there would silently
+    /// drop it from two arms at once.
+    #[test]
+    fn ruling_a7_rotation_vector_arms_carry_dimensioned_arg_rejected() {
+        let bare = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let mut twist = std::collections::BTreeMap::new();
+        twist.insert(Value::String("angular".to_string()), bare.clone());
+        twist.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+
+        let here = super::diagnose("orient_exp", &[bare])
+            .expect("a dimensionless rotation vector must produce a diagnostic");
+        assert_eq!(
+            here.severity,
+            reify_core::Severity::Error,
+            "the orient_exp dimension arm stays Error (exit 1), per Leo's \
+             severity amendment 2026-08-19 via esc-6080-6"
+        );
+        assert_eq!(
+            here.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the orient_exp dimension arm must carry the canonical runtime \
+             dimension-rejection code (ruling A7)"
+        );
+
+        let there = crate::geometry::diagnose("transform_exp", &[Value::Map(twist)])
+            .expect("a dimensionless angular half must produce a diagnostic");
+        assert_eq!(
+            there.severity,
+            reify_core::Severity::Error,
+            "the transform_exp angular arm stays Error"
+        );
+        assert_eq!(
+            there.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the transform_exp ANGULAR arm must carry the same code as its \
+             already-converged linear sibling"
         );
     }
 }

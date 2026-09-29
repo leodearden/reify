@@ -1095,27 +1095,20 @@ async fn the_classification_covers_every_dispatchable_method() {
 /// opposite directions, so neither can be left to the other.
 #[test]
 fn the_ordered_lane_still_has_exactly_one_consumer() {
-    use crate::large_stack::{LSP_LANE, dispatch};
+    use crate::large_stack::LSP_LANE;
+    use crate::tests::test_helpers::post_and_wait;
     use std::collections::HashSet;
 
-    let caller = std::thread::current().id();
-    let mut ids = HashSet::new();
-    for _ in 0..16 {
-        let id = dispatch(LSP_LANE.sender(), || std::thread::current().id());
-        assert_ne!(
-            id, caller,
-            "the ordered lane must run its jobs on a lane thread, not degrade to \
-             an inline call — a degraded lane would report one ThreadId (the \
-             caller's) and pass this test vacuously"
-        );
-        ids.insert(id);
-    }
+    let ids: HashSet<_> = (0..16)
+        .map(|_| post_and_wait(LSP_LANE.sender(), || std::thread::current().id()))
+        .collect();
     assert_eq!(
         ids.len(),
         1,
         "the ordered lane must keep exactly ONE consumer: notifications are \
          order-sensitive against each other, and a second consumer would let a \
-         `didChange` overtake an earlier one. Saw {ids:?}"
+         `didChange` overtake an earlier one. (A degraded lane fails here too: \
+         `post` then spawns a fresh thread per job.) Saw {ids:?}"
     );
 }
 
@@ -1142,7 +1135,7 @@ fn the_ordered_lane_still_has_exactly_one_consumer() {
 /// elapse, not a hang, and the probe is released on every exit path.
 #[tokio::test]
 async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
-    use crate::large_stack::{Lane, dispatch};
+    use crate::large_stack::{Lane, post};
     use crate::lsp_bridge::lsp_request_on_lane;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1166,27 +1159,31 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
         .await
         .expect("a direct hover must succeed");
 
-    // Park exactly ONE of the two consumers, from a plain thread so the runtime
-    // this test is on is never itself blocked.
+    // Park exactly ONE of the two consumers. Posting never waits, so the
+    // runtime this test is on is never itself blocked.
     let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
     let (release_tx, release_rx) = mpsc::channel::<()>();
-    let probe = std::thread::spawn(move || {
-        dispatch(TEST_POOL.sender(), move || {
+    let (finished_tx, finished_rx) = mpsc::channel::<()>();
+    post(
+        TEST_POOL.sender(),
+        Box::new(move || {
             let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
             // Parks until the test drops `release_tx`, which it does on EVERY
             // exit path below — `recv` then returns `Err` and the job ends.
             let _ = release_rx.recv();
-        });
-    });
+            let _ = finished_tx.send(());
+        }),
+    )
+    .expect("posting the probe must succeed");
 
     let parked_on = parked_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("the probe job must reach a consumer and report where it parked");
     assert!(
         parked_on.as_deref().is_some_and(|n| n.starts_with(PREFIX)),
-        "the probe must occupy a real POOL consumer; a lane that degraded to an \
-         inline call would leave both consumers free and make this test vacuous. \
-         Parked on {parked_on:?}"
+        "the probe must occupy a real POOL consumer; a lane that degraded to a \
+         spawned thread would leave both consumers free and make this test \
+         vacuous. Parked on {parked_on:?}"
     );
 
     let outcome = tokio::time::timeout(
@@ -1202,9 +1199,8 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
 
     // Read occupancy BEFORE releasing: the probe cannot have finished, because
     // only dropping `release_tx` — which this frame still holds — can end it.
-    let probe_still_parked = !probe.is_finished();
+    let probe_still_parked = finished_rx.try_recv().is_err();
     drop(release_tx);
-    probe.join().expect("the probe thread must not panic");
 
     let actual = outcome
         .expect(
@@ -1385,8 +1381,8 @@ struct AbandonedOutcome {
 ///
 /// Asserted here: the PRECONDITIONS of the measurement, which belong to neither
 /// test's claim. The probe really occupied a real lane consumer (a lane that
-/// degraded to an inline call would leave the queue free and make both callers
-/// vacuous); the request really was abandoned (the elapse *is* the
+/// degraded to a spawned thread would leave the queue free and make both
+/// callers vacuous); the request really was abandoned (the elapse *is* the
 /// abandonment); the live request really resolved, and answered `null` as a
 /// notification must.
 ///
@@ -1430,7 +1426,7 @@ async fn abandoned_didopen_outcome(
     abandoned_uri: &str,
     live_uri: &str,
 ) -> AbandonedOutcome {
-    use crate::large_stack::dispatch;
+    use crate::large_stack::post;
     use crate::lsp_bridge::lsp_request_on_lane;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1474,12 +1470,14 @@ async fn abandoned_didopen_outcome(
     // Occupy the lane's single consumer.
     let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
     let (release_tx, release_rx) = mpsc::channel::<()>();
-    let probe = std::thread::spawn(move || {
-        dispatch(lane.sender(), move || {
+    post(
+        lane.sender(),
+        Box::new(move || {
             let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
             let _ = release_rx.recv();
-        });
-    });
+        }),
+    )
+    .expect("posting the probe must succeed");
     let parked_on = parked_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("the probe job must reach the consumer and report where it parked");
@@ -1487,7 +1485,7 @@ async fn abandoned_didopen_outcome(
         parked_on.as_deref(),
         Some(lane_name),
         "the probe must occupy the real lane consumer; a lane that degraded to \
-         an inline call would leave the queue free and make this test vacuous"
+         a spawned thread would leave the queue free and make this test vacuous"
     );
 
     // Enqueue a real `didOpen` and then ABANDON it: the only consumer is parked,
@@ -1510,7 +1508,6 @@ async fn abandoned_didopen_outcome(
 
     // Release the consumer; it now dequeues the abandoned job.
     drop(release_tx);
-    probe.join().expect("the probe thread must not panic");
 
     // A LIVE request through the same lane, which is also the FIFO barrier: by
     // the time it resolves the abandoned job has already been dequeued and has
@@ -1703,7 +1700,8 @@ async fn an_abandoned_request_on_the_ordered_lane_is_still_applied() {
 /// `ThreadId` read.
 #[test]
 fn the_query_pool_runs_the_consumers_it_declares() {
-    use crate::large_stack::{LSP_LANE, LSP_POOL, LSP_POOL_SIZE, LSP_POOL_THREAD_PREFIX, dispatch};
+    use crate::large_stack::{LSP_LANE, LSP_POOL, LSP_POOL_SIZE, LSP_POOL_THREAD_PREFIX};
+    use crate::tests::test_helpers::post_and_wait;
     use std::collections::HashSet;
 
     assert_eq!(
@@ -1735,7 +1733,7 @@ fn the_query_pool_runs_the_consumers_it_declares() {
 
     let mut seen: HashSet<String> = HashSet::new();
     for _ in 0..32 {
-        let landed_on = dispatch(LSP_POOL.sender(), || {
+        let landed_on = post_and_wait(LSP_POOL.sender(), || {
             std::thread::current().name().map(str::to_owned)
         })
         .expect(
@@ -1761,9 +1759,9 @@ fn the_query_pool_runs_the_consumers_it_declares() {
     );
     assert!(
         caller.is_none_or(|c| !seen.contains(&c)),
-        "the pool must run its jobs on lane threads, not degrade to inline \
-         calls on the caller — a degraded lane would report the caller's own \
-         thread name and make the naming assertions meaningless. Saw {seen:?}"
+        "the pool must run its jobs on lane threads, never on the caller — a \
+         job answering from the caller's own thread would make the naming \
+         assertions meaningless. Saw {seen:?}"
     );
 
     // REALISED, via `Lane::started()`, and placed after the loop because the
@@ -1835,6 +1833,8 @@ impl NotificationSink for ThreadNameSink {
             .unwrap()
             .push(std::thread::current().name().map(str::to_owned));
     }
+
+    fn log_message(&self, _line: reify_lsp::server::LogLine) {}
 }
 
 impl ThreadNameSink {
