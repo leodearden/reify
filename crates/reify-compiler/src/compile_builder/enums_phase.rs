@@ -335,25 +335,14 @@ pub(crate) fn build_resolution_enums_from_cache(
 ///   change where today's answer is at least defensible. Oracle:
 ///   `enum_ctor_param_binding_tests::local_structure_wins_over_same_named_local_enum`.
 ///
-/// **Single source of truth, called once.** `compile_with_prelude_context_checked_with_config`
-/// installs the resulting scope ONCE around the whole phase sequence rather than
-/// per-phase. That is load-bearing, not tidiness: `phase_functions` and
-/// `phase_traits` run BEFORE `phase_entities`, so a scope installed only inside
-/// `phase_entities` left a trait requirement / fn signature param at
-/// `Type::StructureRef("Fit")` while the conforming structure's param lowered to
-/// `Type::Enum("Fit")` — the two disagreed and a previously-WARNING module
-/// became a hard ERROR (esc-5429-1). Oracles:
-/// `enum_ctor_param_binding_tests::{trait_member_typed_by_shadowing_local_enum_conforms,
-/// fn_param_typed_by_shadowing_local_enum_resolves_call}`.
-///
 /// **Both inputs are final from `pre_pass::collect_decl_refs` onward**, so the
 /// caller may install the resulting scope at ANY point after that phase and get
 /// the same set: `collect_decl_refs` seeds both `ctx.enum_defs` and
 /// `ctx.seen_entity_names`, and the only later phase that touches `ctx.enum_defs`
 /// — [`resolve_enum_variant_payloads`] — rewrites PAYLOADS, never names.
 ///
-/// Where the scope is installed, and why there, is stated at the install site in
-/// [`crate::compile_with_prelude_context_checked_with_config`].
+/// Called once, by [`crate::compile_with_prelude_context_checked_with_config`], whose
+/// install-site comment states where the scope is installed and why it is module-wide.
 pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
     let local_structure_names: HashSet<&str> = ctx
         .seen_entity_names

@@ -549,6 +549,9 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
     // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
     // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
+    // The set-construction rules (local-only, minus local structure names) live in ONE
+    // place — see `enums_phase::build_local_enum_shadow_set`. Oracles:
+    // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
     //
     // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
     // lowers a declared type name must agree on what `Fit` means: `phase_functions`
@@ -558,26 +561,12 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
     // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
     //
-    // Installed immediately after `collect_decl_refs`, before every resolving phase
-    // (#6394; PRD docs/prds/v0_6/enum-shadow-coherence.md §2 R4 / §3 D1): the earliest
-    // point at which both set inputs, `ctx.enum_defs` and `ctx.seen_entity_names`, are
-    // final. It must precede `resolve_enum_variant_payloads`: a payload field resolved
-    // outside the scope lowers to `Type::StructureRef(N)` while every other
-    // declared-type position lowers to `Type::Enum(N)`. Oracles:
-    // `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
-    // shadow_payload_binder_fixture_has_no_errors}`. `phase_aliases` also runs inside
-    // the scope, but its DFS resolves with empty structure sets by design (see the
-    // `aliases_phase` module doc), so shadowing reaches an alias body at its USE
-    // site. Oracle:
-    // `enum_ctor_param_binding_tests::alias_body_naming_shadowed_enum_agrees_with_param_position`.
-    //
-    // The set-construction rules (local-only, minus local structure names) live in ONE
-    // place — see `enums_phase::build_local_enum_shadow_set`.
-    //
-    // Absorption note (PRD §3 D8 / C4): stdlib-namespace α #5493 folds
-    // `build_local_enum_shadow_set` into the NS-P1/P3 shared policy point, so the
-    // shadow set becomes one input to that resolver rather than a standalone
-    // thread-local. This install site is the fold target — a fold, not an excavation.
+    // Installed immediately after `collect_decl_refs`, the earliest point at which
+    // both set inputs are final, so the scope also covers `resolve_enum_variant_payloads`:
+    // outside it a payload field typed by a shadowed name lowers to
+    // `Type::StructureRef(N)` (#6394; PRD docs/prds/v0_6/enum-shadow-coherence.md §2 R4,
+    // §3 D1). Interim policy: stdlib-namespace α #5493 folds this install into its
+    // shared policy point (same PRD §3 D8, §5 C4).
     //
     // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
     // guard immediately and make the scope a silent no-op). It drops at the end of
