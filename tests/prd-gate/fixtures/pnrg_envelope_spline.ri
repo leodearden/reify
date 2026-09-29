@@ -47,7 +47,9 @@
 // atan2(800, 500) = 57.9946168 deg from +X, i.e. -32.0053832 deg from +Y).
 // The pose must go through a NAMED BINDING: an inline `translate(rotate(...))`
 // sweep profile is rejected by the `GeometryProfileRequired` precondition, and
-// #7248's pose guard rejects the unposed spelling outright.
+// #7248's pose guard rejects the unposed spelling outright.  It is a plain
+// `let`, not `aux let`: the GUI's Lezer grammar does not parse `aux let`, and
+// gui/src/__tests__/reifyGrammarCorpus.test.ts pins this file as parsing clean.
 //
 // NOT wired into any probe set or auto-run gate.
 
@@ -59,7 +61,7 @@ module pnrg_envelope_spline
 // surface.  For the nurbs_surface alternative, see
 // tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.
 structure PnrgSpline {
-    aux let profile = rotate(rotate(circle(100mm), 1.0, 0.0, 0.0, -90deg), 0.0, 0.0, 1.0, -32.0053832deg)
+    let profile = rotate(rotate(circle(100mm), 1.0, 0.0, 0.0, -90deg), 0.0, 0.0, 1.0, -32.0053832deg)
     let g = sweep(profile, bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
 }
 
