@@ -75,7 +75,7 @@
 //! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`
 //! (`conformance/mod.rs`, fn-call path, `Severity::Error`) and
 //! `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, ctor
+//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`, ctor
 //! path, `Severity::Warning`).  The `Point` and `Matrix` / `Tensor` arms are
 //! pinned to reach the strict param-side predicate too, by probes sitting
 //! beside those two in the same two modules; they are not re-listed here.
@@ -95,17 +95,22 @@
 //! Stating that explicitly matters because the two spellings do NOT carry the
 //! same authorial intent.  Task 5848's ruling is about `Dimensionless`, whereas
 //! `Real` is also the idiomatic "just a raw number" spelling — including for a
-//! number that is a measurement carried in native units.
-//! `crates/reify-compiler/stdlib/fdm_slice.ri`'s `Bead.centerline`
-//! (`List<Point3<Real>>`) is exactly that: its module doc fixes
-//! a marshalling contract in which centerline coordinates are raw G-code
-//! MILLIMETRES, "Hence `Real` / `Point3<Real>` here, not `Length` /
-//! `Point3<Length>`".  The ruling still applies there, and that is the intended
-//! reading rather than a casualty of it: the declaration says these coordinates
-//! are bare numbers, so a `List<Point3<Length>>` arg is a real breach of that
+//! number that is a measurement carried in native units, where a marshalling
+//! contract fixes the unit and the declaration deliberately erases it.  Where
+//! that second reading applies the ruling still applies too, and that is the
+//! intended outcome rather than a casualty of it: the declaration says those
+//! coordinates are bare numbers, so a dimensioned arg is a real breach of the
 //! contract.  What differs is the PREMISE of the rejection — contract-imposed
 //! erasure rather than an assertion of unit-lessness — so anyone tempted to
-//! retype that param must weigh the marshalling contract, not this rule alone.
+//! retype such a param must weigh the marshalling contract, not this rule alone.
+//!
+//! That second reading has no worked example in `stdlib/` today: every `Real`
+//! param there is dimensionless by nature (tolerances, exponents, knockdown
+//! ratios, loss factors).  It stays legitimate all the same — it is a claim
+//! about authorial intent, which no sweep can rule out for future code — but
+//! weigh a fresh `Real`-for-a-measurement declaration carefully: a unit the
+//! `.ri` surface cannot STATE is exactly how a 1000x disagreement stays
+//! invisible.
 //!
 //! **Measured reach, and what that measurement does NOT cover.**  The tightening
 //! landed with zero new diagnostics: every constructor-arg site at a
@@ -115,17 +120,17 @@
 //! and `designs/` are OUTSIDE the measurement and are evidence neither way; the
 //! nearest latent instance there is `prj/printer_v01/printer.ri`'s cardinal-axis
 //! direction `let`s, written under a unit-magnitude `1m` convention and so
-//! genuinely `Length`-dimensioned.  Inside the measured tree the nearest is that
-//! same `fdm_slice.ri` `Bead.centerline`, absent only because the measurement is
-//! over constructor-ARG sites and no `.ri` file constructs a `Bead` today.  If
-//! one ever did it would NOT stay silent, including from a literal `point3(…)`
-//! arg rather than merely a `List<Point3<Length>>`-typed REF — see the expired
-//! premise below for why a `point3(…)` call now carries a real quantity slot,
-//! recovered from its FIRST argument via the weakness task 5889 owns
-//! (`math_signatures.rs`).
+//! genuinely `Length`-dimensioned.  Inside the measured tree there is no latent
+//! instance to name — see the `stdlib/` sweep above.  The mechanism that would
+//! make one latent still reaches any `Real`-quantity param: a literal
+//! `point3(…)` arg would NOT stay silent, not merely a
+//! `List<Point3<Length>>`-typed REF — see the expired premise below for why a
+//! `point3(…)` call now carries a real quantity slot, recovered from the
+//! dimension its components AGREE on (`math_signatures.rs`; the rule is stated
+//! in full under *What the arg side infers from a literal* below).
 //!
 //! The `.ri` fixtures in
-//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs` drive
+//! `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs` drive
 //! this rule at the ctor path (`Severity::Warning`) through the real
 //! `point3(…)` / `matrix(…)` → `math_fn_result_type` → arm chain that the
 //! direct-`Type` probes in `conformance/mod.rs` deliberately bypass, the `Real`
@@ -141,23 +146,26 @@
 //! produce a dimensioned `Type::Point` arg, because `point3(…)` carries no
 //! quantity slot" — does NOT, and must not be re-asserted: task 5344 claimed
 //! `point3` / `point2` into the math construction family, so those calls now
-//! return a real `Type::Point { n, quantity }`.  That claim is still written,
+//! return a real `Type::Point { n, quantity }`.  That claim was still written,
 //! and still false, at further sites in `conformance/mod.rs` and
-//! `struct_ctor_field_conformance_tests.rs` — ALL OWNED BY TASK 6436, filed
-//! from esc-6159-3 for exactly this purpose, which enumerates them in its own
-//! description so the site list has ONE home and is not maintained here in
-//! lockstep.  Converting the pre-existing `Point`-arm probes to `.ri` fixtures,
-//! which the ctor-path fixtures above show is now possible for the first time,
-//! is 6436's as well.  Task 6159 corrected only what task 6159 itself authored.
+//! `struct_ctor_field_conformance_tests.rs`; task 6436 (filed from esc-6159-3
+//! for exactly this purpose) corrected all of them, and converted the
+//! pre-existing `Point`-arm probes to `.ri` fixtures — which the ctor-path
+//! fixtures above had shown was possible for the first time.  Task 6159 had
+//! corrected only what task 6159 itself authored.
 //!
-//! 6436's list also includes one site in THIS file, and that one IS flagged in
-//! place, because a reader of this section reaches it a few paragraphs down:
-//! "Why the ARG side is tolerant rather than strict" still leads with
-//! `point3(…)` as one of three erasure routes.  Only that ONE route is retired;
-//! the other two — a `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at
-//! every corpus site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
-//! untouched, so the arg-side tolerance RULING stands and only its stated basis
-//! needs re-arguing.
+//! The site list is deliberately NOT enumerated here, and was not while it was
+//! outstanding either: each arm's own doc carries the detail, so the two never
+//! have to be maintained in lockstep.  The reconciliation is done; what remains
+//! normative here is the premise itself — a `point3(…)` / `point2(…)` call
+//! carries a real quantity slot, and no site may re-derive an erasure claim from
+//! it.
+//!
+//! One site in THIS file rested on the same premise and HAS BEEN re-argued: "Why
+//! the ARG side is tolerant rather than strict", a few paragraphs down, which
+//! now carries the whole account of what the retired route cost that ruling and
+//! why it survives on the two that remain.  That paragraph is this file's single
+//! home for it.
 //!
 //! The `Real` quantity slots on `stdlib/solver_elastic.ri`'s `ElasticResult`
 //! `gradient` / `frame` params are out of the measurement's reach for a
@@ -196,26 +204,45 @@
 //! non-zero-risk.  This is a ruling, not an oversight — do not "fix" the asymmetry
 //! with the other four arms by symmetry.  Pinned by
 //! `field_param_given_erased_analytical_field_stays_clean`
-//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`); the
+//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`); the
 //! false-warning count that motivated the arm is recorded once, in the
 //! `Type::Field` arm's own comment in `conformance/mod.rs`.
 //!
 //! **Why the ARG side is tolerant rather than strict.**  This rationale is
 //! ARG-SIDE ONLY — it is what the param-side ruling above does *not* inherit.
 //! The arg side of these arms is systematically erased, so strict equality would
-//! compare a declaration against a hole: `point3(…)` is an eval-builtin with no
-//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders;
+//! compare a declaration against a hole.  TWO erasure routes carry this:
 //! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
-//! site; a `Field`'s slots always erase to `Field<Real, Real>`, which is what
-//! produced the false warnings that arm's comment records.  None of those three
-//! erasure routes exists on the param side, where the slot is always written out.
+//! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
+//! produced the false warnings that arm's comment records.  Neither route exists
+//! on the param side, where the slot is always written out.
+//!
+//! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
+//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders.
+//! Task 5344 retired it.  **The ruling survives the loss because that route did
+//! not become STRICT — it became CORRECT.**  A `point3(…)` arg now carries a real
+//! quantity slot, so at the `Point` arm the tolerance is no longer NEEDED rather
+//! than no longer JUSTIFIED, and nothing that was silent for a good reason has
+//! started comparing a declaration against a hole.
+//!
+//! What the remaining tolerance still buys at that arm is measured, in both
+//! directions, by an accept/reject pair of `.ri` fixtures in
+//! `struct_ctor_field_conformance_tests.rs`:
+//! `point3_dimensionless_at_dimensioned_point_param_stays_clean` — `point3(0, 0,
+//! 1)` at a `Point3<Length>` param, SILENT, which is what the tolerance is for —
+//! and `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+//! — `point3(1kg, 0kg, 0kg)` at the same param, REJECTED.  Those two are where
+//! the arm's line now sits, and they are the fixtures a future tightening has to
+//! move deliberately rather than by accident.
 //!
 //! **The residual this knowingly leaves — an ARG-side one, deliberately kept.**
 //! A `Vector3<Length>` param fed a *dimensionless* vector stays silent: the
 //! corpus's idiomatic spelling for a *direction* is dimensionless even where a
 //! declaration says `Length`, so rejecting it would false-reject `vec3(0, 1, 0)`.
-//! That is the same bounded-cost class as the `Point` arm's tolerance of a bare
-//! numeric literal, and it is accepted for the same reason.  Task 5848 has since
+//! That is the same bounded-cost class as the `Point` arm's tolerance of a
+//! scalar-family arg (any `Type::Scalar { .. }`, dimensioned or not, plus `Int`
+//! and `ScalarParam` — not a bare literal alone), and it is accepted for the
+//! same reason.  Task 5848 has since
 //! LANDED and retyped the direction fields this paragraph used to name —
 //! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
 //! `Vec3<Dimensionless>` today — but the residual is structural, not a property
@@ -226,30 +253,48 @@
 //! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 //! (`struct_ctor_field_conformance_tests.rs`).
 //!
-//! A SECOND residual is specific to the `Matrix`/`Tensor` leg: a `matrix([[…]])`
-//! arg's quantity comes from `matrix_shape` (`math_signatures.rs`), which derives
-//! the whole matrix's quantity from cell `[0][0]` ALONE.  The rule is therefore
-//! only sound for dimension-HOMOGENEOUS literals.  A heterogeneous one — routine
-//! in this domain: a 6x6 stiffness/compliance matrix or a spatial (screw-theory)
-//! Jacobian mixes translational and rotational blocks — can be false-rejected when
-//! `[0][0]` disagrees with the declaration, and, dually, a genuinely wrong matrix
-//! whose `[0][0]` happens to agree sails through.  That inference weakness
-//! pre-dates this rule and was cosmetic while the quantity was never compared;
-//! this ruling makes it load-bearing for a diagnostic.  No site under
-//! `examples/` trips it today (`no_example_emits_ctor_field_conformance_diagnostics`
-//! is green) — that gate discovers files under `EXAMPLES_DIR` ONLY, so `prj/`,
-//! `designs/` and the prd-gate fixtures are NOT evidence either way, and the
-//! claim must not be widened to "the corpus".
+//! **What the arg side infers from a literal (task 5889, CLOSED).**  All three
+//! routes from `.ri` source into a quantity slot — `list_shape` (`vec` /
+//! `diag`), `matrix_shape` (`matrix`), and the inline
+//! `"vec3" | "vec2" | "point3" | "point2"` arm of `math_fn_result_type`, all in
+//! `math_signatures.rs` — infer a quantity ONLY from elements that AGREE on a
+//! dimension, and degrade to `Type::dimensionless_scalar()` otherwise.
+//! Agreement is compared by dimension, not by `Type`: `Int` beside `Real`
+//! agrees, since both are dimensionless and the dimension is all the rule
+//! reads. Elements that agree keep element `[0]`'s `Type` verbatim, so the
+//! narrowing costs no precision where the inference was already sound.
+//! `matrix_shape` inspects every cell of every row, so the heterogeneity a
+//! block-structured matrix actually carries ACROSS row blocks — a 6x6
+//! stiffness/compliance matrix, a spatial (screw-theory) Jacobian mixing
+//! translational and rotational blocks — is seen, not just heterogeneity within
+//! row 0.
 //!
-//! Task 6159's param-side tightening ADDS AN INSTANCE of that same failure
-//! shape: a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param
-//! can now be rejected on cell `[0][0]` alone, where before only a dimensioned
-//! param slot could trip it.  The sibling `list_shape` (`vec` / `diag`) has the
-//! same first-ELEMENT weakness one rank down.  The fix — widen both to detect
-//! heterogeneous cells/elements and degrade to `Type::dimensionless_scalar()`,
-//! which would make the slot yield no dimension and the rule fall silent — is
-//! out of both rulings' scope and is tracked by task 5889, which owns it;
-//! `math_signatures.rs` carries the matching note at each function.
+//! The consequence for THIS rule: a heterogeneous aggregate's arg slot names no
+//! dimension, so `arg_quantity_slot_dimension` (`conformance/mod.rs`) returns
+//! `None` and the rule falls silent BY CONSTRUCTION — no case for it in the
+//! walker, and none is wanted.  Read that precisely in both directions.  The
+//! false-REJECT is GONE: a correctly-declared heterogeneous matrix is no longer
+//! rejected because cell `[0][0]` happened to disagree with the declaration.
+//! The dual false-ACCEPT is NOT detected — a genuinely wrong heterogeneous
+//! matrix is still accepted; what changed is that the silence is now principled
+//! rather than an accident of which cell sat first.  Per-cell dimension checking
+//! would be a separate and much larger ruling, and nothing here should be read
+//! as having made it.
+//!
+//! Pinned end to end, one fixture per route, in
+//! `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`:
+//! `vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean`
+//! (`list_shape`),
+//! `matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean`
+//! (`matrix_shape`, the across-row-block case), and
+//! `vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean`
+//! (the inline arm) — the last paired with
+//! `vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`,
+//! since the two together are what pin that the rule's accept/reject outcome no
+//! longer depends on component ORDER (the inferred `Type` is still element
+//! `[0]`'s, which this rule never reads).  Each has a still-rejecting
+//! HOMOGENEOUS twin — same route, same param — which is what keeps it
+//! non-vacuous.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and

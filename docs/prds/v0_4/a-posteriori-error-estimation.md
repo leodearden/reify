@@ -118,11 +118,13 @@ bincode-cached type.
 
 Instead the boundary is **reconstructed from the realized tet mesh's own free
 faces** (`reify_solver_elastic::volume_refine::boundary_surface_mesh`). This is
-not merely the cheaper route, it is the tighter one: the size field is
-transferred onto the surface by a nearest-vertex scan, so a boundary whose
-vertices are a bit-equal SUBSET of the volume mesh's makes every lookup a
-distance-0 identity — strictly better than an independently tessellated surface
-of the same solid, which would share no vertices with the tet mesh at all.
+not merely the cheaper route, it is the tighter one: the remesh is sized by a
+gmsh background size field built over the realized mesh's own tets (task
+#7447), so the field's support is exactly the union of those tets, and the
+extracted boundary — their free-face set — bounds exactly that support. Every
+point the mesher queries for a size then lies inside some field tet, whereas an
+independently tessellated surface of the same solid bounds a slightly different
+region, leaving some query points outside every field tet.
 
 ### Fallback
 

@@ -1,0 +1,946 @@
+//! δ (task 4740) re-demand staleness gate — deliverable B.
+//!
+//! Pins the headline δ invariant (deliverable B): when a previously hidden body
+//! is un-hidden (its realization re-enters the demand cone via
+//! `set_demand_selective`) and `tessellate_snapshot` is called, the body must
+//! re-realize from the CURRENT parameter values, not from stale snapshot values
+//! left over from when the body was hidden.
+//!
+//! ## Root cause (without fix)
+//!
+//! `tessellate_snapshot` copies `snapshot.values` AS-IS to build its working
+//! `ValueMap` (line ~9250 engine_build.rs). A plain arithmetic cell like
+//! `sb = w * 2` is NOT refreshed by `hydrate_value_cell_in_loop` (which only
+//! handles geometry-query / selector / topology cells). After a hidden-then-edit
+//! cycle, `sb` is stale in `snapshot.values` (never re-evaluated during the
+//! hidden phase because it was not in the demand cone). When body_b is un-hidden
+//! and `tessellate_snapshot` runs, body_b re-realizes from stale `sb`, producing
+//! geometry that reflects the OLD param value rather than the current one.
+//!
+//! ## What δ (step-5) fixes
+//!
+//! Step-5 wires a re-demand handler in `engine_demand.rs` (at
+//! `set_demand_selective`): when a cell leaves the demand cone, it is marked
+//! `Pending` (via `mark_demand_pruned_pending`), so a subsequent warm
+//! `tessellate_snapshot` can detect the stale cell, re-evaluate it, and update
+//! `snapshot.values` to reflect the current param before geometry executes.
+//!
+//! ## Test oracle
+//!
+//! A FRESH cold `eval()` of the post-edit-equivalent source
+//! ([`differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`], `w=20mm` default)
+//! gives `sb`'s value in `snapshot.values` as `40mm` (= `w*2 = 20mm*2`). This
+//! is the expected value the fix must produce in the actual engine's snapshot
+//! after the un-hide + tessellate.
+//!
+//! ## Why `snapshot.values[sb].content_hash()`, not mesh counts
+//!
+//! A box mesh has SIZE-INVARIANT vertex/index counts — `box(20mm,20mm,20mm)`
+//! and `box(40mm,40mm,40mm)` both produce the same vertex/face count, making
+//! count-based assertions falsely GREEN. The `sb` VALUE in `snapshot.values` is
+//! `40mm` (correct) or `20mm` (stale); `content_hash()` encodes the exact value
+//! and differs between these two, making it the correct staleness detector.
+//!
+//! NOTE: `RealizationNodeData.input_cone_hash` is NOT used here — it is only
+//! set by the `build_snapshot` / `build_with_geometry_output` paths, NOT by
+//! `tessellate_snapshot`. Using it would produce `None == None` (trivially GREEN
+//! before the fix) which is NOT a valid RED assertion.
+//!
+//! Fixture: [`differential::SELECTIVE_DEMAND_MULTIBODY_SRC`] —
+//! `param w : Length = 10mm`; `sa = w*3` → `box a` (body_a = realization[0]);
+//! `sb = w*2` → `box b` (body_b = realization[1]).
+//! `sb` is body_b's EXCLUSIVE scalar cell: it does not appear in body_a's
+//! backward cone, so it is stale in `snapshot.values` after a hidden edit.
+
+use crate::differential;
+
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::{RealizationNodeId, ValueCellId};
+use reify_eval::cache::NodeId;
+use reify_eval::{BuildScheduler, Engine};
+use reify_ir::Value;
+use reify_test_support::{compile_source, MockGeometryKernel};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-4 RED: after hide → edit_param(w, 20mm) → un-hide, body_b must
+// re-realize from the CURRENT param (w=20mm, sb=40mm), not from stale sb=20mm.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-4 (RED until step-5): un-hiding body_b after a hidden edit must
+/// cause `snapshot.values[sb]` to be refreshed to the CURRENT param value
+/// (40mm = w*2 = 20mm*2), not the stale snapshot value (20mm = 10mm*2).
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC` (`w=10mm`).
+/// 2. `set_demand_selective([body_a, body_b])` — both visible.
+/// 3. `tessellate_snapshot()` — body_b realized; `snapshot.values[sb]=20mm`.
+/// 4. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: `set_demand_selective` will call `mark_demand_pruned_pending`
+///    at this point, marking `sb` as `Pending` (it just left the demand cone).
+///    Without fix: `sb` stays `Final` with stale value 20mm in the cache.
+/// 5. `edit_param(w, 20mm)` — w changes to 20mm; `sb` is NOT demanded (body_b
+///    hidden) so `sb` is NOT re-evaluated. `sa = 60mm` IS re-evaluated.
+///    `snapshot.values[sb]` stays at 20mm (stale).
+/// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
+///    Step-5 fix: detects `sb` is `Pending` and now demanded → refreshes `sb`
+///    to `w*2 = 40mm` and updates `snapshot.values[sb]`.
+/// 7. `tessellate_snapshot()` — with fix, `snapshot.values[sb]=40mm` before
+///    the copy → body_b tessellates from CURRENT params.
+///    Without fix: `snapshot.values[sb]=20mm` (stale) → wrong geometry.
+///
+/// Oracle: a FRESH cold `eval()` of `SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC`
+/// (`w=20mm` default) gives `snapshot.values[sb]` = `Value::length(0.04)`
+/// (40mm = w*2 = 20mm*2). `sb.content_hash()` encodes the exact value and
+/// differs between 20mm (stale) and 40mm (current).
+///
+/// **RED today** (without step-5): `snapshot.values[sb]` is still 20mm after
+/// the un-hide + tessellate (never refreshed because `sb` was never re-evaluated
+/// — it was outside the demand cone during the `edit_param` in step 5).
+///
+/// **DO NOT** assert on mesh vertex/index counts — those are size-invariant for
+/// a box and would be falsely GREEN.
+///
+/// **DO NOT** assert on `RealizationNodeData.input_cone_hash` — `tessellate_snapshot`
+/// does not set that field (only `build_snapshot`/`build_with_geometry_output` do),
+/// so `input_cone_hash` would be `None` in both actual and oracle, giving `None ==
+/// None` (trivially GREEN before the fix).
+#[test]
+fn redemand_body_b_snapshot_sb_reflects_current_param_after_hidden_edit() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+    let e = "SelectiveMultiBody";
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let w = ValueCellId::new(e, "w");
+    let sb_id = ValueCellId::new(e, "sb");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+
+    // ── Step 1: cold eval — both bodies at w=10mm ────────────────────────────
+    engine.eval(&compiled);
+
+    // ── Step 2: selective demand — both bodies visible ────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after set_demand_selective"
+    );
+
+    // ── Step 3: tessellate — body_b realized at w=10mm, sb=20mm ─────────────
+    let _tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+
+    // Verify sb is 20mm in the snapshot after the initial warm tessellate.
+    let sb_after_tess1 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        sb_after_tess1.is_some(),
+        "precondition: sb must be present in snapshot.values after cold eval + tessellate"
+    );
+
+    // ── Step 4: hide body_b ───────────────────────────────────────────────────
+    // Step-5 fix: set_demand_selective will call mark_demand_pruned_pending here,
+    // marking sb as Pending. Without fix: sb stays Final with stale value.
+    engine.set_demand_selective([body_a.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after hiding body_b"
+    );
+
+    // ── Step 5: edit w → 20mm with body_b hidden ────────────────────────────
+    // sa = w*3 = 60mm (re-evaluated — body_a is visible).
+    // sb = w*2 stays STALE at 20mm (body_b hidden → sb NOT in demand cone →
+    // not in eval_set → NOT re-evaluated → snapshot.values[sb] unchanged).
+    engine
+        .edit_param(w.clone(), Value::length(0.02))
+        .expect("edit_param(w, 20mm) must succeed");
+
+    // Verify sb is still 20mm in snapshot after the hidden edit.
+    let sb_after_edit = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        sb_after_tess1, sb_after_edit,
+        "precondition: snapshot.values[sb] must still be 20mm after edit_param while hidden \
+         (sb was not in the demand cone → not re-evaluated)"
+    );
+
+    // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    // Step-5 fix: detects sb is Pending (marked in step 4) and now demanded →
+    // re-evaluates sb = w*2 = 20mm*2 = 40mm → updates snapshot.values[sb].
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after un-hiding body_b"
+    );
+
+    // ── Step 7: tessellate — body_b should re-realize from CURRENT params ────
+    // With fix: snapshot.values[sb] = 40mm before the copy → body_b tessellates
+    // from CURRENT params.
+    // Without fix: snapshot.values[sb] = 20mm (stale) → wrong geometry.
+    let _tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after the un-hide");
+
+    // ── Actual: sb's content_hash in snapshot after un-hide + tessellate ─────
+    let actual_sb_hash = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+
+    // ── Oracle: fresh cold eval at w=20mm (sb = w*2 = 40mm) ─────────────────
+    //
+    // A fresh engine evaluating the post-edit-equivalent source (w=20mm default)
+    // via cold eval(). After eval(), snapshot.values[sb] = Value::length(0.04)
+    // (40mm = w*2 = 20mm*2). This is the EXPECTED value that step-5 must produce
+    // in the actual engine after the un-hide + tessellate.
+    //
+    // Note: we use eval() only (no tessellate_snapshot) because:
+    // (a) eval() suffices to populate snapshot.values[sb] = 40mm, and
+    // (b) tessellate_snapshot() does NOT update snapshot.values for value cells,
+    //     so the oracle hash is the same whether or not tessellate is called.
+    let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC);
+    let mut oracle_engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    oracle_engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    oracle_engine.eval(&oracle_compiled);
+
+    let oracle_sb_hash = oracle_engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+
+    assert!(
+        oracle_sb_hash.is_some(),
+        "oracle: snapshot.values[sb] must be present after cold eval at w=20mm"
+    );
+
+    // ── Assertion: snapshot.values[sb] must reflect the CURRENT param (w=20mm) ──
+    //
+    // RED today (without step-5):
+    //   actual_sb_hash = content_hash(20mm) [stale, from old w=10mm*2, never
+    //                    refreshed because sb was pruned from eval_set while hidden]
+    //   oracle_sb_hash = content_hash(40mm) [correct, w=20mm*2]
+    //   → assert_eq! FAILS → RED ✓
+    //
+    // GREEN after step-5 (set_demand_selective calls mark_demand_pruned_pending
+    // on hide, tessellate_snapshot refreshes Pending demanded cells before
+    // tessellation):
+    //   actual_sb_hash = content_hash(40mm) [refreshed to w*2=40mm]
+    //   oracle_sb_hash = content_hash(40mm) [correct]
+    //   → assert_eq! PASSES → GREEN ✓
+    assert_eq!(
+        actual_sb_hash, oracle_sb_hash,
+        "snapshot.values[sb] after un-hide + tessellate must match the w=20mm oracle \
+         (sb should be re-evaluated to w*2=40mm before geometry execution).\n\
+         actual:  {actual_sb_hash:?}\n\
+         oracle:  {oracle_sb_hash:?}\n\
+         RED until step-5 implements the re-demand staleness refresh \
+         (set_demand_selective marks pruned cells Pending; tessellate_snapshot \
+         refreshes Pending demanded cells before body_b tessellates)."
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-6: reuse-branch guard — pins the hash gate's "reuse iff unchanged" branch.
+// GREEN immediately after step-5 (hash gate implemented);
+// would FAIL if step-5 had instead used the degraded "always force-recompute
+// on re-demand" fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-6 (characterization guard): un-hiding body_b WITHOUT an intervening
+/// `edit_param` must NOT re-dispatch body_b's kernel ops — the hash gate
+/// detects that the input-cone hash is UNCHANGED and reuses the cached
+/// geometry (`last_dispatch_count` = 0 for that tessellate call).
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_MULTIBODY_SRC` (`w=10mm`).
+/// 2. `set_demand_selective([body_a, body_b])` — both visible.
+/// 3. `tessellate_snapshot()` — body_b realized and written to
+///    `realization_cache`; `snapshot.values[sb]=20mm`; `input_cone_hash` set.
+/// 4. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: marks `sb` (exclusive to body_b) as Pending.
+/// 5. `tessellate_snapshot()` — body_b is HIDDEN (not demanded) — NOT
+///    dispatched.  `realization_cache` entry for body_b is NOT cleared
+///    (no `edit_param` was called, so `clear_realization_cache` did NOT run).
+/// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
+///    Step-5 Part A: `mark_demand_pruned_pending` is a no-op at un-hide (all
+///    demanded nodes stay).
+/// 7. `tessellate_snapshot()`:
+///    Step-5 Part B: sb IS demanded AND Pending → re-evaluated to `w*2 = 20mm`
+///    (same as before, no edit).
+///    Step-5 Part C: hash gate → `current_hash == input_cone_hash` (inputs
+///    unchanged) → `realization_cache` is NOT cleared for body_b → body_b gets
+///    a cache HIT in `tessellate_from_values` → `last_dispatch_count = 0`.
+///
+/// **Asserts:**
+/// (a) `snapshot.values[sb]` is unchanged / still correct (still `20mm`).
+/// (b) `last_dispatch_count` after the final tessellate is 0 (no kernel
+///     ops dispatched for body_b — hash gate reused cached geometry).
+///
+/// **Would FAIL** if step-5 had implemented the "degraded fallback" (always
+/// force-recompute on re-demand, i.e. always `clear_entity` regardless of
+/// the hash comparison): body_b's realization_cache entry would be cleared,
+/// causing a full kernel re-dispatch and `last_dispatch_count > 0`.
+#[test]
+fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
+    let e = "SelectiveMultiBody";
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let sb_id = ValueCellId::new(e, "sb");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+
+    // ── Step 1: cold eval — both bodies at w=10mm ────────────────────────────
+    engine.eval(&compiled);
+
+    // ── Step 2: selective demand — both visible ───────────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF"
+    );
+
+    // ── Step 3: tessellate — body_b realized and cached at w=10mm ────────────
+    let _tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after eval()");
+
+    // ── Precondition: body_b IS in tess1.meshes ──────────────────────────────
+    // This anchors the "reuse" claim below: body_b was initially tessellated
+    // and its geometry handle is now in the realization_cache.  A subsequent
+    // no-edit un-hide should REUSE that geometry (dispatch_count == 0) rather
+    // than silently DROP it (which would also give dispatch_count == 0).
+    let body_b_entity_path = format!("{}#realization[1]", e);
+    assert!(
+        _tess1.meshes.iter().any(|m| m.entity_path == body_b_entity_path),
+        "precondition: body_b must appear in _tess1.meshes (both bodies demanded, \
+         no exempt filter yet); entity_path expected: {body_b_entity_path:?}; \
+         actual paths: {:?}",
+        _tess1.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+    );
+
+    // Capture the snapshot.values[sb] hash at w=10mm for the oracle.
+    let sb_hash_at_w10 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        sb_hash_at_w10.is_some(),
+        "precondition: sb must be present in snapshot.values after cold eval"
+    );
+
+    // ── Step 4: hide body_b ───────────────────────────────────────────────────
+    engine.set_demand_selective([body_a.clone()]);
+
+    // ── Step 5: tessellate with body_b HIDDEN (no edit_param!) ───────────────
+    // body_b is NOT demanded → NOT dispatched; realization_cache entry survives.
+    let _tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after hide");
+
+    // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after un-hide"
+    );
+
+    // ── Step 7: tessellate — body_b should reuse cached geometry ─────────────
+    // `last_dispatch_count` is reset to 0 at the start of each tessellate call.
+    // After this call it should still be 0 (cache hit for body_b, no kernel ops).
+    let _tess3 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must succeed after un-hide");
+
+    // ── Assertion (a): sb is still the w=10mm value ──────────────────────────
+    let sb_hash_after_unhide = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&sb_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        sb_hash_after_unhide, sb_hash_at_w10,
+        "snapshot.values[sb] must be unchanged after hide+unhide without an edit \
+         (still w=10mm*2=20mm).\n\
+         before: {sb_hash_at_w10:?}\n\
+         after:  {sb_hash_after_unhide:?}"
+    );
+
+    // ── Assertion (b): last_dispatch_count = 0 ───────────────────────────────
+    // The hash gate detected `current_hash == input_cone_hash` (inputs unchanged)
+    // and preserved the realization_cache entry for body_b → cache HIT in
+    // tessellate_from_values → no kernel ops dispatched → dispatch count = 0.
+    //
+    // Would be > 0 if step-5 used the degraded "always force-recompute" fallback
+    // (unconditional clear_entity on re-demand, ignoring the hash comparison).
+    let dispatch_count = engine.last_dispatch_count();
+    assert_eq!(
+        dispatch_count, 0,
+        "last_dispatch_count must be 0 after un-hide without an edit: \
+         the hash gate should reuse cached body_b geometry (inputs unchanged).\n\
+         got: {dispatch_count}\n\
+         FAILS if step-5 degraded to force-recompute every re-demand instead \
+         of the input-cone-hash gate."
+    );
+
+    // ── DELTA CONTRACT: body_b is intentionally ABSENT from _tess3.meshes. ─────
+    //
+    // The hash gate marks body_b "exempt" (inputs unchanged), excludes it from
+    // the scheduled seed, and tessellate_from_values emits no BuildStep::Realize
+    // for it — so the mesh slot stays None.  This is NOT a "silent drop": the
+    // consumer (GUI) must treat an absent mesh as an incremental delta ("keep
+    // the previous mesh") rather than a removal signal.
+    //
+    // REUSE EVIDENCE: the pair (a) sb unchanged, (b) dispatch_count==0.
+    //
+    // NOTE on realization_cache: the tessellate_snapshot path only populates
+    // the realization cache when demanded_tol = Some(...), which requires a
+    // RepresentationWithin constraint or active purpose binding.  This fixture
+    // has neither, so demanded_tol = None and the cache is never written.
+    // The "reuse" mechanism here is purely via hash-exempt seed exclusion —
+    // body_b is excluded from the tessellate seed so execute_realization_ops is
+    // never called, giving dispatch_count == 0 without a cache hit.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7 RED: a body-exclusive DEFAULTED PARAM must NOT be reverted to its
+// default on re-demand.
+//
+// Without step-8 fix: Part B of refresh_and_gate_demanded_realizations
+// re-evaluates `p`'s default_expr (10mm) on un-hide, overwriting the user's
+// edit (20mm) with the DEFAULT 10mm — a silent revert.
+//
+// Fixture: SELECTIVE_DEMAND_EXCL_PARAM_SRC
+//   param p : Length = 10mm  ← body_b's exclusive Param (no intermediate let)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// step-7 (RED until step-8): a body-exclusive DEFAULTED Param must NOT be
+/// reverted to its default value on hide → un-hide.
+///
+/// Sequence (UnifiedDag + MockGeometryKernel):
+/// 1. `eval()` on `SELECTIVE_DEMAND_EXCL_PARAM_SRC` (`p=10mm` default).
+/// 2. `set_demand_selective([body_a, body_b])` — both visible, full_scope OFF.
+/// 3. `edit_param(p, 20mm)` — `p` is demanded → `snapshot.values[p] = 20mm`,
+///    freshness `Final`.
+/// 4. `tessellate_snapshot()` — body_b realized at p=20mm.
+/// 5. `set_demand_selective([body_a])` — HIDE body_b.
+///    Step-5 fix: `mark_demand_pruned_pending` marks `p` as `Pending` (it just
+///    left the demand cone).  `snapshot.values[p]` STAYS at 20mm.
+/// 6. `set_demand_selective([body_a, body_b])` — UN-HIDE body_b.
+///    `p` is now demanded AND `Pending`.
+/// 7. `tessellate_snapshot()`:
+///    Part B sees `p` as demanded + Pending → attempts to re-evaluate using
+///    `p`'s `default_expr` (which is `10mm`, the original literal default).
+///    WITHOUT the step-8 fix, Part B re-evaluates `p`'s default_expr and
+///    OVERWRITES `snapshot.values[p]` with `10mm`, REVERTING the user's edit.
+///    WITH the step-8 fix (restrict Part B to `ValueCellKind::Let`), `p` is a
+///    Param → NOT a refresh candidate → `snapshot.values[p]` STAYS at 20mm.
+///
+/// Oracle: a FRESH cold `eval()` of `SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC`
+/// (`p=20mm` default) gives `snapshot.values[p]` = `Value::length(0.02)`
+/// (20mm). The step-7 test asserts that the actual engine's
+/// `snapshot.values[p]` after the un-hide + tessellate matches this oracle.
+///
+/// **RED today** (without step-8): `snapshot.values[p]` is reverted to 10mm
+/// by Part B (which sees `p` as Pending + demanded and re-evaluates its
+/// `default_expr = 10mm`).
+///
+/// **DO NOT** assert on mesh vertex/index counts — size-invariant for a box.
+/// **DO NOT** assert on `RealizationNodeData.input_cone_hash` —
+/// `tessellate_snapshot` does not set it → `None == None` trivially GREEN.
+#[test]
+fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_EXCL_PARAM_SRC);
+    let e = "SelectiveExclParam";
+
+    let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
+    let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
+    let p_id = ValueCellId::new(e, "p");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+
+    // ── Step 1: cold eval ────────────────────────────────────────────────────
+    engine.eval(&compiled);
+
+    // ── Step 2: selective demand — both bodies visible ────────────────────────
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after set_demand_selective"
+    );
+
+    // ── Step 3: edit p → 20mm (body_b visible, p is demanded) ───────────────
+    // p is a Param; edit_param writes it to snapshot.values[p] = 20mm (Final).
+    engine
+        .edit_param(p_id.clone(), Value::length(0.02))
+        .expect("edit_param(p, 20mm) must succeed");
+
+    // Precondition: p is 20mm in the snapshot after edit.
+    let p_after_edit = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+    assert!(
+        p_after_edit.is_some(),
+        "precondition: p must be present in snapshot.values after edit_param"
+    );
+
+    // ── Step 4: tessellate — body_b realized at p=20mm ──────────────────────
+    let _tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+
+    // Verify p is still 20mm after tessellate (tessellate_snapshot does not
+    // overwrite value cells).
+    let p_after_tess1 = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+    assert_eq!(
+        p_after_edit, p_after_tess1,
+        "precondition: snapshot.values[p] must still be 20mm after tessellate_snapshot"
+    );
+
+    // ── Step 5: hide body_b ───────────────────────────────────────────────────
+    // mark_demand_pruned_pending marks p as Pending (it just left the demand cone).
+    // snapshot.values[p] stays at 20mm.
+    engine.set_demand_selective([body_a.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after hiding body_b"
+    );
+
+    // ── Step 6: un-hide body_b ───────────────────────────────────────────────
+    // p is now demanded AND Pending.
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition: full_scope must be OFF after un-hiding body_b"
+    );
+
+    // ── Step 7: tessellate — p must NOT be reverted to 10mm ─────────────────
+    // WITHOUT step-8 fix: Part B sees p as demanded+Pending and re-evaluates
+    // its default_expr (10mm) → overwrites snapshot.values[p] with 10mm.
+    // WITH step-8 fix: Part B restricts to Let cells → p is Param → skipped →
+    // snapshot.values[p] stays at 20mm.
+    let _tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after the un-hide");
+
+    // ── Actual: p's content_hash in snapshot after un-hide + tessellate ───────
+    let actual_p_hash = engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+
+    // ── Oracle: fresh cold eval at p=20mm ─────────────────────────────────────
+    // A fresh engine evaluating SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC (p=20mm
+    // default) via cold eval(). After eval(), snapshot.values[p] = 20mm.
+    let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC);
+    let mut oracle_engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    oracle_engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    oracle_engine.eval(&oracle_compiled);
+
+    let oracle_p_hash = oracle_engine
+        .eval_state()
+        .unwrap()
+        .snapshot
+        .values
+        .get(&p_id)
+        .map(|(v, _)| v.content_hash());
+
+    assert!(
+        oracle_p_hash.is_some(),
+        "oracle: snapshot.values[p] must be present after cold eval at p=20mm"
+    );
+
+    // ── Assertion: snapshot.values[p] must reflect the user's edit (20mm) ────
+    //
+    // RED today (without step-8):
+    //   actual_p_hash = content_hash(10mm) [Part B reverted p to its default]
+    //   oracle_p_hash = content_hash(20mm) [correct, user's edited value]
+    //   → assert_eq! FAILS → RED ✓
+    //
+    // GREEN after step-8 (Part B restricted to ValueCellKind::Let):
+    //   actual_p_hash = content_hash(20mm) [p is Param → skipped by Part B]
+    //   oracle_p_hash = content_hash(20mm) [correct]
+    //   → assert_eq! PASSES → GREEN ✓
+    assert_eq!(
+        actual_p_hash, oracle_p_hash,
+        "snapshot.values[p] after un-hide + tessellate must be the user's edited \
+         value (20mm), NOT the Param default (10mm).\n\
+         actual:  {actual_p_hash:?}\n\
+         oracle:  {oracle_p_hash:?}\n\
+         RED until step-8 restricts Part B refresh candidates to ValueCellKind::Let \
+         (Param cells must not be re-evaluated from their default_expr on re-demand \
+         — doing so silently reverts the user's edit_param)."
+    );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry-LIST lets across a rebuild (task #5385, review esc-5385-4).
+//
+// MEASURED GROUND TRUTH for the test below — `snapshot.values` and
+// `TessellateResult.values` do NOT agree for a geometry list, and only the
+// latter is the user-visible surface:
+//
+//   cell                       snapshot.values      TessellateResult.values
+//   `a`     (scalar geometry)  live GeometryHandle  live GeometryHandle
+//   `holes` (List<Geometry>)   List([Undef; 3])     List([3 live handles])
+//
+// The `snapshot.values` column for `holes` is `List([Undef; 3])` in EVERY path —
+// `eval`, `tessellate_snapshot`, `build_snapshot` and `build` — because the
+// regroup in `post_process_geometry_handle_cells` writes the assembled list into
+// the build's working `ValueMap` (which becomes the result), never back into the
+// snapshot. That pre-hydration placeholder is deliberate and already pinned by
+// `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
+// (generate_eval.rs); the remaining silent-Undef seam is #5402's.
+//
+// So this test asserts on the RESULT, not on `snapshot.values`. Asserting the
+// snapshot would pin `[Undef; 3]` — the defect — as if it were the contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Editing a param the list depends on must leave the list RESOLVED, and
+/// actually re-realized — not stale, not `[Undef; n]`.
+///
+/// The review noted every geometry-list test was single-shot `Engine::eval`, so
+/// no test drove build → `edit_param` → rebuild. `r` feeds all three
+/// `cylinder(r, h)` elements, so a correct rebuild changes every element's
+/// `upstream_values_hash` while keeping all three live.
+///
+/// FULL SCOPE ON PURPOSE (review esc-5385-7). This test deliberately does NOT
+/// call `set_demand_selective`, so despite living in the selective-demand harness
+/// it exercises the ordinary full-scope rebuild path. Driving the same fixture
+/// through hide → un-hide is RED today for a reason this task does not own: a
+/// repeat `tessellate_snapshot` under selective demand returns
+/// `List([Undef; 3])`, a realization-NAME versus cell-MEMBER correspondence gap
+/// filed as task #6460. It lives here rather than in a rebuild harness so #6460
+/// can add its selective-demand cases against this same fixture and these same
+/// helpers.
+#[test]
+fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+    let hashes_before = geometry_list_upstream_hashes(&tess1, &holes_id, 3, "before edit_param");
+
+    // ── Edit `r` 5mm → 7mm; all three cylinders depend on it ────────────────
+    engine
+        .edit_param(ValueCellId::new(e, "r"), Value::length(0.007))
+        .expect("edit_param(r, 7mm) must succeed");
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after edit_param");
+    let refs_after = assert_live_handle_list(
+        &tess2,
+        &holes_id,
+        3,
+        "after edit_param + rebuild: the list must still hold three live handles",
+    );
+
+    // Cross-element distinctness, which the per-element hash loop below CANNOT
+    // see: a regroup bug that broadcasts `holes#0`'s handle into all three slots
+    // changes every element's hash together and so passes that loop.
+    // `generate_eval.rs::assert_geometry_handle_list` already pins this for the
+    // single-shot eval path; this restores the same guarantee on the rebuild
+    // path.
+    let distinct: std::collections::HashSet<_> = refs_after.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "after edit_param + rebuild the elements must still be SEPARATE \
+         realizations, not clones of one: {refs_after:?}",
+    );
+
+    let hashes_after = geometry_list_upstream_hashes(&tess2, &holes_id, 3, "after edit_param");
+
+    // PER ELEMENT, not per Vec: `assert_ne!` on the two `Vec`s holds as soon as
+    // ONE element differs, so a partial regroup that re-realizes `holes#0` from
+    // the edited `r` while serving `holes#1`/`holes#2` stale would pass GREEN.
+    // `zip` cannot silently skip an element here — both vectors come from
+    // `geometry_list_upstream_hashes(..., 3, ...)`, which asserts `items.len()
+    // == 3` before returning, so both are exactly 3 long.
+    //
+    // Each element is compared only against ITSELF across the edit. All three
+    // elements are `cylinder(r, h)` over the same upstream values, so their
+    // hashes are IDENTICAL to one another by construction — that coincidence is
+    // not a bug, and cross-element distinctness belongs on `realization_ref`
+    // (above), never on these hashes.
+    for (k, (before, after)) in hashes_before.iter().zip(&hashes_after).enumerate() {
+        assert_ne!(
+            before, after,
+            "element {k}'s upstream_values_hash did not change after \
+             edit_param(r, 7mm) — served stale rather than re-realized"
+        );
+    }
+}
+
+/// A cone holding a STRICT SUBSET of one geometry list's elements must still
+/// resolve the WHOLE list (review esc-5385-4, blocking finding "correctness").
+///
+/// THE CHAIN this guards: `GeometryListCellAccumulator::into_entries` requires
+/// the resolved index set to be exactly `0..len`, and `declare` is deliberately
+/// called BEFORE the `named_steps` miss `continue` at all three hydration
+/// passes, so an UNREALIZED element counts against that check. `named_steps` is
+/// written only by `execute_realization_ops`, and `BuildStep::Realize` is gated
+/// on `demanded_rids` — derived from the demand cone. So a cone holding a strict
+/// subset makes the index set non-contiguous and drops the WHOLE cell: `holes`
+/// stays `List([Undef; 3])` and the elements that WERE realized become invisible
+/// to every consumer. That is a visible data regression on the majority of the
+/// list, not the conservative safety property the all-or-nothing rule is meant
+/// to be.
+///
+/// The fix is on the DEMAND side, never the accumulator: demand.rs's reverse
+/// edge ("a demanded cell pulls its producing realizations in") makes a strict
+/// subset UNREACHABLE — `holes#0` pulls `Value(holes)`, which pulls every
+/// sibling back in. `into_entries`' exact-index-set check therefore stays
+/// intact, and still defeats a compensating index set.
+///
+/// DISTINCT FROM #6460, which is a repeat no-op `tessellate_snapshot` under
+/// selective demand. Each arm below uses its OWN engine, so both assert on a
+/// FIRST tessellate after their own `set_demand_selective` and neither sits on
+/// that path.
+#[test]
+fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list()
+{
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let element = |k: usize| -> NodeId {
+        let want = format!("holes#{k}");
+        compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.realizations.iter())
+            .find(|r| r.name.as_deref() == Some(&want))
+            .map(|r| NodeId::Realization(r.id.clone()))
+            .unwrap_or_else(|| panic!("fixture must compile a realization named {want:?}"))
+    };
+
+    // The ALL-VISIBLE arm is the control: it establishes that this surface
+    // resolves the list under selective demand AT ALL, so a green SUBSET arm
+    // cannot be read as "selective demand happened to do nothing on this
+    // module".
+    for (label, roots) in [
+        (
+            "all three elements visible",
+            vec![element(0), element(1), element(2)],
+        ),
+        (
+            "the strict subset {holes#0, holes#2}",
+            vec![element(0), element(2)],
+        ),
+    ] {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.eval(&compiled);
+
+        engine.set_demand_selective(roots);
+        assert!(
+            !engine.demand_is_full_scope(),
+            "{label}: precondition — full_scope must be OFF, or the cone is not \
+             actually selective and the subset case is untested"
+        );
+
+        let tess = engine
+            .tessellate_snapshot(&compiled)
+            .expect("tessellate_snapshot must return Some after set_demand_selective");
+        let refs = assert_live_handle_list(
+            &tess,
+            &holes_id,
+            3,
+            &format!("under selective demand with {label}, `holes` must hold three live handles"),
+        );
+
+        // The helper already rejects `Undef` PER ELEMENT and a short list. This
+        // adds that the three are SEPARATE realizations, so a regroup that
+        // broadcast one surviving element's handle into all three slots cannot
+        // pass as "the whole list resolved".
+        let distinct: std::collections::HashSet<_> = refs.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "{label}: the three elements must be separate realizations: {refs:?}",
+        );
+    }
+}
+
+/// One element of a geometry-list cell that is backed by REAL kernel geometry.
+///
+/// Constructible only through [`live_geometry_list`], which refuses any element
+/// whose `kernel_handle` is `None` — so holding one of these IS the evidence
+/// that a kernel handle was present. The kernel handle id itself is checked and
+/// then dropped: it is ephemeral and session-scoped, and no assertion here
+/// compares ids across rebuilds.
+#[derive(Clone, Debug)]
+struct LiveGeometryHandle {
+    realization_ref: RealizationNodeId,
+    upstream_values_hash: [u8; 32],
+}
+
+/// The live handles backing a `len`-element geometry-list cell in
+/// `result.values`, in order. `ctx` labels the call site in panic messages.
+///
+/// THE `kernel_handle: Some(_)` CHECK IS THE POINT (review esc-5385-20).
+/// `kernel_handle` is the ONLY discriminator between the two producers of a
+/// `Value::GeometryHandle`: the kernel-backed hydration path
+/// (`post_process_geometry_handle_cells` / `hydrate_geometry_handles_into_values`)
+/// writes `Some(id)`, while `mint_symbolic_geometry_handles_into_values` writes
+/// `None` and recomputes `upstream_values_hash` from the CURRENT params —
+/// deliberately byte-identical to what the build path would produce. So a
+/// symbolic refill after the all-or-nothing regroup DROPPED the list satisfies
+/// every other assertion available here: the cell is a list, no element is
+/// `Undef`, the elements are distinct realizations, and the hashes changed
+/// across an `edit_param`. Without this check these tests — the only
+/// `MockGeometryKernel`-backed witnesses in this file — cannot tell real
+/// geometry from a placeholder, which is the whole claim they exist to pin.
+///
+/// Single walk for both consumers so the check cannot be enforced at one call
+/// site and forgotten at the other.
+fn live_geometry_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<LiveGeometryHandle> {
+    let value = result
+        .values
+        .get(cell)
+        .unwrap_or_else(|| panic!("{ctx}: no value cell `{cell}` in the result"));
+    let Value::List(items) = value else {
+        panic!("{ctx}: `{cell}` should be a List; got: {value:?}");
+    };
+    assert_eq!(
+        items.len(),
+        len,
+        "{ctx}: `{cell}` should have {len} elements; got: {items:?}",
+    );
+    items
+        .iter()
+        .enumerate()
+        .map(|(k, item)| match item {
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle: Some(_),
+            } => LiveGeometryHandle {
+                realization_ref: realization_ref.clone(),
+                upstream_values_hash: *upstream_values_hash,
+            },
+            Value::GeometryHandle {
+                realization_ref,
+                kernel_handle: None,
+                ..
+            } => panic!(
+                "{ctx}: `{cell}[{k}]` is a SYMBOLIC handle (kernel_handle: None) for \
+                 realization {realization_ref:?} — no kernel geometry backs it, so the \
+                 list only looks realized. A dropped list refilled by \
+                 `mint_symbolic_geometry_handles_into_values` lands here.\n\
+                 full value: {items:?}",
+            ),
+            Value::Undef => panic!(
+                "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
+                 unresolved.\nfull value: {items:?}",
+            ),
+            other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
+        })
+        .collect()
+}
+
+/// The backing realization ids of a live `len`-element geometry-list cell, in
+/// order. See [`live_geometry_list`] for what "live" is checked to mean.
+fn assert_live_handle_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<RealizationNodeId> {
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.realization_ref)
+        .collect()
+}
+
+/// The per-element `upstream_values_hash` of a live geometry-list cell, in
+/// order. Distinguishes "re-realized from the current params" from "served
+/// stale" — but only once [`live_geometry_list`] has ruled out the symbolic
+/// mint, which recomputes a byte-identical hash with no kernel geometry behind
+/// it and would otherwise read as a refresh.
+fn geometry_list_upstream_hashes(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<[u8; 32]> {
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.upstream_values_hash)
+        .collect()
+}

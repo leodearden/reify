@@ -21,11 +21,32 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 /// The native libraries Reify binaries may link against.
+///
+/// INVARIANT: every variant listed here MUST have a corresponding gate arm in
+/// `scripts/check-manifold-deps.sh` (a `# BEGIN <dep>-candidates` marker block
+/// plus the presence check that consumes it). A variant WITHOUT one ships a
+/// SILENT stub kernel — that script's header states the rule under
+/// "THE SILENT-VACUITY RULE".
+///
+/// `tests/infra/test_occt_deps_preflight.sh` pins that invariant in two parts,
+/// because a DECLARED arm and a GATING arm are not the same thing. The lexical
+/// half compares this variant list against that script's marker-block names as
+/// SETS. The behavioural half then drives the guard once per derived dep with
+/// that dep's lib dir (then its include dir) pointed at an EMPTY fixture and
+/// every other dep healthy, and asserts the guard REDS naming that dep's own
+/// declared sentinel — so a marker block that no presence check consumes fails
+/// there rather than passing the set comparison and shipping ungated.
+///
+/// The BEGIN/END marker comments below exist only to make this body
+/// machine-readable for that check — the enum stays the single source of
+/// truth, and nothing is duplicated anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDep {
+    // BEGIN native-dep-variants
     Occt,
     Gmsh,
     OpenVdb,
+    // END native-dep-variants
 }
 
 /// Resolved location of a native library's headers and shared objects.
@@ -56,13 +77,14 @@ impl NativeDep {
 
     /// Canonical include-dir candidates in priority order.
     ///
-    /// The OCCT arm below is MIRRORED verbatim — order included — in the
-    /// `occt-candidates` marker block of `scripts/check-manifold-deps.sh`,
-    /// whose preflight has to reach the same verdict this function feeds into
-    /// `has_occt`. This side stays the single source of truth; parity is
-    /// pinned by `tests/infra/test_occt_deps_preflight.sh`, so an edit here
-    /// without the matching bash edit fails that guard rather than silently
-    /// leaving the gate and the build disagreeing.
+    /// ALL THREE arms below are MIRRORED verbatim — order included — in the
+    /// `occt-candidates`, `gmsh-candidates` and `openvdb-candidates` marker
+    /// blocks of `scripts/check-manifold-deps.sh`, whose preflight has to
+    /// reach the same verdict this function feeds into `has_occt` /
+    /// `has_gmsh` / `has_openvdb`. This side stays the single source of truth;
+    /// parity is pinned per-dep by `tests/infra/test_occt_deps_preflight.sh`,
+    /// so an edit here without the matching bash edit fails that guard rather
+    /// than silently leaving the gate and the build disagreeing.
     fn include_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -85,11 +107,15 @@ impl NativeDep {
     /// `/opt/reify-deps/lib` first because that's where their canonical install
     /// lives via `scripts/setup-dev.sh`.
     ///
-    /// That ordering is precisely what the bash mirror in
-    /// `scripts/check-manifold-deps.sh`'s `occt-candidates` block must
-    /// preserve, which is why `tests/infra/test_occt_deps_preflight.sh`
-    /// compares the two lists order-sensitively. See the note on the
-    /// include-dir candidates above.
+    /// Those orderings are precisely what the bash mirrors in
+    /// `scripts/check-manifold-deps.sh`'s `occt-candidates`,
+    /// `gmsh-candidates` and `openvdb-candidates` blocks must preserve, which
+    /// is why `tests/infra/test_occt_deps_preflight.sh` compares each pair of
+    /// lists order-sensitively. Note OpenVdb's order is not Gmsh's either
+    /// (`/usr/local/lib` ahead of `/usr/lib/x86_64-linux-gnu`, where Gmsh has
+    /// the reverse), so the mirrors are per-dep copies and must not be
+    /// collapsed into one shared list. See the note on the include-dir
+    /// candidates above.
     fn lib_candidates(self) -> &'static [&'static str] {
         match self {
             NativeDep::Occt => &[
@@ -158,7 +184,7 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
 /// the same environment, fell through to the candidate list and went green
 /// describing a resolution this function would not perform. Both halves of
 /// that mirror now agree; the bash half is the `[ -n "$override" ]` test in
-/// that script's `occt_find_dir`.
+/// that script's `dep_find_dir`.
 fn find_dir_with_override(
     override_dir: Option<&str>,
     candidates: &[&str],
@@ -396,7 +422,7 @@ mod tests {
 
     /// An exported-but-EMPTY override counts as unset here, matching the
     /// `[ -n "$override" ]` half of the mirror in
-    /// `scripts/check-manifold-deps.sh`'s `occt_find_dir`. Without the filter
+    /// `scripts/check-manifold-deps.sh`'s `dep_find_dir`. Without the filter
     /// this resolved to the empty path and set `has_occt` while the preflight,
     /// reading the same environment, went green — exactly the guard/build
     /// disagreement that arm exists to prevent.

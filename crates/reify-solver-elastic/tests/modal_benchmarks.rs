@@ -594,7 +594,10 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
 }
 
 /// Realize the simply-supported (pin-pin) Dirichlet BCs over the *promoted P2*
-/// node set — a verbatim port of `modal_ops::simply_supported_pin_pin_bcs`:
+/// node set — a verbatim port of the pin-pin Dirichlet set
+/// `modal_ops::build_dirichlet_bcs` realizes for
+/// `[PinnedSupport("x_min"), PinnedSupport("x_max")]` (pinned bit-for-bit by
+/// `modal_ops::tests::build_dirichlet_bcs_pin_pin_places_minimal_anchors`):
 ///
 ///   1. Pin ONLY the transverse Z DOF on every node of both end faces
 ///      (`x ≈ 0` and `x ≈ L`), selected by x-coordinate so the P2 edge-midpoint

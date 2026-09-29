@@ -412,6 +412,43 @@ describe('PropertyEditor blur-commit', () => {
   });
 });
 
+describe('PropertyEditor commits once per gesture, never per keystroke', () => {
+  const values = EDITABLE_C1;
+
+  // `onSetParameter` is now the DURABLE write: every call rewrites the
+  // parameter's default in the source file. These pin that the edit box asks
+  // for exactly one such write per completed edit, under the async handler
+  // shape the App actually passes.
+  it('typing alone commits nothing', async () => {
+    const onSetParam = vi.fn(async () => {});
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    for (const value of ['7', '75', '750']) {
+      fireEvent.input(el, { target: { value } });
+    }
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
+  it('Enter commits the typed literal exactly once', async () => {
+    const onSetParam = vi.fn(async () => {});
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: '80mm' } });
+    fireEvent.keyDown(el, { key: 'Enter' });
+
+    expect(onSetParam).toHaveBeenCalledTimes(1);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
+  });
+});
+
 describe('PropertyEditor stale input', () => {
   it('when not editing, input value updates when props.values changes', () => {
     const [values, setValues] = createSignal<Record<string, ValueData>>({

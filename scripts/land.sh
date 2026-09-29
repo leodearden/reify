@@ -91,7 +91,28 @@ main_gate_mark
 # the manual-land path — without this a manual land queues behind a task slot
 # (merge-starvation / livelock; PRD §5 D5). Exporting propagates the role to the
 # pre-merge-commit child spawned by git merge.
+#
+# That same child inherits REIFY_GATE_EXCLUDE_HEAVY, which scopes the 8 heavy-filter
+# members (scripts/heavy-test-filter-lib.sh) out of this local gate exactly as
+# dark-factory-orchestrator.yaml:230 already does for every orchestrator-spawned
+# role. Defaulting it to 1 is load-bearing, not tidiness: this path runs
+# --profile both --scope all, so the debug --workspace pass runs the heavy members
+# under a binding 3600s wall where their 12h per-test ceiling is unreachable and a
+# hang degrades to a bare `timeout` exit 124 naming nothing. Do not remove this
+# without also removing that ceiling.
+#
+# The decision, the coverage-vs-diagnosability trade behind it, why the hook is
+# deliberately left alone, and the accepted residual are recorded ONCE in
+# docs/prds/offline-deep-test-lane.md DA5 (esc-6485-3 option B, Leo 2026-08-31).
+# Propagation into the gate child is pinned behaviourally, not by grep, in
+# tests/infra/test_land_script.sh.
+#
+# `:-` rather than a bare 1, deliberately: DA5 settles the DEFAULT, not whether an
+# operator may override it. `REIFY_GATE_EXCLUDE_HEAVY=0 scripts/land.sh <branch>`
+# still buys full local heavy coverage, at the cost of the attribution above — the
+# behaviour every local land had before task 6485.
 export DF_VERIFY_ROLE=merge
+export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
 if git merge --no-ff "$BRANCH"; then
     landed="$(git rev-parse HEAD)"

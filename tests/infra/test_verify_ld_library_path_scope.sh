@@ -326,7 +326,7 @@ expect_scrubbed "$PLAN_DUMP" 'tree-sitter-generate.sh'                'merge tes
 
 # Node lane, sequential form (action=test => DO_LINT=0, so the three npm
 # commands are emitted as separate plan lines rather than backgrounded).
-expect_scrubbed "$PLAN_DUMP" "npm run typecheck && npm test"          'merge test / gui'
+expect_scrubbed "$PLAN_DUMP" "npm run typecheck && ../scripts/gui-vitest-run.sh"          'merge test / gui'
 expect_scrubbed "$PLAN_DUMP" 'gui/sidecar/package-lock.json'          'merge test / sidecar'
 expect_scrubbed "$PLAN_DUMP" 'tree-sitter-reify/package-lock.json'    'merge test / tree-sitter'
 

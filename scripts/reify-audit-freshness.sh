@@ -246,7 +246,9 @@ reify_audit_is_stale() {
 #               NO live consumer — never wire this to a done-flip path (#7139).
 # mode=rebuild: If stale, run `cargo build --release -q -p reify-audit`
 #               (cwd=repo_root), then re-check freshness.
-#               If still stale after rebuild, print hint and return 125.
+#               If still stale after rebuild, print hint and return 125 —
+#               unless the build SUCCEEDED and $bin is cargo's own artifact
+#               (CARGO IS THE AUTHORITY, #7691), which returns 0.
 #               If fresh (before or after rebuild), return 0.
 # mode=<other>: UNKNOWN mode — print E_AUDIT_GUARD_BAD_MODE and proceed as
 #               warn-open. Never falls through to a refusal (#7139 review).
@@ -318,9 +320,43 @@ reify_audit_guard() {
 
     if [ "$mode" = "rebuild" ]; then
         # Attempt to self-heal the release binary.
-        (cd "$repo_root" && cargo build --release -q -p reify-audit) || true
+        local _cargo_rc=0
+        (cd "$repo_root" && cargo build --release -q -p reify-audit) || _cargo_rc=$?
         # Re-check: if now fresh, return 0.
         if ! reify_audit_is_stale "$bin" "$repo_root"; then
+            return 0
+        fi
+        # CARGO IS THE AUTHORITY (task #7691).  The mtime comparison is a
+        # PROXY for "nobody rebuilt this binary since crates/reify-audit last
+        # changed"; a `cargo build` that just SUCCEEDED refutes that proxy for
+        # the artifact cargo itself owns.  The two disagree routinely: a
+        # commit touching only non-source files under crates/reify-audit
+        # (pdiag-baseline.txt, ptodo-baseline.txt, tests/ — about half of that
+        # crate's commits) advances the epoch while cargo's fingerprint
+        # correctly finds nothing to rebuild, so the no-op leaves an older
+        # mtime behind.  Measured on a warm lane: a baseline-only commit gave
+        # guard rc 125 after a 0.45s no-op build, and
+        # test_reify_audit_pdiag.sh then skipped its ratchet (a) against a
+        # binary that was current.
+        #
+        # Scoped to cargo's own output path: a success says nothing about a
+        # copy elsewhere (an installed binary, a hermetic test's fake), which
+        # keeps the mtime verdict.  A FAILED build keeps it too, and falls
+        # through to rc 125 below.  `-ef` compares device and inode, so it
+        # follows symlinks and is false when either file is missing — it
+        # cannot fail open the way two empty path strings would.
+        #
+        # The output path is derived from CARGO_TARGET_DIR alone.  A build
+        # redirected by CARGO_BUILD_TARGET_DIR or a CARGO_BUILD_TARGET triple
+        # would leave that path naming an untouched old binary, so either one
+        # set keeps the mtime verdict.  The config-file forms (build.target-dir,
+        # build.target) are NOT detected: reify's .cargo/config.toml sets
+        # neither, and adding one must revisit this rule.
+        local _cargo_bin="${CARGO_TARGET_DIR:-target}/release/reify-audit"
+        case "$_cargo_bin" in /*) ;; *) _cargo_bin="$repo_root/$_cargo_bin" ;; esac
+        if [ "$_cargo_rc" -eq 0 ] && [ -x "$bin" ] && [ "$bin" -ef "$_cargo_bin" ] \
+            && [ -z "${CARGO_BUILD_TARGET_DIR:-}${CARGO_BUILD_TARGET:-}" ]; then
+            echo "reify-audit: '$bin' mtime $btime predates crates/reify-audit commit $epoch, but cargo build just succeeded against it — cargo's fingerprint is the freshness authority for its own artifact; treating it as fresh" >&2
             return 0
         fi
         # Still stale after rebuild — fall through to the refuse message.
@@ -399,11 +435,11 @@ $_remedy" >&2
     fi
 
     # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
-    # Two very different worlds reach here: a failed `cargo build -p reify-audit`
-    # (nothing on disk to run), and a build that was a legitimate no-op — cargo's
-    # fingerprint says up-to-date — while the on-disk mtime still predates the
-    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
-    # stamped mtimes, where $bin is fully executable.  Callers that refuse on 125
+    # Very different worlds reach here: a failed `cargo build -p reify-audit`
+    # with nothing on disk to run, the same failure with an OLDER binary still
+    # executable at $bin, and — in refuse mode, or for a $bin that is not
+    # cargo's own artifact (see CARGO IS THE AUTHORITY above) — a binary that
+    # runs perfectly well but is merely old by mtime.  Callers that refuse on 125
     # must split on `[ -x "$bin" ]` first, exactly as they must for rc 75 above;
     # tests/infra/test_reify_audit_ptodo.sh does (absent → exit 1, present →
     # degrade to RATCHET_SKIP=1 and keep running the staleness-tolerant gates).

@@ -37,7 +37,14 @@ binary built once, idle host, `nproc=32`.
   fixture's 2_000_000 `max_dofs` cap.
 - **Flake rate, post-fix.** 25 of 25 consecutive runs passed in the same lane.
 
-## Hypothesis (NOT established fact)
+## Hypothesis (NOT established fact) — RESOLVED by task 7411, see below
+
+> **Status:** the hypothesis below was tested and CONFIRMED for the attributed
+> call site, and both grounds it gave for deferring the fix were measured and
+> overturned. Text preserved verbatim as the record of what was believed
+> before the measurement; read
+> "[Measured (task 7411)](#measured-task-7411--the-hypothesis-above-tested)"
+> below for what is now established.
 
 The SEED mesh is what is unpinned. `reify-kernel-gmsh`'s `kernel_real.rs` hands
 `MeshingOptions::default()` to the 3D mesher at both volume-meshing call sites;
@@ -55,3 +62,109 @@ not fixed under task 7414 — pinning the seed is a cross-cutting change to ever
 `VolumeMesh` realization, with a real wallclock cost that needs its own
 benchmark, and NumThreads=1 HXT stability is itself unverified absent a
 `Mesh.RandomSeed`.
+
+## Measured (task 7411) — the hypothesis above, tested
+
+Same class of measurement as the 7414 log above, from a different task and lane:
+warm lane `_lane-9`, task branch `task/7411` (= main @ `af103dcc53`), idle host,
+`nproc=32`. Point-in-time, one host / one gmsh build, same caveat as §Measured.
+
+Task 7411 was de-flaking a *different* e2e —
+`reify-eval::morph_arm_e2e::e2e_non_structural_tick_morphs_and_preserves_connectivity`,
+which intermittently recorded `remeshed_quality_soft_fail: 1` instead of
+`morphed == 1` — but it runs through the same `kernel_real.rs`
+`MeshingOptions::default()` seam this note fingered, so its measurements settle
+the open questions here.
+
+- **The CAUSE is confirmed, for the attributed call site.** No longer a
+  hypothesis: driving `mesh_surface_to_volume_with_attribution` through the
+  production trait method under `MeshingOptions::default()` produced **12
+  distinct meshes in 12 runs** (tet counts 1163..1239, ±3%; verts 838..848).
+  The `default()` literal at the call site IS the drift source.
+- **`NumThreads = 1` alone IS stable — no `Mesh.RandomSeed` needed.** This
+  retires the note's caveat that "NumThreads=1 HXT stability is itself
+  unverified absent a `Mesh.RandomSeed`". With `deterministic: true` the same
+  producer was **bit-identical across 12 runs spanning 2 processes** — at auto
+  mesh size (verts=841 tets=1183) and at `mesh_size = 0.0015` (verts=1045
+  tets=1531). Identity held ACROSS processes, not merely within one.
+  `Mesh.RandomSeed` is still set nowhere in `crates/`, and is not needed.
+- **The feared wallclock cost is INVERTED at realization mesh scale.** This
+  retires the note's second deferral ground ("a real wallclock cost that needs
+  its own benchmark"). At ~1200 tets a 32-thread HXT pool is pure overhead, so
+  pinning is a large SPEEDUP:
+
+  | Workload | `default()` | `deterministic: true` |
+  |---|---|---|
+  | morph e2e, 48 runs @ 8-way concurrency | 3m46s wall / 28m21s CPU | 10.4s wall / 22.5s CPU (~22x wall, ~76x CPU) |
+  | gmsh attributed reproducibility test | 61–74s per run | 0.24–0.88s per run (~100x) |
+  | morph e2e, single unloaded run | 4.1–12.4s | 0.30s |
+
+- **The speedup holds across the mesh-size range, not just at realization
+  scale.** The table above measures the ~1200-tet realization fixture only,
+  which left open whether single-threading costs on the larger meshes an FEA
+  face-selector-BC solve can produce — the attributed producer always meshes at
+  the auto-derived size, since the trait method carries no `MeshingOptions` for
+  a caller to cap it. Swept directly against
+  `mesh_surface_to_volume_with_attribution` on a watertight unit cube, one call
+  per cell, arms interleaved (`default`, pinned, `default`, pinned) so host load
+  hits both:
+
+  | `mesh_size` | tets | `default()` (32 threads) | `deterministic: true` (1 thread) |
+  |---|---|---|---|
+  | auto | ~1.2k | 3.75s, 2.22s | 0.016s, 0.016s |
+  | 0.1 | ~4.6k | 2.62s, 6.90s | 0.048s, 0.057s |
+  | 0.05 | ~33k | 15.31s, 11.19s | 0.276s, 0.244s |
+  | 0.03 | ~149k | 20.65s, 10.45s | 1.09s, 1.00s |
+  | 0.02 | ~491k | 24.74s, 26.94s | 4.31s, 3.40s |
+
+  The pin is faster at every scale measured — ~140x at realization scale,
+  narrowing to ~6x at half a million tets, never inverting. The `default()` arm
+  also drifts at every scale (490819 vs 490450 tets at `mesh_size = 0.02`),
+  while the pinned arm repeats its count exactly (490451 twice), so neither the
+  drift nor the cost is a small-mesh artefact. The Rust side was a debug build,
+  which taxes both arms equally — gmsh itself is the prebuilt optimized native
+  library, and it dominates.
+
+### What remains unpinned after 7411
+
+This note's remaining scope is now strictly narrower. Of the two
+`kernel_real.rs` volume-meshing call sites its hypothesis named:
+
+- the **attributed** override (`GmshKernel::mesh_surface_to_volume_attributed`)
+  is **pinned** by task 7411, guarded by
+  `reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs::attributed_producer_output_is_reproducible_across_repeated_calls`
+  (deterministically red without the pin);
+- the **plain** override (`GmshKernel::mesh_surface_to_volume`) is **still
+  unpinned**, and is now that file's only `MeshingOptions::default()` call site.
+
+What the pinned branch's reach actually is, since both the kernel doc and an
+earlier draft of this section framed it as the morph-source supplier alone: it
+is NOT morph-only. `reify-eval` takes it for every boundary-demanded
+`VolumeMesh` realization — i.e. every FEA face-selector-BC solve on real user
+geometry — so the pin lands on user-facing work, which is why the mesh-size
+sweep above was measured rather than deferred.
+
+7411 stopped at that branch deliberately: only the attributed branch produces
+morph sources (`decide_morph_or_remesh` remeshes any source lacking the
+task-4092 `BoundaryAssociation`, which only this branch attaches), so the flake
+mechanism was exclusive to it, and the plain override additionally serves GUI
+realization rebuilds on surfaces this task never measured. Tracked as ticket
+`tkt_0RTPM0DR78N6RG5Y7PZJNH2FZF`, alongside this note's existing
+`tkt_0RTGVY62JW40ZMJDEQWEJRYCSE`.
+
+That ticket also carries a SPOT item, and its text UNDERCOUNTS the target: the
+`deterministic ? 1 : threads ? available_parallelism()` block is **triplicated**,
+not duplicated — `GmshKernel::mesh_to_volume` (`kernel_real.rs`),
+`run_meshing_with_entity_queries` (`mesh_boundary.rs`, the mesher behind the
+attributed path) and `refine_volume_with_size_field` (`refine_volume.rs`). A
+`resolve_num_threads(&MeshingOptions) -> f64` helper beside `MeshingOptions` in
+`options.rs` is the natural fix. (`mesh_plane_2d` in `mesh_profile_2d.rs` reads
+similarly but is a genuinely different shape — it sets `NumThreads = 1` only
+under `deterministic` and honours no `threads` override — so it is a variant to
+reconcile deliberately, not a fourth copy to fold in blindly.) Whoever picks the
+ticket up should take the site list from this paragraph, not from the ticket
+text.
+
+Note the seed/refine asymmetry above is now half-closed: `RealizedAdaptiveProblem::new`
+pins the REFINE step, 7411 pins the ATTRIBUTED seed producer, and only the plain
+seed producer still drifts.

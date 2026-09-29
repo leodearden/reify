@@ -12,8 +12,9 @@ module whole_model_cost_min
 //
 // This file is the two-child generalisation of the single-child
 // `examples/whole_model_joint_drive.ri`. That sibling's header is the
-// canonical source for the mechanics both fixtures share verbatim — the SEED
-// vs. argmin distinction, the inlined-aggregate TRAP, why `auto(free)` not
+// canonical source for the mechanics both fixtures share verbatim — the
+// ROBUSTNESS-FLOOR rule behind the merged figures, the inlined-aggregate TRAP,
+// why `auto(free)` not
 // strict `auto`, and the v1 depth-1/one-auto boundary — so below, each of
 // those sections states only this fixture's delta and cites the sibling
 // rather than re-deriving them.
@@ -51,32 +52,49 @@ module whole_model_cost_min
 //
 // `line_cost = unit_cost × quantity_produced` is strictly increasing in the
 // auto over both intervals. Same mechanism as
-// `examples/whole_model_joint_drive.ri` (see its "Why the merged figures are
-// the SEED, not the exact argmin" section for the full derivation, not
-// repeated here): with the `minimize` stripped, FROZEN forms no cluster, so
-// each child resolves ALONE at its own synthesised Chebyshev BOX CENTRE;
-// MERGED (this file) unions `{CostAssembly, Plate, Spacer}` into ONE cluster
-// (dimension 2, far below `WHOLE_MODEL_CLUSTER_DIM_CAP` = 12), no centrality
-// objective is synthesised, and cost-minimisation drives BOTH autos toward
-// their lower brackets instead — which is why BOTH boxes' LOWER brackets must
-// contain the solver's fixed 0.01 seed (same seed-fallback reason as the
-// sibling file; a bound above 0.01 reports `RobustnessFloorInfeasible`).
+// `examples/whole_model_joint_drive.ri` (see its "Why the merged figure is the
+// ROBUSTNESS FLOOR, not zero" section for the full derivation, not repeated
+// here): with the `minimize` stripped, FROZEN forms no cluster, so each child
+// resolves ALONE at its own synthesised Chebyshev BOX CENTRE; MERGED (this
+// file) unions `{CostAssembly, Plate, Spacer}` into ONE cluster (dimension 2,
+// far below `WHOLE_MODEL_CLUSTER_DIM_CAP` = 12), no centrality objective is
+// synthesised, and cost-minimisation drives BOTH autos onto their floored
+// LOWER brackets instead.
+//
+// Where each auto lands follows that sibling's published rule, applied
+// unchanged: effective lower bound = `bracket + max(REL_MARGIN × |bracket|,
+// ABS_FLOOR_SI)`. This fixture's delta is that BOTH children are bracketed
+// `>= 0.0`, so for both the bound magnitude is 0 and the RELATIVE margin
+// degenerates to the ABSOLUTE floor — `m = max(0.02 × 0.0, 1e-9) = 1e-9` —
+// putting both autos on the SAME floored bound, with each child's own
+// `unit_cost` scaling it into a different `line_cost`. A bracket away from 0
+// takes the relative arm rather than failing: the sibling's worked `>= 1.0`
+// variant floors to `1.02` and solves cleanly with zero errors, NOT
+// `RobustnessFloorInfeasible`.
 //
 //   FROZEN CASCADE (the same model with the parent's `minimize` removed):
 //     Plate:  quantity_produced → 50.0  ((0.0+100.0)/2)   line_cost → 25.00 USD
 //     Spacer: quantity_produced → 20.0  ((0.0+ 40.0)/2)   line_cost → 45.00 USD
 //     Whole-assembly total: 25.00 + 45.00 = 70.00 USD.
 //   MERGED (this file, with the `minimize`):
-//     Plate:  quantity_produced → 0.01                    line_cost → 0.005  USD
-//     Spacer: quantity_produced → 0.01                    line_cost → 0.0225 USD
-//     Whole-assembly total: 0.005 + 0.0225 = 0.0275 USD.
+//     Plate:  quantity_produced → 1e-9 (floored)          line_cost → 5e-10   USD
+//     Spacer: quantity_produced → 1e-9 (floored)          line_cost → 2.25e-9 USD
+//     Whole-assembly total: 5e-10 + 2.25e-9 = 2.75e-9 USD.
 //
 //   Every figure above is the derivation AND was CONFIRMED OBSERVED verbatim
-//   by running both evals (the `mwhole_bt4_*` tests in
+//   by running both evals (the `mwhole_bt4*` tests in
 //   crates/reify-eval/tests/joint_drive_expansion_boundary.rs read these same
-//   cells). The tests assert none of these as absolutes — only the STRICT
-//   comparative directions, never an absolute converged value or a tuned
-//   tolerance — so this arithmetic is documentation, not a pin.
+//   cells). BT4(i) and BT4(ii) assert none of them as absolutes — only the
+//   STRICT comparative directions against the frozen cascade. BT4b does pin
+//   both MERGED autos, but against `bracket + max(REL_MARGIN × |bracket|,
+//   ABS_FLOOR_SI)` evaluated at their `0.0` bracket — DERIVED from the rule
+//   above, never tuned to an observed output. The frozen figures and every
+//   `line_cost` here remain documentation, not a pin.
+//
+//   The user-observable signal is the GOVERNANCE change — 70.00 USD → 2.75e-9
+//   USD — not the precise converged numbers. Without the joint drive, the
+//   parent's cost objective cannot reach either child's auto and both designs
+//   sit at the arbitrary centre of their feasible boxes.
 //
 // # Reading the result
 //
@@ -175,9 +193,10 @@ structure def Plate : Costed {
     // The joint-drive target.  Bracketed by a NON-DEGENERATE box so the
     // cost-minimising direction and the frozen Chebyshev centre (50.0) are far
     // apart — that separation is what makes the coupling observable.  The
-    // lower bracket must contain the solver's fixed 0.01 seed for a
-    // dimensionless auto; see the header's "Why the merged figures are the
-    // SEED" note.
+    // lower bracket is what the robustness floor is applied TO: at `0.0` the
+    // margin takes its ABSOLUTE arm, so the merged auto lands at `1e-9`.  Rule
+    // and constants: the header's "Merged vs. frozen" section, and the
+    // sibling's "Why the merged figure is the ROBUSTNESS FLOOR, not zero".
     param quantity_produced : Real   = auto(free)
     constraint quantity_produced >= 0.0
     constraint quantity_produced <= 100.0
@@ -190,9 +209,11 @@ structure def Spacer : Costed {
     param lead_time         : Time   = 72h
 
     // A NARROWER, differently-priced box than Plate's — so the two children's
-    // contributions are not a scaled copy of one another and each auto is
-    // independently distinguishable in the eval result. Lower bracket still
-    // contains the 0.01 seed.
+    // contributions are not a scaled copy of one another: the narrower box
+    // gives Spacer a DIFFERENT frozen Chebyshev centre (20.0 vs Plate's 50.0),
+    // and the different `unit_cost` a different merged `line_cost` (2.25e-9 vs
+    // 5e-10) even though both children share the `>= 0.0` bracket and so land
+    // on the SAME absolute floor.
     param quantity_produced : Real   = auto(free)
     constraint quantity_produced >= 0.0
     constraint quantity_produced <= 40.0

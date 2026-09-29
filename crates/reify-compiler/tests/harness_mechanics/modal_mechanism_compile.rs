@@ -263,7 +263,7 @@ mod modal_analysis_fns_stdlib_compile {
             part: Part(),
             modes: [],
             boundary_conditions: [],
-            damping: RayleighDamping(alpha: 0.0, beta: 0.0),
+            damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0s),
             mass_matrix_norm: 1.0,
             stiffness_matrix_norm: 1.0
         )

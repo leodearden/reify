@@ -347,7 +347,7 @@ tasks:
       expect: present
   - name: examples-corpus-is-compile-gated-so-the-exemplar-cannot-rot
     binding: 'capability->producer (substrate, wired-on-main). examples/best_practices/
-      is auto-compile- gated by crates/reify-compiler/tests/examples_smoke.rs, so
+      is auto-compile- gated by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs, so
       the graduated exemplar is held green by the merge gate rather than by prose.
       Note the cost, which is expected and not a defect: examples/*.ri has no carve-out
       arm in scripts/verify.sh''s decide_scope and falls to the conservative default,

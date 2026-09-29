@@ -751,7 +751,28 @@ structure S {
 }
 "#,
     );
-    assert_no_error_diagnostics(&compiled.diagnostics, "Angle param defaults");
+    // δ (#5306) flipped CTOR_FIELD_CONFORMANCE_SEVERITY to Error, and a bare `0` at a
+    // dimensioned param default is PRD §7 row 10 (D8) — so this fixture now
+    // legitimately produces exactly one Error, for `phase_bare`. That is orthogonal
+    // to what this test pins, which is what the compiler STORES for the bare
+    // default; the diagnostic does not rewrite the value. Asserted rather than
+    // filtered away, so a SECOND Error here would still fail the test.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one Error — the D8 param-default conformance rejection of \
+         `phase_bare : Angle = 0` — got: {errors:#?}"
+    );
+    assert!(
+        errors[0].message.contains("phase_bare"),
+        "the one Error must be the `phase_bare` param-default rejection, got: {:?}",
+        errors[0]
+    );
 
     let template = compiled
         .templates
@@ -780,8 +801,8 @@ structure S {
     let bare = default_type("phase_bare");
     assert!(
         !matches!(&bare, reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless()),
-        "`= 0` must stay DIMENSIONLESS — the param-default guard suppresses the \
-         diagnostic but does not rewrite the value, unlike coerce_zero_operand. \
+        "`= 0` must stay DIMENSIONLESS — the param-default conformance check REPORTS \
+         the mismatch but does not rewrite the value, unlike coerce_zero_operand. \
          Got {bare:?}; if this now fails, the `phase : Angle = 0deg` note in \
          modal_analysis.ri needs revisiting."
     );

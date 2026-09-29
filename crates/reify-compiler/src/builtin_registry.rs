@@ -73,3 +73,22 @@ fn sole_row_id(name: &str) -> Option<reify_builtins::BuiltinId> {
 pub(crate) fn registry_owns(name: &str) -> bool {
     sole_row_id(name).is_some()
 }
+
+/// Is `name` registered **at all** — under any arity?
+///
+/// The membership question, as distinct from [`registry_owns`]'s
+/// answerability question. They differ on exactly one case, the arity
+/// overload: a name whose group holds several rows is registered, so this
+/// returns `true`, while `registry_owns` returns `false` because no single
+/// row can be asked for a result type. α seeds no overload, so the two agree
+/// today; τ1's two-arg `floor` is the first that will split them.
+///
+/// That case is why [`crate::unresolved_function::is_known_builtin`] must ask
+/// this one. It unions the name vocabularies to decide whether a callee is
+/// known to the compiler at all, and an overloaded builtin is emphatically
+/// known — typing it through the terminal first-arg fallback is a separate
+/// question from whether it exists. Asking `registry_owns` there would warn
+/// `UnresolvedFunction` on a name the registry holds two rows for.
+pub(crate) fn registry_knows_name(name: &str) -> bool {
+    !reify_builtins::name_group(name).is_empty()
+}

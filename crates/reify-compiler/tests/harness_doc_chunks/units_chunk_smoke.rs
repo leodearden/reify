@@ -6,9 +6,10 @@
 //! every scanner used here (`reify_tagged_fences`, `assert_module_compiles`,
 //! `strip_reify_comments`, `called_names`, `registry_family`) is that module's,
 //! raised to `pub(crate)` and parameterised by chunk path in task 5759's
-//! prerequisite refactor — as is the whole cited-path loop
+//! prerequisite refactor. The whole cited-path loop
 //! (`assert_cited_paths_resolve`), extracted in the same spirit once this file
-//! and its sibling had grown two copies of it. Copying any of them here would
+//! and its sibling had grown two copies of it, now lives in
+//! `chunk_cite_gate.rs` with the binary's one cite scanner. Copying any of them here would
 //! have made this harness binary's FIFTH near-identical scraper, which is
 //! exactly the tracked defect (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924)
 //! that geometry_chunk_smoke.rs's "Known duplication" section exists to stop
@@ -65,9 +66,10 @@
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
+use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::geometry_chunk_smoke::{
-    assert_cited_paths_resolve, assert_module_compiles, called_names, phantom_name_panic,
-    registry_family, reify_tagged_fences, strip_reify_comments,
+    assert_module_compiles, called_names, phantom_name_panic, registry_family, reify_tagged_fences,
+    strip_reify_comments,
 };
 
 /// The chunk this file owns. Read (never written) at RUNTIME rather than

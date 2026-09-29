@@ -13,11 +13,6 @@
 //!     the `unit`-declaration pre-pass, dimension resolution — beside the materials / money
 //!     / cost / affine clusters it was swept with.
 //!
-//! Recorded one-sidedly for now: `harness_units.rs`'s own header still carries pre-split
-//! wording that reads as covering this root's `unit_{declaration,registry}_tests.rs`. The
-//! reciprocal narrowing is outside this leaf's lock set; task #6019 (ticket
-//! tkt_0RS43PW3WV70QHNJT878VTWXCR) owns it.
-//!
 //! Layout contract C1 (naming, the mandatory `#[path]`, kLOC cap, baseline ratchet):
 //! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
 //! `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1 — kept there, not restated here.

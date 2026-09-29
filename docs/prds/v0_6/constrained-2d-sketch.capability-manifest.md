@@ -37,7 +37,7 @@ Leaves: ζ, η, θ.
 - **sketch-profile-op** → `producer:task-ε` (upstream). `GeometryOp::SketchProfile`
   + kernel face-with-holes are batch-delivered. PASS.
 - **exemplar-ci-gate** (substrate) — `examples/best_practices/` auto-compile gate
-  exists on main: `crates/reify-compiler/tests/examples_smoke.rs` (corpus seeded by
+  exists on main: `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (corpus seeded by
   task #5397). PASS.
 - **bbox-within-1µm** (numeric floor) — bound is driven-dimension reproduction, not
   method accuracy: dimensions are equality constraints; libslvs converges to

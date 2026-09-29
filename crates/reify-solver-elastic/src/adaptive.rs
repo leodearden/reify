@@ -75,7 +75,7 @@ pub enum BudgetReason {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvergenceStatus {
     /// The solve reached its accuracy target; `final_indicator` carries the
-    /// final global relative energy-norm error (dimensionless).
+    /// [`AdaptiveEstimate::relative_error`] (dimensionless).
     Converged { final_indicator: f64 },
     /// The adaptive loop stopped before hitting the target; `reason` explains
     /// why (budget cap or stall). Per the PRD this is a warning + downgraded
@@ -87,8 +87,9 @@ pub enum ConvergenceStatus {
 /// it"), mirroring `ElasticOptions` in `solver_elastic.ri`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinementBudget {
-    /// Relative energy-norm error target; the loop converges once the global
-    /// indicator is `<=` this value. (`ElasticOptions.target_accuracy`.)
+    /// Relative error target FOR THE SELECTED ESTIMATOR; the loop converges
+    /// once [`AdaptiveEstimate::relative_error`] is `<=` this value.
+    /// (`ElasticOptions.target_accuracy`.)
     pub target_accuracy: f64,
     /// Upper bound on refinement iterations. `0` is legitimate (one solve, no
     /// refinement). (`ElasticOptions.max_refinement_iterations`.)
@@ -199,20 +200,84 @@ pub fn should_run_refinement(trigger: RefineTrigger) -> bool {
     )
 }
 
+/// The scalar result of a goal-oriented (dual-weighted) estimate.
+///
+/// PRD `docs/prds/v0_6/goal-oriented-error-estimation.md` §5.5. Carried by
+/// [`AdaptiveEstimate::qoi`] when the loop is driven by a quantity of
+/// interest; absent on the energy-norm path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QoiEstimate {
+    /// `J(u_h)` — the quantity of interest on the current discrete solution,
+    /// in the QoI's own units (a length, a pressure, …).
+    pub value: f64,
+    /// Signed estimate of `J(u) − J(u_h)`, from
+    /// [`crate::error_estimator::DualWeightedIndicator::qoi_error_estimate`].
+    pub error_estimate: f64,
+    /// Cancellation-free bound `Σ |η_K| ≥ |error_estimate|`, from
+    /// [`crate::error_estimator::DualWeightedIndicator::qoi_error_bound`].
+    pub error_bound: f64,
+}
+
 /// One iteration's solve-and-estimate output.
 ///
-/// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
-/// `global_relative_energy_error` (compared against `target_accuracy` and used
-/// for stall detection) and `per_element` feeds [`mark_dorfler`]. `n_dofs` is
-/// the current mesh's degree-of-freedom count for the `max_dofs` budget gate.
+/// The loop is estimator-AGNOSTIC: it compares `relative_error` against
+/// `target_accuracy`, marks on `per_element`, and gates on `n_dofs`, without
+/// knowing which estimator produced them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdaptiveEstimate {
-    /// Global relative energy-norm error of the current solve.
-    pub global_indicator: f64,
-    /// Per-element error indicator η_e (element order), the Dörfler input.
+    /// The estimator-defined DIMENSIONLESS quantity compared against
+    /// [`RefinementBudget::target_accuracy`] and fed to [`is_stalled`].
+    ///
+    /// For the Z-Z estimator this is
+    /// [`crate::error_estimator::ZzIndicator::global_relative_energy_error`];
+    /// for a goal-oriented one it is a QoI-relative error. The name
+    /// deliberately does not say which — its predecessor, `global_indicator`,
+    /// baked the energy norm into a seam both estimators pass through.
+    ///
+    /// # Must be FINITE
+    ///
+    /// A `NaN` slips past every termination test in
+    /// [`run_adaptive_refinement`]: both `relative_error <= target_accuracy`
+    /// and [`is_stalled`]'s `curr >= (1 − drop) · prev` are `false` for
+    /// `NaN`, so the loop takes NEITHER exit and burns
+    /// `max_refinement_iterations` full remesh-and-solve cycles on a value
+    /// that means nothing. Non-finite is easy to produce on the
+    /// goal-oriented path, whose natural definition is
+    /// `error_bound / |J(u_h)|` and whose `J(u_h)` is exactly zero for a
+    /// displacement QoI evaluated at a symmetry point. An estimator that
+    /// cannot form a meaningful ratio must report a conservative FINITE
+    /// value, or fail with its own typed error, rather than pass the
+    /// division through — which is what the Z-Z path's zero-energy guard
+    /// ([`crate::error_estimator::compute_zz_indicator`]) already does.
+    pub relative_error: f64,
+
+    /// Per-element NON-NEGATIVE marking weights (element order), the
+    /// [`mark_dorfler`] input.
+    ///
+    /// `η_e` for the Z-Z estimator;
+    /// [`crate::error_estimator::DualWeightedIndicator::marking_weights`]
+    /// (`|η_K|`) for the dual-weighted one.
+    ///
+    /// # Marked-set sizes are NOT comparable across estimators
+    ///
+    /// PRD §5.2: the two are not homogeneous of the same degree — Z-Z marks
+    /// on a square root, the dual-weighted indicator on an energy — and
+    /// Dörfler's prefix rule is not invariant under squaring. The same mesh
+    /// and the same θ can therefore mark a different NUMBER of elements
+    /// depending on the estimator, by design. No test may assert that the
+    /// two agree on marked-set size.
     pub per_element: Vec<f64>,
+
     /// Degrees of freedom of the current mesh.
     pub n_dofs: usize,
+
+    /// The goal-oriented estimate, when one was computed.
+    ///
+    /// `None` on the energy-norm path. The loop CARRIES this without reading
+    /// it — nothing in the termination, marking or stall logic branches on it
+    /// — so that the landed Z-Z behaviour cannot drift as the goal-oriented
+    /// path is built out around it.
+    pub qoi: Option<QoiEstimate>,
 }
 
 /// Dependency-injection seam for the adaptive refinement loop.
@@ -226,12 +291,23 @@ pub struct AdaptiveEstimate {
 /// control be exercised with the task's "stub indicator + refiner" strategy,
 /// independent of the heavy solve pipeline.
 pub trait AdaptiveProblem {
-    /// Error type returned by [`refine`](AdaptiveProblem::refine) (e.g.
-    /// [`crate::volume_refine::RefineError`], or `Infallible` for stubs).
+    /// Error type returned by BOTH seam methods (e.g.
+    /// [`crate::volume_refine::RefineError`], or `Infallible` for stubs that
+    /// cannot fail either way).
     type Error;
 
     /// Solve on the current mesh and return the a-posteriori estimate.
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate;
+    ///
+    /// # Errors
+    ///
+    /// Estimation is fallible because a goal-oriented estimator can stop
+    /// being computable part-way through a run: a coordinate-addressed QoI
+    /// (`crate::qoi`) is re-resolved against every mesh the loop produces,
+    /// and one of them may place its point outside the body. An infallible
+    /// signature left such an estimator only two options — panic, or invent
+    /// a number — and an invented error estimate is indistinguishable from
+    /// convergence.
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error>;
 
     /// Refine the mesh, targeting the Dörfler-`marked` elements.
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error>;
@@ -416,16 +492,44 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
 ///
 /// Each iteration solves on the current mesh, then evaluates the termination
 /// conditions in **first-match precedence**; if none fire it Dörfler-marks the
-/// per-element indicators (fraction `theta`) and refines before re-solving.
+/// per-element weights (fraction `theta`) and refines before re-solving.
+///
+/// # Errors
+///
+/// Propagates `P::Error` from EITHER seam — `solve_and_estimate` as well as
+/// `refine` — at the point of failure, leaving the problem in whatever state
+/// the failing call left it.
+///
+/// # Panics
+///
+/// If any [`AdaptiveEstimate::relative_error`] is not finite, immediately on
+/// the solve that produced it. That field's own doc makes finiteness a
+/// contract, and this is where it is enforced: the violation is a defect in
+/// the injected estimator, not user data, so it follows the crate's
+/// unconditional-`assert!` convention rather than becoming a
+/// [`ConvergenceStatus`]. The alternative was rejected on both counts —
+/// [`BudgetReason`] is a 1:1 mirror of the DSL enum in
+/// `solver_elastic.ri` (pinned variant-for-variant, with a wire discriminant
+/// in `reify-compute-contract`), so a new "non-finite estimate" variant is
+/// not this seam's to mint; and reporting one as `NotConverged` would dress
+/// an estimator bug as an ordinary budget outcome.
+///
+/// The check is deliberately NOT a `debug_assert!`. A `NaN` takes neither
+/// the target nor the stall exit, so the loop would spend its entire
+/// `max_refinement_iterations` on full remesh-and-solve cycles against a
+/// meaningless number — and it would do so only in RELEASE, which is exactly
+/// where real solves run and where the wasted budget costs minutes to hours.
+/// Same reasoning, same strength as
+/// [`crate::qoi::QoiError::DegenerateContributingSet`].
 ///
 /// # Termination precedence: target > stall > max-iter > max-dofs
 ///
-/// 1. **Target** — `global_indicator <= target_accuracy` ⇒
+/// 1. **Target** — `relative_error <= target_accuracy` ⇒
 ///    [`ConvergenceStatus::Converged`]. Success outranks every budget reason,
 ///    so a solve that meets the target while also tripping a cap still reports
 ///    `Converged`.
 /// 2. **Stall** (only after the first solve) — [`is_stalled`] of the previous
-///    vs current global indicator ⇒ [`BudgetReason::Stalled`]. Diminishing
+///    vs current `relative_error` ⇒ [`BudgetReason::Stalled`]. Diminishing
 ///    returns: refining further is unproductive.
 /// 3. **Max iterations** — `iter >= max_refinement_iterations` ⇒
 ///    [`BudgetReason::MaxIterations`]. `max_refinement_iterations == 0` is
@@ -447,17 +551,26 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
     let mut prev_global: Option<f64> = None;
 
     loop {
-        let est = problem.solve_and_estimate();
+        let est = problem.solve_and_estimate()?;
+        assert!(
+            est.relative_error.is_finite(),
+            "AdaptiveEstimate::relative_error must be finite (see its doc); \
+             got {} on solve {} — a non-finite value takes neither the target \
+             nor the stall exit, so the loop would spend its whole iteration \
+             budget refining against a meaningless number",
+            est.relative_error,
+            iter + 1,
+        );
 
         // (1) Target — success outranks every budget reason.
-        if est.global_indicator <= budget.target_accuracy {
+        if est.relative_error <= budget.target_accuracy {
             return Ok(ConvergenceStatus::Converged {
-                final_indicator: est.global_indicator,
+                final_indicator: est.relative_error,
             });
         }
         // (2) Stall — only meaningful once there is a prior iteration.
         if let Some(prev) = prev_global
-            && is_stalled(prev, est.global_indicator)
+            && is_stalled(prev, est.relative_error)
         {
             return Ok(ConvergenceStatus::NotConverged {
                 reason: BudgetReason::Stalled,
@@ -478,7 +591,7 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 
         let marked = mark_dorfler(&est.per_element, theta);
         problem.refine(&marked)?;
-        prev_global = Some(est.global_indicator);
+        prev_global = Some(est.relative_error);
         iter += 1;
     }
 }
@@ -1018,5 +1131,290 @@ mod tests {
         // PartialEq + distinctness: a variant equals only itself.
         assert_eq!(variants[0], RefineTrigger::ParameterProbe);
         assert_ne!(variants[0], variants[1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // step-9: the fallible, estimator-agnostic AdaptiveProblem seam (§5.5)
+    // -----------------------------------------------------------------------
+
+    /// Which seam of a [`ScriptedProblem`] failed, and on which call.
+    ///
+    /// ONE error type spanning both seams, with a payload that names the
+    /// failing one. That is what lets these tests assert the two are
+    /// DISTINGUISHABLE to a caller: before this step `solve_and_estimate`
+    /// was infallible, so a QoI that became unresolvable on iteration 3 had
+    /// no exit at all and could only panic or fabricate a value.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum SeamError {
+        /// `solve_and_estimate` failed on this 1-based call.
+        Estimate(usize),
+        /// `refine` failed on this 1-based call.
+        Refine(usize),
+    }
+
+    /// An [`AdaptiveProblem`] driven by a fixed script of per-call outcomes.
+    ///
+    /// Deliberately NOT `Infallible`: the whole point of this step is that a
+    /// problem whose ESTIMATE can fail is now expressible, so the stub's
+    /// `Error` has to be a type that can actually carry a failure.
+    struct ScriptedProblem {
+        /// One outcome per `solve_and_estimate` call, consumed in order.
+        estimates: Vec<Result<AdaptiveEstimate, SeamError>>,
+        solve_calls: usize,
+        refine_calls: usize,
+        /// 1-based `refine` call to fail on, if any.
+        fail_refine_on_call: Option<usize>,
+        /// Every marked set handed to `refine`, in order — the record the
+        /// marking assertions read.
+        marked_log: Vec<Vec<usize>>,
+    }
+
+    impl ScriptedProblem {
+        fn new(estimates: Vec<Result<AdaptiveEstimate, SeamError>>) -> Self {
+            Self {
+                estimates,
+                solve_calls: 0,
+                refine_calls: 0,
+                fail_refine_on_call: None,
+                marked_log: Vec::new(),
+            }
+        }
+
+        fn failing_refine_on(mut self, call: usize) -> Self {
+            self.fail_refine_on_call = Some(call);
+            self
+        }
+    }
+
+    impl AdaptiveProblem for ScriptedProblem {
+        type Error = SeamError;
+
+        fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
+            self.solve_calls += 1;
+            self.estimates
+                .get(self.solve_calls - 1)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "script exhausted: the loop ran {} solves but only {} \
+                         were scripted",
+                        self.solve_calls,
+                        self.estimates.len(),
+                    )
+                })
+                .clone()
+        }
+
+        fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
+            self.refine_calls += 1;
+            self.marked_log.push(marked.to_vec());
+            if self.fail_refine_on_call == Some(self.refine_calls) {
+                return Err(SeamError::Refine(self.refine_calls));
+            }
+            Ok(())
+        }
+    }
+
+    /// An estimate with no QoI attached — the Z-Z path's shape.
+    fn zz_estimate(relative_error: f64, per_element: Vec<f64>, n_dofs: usize) -> AdaptiveEstimate {
+        AdaptiveEstimate {
+            relative_error,
+            per_element,
+            n_dofs,
+            qoi: None,
+        }
+    }
+
+    /// A budget that stops nothing, so a test isolates the one rule it means
+    /// to exercise.
+    fn permissive_budget() -> RefinementBudget {
+        RefinementBudget {
+            target_accuracy: 1e-6,
+            max_refinement_iterations: 10,
+            max_dofs: 1_000_000,
+        }
+    }
+
+    /// §5.5 — a failure in the ESTIMATE seam propagates out of the loop, and
+    /// is distinguishable from a failure in the refine seam.
+    ///
+    /// This is the exit that did not exist before: `solve_and_estimate` was
+    /// infallible, so an estimator that could fail part-way through a run —
+    /// a coordinate-addressed QoI whose point falls outside the body on the
+    /// mesh iteration 3 produces, say — had nowhere to report it. Its only
+    /// options were to panic or to fabricate a number, and a fabricated
+    /// error estimate is indistinguishable from convergence.
+    ///
+    /// The earlier iterations must still have run: this asserts the loop
+    /// fails at the point of failure rather than pre-flighting, so a run that
+    /// dies on iteration 3 has really done two refinements and the caller's
+    /// mesh state is what the error message implies.
+    ///
+    /// The `relative_error` script drops by 5× per iteration, comfortably
+    /// past `STALL_MIN_RELATIVE_DROP`, so the run reaches the scripted
+    /// failure instead of stopping early as `Stalled`.
+    ///
+    /// # TDD red→green
+    ///
+    /// **RED** (step-9): `solve_and_estimate` returns a bare
+    /// `AdaptiveEstimate`, and `AdaptiveEstimate` has no `relative_error` or
+    /// `qoi` field, so this fails to COMPILE. **GREEN** (step-10).
+    #[test]
+    fn an_estimate_seam_failure_propagates_out_of_the_loop_distinguishably_from_a_refine_failure() {
+        let budget = permissive_budget();
+
+        let mut failing_estimate = ScriptedProblem::new(vec![
+            Ok(zz_estimate(0.5, vec![3.0, 1.0], 100)),
+            Ok(zz_estimate(0.1, vec![3.0, 1.0], 200)),
+            Err(SeamError::Estimate(3)),
+        ]);
+        let estimate_err = run_adaptive_refinement(&mut failing_estimate, &budget, DORFLER_THETA);
+        assert_eq!(
+            estimate_err,
+            Err(SeamError::Estimate(3)),
+            "the estimate seam's error must surface verbatim, not as a status",
+        );
+        assert_eq!(
+            (failing_estimate.solve_calls, failing_estimate.refine_calls),
+            (3, 2),
+            "the two earlier iterations must have run to completion before \
+             the failing third solve",
+        );
+
+        let mut failing_refine = ScriptedProblem::new(vec![
+            Ok(zz_estimate(0.5, vec![3.0, 1.0], 100)),
+            Ok(zz_estimate(0.1, vec![3.0, 1.0], 200)),
+            Ok(zz_estimate(0.02, vec![3.0, 1.0], 400)),
+        ])
+        .failing_refine_on(2);
+        let refine_err = run_adaptive_refinement(&mut failing_refine, &budget, DORFLER_THETA);
+        assert_eq!(refine_err, Err(SeamError::Refine(2)));
+
+        assert_ne!(
+            estimate_err, refine_err,
+            "a caller must be able to tell WHICH seam failed; identical \
+             errors from the two would make the estimate seam's new \
+             fallibility unusable for diagnosis",
+        );
+    }
+
+    /// `AdaptiveEstimate.qoi` is carried through the loop WITHOUT being read.
+    ///
+    /// β widens the seam to carry a QoI result; γ is what will consume it.
+    /// Until then the loop's control flow must be provably independent of
+    /// the new field, or the Z-Z path's landed behaviour could drift under a
+    /// change that only meant to add a channel.
+    ///
+    /// Asserted behaviourally rather than by inspection: two runs whose
+    /// scripts are IDENTICAL except for `qoi` must produce the same status
+    /// and the same sequence of marked sets. A loop that branched on `qoi`
+    /// anywhere — termination, marking, stall — would have to differ in one
+    /// of those two observables.
+    #[test]
+    fn the_qoi_field_is_carried_through_the_loop_without_being_read() {
+        let budget = permissive_budget();
+        let script = |qoi: Option<QoiEstimate>| {
+            vec![
+                Ok(AdaptiveEstimate {
+                    relative_error: 0.5,
+                    per_element: vec![4.0, 3.0, 2.0, 1.0],
+                    n_dofs: 100,
+                    qoi: qoi.clone(),
+                }),
+                Ok(AdaptiveEstimate {
+                    relative_error: 1e-9,
+                    per_element: vec![1.0],
+                    n_dofs: 200,
+                    qoi,
+                }),
+            ]
+        };
+
+        let mut without = ScriptedProblem::new(script(None));
+        let mut with = ScriptedProblem::new(script(Some(QoiEstimate {
+            value: -3.25e-4,
+            error_estimate: 7.5e-6,
+            error_bound: 9.0e-6,
+        })));
+
+        let status_without = run_adaptive_refinement(&mut without, &budget, DORFLER_THETA);
+        let status_with = run_adaptive_refinement(&mut with, &budget, DORFLER_THETA);
+
+        assert_eq!(
+            status_without, status_with,
+            "attaching a QoI must not change the loop's outcome",
+        );
+        assert_eq!(
+            without.marked_log, with.marked_log,
+            "attaching a QoI must not change which elements get marked",
+        );
+        assert!(
+            !without.marked_log.is_empty(),
+            "the comparison must cover at least one refinement, or it is \
+             vacuous",
+        );
+    }
+
+    /// Marking still runs on `per_element`, unconditionally and unchanged.
+    ///
+    /// `per_element` is the ONE input `mark_dorfler` sees, and §5.2 makes it
+    /// non-negative marking weights for both estimators (η_e for Z-Z, |η_K|
+    /// for the dual-weighted one). This pins that the loop passes it through
+    /// verbatim: a loop that pre-filtered, re-sorted or rescaled it would
+    /// diverge from `mark_dorfler`'s own contract, which is separately
+    /// tested.
+    #[test]
+    fn every_iteration_marks_on_per_element_exactly_as_mark_dorfler_would() {
+        let per_element_by_iteration = [vec![4.0, 3.0, 2.0, 1.0], vec![9.0, 1.0, 1.0]];
+        let mut p = ScriptedProblem::new(vec![
+            Ok(zz_estimate(0.5, per_element_by_iteration[0].clone(), 100)),
+            Ok(zz_estimate(0.1, per_element_by_iteration[1].clone(), 200)),
+            Ok(zz_estimate(1e-9, vec![1.0], 400)),
+        ]);
+
+        let status = run_adaptive_refinement(&mut p, &permissive_budget(), DORFLER_THETA);
+        assert!(status.is_ok(), "the script converges on its third solve");
+        assert_eq!(
+            p.marked_log.len(),
+            per_element_by_iteration.len(),
+            "one marking per refinement",
+        );
+        for (i, (logged, per_element)) in p
+            .marked_log
+            .iter()
+            .zip(&per_element_by_iteration)
+            .enumerate()
+        {
+            assert_eq!(
+                *logged,
+                mark_dorfler(per_element, DORFLER_THETA),
+                "iteration {i}: the loop must mark exactly what mark_dorfler \
+                 returns for that iteration's per_element",
+            );
+        }
+    }
+
+    /// A non-finite `relative_error` stops the loop AT ONCE, in every build
+    /// profile.
+    ///
+    /// `AdaptiveEstimate::relative_error` documents finiteness as a contract;
+    /// this pins that the contract is actually enforced. `NaN` is false under
+    /// both `<=` and `is_stalled`'s `>=`, so without the check the loop takes
+    /// neither exit and burns `max_refinement_iterations` full
+    /// remesh-and-solve cycles — and it would do so only where the check is
+    /// compiled out, which is release, which is where real solves run.
+    ///
+    /// The scripted budget allows ten iterations and the script supplies
+    /// exactly ONE estimate, so a loop that merely limped past the bad value
+    /// would panic on `ScriptedProblem`'s "script exhausted" arm instead —
+    /// a different message, which is why the expected panic text is matched
+    /// rather than left open.
+    ///
+    /// `#[cfg(debug_assertions)]` is deliberately ABSENT: the point of the
+    /// amendment is that this holds in release too.
+    #[test]
+    #[should_panic(expected = "AdaptiveEstimate::relative_error must be finite")]
+    fn a_non_finite_relative_error_aborts_the_loop_rather_than_burning_the_budget() {
+        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(f64::NAN, vec![1.0], 100))]);
+        let _ = run_adaptive_refinement(&mut p, &permissive_budget(), DORFLER_THETA);
     }
 }

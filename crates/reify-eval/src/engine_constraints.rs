@@ -284,29 +284,6 @@ pub struct GdtCallout {
     pub zone_shape: Option<String>,
 }
 
-/// Does any leaf operand of `expr` resolve to `Undef` in `values`?
-///
-/// This is deliberately the SAME predicate the language-level
-/// `SimpleConstraintChecker` uses to choose between its two Indeterminate
-/// reasons (`classify_undef`, crates/reify-constraints/src/lib.rs): collect
-/// every leaf `ValueRef` and ask whether any of them is undefined.  Keeping it
-/// identical is what makes the peel's "decline this entry" decision in
-/// [`Engine::dispatch_constraints`] exact rather than approximate — an entry is
-/// declined precisely when the checker will answer `undefined inputs: <cell>`,
-/// never when it would answer `operator undefined for these operand kinds`
-/// (the misattribution task 6169 ζ exists to eliminate).
-///
-/// Cost note (C2): only ever called on an entry that already matched the
-/// `RepresentationWithin` shape AND evaluated to `Indeterminate`, so the
-/// `collect_value_refs` allocation is off both hot paths — a non-assertion
-/// module never reaches it, and a measuring surface reaches it only for a
-/// subject it could not resolve.
-fn has_undefined_operand(expr: &CompiledExpr, values: &ValueMap) -> bool {
-    expr.collect_value_refs()
-        .iter()
-        .any(|id| values.get_or_undef(id).is_undef())
-}
-
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -459,12 +436,14 @@ impl Engine {
                 //
                 // So decline the entry: push it to `rest` and let it reach the
                 // checker exactly as it did before ζ.  The definedness predicate
-                // is the same one the checker itself uses (`classify_undef`'s
-                // has-undef branch: any leaf `ValueRef` that is `Undef` in
-                // `values`), so "declined here" ⇔ "the checker will say
-                // `undefined inputs`" by construction — this can never route an
-                // entry into the `operator undefined for these operand kinds`
-                // branch that ζ eliminates.
+                // is [`reify_constraints::has_undefined_leaf`] — the same
+                // function `classify_undef`'s has-undef branch is built on
+                // (task 6480 factored it out of reify-constraints so both
+                // crates call one implementation instead of keeping
+                // independently-maintained copies) — so "declined here" ⇔
+                // "the checker will say `undefined inputs`" by construction —
+                // this can never route an entry into the `operator undefined
+                // for these operand kinds` branch that ζ eliminates.
                 //
                 // Only the `Indeterminate` arm is declined.  A `Satisfied` /
                 // `Violated` engine answer is a real measurement (reached via
@@ -472,7 +451,9 @@ impl Engine {
                 // type-name scan, which resolves without the subject cell being
                 // populated), and must not be thrown away just because the cell
                 // is unhydrated.
-                Some((Satisfaction::Indeterminate, _)) if has_undefined_operand(expr, values) => {
+                Some((Satisfaction::Indeterminate, _))
+                    if reify_constraints::has_undefined_leaf(expr, values) =>
+                {
                     rest.push((i, id, expr, target));
                 }
                 Some((satisfaction, diag_opt)) => {

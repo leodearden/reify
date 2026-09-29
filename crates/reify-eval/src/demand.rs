@@ -7,7 +7,9 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::cache::NodeId;
-use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
+use crate::deps::{
+    extract_dependency_trace, extract_realization_dependencies, geometry_cell_realization_reads,
+};
 
 /// Tracks which nodes are demanded and maintains the demand cone.
 ///
@@ -91,6 +93,9 @@ impl DemandRegistry {
         self.demand_cone.clear();
 
         let mut queue: VecDeque<NodeId> = self.always_demanded.iter().cloned().collect();
+        // Precomputed ONCE: per-node lookup would make the BFS
+        // O(nodes x realizations), defeating the point of an inverted map.
+        let realizations_by_cell = geometry_cell_realization_reads(graph);
 
         while let Some(node) = queue.pop_front() {
             if !self.demand_cone.insert(node.clone()) {
@@ -101,6 +106,32 @@ impl DemandRegistry {
             // Extract dependencies for this node and add them to the cone
             let deps = match &node {
                 NodeId::Value(vcid) => {
+                    // The REVERSE of the γ arm below, and its matched pair:
+                    // γ is "a demanded realization pulls its paired cell in";
+                    // this is "a demanded cell pulls its producing
+                    // realizations in". Neither alone closes the cone — a
+                    // geometry-list cell is reachable from an ordinary
+                    // consumer with no element as a root. It fires for EVERY
+                    // geometry-backed cell, a 1:1 param/let cell as much as an
+                    // N:1 list cell.
+                    //
+                    // `GeometryListCellAccumulator::into_entries` is the
+                    // consumer that DEPENDS on this: it drops the whole list
+                    // unless every element resolved, which is conservative only
+                    // while list-element atomicity holds here.
+                    //
+                    // The ACCUMULATING view, never `deps::realization_by_cell`:
+                    // that resolver deliberately drops cells backed by >1
+                    // realization, i.e. exactly the list cells this edge exists
+                    // to serve.
+                    if let Some(rids) = realizations_by_cell.get(vcid) {
+                        for rid in rids {
+                            let realization_node = NodeId::Realization(rid.clone());
+                            if !self.demand_cone.contains(&realization_node) {
+                                queue.push_back(realization_node);
+                            }
+                        }
+                    }
                     if let Some(cell_node) = graph.value_cells.get(vcid) {
                         cell_node
                             .default_expr
@@ -128,6 +159,10 @@ impl DemandRegistry {
                         // full scope (it drops the geometry-let cell), breaking the
                         // "all-visible selectivity is a no-op — schedule EXACTLY what
                         // full scope does" invariant (selective_demand_alpha).
+                        //
+                        // One matched pair with the reverse edge in the
+                        // `NodeId::Value` arm above: this is "a demanded
+                        // realization pulls its paired cell in".
                         if let Some(cell) = &rnode.geometry_cell {
                             let value_node = NodeId::Value(cell.clone());
                             if !self.demand_cone.contains(&value_node) {
@@ -744,5 +779,204 @@ mod tests {
         assert!(reg.is_full_scope());
         reg.set_full_scope(false);
         assert!(!reg.is_full_scope());
+    }
+
+    /// Task #4954 γ, extended to geometry lists: demanding a geometry-list
+    /// ELEMENT realization must pull the `List<Geometry>` cell the list
+    /// occupies into the demand cone.
+    ///
+    /// The γ arm above rides `RealizationNodeData.geometry_cell`, which was
+    /// `None` for every element until `from_templates` learned to derive it
+    /// from `list_binding`. Without the pull, an all-visible selective cone
+    /// schedules strictly LESS than full scope — it drops `S.holes` — breaking
+    /// the "all-visible selectivity is a no-op: schedule EXACTLY what full
+    /// scope does" invariant.
+    ///
+    /// Asserted for EVERY element: any one of them alone must suffice to bring
+    /// the shared list cell in.
+    #[test]
+    fn demanding_a_geometry_list_element_pulls_its_list_cell_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param r : Length = 5mm
+    let holes = generate(3, |i| cylinder(r, 20mm))
+    let merged = union_all(holes)
+}"#,
+        );
+        let element_ids: Vec<_> = (0..3)
+            .map(|k| {
+                let want = format!("holes#{k}");
+                module
+                    .templates
+                    .iter()
+                    .flat_map(|t| t.realizations.iter())
+                    .find(|r| r.name.as_deref() == Some(&want))
+                    .unwrap_or_else(|| panic!("repro must compile a realization named {want:?}"))
+                    .id
+                    .clone()
+            })
+            .collect();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let holes = NodeId::Value(ValueCellId::new("S", "holes"));
+
+        for (k, rid) in element_ids.iter().enumerate() {
+            let mut reg = DemandRegistry::new();
+            reg.add_demand(NodeId::Realization(rid.clone()));
+            reg.rebuild_cone(&graph);
+
+            assert!(
+                reg.is_demanded(&holes),
+                "demanding holes#{k} must pull Value(S.holes) into the cone"
+            );
+        }
+    }
+
+    /// The REVERSE of `demanding_a_geometry_list_element_pulls_its_list_cell_…`:
+    /// a demanded geometry-list CELL must pull every realization that produces
+    /// it into the cone. The two read as ONE invariant — neither half alone
+    /// closes the cone.
+    ///
+    /// `rebuild_cone`'s `NodeId::Value` arm once followed only `default_expr`'s
+    /// reads, which never name the realization that hydrates the cell. For a
+    /// geometry-LIST cell (`Type::List(Type::Geometry)`, one cell backed by N
+    /// realizations) that gap is an atomicity hole as well — which is why the
+    /// edge belongs to this task. The 1:1 geometry cells the same edge covers
+    /// are pinned by `a_demanded_plain_geometry_cell_pulls_exactly_its_own_…`.
+    ///
+    /// Three roots, each asserted PER ELEMENT so a partial fix cannot pass:
+    ///
+    /// 1. REVERSE — the list cell alone.
+    /// 2. ATOMICITY — a STRICT SUBSET of the elements must reach its own
+    ///    missing sibling, via element → γ → list cell → reverse → siblings.
+    ///    A subset must be UNREACHABLE, not merely tolerated downstream:
+    ///    `GeometryListCellAccumulator::into_entries` drops the whole cell
+    ///    unless the resolved index set is exactly `0..len`.
+    /// 3. INDIRECT ROOT — an ordinary consumer (`holes[0]`, measured to read
+    ///    `S.holes`) with no element as a root at all.
+    ///
+    /// CONTROL: a second list `pins`, backing a DIFFERENT cell, stays OUT of
+    /// all three cones — the edge is keyed per cell, not "enqueue every
+    /// realization".
+    #[test]
+    fn a_demanded_geometry_list_cell_pulls_every_element_realization_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param r : Length = 5mm
+    let holes = generate(3, |i| cylinder(r, 20mm))
+    let pins = generate(2, |i| cylinder(r, 4mm))
+    let first = holes[0]
+}"#,
+        );
+        let element = |name: &str| -> NodeId {
+            module
+                .templates
+                .iter()
+                .flat_map(|t| t.realizations.iter())
+                .find(|r| r.name.as_deref() == Some(name))
+                .map(|r| NodeId::Realization(r.id.clone()))
+                .unwrap_or_else(|| panic!("repro must compile a realization named {name:?}"))
+        };
+        let holes: Vec<NodeId> = (0..3).map(|k| element(&format!("holes#{k}"))).collect();
+        let pins: Vec<NodeId> = (0..2).map(|k| element(&format!("pins#{k}"))).collect();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let cone_from = |roots: &[NodeId]| {
+            let mut reg = DemandRegistry::new();
+            for root in roots {
+                reg.add_demand(root.clone());
+            }
+            reg.rebuild_cone(&graph);
+            reg
+        };
+
+        for (root_label, roots) in [
+            (
+                "Value(S.holes)",
+                vec![NodeId::Value(ValueCellId::new("S", "holes"))],
+            ),
+            (
+                "the strict subset {holes#0, holes#2}",
+                vec![holes[0].clone(), holes[2].clone()],
+            ),
+            (
+                "Value(S.first), a consumer with no element as a root",
+                vec![NodeId::Value(ValueCellId::new("S", "first"))],
+            ),
+        ] {
+            let reg = cone_from(&roots);
+            for (k, el) in holes.iter().enumerate() {
+                assert!(
+                    reg.is_demanded(el),
+                    "a cone rooted at {root_label} must contain Realization(holes#{k})"
+                );
+            }
+            for (k, el) in pins.iter().enumerate() {
+                assert!(
+                    !reg.is_demanded(el),
+                    "a cone rooted at {root_label} must NOT pull the unrelated \
+                     Realization(pins#{k}) in — the reverse edge is keyed per cell"
+                );
+            }
+        }
+    }
+
+    /// The reverse edge's 1:1 half, pinned deliberately rather than left
+    /// incidental: `geometry_cell_realization_reads` carries EVERY geometry
+    /// link, so an ordinary single-geometry `let` and a geometry `param` —
+    /// each paired 1:1 with its own `Type::Geometry` cell by γ (task #4954) —
+    /// also pull their realization in when that cell is demanded.
+    ///
+    /// The widening is exactly ONE realization, the cell's own: the sibling
+    /// `other` backs a different cell and stays out, so the edge never
+    /// degrades into "demand every realization".
+    #[test]
+    fn a_demanded_plain_geometry_cell_pulls_exactly_its_own_realization_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_core::RealizationNodeId;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param width : Length = 10mm
+    param body : Solid = box(width, width, width)
+    let loc_box = box(width, width, width)
+    let other = cylinder(width, width)
+}"#,
+        );
+        let realization_named = |name: &str| -> RealizationNodeId {
+            module
+                .templates
+                .iter()
+                .flat_map(|t| t.realizations.iter())
+                .find(|r| r.name.as_deref() == Some(name))
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| panic!("repro must compile a realization named {name:?}"))
+        };
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        for cell in ["loc_box", "body"] {
+            let mut reg = DemandRegistry::new();
+            reg.add_demand(NodeId::Value(ValueCellId::new("S", cell)));
+            reg.rebuild_cone(&graph);
+
+            let demanded: Vec<RealizationNodeId> = graph
+                .realizations
+                .keys()
+                .filter(|rid| reg.is_demanded(&NodeId::Realization((*rid).clone())))
+                .cloned()
+                .collect();
+            assert_eq!(
+                demanded,
+                vec![realization_named(cell)],
+                "a cone rooted at Value(S.{cell}) must hold exactly its own \
+                 realization — no other realization, and not none"
+            );
+        }
     }
 }

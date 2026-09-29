@@ -23,6 +23,14 @@ source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
 [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/plan_capture_lib.sh"
 
+# release-scope-lib.sh (task 7580): provides release_declared_set(), the single
+# source of truth for the declared release-sensitive crate set (also used by
+# scripts/verify.sh itself), so the T17-AMB non-vacuity guard below cannot
+# drift from scripts/release-sensitive-crates.txt via a second, independent
+# grep over that file.
+[ -f "$REPO_ROOT/scripts/release-scope-lib.sh" ] || { echo "ERROR: release-scope-lib.sh not found at $REPO_ROOT/scripts/release-scope-lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/release-scope-lib.sh"
+
 WRAPPER="$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 
 echo "=== OCCT flock gate tests ==="
@@ -625,10 +633,14 @@ assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner
 # that knob is consulted ONLY when DF_VERIFY_ROLE=merge (scripts/verify.sh, the
 # _RELEASE_DELTA_SKIP decision block), and when it is 1 on a delta-clean tree the release
 # nextest pass is replaced by the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker —
-# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. It is
-# default-OFF today but is slated for activation in the orchestrator's verify_env by the
-# sibling sweep task (#5280), so pinning the plan shape here is a live concern, not a
-# hypothetical. T1/T2/T8/T9 need no such pin: they do not set the merge role.
+# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. The
+# knob is ACTIVE today, not hypothetical: dark-factory-orchestrator.yaml's verify_env sets it
+# to "1" unconditionally (the sibling sweep task #5280 has landed), so pinning the plan shape
+# here is a live concern. THE RULE (#7580, replacing a now-stale enumeration that predated
+# T14-T17): every capture in this file that sets DF_VERIFY_ROLE=merge pins
+# REIFY_RELEASE_DELTA_SKIP — T11, T12, T13, T17 and T17-AMB today. Captures that set no role
+# (T1-T10) or role=offline (T14-T16) need no pin, because verify.sh:2237 consults the knob
+# only under role=merge.
 echo ""
 echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
 
@@ -697,6 +709,289 @@ export _T13_PLAN
 assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
+
+# -- Tests T14–T17 (task 6485): role-scoped OFFLINE release wall ------------------
+# INVARIANT: the offline release wall must strictly EXCEED the heavy per-test
+# ceiling in .config/nextest.toml, so nextest SIGTERMs the offending test BY NAME
+# before the outer `timeout` can fire exit 124 with zero attribution. Tiers and
+# rationale: docs/prds/offline-deep-test-lane.md DA6.
+#
+# SCOPE SPLIT, so neither guard grows the other's job:
+# test_nextest_slow_priority.sh Assertion L guards the numeric RELATIONSHIP
+# (wall > ceiling, every operand derived from a file); these four guard the
+# RENDERING — that the role default reaches the command line at all.
+#
+# Each case invokes verify.sh with NO --profile flag on purpose: the offline role
+# forces PROFILE=release itself (verify.sh ~:702), and that is part of what is
+# under test. Captures reuse the T8/T9 idiom verbatim (capture_print_plan +
+# plan_capture_complete + plan_strip_comments + occt_plan_grep_or_dump), each
+# guarded with `|| true` for the same task 6247 retry-on-truncation reason.
+#
+# NOTE these are the T-series (T1–T17, the --print-plan timeout-knob tests), which
+# is a DIFFERENT series from this file's `Test 14`–`Test 17` flock-wrapper tests.
+echo ""
+echo "--- Tests T14–T17 (task 6485): role-scoped offline release wall (13h) ---"
+
+# T14: DF_VERIFY_ROLE=offline with BOTH timeout knobs unset → the release nextest
+#      pass renders the 13h role default. RED against current code: verify.sh has
+#      no role-scoped release default, so offline renders the 90m base default.
+_T14_ERR="$(mktemp)"
+_T14_RAW=""
+capture_print_plan _T14_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=offline \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T14_ERR" || true
+assert "T14: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T14_RAW"
+_T14_PLAN="$(plan_strip_comments "$_T14_RAW")"
+export _T14_PLAN _T14_RAW
+assert "T14: DF_VERIFY_ROLE=offline (knobs unset): release nextest pass uses the 13h offline wall" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T14_PLAN" "$_T14_ERR"
+# Cheap misconfiguration canary: if the role or profile did not take, the wall
+# assertion above would be testing something other than what it claims to.
+# Asserted against the RAW capture — plan_strip_comments drops the `#` header line.
+assert "T14: plan header confirms role=offline (the assertion above really is exercising the offline role)" \
+    occt_plan_grep_or_dump 'role=offline' "$_T14_RAW" "$_T14_ERR"
+assert "T14: plan header confirms profile=release (offline forces release with no --profile flag)" \
+    occt_plan_grep_or_dump 'profile=release' "$_T14_RAW" "$_T14_ERR"
+rm -f "$_T14_ERR"
+
+# T15: GREEN-ON-ARRIVAL companion — an EXPLICIT VALID knob still wins verbatim
+#      under offline (renders 100m, not 13h). Pins that the role default is a
+#      DEFAULT, not an override; a future implementation that force-set 13h
+#      unconditionally under offline would fail here.
+_T15_ERR="$(mktemp)"
+_T15_RAW=""
+capture_print_plan _T15_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T15_ERR" || true
+assert "T15: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T15_RAW"
+_T15_PLAN="$(plan_strip_comments "$_T15_RAW")"
+export _T15_PLAN
+assert "T15: DF_VERIFY_ROLE=offline + explicit REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: the explicit value wins verbatim (role default is a default, not an override)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T15_PLAN" "$_T15_ERR"
+rm -f "$_T15_ERR"
+
+# T16: a MALFORMED knob under offline must fall back to 13h, NOT to the 90m base
+#      default. This is the assertion that forbids the cheaper-looking "apply the
+#      offline default only when the knob is unset" implementation: that form
+#      leaves a malformed value sitting on 90m, i.e. the offline lane running a 12h
+#      ceiling under a 5400s wall — precisely the unreachable-ceiling /
+#      zero-attribution shape this task removes, arrived at SILENTLY. RED today.
+_T16_ERR="$(mktemp)"
+_T16_RAW=""
+capture_print_plan _T16_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T16_ERR" || true
+assert "T16: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T16_RAW"
+_T16_PLAN="$(plan_strip_comments "$_T16_RAW")"
+export _T16_PLAN
+assert "T16: DF_VERIFY_ROLE=offline + malformed REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana: falls back to the 13h offline default, NOT the 90m base default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T16_PLAN" "$_T16_ERR"
+rm -f "$_T16_ERR"
+
+# T17: GREEN-ON-ARRIVAL companion — role scoping must not LEAK. Under
+#      DF_VERIFY_ROLE=merge the release pass still renders 90m and the debug pass
+#      still renders 60m. T2/Test 17b already cover the unset-role case; merge is
+#      pinned explicitly here because it is the role whose release budget feeds
+#      T10's outer-wall relationship guard, so a leak would silently invalidate T10.
+# _MERGE_PLAN_ENV is the merge-role capture env, shared verbatim with T17-AMB
+# and T17-AMB-CTRL below (#7580) so those captures cannot silently drift from
+# this one: removing this array's `-u REIFY_RELEASE_DELTA_SKIP` reds T17-AMB
+# too, not just this assertion.
+_MERGE_PLAN_ENV=(env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge)
+_T17_ERR="$(mktemp)"
+_T17_RAW=""
+capture_print_plan _T17_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        "${_MERGE_PLAN_ENV[@]}" \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17_ERR" || true
+assert "T17: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17_RAW"
+_T17_PLAN="$(plan_strip_comments "$_T17_RAW")"
+export _T17_PLAN
+assert "T17: DF_VERIFY_ROLE=merge: release nextest pass still renders the 90m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17_PLAN" "$_T17_ERR"
+assert "T17: DF_VERIFY_ROLE=merge: debug nextest pass still renders the 60m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T17_PLAN" "$_T17_ERR"
+rm -f "$_T17_ERR"
+
+# -- Test T17-AMB (task 7580): T17's capture must stay ambient-hermetic --------
+# T17's env line above now pins `-u REIFY_RELEASE_DELTA_SKIP` (via the shared
+# _MERGE_PLAN_ENV array defined there); this companion proves that pin is
+# load-bearing by running T17's own env under a hostile ambient
+# REIFY_RELEASE_DELTA_SKIP=1. In production, dark-factory-orchestrator.yaml's
+# verify_env sets that knob to "1" unconditionally, so on a delta-clean merge
+# — were the pin ever dropped — it would silently replace the 90m release
+# nextest pass with the frozen `RELEASE-PASS: skipped (delta-clean)` marker
+# (scripts/verify.sh _RELEASE_DELTA_SKIP block). T17 alone cannot exercise
+# that path: its capture carries no ambient REIFY_RELEASE_DELTA_SKIP, and
+# _derive_merge_delta() is underivable on a task lane's linear HEAD anyway, so
+# the leak reaches only a real merge commit's delta. This companion reproduces
+# the hostile ambient directly, forcing the delta-clean decision via
+# REIFY_AFFECTED_CRATES_OVERRIDE (verify.sh short-circuits delta derivation
+# entirely when it is set), so the guard is deterministic on any HEAD shape.
+echo ""
+echo "--- Test T17-AMB (task 7580): T17's capture stays hermetic against an ambient REIFY_RELEASE_DELTA_SKIP=1 ---"
+
+# Non-vacuity guard: reify-cli must genuinely be absent from the declared
+# release-sensitive set, or the override below would force delta-clean for a
+# reason unrelated to what this test intends to prove (mirrors
+# tests/infra/test_verify_release_delta_skip.sh:73-81). Goes through the
+# shared release_declared_set() (scripts/release-scope-lib.sh) — the same
+# single source of truth verify.sh itself consults — rather than a second raw
+# grep over release-sensitive-crates.txt.
+_T17AMB_NONSENSITIVE_CRATE="reify-cli"
+_t17amb_crate_not_sensitive() { ! release_declared_set | grep -qxF "$1"; }
+assert "T17-AMB: chosen non-sensitive crate ($_T17AMB_NONSENSITIVE_CRATE) is genuinely absent from the declared release-sensitive set (guards against a vacuous pass)" \
+    _t17amb_crate_not_sensitive "$_T17AMB_NONSENSITIVE_CRATE"
+
+# Fork-free negation predicates for the marker/pass-absence asserts below
+# (mirror tests/infra/test_verify_release_delta_skip.sh's _lacks_skip_marker).
+# Both must run in THIS shell via assert's "$@" — never through `bash -c`,
+# which would not see plan_match: plan_match is defined in plan_capture_lib.sh
+# and is not `export -f`'d, so a `bash -c` child shell would not see it.
+_t17amb_lacks_skip_marker() { ! plan_match "$1" 'RELEASE-PASS: skipped \(delta-clean\)'; }
+_t17amb_lacks_release_pass() { ! plan_match "$1" 'timeout --kill-after=60 90m .*cargo nextest run .*--release'; }
+
+_T17AMB_ERR="$(mktemp)"
+_T17AMB_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+#
+# Reuses _MERGE_PLAN_ENV (T17's own env, defined above) verbatim, wrapped in a
+# hostile ambient REIFY_RELEASE_DELTA_SKIP=1 + REIFY_AFFECTED_CRATES_OVERRIDE=
+# <non-sensitive>, so this capture cannot silently drift from T17's own:
+# removing T17's `-u REIFY_RELEASE_DELTA_SKIP` reds this assertion too.
+capture_print_plan _T17AMB_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
+        "${_MERGE_PLAN_ENV[@]}" \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17AMB_ERR" || true
+assert "T17-AMB: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17AMB_RAW"
+_T17AMB_PLAN="$(plan_strip_comments "$_T17AMB_RAW")"
+export _T17AMB_PLAN
+assert "T17-AMB: DF_VERIFY_ROLE=merge under an ambient REIFY_RELEASE_DELTA_SKIP=1 (delta forced clean): release nextest pass still renders the 90m default (T17's capture is ambient-hermetic, not merely default-hermetic)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17AMB_PLAN" "$_T17AMB_ERR"
+assert "T17-AMB: the frozen 'RELEASE-PASS: skipped (delta-clean)' marker is ABSENT from the plan (the leak this companion guards against)" \
+    _t17amb_lacks_skip_marker "$_T17AMB_PLAN"
+rm -f "$_T17AMB_ERR"
+
+# T17-AMB-CTRL: positive control — the IDENTICAL hostile ambient, but with
+# T17's `-u REIFY_RELEASE_DELTA_SKIP` pin removed (i.e. exactly the plan.json
+# step-1 RED capture). Proves the hostile ambient above is genuinely hostile —
+# not a no-op — so T17-AMB's two asserts above cannot be passing vacuously
+# because REIFY_AFFECTED_CRATES_OVERRIDE silently stopped forcing delta-clean.
+_T17AMBCTRL_ERR="$(mktemp)"
+_T17AMBCTRL_RAW=""
+capture_print_plan _T17AMBCTRL_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17AMBCTRL_ERR" || true
+assert "T17-AMB-CTRL: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17AMBCTRL_RAW"
+_T17AMBCTRL_PLAN="$(plan_strip_comments "$_T17AMBCTRL_RAW")"
+export _T17AMBCTRL_PLAN
+assert "T17-AMB-CTRL: same hostile ambient WITHOUT the -u REIFY_RELEASE_DELTA_SKIP pin: the skip marker IS present (the ambient is genuinely hostile, not a no-op)" \
+    occt_plan_grep_or_dump 'RELEASE-PASS: skipped \(delta-clean\)' "$_T17AMBCTRL_PLAN" "$_T17AMBCTRL_ERR"
+assert "T17-AMB-CTRL: same hostile ambient WITHOUT the pin: the 90m release nextest pass is ABSENT (the marker replaces it rather than coexisting)" \
+    _t17amb_lacks_release_pass "$_T17AMBCTRL_PLAN"
+rm -f "$_T17AMBCTRL_ERR"
+
+# -- Test T18-BG (task 7552): the background role's rendered walls and its heavy --
+#    membership.
+#
+# T14-T17 above pin that the OFFLINE role's 13h release default reaches the
+# command line and does not leak to merge. This case pins the OTHER heavy-running
+# role. It exists because task 7552 re-sized .config/nextest.toml's heavy per-test
+# ceiling to fit UNDER this role's walls, and that decision rests on two facts
+# about `background` that nothing in either guard file rendered:
+#   - its walls are the BASE defaults (60m debug, 90m release) — offline's
+#     role-scoping must not leak here either, the same non-leak property T17 pins
+#     for merge. The 60m debug wall is the tighter of the two and is therefore
+#     the wall the new ceiling was sized against;
+#   - it really does RUN the heavy members. verify.sh scopes the
+#     `-E "not (<heavy>)"` exclusion to task|merge, so setting
+#     REIFY_GATE_EXCLUDE_HEAVY=1 — which dark-factory-orchestrator.yaml's
+#     verify_env does unconditionally, for every role — excludes nothing here.
+#     A ceiling sized for a role that turned out not to run heavy members would
+#     be sized against nothing.
+# test_nextest_slow_priority.sh Assertion L DERIVES both facts from verify.sh's
+# source; this is the independent check that the derivation matches what the
+# script actually emits. Same scope split as T14-T17: L guards the numeric
+# relationship, this guards the RENDERING.
+#
+# THE KNOB IS SET, NOT UNSET, and that is load-bearing. The timeout knobs are
+# `-u`'d so the wall assertions stay ambient-hermetic, but REIFY_GATE_EXCLUDE_HEAVY
+# is pinned to its PRODUCTION value of 1. Under `-u` the exclusion fragment would
+# be absent because the knob is unset, and the premise assertion would pass
+# whatever _GATE_HEAVY_EXCLUDE's role scope said — vacuous in exactly the
+# direction it exists to check. `-u REIFY_RELEASE_DELTA_SKIP` is pinned for the
+# reason T17-AMB documents: background shares merge's `--profile both` branch, so
+# a hostile ambient value can replace the release pass with a skip marker.
+#
+# GREEN ON ARRIVAL, like T15 and T17 — it pins pre-existing behaviour that task
+# 7552's ceiling now depends on, so it is validated BY MUTATION (widen
+# _GATE_HEAVY_EXCLUDE to name `background` in a scratch verify.sh and confirm the
+# premise assertion reds), not by expecting a RED first.
+#
+# No --profile flag, on purpose: background forces PROFILE="both" itself, and
+# that is part of what is under test.
+#
+# THE `-BG` SUFFIX IS NOT DECORATION — do not "tidy" it back to a bare T18. This
+# file carries TWO independently-numbered series that share the same integers
+# (the file's own comment at the top says so), and plain `Test 18` already exists
+# ~70 lines below — about fd 9 leaking into BACKGROUND DAEMONS, so both sections
+# match a grep for `18` AND for `background`. Suffixing follows the T17-AMB
+# precedent and keeps `grep -n "Test 18"` pointing at exactly one case, which is
+# how anyone triaging a failure finds the right section to edit.
+echo ""
+echo "--- Test T18-BG (task 7552): background renders the base 60m/90m walls and runs the heavy members ---"
+
+_t18bg_lacks_heavy_exclusion() { ! plan_match "$1" 'cargo nextest run.*-E "not \('; }
+
+_T18BG_ERR="$(mktemp)"
+_T18BG_RAW=""
+capture_print_plan _T18BG_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_RELEASE_DELTA_SKIP \
+        REIFY_GATE_EXCLUDE_HEAVY=1 DF_VERIFY_ROLE=background \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T18BG_ERR" || true
+assert "T18-BG: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T18BG_RAW"
+_T18BG_PLAN="$(plan_strip_comments "$_T18BG_RAW")"
+export _T18BG_PLAN _T18BG_RAW
+
+# Misconfiguration canaries first: if the role or the profile did not take, every
+# assertion below would be exercising something other than what it names.
+# Asserted against the RAW capture — plan_strip_comments drops the `#` header.
+assert "T18-BG: plan header confirms role=background (the assertions below really are exercising the background role)" \
+    occt_plan_grep_or_dump 'role=background' "$_T18BG_RAW" "$_T18BG_ERR"
+assert "T18-BG: plan header confirms profile=both (background forces both passes with no --profile flag, so the tighter DEBUG wall is the one that binds it)" \
+    occt_plan_grep_or_dump 'profile=both' "$_T18BG_RAW" "$_T18BG_ERR"
+
+assert "T18-BG: DF_VERIFY_ROLE=background: debug nextest pass renders the base 60m wall — the tighter of its two, and the wall .config/nextest.toml's heavy ceiling is sized under" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T18BG_PLAN" "$_T18BG_ERR"
+assert "T18-BG: DF_VERIFY_ROLE=background: release nextest pass renders the base 90m wall, NOT offline's 13h (the role-scoping does not leak here either)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T18BG_PLAN" "$_T18BG_ERR"
+
+# The premise assertion — the real point of this case.
+assert "T18-BG: DF_VERIFY_ROLE=background with REIFY_GATE_EXCLUDE_HEAVY=1 (its production value): NO -E \"not (<heavy>)\" fragment on any nextest line, so the role genuinely runs all 8 heavy members and the ceiling sized under its wall is sized against something real" \
+    _t18bg_lacks_heavy_exclusion "$_T18BG_PLAN"
+rm -f "$_T18BG_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

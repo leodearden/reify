@@ -202,3 +202,36 @@ scripts/check-compute-trampoline-registration.sh
 #   --print-plan invocation reaches; what remains is the narrower
 #   unreached-branch residual — see the ONE QUALIFICATION paragraph in the
 #   header note.
+#
+# scripts/gui-vitest-run.sh (task 7630): the shared vitest runner that BOTH
+#   verify.sh's gui block and scripts/gui-test.sh invoke — the single definition
+#   of how the frontend suites are run, including the bounded worker-RPC-flake
+#   retry. An edit to it changes what the gui block actually executes, so it must
+#   route to the full --scope all gate rather than the merge-worker config
+#   fast-path.
+#
+#   WHY A ROW IS NEEDED, precisely — it is NOT the unreached-branch residual the
+#   header's ONE QUALIFICATION describes. Measured at HEAD: the plan-derived half
+#   (clause 4b) DOES see this leaf, but derives it verbatim as
+#   `../scripts/gui-vitest-run.sh`. The `../` is load-bearing at the call site —
+#   wrap_subshell cd's into gui/ before running gui_inner — and the guard's
+#   normalizer does not resolve a parent segment, so the derived token never
+#   matches the repo-relative path a caller passes to `requires-full-gate`.
+#   Clause 4a misses it too, for the ordinary reason: the statement is a
+#   `gui_inner+=` assignment, not an add()/add_tool() line.
+#
+#   So this row is a normalization gap, not a derivation gap. Resolving `../` in
+#   the guard's normalizer would make the row redundant and is the better fix;
+#   until then the derived set also carries a harmless unmatchable
+#   `../scripts/gui-vitest-run.sh` token alongside this row.
+#
+#   COMPLEMENTARY REGISTRATION STILL MISSING (7630 amendment pass): this row
+#   routes an EDIT to the full --scope all gate, but it does not make a
+#   task-scope verify select the runner's guard test. That needs a row in
+#   scripts/verify-pipeline-infra-tests.txt mapping scripts/gui-vitest-run.sh
+#   (and gui/vitest-worker-rpc-flake-reporter.ts, gui/vitest.config.ts) to
+#   tests/infra/test_gui_vitest_rpc_hardening.sh. That file is outside task
+#   7630's locked scope, so it is deferred to a follow-up rather than edited
+#   here; until it lands, an agent iterating on the runner at --scope branch
+#   discovers a break only at merge time.
+scripts/gui-vitest-run.sh

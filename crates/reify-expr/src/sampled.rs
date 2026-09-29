@@ -8,6 +8,11 @@
 //!   [`crate::interp::interpolate_1d`]/`_2d`/`_3d`. RBF / Kriging fall back
 //!   to Linear and emit `W_INTERPOLATION_DEFERRED` (delegated to interp's
 //!   own resolve-method path).
+//! * `sample_window_projection_at_point` samples a per-node projection of a
+//!   windowed field (e.g. the von Mises value of each node's stress tensor):
+//!   every node's window is projected, then the projected node values are
+//!   located and interpolated exactly like a raw buffer — OOB handling and its
+//!   once-per-session latch are the backing field's own.
 //!
 //! `EvalContext` carries an optional `RefCell<Vec<Diagnostic>>` sink. When
 //! present, OOB and interpolation-deferred warnings are pushed into it for
@@ -81,10 +86,65 @@ pub fn sample_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let coords = match extract_coords(point, field.kind) {
-        Some(c) => c,
-        None => return Value::Undef,
+    match in_bounds_query_coords(field, point, ctx) {
+        Some(coords) => interpolate_node_values(field, &field.data, &coords, codomain_type, ctx),
+        None => Value::Undef,
+    }
+}
+
+/// Sample the per-node projection of a windowed `SampledField` at `point`.
+///
+/// Each grid node of `field` owns one `window_len`-float window of
+/// `field.data`, in node order. `project` maps every window to `K` node
+/// values, which are then interpolated exactly as [`sample_at_point`]
+/// interpolates a raw buffer: on the field's own grid, with its own method,
+/// wrapped per `codomain_type` (`K == 1` → one value, `K > 1` → the container
+/// the codomain names). So at a grid node the result is that node's projection.
+///
+/// The query is located against `field` BEFORE anything is projected: a
+/// malformed or out-of-bounds point returns `Value::Undef` without projecting,
+/// and an out-of-bounds one warns through `field`'s own once-per-session
+/// latch, which every other sample of the same field shares.
+///
+/// Returns `Value::Undef` when `window_len` does not tile `field.data` (zero
+/// included). Cost: every window is projected on every call, O(grid).
+pub(crate) fn sample_window_projection_at_point<const K: usize>(
+    field: &SampledField,
+    window_len: usize,
+    project: impl Fn(&[f64]) -> [f64; K],
+    point: &Value,
+    codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    const { assert!(K > 0) };
+    let grid_count = grid_node_count(field);
+    if window_len == 0
+        || grid_count == 0
+        || grid_count.checked_mul(window_len) != Some(field.data.len())
+    {
+        return Value::Undef;
+    }
+    let Some(coords) = in_bounds_query_coords(field, point, ctx) else {
+        return Value::Undef;
     };
+    let node_values: Vec<f64> = field
+        .data
+        .chunks_exact(window_len)
+        .flat_map(project)
+        .collect();
+    interpolate_node_values(field, &node_values, &coords, codomain_type, ctx)
+}
+
+/// Steps 1 and 2 of [`sample_at_point`]: `point`'s per-axis coordinates on
+/// `field`'s grid, or `None` when `point` is malformed (silently) or out of
+/// bounds. The first out-of-bounds query per field per session wins the
+/// `oob_emitted` swap and pushes the one `W_FIELD_OUT_OF_BOUNDS` warning.
+fn in_bounds_query_coords(
+    field: &SampledField,
+    point: &Value,
+    ctx: &EvalContext,
+) -> Option<Vec<f64>> {
+    let coords = extract_coords(point, field.kind)?;
 
     if is_out_of_bounds(&coords, &field.bounds_min, &field.bounds_max) {
         if field
@@ -100,116 +160,118 @@ pub fn sample_at_point(
             .with_code(DiagnosticCode::FieldOutOfBounds);
             sink.borrow_mut().push(diag);
         }
-        return Value::Undef;
+        return None;
     }
 
-    // Compute grid node count and data stride.
+    Some(coords)
+}
+
+/// Step 3 of [`sample_at_point`]: interpolate `node_values` — a buffer laid
+/// out on `field`'s grid, one value or one interleaved run of components per
+/// node — at `coords`, and wrap the result per `codomain_type`.
+fn interpolate_node_values(
+    field: &SampledField,
+    node_values: &[f64],
+    coords: &[f64],
+    codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Compute grid node count and buffer stride.
     //
-    // For elaborator-validated scalar fields, `data.len() == grid_count` (stride 1).
-    // For ε eager-lowered gradient/laplacian Sampled outputs, `data.len() == grid_count * n_axes`
-    // (stride = n_axes).  The stride is derived directly from the data buffer so this dispatch
-    // is robust to any multi-component output without re-parsing the codomain arity.
+    // For elaborator-validated scalar fields, `node_values.len() == grid_count` (stride 1).
+    // For ε eager-lowered gradient/laplacian Sampled outputs,
+    // `node_values.len() == grid_count * n_axes` (stride = n_axes); a K-value window
+    // projection has stride K. The stride is derived directly from the buffer so this
+    // dispatch is robust to any multi-component output without re-parsing the codomain arity.
     //
     // `grid_count == 0` → degenerate; fall through to scalar path which will surface the
     // invariant violation via the interpolate_Nd assert (same as before this change).
-    let grid_count: usize = field.axis_grids.iter().map(|g| g.len()).product();
-    // Invariant: data.len() must be an exact multiple of grid_count for elaborator-validated
-    // and ε-produced fields.  A debug_assert catches mis-constructed fields in debug builds
-    // rather than silently sampling with a truncated stride.
+    let grid_count = grid_node_count(field);
+    // Invariant: node_values.len() must be an exact multiple of grid_count for
+    // elaborator-validated and ε-produced fields.  A debug_assert catches mis-constructed
+    // fields in debug builds rather than silently sampling with a truncated stride.
     debug_assert!(
-        grid_count == 0 || field.data.len().is_multiple_of(grid_count),
-        "SampledField data length {} is not a multiple of grid_count {}; field layout is corrupt",
-        field.data.len(),
+        grid_count == 0 || node_values.len().is_multiple_of(grid_count),
+        "node buffer length {} is not a multiple of grid_count {}; field layout is corrupt",
+        node_values.len(),
         grid_count,
     );
-    // stride = data.len() / grid_count, clamped to ≥ 1.
+    // stride = node_values.len() / grid_count, clamped to ≥ 1.
     // checked_div returns None when grid_count == 0 (degenerate); .unwrap_or(1) keeps the scalar
     // path so the interpolate_Nd assert surfaces the invariant violation unchanged.
-    // For data.len() < grid_count, result is 0; .max(1) also keeps the scalar path.
-    let stride = field.data.len().checked_div(grid_count).unwrap_or(1).max(1);
-
-    let method: InterpolationMethod = field.interpolation.into();
+    // For node_values.len() < grid_count, result is 0; .max(1) also keeps the scalar path.
+    let stride = node_values
+        .len()
+        .checked_div(grid_count)
+        .unwrap_or(1)
+        .max(1);
 
     // ── stride > 1: multi-component path (ε) ────────────────────────────────
-    // Deinterleave each component from `data[g * stride + c]`, interpolate with
-    // the same kernels as the scalar path, assemble Value::Vector.
-    // Diagnostics are forwarded from component 0 only (not once per component).
+    // Deinterleave each component from `node_values[g * stride + c]`,
+    // interpolate with the same kernels as the scalar path, and assemble the
+    // container the codomain names. Diagnostics are forwarded from component 0
+    // only (not once per component).
     if stride > 1 {
-        // Extract the per-component type from the codomain.
-        // Vector{n, quantity} → quantity; any other codomain → codomain itself (fallback).
-        let component_type: &Type = match codomain_type {
-            Type::Vector { quantity, .. } => quantity.as_ref(),
-            _ => codomain_type,
+        // Codomain → (per-component type, container):
+        //   Vector{n, quantity} → (quantity, Value::Vector)
+        //   List(element)       → (element, Value::List)
+        //   anything else       → (the codomain itself, Value::Vector) — fallback
+        let (component_type, assemble): (&Type, fn(Vec<Value>) -> Value) = match codomain_type {
+            Type::Vector { quantity, .. } => (quantity.as_ref(), Value::Vector),
+            Type::List(element) => (element.as_ref(), Value::List),
+            _ => (codomain_type, Value::Vector),
         };
 
         let mut components = Vec::with_capacity(stride);
-        let mut first_diagnostics: Option<Vec<Diagnostic>> = None;
-
         for c in 0..stride {
             // Deinterleave: collect every c-th element from the interleaved buffer.
-            let values_c: Vec<f64> =
-                (0..grid_count).map(|g| field.data[g * stride + c]).collect();
-
-            let result_c: InterpolationResult = match field.kind {
-                SampledGridKind::Regular1D => {
-                    interpolate_1d(method, &field.axis_grids[0], &values_c, coords[0])
-                }
-                SampledGridKind::Regular2D => interpolate_2d(
-                    method,
-                    &field.axis_grids[0],
-                    &field.axis_grids[1],
-                    &values_c,
-                    (coords[0], coords[1]),
-                ),
-                SampledGridKind::Regular3D => interpolate_3d(
-                    method,
-                    &field.axis_grids[0],
-                    &field.axis_grids[1],
-                    &field.axis_grids[2],
-                    &values_c,
-                    (coords[0], coords[1], coords[2]),
-                ),
-            };
-
-            let comp_f64 = result_c.value;
-            // Capture diagnostics from the first component only (RBF/Kriging fallback etc.).
+            let values_c: Vec<f64> = (0..grid_count)
+                .map(|g| node_values[g * stride + c])
+                .collect();
+            let result_c = interpolate_on_grid(field, &values_c, coords);
             if c == 0 {
-                first_diagnostics = Some(result_c.diagnostics);
+                forward_diagnostics(result_c.diagnostics, ctx);
             }
-            components.push(wrap_result(comp_f64, component_type));
+            components.push(wrap_result(result_c.value, component_type));
         }
-
-        // Forward first-component diagnostics once to the runtime sink.
-        if let Some(diags) = first_diagnostics
-            && !diags.is_empty()
-            && let Some(sink) = ctx.diagnostics
-        {
-            let mut borrow = sink.borrow_mut();
-            for d in diags {
-                borrow.push(d);
-            }
-        }
-
-        return Value::Vector(components);
+        return assemble(components);
     }
 
-    // ── stride ≤ 1: existing scalar path — bit-identical to the original ────
+    // ── stride ≤ 1: scalar path ─────────────────────────────────────────────
     //
     // The elaborator (`engine_eval::build_sampled_field`) enforces:
     // 1. each axis spacing is strictly positive and finite,
     // 2. each axis grid has at least 2 nodes,
     // 3. `data.len() == product(axis_grids[i].len())`.
     // Any violation poisons the field to Value::Undef at elaboration time, so the
-    // interpolate_Nd asserts below cannot fire from elaborator-validated input.
-    let result: InterpolationResult = match field.kind {
+    // interpolate_Nd asserts cannot fire from elaborator-validated input.
+    let result = interpolate_on_grid(field, node_values, coords);
+    forward_diagnostics(result.diagnostics, ctx);
+    wrap_result(result.value, codomain_type)
+}
+
+/// Number of nodes in `field`'s grid: the product of its axis lengths.
+fn grid_node_count(field: &SampledField) -> usize {
+    field.axis_grids.iter().map(|g| g.len()).product()
+}
+
+/// Interpolate a one-value-per-node buffer at `coords`, dispatching to
+/// `interpolate_1d`/`2d`/`3d` on `field.kind` with the field's grid and method.
+fn interpolate_on_grid(
+    field: &SampledField,
+    values: &[f64],
+    coords: &[f64],
+) -> InterpolationResult {
+    let method: InterpolationMethod = field.interpolation.into();
+    match field.kind {
         SampledGridKind::Regular1D => {
-            interpolate_1d(method, &field.axis_grids[0], &field.data, coords[0])
+            interpolate_1d(method, &field.axis_grids[0], values, coords[0])
         }
         SampledGridKind::Regular2D => interpolate_2d(
             method,
             &field.axis_grids[0],
             &field.axis_grids[1],
-            &field.data,
+            values,
             (coords[0], coords[1]),
         ),
         SampledGridKind::Regular3D => interpolate_3d(
@@ -217,23 +279,21 @@ pub fn sample_at_point(
             &field.axis_grids[0],
             &field.axis_grids[1],
             &field.axis_grids[2],
-            &field.data,
+            values,
             (coords[0], coords[1], coords[2]),
         ),
-    };
+    }
+}
 
-    // Forward any interpolation diagnostics (e.g. RBF/Kriging deferral) to
-    // the runtime sink. Like OOB above, silent-drop when no sink is wired.
-    if !result.diagnostics.is_empty()
+/// Forward interpolation diagnostics (e.g. the RBF/Kriging deferral) to the
+/// runtime sink. Like the out-of-bounds warning, they are silently dropped
+/// when no sink is wired.
+fn forward_diagnostics(diagnostics: Vec<Diagnostic>, ctx: &EvalContext) {
+    if !diagnostics.is_empty()
         && let Some(sink) = ctx.diagnostics
     {
-        let mut borrow = sink.borrow_mut();
-        for d in result.diagnostics {
-            borrow.push(d);
-        }
+        sink.borrow_mut().extend(diagnostics);
     }
-
-    wrap_result(result.value, codomain_type)
 }
 
 /// Extract per-axis SI scalar coordinates from a sample-point `Value`,
@@ -308,13 +368,15 @@ fn wrap_result(v: f64, codomain_type: &Type) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::sync::atomic::AtomicBool;
 
-    use reify_core::Type;
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type};
     use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value, ValueMap};
 
     use crate::EvalContext;
     use super::sample_at_point;
+    use super::sample_window_projection_at_point;
 
     // ── fixture helpers ──────────────────────────────────────────────────────
 
@@ -528,6 +590,30 @@ mod tests {
         }
     }
 
+    /// A `List<Scalar<P>>` codomain samples a stride-3 field to a `Value::List`
+    /// whose components carry the element's dimension, not to a `Value::Vector`
+    /// of dimensionless `Real`s. At the grid node (2, 1, 0) every trilinear lerp
+    /// is exact (t = 0 against a finite neighbour, or t = 1 between adjacent
+    /// integers), so the whole value compares bit-exactly.
+    #[test]
+    fn sample_at_point_stride3_with_list_codomain_returns_a_list_of_element_typed_components() {
+        let sf = make_3d_stride3(3, 3, 3, 1.0, |x, y, z| [x, y, z]);
+        let codomain = Type::List(Box::new(Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }));
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let point = Value::Vector(vec![Value::Real(2.0), Value::Real(1.0), Value::Real(0.0)]);
+        let pressure = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            sample_at_point(&sf, &point, &codomain, &ctx),
+            Value::List(vec![pressure(2.0), pressure(1.0), pressure(0.0)]),
+        );
+    }
+
     /// sample_at_point on a stride-2 Regular2D field with linearly-varying components
     /// (comp0=x, comp1=y) at a grid node returns the exact per-component values.
     /// Linear interpolation on a grid node is exact by construction.
@@ -559,6 +645,115 @@ mod tests {
                 assert!((c1 - 2.0).abs() < 1e-12, "comp1 at grid node (1,2) must be 2.0, got {c1}");
             }
             other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    // ── per-node window projection ───────────────────────────────────────────
+
+    /// Build a Regular1D Linear field whose node `i` holds `windows[i]`: the
+    /// buffer is the windows concatenated, so its stride is the window length.
+    fn make_1d_windowed(axis: Vec<f64>, windows: Vec<Vec<f64>>) -> SampledField {
+        SampledField {
+            name: "test-1d-windowed".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![axis[0]],
+            bounds_max: vec![axis[axis.len() - 1]],
+            spacing: vec![axis[1] - axis[0]],
+            interpolation: InterpolationKind::Linear,
+            data: windows.concat(),
+            axis_grids: vec![axis],
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Nodes x = 0, 1, 2 holding the windows [1, 2], [3, 4], [5, 6].
+    fn pairs_at_three_nodes() -> SampledField {
+        make_1d_windowed(
+            vec![0.0, 1.0, 2.0],
+            vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]],
+        )
+    }
+
+    /// Each node's window is projected FIRST, then the projected node values
+    /// are interpolated with the field's own method. The window products are
+    /// 2, 12 and 30, so the mid-cell sample is lerp(2, 12, 0.5) = 7, whereas
+    /// interpolating the windows first would give 2 · 3 = 6. A K = 2 projection
+    /// takes the multi-component path, so a List codomain yields a List.
+    #[test]
+    fn sample_window_projection_at_point_interpolates_projected_node_values() {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let scalar = Type::dimensionless_scalar();
+        let product = |w: &[f64]| [w[0] * w[1]];
+
+        let mid_cell = Value::Real(0.5);
+        let last_node = Value::Real(2.0);
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, product, &mid_cell, &scalar, &ctx),
+            Value::Real(7.0),
+        );
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, product, &last_node, &scalar, &ctx),
+            Value::Real(30.0),
+        );
+
+        let list = Type::List(Box::new(Type::dimensionless_scalar()));
+        let sum_and_difference = |w: &[f64]| [w[0] + w[1], w[0] - w[1]];
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, sum_and_difference, &mid_cell, &list, &ctx),
+            Value::List(vec![Value::Real(5.0), Value::Real(-1.0)]),
+        );
+    }
+
+    /// An out-of-bounds query is refused through the BACKING field's
+    /// once-per-session latch: two projection samples and a later raw sample
+    /// of the same field emit exactly one out-of-bounds warning between them.
+    #[test]
+    fn sample_window_projection_at_point_out_of_bounds_uses_the_backing_fields_once_per_session_warning()
+     {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        let scalar = Type::dimensionless_scalar();
+        let product = |w: &[f64]| [w[0] * w[1]];
+        let outside = Value::Real(5.0);
+
+        for _ in 0..2 {
+            assert_eq!(
+                sample_window_projection_at_point(&sf, 2, product, &outside, &scalar, &ctx),
+                Value::Undef,
+            );
+        }
+        assert_eq!(sample_at_point(&sf, &outside, &scalar, &ctx), Value::Undef);
+
+        let out_of_bounds_warnings = sink
+            .borrow()
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::FieldOutOfBounds))
+            .count();
+        assert_eq!(out_of_bounds_warnings, 1);
+    }
+
+    /// A window length that does not tile the node buffer — including zero —
+    /// is refused as `Undef` instead of projecting a misaligned buffer or
+    /// panicking inside `chunks_exact`.
+    #[test]
+    fn sample_window_projection_at_point_rejects_a_window_length_that_does_not_tile_the_buffer() {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let scalar = Type::dimensionless_scalar();
+        let sum = |w: &[f64]| [w.iter().sum::<f64>()];
+        let mid_cell = Value::Real(0.5);
+
+        for window_len in [3, 0] {
+            assert_eq!(
+                sample_window_projection_at_point(&sf, window_len, sum, &mid_cell, &scalar, &ctx),
+                Value::Undef,
+                "window length {window_len} does not tile a 6-float, 3-node buffer",
+            );
         }
     }
 }

@@ -63,6 +63,13 @@
 //!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
 //!     probe_target_accuracy, RefineTrigger, should_run_refinement,
 //!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+//!     // Task 7452 (PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf
+//!     // β): goal-oriented error estimation — QoI functionals, their dual
+//!     // loads, the dual-solve seam, the dual-weighted indicator, and the
+//!     // QoI channel on the adaptive seam.
+//!     P1TetMeshRef, QuantityOfInterest, QoiKind, QoiError,
+//!     LocalDisplacementQoi, LocalNormalStressQoi, solve_dual_cg,
+//!     DualWeightedIndicator, compute_dual_weighted_indicator, QoiEstimate,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -516,6 +523,10 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+// Task 7452/β: goal-oriented (dual-weighted) error estimation — bounded linear
+// functionals of the displacement field and their dual loads. PRD
+// docs/prds/v0_6/goal-oriented-error-estimation.md §5.1/§5.3, §6 C2–C6.
+pub mod qoi;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
@@ -560,7 +571,7 @@ pub mod warm_state;
 // docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
 pub mod adaptive;
 pub use adaptive::{
-    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA, QoiEstimate,
     RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
     refine_marked_elements, run_adaptive_refinement,
 };
@@ -663,13 +674,22 @@ pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
+// Task 7452/β: goal-oriented error estimation — dual-weighted per-element
+// indicator. PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.4, §6 C3/C5.
+pub use error_estimator::{DualWeightedIndicator, compute_dual_weighted_indicator};
+// Task 7452/β: goal-oriented error estimation — quantity-of-interest surface.
+// PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.1, §6 C2–C6.
+pub use qoi::{
+    LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef, QoiError, QoiKind,
+    QuantityOfInterest, solve_dual_cg,
+};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{
-    EigenSolverOptions, EigenSolverResult, MetricOp, SparseMetricOp, SparseStiffnessOp,
-    StiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
-    try_solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, MetricOp, ShiftInvertFailure, SparseFactorRef,
+    SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
+    solve_eigen_shift_invert, try_solve_eigen_shift_invert,
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
@@ -713,9 +733,9 @@ pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_s
 // (task 2988 sweep step, task 2989 eval-side wiring) can reach them via
 // `reify_solver_elastic::*` without descending into the `mesher` module.
 pub use mesher::{
-    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
-    auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
-    ring_signed_area_2d,
+    DEGENERATE_RING_AREA_TOLERANCE, Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport,
+    ProfileBoundary, SweepElementTarget, auto_mesh_size_from_boundary, compute_quad_skew,
+    mesh_swept_profile_2d, recombine_quality_ok, ring_self_intersects_2d, ring_signed_area_2d,
 };
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.

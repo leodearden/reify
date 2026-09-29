@@ -1288,6 +1288,46 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
     let b = box(p, p, p)
 }"#;
 
+/// Geometry-LIST let under selective demand (task #5385, review esc-5385-4).
+///
+/// - body_a = `let a = box(10mm, 10mm, 10mm)`: the always-visible body, so the
+///   demand set is never empty while `merged` is hidden.
+/// - `let holes = generate(3, |i| cylinder(r, h))` unrolls at compile time into
+///   three sibling realizations `holes#0..2`, regrouped at eval into ONE
+///   `List<Geometry>` value cell `holes`.
+/// - `let merged = union_all(holes)`: the consumer that pulls
+///   `NodeId::Value(SelectiveGeomList.holes)` into the demand cone, so hiding it
+///   makes `holes` leave the cone (⇒ `mark_demand_pruned_pending` marks it
+///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
+///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
+///
+/// WHAT ITS SOLE CONSUMER ACTUALLY PINS TODAY (review esc-5385-7). The only test
+/// using this fixture, `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed`,
+/// is a FULL-SCOPE build → `edit_param` → rebuild test: it never calls
+/// `set_demand_selective`, so the demand-cone transitions described above are set
+/// up by this source but not taken by that test. It asserts that an edited param
+/// re-realizes all three elements as live handles with a changed
+/// `upstream_values_hash` — i.e. the rebuild path, not the demand path.
+///
+/// The selective-demand transitions this fixture was shaped for are #6460's to
+/// drive, and they are RED today: under `set_demand_selective` a second, no-op
+/// `tessellate_snapshot` returns `List([Undef, Undef, Undef])` where full scope
+/// returns live handles both times. That is a realization-NAME (`holes#k`) versus
+/// cell-MEMBER (`holes`) correspondence gap, not a write-back-guard problem — the
+/// monotone write-back guard once hypothesized here was MEASURED INERT for a
+/// geometry-list cell (such a cell never holds a resolved value in
+/// `snapshot.values` in any path) and was removed. The fixture and its
+/// `assert_live_handle_list` / `geometry_list_upstream_hashes` helpers are left in
+/// this harness deliberately, so #6460 can add its selective-demand tests without
+/// re-authoring them.
+pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    let a = box(10mm, 10mm, 10mm)
+    let holes = generate(3, |i| cylinder(r, h))
+    let merged = union_all(holes)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere

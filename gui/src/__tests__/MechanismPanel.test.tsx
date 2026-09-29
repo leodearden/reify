@@ -47,6 +47,45 @@ function makeDescriptor(overrides: Partial<MechanismDescriptor> & { cell_id: str
   };
 }
 
+/**
+ * Replace `requestAnimationFrame`/`cancelAnimationFrame` with a manually driven
+ * queue, so a test can observe a frame while it is still PENDING — the state a
+ * drag's preview is in when the gesture ends and the commit races it.
+ */
+function installManualRaf() {
+  const originalRequest = globalThis.requestAnimationFrame;
+  const originalCancel = globalThis.cancelAnimationFrame;
+  const pending = new Map<number, FrameRequestCallback>();
+  let nextId = 0;
+
+  globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+    nextId += 1;
+    pending.set(nextId, cb);
+    return nextId;
+  };
+  globalThis.cancelAnimationFrame = (id: number): void => {
+    pending.delete(id);
+  };
+
+  return {
+    pendingFrames: (): number => pending.size,
+    flush(): void {
+      const due = [...pending.values()];
+      pending.clear();
+      for (const cb of due) cb(performance.now());
+    },
+    restore(): void {
+      globalThis.requestAnimationFrame = originalRequest;
+      globalThis.cancelAnimationFrame = originalCancel;
+    },
+  };
+}
+
+/** Yield past a macrotask boundary, draining every settled promise continuation. */
+function flushPendingPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 afterEach(() => {
   cleanup();
 });
@@ -59,7 +98,7 @@ describe('MechanismPanel', () => {
       render(() => (
         <MechanismPanel
           descriptors={[]}
-          onSetParameter={vi.fn()}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
           onScrubLocal={vi.fn()}
         />
       ));
@@ -70,7 +109,7 @@ describe('MechanismPanel', () => {
       render(() => (
         <MechanismPanel
           descriptors={[]}
-          onSetParameter={vi.fn()}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
           onScrubLocal={vi.fn()}
         />
       ));
@@ -85,7 +124,7 @@ describe('MechanismPanel', () => {
         makeDescriptor({ cell_id: 'Robot.arm', name: 'arm', bodies_count: 3, joints: [makeJoint({ joint_index: 0 })] }),
       ];
       render(() => (
-        <MechanismPanel descriptors={descriptors} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={descriptors} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       expect(screen.getByText('m')).toBeTruthy();
       expect(screen.getByText('arm')).toBeTruthy();
@@ -96,7 +135,7 @@ describe('MechanismPanel', () => {
         makeDescriptor({ cell_id: 'Kinematic.m', bodies_count: 4 }),
       ];
       render(() => (
-        <MechanismPanel descriptors={descriptors} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={descriptors} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       // Should show bodies count somehow (e.g. "4 bodies" or "bodies: 4")
       expect(screen.getByText(/4/)).toBeTruthy();
@@ -113,7 +152,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       // Check that kind labels appear
       expect(screen.getByText(/prismatic/i)).toBeTruthy();
@@ -129,7 +168,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const sliders = screen.getAllByRole('slider');
       expect(sliders).toHaveLength(2);
@@ -152,7 +191,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const slider = screen.getByRole('slider') as HTMLInputElement;
       expect(Number(slider.min)).toBeCloseTo(0);
@@ -177,7 +216,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const slider = screen.getByRole('slider') as HTMLInputElement;
       expect(Number(slider.min)).toBeCloseTo(deg(lower), 1);
@@ -185,13 +224,175 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(e) slider onChange fires onSetParameter', () => {
-    it('prismatic slider fires onSetParameter with "Xmm" formatted value', () => {
+  describe('(e) slider input previews; slider change commits', () => {
+    it('prismatic slider input previews "Xmm" and commits nothing', () => {
       // Synchronously flush RAF so the callback runs immediately
       const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
         cb(performance.now());
         return 1;
       });
+      try {
+        const onSetParameter = vi.fn();
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        expect(onPreviewParameter).toHaveBeenCalledWith(
+          'Kinematic.y_pos',
+          expect.stringMatching(/mm$/),
+        );
+        expect(onSetParameter).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('revolute slider input previews "Xdeg" and commits nothing', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onSetParameter = vi.fn();
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'revolute',
+              dimension: 'angle',
+              driving_param_cell_id: 'Kinematic.theta',
+              range_lower_si: 0,
+              range_upper_si: Math.PI,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '90' } });
+
+        expect(onPreviewParameter).toHaveBeenCalledWith(
+          'Kinematic.theta',
+          expect.stringMatching(/deg$/),
+        );
+        expect(onSetParameter).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('a burst of drag frames commits nothing — the whole drag stays transient', () => {
+      const raf = installManualRaf();
+      try {
+        const onSetParameter = vi.fn();
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        for (const value of ['100', '200', '300', '400', '500']) {
+          fireEvent.input(slider, { target: { value } });
+          raf.flush();
+        }
+
+        expect(onPreviewParameter).toHaveBeenCalledTimes(5);
+        expect(onSetParameter).not.toHaveBeenCalled();
+      } finally {
+        raf.restore();
+      }
+    });
+
+    it('prismatic slider change commits the final value once, formatted like a preview', async () => {
+      const raf = installManualRaf();
+      try {
+        const onSetParameter = vi.fn();
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        fireEvent.input(slider, { target: { value: '400' } });
+        raf.flush();
+        fireEvent.change(slider, { target: { value: '400' } });
+        await flushPendingPromises();
+
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', '400mm');
+        expect(onSetParameter.mock.calls[0][1]).toBe(onPreviewParameter.mock.calls[0][1]);
+      } finally {
+        raf.restore();
+      }
+    });
+
+    it('a burst of change events commits the first and then one trailing write', async () => {
+      // `change` fires once per pointer release AND once per arrow key, and
+      // auto-repeat delivers roughly 30 of those a second. Each one is a full
+      // recompile plus an atomic `.ri` rewrite, so keyboard scrubbing was the
+      // one gesture still routing the write cadence the preview/commit split
+      // exists to prevent straight through.
+      vi.useFakeTimers();
       try {
         const onSetParameter = vi.fn();
         const desc = makeDescriptor({
@@ -207,22 +408,81 @@ describe('MechanismPanel', () => {
           ],
         });
         render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
         ));
         const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '400' } });
-        // onSetParameter should be called with (driving_param_cell_id, '<value>mm')
-        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', expect.stringMatching(/mm$/));
+
+        for (const value of ['100', '110', '120']) {
+          fireEvent.change(slider, { target: { value } });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Leading edge: the first release-or-keypress is durable immediately,
+        // so no gesture can end with its write merely scheduled.
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', '100mm');
+
+        // Trailing edge: the rest of the burst collapses to its LAST value,
+        // the only one the slider still sits on.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onSetParameter).toHaveBeenCalledTimes(2);
+        expect(onSetParameter).toHaveBeenLastCalledWith('Kinematic.y_pos', '120mm');
       } finally {
-        rafSpy.mockRestore();
+        vi.useRealTimers();
       }
     });
 
-    it('revolute slider fires onSetParameter with "Xdeg" formatted value', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
+    it('a coalesced write still lands when the row unmounts before its window closes', async () => {
+      // The asymmetry with a pending PREVIEW, which unmount cancels: a preview
+      // is transient by definition, while a durable write the user has already
+      // made is theirs whether or not this row survives to see it land.
+      vi.useFakeTimers();
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+            }),
+          ],
+        });
+        const { unmount } = render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        fireEvent.change(slider, { target: { value: '100' } });
+        fireEvent.change(slider, { target: { value: '120' } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+
+        unmount();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(onSetParameter).toHaveBeenCalledTimes(2);
+        expect(onSetParameter).toHaveBeenLastCalledWith('Kinematic.y_pos', '120mm');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('revolute slider change commits "Xdeg"', async () => {
+      const raf = installManualRaf();
       try {
         const onSetParameter = vi.fn();
         const desc = makeDescriptor({
@@ -239,13 +499,22 @@ describe('MechanismPanel', () => {
           ],
         });
         render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
         ));
         const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '90' } });
-        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.theta', expect.stringMatching(/deg$/));
+
+        fireEvent.change(slider, { target: { value: '90' } });
+        await flushPendingPromises();
+
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.theta', '90deg');
       } finally {
-        rafSpy.mockRestore();
+        raf.restore();
       }
     });
   });
@@ -270,7 +539,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const sliders = screen.getAllByRole('slider');
       expect(sliders).toHaveLength(1);
@@ -298,7 +567,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const sliders = screen.getAllByRole('slider');
       expect(sliders).toHaveLength(1);
@@ -322,7 +591,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       expect(screen.queryAllByRole('slider')).toHaveLength(0);
     });
@@ -345,7 +614,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       expect(screen.queryAllByRole('slider')).toHaveLength(0);
     });
@@ -369,7 +638,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       // Check the kind label specifically (exact text "coupling")
       const kindLabels = screen.getAllByText('coupling');
@@ -395,7 +664,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       // Check the kind label specifically (exact text "fixed")
       const kindLabels = screen.getAllByText('fixed');
@@ -405,60 +674,152 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(h) RAF-coalesced scrub', () => {
-    it('rapid input events dispatch at most one onSetParameter per RAF tick', () => {
-      // Capture RAF callbacks
-      const rafCallbacks: FrameRequestCallback[] = [];
-      const originalRaf = globalThis.requestAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        rafCallbacks.push(cb);
-        return rafCallbacks.length;
-      };
+  describe('(h) RAF-coalesced preview, and the commit that ends the gesture', () => {
+    /** A prismatic joint driven by `Kinematic.y_pos` — the canonical drag subject. */
+    const draggableDescriptor = () =>
+      makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'prismatic',
+            driving_param_cell_id: 'Kinematic.y_pos',
+          }),
+        ],
+      });
 
+    it('rapid input events dispatch at most one onPreviewParameter per RAF tick, with the last value', () => {
+      const raf = installManualRaf();
       try {
-        const onSetParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'prismatic',
-              driving_param_cell_id: 'Kinematic.y_pos',
-            }),
-          ],
-        });
+        const onPreviewParameter = vi.fn();
         render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+          <MechanismPanel
+            descriptors={[draggableDescriptor()]}
+            onSetParameter={vi.fn()}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
         ));
         const slider = screen.getByRole('slider') as HTMLInputElement;
 
-        // Fire 5 rapid input events before any RAF fires
-        fireEvent.input(slider, { target: { value: '100' } });
-        fireEvent.input(slider, { target: { value: '200' } });
-        fireEvent.input(slider, { target: { value: '300' } });
-        fireEvent.input(slider, { target: { value: '400' } });
-        fireEvent.input(slider, { target: { value: '500' } });
-
-        // Before RAF fires: onSetParameter should not have been called yet
-        // (or if it's called synchronously, at most once with the last value)
-        const callsBefore = onSetParameter.mock.calls.length;
-
-        // Flush one RAF tick
-        const cb = rafCallbacks[0];
-        if (cb) cb(performance.now());
-
-        // After RAF: should have been called at most once more (with the last pending value)
-        const callsAfter = onSetParameter.mock.calls.length;
-        expect(callsAfter - callsBefore).toBeLessThanOrEqual(1);
-
-        // If there was a call, it should use the last value ("500mm")
-        if (callsAfter > callsBefore) {
-          const lastCall = onSetParameter.mock.calls[callsAfter - 1];
-          expect(lastCall[0]).toBe('Kinematic.y_pos');
-          expect(lastCall[1]).toMatch(/500/);
+        for (const value of ['100', '200', '300', '400', '500']) {
+          fireEvent.input(slider, { target: { value } });
         }
+        expect(onPreviewParameter).not.toHaveBeenCalled();
+        expect(raf.pendingFrames()).toBe(1);
+
+        raf.flush();
+
+        expect(onPreviewParameter).toHaveBeenCalledTimes(1);
+        expect(onPreviewParameter).toHaveBeenCalledWith('Kinematic.y_pos', '500mm');
       } finally {
-        globalThis.requestAnimationFrame = originalRaf;
+        raf.restore();
+      }
+    });
+
+    it('a commit cancels the preview frame still pending, and lands last', async () => {
+      const raf = installManualRaf();
+      try {
+        const order: string[] = [];
+        const onPreviewParameter = vi.fn(() => {
+          order.push('preview');
+        });
+        const onSetParameter = vi.fn(() => {
+          order.push('commit');
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[draggableDescriptor()]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        fireEvent.input(slider, { target: { value: '200' } });
+        raf.flush();
+        await flushPendingPromises();
+        const previewsMidDrag = onPreviewParameter.mock.calls.length;
+        expect(previewsMidDrag).toBe(1);
+
+        fireEvent.input(slider, { target: { value: '300' } });
+        expect(raf.pendingFrames()).toBe(1);
+
+        fireEvent.change(slider, { target: { value: '300' } });
+        expect(raf.pendingFrames()).toBe(0);
+
+        raf.flush();
+        await flushPendingPromises();
+
+        expect(onPreviewParameter).toHaveBeenCalledTimes(previewsMidDrag);
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', '300mm');
+        expect(order.at(-1)).toBe('commit');
+      } finally {
+        raf.restore();
+      }
+    });
+
+    it('a commit waits for the in-flight preview it follows', async () => {
+      const raf = installManualRaf();
+      try {
+        let landPreview!: () => void;
+        const previewInFlight = new Promise<void>((resolve) => {
+          landPreview = resolve;
+        });
+        const onPreviewParameter = vi.fn(() => previewInFlight);
+        const onSetParameter = vi.fn();
+        render(() => (
+          <MechanismPanel
+            descriptors={[draggableDescriptor()]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        fireEvent.input(slider, { target: { value: '250' } });
+        raf.flush();
+        expect(onPreviewParameter).toHaveBeenCalledTimes(1);
+
+        fireEvent.change(slider, { target: { value: '250' } });
+        await flushPendingPromises();
+        expect(onSetParameter).not.toHaveBeenCalled();
+
+        landPreview();
+        await flushPendingPromises();
+
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', '250mm');
+      } finally {
+        raf.restore();
+      }
+    });
+
+    it('unmounting mid-drag strands no preview frame', () => {
+      const raf = installManualRaf();
+      try {
+        const onPreviewParameter = vi.fn();
+        const { unmount } = render(() => (
+          <MechanismPanel
+            descriptors={[draggableDescriptor()]}
+            onSetParameter={vi.fn()}
+            onPreviewParameter={onPreviewParameter}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+        expect(raf.pendingFrames()).toBe(1);
+
+        unmount();
+        expect(raf.pendingFrames()).toBe(0);
+
+        raf.flush();
+        expect(onPreviewParameter).not.toHaveBeenCalled();
+      } finally {
+        raf.restore();
       }
     });
   });
@@ -487,7 +848,7 @@ describe('MechanismPanel', () => {
         render(() => (
           <MechanismPanel
             descriptors={[desc]}
-            onSetParameter={vi.fn()}
+            onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
             onScrubLocal={onScrubLocal}
           />
         ));
@@ -526,7 +887,7 @@ describe('MechanismPanel', () => {
         render(() => (
           <MechanismPanel
             descriptors={[desc]}
-            onSetParameter={vi.fn()}
+            onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
             onScrubLocal={onScrubLocal}
           />
         ));
@@ -571,7 +932,7 @@ describe('MechanismPanel', () => {
         render(() => (
           <MechanismPanel
             descriptors={[desc]}
-            onSetParameter={vi.fn()}
+            onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
             onScrubLocal={(cellId, jointIndex, valueSi) => {
               if (cellId !== null) {
                 store.setOptimistic(cellId, jointIndex, valueSi);
@@ -631,7 +992,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const slider = screen.getByRole('slider') as HTMLInputElement;
       // 0.25 m → 250 mm display
@@ -657,7 +1018,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const row = screen.getByTestId('joint-row-0');
       expect(row.getAttribute('data-binding')).toBe('literal');
@@ -683,7 +1044,7 @@ describe('MechanismPanel', () => {
         ],
       });
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
       const row = screen.getByTestId('joint-row-0');
       expect(row.getAttribute('data-binding')).toBe('param');
@@ -692,12 +1053,123 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(j) literal-bound slider fires onSetParameter with synth param name', () => {
-    it('literal_bound prismatic slider fires onSetParameter with synth_param_name and "Xmm" value', () => {
+  describe('(j) literal-bound slider previews and commits under its synth param name', () => {
+    it('literal_bound prismatic slider previews under synth_param_name with an "Xmm" value', () => {
       const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
         cb(performance.now());
         return 1;
       });
+      try {
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: null,
+              current_value_si: null,
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+              binding: {
+                kind: 'literal_bound',
+                synth_param_name: '__joint_x_axis_v',
+                initial_value_si: 0.1,
+                scrubbable: true,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={onPreviewParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        // Must preview under the synth param name, not null
+        expect(onPreviewParameter).toHaveBeenCalledWith('__joint_x_axis_v', expect.stringMatching(/mm$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('literal_bound revolute slider previews under synth_param_name with an "Xdeg" value', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'revolute',
+              dimension: 'angle',
+              driving_param_cell_id: null,
+              current_value_si: null,
+              range_lower_si: 0,
+              range_upper_si: Math.PI,
+              binding: {
+                kind: 'literal_bound',
+                synth_param_name: '__joint_theta_v',
+                initial_value_si: 0.5,
+                scrubbable: true,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={onPreviewParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '90' } });
+
+        expect(onPreviewParameter).toHaveBeenCalledWith('__joint_theta_v', expect.stringMatching(/deg$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('param_bound joint still previews under param_cell_id (regression)', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onPreviewParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+              binding: {
+                kind: 'param_bound',
+                param_cell_id: 'Kinematic.y_pos',
+                current_value_si: 0.1,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={onPreviewParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        expect(onPreviewParameter).toHaveBeenCalledWith('Kinematic.y_pos', expect.stringMatching(/mm$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('literal_bound slider change commits under synth_param_name', async () => {
+      const raf = installManualRaf();
       try {
         const onSetParameter = vi.fn();
         const desc = makeDescriptor({
@@ -720,90 +1192,20 @@ describe('MechanismPanel', () => {
           ],
         });
         render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
         ));
         const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '400' } });
+        fireEvent.change(slider, { target: { value: '400' } });
+        await flushPendingPromises();
 
-        // Must fire with synth param name, not null
-        expect(onSetParameter).toHaveBeenCalledWith('__joint_x_axis_v', expect.stringMatching(/mm$/));
+        expect(onSetParameter).toHaveBeenCalledWith('__joint_x_axis_v', '400mm');
       } finally {
-        rafSpy.mockRestore();
-      }
-    });
-
-    it('literal_bound revolute slider fires onSetParameter with synth_param_name and "Xdeg" value', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
-      try {
-        const onSetParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'revolute',
-              dimension: 'angle',
-              driving_param_cell_id: null,
-              current_value_si: null,
-              range_lower_si: 0,
-              range_upper_si: Math.PI,
-              binding: {
-                kind: 'literal_bound',
-                synth_param_name: '__joint_theta_v',
-                initial_value_si: 0.5,
-                scrubbable: true,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '90' } });
-
-        expect(onSetParameter).toHaveBeenCalledWith('__joint_theta_v', expect.stringMatching(/deg$/));
-      } finally {
-        rafSpy.mockRestore();
-      }
-    });
-
-    it('param_bound joint still fires onSetParameter with param_cell_id (regression)', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
-      try {
-        const onSetParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'prismatic',
-              driving_param_cell_id: 'Kinematic.y_pos',
-              range_lower_si: 0,
-              range_upper_si: 0.8,
-              binding: {
-                kind: 'param_bound',
-                param_cell_id: 'Kinematic.y_pos',
-                current_value_si: 0.1,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '400' } });
-
-        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', expect.stringMatching(/mm$/));
-      } finally {
-        rafSpy.mockRestore();
+        raf.restore();
       }
     });
 
@@ -834,7 +1236,7 @@ describe('MechanismPanel', () => {
           ],
         });
         render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={onScrubLocal} />
+          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={onScrubLocal} />
         ));
         const slider = screen.getByRole('slider') as HTMLInputElement;
         fireEvent.input(slider, { target: { value: '400' } });

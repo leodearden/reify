@@ -201,13 +201,15 @@ structure def BadUsage {
 "#;
 
     let compiled = compile_source_with_stdlib(SOURCE);
-    // task 5302 α: ctor-site trait conformance (the `sub =` path) now emits at
-    // Severity::Warning under the CTOR_FIELD_CONFORMANCE_SEVERITY knob, not Error.
-    // Filter warnings (was collect_errors). Diagnostic code/message unchanged.
-    let warnings: Vec<_> = compiled
+    // Ctor-site trait conformance (the `sub =` path) emits at the
+    // CTOR_FIELD_CONFORMANCE_SEVERITY knob. Task 5302 α downgraded that knob to
+    // Warning and this filter moved off `collect_errors` to match; task 5306 δ
+    // flipped it back to Error, so this reverts to the pre-5302 form. The
+    // diagnostic's code and message were unchanged by both moves.
+    let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.severity == Severity::Error)
         .collect();
     // Match "trait 'Support'" specifically so a stray mention of the consumer
     // structure name "SupportConsumer" cannot accidentally satisfy the check.
@@ -215,12 +217,12 @@ structure def BadUsage {
     //   "type 'NotASupport' does not conform to trait 'Support' required by param 'sup'"
     // (see crates/reify-compiler/src/conformance/mod.rs:374-376).
     assert!(
-        warnings
+        errors
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("trait 'Support'")),
         "NotASupport must be rejected for a Support-typed param with a 'does not conform \
-         to trait Support' warning (empty-marker trait still enforces nominal identity); \
-         got warnings: {warnings:?}"
+         to trait Support' error (empty-marker trait still enforces nominal identity); \
+         got errors: {errors:?}"
     );
 }

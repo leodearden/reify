@@ -16,6 +16,10 @@ use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::*;
 
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
+
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test
 // ---------------------------------------------------------------------------
@@ -129,7 +133,7 @@ fn revolve_720_degrees() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), real_literal(angle_720_rad)),
+            ("angle".into(), angle_literal(angle_720_rad)),
         ],
     };
 
@@ -310,7 +314,7 @@ fn negative_revolve_angle_is_valid() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), real_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
+            ("angle".into(), angle_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
         ],
     };
 

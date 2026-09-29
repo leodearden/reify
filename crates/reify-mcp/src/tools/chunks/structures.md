@@ -4,7 +4,7 @@ Structures are the primary entity kind in Reify. They compose spatially via cont
 
 ## Syntax
 
-```
+```reify-fragment
 structure def Bracket<M: Material> : Rigid {
     param thickness : Length
     param width : Length = 50mm
@@ -49,7 +49,7 @@ structure def Bracket<M: Material> : Rigid {
 ## Instantiation
 
 Sub-structures are instantiated with `sub`:
-```
+```reify-fragment
 sub motor : ElectricMotor { shaft_diameter = 8mm }
 sub vents : List<Vent>
 ```
@@ -58,7 +58,7 @@ Parameters can be set in the curly-brace block. Omitted parameters get their def
 
 ## Meta Blocks
 
-```
+```reify-fragment
 structure def Bracket : Rigid {
     meta {
         description = "L-shaped mounting bracket"

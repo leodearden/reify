@@ -64,28 +64,6 @@
 # five crates to zero rows). The LIVE count is whatever the recipe above prints,
 # and the guard's row scans already report it (`rows=N`) — deliberately not
 # restated here, so it cannot go stale again.
-crates/reify-compiler/tests/ambient_default_injection_tests.rs
-crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
-crates/reify-compiler/tests/boundary1_consumer.rs
-crates/reify-compiler/tests/boundary2_producer.rs
-crates/reify-compiler/tests/cfg_check_entry_tests.rs
-crates/reify-compiler/tests/cfg_import_gating_tests.rs
-crates/reify-compiler/tests/deep_dot_chain_tests.rs
-crates/reify-compiler/tests/determinacy_compile_tests.rs
-crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
-crates/reify-compiler/tests/guard_compilation.rs
-crates/reify-compiler/tests/implicit_conversion_tests.rs
-crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
-crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs
-crates/reify-compiler/tests/optimized_annotation_tests.rs
-crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs
-crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
-crates/reify-compiler/tests/prepass_consolidation_tests.rs
-crates/reify-compiler/tests/robustness_examples_tests.rs
-crates/reify-compiler/tests/selector_composition_tests.rs
-crates/reify-compiler/tests/silent_defaults_tests.rs
-crates/reify-compiler/tests/termination_check_tests.rs
-crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs
 crates/reify-eval/tests/achieved_repr_tol.rs
 crates/reify-eval/tests/ad_hoc_selector_smoke_tests.rs
 crates/reify-eval/tests/affine_apply_e2e.rs
@@ -148,8 +126,6 @@ crates/reify-eval/tests/extrude_infinite_e2e.rs
 crates/reify-eval/tests/extrude_symmetric_e2e.rs
 crates/reify-eval/tests/failed_propagation.rs
 crates/reify-eval/tests/fallback_recovery_e2e.rs
-crates/reify-eval/tests/fdm_bracket_e2e.rs
-crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs
 crates/reify-eval/tests/fdm_slice_e2e.rs
 crates/reify-eval/tests/feature_accessor_eval.rs
 crates/reify-eval/tests/feature_datum_tests.rs

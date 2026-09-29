@@ -761,7 +761,7 @@ Four movements, in dependency order:
   `examples/best_practices/` + `INDEX.md`, `.claude/skills/reify-design/SKILL.md`.
   Doc-chunk text for the opt-in with every signature verified against the compiler
   registries; a worked example that compiles under
-  `crates/reify-compiler/tests/examples_smoke.rs`; the one-line cheatsheet index
+  `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`; the one-line cheatsheet index
   entry. *Leaf.* Signal: **discoverability acceptance** — an author who knows the
   goal ("stop my optimum parking on the clearance bound") but not the feature name
   reaches it from the chunks or the corpus index. Depends on μ.

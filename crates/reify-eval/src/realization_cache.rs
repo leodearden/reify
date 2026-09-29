@@ -120,11 +120,9 @@ impl<V> RealizationCache<V> {
     ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
     ///   Never decremented — not by [`remove`](Self::remove), not by
     ///   [`clear_entity`](Self::clear_entity), and not by the whole-cache
-    ///   [`clear`](Self::clear) behind `clear_realization_cache()` (which
-    ///   `edit_param`/`edit_source` perform on every edit, so a reset-on-flush
-    ///   counter would be useless for cross-edit measurement). No method on this
-    ///   type can lower the count — the monotonicity is structural, not a
-    ///   convention imposed on call sites.
+    ///   [`clear`](Self::clear). No method on this type can lower the count. See
+    ///   [`clear`](Self::clear) for why that survives the whole-cache flush by
+    ///   construction.
     /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
     ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
     ///   intermediates are steps *within* one realization, not realizations.
@@ -150,7 +148,15 @@ impl<V> RealizationCache<V> {
     /// [`realization_entries`](Self::realization_entries) survives it without
     /// any save/restore dance at the call site. Reseating the whole struct to
     /// [`RealizationCache::new`] instead would zero the counter — that is
-    /// exactly what this method exists to make impossible.
+    /// exactly what this method exists to make impossible. Because
+    /// `edit_param` / `edit_source` flush on every edit, a reset-on-flush
+    /// counter would be zeroed constantly and useless for cross-edit
+    /// measurement.
+    ///
+    /// Pinned by `clear_empties_the_cache_but_preserves_realization_entries`
+    /// below in this file and by
+    /// `realization_entries_survives_clear_realization_cache` in
+    /// `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear(&mut self) {
         self.buckets.clear();
     }
@@ -1025,11 +1031,8 @@ mod tests {
     /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
     /// empties the cache without touching the lifetime counter.
     ///
-    /// This is the structural half of the monotonicity invariant: `clear` can
-    /// only reach `buckets`, so there is no save/restore dance at the call site
-    /// that a later edit could reorder or forget. Reseating to
-    /// `RealizationCache::new()` — the shape this replaced — would zero the
-    /// counter on every `edit_param`/`edit_source`.
+    /// This is the structural half of the monotonicity invariant; see
+    /// [`RealizationCache::clear`] for why it holds by construction.
     #[test]
     fn clear_empties_the_cache_but_preserves_realization_entries() {
         let mut cache = RealizationCache::<u32>::new();

@@ -2,22 +2,24 @@
 //! instead of `Bool`.
 //!
 //! Root cause: the five bare eval sites (eval_cached Let branch, eval_cached
-//! Param-default closure, edit_param Let main loop, edit_source Let main loop,
-//! concurrent wave-2) omit `.with_determinacy(snapshot_values)` from the
-//! EvalContext they build.  Any `determined(x)` / `undetermined(x)` / etc.
-//! evaluated through those sites collapses to `Value::Undef` because the
-//! `DeterminacyPredicate` eval arm returns `Undef` when no determinacy map is
-//! present.
+//! Param-default closure, edit_param Let main loop, edit_source Let main
+//! loop, edit_source post-solve wave-2 (#7114)) omit
+//! `.with_determinacy(snapshot_values)` from the EvalContext they build.
+//! Any `determined(x)` / `undetermined(x)` / etc. evaluated through those
+//! sites collapses to `Value::Undef` because the `DeterminacyPredicate` eval
+//! arm returns `Undef` when no determinacy map is present.
 //!
-//! These tests use a plain NON-guard readable `let r = determined(x)` so they
-//! traverse the bare main-loop site (not the guard-re-elaboration phase that
-//! already rescues guard cells with `.with_determinacy`).
+//! The main-loop tests below use a plain NON-guard readable `let r =
+//! determined(x)` so they traverse the bare main-loop site (not the
+//! guard-re-elaboration phase that already rescues guard cells with
+//! `.with_determinacy`).
 //!
 //! Task 4356: cell_eval_ctx determinacy unification.
 
+use reify_constraints::DimensionalSolver;
 use reify_core::{ValueCellId, VersionId};
 use reify_ir::Value;
-use reify_test_support::{make_engine, parse_and_compile};
+use reify_test_support::{make_engine, make_simple_engine, parse_and_compile};
 
 /// Source shared across all three warm tests:
 ///   param x  : Length = 10mm
@@ -200,4 +202,118 @@ fn eval_cached_param_default_resolves_determinacy_predicate() {
     );
 }
 
-// ── Amendment: concurrent wave-2 ──────────────────────────────────────────
+// ── Solver wave-2: edit_param vs edit_source (task #7114) ────────────────────
+
+/// Pre-edit solver fixture: `base = 3mm` ⇒ `x == 5mm`. `ready`/`gated` read
+/// only `x`, never `base`, so they sit outside `base`'s dirty cone — the
+/// post-solve second propagation wave is the only phase that re-evaluates
+/// them on either edit surface.
+const SOLVER_WAVE2_BASE3_SRC: &str = r#"
+    structure S {
+        param base : Length = 3mm
+        param x : Length = auto
+        constraint x == base + 2mm
+        let ready = determined(x)
+        let gated = if determined(x) then x else 0mm
+    }
+"#;
+
+/// Same structure/cell IDs as [`SOLVER_WAVE2_BASE3_SRC`]; only `base`'s
+/// default changes, 3mm → 7mm, so the solver re-resolves `x` to 9mm.
+const SOLVER_WAVE2_BASE7_SRC: &str = r#"
+    structure S {
+        param base : Length = 7mm
+        param x : Length = auto
+        constraint x == base + 2mm
+        let ready = determined(x)
+        let gated = if determined(x) then x else 0mm
+    }
+"#;
+
+/// Absolute tolerance for `gated`'s expected 9mm (0.009 m) — a Nelder-Mead
+/// solver-search output, not an exact literal. Same rationale as
+/// `MOVED_AUTO_TOL` in engine_edit.rs's `edit_param_back_props_moved_auto`:
+/// the measured error is ~5.6e-16 m on all three paths below, ~9 orders of
+/// magnitude inside this bound, while the stale pre-edit value (5mm) is
+/// 4e-3 m away and `Undef` fails the pattern outright.
+const SOLVER_TOL_M: f64 = 1e-6;
+
+/// A `SimpleConstraintChecker` + `DimensionalSolver` engine, no geometry
+/// kernel — used by all three legs (cold / edit_param / edit_source) below.
+fn solver_engine() -> reify_eval::Engine {
+    make_simple_engine().with_solver(Box::new(DimensionalSolver))
+}
+
+/// A solver-driven `determined(x)` / `if determined(x) then x else 0mm` must
+/// resolve identically whether `x` was re-resolved via `edit_param`,
+/// `edit_source`, or a cold `eval()` of the post-edit source. `ready`/`gated`
+/// are outside `base`'s dirty cone (see [`SOLVER_WAVE2_BASE3_SRC`]), so the
+/// post-solve second propagation wave is the only phase that re-evaluates
+/// them — this pins that wave's context on both edit surfaces, not just the
+/// main walk covered above.
+///
+/// Regression (#7114): edit_source's second propagation wave once omitted
+/// `.with_determinacy`, so `ready`/`gated` collapsed to `Undef` there while
+/// `edit_param` and cold both resolved to `Bool(true)` / 9mm.
+#[test]
+fn solver_wave2_resolves_determinacy_predicate_on_both_edit_surfaces() {
+    let pre = parse_and_compile(SOLVER_WAVE2_BASE3_SRC);
+    let post = parse_and_compile(SOLVER_WAVE2_BASE7_SRC);
+
+    let base_id = ValueCellId::new("S", "base");
+    let x_id = ValueCellId::new("S", "x");
+    let ready_id = ValueCellId::new("S", "ready");
+    let gated_id = ValueCellId::new("S", "gated");
+
+    let mut param_engine = solver_engine();
+    param_engine.eval(&pre);
+    let edit_param_result = param_engine
+        .edit_param(base_id, Value::length(0.007))
+        .expect("edit_param should succeed");
+
+    let mut source_engine = solver_engine();
+    source_engine.eval(&pre);
+    let edit_source_result = source_engine
+        .edit_source(&post)
+        .expect("edit_source should succeed");
+
+    let mut cold_engine = solver_engine();
+    let cold_result = cold_engine.eval(&post);
+
+    // GUARD: both edits must actually reach the solver, or the fixture
+    // proves nothing about wave2 — a miss means base's edit stopped dirtying
+    // the constraint, not that #7114's determinacy bug is fixed.
+    assert!(
+        edit_param_result.resolved_params.contains_key(&x_id),
+        "edit_param: x should be in resolved_params (solver must re-resolve x)"
+    );
+    assert!(
+        edit_source_result.resolved_params.contains_key(&x_id),
+        "edit_source: x should be in resolved_params (solver must re-resolve x)"
+    );
+
+    for (label, result) in [
+        ("cold", &cold_result),
+        ("edit_param", &edit_param_result),
+        ("edit_source", &edit_source_result),
+    ] {
+        assert_eq!(
+            result.values.get(&ready_id),
+            Some(&Value::Bool(true)),
+            "{label}: ready = determined(x) should be Bool(true); got {:?}",
+            result.values.get(&ready_id)
+        );
+
+        match result.values.get(&gated_id) {
+            Some(Value::Scalar { si_value, .. }) => {
+                assert!(
+                    (si_value - 0.009).abs() < SOLVER_TOL_M,
+                    "{label}: gated should be within {:.0e}m of 9mm (0.009m); \
+                     got {si_value}m",
+                    SOLVER_TOL_M
+                );
+            }
+            other => panic!("{label}: gated should be a Length Scalar (~9mm); got {other:?}"),
+        }
+    }
+}

@@ -71,7 +71,7 @@ genuine landing signal rather than a vacuous match.
 | Capability | Binding | Verdict | Check |
 |---|---|---|---|
 | `fea-has-zero-doc-chunk-presence-so-the-chunk-leaf-is-waived` | **Docs-truth waiver evidence, measured.** No file under `crates/reify-mcp/src/tools/chunks/` mentions buckling, modal, eigen, FEA or any `solve_*` function — the 17 chunks cover collections, connect, constraints, enums, fields, functions, geometry, guards, occurrences, parameters, purposes, stdlib, structures, syntax, traits, types, units. A chunk edit here would be a one-paragraph orphan in a topic that does not exist. The gate's other three obligations **are** delivered; the chunk obligation is waived with this rationale plus a filed follow-up for FEA chunk coverage as a whole. | PASS | grep `spectral_shift` present in `examples/best_practices/INDEX.md` |
-| `examples-corpus-is-compile-gated-so-the-exemplar-cannot-rot` | substrate, wired-on-main. `examples/best_practices/` is auto-compile-gated by `crates/reify-compiler/tests/examples_smoke.rs`. Expected cost, not a defect: `examples/*.ri` has no carve-out arm in `verify.sh`'s `decide_scope`, so this leaf's diff runs the full workspace gate. | PASS | manual — an existing harness property; a check on it would be vacuous. |
+| `examples-corpus-is-compile-gated-so-the-exemplar-cannot-rot` | substrate, wired-on-main. `examples/best_practices/` is auto-compile-gated by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`. Expected cost, not a defect: `examples/*.ri` has no carve-out arm in `verify.sh`'s `decide_scope`, so this leaf's diff runs the full workspace gate. | PASS | manual — an existing harness property; a check on it would be vacuous. |
 
 ## θ — PRD close
 

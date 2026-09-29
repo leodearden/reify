@@ -3,7 +3,10 @@
 use reify_compiler::stdlib_loader;
 use reify_core::{DiagnosticCode, ModulePath, ValueCellId};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
+use reify_test_support::{
+    assert_no_eval_errors, cell_value, collect_errors, make_engine, parse_and_compile_with_stdlib,
+    scalar_si, steel_elastic_source, steel_material_elastic_source,
+};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
@@ -83,6 +86,51 @@ fn eval_with_prelude_trait_conformance() {
             "Elastic param '{}' should be {}, got {}",
             param,
             expected_val,
+            actual
+        );
+    }
+}
+
+/// `ThermallyCharacterized`'s three required scalars carry their declared values
+/// all the way through eval, as resolved SI scalars.
+///
+/// None of the three has a production reader, so nothing else would notice if a
+/// value stopped arriving; this pins the *data-carrying* half of task #5801's
+/// declared-only ruling (docs/reify-stdlib-reference.md §6.3). The sibling
+/// `eval_with_prelude_trait_conformance` above plays the same role for `Elastic`'s
+/// equally reader-free `shear_modulus`.
+///
+/// The three `= undef` Temperature params are omitted deliberately, since
+/// optionality is not what is under test here.
+#[test]
+fn eval_carries_thermally_characterized_scalars_in_si() {
+    let source = r#"
+structure def Alumina : ThermallyCharacterized {
+    param density : Density = 3900kg/m^3
+    param name : String = "alumina"
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let result = make_engine().eval(&compiled);
+    assert_no_eval_errors(&result);
+
+    // Relative tolerance: an absolute one would be meaningless across magnitudes
+    // spanning 1e-6 (thermal_expansion) to 1e3 (specific_heat).
+    let expected_si: &[(&str, f64)] = &[
+        ("thermal_conductivity", 30.0), // W/(m·K)
+        ("specific_heat", 880.0),       // J/(kg·K)
+        ("thermal_expansion", 8.1e-6),  // K⁻¹
+    ];
+    for &(param, expected) in expected_si {
+        let actual = scalar_si(&cell_value(&result, "Alumina", param), param);
+        assert!(
+            (actual - expected).abs() <= expected * 1e-12,
+            "'{}' should reach eval as {} (SI), got {}",
+            param,
+            expected,
             actual
         );
     }

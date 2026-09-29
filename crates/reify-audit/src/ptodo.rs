@@ -21,30 +21,30 @@
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
-//! (`std::fs::read_to_string`), and the read-only task-DB open touch IO, inside
-//! [`check`].
+//! (`AuditContext::read_relative`, which owns the fail-safe contract), and
+//! the read-only task-DB open touch IO, inside [`check`].
 //!
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
-use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity};
+use crate::scan_util::{contains_word, is_word_byte};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+// §8.4 terminal set and the §6.3 membership test now live in the shared
+// task-DB scaffolding, which the PDCHECK lane reads too.
+use crate::task_rows::{is_terminal_status, path_present_in_tracked};
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
 // §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
 // -----------------------------------------------------------------------
 
-/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
-/// the hand-rolled `\b` word-boundary checks in [`find_comment_marker`].
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// `char`-level analogue of [`is_word_byte`] for the `\b` left-boundary check
-/// in [`has_malformed_cite`] (which scans `char`s to recognise Greek cites).
+/// `char`-level analogue of [`crate::scan_util::is_word_byte`] for the `\b`
+/// left-boundary check in [`has_malformed_cite`] (which scans `char`s to
+/// recognise Greek cites). Not a duplicate of the byte predicate — a Greek
+/// cite is multibyte, so that scan cannot be expressed over bytes.
 fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -290,8 +290,9 @@ fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<
         return None;
     }
 
-    /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
-    /// `-`, so a hyphenated PRD noun (`open-question`) is read as ONE token.
+    /// The token alphabet for the spaced-noun families:
+    /// [`crate::scan_util::is_word_byte`] plus `-`, so a hyphenated PRD noun
+    /// (`open-question`) is read as ONE token.
     fn is_token_byte(b: u8) -> bool {
         is_word_byte(b) || b == b'-'
     }
@@ -673,39 +674,6 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
     owners
 }
 
-/// Return `true` if `token` (a lowercase ASCII string, e.g. `"done"` or
-/// `"cancelled"`) appears as a **whole word** in `s_lower` (a pre-lowercased
-/// string slice). Word boundaries are the `[A-Za-z0-9_]` alphabet of
-/// [`is_word_byte`]; a token at the start/end of the slice has an implicit
-/// boundary there.
-///
-/// Used by [`is_g_allow_cite_exempt`] rule (a) to test for `done` /
-/// `cancelled` inside a parenthetical group without false-matching subwords:
-/// `"abandoned"` contains `"done"` but not as a whole word (left boundary
-/// fails), and `"undone"` similarly fails the left-boundary check.
-fn contains_word_token(s_lower: &str, token: &str) -> bool {
-    let bytes = s_lower.as_bytes();
-    let n = bytes.len();
-    let tlen = token.len();
-    let mut start = 0;
-    while start + tlen <= n {
-        match s_lower[start..].find(token) {
-            None => break,
-            Some(rel) => {
-                let idx = start + rel;
-                let after = idx + tlen;
-                let left_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
-                let right_ok = after >= n || !is_word_byte(bytes[after]);
-                if left_ok && right_ok {
-                    return true;
-                }
-                start = idx + 1;
-            }
-        }
-    }
-    false
-}
-
 /// Depth-match the parenthetical group whose opening `(` is at `open_paren_idx`
 /// in `bytes`, returning the byte index of the matching `)`.  Returns `None`
 /// when the group is unclosed (EOF before depth returns to 0).
@@ -735,12 +703,22 @@ fn find_group_close(bytes: &[u8], open_paren_idx: usize) -> Option<usize> {
 
 /// Return `true` if `group_lower` (a pre-lowercased slice of a paren group body
 /// — the characters between `(` and `)`, exclusive, or a `;`-bounded sub-window
-/// thereof) contains a whole-word `done` or `cancelled` token.  Word boundaries
-/// are defined by [`is_word_byte`].
+/// thereof) contains a whole-word `done` or `cancelled` token, so subwords like
+/// `"abandoned"` and `"undone"` do NOT match.
 ///
 /// Called by [`is_g_allow_cite_exempt`] rule (a) via [`find_group_close`].
+///
+/// [`crate::scan_util::contains_word`] is case-SENSITIVE while this lane's
+/// contract is case-insensitive, and the two agree here for a reason worth
+/// stating: the needles are the hardcoded lowercase ASCII literals below, and
+/// every caller has already lowercased the slice it passes. So a pre-lowercased
+/// haystack plus a case-sensitive whole-word match reproduce the prior
+/// semantics exactly. The private byte-stepped matcher this replaces was
+/// UTF-8-safe only by the same accident of ASCII needles; the shared
+/// char-stepped one is safe by construction, which matters because a panic
+/// here would take a hard-gated detector down.
 fn group_has_terminal_token(group_lower: &str) -> bool {
-    contains_word_token(group_lower, "done") || contains_word_token(group_lower, "cancelled")
+    contains_word(group_lower, "done") || contains_word(group_lower, "cancelled")
 }
 
 /// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
@@ -982,10 +960,12 @@ fn has_deferral_prose(text: &str) -> bool {
     /// — a hyphenated compound such as `pending-queue` NAMES a thing rather than
     /// deferring work).
     ///
-    /// The word-byte half delegates to the module-shared [`is_word_byte`], the
+    /// The word-byte half delegates to [`crate::scan_util::is_word_byte`], the
     /// documented alphabet for the hand-rolled `\b` checks, rather than
-    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change to
-    /// the module's notion of a word byte cannot silently skip this guard.
+    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change
+    /// to what counts as a word byte cannot silently skip this guard. That
+    /// guarantee now spans the whole crate rather than this module, which is
+    /// the point of keeping the alphabet in one place.
     fn disqualifies_either_side(b: u8) -> bool {
         b == b'"' || b == b'`' || b == b'-' || is_word_byte(b)
     }
@@ -1077,24 +1057,43 @@ pub fn is_swept_ext(path: &str) -> bool {
 // §8.3 per-file classification
 // -----------------------------------------------------------------------
 
-/// The four structural-lane finding kinds α emits (all Medium severity). The
-/// §8.3 `kind` token is carried as a stable summary prefix under the single
-/// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A TODO-family marker with no task citation at all.
-    Untracked,
-    /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
-    MalformedCite,
-    /// Prose claiming the work is tracked elsewhere, with no canonical cite.
-    PhantomTracking,
-    /// A bare `#[ignore]` attribute (no reason string).
-    BareIgnore,
+/// Declares a fieldless enum together with its `ALL` list from ONE variant
+/// list, so a variant cannot exist without being in `ALL`.
+macro_rules! enum_with_all {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident { $($(#[$variant_meta:meta])* $variant:ident,)+ }
+    ) => {
+        $(#[$enum_meta])*
+        enum $name { $($(#[$variant_meta])* $variant,)+ }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            const ALL: &'static [$name] = &[$($name::$variant),+];
+        }
+    };
+}
+
+enum_with_all! {
+    /// The structural-lane finding kinds α emits (severity per
+    /// [`Kind::severity`]). The §8.3 `kind` token is carried as a stable summary prefix under the single
+    /// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// A TODO-family marker with no task citation at all.
+        Untracked,
+        /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
+        MalformedCite,
+        /// Prose claiming the work is tracked elsewhere, with no canonical cite.
+        PhantomTracking,
+        /// A bare `#[ignore]` attribute (no reason string).
+        BareIgnore,
+    }
 }
 
 impl Kind {
     /// The §8.3 kind token, used as the finding summary prefix.
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Kind::Untracked => "untracked",
             Kind::MalformedCite => "malformed-cite",
@@ -1118,6 +1117,19 @@ impl Kind {
         }
     }
 }
+
+/// The §8.3 kind tokens the structural lane emits — the only kinds a §6.6
+/// baseline may carry (PRD §19). One token per [`Kind`], derived from
+/// `Kind::ALL`, so a new variant joins it without a second edit.
+pub const STRUCTURAL_KINDS: [&str; Kind::ALL.len()] = {
+    let mut tokens = [""; Kind::ALL.len()];
+    let mut i = 0;
+    while i < tokens.len() {
+        tokens[i] = Kind::ALL[i].as_str();
+        i += 1;
+    }
+    tokens
+};
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
 /// is either *structurally* offending (no canonical cite → α's domain) or
@@ -1304,8 +1316,8 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // `Untracked`; δ-B has only the comment, so the cite IS the anchor
             // — which is what stops the lane firing on every prose comment
             // containing "pending". It emits only `Cited` and reaches ONLY the
-            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
-            // and the §8.4 severity map untouched.
+            // unchanged β liveness lane, leaving §8.3's taxonomy,
+            // `STRUCTURAL_KINDS` and the §8.4 severity map untouched.
             //
             // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
             // `// G-allow:` register to its owner lane, which has its own
@@ -1385,45 +1397,9 @@ pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
-/// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
-/// orphans its marker. Every other present status (pending / in-progress /
-/// blocked / deferred) is nominally live — but see `metadata_do_not_complete`:
-/// a non-terminal task carrying `do_not_complete == true` is classified as
-/// `parked-on-anchor` (Medium) rather than live (task ι, #4644). η flips
-/// `orphaned` to High; β keeps all other liveness kinds Medium.
-fn is_terminal_status(status: &str) -> bool {
-    status == "done" || status == "cancelled"
-}
-
 // -----------------------------------------------------------------------
 // §6.3 inverse lane — non-terminal tasks citing git-deleted metadata.files paths
 // -----------------------------------------------------------------------
-
-/// §6.3 inverse-lane membership test: returns `true` when `path` (trailing-
-/// slash-tolerant) is "present in the tracked set" — i.e. it equals a tracked
-/// file OR is a directory prefix of some tracked file (a tracked file starts
-/// with `path + "/"`). Strips at most one trailing `/` before the checks.
-///
-/// This guard suppresses the critical FP class where `metadata.files` names
-/// a DIRECTORY that still exists (e.g. `crates/reify-audit/tests`): a
-/// directory is never a member of the `git ls-files` set, yet
-/// `git log -1 -- <dir>` returns non-empty — without this guard, every
-/// directory citation would produce a false-positive finding.
-fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<String>) -> bool {
-    // Strip at most one trailing slash for both exact-match and prefix checks.
-    let path = path.trim_end_matches('/');
-    if tracked.contains(path) {
-        return true;
-    }
-    // Directory-prefix membership: some tracked file lives under `path/`.
-    // O(n) scan over the tracked set — acceptable for current backlog sizes
-    // because most cited paths hit the O(1) exact-match branch above and only
-    // genuinely absent paths reach here. If the tracked set grows very large
-    // (tens of thousands of files), consider a sorted Vec<String> +
-    // `partition_point`-based prefix search to reduce this to O(log n).
-    let prefix = format!("{}/", path);
-    tracked.iter().any(|f| f.starts_with(&prefix))
-}
 
 /// §6.3 inverse lane: for each non-terminal master task, check each cited
 /// `metadata.files` path. A path absent from `tracked` (not an exact tracked
@@ -1444,9 +1420,10 @@ fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<Strin
 /// [`crate::GitOps::rename_target_for_path`]) degrades to the deleted kind, so
 /// the lane never trades one misleading finding for another.
 ///
-/// Fail-soft on DB errors (propagated as `Err` so the caller's
-/// `and_then`-based degradation handles them alongside the liveness lane).
-/// NULL/malformed/missing `metadata` → empty files list → graceful (no panic).
+/// Task selection, permissive metadata parse and the git memo live in
+/// [`crate::task_rows`], shared with the PDCHECK lane. Fail-soft on DB errors
+/// (propagated as `Err` so the caller's `and_then`-based degradation handles
+/// them alongside the liveness lane).
 ///
 /// Findings are sorted by (task_id, path) for determinism; deleted paths are
 /// by definition absent from `tracked` so they never share a key with the
@@ -1457,42 +1434,12 @@ pub fn resolve_inverse(
     git: &dyn crate::GitOps,
     tracked: &std::collections::HashSet<String>,
 ) -> rusqlite::Result<Vec<Finding>> {
-    let mut stmt =
-        conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
-
-    let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
     let mut out: Vec<Finding> = Vec::new();
-    // Per-run caches: avoid redundant `git log` / `git show` spawns when
-    // multiple tasks cite the same absent path (common in larger backlogs where
-    // a single deleted or renamed file is referenced by several related tasks —
-    // the measured live case was 2 renamed paths cited by 6 tasks).
-    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
-    // Keyed on (cited path, sha) rather than the path alone: within a run the
-    // sha IS a pure function of the path (it comes from `git_cache`), but the
-    // tuple key is correct without depending on that invariant, and matches the
-    // `HashMap<(String, String), _>` shape the GitOps mock uses.
-    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut history = crate::task_rows::PathHistory::default();
 
-    for (id, status, metadata_opt) in rows {
-        if is_terminal_status(&status) {
-            continue;
-        }
-
-        // Parse metadata.files: NULL / malformed / missing key → empty, graceful.
-        let files: Vec<String> = metadata_opt
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
-            .and_then(|v| v.get("files").and_then(|a| a.as_array()).cloned())
-            .unwrap_or_default()
-            .into_iter()
+    for (id, metadata) in crate::task_rows::non_terminal_master_tasks(conn)? {
+        let files: Vec<String> = crate::task_rows::metadata_array(&metadata, "files")
+            .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
 
@@ -1500,63 +1447,49 @@ pub fn resolve_inverse(
             if path_present_in_tracked(&path, tracked) {
                 continue;
             }
-            // Path absent from tracked set — check git history (fail-safe: None
-            // on any git error → no false positive). Results are memoized to
-            // avoid repeated subprocess spawns for the same path across tasks.
-            let commit_opt = git_cache
-                .entry(path.clone())
-                .or_insert_with(|| git.last_commit_for_path(&path))
-                .clone();
-            if let Some(commit) = commit_opt {
-                // Did that same commit RENAME the path rather than delete it?
-                // Fail-safe: None on a merge commit, a genuine delete, or any
-                // git error → the unchanged deleted-path finding below.
-                let rename_target = rename_cache
-                    .entry((path.clone(), commit.sha.clone()))
-                    .or_insert_with(|| git.rename_target_for_path(&path, &commit.sha))
-                    .clone()
-                    // Only advertise a target the reader can actually go look
-                    // at: a target that was itself renamed again or deleted
-                    // falls back to the deleted kind. `path_present_in_tracked`
-                    // (not a bare `tracked.contains`) keeps the trailing-slash
-                    // and directory-prefix semantics identical to the cited-path
-                    // check above, so the two membership tests cannot drift.
-                    .filter(|new_path| path_present_in_tracked(new_path, tracked));
-                if let Some(new_path) = rename_target {
-                    out.push(Finding {
-                        pattern: Pattern::PTodo,
-                        severity: Severity::Medium,
-                        task_id: id.to_string(),
-                        summary: format!(
-                            "task-cites-renamed-path: task #{id} cites renamed path '{path}' (renamed to '{new_path}' in {sha})",
-                            sha = commit.sha,
-                        ),
-                        evidence: vec![
-                            // Only the CITED path: `MetadataFiles` means
-                            // "entries from a task's metadata.files", and it is
-                            // this lane's path sort key (see the sort below).
-                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
-                            EvidenceRef::File { path: new_path },
-                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
-                        ],
-                    });
-                } else {
-                    out.push(Finding {
-                        pattern: Pattern::PTodo,
-                        severity: Severity::Medium,
-                        task_id: id.to_string(),
-                        summary: format!(
-                            "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
-                            sha = commit.sha,
-                        ),
-                        evidence: vec![
-                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
-                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
-                        ],
-                    });
-                }
+            // Path absent from the tracked set — ask git. `None` → the path
+            // never existed → presumed to-be-created → pass (no finding).
+            let Some((commit, rename_target)) = history.resolve(git, tracked, &path) else {
+                continue;
+            };
+            // Did that same commit RENAME the path rather than delete it?
+            // Fail-safe: a merge commit, a genuine delete, a git error, or a
+            // target that is itself no longer tracked all degrade to the
+            // deleted kind, so the lane never trades one misleading finding
+            // for another.
+            if let Some(new_path) = rename_target {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-renamed-path: task #{id} cites renamed path '{path}' (renamed to '{new_path}' in {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        // Only the CITED path: `MetadataFiles` means
+                        // "entries from a task's metadata.files", and it is
+                        // this lane's path sort key (see the sort below).
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::File { path: new_path },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
+            } else {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
             }
-            // None → path never existed → presumed to-be-created → pass.
         }
     }
 
@@ -1915,14 +1848,14 @@ fn fold_whitespace(s: &str) -> String {
 /// hard gate in both the engine-seam primitive and the repo-wide lane; task
 /// η #4559 analogue) and `g-allow-unknown-id` (Medium).
 ///
-/// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
-/// G-allow advisory lane from the source-marker baseline, mirroring the ζ
-/// inverse-lane exclusion: G-allow findings are a distinct
-/// orphan-suppression-provenance taxonomy (path-keyed, `.rs` files) whose kind
-/// strings (`g-allow-*`) are outside `baseline_is_well_formed`'s `VALID_KINDS`
-/// set — including them in the baseline would make a regen fail the kind check.
-// G-allow: pub for external callers (tests/ptodo_baseline.rs, src/bin/ptodo-baseline-gen.rs —
-// separate crates / bins that cannot see crate-private items). Mirrors the
+/// Used by `ptodo-baseline-gen` to exclude the G-allow advisory lane from the
+/// source-marker baseline, mirroring the ζ inverse-lane exclusion: G-allow
+/// findings are a distinct orphan-suppression-provenance taxonomy (path-keyed,
+/// `.rs` files) whose kind strings (`g-allow-*`) are outside
+/// [`STRUCTURAL_KINDS`] — including them in the baseline would make a regen
+/// fail `baseline_is_well_formed`'s kind check.
+// G-allow: pub for an external caller (src/bin/ptodo-baseline-gen.rs — a
+// separate bin that cannot see crate-private items). Mirrors the
 // resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn is_g_allow_finding(f: &Finding) -> bool {
     f.summary.starts_with("g-allow-")
@@ -1976,7 +1909,7 @@ fn g_allow_finding_line(f: &Finding) -> usize {
 /// Counting boundary (pinned by `tests/ptodo.rs`):
 /// * `files_scanned` — tracked paths that survived `is_swept_ext(path) &&
 ///   !is_allowlisted(path)` AND were read successfully. Paths skipped fail-safe
-///   because `read_to_string` errored are excluded by construction; a swept file
+///   because the read yielded `None` are excluded by construction; a swept file
 ///   carrying zero markers is INCLUDED.
 /// * `markers_examined` — [`scan_file`]-classified marker lines
 ///   ([`LineClass::Structural`] and [`LineClass::Cited`] alike) across exactly
@@ -1998,6 +1931,30 @@ pub struct ScanStats {
     pub files_scanned: usize,
     /// [`scan_file`]-classified marker lines across those files.
     pub markers_examined: usize,
+    /// Whether the DB-dependent lanes ran. It exists so the §6.6 ratchet can
+    /// PROVE it ran DB-absent (PRD §19).
+    pub tasks_db: TasksDbMode,
+}
+
+/// Whether [`check_with_stats`] resolved the task DB.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TasksDbMode {
+    /// The §6.7 degrade path fired (the DB is missing, unreadable, or failed to
+    /// resolve), so no DB-dependent lane (β, ζ, G-allow) contributed.
+    #[default]
+    Absent,
+    /// The DB opened and all three DB-dependent lanes resolved.
+    Present,
+}
+
+impl TasksDbMode {
+    /// The token the scan-evidence line carries for this mode.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            TasksDbMode::Absent => "absent",
+            TasksDbMode::Present => "present",
+        }
+    }
 }
 
 /// PTODO sweep (§5/§8) — see [`check_with_stats`], of which this is the
@@ -2011,8 +1968,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 /// G-allow advisory (γ-advisory) lanes. Enumerates tracked files via the git
 /// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
 /// extensions that are not allowlisted (§6.8), reads each file's
-/// **working-tree** content directly (`std::fs::read_to_string` — only
-/// enumeration is a git dependency; the lane "runs everywhere, including
+/// **working-tree** content directly
+/// ([`AuditContext::read_relative`](crate::AuditContext::read_relative) —
+/// only enumeration is a git dependency; the lane "runs everywhere, including
 /// worktrees"), and classifies each line via the single [`scan_file`] pass.
 ///
 /// That one pass feeds the structural (α) and liveness (β) lanes:
@@ -2059,9 +2017,8 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         }
         // Read the working tree directly (only enumeration is a git seam). Skip
         // unreadable paths fail-safe.
-        let content = match std::fs::read_to_string(ctx.project_root.join(path)) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Some(content) = ctx.read_relative(path) else {
+            continue;
         };
         // Counted only after a successful read, so fail-safe skips above are
         // excluded from the §6.6 scan evidence by construction.
@@ -2115,6 +2072,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         Ok((live, inv, g_allow))
     }) {
         Ok((live, inv, g_allow)) => {
+            stats.tasks_db = TasksDbMode::Present;
             keyed.extend(live);
             inverse_findings = inv;
             // Insert G-allow findings into keyed so they sort with the other
@@ -3517,7 +3475,7 @@ mod tests {
     /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
     /// and reaches only the unchanged β liveness lane. Pinned as its own
     /// assertion because it is the property that keeps §8.3's taxonomy (and
-    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// therefore `STRUCTURAL_KINDS`, `fingerprint` and the §8.4 severity map)
     /// byte-unchanged by this lane.
     #[test]
     fn scan_file_delta_b_emits_no_structural_kind() {
@@ -4208,9 +4166,9 @@ mod tests {
     ///
     /// Rationale for the exclusion: g-allow-orphaned / g-allow-unknown-id are a
     /// distinct orphan-suppression-provenance taxonomy (path-keyed, .rs files).
-    /// Including them in the baseline would (a) make the on-demand (B) ratchet
-    /// RED against the intentionally-empty baseline and (b) make a future regen
-    /// emit lines whose `kind` fails `VALID_KINDS` in `baseline_is_well_formed`.
+    /// Including them in the baseline would make a regen emit lines whose
+    /// `kind` is outside [`STRUCTURAL_KINDS`], which `baseline_is_well_formed`
+    /// rejects.
     /// The `fingerprint()` check below documents WHY the exclusion is necessary.
     ///
     /// RED until step-6 adds `pub fn is_g_allow_finding`.
@@ -4257,25 +4215,16 @@ mod tests {
         );
 
         // Demonstrate WHY exclusion is needed: fingerprint() extracts the kind
-        // segment "g-allow-orphaned", which is NOT in the source-marker VALID_KINDS
-        // taxonomy {untracked, malformed-cite, phantom-tracking, bare-ignore,
-        // orphaned, unknown-id}.  A regen including it would fail
+        // segment "g-allow-orphaned", which is NOT one of the STRUCTURAL_KINDS a
+        // baseline may carry. A regen including it would fail
         // baseline_is_well_formed's kind check — so it must be excluded upstream.
         let fp = fingerprint(&g_allow_orphaned);
         let kind_segment = fp.split(" :: ").nth(1).unwrap_or("");
-        const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
-            "untracked",
-            "malformed-cite",
-            "phantom-tracking",
-            "bare-ignore",
-            "orphaned",
-            "unknown-id",
-        ];
         assert!(
-            !SOURCE_MARKER_VALID_KINDS.contains(&kind_segment),
-            "fingerprint kind {kind_segment:?} must NOT be in the source-marker \
-             VALID_KINDS — this documents why g-allow findings must be excluded \
-             from the baseline ratchet"
+            !STRUCTURAL_KINDS.contains(&kind_segment),
+            "fingerprint kind {kind_segment:?} must NOT be in STRUCTURAL_KINDS — \
+             this documents why g-allow findings must be excluded from the \
+             baseline ratchet"
         );
     }
 }

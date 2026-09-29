@@ -1780,6 +1780,122 @@ F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
 F_FWD_POSBIND_RE='^[[:blank:]]*(local[[:blank:]]+)?[A-Za-z_][A-Za-z0-9_]*="\$[0-9]"'
 F_FWD_FNDEF_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\(\)'
 
+# (g) THE PYTHON DIALECT. Under
+# docs/notes/infra-test-bash-to-python-migration-policy.md a ported member keeps
+# its `.sh` BASENAME and shrinks to a wrapper over a same-stem `.py` sibling
+# holding the real assertions, so the invocation this closure has to see moves
+# out of the node's own text. These EREs are SEPARATELY NAMED and are never a
+# widening of (b)-(e): F_EDGE_VERB_RE drives the bash path, its verb set
+# {bash, sh, source} is measured, and adding `python3` to it would be both
+# insufficient (Python never writes the verb-blank-path shape (c) needs) and
+# broader on the bash side than anything here requires.
+#
+# (g) itself is THE DELEGATION RULE, which gates attribution rather than
+# conferring capability. Same anchor as (a), verb set exactly {python3, python},
+# path ending in the sibling's basename: a node is read together with its `.py`
+# only when it REALLY RUNS it. Mere sibling existence is deliberately not
+# enough -- run_all.sh globs `test_*.sh`, so an unwrapped `.py` is never run and
+# must stay inert here too. The `/` is required for the same reason (c) requires
+# one: a sibling is addressed through the script's own directory.
+F_PY_DELEG_PRE="${F_EDGE_ANCHOR}"'(python3|python)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*"?[^"[:blank:]]*/'
+# (h) A PYTHON BIND: a real assignment whose right-hand side ends in the target
+# basename inside a STRING LITERAL. MEASURED against the port's :53,
+# `NESTED_SUITE = SCRIPT_DIR / "test_occt_flock_gate.sh"` -- blanks around the
+# `=` and a Path-join, so (d), which requires `VAR=` with a `/`-path hard
+# against it, cannot match. `[^=]*` keeps the right-hand side from spanning a
+# SECOND `=`, so a keyword argument later on the line cannot masquerade as the
+# binding assignment; the variable name is recovered by `grep -oE` plus sed
+# exactly as (d)'s is.
+# WHAT THIS REJECTS, and it is live rather than hypothetical: a DOCSTRING
+# sentence naming the node (the port :13/:24, test_flake_density_report.py
+# :9/:56) carries no assignment at all. `#`-stripping is shared with Python --
+# `#` opens a comment there too -- but it does NOT remove a docstring, and
+# run_all.sh sorts ahead of every real target in _f_closure_compute's sorted
+# shortlist, so admitting prose would hand a ported member the WRONG ROUTE
+# rather than merely an extra one.
+# THE PAIRING WITH (i) IS LOAD-BEARING ON THE REAL TREE, not just on a fixture,
+# and note WHY: these EREs are applied to every node's stripped text, BASH
+# NODES INCLUDED, and (h)'s shape is laxer about its right-hand side than (d)
+# is. MEASURED by dropping (i)'s exec-position requirement and re-deriving --
+# F1 goes RED with two unlisted members, both bind-only MENTIONS in bash:
+# test_verify_retry_subset.sh:273 binds `RUNALL_IDX=$(... grep -nF
+# "run_all.sh" ...)`, where the node name is a grep PATTERN, and
+# test_verify_retry_failed_only.sh:33 binds `RAMEMBER2=` to a member basename
+# as plain DATA. Neither is a call. That is the same class of false admission
+# F_EDGE_VAR_PRE records for the bash dialect, now with its own real-tree
+# instances.
+F_EDGE_PY_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*=[[:blank:]]*[^=]*"'
+F_EDGE_PY_STR_SUF='"'
+# (i) THE ARGV-LIST EXEC POSITION, the Python analogue of (e). In Python argv is
+# DATA, so the exec verb is a QUOTED STRING and must be the list's FIRST
+# element; `str(...)` and `os.fspath(...)` wrappers are tolerated because both
+# are idiomatic for handing a Path to subprocess. `[^]]` holds the whole rule
+# inside one list, which also stops a trailing `#` comment -- which the strip,
+# being whole-line, does not remove -- from being read as part of the call.
+# THE VERB SET IS {bash, sh}, deliberately not (b)'s: `source` is a shell
+# builtin and can never be argv[0] of an exec, so admitting it would only add a
+# shape that cannot occur.
+# WHAT THIS REJECTS: `[sys.executable, str(TOOL_PATH), *args]`, live in
+# test_flake_density_report.py's LedgerFixture.run_cli -- an argv list headed
+# by a bare NAME rather
+# than a quoted verb. Requiring (h) AND (i) FOR THE SAME VARIABLE is the direct
+# analogue of the (d)+(e) pairing and rejects the Python form of the bind-only
+# inspection shape for the same measured reason (e) records.
+# THE QUOTED-VERB-FIRST REQUIREMENT IS WHAT KEEPS BASH'S `[` OUT, and that was
+# MEASURED rather than reasoned: `[` opens Python's list and is also bash's
+# TEST BUILTIN. Relax the requirement to a bare `\[` and re-derive, and F1 goes
+# RED on test_verify_retry_subset.sh, whose `[ -z "$RUNALL_IDX" ]` (:476) and
+# `[ -n "$STAMP_IDX" ] && [ "$STAMP_IDX" -gt "$RUNALL_IDX" ]` (:477) read as
+# argv lists carrying its :273 bind. The quoted verb is the one token that
+# tells a Python list from a shell test.
+# SCOPED GAP, stated rather than left implied: these are line-oriented like
+# every other ERE here, so an argv list SPLIT ACROSS LINES is not seen. No
+# in-tree Python member writes one today.
+F_EDGE_PY_LIST_PRE='\[[[:blank:]]*"(bash|sh)"[[:blank:]]*,'
+F_EDGE_PY_EXEC_PRE="${F_EDGE_PY_LIST_PRE}"'[^]]*[^A-Za-z0-9_.]'
+F_EDGE_PY_VAR_SUF='([^A-Za-z0-9_]|$)'
+# (j) THE PYTHON LITERAL, (c)'s analogue: the target basename as a string
+# literal in that same argv-list position, so the shortest one-shot spelling --
+# `subprocess.run(["bash", str(D / "test_x.sh")])` -- is not a silent drop.
+# IN-TREE OCCURRENCES TODAY: ZERO. Stated plainly, the same honesty the `body`
+# opener kind's note in Section G carries, and FC8c is the live fixture control
+# that keeps this branch exercised rather than merely present.
+F_EDGE_PY_LITERAL_PRE="${F_EDGE_PY_LIST_PRE}"'[^]]*"[^"]*'
+
+# _f_strip_comments <path> -> that file with whole-line comments removed, on
+# STDOUT. ONE comment grammar for the whole derivation, which is what makes the
+# `.py` attribution below free: `#` opens a comment in both languages this
+# section reads. A token mentioned only in a comment neither makes a file
+# deadline-capable nor constitutes an invocation. Callers redirect to a FILE,
+# never into a pipe -- see the SIGPIPE/pipefail note above
+# _f_direct_capable_stripped.
+_f_strip_comments() {
+    grep -vE '^[[:blank:]]*#' "$1" || true
+}
+
+# _f_strip_node <node-path> <out-file> -> the node's comment-stripped text, PLUS
+# that of the `.py` sibling it delegates to, if it really delegates to one.
+#
+# TEXT ATTRIBUTION, and the whole of Section F's Python support. A `.py` IS
+# NEVER A NODE -- _f_node_list below is unchanged -- so the roster, D_ROSTER,
+# the G0 slice, the run-all-classification manifest row and every doc reference
+# stay keyed on the `.sh` basename, and a ported member keeps its identity.
+# What changes is only WHICH TEXT that node is judged on. Both the direct
+# predicate and every edge rule then see the sibling for free, with no further
+# change anywhere.
+#
+# The delegation is tested against the ALREADY-STRIPPED `.sh`, so a
+# commented-out invocation confers nothing.
+_f_strip_node() {
+    local _p="$1" _out="$2" _py="${1%.sh}.py" _pyb _n
+    _f_strip_comments "$_p" > "$_out"
+    [ -f "$_py" ] || return 0
+    _pyb="${_py##*/}"
+    _n="$(grep -cE -- "${F_PY_DELEG_PRE}${_pyb//./\\.}${F_EDGE_PATH_SUF}" "$_out" || true)"
+    [ "${_n:-0}" -ge 1 ] || return 0
+    _f_strip_comments "$_py" >> "$_out"
+}
+
 # F_FWD_LIB_MAP[<lib basename>] -> `|`-separated alternation of the function
 # names that exec-forwarding lib defines. Computed ONCE per derivation by
 # _f_scan_fwd_libs below, hoisted out of both the per-node and the per-round
@@ -1796,7 +1912,7 @@ _f_scan_fwd_libs() {
     for _l in "$_d"/*_lib.sh; do
         [ -e "$_l" ] || continue
         _base="${_l##*/}"
-        grep -vE '^[[:blank:]]*#' "$_l" > "$_sd/$_base" || true
+        _f_strip_comments "$_l" > "$_sd/$_base"
         _pvars=()
         mapfile -t _pvars < <(grep -oE -- "$F_FWD_POSBIND_RE" "$_sd/$_base" \
             | sed -E 's/^[[:blank:]]*(local[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/' | sort -u)
@@ -1843,12 +1959,20 @@ _f_fwd_fn_alt() {
 # <target-basename>. This is the one place the edge grammar lives, so
 # tightening it is a one-function change.
 #
-# TWO PHASES, because an invocation can name its target either way:
-#   A. a LITERAL path after an anchored verb;
-#   B. a BIND of the path to a variable, AND that same variable appearing in
-#      an EXEC POSITION somewhere in the file. Phase B alone is a mention,
-#      not a call -- see F_EDGE_VAR_PRE's comment for the measured shape this
-#      two-phase requirement is what rejects.
+# FOUR PHASES -- a LITERAL and a BIND-plus-EXEC-POSITION pair in each of the
+# two dialects, because an invocation can name its target either way and can be
+# written in either language:
+#   A. bash: a LITERAL path after an anchored verb;
+#   B. python: the target basename as a string literal in an argv list headed by
+#      a QUOTED exec verb;
+#   C. bash: a BIND of the path to a variable, AND that same variable appearing
+#      in an EXEC POSITION somewhere in the file;
+#   D. python: the same pairing, with (h)'s assignment shape and (i)'s
+#      argv-list position.
+# The BIND HALF ALONE IS A MENTION, not a call, in both dialects -- see
+# F_EDGE_VAR_PRE's comment for the measured bash shape that requirement
+# rejects, and (i)'s for its Python twin. The LITERAL phases run first in each
+# dialect because they are a single grep with no variable recovery.
 # Line-oriented and comment-stripped, exactly like the direct predicate; the
 # two phases are per-FILE rather than per-LINE because a bind and its exec
 # are routinely lines apart (all three real run_all invokers bind at the top
@@ -1863,23 +1987,41 @@ _f_edge_exists() {
     _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" || true)"
     if [ "${_n:-0}" -ge 1 ]; then return 0; fi
 
+    _n="$(grep -cE -- "${F_EDGE_PY_LITERAL_PRE}${_esc}${F_EDGE_PY_STR_SUF}" "$_sf" || true)"
+    if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+
     mapfile -t _vars < <(grep -oE -- "${F_EDGE_BIND_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" \
         | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/' | sort -u)
-    if [ "${#_vars[@]}" -eq 0 ]; then return 1; fi
-    _f_fwd_fn_alt "$_sf"
-    for _v in "${_vars[@]}"; do
-        [ -n "$_v" ] || continue
-        # Exec position: right after an anchored verb, or as the line's own
-        # first command word, or -- the second-order route -- on a line whose
-        # first command word is an exec-forwarding helper this file sources.
-        _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        if [ -n "$F_FWD_FN_ALT" ]; then
-            _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        fi
-        _n="$(grep -cE -- "$_re" "$_sf" || true)"
-        if [ "${_n:-0}" -ge 1 ]; then return 0; fi
-    done
+    if [ "${#_vars[@]}" -gt 0 ]; then
+        _f_fwd_fn_alt "$_sf"
+        for _v in "${_vars[@]}"; do
+            [ -n "$_v" ] || continue
+            # Exec position: right after an anchored verb, or as the line's own
+            # first command word, or -- the second-order route -- on a line whose
+            # first command word is an exec-forwarding helper this file sources.
+            _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            if [ -n "$F_FWD_FN_ALT" ]; then
+                _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            fi
+            _n="$(grep -cE -- "$_re" "$_sf" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+        done
+    fi
+
+    _vars=()
+    mapfile -t _vars < <(grep -oE -- "${F_EDGE_PY_BIND_PRE}${_esc}${F_EDGE_PY_STR_SUF}" "$_sf" \
+        | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)[[:blank:]]*=.*/\1/' | sort -u)
+    if [ "${#_vars[@]}" -gt 0 ]; then
+        for _v in "${_vars[@]}"; do
+            [ -n "$_v" ] || continue
+            # Argv-list exec position. No forwarding-helper arm here: the bash
+            # second-order route is a property of shell function definitions,
+            # and there is no measured Python instance of it to generalize from.
+            _n="$(grep -cE -- "${F_EDGE_PY_EXEC_PRE}${_v}${F_EDGE_PY_VAR_SUF}" "$_sf" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+        done
+    fi
     return 1
 }
 
@@ -1958,14 +2100,14 @@ _f_closure_compute() {
     _sd="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").stripped"
     rm -rf "$_sd"; mkdir -p "$_sd"
 
-    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is
-    # comment-stripped exactly once here, for the whole derivation -- a token
-    # mentioned only in a comment neither makes a file deadline-capable nor
-    # constitutes an invocation.
+    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is stripped
+    # exactly once here, for the whole derivation, through _f_strip_node -- which
+    # is also where a delegating wrapper picks up its `.py` sibling's text, so
+    # both the direct predicate and every edge rule below see it for free.
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _base="${_p##*/}"
-        grep -vE '^[[:blank:]]*#' "$_p" > "$_sd/$_base" || true
+        _f_strip_node "$_p" "$_sd/$_base"
         if _f_direct_capable_stripped "$_sd/$_base"; then
             _cap["$_base"]="direct"
         else
@@ -2508,6 +2650,302 @@ assert "FC5a: a node-bound variable passed to an EXEC-FORWARDING helper is an ed
 assert "FC5b: the same handoff to an INERT lib, and sourcing a forwarding lib without handing it the target, are NOT edges (expected $F_CLOSURE_FWD_EXPECT derived, got $F_FC5_COUNT: ${F_FC5_DERIVED:-<none>})" \
     test "$F_FC5_COUNT" -eq "$F_CLOSURE_FWD_EXPECT"
 
+echo ""
+echo "--- FC8: the PYTHON-SIBLING dialect -- a wrapper whose invocation lives in its .py sibling ---"
+
+# THE SHAPE THESE CONTROLS EXIST FOR, and why it needs a dialect of its own
+# rather than a widening of the four bash edge EREs above.
+# docs/notes/infra-test-bash-to-python-migration-policy.md ports a member by
+# keeping its `.sh` BASENAME -- run_all.sh globs `test_*.sh` only, so the
+# basename is what stays discovered, manifest-keyed and doc-referenced -- and
+# shrinking that `.sh` to a wrapper that runs a sibling `.py` holding the real
+# assertions. The invocation this closure has to see therefore moves OUT of the
+# node's own text and into that sibling, written in a language where argv is
+# DATA rather than syntax:
+#   NESTED = SCRIPT_DIR / "test_occt_flock_gate.sh"   a Path-join, not `VAR=`
+#   ["bash", str(NESTED)]                             a LIST, not `bash <path>`
+# MEASURED on test_verify_env_ambient_isolation.py -- its module-level
+# NESTED_SUITE bind, and the argv list in
+# TestNestedSuiteUnderRealAmbient.setUpClass. CITED BY SYMBOL, NOT BY LINE, and
+# that holds for every cross-file citation this dialect and Section G's Python
+# rows carry: nothing here asserts on a line number, so a stale one is silent,
+# and a reader re-deriving a grammar decision from it re-derives it wrongly.
+# A symbol survives every edit short of a rename.
+# F_EDGE_BIND_PRE cannot match the first (it requires `VAR=` with no
+# blanks around it and a `/` immediately after), and F_EDGE_VERB_RE cannot match
+# the second (it requires the verb followed by a BLANK, where a list gives it a
+# `"`). A ported member therefore drops silently out of the derivation, taking
+# its roster membership and Section G's non-vacuity check with it -- 144/0 ->
+# 141/3, the measurement that has kept the policy's second arm deferred.
+#
+# A `.py` IS NEVER A NODE. _f_node_list stays `test_*.sh` plus run_all.sh, so
+# D_ROSTER, F1, the G0 slice, the run-all-classification manifest row and every
+# doc reference keep pointing at the `.sh` basename. What the derivation gains
+# instead is TEXT ATTRIBUTION: a node that REALLY DELEGATES to a same-stem
+# sibling is read together with it. Gating on a real delegation rather than on
+# mere sibling existence is what keeps a stray, unrun `.py` inert -- the same
+# line the house rule draws when it says an unwrapped `.py` asserts nothing.
+#
+# THE FALSE-ADMISSION HAZARD IS MEASURED AND LIVE, which is why the negatives
+# below are not decorative. `#`-stripping is shared with Python -- `#` is its
+# comment character too -- but it does NOT remove a DOCSTRING, and both
+# in-tree Python members name a node in docstring prose: the parked port at
+# :13/:24 and test_flake_density_report.py at :9/:56 both name run_all.sh,
+# which sorts AHEAD of every real target in _f_closure_compute's sorted
+# shortlist. A rule loose enough to read prose as an invocation would not merely
+# over-admit -- it would hand a ported member the WRONG ROUTE, silently.
+F_PY_POS_DIR="$TMPF/fx-py-pos"; mkdir -p "$F_PY_POS_DIR"
+F_PY_NEG_DIR="$TMPF/fx-py-neg"; mkdir -p "$F_PY_NEG_DIR"
+
+# The SEED node both dirs are built around: a plainly direct-capable suite, so
+# every derivation below reaches its deadline through a node whose capability
+# has nothing to do with Python.
+cat > "$F_PY_POS_DIR/test_f_py_seed.sh" <<'F8SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+F8SEEDEOF
+cp "$F_PY_POS_DIR/test_f_py_seed.sh" "$F_PY_NEG_DIR/test_f_py_seed.sh"
+
+# FC8 POSITIVE -- three grammar variants, each as its OWN wrapper/sibling pair
+# and each with its own ROUTE pin below, so a narrowing edit reports WHICH
+# variant it stopped seeing rather than one opaque count (the F_POS_VARIANTS /
+# E_POS_VARIANTS idiom this file uses throughout).
+#
+# (i) BIND plus argv-list EXEC -- the real port's shape, transcribed.
+cat > "$F_PY_POS_DIR/test_f_py_bind.sh" <<'F8BINDSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_bind.py"
+F8BINDSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_bind.py" <<'F8BINDPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8BINDPYEOF
+
+# (ii) The SAME bind reached through an os.fspath() wrapper rather than str().
+# Both spellings are idiomatic for handing a Path to subprocess, and a rule
+# that saw only one of them would be a coin flip on the next porter's habit.
+cat > "$F_PY_POS_DIR/test_f_py_fspath.sh" <<'F8FSSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_fspath.py"
+F8FSSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_fspath.py" <<'F8FSPYEOF'
+import os
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", os.fspath(NESTED)], check=True)
+F8FSPYEOF
+
+# (iii) The one-line LITERAL form, where the node basename never reaches a
+# variable at all. IN-TREE OCCURRENCES TODAY: ZERO -- stated plainly, the same
+# honesty the `body` opener kind's note in Section G already carries. It is
+# covered because it is the shortest way to write a one-shot nested run and
+# the alternative is a SILENT drop, and this fixture is the live control that
+# keeps the branch exercised rather than merely present.
+cat > "$F_PY_POS_DIR/test_f_py_literal.sh" <<'F8LITSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_literal.py"
+F8LITSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_literal.py" <<'F8LITPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+
+subprocess.run(["bash", str(D / "test_f_py_seed.sh")], check=True)
+F8LITPYEOF
+
+F_PY_POS_VARIANTS=3
+F_PY_POS_EXPECT=$(( F_PY_POS_VARIANTS + 1 ))
+
+# FC8 NEGATIVE -- four shapes that must NOT be edges, plus the sentinel that
+# keeps their count a DISCRIMINATION rather than an absence (FC4's pairing, and
+# for the same reason: without it "the dialect rejected all four" would be
+# indistinguishable from "the derivation returned nothing over this dir").
+#
+# (iv) A DOCSTRING naming the seed node in PROSE, with no assignment and no
+# argv list anywhere in the file. This is the shape live at the parked port's
+# :13/:24 and at test_flake_density_report.py:9/:56, and `#`-stripping does not
+# touch it.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_docstring.sh" <<'F8DOCSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_docstring.py"
+F8DOCSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_docstring.py" <<'F8DOCPYEOF'
+"""Guard ported from bash.
+
+The suite this module used to drive was test_f_py_seed.sh, and the wrapper
+run_all.sh discovers is the sibling of the same stem. Neither sentence is an
+invocation, and neither is reached by the comment strip.
+"""
+
+import unittest
+
+
+class TestProseIsNotACall(unittest.TestCase):
+    def test_nothing_is_spawned(self):
+        self.assertTrue(True)
+F8DOCPYEOF
+
+# (v) A sibling the wrapper only INSPECTS -- `test -f` and a source grep, never
+# a python verb. The sibling genuinely would invoke the seed, so the ONLY thing
+# keeping this out of the derivation is the absent delegation: this is the
+# fixture that pins attribution to a real handoff rather than to the mere
+# existence of a same-stem file.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_inspected.sh" <<'F8INSSHEOF'
+#!/usr/bin/env bash
+test -f "$SCRIPT_DIR/test_f_py_neg_inspected.py"
+grep -qE 'subprocess' "$SCRIPT_DIR/test_f_py_neg_inspected.py"
+F8INSSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_inspected.py" <<'F8INSPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8INSPYEOF
+
+# (vi) A Python BIND to the seed node that is only ever INSPECTED, never placed
+# in argv-list exec position. The direct analogue of
+# test_verify_release_delta_skip.sh's bind-only shape (:521, inspected at
+# :523/:530/:536) -- the one measured false admission that sank the run_all
+# alternation, and the reason the bash rule requires bind AND exec position for
+# the SAME variable. The Python dialect inherits that pairing or it inherits
+# the defect.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_bind_only.sh" <<'F8BOSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_bind_only.py"
+F8BOSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_bind_only.py" <<'F8BOPYEOF'
+import unittest
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+
+class TestSeedIsOnlyInspected(unittest.TestCase):
+    def test_seed_is_present(self):
+        self.assertTrue(NESTED.is_file())
+
+    def test_seed_carries_a_shebang(self):
+        self.assertTrue(NESTED.read_text().startswith("#!"))
+F8BOPYEOF
+
+# (vii) An argv list whose FIRST element is not a quoted exec verb. The shape is
+# transcribed from test_flake_density_report.py's LedgerFixture.run_cli
+# (`[sys.executable, str(TOOL_PATH), *args]`); the fixture points it at the seed
+# node so that the quoted-verb-first requirement is the only thing rejecting it.
+# What that requirement buys, measured: it is what keeps the live
+# `[sys.executable, ...]` site in the tree from making
+# test_flake_density_report.sh a roster member -- FC8h below is the real-tree
+# half of this same pin.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_sysexec.sh" <<'F8SESHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_sysexec.py"
+F8SESHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_sysexec.py" <<'F8SEPYEOF'
+import subprocess
+import sys
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run([sys.executable, str(NESTED)], capture_output=True)
+F8SEPYEOF
+
+# THE SENTINEL: one plainly-delegating pair, so FC8f's count discriminates.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_control.sh" <<'F8CTLSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_control.py"
+F8CTLSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_control.py" <<'F8CTLPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8CTLPYEOF
+
+F_PY_NEG_EXPECT=2
+
+# Routes and counts precomputed into PLAIN variables -- never a $(...) inside a
+# description (E1's discipline, and E1's sweep includes this file). Basenames
+# and counts only, never a matched line.
+F_FC8_BIND_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_bind.sh)"
+F_FC8_FSPATH_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_fspath.sh)"
+F_FC8_LITERAL_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_literal.sh)"
+F_FC8_POS_COUNT="$(_f_closure_names "$F_PY_POS_DIR" | grep -cE '^test_' || true)"
+F_FC8_NEG_CTRL_ROUTE="$(_f_route_of "$F_PY_NEG_DIR" test_f_py_neg_control.sh)"
+F_FC8_NEG_COUNT="$(_f_closure_names "$F_PY_NEG_DIR" | grep -cE '^test_' || true)"
+F_FC8_NEG_ADMITTED="$(_f_closure_names "$F_PY_NEG_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC8a: a Python sibling that BINDS the seed node by Path-join and execs it through an argv list is an edge -- the parked port's shape verbatim (expected via:test_f_py_seed.sh, got ${F_FC8_BIND_ROUTE:-<underived>})" \
+    test "$F_FC8_BIND_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8b: ... and so is the same bind handed to subprocess through os.fspath() rather than str() (expected via:test_f_py_seed.sh, got ${F_FC8_FSPATH_ROUTE:-<underived>})" \
+    test "$F_FC8_FSPATH_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8c: ... and so is the one-line LITERAL form, where the node basename never reaches a variable (zero in-tree occurrences today -- this fixture is what keeps that branch exercised; expected via:test_f_py_seed.sh, got ${F_FC8_LITERAL_ROUTE:-<underived>})" \
+    test "$F_FC8_LITERAL_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8d: all $F_PY_POS_VARIANTS Python edge variants are derived, plus the seed itself, and nothing else in that dir is (expected $F_PY_POS_EXPECT, got $F_FC8_POS_COUNT)" \
+    test "$F_FC8_POS_COUNT" -eq "$F_PY_POS_EXPECT"
+assert "FC8e: positive control for FC8f -- the one pair in the NEGATIVE dir that really does delegate and invoke is admitted, so FC8f's count cannot be satisfied by a wholesale derivation failure over that dir (expected via:test_f_py_seed.sh, got ${F_FC8_NEG_CTRL_ROUTE:-<underived>})" \
+    test "$F_FC8_NEG_CTRL_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8f: none of the four measured non-invocation shapes is an edge -- a DOCSTRING naming the node in prose, a sibling the wrapper only inspects and never runs, a Python bind that is only ever inspected, and an argv list headed by sys.executable instead of a quoted exec verb (expected $F_PY_NEG_EXPECT derived, the seed and the sentinel and nothing else, got $F_FC8_NEG_COUNT: ${F_FC8_NEG_ADMITTED:-<none>})" \
+    test "$F_FC8_NEG_COUNT" -eq "$F_PY_NEG_EXPECT"
+
+# THE REAL-TREE NEGATIVE, and it needs no fixture and cannot be retired: the
+# tree already carries exactly one delegating wrapper/sibling pair,
+# test_flake_density_report.{sh,py}, and its `.py` names run_all.sh in TWO
+# docstrings (:9, :56) while spawning only `[sys.executable, str(TOOL_PATH),
+# *args]` (LedgerFixture.run_cli). It is therefore a free, permanent, real-tree
+# instance of both
+# (iv) and (vii) at once -- and an expensive one to get wrong, because
+# run_all.sh sorts ahead of every other candidate, so a docstring-admitting rule
+# would put this file in the roster with route via:run_all.sh and turn F1 RED
+# with an unlisted member whose natural repair is to declare something that is
+# not deadline-capable at all.
+#
+# FC8h IS LIVE, AND THAT WAS MEASURED rather than assumed -- attribution really
+# does fire on this pair (the wrapper's delegation at :32-33 is a genuine
+# python3 invocation of the sibling), so the file's whole text IS read and the
+# grammar is what keeps it out. Proved by mutation: widen the Python dialect
+# into a path-MENTION grammar -- drop (j)'s list prefix AND (h)'s closing-quote
+# suffix -- and FC8h goes RED, alongside FC6a flipping to the wrong route.
+# NOTE THE ASYMMETRY, recorded so a reader does not over-claim: dropping (i)'s
+# quoted-verb-first requirement alone does NOT red FC8h. It reds F1 instead, on
+# test_verify_retry_subset.sh. The two pins catch different widenings, which is
+# why both are kept.
+# FC8g BEFORE FC8h, the FC7a-before-FC7b ordering and for the same reason:
+# `_f_route_of` prints the empty string both for a node that is correctly not
+# derived AND for one that is not in the node set at all, so FC8h alone would
+# go green for the wrong reason the moment the pair is renamed or the
+# delegation is rewritten.
+F_FC8_TREE_DELEG="$(grep -cE -- "${F_EDGE_ANCHOR}(python3|python)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*\"?[^\"[:blank:]]*/test_flake_density_report\.py" \
+    "$SCRIPT_DIR/test_flake_density_report.sh" 2>/dev/null || true)"
+F_FC8_TREE_PAIR=0
+if [ -f "$SCRIPT_DIR/test_flake_density_report.py" ] && [ "${F_FC8_TREE_DELEG:-0}" -ge 1 ]; then
+    F_FC8_TREE_PAIR=1
+fi
+F_FC8_TREE_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_flake_density_report.sh)"
+
+assert "FC8g: test_flake_density_report.sh really IS a delegating wrapper over a sibling .py present on disk, so FC8h pins attribution rather than an absent pair (non-vacuity; got ${F_FC8_TREE_DELEG:-0} delegation line(s), pair present: $F_FC8_TREE_PAIR)" \
+    test "$F_FC8_TREE_PAIR" -eq 1
+assert "FC8h: ... and it is still NOT derived -- its sibling names run_all.sh only in docstring PROSE and spawns only through sys.executable, so neither the prose nor the argv list may become an edge (expected <underived>, got ${F_FC8_TREE_ROUTE:-<underived>})" \
+    test -z "$F_FC8_TREE_ROUTE"
+
 # REAL-TREE ROUTE PINS. Membership alone would not catch a derivation that
 # reached the right file by the wrong edge, and for this file that is not
 # hypothetical: a path-mention grammar derives
@@ -2674,8 +3112,9 @@ G_MEMBERS=(
     # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
     # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
     test_slot_event_log.sh
-    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry --
-    # exec'd at :177 by its literal path.
+    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry.
+    # PORTED TO PYTHON (task 7626): the site that must divert is no longer in
+    # this file -- see G_SCAN below.
     test_verify_env_ambient_isolation.sh
     # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
     # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
@@ -2697,14 +3136,16 @@ G_SITE=(
     '"\$REAL_RUN_ALL"'
     '"\$RUN_ALL"'
     '"\$(SEM|OCCT|LIB)"'
-    '"\$SCRIPT_DIR/test_occt_flock_gate\.sh"'
+    'subprocess\.Popen\('
     '"\$REPO_ROOT/scripts/verify\.sh"'
 )
 # Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
 # member's deadline-capable invocation. EMPTY means "the member itself", which
-# is the case for eight of the nine.
+# is the case for seven of the nine. The DIALECT is not a fourth column: the
+# G3/G1 loop derives it from this entry's extension, so it cannot drift from
+# the file it describes.
 #
-# THE ONE INDIRECTION, and why it is not optional.
+# INDIRECTION 1, and why it is not optional.
 # test_run_all_ambient_isolation.sh reaches its deadline SECOND-ORDER: TARGET is
 # bound at :93, handed to `ambient_isolation_check_one` at :366, and exec'd at
 # run_all_ambient_isolation_lib.sh:73/:92 as `bash "$_target" 2>&1` inside an
@@ -2716,9 +3157,27 @@ G_SITE=(
 # member itself gives 1 site / 1 unredirected; scanning the lib for the site it
 # really execs gives 2 sites / 0 unredirected.
 #
-# THE HONEST LIMITATION: this indirection is DECLARED, not derived from Section
+# INDIRECTION 2 (task 7626), and why its SITE is the spawn and not the target.
+# test_verify_env_ambient_isolation.sh is now a thin wrapper over a `.py`
+# sibling, which is where its deadline-capable invocation of
+# test_occt_flock_gate.sh lives. Its derived ROUTE is unchanged and still
+# via:test_occt_flock_gate.sh (FC6b pins it) -- but in Python ARGV IS DATA and
+# the spawn is the exec. The argv list `["bash", str(NESTED_SUITE)]` in
+# TestNestedSuiteUnderRealAmbient.setUpClass
+# carries no stream disposition whatsoever, so asserting on it could only ever
+# produce the same false RED that Section G already refuses to raise on
+# test_run_all_ambient_isolation.sh's forwarding call, one indirection up. The
+# leak property lives entirely at run_under_ambient's single Popen funnel,
+# which is what this row therefore names. MEASURED: scanning the
+# `.py` for the spawn gives 1 site / 0 unredirected; the `.sh` wrapper has none
+# of either, which is precisely the vacuity G3 caught when the port landed.
+#
+# THE HONEST LIMITATION, and it now covers BOTH rows: this indirection is
+# DECLARED, not derived from Section
 # F's exec-forwarding-lib rule (F_FWD_LIB_MAP), which already knows how to
-# recognise such a lib. A new forwarding hop therefore needs a human edit here.
+# recognise such a lib, nor from the `.py` sibling Section F's own delegation
+# rule already follows. A new hop of either kind therefore needs a human edit
+# here.
 # What keeps that from being SILENT is the pair G0 (a new static-only member
 # cannot go uncovered) and G3 (a member whose site moved cannot pass
 # vacuously) -- the same two guards that make the whole declared table
@@ -2726,7 +3185,9 @@ G_SITE=(
 G_SCAN=(
     ''
     run_all_ambient_isolation_lib.sh
-    '' '' '' '' '' '' ''
+    '' '' '' '' ''
+    test_verify_env_ambient_isolation.py
+    ''
 )
 
 # G0 FIRST -- the COMPLETENESS assert, before any per-member check.
@@ -2778,6 +3239,40 @@ assert "G0: Section G covers EVERY static-only roster member -- the declared cov
 # G2e below pins that the two grammars stay separate.
 G_CAPTURE_RE='2>[^&]'
 
+# THE PYTHON DIALECT OF THAT SAME GRAMMAR (task 7626). Section F now follows a
+# delegating wrapper into its `.py` sibling, so a ported member can hold its
+# deadline-capable invocation in Python -- where the leak property is not
+# written with `2>` at all but carried by the spawn call KWARGS. Three
+# separately-named EREs, held apart from each other and from G_CAPTURE_RE for
+# the same reason Section F holds its edge EREs apart: each keeps its own
+# rationale attached and stays independently greppable.
+#
+# G_PY_CAPTURE_RE is the straight-diversion analogue of `2>[^&]`. Both
+# subprocess.PIPE and subprocess.DEVNULL satisfy it, for exactly the reason
+# `2>/dev/null` does at G2e1: Section G asserts the LEAK property, not D4
+# evidence preservation. `capture_output=True` is the third in-tree idiom
+# (test_flake_density_report.py's LedgerFixture.run_cli) and diverts BOTH
+# streams in one token.
+G_PY_CAPTURE_RE='(stderr=subprocess\.(PIPE|DEVNULL)|capture_output=True)'
+# G_PY_MERGE_RE is the `2>&1` analogue, and carries the same stdout
+# PRECONDITION: merging stderr into an INHERITED stdout is the leak, not a fix.
+#
+# THE PYTHON MERGE BRANCH TAKES NO ORDER TEST, and that is a deliberate dialect
+# difference with a stated reason rather than an omission. G2g3 pins that bash
+# `2>&1 >file` still leaks, because fd 2 is aimed at whatever fd 1 is AT THAT
+# MOMENT -- the inherited stdout -- and only then does fd 1 move, so the bash
+# rule has to compare POSITIONS. Python kwargs carry no ordering at all: they
+# are collected into one mapping and applied by a single call, so
+# `stdout=..., stderr=...` and the reverse are the same call. G2h3b is the
+# standing fixture that pins the difference, so a future reader cannot restore
+# symmetry with bash and start flagging a correct spawn.
+G_PY_MERGE_RE='stderr=subprocess\.STDOUT'
+# G_PY_OUTDIV_RE is that precondition: stdout itself diverted.
+G_PY_OUTDIV_RE='(stdout=subprocess\.(PIPE|DEVNULL)|capture_output=True)'
+# The spawn verbs that OPEN a multi-line call. PASS 1 tests this BEFORE the bare
+# `(` subshell branch, so a spawn is never misread as a subshell.
+G_PY_SPAWN_RE='subprocess\.(Popen|run|call|check_call|check_output)'
+
 # _g_scan <logical-lines-file> <site-ERE> -> "<sites> <unredirected>", the ONE
 # analysis both predicates below read, so their two counts can never disagree.
 #
@@ -2807,11 +3302,23 @@ G_CAPTURE_RE='2>[^&]'
 # NO APOSTROPHE APPEARS INSIDE THE AWK PROGRAM, comments included -- the whole
 # program is a single-quoted shell string, so one would end it. The single
 # quote the body rule needs is BUILT (SQ, below) for the same reason.
-_g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
-    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" awk '
+_g_scan() {  # <logical-lines-file> <site-ERE> [dialect] -> "<sites> <unredirected>"
+    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" G_AWK_DIALECT="${3:-bash}" \
+    G_AWK_PYCAP="$G_PY_CAPTURE_RE" G_AWK_PYMERGE="$G_PY_MERGE_RE" \
+    G_AWK_PYOUT="$G_PY_OUTDIV_RE" G_AWK_PYSPAWN="$G_PY_SPAWN_RE" awk '
     BEGIN {
         SITE = ENVIRON["G_AWK_SITE"]
         CAP  = ENVIRON["G_AWK_CAP"]
+        # The DIALECT selects which capture grammar is asked. It DEFAULTS to
+        # bash, which is what makes every control and every bash member above
+        # provably byte-identical: they pass no third argument, so nothing they
+        # see can change. Like the two EREs it arrives through ENVIRON, never
+        # awk -v -- see the escape-processing trap recorded in the preamble.
+        DIA      = ENVIRON["G_AWK_DIALECT"]
+        PYCAP    = ENVIRON["G_AWK_PYCAP"]
+        PYMERGE  = ENVIRON["G_AWK_PYMERGE"]
+        PYOUT    = ENVIRON["G_AWK_PYOUT"]
+        PYSPAWN  = ENVIRON["G_AWK_PYSPAWN"]
         SQ = sprintf("%c", 39)   # the single quote, built not written
         DQ = sprintf("%c", 34)   # the double quote, built for symmetry
         n = 0; top = 0; sites = 0; unred = 0
@@ -2887,8 +3394,11 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
     # THREE OPENER KINDS, each a real in-tree shape:
     #   subst    a line ending in $( -- stdout is diverted into a variable,
     #            which is what makes an inner 2>&1 a diversion rather than a
-    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388,
-    #            and test_verify_env_ambient_isolation.sh:172-178.
+    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388.
+    #            It USED to cite test_verify_env_ambient_isolation.sh:172-178 as
+    #            a second instance; task 7626 ported that member to Python, so
+    #            the shape there is now a pyspawn block and the citation would
+    #            be false. Its Python successor is the pyspawn kind below.
     #   body     a line ending in "bash -c" plus a quote -- an inline script
     #            body, closed by a line starting with that quote, whose capture
     #            sits on that closing line. A real in-tree shape
@@ -2912,9 +3422,26 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
     # NOT captured. Both degrade toward flagging, never toward hiding.
     {
         line[++n] = $0
+        # PYSPAWN BODY ACCUMULATION, and the one structural difference from the
+        # three bash kinds. A subshell and an inline body are stamped by their
+        # CLOSER; the disposition of a Python call is in its BODY -- the kwargs --
+        # and its closer is a bare paren carrying nothing. So the flags are
+        # gathered here, across every line inside the block, and the stamp is
+        # computed at close from what was gathered. Runs BEFORE this line is
+        # classified, so top still names the ENCLOSING block: a spawn opener
+        # never feeds its own accumulator, which is correct -- a line that ends
+        # in the open paren has no kwargs on it, and one that does carry them
+        # is not an opener at all and takes the line-local branch in PASS 2.
+        if (DIA == "py" && top > 0 && bk[stack[top]] == "pyspawn") {
+            po = stack[top]
+            if ($0 ~ PYCAP)   pycap[po]   = 1
+            if ($0 ~ PYMERGE) pymerge[po] = 1
+            if ($0 ~ PYOUT)   pyout[po]   = 1
+        }
         isopen = 0; k = ""
         if      ($0 ~ /\$\($/)                                      { isopen = 1; k = "subst" }
         else if ($0 ~ "(bash|sh)[[:blank:]]+-c[[:blank:]]+" SQ "$") { isopen = 1; k = "body" }
+        else if (DIA == "py" && $0 ~ /\($/ && $0 ~ PYSPAWN)         { isopen = 1; k = "pyspawn" }
         else if ($0 ~ /\($/ && $0 !~ /\$\(\($/)                     { isopen = 1; k = "subshell" }
 
         isclose = 0
@@ -2926,6 +3453,12 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
 
         if (isclose) {
             ok = stack[top--]
+            if (bk[ok] == "pyspawn") {
+                # From the BODY. A straight diversion captures on its own; a
+                # merge captures only with stdout diverted too -- the G2d
+                # precondition, in the other language.
+                d = (pycap[ok] || (pymerge[ok] && pyout[ok])) ? "err" : "none"
+            } else {
             # Only the CLOSERS OWN segment can capture the block. Scan from
             # just past the closing token, stepping over the `"` of a `)"` that
             # closes a `"$( ... )"` so the segment scanner does not read the
@@ -2936,6 +3469,7 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
             if (substr($0, cfrom, 1) == DQ) cfrom++
             cseg = segfrom($0, cfrom)
             d = (cseg ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
+            }
             stamp[ok] = bk[ok] ":" d
             encl[n] = (top > 0) ? stack[top] : 0
         } else if (isopen) {
@@ -2968,11 +3502,22 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
             seg = segat(line[i], RSTART)
             sep = SEP
             cap = 0
+            if (DIA == "py") {
+                # Line-local first: a one-line spawn needs no block machinery.
+                if (seg ~ PYCAP) cap = 1
+                else if (seg ~ PYMERGE && seg ~ PYOUT) cap = 1
+                # THE ONE NEW CLAUSE. A multi-line spawn site IS its own
+                # opener, and encl[] points at the block ENCLOSING an opener,
+                # never at itself -- so unlike the subshell and body kinds this
+                # site has to consult its own stamp.
+                if (!cap && bk[i] == "pyspawn" && stamp[i] ~ /:err$/) cap = 1
+            } else {
             if (seg ~ CAP) cap = 1
             else if (match(seg, /2>&1/)) {
                 pre = substr(seg, 1, RSTART - 1)
                 if (pre ~ /(^|[^2>&])>[^&]/ || pre ~ /\$\(/ || sep == "|") cap = 1
                 else for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /^subst:/) { cap = 1; break }
+            }
             }
             if (!cap) for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /:err$/) { cap = 1; break }
             if (!cap) unred++
@@ -2986,7 +3531,7 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
 # that file holds. Drives G3's per-member non-vacuity arm.
 _g_sites() {
     local _r
-    _r="$(_g_scan "$1" "$2")"
+    _r="$(_g_scan "$1" "$2" "${3:-bash}")"
     echo "${_r%% *}"
 }
 
@@ -2994,7 +3539,7 @@ _g_sites() {
 # NOT divert their stderr. Drives G1.
 _g_unredirected() {
     local _r
-    _r="$(_g_scan "$1" "$2")"
+    _r="$(_g_scan "$1" "$2" "${3:-bash}")"
     echo "${_r##* }"
 }
 
@@ -3085,10 +3630,11 @@ printf '%s\n' \
 # The merge rule and its STDOUT PRECONDITION. `2>&1` is a diversion only if
 # stdout is itself diverted; with stdout inherited it is the leak, not a fix
 # (the same reason D4's grammar rejects it outright). The positive shape is at
-# test_run_all_content_skip.sh:80-87 and :380-388 and
-# test_verify_env_ambient_isolation.sh:172-178 -- `2>&1` IS on the invocation
+# test_run_all_content_skip.sh:80-87 and :380-388 -- `2>&1` IS on the invocation
 # line, but its legitimacy is only knowable from the enclosing `$(` opener,
 # and these carry no backslash continuation for the joiner to merge.
+# test_verify_env_ambient_isolation.sh:172-178 was a second instance until task
+# 7626 ported that member; G2h2 is the same precondition in the Python dialect.
 printf '%s\n' \
     'bash "$G_PROBE" --pool 2>&1 || _rc=$?' \
     > "$G_CTRL_MERGE_BARE"
@@ -3380,6 +3926,141 @@ assert "G2g3: ... and a REVERSED 2>&1 >file still leaks, because fd 2 is aimed a
     test "$G2G3_N" -eq 1
 
 echo ""
+echo "--- G2h: the PYTHON dialect -- diversion is a KWARG, not a redirect ---"
+
+# WHY A DIALECT AND NOT AN ALTERNATION. Section F now follows a delegating
+# wrapper into its `.py` sibling (FC8), so a ported member's deadline-capable
+# invocation can live in Python -- and there the leak property is not written
+# with `2>` at all. It is carried by the spawn call's KWARGS:
+# `stderr=subprocess.PIPE/DEVNULL` and `capture_output=True` are the straight
+# diversions, `stderr=subprocess.STDOUT` is the merge, and the merge is a
+# diversion only when stdout is itself diverted -- exactly G2d's precondition,
+# spelled in another language.
+#
+# THE MERGE BRANCH TAKES NO ORDER TEST, and that is a deliberate difference
+# from bash rather than an omission. G2g3 pins that `2>&1 >file` LEAKS, because
+# fd 2 is aimed at whatever fd 1 is AT THAT MOMENT -- the inherited stdout --
+# and only then does fd 1 move. Python kwargs carry no such ordering: they are
+# collected into one mapping and applied by a single call, so
+# `stderr=..., stdout=...` and the reverse are the same call. G2h3 is the
+# standing fixture that pins the difference, so a future reader cannot
+# "restore symmetry" with bash and silently start flagging a correct spawn.
+#
+# THE SITE IS THE SPAWN CALL, NOT THE ARGV LIST, and the reason is the same one
+# the G_SCAN preamble gives for the forwarding-lib indirection: in Python argv
+# is DATA. `["bash", str(NESTED)]` carries no stream disposition whatsoever, so
+# asserting on it could only ever produce a false RED. The leak property lives
+# entirely at the spawn.
+#
+# Fixtures are PRINTF'd into $TMPG like every other control in this section,
+# and driven straight through _g_sites/_g_unredirected. The `py` argument is
+# the DIALECT; every existing control above passes none and so keeps the bash
+# default, which is what makes their byte-identical counts a real claim.
+G_PY_CTRL_MULTI_CAP="$TMPG/ctrl-py-multiline-captured.cmds"
+G_PY_CTRL_MULTI_MERGE="$TMPG/ctrl-py-multiline-merge-stdout-inherited.cmds"
+G_PY_CTRL_MULTI_REV="$TMPG/ctrl-py-multiline-kwargs-reversed.cmds"
+G_PY_CTRL_LINE_DEVNULL="$TMPG/ctrl-py-line-devnull.cmds"
+G_PY_CTRL_LINE_CAPOUT="$TMPG/ctrl-py-line-capture-output.cmds"
+G_PY_CTRL_LINE_BARE="$TMPG/ctrl-py-line-no-stream-kwargs.cmds"
+G_PY_CTRL_SITE='subprocess\.(Popen|run)\('
+
+# THE REAL PORT'S SHAPE, transcribed from run_under_ambient: the spawn opens on
+# one line and its kwargs sit on the NEXT. This is the one structural
+# difference from the three bash opener kinds -- a subshell and an inline body
+# are stamped by their CLOSER, but a Python call's disposition is in its BODY,
+# and the closer `)` carries nothing at all.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_CAP"
+
+# ITS LOAD-BEARING MIRROR, the exact Python analogue of G2d1: the same merge
+# with stdout left INHERITED. Merging into the stream run_all Phase 3 re-emits
+# IS the leak, not a fix, in either language.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stderr=subprocess.STDOUT,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_MERGE"
+
+# THE ORDER FIXTURE. Same two kwargs as the first fixture, written the other way
+# round. Still captured -- see the no-order-test note above.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stderr=subprocess.STDOUT, stdout=subprocess.PIPE,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_REV"
+
+# LINE-LOCAL SPAWNS, which need no block machinery at all -- the existing
+# line-local branch handles them once the dialect EREs are in play.
+printf '%s\n' \
+    'subprocess.run(["bash", str(NESTED)], stderr=subprocess.DEVNULL, check=True)' \
+    > "$G_PY_CTRL_LINE_DEVNULL"
+# `capture_output=True` is the third in-tree idiom and diverts BOTH streams in
+# one token. Live in test_flake_density_report.py's LedgerFixture.run_cli.
+printf '%s\n' \
+    'subprocess.run([sys.executable, str(TOOL_PATH)], capture_output=True, text=True)' \
+    > "$G_PY_CTRL_LINE_CAPOUT"
+printf '%s\n' \
+    'subprocess.run(["bash", str(NESTED)], check=True)' \
+    > "$G_PY_CTRL_LINE_BARE"
+
+# SITES ASSERTED ALONGSIDE EVERY ZERO, the G3-before-G1 discipline applied to
+# the controls themselves: a fixture the site ERE cannot see yields 0
+# unredirected for the wrong reason, and would stay green through any
+# regression. Counts precomputed into plain variables, `test` as the checker.
+G2H1_SITES="$(_g_sites "$G_PY_CTRL_MULTI_CAP" "$G_PY_CTRL_SITE" py)"
+G2H1_N="$(_g_unredirected "$G_PY_CTRL_MULTI_CAP" "$G_PY_CTRL_SITE" py)"
+G2H2_N="$(_g_unredirected "$G_PY_CTRL_MULTI_MERGE" "$G_PY_CTRL_SITE" py)"
+G2H3_SITES="$(_g_sites "$G_PY_CTRL_MULTI_REV" "$G_PY_CTRL_SITE" py)"
+G2H3_N="$(_g_unredirected "$G_PY_CTRL_MULTI_REV" "$G_PY_CTRL_SITE" py)"
+G2H4_SITES="$(_g_sites "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE" py)"
+G2H4_N="$(_g_unredirected "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE" py)"
+G2H5_SITES="$(_g_sites "$G_PY_CTRL_LINE_CAPOUT" "$G_PY_CTRL_SITE" py)"
+G2H5_N="$(_g_unredirected "$G_PY_CTRL_LINE_CAPOUT" "$G_PY_CTRL_SITE" py)"
+G2H6_N="$(_g_unredirected "$G_PY_CTRL_LINE_BARE" "$G_PY_CTRL_SITE" py)"
+
+assert "G2h1a: the multi-line spawn OPENER is itself the site, so G2h1b's zero is not vacuous (got $G2H1_SITES sites)" \
+    test "$G2H1_SITES" -eq 1
+assert "G2h1b: a multi-line spawn whose kwargs divert stdout and merge stderr into it is NOT flagged -- the capture is in the call BODY, which no bash opener kind stamps (got $G2H1_N unredirected)" \
+    test "$G2H1_N" -eq 0
+assert "G2h2: ... but the same merge with stdout left INHERITED still IS -- the Python analogue of G2d1, and block tolerance is not blanket here either (got $G2H2_N unredirected)" \
+    test "$G2H2_N" -eq 1
+assert "G2h3a: the reversed-kwargs fixture is a site too (got $G2H3_SITES sites)" \
+    test "$G2H3_SITES" -eq 1
+assert "G2h3b: ... and the SAME two kwargs written in the other order are still captured -- Python kwargs carry no ordering, so this branch deliberately takes no order test, unlike bash's G2g3 (got $G2H3_N unredirected)" \
+    test "$G2H3_N" -eq 0
+assert "G2h4a: the one-line spawn is a site, so G2h4b's zero is not vacuous (got $G2H4_SITES sites)" \
+    test "$G2H4_SITES" -eq 1
+assert "G2h4b: a one-line spawn diverting stderr to DEVNULL is NOT flagged -- G asserts the LEAK property, so destroying the evidence satisfies it here exactly as 2>/dev/null does at G2e1 (got $G2H4_N unredirected)" \
+    test "$G2H4_N" -eq 0
+assert "G2h5a: the capture_output fixture is a site too (got $G2H5_SITES sites)" \
+    test "$G2H5_SITES" -eq 1
+assert "G2h5b: ... and capture_output=True alone is a diversion -- one token moving BOTH streams, the third in-tree idiom (got $G2H5_N unredirected)" \
+    test "$G2H5_N" -eq 0
+assert "G2h6: a one-line spawn with NO stream kwargs at all IS flagged (got $G2H6_N unredirected)" \
+    test "$G2H6_N" -eq 1
+
+# --- TIER SEPARATION, the G2e analogue for the two DIALECTS. G2e keeps
+# Section G's laxer diversion grammar from leaking into D4's file-only one;
+# these keep the two LANGUAGES from leaking into each other. Both reuse a
+# fixture an assert above has already proved reads ZERO under its OWN dialect,
+# so each pair says exactly one thing: the answer CHANGED because the dialect
+# did. Under an implementation that merely bolted the Python EREs onto the bash
+# grammar as an alternation, both would read 0 and both asserts would be RED.
+G2H7_N="$(_g_unredirected "$G_CTRL_CAP" "$G_CTRL_SITE" py)"
+G2H8_N="$(_g_unredirected "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE")"
+
+assert "G2h7: a BASH capture (G2b's own fixture, 0 unredirected under bash) is NOT a capture under the python dialect -- 2> means nothing there (got $G2H7_N unredirected)" \
+    test "$G2H7_N" -eq 1
+assert "G2h8: ... and symmetrically a PYTHON capture (G2h4b's fixture, 0 unredirected under py) is not one under the bash default -- a kwarg is not a redirect (got $G2H8_N unredirected)" \
+    test "$G2H8_N" -eq 1
+
+echo ""
 echo "--- G3/G1: every static-only roster member, over its own source ---"
 
 for _g_i in "${!G_MEMBERS[@]}"; do
@@ -3392,9 +4073,29 @@ for _g_i in "${!G_MEMBERS[@]}"; do
     [ "$_g_f" = "$_g_m" ] || _g_via=" -> $_g_f"
     _g_j="$TMPG/${_g_m}.logical"
     _d_join_logical "$SCRIPT_DIR/$_g_f" > "$_g_j"
-    _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
-    _g_nsites="$(_g_sites "$_g_j" "$_g_re")"
-    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re")"
+    # THE DIALECT IS DERIVED FROM THE SCAN TARGET, never declared: a fourth
+    # hand-typed column could drift from the file it describes, and there is
+    # nothing to judge here that the extension does not already say.
+    # _d_join_logical itself needs no dialect -- it strips `^[[:blank:]]*(#|
+    # assert )`, which is already right for Python, and a second near-identical
+    # joiner is exactly the twin-drift hazard this file forbids elsewhere.
+    #
+    # THE EXEC-POSITION ANCHOR IS BASH-ONLY, and that is not an oversight. It
+    # exists to tell an invocation from an INSPECTION of the same token --
+    # `test -f "$RUN_ALL"`, a case subject, a grep argument (G2f4). A Python
+    # site target is the spawn CALL itself, which has no inspection form, so
+    # there is nothing for an anchor to discriminate; prefixing the bash one
+    # would simply reject every real site, since `proc = subprocess.Popen(`
+    # puts no command start before the token. The site target is used bare.
+    _g_dialect=bash
+    case "$_g_f" in *.py) _g_dialect=py ;; esac
+    if [ "$_g_dialect" = "py" ]; then
+        _g_re="${G_SITE[$_g_i]}"
+    else
+        _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
+    fi
+    _g_nsites="$(_g_sites "$_g_j" "$_g_re" "$_g_dialect")"
+    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re" "$_g_dialect")"
 
     # G3 BEFORE G1, the D4a analogue: G1 asserts a ZERO, and a stale or
     # typo'd site target would make that zero green forever. This is the arm

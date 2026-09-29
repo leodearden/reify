@@ -30,6 +30,8 @@ mod common;
 
 #[path = "harness_modules_ports/alias_dfs_diagnostic_tests.rs"]
 mod alias_dfs_diagnostic_tests;
+#[path = "harness_modules_ports/chain_desugar_tests.rs"]
+mod chain_desugar_tests;
 #[path = "harness_modules_ports/connect_compile_tests.rs"]
 mod connect_compile_tests;
 #[path = "harness_modules_ports/deprecated_use_tests.rs"]
@@ -46,6 +48,8 @@ mod io_traits_tests;
 mod module_dag_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]
 mod occurrence_compile_tests;
+#[path = "harness_modules_ports/pin_cell_id_namespace_tests.rs"]
+mod pin_cell_id_namespace_tests;
 #[path = "harness_modules_ports/port_compile_tests.rs"]
 mod port_compile_tests;
 #[path = "harness_modules_ports/ports_prelude_test.rs"]

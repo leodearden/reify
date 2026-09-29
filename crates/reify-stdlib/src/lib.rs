@@ -53,14 +53,31 @@ pub use tolerancing::diagnose as tolerancing_diagnose;
 /// (empty/unknown-case weights or incompatible meshes).
 pub use fea::diagnose as fea_diagnose;
 
-/// Public re-export of the affine-constructor diagnostic classifier (task β).
+/// Public re-export of the affine-constructor diagnostic classifier (task β),
+/// which also carries the `transform_exp` `Twist.angular` dimension arm (#6080).
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
 /// push a `Severity::Warning` into the `EvalContext` sink when `affine_scale`
 /// returns `Value::Undef` for a zero (degenerate, det=0) or dimensioned scale
-/// factor. Fires only on the `Value::Undef` path, like `stackup_diagnose` /
-/// `fea_diagnose`.
+/// factor, and a `Severity::Error` when `transform_exp` returns `Value::Undef`
+/// because the twist's `angular` half is not `Vector3<Angle>`. Fires only on the
+/// `Value::Undef` path, like `stackup_diagnose` / `fea_diagnose`.
 pub use geometry::diagnose as geometry_diagnose;
+
+/// Public re-export of the rotation-vector dimension classifier (task 6080).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push a `Severity::Error` into the `EvalContext` sink when `orient_exp`
+/// returns `Value::Undef` because its rotation-vector argument does not carry
+/// ANGLE. `mod orientation` is private, so this re-export is what makes the hook
+/// reachable from `reify-expr` at all. Fires only on the `Value::Undef` path,
+/// like `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose`.
+///
+/// Narrowing `orient_exp` from `DIMENSIONLESS` to `ANGLE` is a breaking change to
+/// a published stdlib signature; this diagnostic is its migration mechanism, so
+/// the previously-accepted spelling fails loudly instead of yielding a bare
+/// `undef`.
+pub use orientation::diagnose as orientation_diagnose;
 
 /// Public re-export of the PRB-flexure diagnostic classifier (task 3871).
 ///

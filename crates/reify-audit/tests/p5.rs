@@ -19,8 +19,8 @@ mod p5 {
 
 use crate::common::schema::{seed_db, insert_event, insert_task_completed_event};
 use reify_audit::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
-    Pattern, Severity, TaskMetadata, p5_phantom_done,
+    AuditContext, ChangedSymbol, DeclSuppression, DoneProvenance, EvidenceRef, Finding, GitCommit,
+    MockGitOps, MockJCodemunchOps, Pattern, Severity, TaskMetadata, p5_phantom_done,
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -119,7 +119,9 @@ mod tests {
             Pattern::P5LivePathStranded,
             Pattern::PTodo,
             Pattern::PDsSentinel,
+            Pattern::PDiag,
             Pattern::PDocCover,
+            Pattern::PDeliveredCheckPath,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -133,7 +135,9 @@ mod tests {
                 Pattern::P5LivePathStranded => {}
                 Pattern::PTodo => {}
                 Pattern::PDsSentinel => {}
+                Pattern::PDiag => {}
                 Pattern::PDocCover => {}
+                Pattern::PDeliveredCheckPath => {}
             }
         }
 
@@ -153,6 +157,10 @@ mod tests {
                 table: "events".to_string(),
                 key: "k".to_string(),
             },
+            EvidenceRef::DeliveredCheck {
+                check_name: "c".to_string(),
+                paths: vec!["p".to_string()],
+            },
         ];
         for r in refs {
             match r {
@@ -160,6 +168,7 @@ mod tests {
                 EvidenceRef::Commit { sha: _, subject: _ } => {}
                 EvidenceRef::MetadataFiles { entries: _ } => {}
                 EvidenceRef::RunsDb { table: _, key: _ } => {}
+                EvidenceRef::DeliveredCheck { check_name: _, paths: _ } => {}
             }
         }
 
@@ -1900,6 +1909,226 @@ mod tests {
         );
     }
 
+    /// A `git check-ignore` failure must not manufacture a blocking refusal
+    /// either — the gitignore filter CONSTRUCTS the declared set.
+    ///
+    /// `check_task` subtracts the gitignored subset from `metadata.files` to
+    /// build `declared`, so a `false` from a FAILED probe keeps the entry in
+    /// the very set the refusal rests on. None of the other guards catch it:
+    /// `main` still resolves, and `ls-tree` healthily answers "untracked" for a
+    /// build artefact that genuinely is one, so a legitimate done-flip was
+    /// refused at High on evidence this leg never gathered.
+    ///
+    /// The control task is byte-identical except that git ANSWERS "not
+    /// ignored" rather than failing, and must still be refused at High — so
+    /// this cannot pass by muting the gate.
+    #[test]
+    fn pre_done_gate_gitignore_probe_failure_downgrades_to_advisory_low() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        // The repo is HEALTHY: `main` resolves, so the MAIN_BASE probe passes
+        // and cannot be what downgrades the finding.
+        git.set_is_ancestor("main", "main", true);
+
+        // (a) git FAILED the ignore probe — the question is unanswered.
+        git.set_is_gitignored_error(
+            "target/debug/flaky-generated.rs",
+            "git check-ignore exited Some(129)",
+        );
+        git.set_path_tracked_on("main", "target/debug/flaky-generated.rs", false);
+        git.set_log_grep("main", "6345GIERR", vec![]);
+
+        // (b) control: git ANSWERED "not ignored" for an identical-shaped task.
+        git.set_is_gitignored("target/debug/answered-generated.rs", false);
+        git.set_path_tracked_on("main", "target/debug/answered-generated.rs", false);
+        git.set_log_grep("main", "6345GIOK", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GIERR".to_string(),
+            pre_done_meta("6345GIERR", "review", &["target/debug/flaky-generated.rs"]),
+        );
+        task_metadata.insert(
+            "6345GIOK".to_string(),
+            pre_done_meta(
+                "6345GIOK",
+                "review",
+                &["target/debug/answered-generated.rs"],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIERR");
+        assert_eq!(
+            findings.len(),
+            1,
+            "a degraded ignore probe must stay VISIBLE, not silent, and must not \
+             add a P5MetadataFilesGitignored Medium for a path never proved \
+             ignored; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings[0].severity,
+            Severity::Low,
+            "a refusal resting on a declared set built by a FAILED \
+             `git check-ignore` must not block a done-flip; got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0].summary.contains("[advisory")
+                && findings[0].summary.contains("check-ignore"),
+            "the failing seam must be named in the summary so an operator can \
+             re-check it by hand; got {:?}",
+            findings[0].summary
+        );
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIOK");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "git ANSWERING \"not ignored\" is evidence and must still refuse — \
+             otherwise the fix above has merely muted the gate; got {:?}",
+            findings[0]
+        );
+    }
+
+    /// The other direction of the same seam: a degraded ignore probe must not
+    /// MANUFACTURE a finding where a healthy run had none.
+    ///
+    /// Arming `degraded` only ever downgrades a refusal that already exists.
+    /// A task whose declared entries are all accounted for on main never
+    /// reaches a refusal at all, so a failed probe on it must stay invisible.
+    #[test]
+    fn pre_done_gate_gitignore_probe_failure_alone_emits_nothing() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+        git.set_is_gitignored_error(
+            "crates/reify-x/src/landed.rs",
+            "git check-ignore exited Some(129)",
+        );
+        // git healthily answers: the deliverable IS on main.
+        git.set_path_tracked_on("main", "crates/reify-x/src/landed.rs", true);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GINONE".to_string(),
+            pre_done_meta("6345GINONE", "review", &["crates/reify-x/src/landed.rs"]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GINONE");
+        assert!(
+            findings.is_empty(),
+            "a failed ignore probe must not manufacture a finding for a task \
+             whose deliverables are all tracked on main; got {:?}",
+            findings
+        );
+    }
+
+    /// The precision boundary of the downgrade: an unanswered entry disarms
+    /// the gate only for a refusal that RESTS on it.
+    ///
+    /// `metadata.files` is task-wide, but a refusal rests on the entries that
+    /// survive to `still_absent`. Here the unprobeable entry is the vendored
+    /// generated file the ignore filter exists for — and `ls-tree` answers
+    /// that it IS on main, so it clears before any refusal is built. The
+    /// SECOND entry was answered on both legs (git says "not ignored", "not on
+    /// main") and was never written at all: a genuine phantom-done whose
+    /// evidence was fully gathered.
+    ///
+    /// Seeding the advisory channel task-globally emits that refusal as a
+    /// non-blocking `Low`, so one unrelated probe failure would let the
+    /// phantom-done flip through. The intended semantics — pinned here — is
+    /// that entries git answered for keep their full blocking strength.
+    ///
+    /// The converse (the unanswered entry IS the one still absent, so the
+    /// refusal downgrades) is pinned by
+    /// `pre_done_gate_gitignore_probe_failure_downgrades_to_advisory_low`;
+    /// together the two straddle the boundary.
+    #[test]
+    fn pre_done_gate_answered_absent_entry_still_blocks_despite_a_sibling_probe_failure() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // Entry 1: git never answered whether it is ignored — but it is
+        // demonstrably on main, so its ignore-status was never load-bearing.
+        git.set_is_gitignored_error(
+            "crates/reify-x/src/generated/parser.c",
+            "git check-ignore failed: Resource temporarily unavailable",
+        );
+        git.set_path_tracked_on("main", "crates/reify-x/src/generated/parser.c", true);
+        // Entry 2: git ANSWERED both questions about it. This is the entry the
+        // refusal rests on.
+        git.set_is_gitignored("crates/reify-x/src/never-landed.rs", false);
+        git.set_path_tracked_on("main", "crates/reify-x/src/never-landed.rs", false);
+        git.set_log_grep("main", "6345GIMIX", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GIMIX".to_string(),
+            pre_done_meta(
+                "6345GIMIX",
+                "review",
+                &[
+                    "crates/reify-x/src/generated/parser.c",
+                    "crates/reify-x/src/never-landed.rs",
+                ],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIMIX");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "the refusal rests ONLY on an entry git answered for, so an              unanswered probe on a DIFFERENT entry must not disarm it; got {:?}",
+            findings[0]
+        );
+    }
+
     /// A `log_grep`-derived sibling is an ancestor of `MAIN_BASE` by
     /// construction, so the pre-done scan must not fork to ask.
     ///
@@ -2814,9 +3043,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 42,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers returned → stranded.
@@ -3016,9 +3243,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 42,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // There IS a non-test caller → symbol is not stranded.
@@ -3109,9 +3334,7 @@ mod tests {
                 name: "expand_purpose".to_string(),
                 file: "crates/reify-eval/src/expander.rs".to_string(),
                 line: 15,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers set → empty.
@@ -3192,9 +3415,10 @@ mod tests {
                 name: "internal_helper".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 100,
-                has_allow_dead_code: true,  // opt-out
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression {
+                    has_allow_dead_code: true,  // opt-out
+                    ..Default::default()
+                }),
             }],
         );
         // No callers.
@@ -3220,6 +3444,119 @@ mod tests {
             h2_findings.is_empty(),
             "#[allow(dead_code)] symbol must NOT be flagged by H2; got {:?}",
             h2_findings
+        );
+    }
+
+    /// H2 FP guard (d): a symbol whose declaration was never LOCATED carries no
+    /// opt-out judgement at all, so H2 must skip it rather than strand it.
+    ///
+    /// The sibling above pins the case where enrichment READ the declaration
+    /// and found an opt-out. This is the case where enrichment read nothing —
+    /// `opts_out()` is vacuously false, so `is_symbol_suppressed` answers
+    /// "no opt-out" and H2 strands a symbol whose author may well have written
+    /// `#[allow(dead_code)]`. Same defect as P1's, through the same three
+    /// suppression facts.
+    ///
+    /// Two symbols, asserted as a partition of the pattern-filtered set: the
+    /// located sibling must still be stranded, so the guard is shown to be
+    /// narrow rather than blanket.
+    #[test]
+    fn h2_skips_a_symbol_whose_declaration_was_never_located() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP4");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp4_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP4", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP4".to_string(),
+            TaskMetadata {
+                task_id: "H2FP4".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots satisfy the cross-crate gate.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp4_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate with an unlocatable declaration".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2fp4_commit^1",
+            "h2fp4_commit",
+            vec![
+                ChangedSymbol {
+                    name: "unlocatable_helper".to_string(),
+                    file: "crates/reify-eval/src/lib.rs".to_string(),
+                    line: 100,
+                    // The declaration was never located — suppression UNKNOWN.
+                    suppression: None,
+                },
+                ChangedSymbol {
+                    name: "located_helper".to_string(),
+                    file: "crates/reify-compiler/src/compile.rs".to_string(),
+                    line: 20,
+                    // Located and genuinely carrying no opt-out.
+                    suppression: Some(DeclSuppression::default()),
+                },
+            ],
+        );
+        // No callers for either — nothing is rescued by find_references.
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            h2_findings.len(),
+            1,
+            "the located symbol must still be stranded and the unlocatable one \
+             must not; got {h2_findings:?}",
+        );
+        assert!(
+            h2_findings[0].summary.contains("located_helper"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
+            h2_findings[0].summary
+        );
+        assert!(
+            !h2_findings
+                .iter()
+                .any(|f| f.summary.contains("unlocatable_helper")),
+            "a symbol whose declaration was never located must not be stranded \
+             — nothing read its opt-outs; got {h2_findings:?}",
         );
     }
 
@@ -3410,9 +3747,7 @@ mod tests {
                 name: "expand_purpose_reflective_placeholders".to_string(),
                 file: "crates/reify-compiler/src/compile.rs".to_string(),
                 line: 58,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers → stranded.
@@ -3425,9 +3760,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-compiler/src/compile.rs".to_string(),
                 line: 20,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         jc.set_find_references(

@@ -46,8 +46,9 @@
 //! 24 `#[test]` fns to stay under the verify pipeline's heartbeat-idle
 //! backstop, this gate runs as a single test. `examples/best_practices/` is
 //! ~7 files, and the full in-process sweep measures ~0.3s — far short of the
-//! backstop, so sharding would be dead weight (`examples_smoke.rs` is
-//! likewise un-sharded on purpose, for the same reason).
+//! backstop, so sharding would be dead weight
+//! (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+//! is likewise un-sharded on purpose, for the same reason).
 
 use reify_core::ConstraintNodeId;
 use reify_ir::Satisfaction;
@@ -148,8 +149,9 @@ fn seeded_satisfied_constraint_is_reported() {
 /// caller in this file that walks real corpus files prints the file path to
 /// stderr first, so such a panic stays attributable to a file — see
 /// `run_corpus_gate`. Re-asserting the zero-Error compile contract itself is
-/// deliberately out of scope: `examples_smoke.rs` is the designated compile
-/// gate for this corpus.
+/// deliberately out of scope:
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// is the designated compile gate for this corpus.
 fn constraint_statuses(source: &str) -> Vec<(reify_core::ConstraintNodeId, Satisfaction)> {
     let result = reify_test_support::check_source_with_stdlib(source);
     result
@@ -316,8 +318,8 @@ fn audit_reports_stale_expected_indeterminate() {
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
 /// this crate's manifest directory (two levels up) — matches
-/// `examples_smoke.rs:13`'s `EXAMPLES_DIR` and both sibling gates'
-/// `corpus_files`.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `EXAMPLES_DIR` and both sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
@@ -325,10 +327,11 @@ const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/be
 ///
 /// Deliberately a FLAT (non-recursive) read — this fn's flatness is
 /// load-bearing, not incidental: the corpus is a single flat drawer of idiom
-/// exemplars by design (`examples_smoke.rs::corpus_ri_files()`, line 636's
-/// comment), and a nested subdirectory appearing here is a structural change
-/// that should be reviewed rather than silently absorbed by switching this to
-/// a recursive walk.
+/// exemplars by design
+/// (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`'s
+/// doc comment), and a nested subdirectory appearing here is a structural
+/// change that should be reviewed rather than silently absorbed by switching
+/// this to a recursive walk.
 fn corpus_files() -> Vec<std::path::PathBuf> {
     let dir = std::path::Path::new(CORPUS_DIR);
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
@@ -359,13 +362,13 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
 /// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
-/// comment records that a nested subdirectory here is a structural change
-/// that should be reviewed rather than silently absorbed), sorted
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`,
+/// whose comment records that a nested subdirectory here is a structural
+/// change that should be reviewed rather than silently absorbed), sorted
 /// (deterministic failure output), and containing the known exemplars
 /// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
 /// resolution actually reached the real directory rather than returning an
@@ -485,12 +488,13 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
 
 /// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
 /// file that actually exists in `corpus_files()` (mirrors
-/// `examples_smoke.rs::skip_set_entries_exist_under_examples_dir`, line 248 —
-/// an entry left behind after its exemplar is renamed or deleted must fail
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::skip_set_entries_exist_under_examples_dir`
+/// — an entry left behind after its exemplar is renamed or deleted must fail
 /// loudly instead of silently never matching), no duplicate `(file, index)`
 /// pairs, and every entry's reason string is non-empty — the
-/// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
-/// encodes (`examples_smoke.rs:20-22`).
+/// auditable-justification contract that
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `SKIP_SET` `(&str, &str)` tuple shape encodes.
 #[test]
 fn expected_indeterminate_entries_are_well_formed() {
     let files = corpus_files();
@@ -553,12 +557,12 @@ fn describe_failure(failure: &GateFailure) -> String {
 /// every `GateFailure` found across `examples/best_practices/`.
 ///
 /// Deliberately does NOT re-assert the zero-Error compile contract —
-/// `examples_smoke.rs` owns that gate and duplicating it here would be
-/// lockstep duplication. `constraint_statuses` (via
-/// `check_source_with_stdlib`) panics on a parse/compile error, so this fn
-/// `eprintln!`s each file's repo-relative path immediately BEFORE checking
-/// it, keeping such a panic attributable to a file without re-asserting the
-/// compile contract itself.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// owns that gate and duplicating it here would be lockstep duplication.
+/// `constraint_statuses` (via `check_source_with_stdlib`) panics on a
+/// parse/compile error, so this fn `eprintln!`s each file's repo-relative
+/// path immediately BEFORE checking it, keeping such a panic attributable to
+/// a file without re-asserting the compile contract itself.
 ///
 /// When `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS=1` is set, the offender
 /// report is still printed but this returns an empty vec, downgrading

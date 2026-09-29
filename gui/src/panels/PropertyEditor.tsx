@@ -45,7 +45,12 @@ function displayValue(val: ValueData): string {
 export interface PropertyEditorProps {
   values: Record<string, ValueData>;
   selectedEntity: string | null;
-  onSetParameter: (cellId: string, value: string) => void;
+  /**
+   * Commit the edited literal — the DURABLE write, which rewrites the
+   * parameter's default in the source file. Called only on Enter or blur,
+   * never per keystroke.
+   */
+  onSetParameter: (cellId: string, value: string) => void | Promise<void>;
   onGroupDoubleClick?: (entityPath: string) => void;
   highlightedParams?: string[];
   /** Per-dimension display-unit ladders (task #5199), fetched once via `get_unit_ladders`. */

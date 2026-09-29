@@ -65,6 +65,53 @@
 //! for GAP A; the `volume_mesh_to_solver_mesh_*orphan*` family for GAP B)
 //! remain the load-bearing regression guards for the two mechanisms these
 //! capstones compose.
+//!
+//! # Full-build census, and why the one two-build test stays (task #7431)
+//!
+//! Task #7431 profiled this file looking for redundant OCCT+gmsh builds to
+//! eliminate. MEASURED per `#[test]` on the `cfg(has_gmsh)` arm, counting every
+//! `.build(..)` reachable through `build_realized`,
+//! `build_multi_case_and_count_realizations` and `realized_cylinder_fields`:
+//!
+//! | test | full OCCT+gmsh builds |
+//! |---|---|
+//! | `body_solve_runs_on_realized_volume_mesh` | 1 |
+//! | `multi_case_body_solve_shares_one_realization_across_cases` | 1 |
+//! | `multi_case_body_solve_survives_a_preceding_template` | 1 |
+//! | `non_prismatic_body_solve_runs_on_realized_volume_mesh` | 1 |
+//! | `non_prismatic_two_case_build_realizes_body_exactly_once` | **2** |
+//! | `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` | 1 |
+//! | `scalar_dims_solve_still_yields_synthetic_854_grid` | 0 — kernel-less `eval` |
+//! | `body_adaptive_solve_runs_the_gmsh_realized_localized_lane` | 1 |
+//! | `realized_cylinder_mesh_covers_its_own_aabb` | 1, but `#[ignore]` — costs the gate nothing |
+//!
+//! EXACTLY ONE test does two full builds, not the three the profiling task was
+//! scoped from. That agrees independently with `.config/nextest.toml`'s own note
+//! on this file ("This test does perform TWO full builds (a two-case case plus a
+//! one-case control) versus the siblings' one").
+//!
+//! And in that one test the second build IS THE ASSERTION. It is not a warm-up,
+//! a fixture or a repeat: the ONE-case control's `realization_entries` delta is
+//! what the two-case delta is compared AGAINST, and that comparison is the
+//! entire shape-robust half of PRD B9. `NON_PRISMATIC_ONE_CASE_BODY_SOURCE`'s
+//! doc states why the cheaper single-build form is not equivalent: *"Asserting
+//! 'the two-case build realizes exactly once' alone is weak: a module that
+//! realized once for reasons unrelated to case-sharing would satisfy it."*
+//! Deleting the second build would therefore delete a PRD assertion, not a cost.
+//! It is RETAINED deliberately — "where it is, leave the test alone and say so".
+//!
+//! ## The one redundancy that IS here, and is deliberately not taken
+//!
+//! `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` is built by BOTH
+//! `non_prismatic_two_case_build_realizes_body_exactly_once` and
+//! `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` — the
+//! same full OCCT+gmsh build, run in two tests. Merging them would undo the
+//! deliberate #4152 split (see that test's doc: the split exists so the
+//! `realization_entries` counter has GREEN coverage on a real OCCT+gmsh path,
+//! not only on `MockGeometryKernel`), AND would serialise two builds into one
+//! longer straggler. That is a CPU-second win paid for in makespan — the wrong
+//! trade for the metric #7431 optimises, since this file already sits in the
+//! slow tail. Filed as a follow-up rather than done here.
 
 // Gmsh linker anchor — see the module doc above.
 #[cfg(has_gmsh)]

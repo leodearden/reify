@@ -47,6 +47,22 @@ export const KEYWORDS = [
   'priv',
   'aux',
   'at',
+  // The derived sub arm (assembly-derivation-toolbox.md leaf A-alpha, task
+  // #6615). All eight are `ekw<>` (@extend) productions in reify.grammar, and
+  // the data-driven guard above scans for the `kw<"…">` substring that `ekw<>`
+  // deliberately contains — so omitting any of them here renders it unstyled
+  // and fails that guard.
+  //
+  // `symmetry` is NOT here on purpose: PRD §8 contract item (ii) reserves it by
+  // comment only, with no production, so there is nothing to style.
+  'mirror',
+  'image',
+  'of',
+  'across',
+  'under',
+  'keep',
+  'exclude',
+  'using',
   'trait',
   'fn',
   'type',

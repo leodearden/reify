@@ -842,3 +842,338 @@ structure S {
         "binding the unused param must NOT change the compiled predicate (B4)"
     );
 }
+
+// ── Task 6416: the #4546 arg type check now fires for enum-typed params ──────
+
+/// Count `ConstraintArgTypeMismatch` diagnostics in a compiled module.
+///
+/// Shared by the task-6416 cases below so the reject and accept sides are
+/// counted identically — the established idiom from
+/// `constraint_def_compile_tests.rs`'s `constraint_arg_type_mismatch_carries_code`.
+fn arg_type_mismatch_count(module: &reify_compiler::CompiledModule) -> usize {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConstraintArgTypeMismatch))
+        .count()
+}
+
+/// Assert the `ConstraintArgTypeMismatch` count for `source`, with a message
+/// naming `what` and dumping the diagnostics on failure.
+///
+/// When `expected == 0` the module is ALSO asserted to compile with zero
+/// Error-severity diagnostics. Without that second half every accept-side guard
+/// here is VACUOUS: a constraint def that failed to compile, a `Zq.Close` that
+/// failed to resolve, a parse error, or a spurious def-site `unknown type` each
+/// yield zero mismatch diagnostics too, so a bare count of 0 cannot tell
+/// "accepted" from "never checked". With it, 0 means compiled, checked, passed.
+fn assert_arg_type_mismatches(source: &str, expected: usize, what: &str) {
+    let module = compile_source(source);
+    let got = arg_type_mismatch_count(&module);
+    assert_eq!(
+        got, expected,
+        "expected {} ConstraintArgTypeMismatch diagnostic(s) for {}, got {}; diagnostics: {:?}",
+        expected, what, got, module.diagnostics
+    );
+    if expected == 0 {
+        let errors = error_diags(&module.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "expected {} to compile CLEAN, but got error diagnostic(s): {:?}. \
+             A zero mismatch count is only meaningful if the arg was actually \
+             reached and checked",
+            what,
+            errors
+        );
+    }
+}
+
+/// Before task 6416 an enum-typed param carried `ty: None`, so
+/// `expand_constraint_inst` skipped it and an Int arg passed where an enum was
+/// declared produced ZERO diagnostics. Now `ty` is `Some(Enum("Zq"))` and Rule 5
+/// of `constraint_arg_type_conforms` rejects it.
+///
+/// This is the user-visible defect in the task title, pinned independently of
+/// the def-side structural assertion in `constraint_def_compile_tests.rs`.
+#[test]
+fn int_arg_for_enum_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+structure S {
+    constraint K(g: 5)
+}
+"#,
+        1,
+        "an Int literal passed to an Enum(Zq) param",
+    );
+}
+
+/// Bool counterpart of `int_arg_for_enum_param_is_rejected` — also measured at
+/// zero diagnostics before task 6416.
+#[test]
+fn bool_arg_for_enum_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+structure S {
+    constraint K(g: true)
+}
+"#,
+        1,
+        "a Bool literal passed to an Enum(Zq) param",
+    );
+}
+
+/// A variant of the WRONG enum must be rejected too — `Enum(Other)` vs
+/// `Enum(Zq)` is a Rule-5 rejection, not merely a non-enum-vs-enum one. This is
+/// the case most likely to bite in real code, since it still *looks* enum-typed.
+#[test]
+fn wrong_enum_variant_arg_for_enum_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+enum Other { A, B }
+
+constraint def K {
+    param g : Zq
+    true
+}
+structure S {
+    constraint K(g: Other.A)
+}
+"#,
+        1,
+        "an Other.A variant passed to an Enum(Zq) param",
+    );
+}
+
+/// Guard: the correct variant literal must NOT be rejected.
+///
+/// Task 6416 activates a type check against a population it has never run on,
+/// so the dominant risk is a FALSE POSITIVE on valid code, not a missed
+/// rejection. The three guards below pin that boundary from the accept side —
+/// the reject tests above would stay green under an over-broad future change
+/// that also began rejecting valid enum args.
+#[test]
+fn correct_enum_variant_arg_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+structure S {
+    constraint K(g: Zq.Close)
+}
+"#,
+        0,
+        "the correct Zq.Close variant passed to an Enum(Zq) param",
+    );
+}
+
+/// Guard: an enum param actually REFERENCED by the predicate must still be
+/// accepted, exercising the predicate-substitution path rather than the trivial
+/// `true` body used by the other cases.
+#[test]
+fn enum_param_referenced_by_predicate_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    g == Zq.Close
+}
+structure S {
+    constraint K(g: Zq.Medium)
+}
+"#,
+        0,
+        "an enum arg bound to a param referenced by the predicate",
+    );
+}
+
+/// Guard: an enum-typed STRUCTURE param forwarded as the arg must be accepted.
+///
+/// This is the shape of the one pre-existing enum-typed constraint-def param in
+/// tracked source (`constraint_inst_match_substitution` above), converting an
+/// incidental pass into an explicit contract. Structure params already resolved
+/// bare enum names before task 6416, so the arg's type is `Enum(Zq)` and Rule 3
+/// (`type_compatible` identity) accepts.
+#[test]
+fn enum_typed_structure_param_arg_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+structure S {
+    param q: Zq
+    constraint K(g: q)
+}
+"#,
+        0,
+        "an enum-typed structure param forwarded to an Enum(Zq) param",
+    );
+}
+
+// ── Task 6416: the arg type check on the OPTION-WRAPPED enum param ──────────
+//
+// `param g : Option<Zq>` is the third spelling the `EnumNameScope` install newly
+// resolves (`constraint_def_compile_tests.rs` pins the def-side
+// `Some(Option(Enum("Zq")))`), and the only one that was user-visibly BROKEN
+// before rather than merely under-typed. Resolving it activates #4546's arg
+// check on a shape that had none, so the three cases below pin the consequence
+// users actually see.
+
+/// The `some(..)` spelling must be accepted for an `Option<Zq>` param.
+#[test]
+fn some_wrapped_enum_arg_for_option_typed_param_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: some(Zq.Close))
+}
+"#,
+        0,
+        "a some(Zq.Close) arg passed to an Option<Enum(Zq)> param",
+    );
+}
+
+/// A BARE variant passed to an `Option<Zq>` param must be rejected: there is no
+/// `T -> Option<T>` widening in `type_compatible` (`type_compat.rs`), so the
+/// `some(..)` wrapper is required — the same rule struct params already follow.
+///
+/// This direction is deliberate, not incidental, and is pinned so a future
+/// widening (or a regression back to `ty: None`, which would skip the check and
+/// silently accept) cannot land unnoticed. Before task 6416 this source emitted
+/// a spurious def-site `unknown type 'Option'` and zero mismatches.
+#[test]
+fn bare_enum_arg_for_option_typed_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: Zq.Close)
+}
+"#,
+        1,
+        "a bare Zq.Close variant passed to an Option<Enum(Zq)> param",
+    );
+}
+
+/// A bare `none` is REJECTED for an `Option<Zq>` param. This pins TODAY's
+/// behaviour, not a desired contract: `expr.rs` types a bare `none` as
+/// `Option<Real>` ("contextual override happens at param/let sites") and the
+/// constraint-arg binding site applies no such override, so #4546's check
+/// compares `Option<Real>` against `Option<Enum(Zq)>`.
+///
+/// MEASURED: the cause is enum-independent and pre-existing — `param g :
+/// Option<Length>` + `K(g: none)` fails identically ("expected
+/// Option<Scalar[m]>, got Option<Real>"). Task 6416 only makes `Option<Zq>`
+/// reach the check at all; before it, the def site emitted a spurious `unknown
+/// type 'Option'`. Contextual typing of `none` here is filed as follow-up
+/// ticket tkt_0RTT1BWK4518B7W6XX74XSE79D — flip the expected count to 0 when it
+/// lands.
+#[test]
+fn bare_none_arg_for_option_typed_enum_param_is_rejected_today() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: none)
+}
+"#,
+        1,
+        "a bare `none` passed to an Option<Enum(Zq)> param (today's behaviour: \
+         `none` defaults to Option<Real>)",
+    );
+}
+
+// ── Task 6416 / step-5: the arg type check on the ENUM-BODIED ALIAS path ─────
+//
+// Task 6259's parity harness in `tests/harness_langcore/type_alias_compile_tests.rs`
+// compares `alias_ty` against `direct_ty` only, so reverting task 6416's
+// `EnumNameScope` install collapses both sides to `None` and leaves it green.
+// The two cases below pin ABSOLUTE diagnostic counts through the alias spelling,
+// which is what actually detects such a revert.
+
+/// An Int literal passed to an ALIAS-typed enum param must be rejected exactly
+/// as it is for the direct spelling — `type AL = Zq` resolves to `Enum(Zq)`, so
+/// `expand_constraint_inst` type-checks the arg instead of skipping it.
+#[test]
+fn int_arg_for_alias_typed_enum_param_is_rejected() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+structure S {
+    constraint K(g: 5)
+}
+"#,
+        1,
+        "an Int literal passed to an alias-typed (`type AL = Zq`) Enum param",
+    );
+}
+
+/// Accept-side guard for the alias spelling: the correct variant must still pass.
+///
+/// Without this, the reject case above would stay green under an over-broad
+/// future change that began rejecting every alias-typed enum arg — the same
+/// false-positive risk the direct-spelling guards above cover.
+#[test]
+fn correct_enum_variant_arg_for_alias_typed_param_is_accepted() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+structure S {
+    constraint K(g: Zq.Close)
+}
+"#,
+        0,
+        "the correct Zq.Close variant passed to an alias-typed (`type AL = Zq`) Enum param",
+    );
+}

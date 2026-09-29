@@ -21,11 +21,12 @@
 # node_modules state. The npm cache (~/.npm) is shared across worktrees and
 # warm, so `npm ci --prefer-offline` completes in ~1s offline.
 #
-# This is intentionally a STANDALONE checkpoint helper and is NOT wired into
-# verify.sh: the merge gate keeps its own inlined `npm ci && npm run typecheck
-# && npm test` in the gui block. Keeping them separate avoids making this file a
-# load-bearing verify-pipeline artifact (scripts/verify-pipeline-guard.sh). The
-# commands are kept equivalent by convention; if the gui block's command shape
+# This remains a STANDALONE checkpoint helper — the merge gate does not call it,
+# and it is not itself a verify-pipeline artifact. But the two no longer stay
+# equivalent by convention alone: since task 7630 both this script and the gate's
+# gui block invoke the SAME vitest runner, scripts/gui-vitest-run.sh, which IS a
+# load-bearing verify-pipeline artifact. The provisioning and typecheck steps
+# around it are still duplicated here by design; if the gui block's command shape
 # changes materially, update this script to match.
 
 set -euo pipefail
@@ -85,12 +86,11 @@ if [ "$DO_TYPECHECK" -eq 1 ]; then
     npm run typecheck
 fi
 
-# 3. Vitest. `npm test` = `vitest run`, whose `pretest` hook regenerates the
-#    lezer parser (build:grammar) — which is why node_modules must exist first.
-#    Forward any args after `--` to vitest via `npm test -- <args>`.
-echo "==> gui-test: npm test (vitest run)..."
-if [ "${#VITEST_ARGS[@]}" -gt 0 ]; then
-    npm test -- "${VITEST_ARGS[@]}"
-else
-    npm test
-fi
+# 3. Vitest, via the SHARED runner that verify.sh's gui block also calls, so
+#    the two cannot drift (task 7630). The runner wraps `npm test` (= `vitest
+#    run`, whose `pretest` hook regenerates the lezer parser via build:grammar —
+#    which is why node_modules must exist first) and adds the bounded,
+#    signature-gated retry of the worker->host RPC starvation flake. It resolves
+#    its own paths, so calling it from here needs no cwd assumption.
+echo "==> gui-test: vitest run (via scripts/gui-vitest-run.sh)..."
+"$SCRIPT_DIR/gui-vitest-run.sh" "${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}"

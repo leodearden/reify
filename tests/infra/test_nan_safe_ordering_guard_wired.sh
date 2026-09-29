@@ -823,13 +823,13 @@ assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
 # not to a paraphrase here.
 #
 # EXACTLY WHAT THIS BLOCK PINS — read this before citing it as evidence:
-#   1. hK1-hK5: an UNGUARDED hazard planted at each excluded path is NOT
+#   1. hK1-hK4: an UNGUARDED hazard planted at each excluded path is NOT
 #      flagged. This detects ONE thing — a widening of SCOPE_PATHSPECS that
 #      brings that path in scope. That is the intended tripwire: the gate's
 #      pathspecs, decision 9 and these pins are meant to fail together, and a
 #      reviewer seeing one flip should be sent to decision 9's census table
 #      and its four follow-up tickets before approving.
-#   2. hK1-hK5 (second assert each): the path still EXISTS as a tracked file
+#   2. hK1-hK4 (second assert each): the path still EXISTS as a tracked file
 #      in the REAL repo. Every other assertion here runs against the
 #      synthetic $FIX repo and would keep passing against a path that had
 #      been renamed or deleted — pinning a string, not a site. This leg is
@@ -843,8 +843,8 @@ assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
 # re-measuring is a human/task job. Do not read a green hK as "the census is
 # still accurate".
 #
-# ANTI-VACUITY: hK6 writes the BYTE-IDENTICAL hazard text to a COVERED path
-# and requires exit 1. Without it, a typo in $HK_HAZARD would make all five
+# ANTI-VACUITY: hK5 writes the BYTE-IDENTICAL hazard text to a COVERED path
+# and requires exit 1. Without it, a typo in $HK_HAZARD would make all four
 # exclusion assertions pass for the wrong reason and the pin would be
 # worthless — the same failure mode block (hI) guards at the scan-set level.
 # ===========================================================================
@@ -862,7 +862,7 @@ HK_HAZARD='pub fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap
 # gate would exit 2 per the (hI) contract and every "not flagged" assertion
 # below would be testing the wrong thing — passing because the gate errored
 # out, not because the path is out of scope. When <path> IS the covered file
-# (hK8) it simply overwrites that clean content with the hazard.
+# (hK5) it simply overwrites that clean content with the hazard.
 write_hazard_at() {
     local rel="$1"
     rm -rf "$FIX/crates"
@@ -873,15 +873,15 @@ write_hazard_at() {
     stage
 }
 
-# The deliberately-excluded set, as measured on 2026-08-20 and SHRUNK from
-# seven to five by task #6376, which hardened reify-stdlib's analysis.rs and
-# matrix.rs and brought that crate INTO scope (see block (hL) below).
-# reify-constraints stays excluded — it is still class A pending its own
-# follow-up ticket, so this was a HALF-fired widening trigger, not a
-# discharged one. Line numbers drift (that is the whole point of this block);
-# the FILE-level record is what is authoritative here and in decision 9.
+# The deliberately-excluded set, as measured on 2026-08-20, SHRUNK from
+# seven to five by task #6376 (which hardened reify-stdlib's analysis.rs and
+# matrix.rs — block (hL)) and from five to four by task #6377 (which hardened
+# reify-constraints — block (hM)). Those two tasks are the two halves of
+# decision 9's widening trigger; with #6377 landed the trigger is FULLY
+# FIRED, not half-fired. Only reify-eval and reify-ir remain class A here.
+# Line numbers drift (that is the whole point of this block); the FILE-level
+# record is what is authoritative here and in decision 9.
 HK_EXCLUDED=(
-    'crates/reify-constraints/src/solver.rs'
     'crates/reify-eval/src/engine_build.rs'
     'crates/reify-eval/src/persistent_cache.rs'
     'crates/reify-eval/src/warm_pool.rs'
@@ -902,17 +902,17 @@ for _hk_rel in "${HK_EXCLUDED[@]}"; do
         git -C "$REPO_ROOT" ls-files --error-unmatch "$_hk_rel"
 done
 
-# hK6 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
+# hK5 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
 write_hazard_at 'crates/reify-fdm/src/lib.rs'
-assert "hK6: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK5 are not passing vacuously)" \
+assert "hK5: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK4 are not passing vacuously)" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
-# hK7 — the covered scope is still wired end-to-end: covered file, clean, green.
+# hK6 — the covered scope is still wired end-to-end: covered file, clean, green.
 write_fixture <<'RS'
 pub fn covered_but_clean() {}
 RS
 stage
-assert "hK7: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
+assert "hK6: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
 # ===========================================================================
@@ -923,7 +923,7 @@ assert "hK7: CONTROL — a clean covered file alone is exit 0 (scan set non-empt
 # "pinned by nothing" — a silent narrowing later would go unnoticed. This is
 # the other half: the crate is in scope AND the escape still works there.
 #
-# Why the crate moved, the half-fired widening trigger, and what stays
+# Why the crate moved, the widening trigger, and what stays
 # excluded are recorded ONCE, canonically, in
 # docs/prds/compute-fea-hardening.md "Resolved design decision 9" — go there,
 # not to a paraphrase here.
@@ -954,5 +954,64 @@ assert "hL2: ...and // nan-safe:allow still clears a site in the newly covered c
 # hL3 — REAL-TREE leg, mirroring (hK)'s: the covered path still exists.
 assert "hL3: ...and crates/reify-stdlib/src/analysis.rs still exists as a tracked file in the real tree" \
     git -C "$REPO_ROOT" ls-files --error-unmatch 'crates/reify-stdlib/src/analysis.rs'
+
+# ===========================================================================
+# hM — reify-constraints is now COVERED (task #6377), the second positive
+# of (hK) and the OTHER half of decision 9's widening trigger.
+#
+# Same rationale as (hL): (hK) can only ever detect that a path is OUT of
+# scope, so widening the gate without a positive pin would move the crate
+# from "pinned excluded" to "pinned by nothing", and a silent narrowing
+# later would go unnoticed.
+#
+# TWO paths are pinned here, not one. The 2026-08-20 census recorded
+# reify-constraints as ONE gate-visible site (solver.rs) and missed cpsat.rs
+# entirely; re-running the gate with the pathspec inserted reports both.
+# Pinning only solver.rs would re-create exactly the blind spot task #6377
+# found — the same census-staleness failure mode decision 9 already
+# documents for 2026-07-09.
+#
+# Why the crate moved, what the fix was, and what stays excluded are
+# recorded ONCE, canonically, in docs/prds/compute-fea-hardening.md
+# "Resolved design decision 9" — go there, not to a paraphrase here.
+# ===========================================================================
+echo ""
+echo "--- (hM): reify-constraints is now IN the gate's scan set (task #6377) ---"
+
+# hM1 — solver.rs is genuinely in scope: an unguarded hazard there IS flagged.
+write_hazard_at 'crates/reify-constraints/src/solver.rs'
+assert "hM1: crates/reify-constraints/src/solver.rs is COVERED — an UNGUARDED hazard there IS flagged" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hM2 — and so is cpsat.rs. Pinned explicitly BECAUSE the census missed it:
+# a future narrowing that dropped cpsat.rs while keeping solver.rs would
+# otherwise be invisible here.
+write_hazard_at 'crates/reify-constraints/src/cpsat.rs'
+assert "hM2: crates/reify-constraints/src/cpsat.rs is COVERED — an UNGUARDED hazard there IS flagged (the 2026-08-20 census missed this site)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hM3 — and the escape still works in the newly covered crate. Same two-file
+# shape as (hL2)/write_hazard_at (clean covered file first, so the scan set is
+# never empty and exit 2 can't fake a pass), with the annotation appended.
+# stage() is called explicitly: the gate is `git ls-files`-hermetic, so an
+# unstaged fixture would pass vacuously.
+rm -rf "$FIX/crates"
+mkdir -p "$FIX/crates/reify-fdm/src"
+printf 'pub fn covered_but_clean() {}\n' > "$FIX/crates/reify-fdm/src/lib.rs"
+mkdir -p "$FIX/crates/reify-constraints/src"
+printf '%s // nan-safe:allow — guarded upstream\n' "$HK_HAZARD" \
+    > "$FIX/crates/reify-constraints/src/solver.rs"
+stage
+assert "hM3: ...and // nan-safe:allow still clears a site in the newly covered crate" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hM4/hM5 — REAL-TREE legs, mirroring (hK)'s and (hL3): both covered paths
+# still exist, so a crate split or module move fails loudly here instead of
+# silently hollowing this block out.
+assert "hM4: ...and crates/reify-constraints/src/solver.rs still exists as a tracked file in the real tree" \
+    git -C "$REPO_ROOT" ls-files --error-unmatch 'crates/reify-constraints/src/solver.rs'
+
+assert "hM5: ...and crates/reify-constraints/src/cpsat.rs still exists as a tracked file in the real tree" \
+    git -C "$REPO_ROOT" ls-files --error-unmatch 'crates/reify-constraints/src/cpsat.rs'
 
 test_summary
