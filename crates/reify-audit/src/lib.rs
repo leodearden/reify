@@ -233,21 +233,23 @@ pub enum Pattern {
     ///
     /// - **Omission lane** — a `*_NAMES` registry entry in
     ///   `crates/reify-compiler/src/units.rs` that is not documented in any
-    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
-    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
-    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
-    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
-    ///   that IS documented).
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not ledgered
+    ///   as a bare-name row → `undocumented-name:`. Ratchet-honesty sibling:
+    ///   `stale-allow-entry:` (an allow-marked name that IS documented).
     /// - **Fabrication lane** — a call-shaped name documented in a chunk that
-    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    ///   exists nowhere in the compiler/stdlib sources and is not ledgered as
+    ///   a `<chunk path>:<name>` row → `fabricated-name:`.
     /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
     ///   with a blank reason body confers NO exemption and is itself a finding.
+    /// - `stale-baseline-entry:` — a row of the committed ledger
+    ///   `crates/reify-audit/pdoccover-baseline.txt` that settles no live debt.
     ///
-    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
-    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
-    /// code is the High-severity count, so joining the no-`--pattern` default
-    /// sweep would drown every other detector. Structural: reads the working
-    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    /// **Opt-in only**, like PDIAG: the exit code is the High-severity count,
+    /// so a drifting ledger in the no-`--pattern` default sweep would move
+    /// every bare `reify-audit` exit code. The hard gate over the committed
+    /// ledger is `tests/infra/test_reify_audit_pdoccover.sh`. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch.
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,

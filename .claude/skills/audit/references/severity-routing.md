@@ -125,7 +125,7 @@ P5 findings never reach Medium in the periodic sweep context, so no Medium title
 - `detail=json.dumps([{"path": f.task_id, "summary": f.summary} for f in pdoccover_findings])`;
 - `task_id="audit"`, with every other §1 parameter unchanged.
 
-Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `escalation_id`. Why batched: the findings are one census with one owner — #6931 seeds `crates/reify-audit/pdoccover-baseline.txt` and wires the gate — so a human makes one decision per run, not one per name. Per-finding escalation would queue one advisory per name in the backlog (measured in `references/modes.md` §4) for that one decision.
+Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `escalation_id`. Why batched: the findings are one census settled against one ledger, `crates/reify-audit/pdoccover-baseline.txt`, which the merge gate `tests/infra/test_reify_audit_pdoccover.sh` enforces — so a High on main means that gate was bypassed or skipped its ratchet scenario, and a human makes one decision per run (fix the chunks, or regenerate the ledger), not one per name.
 
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
 

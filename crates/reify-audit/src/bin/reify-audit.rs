@@ -1578,13 +1578,11 @@ mod tests {
     //
     // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
     // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
-    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
-    // (like PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
-    // known backlog of undocumented names, so until #5480 seeds
-    // pdoccover-baseline.txt the detector would add ~80 High findings to every
-    // default sweep. High severity feeds the exit code, so joining the default
-    // sweep now would turn every audit run non-zero. It joins the sweep when
-    // the baseline lands, not before.
+    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN,
+    // for PDIAG's reason: its verdicts are High and feed the exit code, and
+    // they ratchet against a committed ledger (pdoccover-baseline.txt), so in
+    // the default sweep a drifting ledger would turn every bare audit run
+    // non-zero. The hard gate is tests/infra/test_reify_audit_pdoccover.sh.
     // -------------------------------------------------------------------
 
     /// `--pattern PDOCCOVER` must be accepted and stored.
@@ -1619,9 +1617,8 @@ mod tests {
         assert!(
             !selects(pattern_flag::PDOCCOVER, None),
             "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
-             findings are High severity and the corpus has a known backlog, so \
-             joining the sweep before #5480 seeds the baseline would make every \
-             audit run exit non-zero"
+             findings are High severity and ratchet against a committed ledger, \
+             so a drifting ledger would make every bare audit run exit non-zero"
         );
         assert!(
             selects(pattern_flag::PDOCCOVER, Some("PDOCCOVER")),

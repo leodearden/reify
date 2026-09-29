@@ -307,7 +307,7 @@ fn omission_lane_tolerates_an_empty_baseline_file() {
 /// Findings are deterministically ordered by (category, name) — not by
 /// declaration order, and not by whatever order the registry walk happened to
 /// visit. A detector whose output reorders between runs cannot be diffed, and
-/// #5480's baseline regenerator consumes this ordering directly.
+/// the `pdoccover-baseline-gen` regenerator consumes this ordering directly.
 #[test]
 fn omission_findings_are_deterministically_ordered() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -514,7 +514,7 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
 /// elided `(...)`) can drop the ONLY call-shaped token on a marked line, and a
 /// marker that yields no name yields no finding. The erosion is silent — the
 /// lane reports clean, nothing goes RED — and `allow-missing-reason:` is one of
-/// the four categories #5480 hard-gates, so PRD design decision 7's guarantee
+/// the categories the gate hard-gates, so PRD design decision 7's guarantee
 /// that "the escape hatch can never become un-reviewable" would quietly stop
 /// holding as the mention side got more precise.
 ///
@@ -639,8 +639,8 @@ fn reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication() {
 /// call-shaped token. This one covers what the raw harvest ALTERED — a marked
 /// line with SEVERAL shapes. Keying the report by name would make the module's
 /// own canonical example, `translate(primitive(...), 0, 0, -h/2)`, cost two
-/// findings and `f(g(h(x)))` three, inflating one of the four categories #5480
-/// hard-gates by an amount no one chose. `fabrication_findings` therefore keys
+/// findings and `f(g(h(x)))` three, inflating a category the gate hard-gates
+/// by an amount no one chose. `fabrication_findings` therefore keys
 /// the REPORT by marker LINE and names it after the LEFTMOST call shape.
 ///
 /// Case (b) pins the other half of "per line": two markers sharing a
@@ -722,11 +722,11 @@ fn reasonless_marker_costs_exactly_one_finding_per_marker_line() {
 /// `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication` in the
 /// other direction: a marker whose only shape is filtered would then report the
 /// marker AND the fabrication, charging one mistake twice. The residue is
-/// self-healing (writing the reason body restores the fabrication verdict), the
-/// marked line does textually name the token, and `fabricated-name:` is
-/// report-only for #5480. Pinned so the trade is a decision with a test behind
-/// it — if this goes RED with a `fabricated-name:` finding as well, the
-/// narrowing was made deliberately and the doc comment must move with it.
+/// self-healing (writing the reason body restores the fabrication verdict) and
+/// the marked line does textually name the token. Pinned so the trade is a
+/// decision with a test behind it — if this goes RED with a `fabricated-name:`
+/// finding as well, the narrowing was made deliberately and the doc comment
+/// must move with it.
 #[test]
 fn reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver() {
     let dir = tempfile::tempdir().expect("tempdir");

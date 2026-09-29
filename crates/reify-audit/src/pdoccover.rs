@@ -28,7 +28,8 @@
 //! 1. **documented** — word-boundary match in ≥1 `chunks/*.md`;
 //! 2. **allowed** — its registry entry line carries
 //!    `// pdoccover:allow — <reason>` (reason mandatory);
-//! 3. **baselined** — listed in `crates/reify-audit/pdoccover-baseline.txt`.
+//! 3. **ledgered** — a bare-name row in the ratchet ledger (see "The
+//!    ratchet ledger").
 //!
 //! Anything else is an offender.
 //!
@@ -36,7 +37,8 @@
 //!
 //! Reverse census: every **call-shaped** name mentioned in a chunk (an
 //! identifier immediately followed by `(`) must exist somewhere in the
-//! compiler/stdlib sources. Names that do not are fabrications.
+//! compiler/stdlib sources. Names that do not are fabrications, unless the
+//! line is allow-marked or the ledger carries a `<chunk path>:<name>` row.
 //!
 //! ### The existence oracle is deliberately asymmetric
 //!
@@ -123,11 +125,10 @@
 //!   list for exactly that reason.)
 //!
 //! Do not add a context-modelling filter to [`chunk_call_mentions`] without
-//! updating this section and the floor guard's anchor set. Because two
-//! false positives remain rather than zero, the omission lane is still the
-//! more trustworthy half, which is one more reason the CLI arm stays
-//! opt-in — and the reason #5480's gate must leave `fabricated-name:`
-//! report-only (see "δ's gate keys on the OMISSION categories only").
+//! updating this section and the floor guard's anchor set. A residual false
+//! positive is settled by a `pdoccover:allow — <reason>` marker on its line
+//! or a `<chunk path>:<name>` ledger row, never by widening a filter — so
+//! the gate covers all five categories.
 //!
 //! **No residual count is pinned in this comment as an invariant.** The two
 //! SHAPES above are the invariant; any site or count cited is a dated
@@ -148,9 +149,9 @@
 //!
 //! | Prefix | Meaning |
 //! |---|---|
-//! | `undocumented-name:` | registry name with no chunk mention, no allow, no baseline |
-//! | `fabricated-name:` | chunk documents a call-shaped name that exists nowhere in source |
-//! | `stale-baseline-entry:` | baselined name that IS documented — ratchet honesty |
+//! | `undocumented-name:` | registry name with no chunk mention, no allow, no ledger row |
+//! | `fabricated-name:` | chunk documents a call-shaped name that exists nowhere in source, no ledger row |
+//! | `stale-baseline-entry:` | ledger row that settles no live debt — ratchet honesty |
 //! | `stale-allow-entry:` | allow-marked name that IS documented — ratchet honesty |
 //! | `allow-missing-reason:` | `pdoccover:allow` with no reason body — confers NO exemption |
 //!
@@ -174,52 +175,27 @@
 //! text scanner, PRD §(b)). No regex crate: the audit crate has none and must
 //! not gain one.
 //!
-//! ## CLI posture — opt-in, for now
+//! ## CLI posture — opt-in, like PDIAG
 //!
-//! `run_pdoccover` in `bin/reify-audit.rs` uses `is_some_and`, so PDOCCOVER
-//! runs only under an explicit `--pattern PDOCCOVER`. Its two structural
-//! siblings PTODO and PDSSENTINEL use `is_none_or` and ride the default sweep;
-//! the difference is severity plus backlog. These findings are High and the
-//! exit code is the High-severity count, so with an unseeded baseline and a
-//! documentation backlog still to work through, joining the default sweep
-//! today would turn every audit run non-zero.
-//! It joins when #5480 seeds the baseline and the residual reaches zero — the
-//! warn-first-then-ratchet path PTODO took.
+//! The DETECTORS row in `bin/reify-audit.rs` keeps PDOCCOVER out of the
+//! pattern-less default sweep. Its findings are High and the exit code is
+//! the High-severity count, so a ledger drifting against an unrelated edit
+//! would move every bare `reify-audit` exit code. The hard gate is
+//! `tests/infra/test_reify_audit_pdoccover.sh`, which selects the pattern
+//! explicitly and runs it against the committed ledger.
 //!
-//! ## The #5480 seam
+//! ## The ratchet ledger
 //!
-//! This task ships the detector and [`baseline_candidates`]. It ships NO
-//! baseline file, NO `--emit-baseline` flag, NO generator binary, NO
-//! `tests/infra/` script and NO `run-all-classification.manifest` row — all of
-//! those are #5480 (δ). [`baseline_candidates`] is the single derivation δ's
-//! regenerator calls, sharing [`omission_dispositions`] with [`check`] so a
-//! generated baseline cannot disagree with the ratchet that checks it.
-//!
-//! ### δ's gate keys on the OMISSION categories only
-//!
-//! Normative for #5480, recorded here because #5480's own text says this
-//! pattern "needs no change" and would otherwise inherit the constraint
-//! silently. The ratchet has ONE channel and it is omission-shaped: the
-//! baseline file is a flat list of NAMES, and [`baseline_candidates`] selects
-//! [`Disposition::Undocumented`] alone. A `fabricated-name:` finding therefore
-//! has no ratchet channel at all — it is suppressible only by hand-editing a
-//! `pdoccover:allow` marker onto the mentioning chunk line, one at a time.
-//!
-//! #5647 landed the mention-side narrowing described above, but the
-//! conclusion is UNCHANGED: a hard gate over ALL five categories would still
-//! land carrying unsuppressable false positives, because two residual false
-//! positives remain — not zero — and the ratchet's one channel is
-//! name-shaped, so neither `compute_moi` nor `predicate` is suppressible by
-//! baseline. So δ's gate keys on `undocumented-name:`, `stale-baseline-entry:`,
-//! `stale-allow-entry:` and `allow-missing-reason:`; `fabricated-name:` stays
-//! REPORT-ONLY. Two ways to lift that, whichever comes first: a per-line
-//! `pdoccover:allow` marker on each of the two chunk lines (traits.md:9 and
-//! constraints.md:50 — constraints.md:51 repeats the same name, and the
-//! per-(file, name) dedup subsumes it, so one marker settles both), or the
-//! baseline format grows `path:name` rows and the disposition logic covers
-//! fabrications so the ratchet absorbs them the way it absorbs omissions.
-//! Either is a deliberate decision with a test behind it — neither is a
-//! silent widening of the gate.
+//! Both lanes are baseline-BLIND: each returns its non-debt findings plus its
+//! debt keyed by [`BaselineRow`], and [`check`] settles that debt against the
+//! committed `crates/reify-audit/pdoccover-baseline.txt`. A bare `<name>` row
+//! absorbs an `undocumented-name:`; a `<chunk path>:<name>` row absorbs that
+//! chunk's `fabricated-name:` for the name. A row is stale iff removing it
+//! changes no other finding, and every stale row is a `stale-baseline-entry:`.
+//! [`baseline_ledger`] is the one derivation behind both [`check`] and the
+//! `pdoccover-baseline-gen` bin, so a regenerated ledger cannot disagree with
+//! the ratchet that checks it. Row grammar and set algebra:
+//! [`crate::pdoccover_baseline`].
 //!
 //! ## Both scanners are deliberately format-agnostic
 //!
@@ -1326,7 +1302,7 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
 /// one the filters drop (`auto(free)`, `pipe@region(x)`,
 /// `translate(primitive(...))`, or a name the chunk declares elsewhere) —
 /// otherwise widening the filters silently shrinks coverage of a category
-/// #5480 hard-gates, and PRD design decision 7's guarantee that "the escape
+/// the gate hard-gates, and PRD design decision 7's guarantee that "the escape
 /// hatch can never become un-reviewable" quietly stops holding. One function
 /// rather than two walks, so the narrowed and raw views can never disagree
 /// about what a call site IS.
@@ -1718,7 +1694,7 @@ fn omission_findings(inputs: &Inputs) -> LaneResults {
 /// mention-side filters: each filter added there would silently stop reporting
 /// malformed markers on the lines it drops (`auto(free)`, `pipe@region(x)`,
 /// `translate(primitive(...))`, `solid.volume()`, or any name the chunk
-/// declares elsewhere), shrinking a category #5480 hard-gates without anything
+/// declares elsewhere), shrinking a category the gate hard-gates without anything
 /// going RED. `reasonless_marker_survives_every_mention_side_filter` in
 /// tests/pdoccover.rs pins one case per filter.
 ///
@@ -1734,7 +1710,7 @@ fn omission_findings(inputs: &Inputs) -> LaneResults {
 ///   representative name is the LEFTMOST call shape on it. Keying the report by
 ///   name instead would make `translate(primitive(...), 0, 0, -h/2)` cost two
 ///   findings and `f(g(h(x)))` three — a count that varies with how the marked
-///   line is written, in one of the four categories #5480 hard-gates. Two
+///   line is written, in a category the gate hard-gates. Two
 ///   markers that happen to share a representative name are still two defects
 ///   and two findings, each citing its own line, because each is its own edit.
 ///   Pinned by `reasonless_marker_costs_exactly_one_finding_per_marker_line`.
@@ -1750,15 +1726,13 @@ fn omission_findings(inputs: &Inputs) -> LaneResults {
 ///   charging one mistake twice — which is exactly what
 ///   `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication`
 ///   forbids. The residue is self-healing (writing the reason body restores
-///   the fabrication verdict), the marked line does textually name the token,
-///   and `fabricated-name:` is report-only for δ. Pinned by
+///   the fabrication verdict) and the marked line does textually name the
+///   token. Pinned by
 ///   `reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver`.
 ///
 /// Residual, and deliberately left: a reasonless marker on a line with NO
 /// call-shaped token at all still reports nothing, because a finding here is
-/// keyed by NAME and such a line offers none. Reporting it would need a
-/// path:line-keyed channel, which is #5480's baseline-format work, not this
-/// lane's.
+/// keyed by NAME and such a line offers none.
 fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> LaneResults {
     let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
@@ -1775,7 +1749,7 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> LaneResults 
         // (`auto(free)`, `pipe@region(x)`, `translate(primitive(...))`, or a
         // name the chunk declares elsewhere), and sourcing this pass from the
         // narrowed view would then make the malformed marker invisible — a
-        // false-clean on a category #5480 hard-gates, and precisely the hole in
+        // false-clean on a category the gate hard-gates, and precisely the hole in
         // PRD design decision 7 that the line-order independence also closes.
         //
         // The two shapes differ on purpose (see this function's doc comment):
