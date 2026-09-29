@@ -521,6 +521,43 @@ echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 _SECT3_HELPER="$SCRIPT_DIR/test_helpers.sh"
 export _SECT3_HELPER
 
+# Returns-control probe: sources $1 with the exact Section 3 recipe and prints
+# SOURCE_RETURNED only if control comes back with extract_fn defined. Every
+# Section 3 assert below depends on that: a sourced top-level `exit 0` would
+# end each subshell before its check runs, so all of them would pass vacuously.
+# The target travels via env, not a positional, because a sourced file
+# inherits positionals.
+_sourcing_returns_control() {
+    env _SOURCE_TARGET="$1" bash -c '
+        source "$_SECT3_HELPER"
+        test_summary() { :; }
+        source "$_SOURCE_TARGET" >/dev/null 2>&1 || true; set +eo pipefail
+        declare -F extract_fn >/dev/null && printf "%s\n" SOURCE_RETURNED
+    '
+}
+_real_sync_test_returns_control() {
+    [ -n "$SYNC_TEST" ] || return 1
+    local out
+    out=$(_sourcing_returns_control "$SYNC_TEST") || true
+    [[ "$out" == *SOURCE_RETURNED* ]]
+}
+# Sensitivity pin: the same fixture with and without a trailing `exit 0`, so
+# the exit is the only thing that can flip the verdict.
+_probe_flags_top_level_exit() {
+    local fixture without_exit with_exit
+    fixture=$(mktemp) || return 1
+    printf '%s\n' 'extract_fn() { :; }' > "$fixture"
+    without_exit=$(_sourcing_returns_control "$fixture") || true
+    printf '%s\n' 'exit 0' >> "$fixture"
+    with_exit=$(_sourcing_returns_control "$fixture") || true
+    rm -f "$fixture"
+    [[ "$without_exit" == *SOURCE_RETURNED* ]] && [[ "$with_exit" != *SOURCE_RETURNED* ]]
+}
+assert 'sourcing sync_comments_test.sh returns control with extract_fn defined (Section 3 is non-vacuous)' \
+    _real_sync_test_returns_control
+assert 'returns-control probe flags a fixture that defines extract_fn then exits 0 (sensitivity pin)' \
+    _probe_flags_top_level_exit
+
 # accept: regular fn — fn foo( must be extracted when fn_name=foo
 assert "extract_fn: fn foo( extracted correctly for fn_name=foo" \
     bash -c '
