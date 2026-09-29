@@ -8271,10 +8271,6 @@ mod tests {
     fn nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
 
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             let _ = super::nearest_node(&[[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]], [1.0, 0.0, 0.0]);
@@ -12471,10 +12467,6 @@ mod tests {
     #[test]
     fn frequency_ascending_order_skips_resort_and_warns_on_non_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
 
         let (subscriber, capture) = warn_capturing_subscriber();
 
