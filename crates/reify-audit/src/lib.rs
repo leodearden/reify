@@ -290,7 +290,8 @@ pub enum Pattern {
     /// carried as a stable summary prefix (PTODO's `kind`-as-prefix convention
     /// above): `fabricated-cite:` (one per manifest and name) and
     /// `allow-missing-reason:` (a `pcite:allow` marker with no reason body,
-    /// which exempts nothing).
+    /// which exempts nothing). Each carries one [`EvidenceRef::FileLine`]:
+    /// the manifest line, and the cited symbol for `fabricated-cite:`.
     ///
     /// **Medium only** — report-only and exit-neutral, so the lane cannot gate
     /// even when selected. Opt-in, like PDIAG/PDOCCOVER/PDCHECK. Structural:
@@ -306,6 +307,16 @@ pub enum Pattern {
 pub enum EvidenceRef {
     /// Filesystem path relative to `project_root`.
     File { path: String },
+    /// One line of a file relative to `project_root`, and the `symbol` on it
+    /// the finding is about — `None` when the finding is about the line
+    /// itself. A detector that reports several findings per file carries
+    /// each one's handle here, so a consumer (the `/audit` dedupe key, a
+    /// follow-up title) reads it rather than parsing it out of the summary.
+    FileLine {
+        path: String,
+        line: usize,
+        symbol: Option<String>,
+    },
     /// A git commit by SHA + first-line subject.
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.

@@ -128,9 +128,12 @@ fn a_cite_no_tracked_source_contains_is_one_medium_fabricated_cite() {
     );
     assert_eq!(
         f.evidence,
-        vec![EvidenceRef::File {
-            path: MANIFEST.to_string()
-        }]
+        vec![EvidenceRef::FileLine {
+            path: MANIFEST.to_string(),
+            line: 3,
+            symbol: Some("ghost_symbol".to_string()),
+        }],
+        "the cited symbol and its line are structured evidence, not summary prose"
     );
     assert_eq!(f.task_id, MANIFEST);
 }
@@ -275,6 +278,19 @@ fn a_reasoned_allow_marker_suppresses_and_a_reasonless_one_is_itself_reported() 
         names_in(&reasonless, "allow-missing-reason"),
         vec![format!("{MANIFEST}:3")],
         "a reasonless marker is one finding keyed by its line; got {reasonless:#?}"
+    );
+    let marker = reasonless
+        .iter()
+        .find(|f| category(f) == "allow-missing-reason")
+        .expect("the marker finding");
+    assert_eq!(
+        marker.evidence,
+        vec![EvidenceRef::FileLine {
+            path: MANIFEST.to_string(),
+            line: 3,
+            symbol: None,
+        }],
+        "a marker finding is about its line, not a symbol"
     );
     assert_eq!(
         names_in(&reasonless, "fabricated-cite"),
@@ -489,12 +505,23 @@ fn real_repo_pcite_smoke() {
         assert_eq!(f.pattern, Pattern::PManifestCite, "{f:#?}");
         assert_eq!(f.severity, Severity::Medium, "{f:#?}");
         assert!(known.contains(category(f)), "unknown category: {f:#?}");
-        match f.evidence.as_slice() {
-            [EvidenceRef::File { path }] => assert!(
-                path.starts_with(MANIFEST_ROOT) && path.ends_with(MANIFEST_SUFFIX),
-                "evidence must be a manifest: {f:#?}"
-            ),
-            other => panic!("exactly one File evidence expected, got {other:?}"),
-        }
+        let [EvidenceRef::FileLine { path, line, symbol }] = f.evidence.as_slice() else {
+            panic!("exactly one FileLine evidence expected: {f:#?}");
+        };
+        assert!(
+            path.starts_with(MANIFEST_ROOT) && path.ends_with(MANIFEST_SUFFIX) && *line >= 1,
+            "evidence must be a manifest line: {f:#?}"
+        );
+        let handle = symbol.clone().unwrap_or_else(|| format!("{path}:{line}"));
+        assert_eq!(
+            name(f),
+            handle,
+            "the summary names the handle the evidence carries: {f:#?}"
+        );
+        assert_eq!(
+            symbol.is_some(),
+            category(f) == "fabricated-cite",
+            "only a fabricated cite names a symbol: {f:#?}"
+        );
     }
 }

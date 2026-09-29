@@ -10,7 +10,7 @@
 //! - **Corpus** — tracked files under [`MANIFEST_ROOT`] ending
 //!   [`MANIFEST_SUFFIX`].
 //! - **Grammar** — [`cited_symbols`]: backtick spans after a line's first
-//!   `grep:`, split into `::` segments. #6233's prototype over 138 manifests
+//!   free-standing `grep:`, split into `::` segments. #6233's prototype over 138 manifests
 //!   measured 620 cited segments in 60 manifests with 9 unresolved (5
 //!   dark-factory symbols, 2 OCCT names, 2 unclear). Wider grammars — the
 //!   whole row, or every bare snake_case word — left 55 to 231 unresolved,
@@ -100,8 +100,9 @@ fn manifest_findings(path: &str, content: &str, known: &HashSet<&str>) -> Vec<Ke
             }
             out.push(keyed(
                 "allow-missing-reason",
-                &format!("{path}:{line_no}"),
                 path,
+                line_no,
+                None,
                 &format!("— `{ALLOW_TOKEN}` with no reason body exempts nothing; write `{ALLOW_TOKEN} — <reason>`"),
             ));
         }
@@ -109,8 +110,9 @@ fn manifest_findings(path: &str, content: &str, known: &HashSet<&str>) -> Vec<Ke
             if !known.contains(name) && reported.insert(name) {
                 out.push(keyed(
                     "fabricated-cite",
-                    name,
                     path,
+                    line_no,
+                    Some(name),
                     &format!(
                         "— cited as grep evidence at {path}:{line_no}, but no tracked source \
                          outside {PROSE_ROOT} and *{PROSE_SUFFIX} contains it"
@@ -122,32 +124,46 @@ fn manifest_findings(path: &str, content: &str, known: &HashSet<&str>) -> Vec<Ke
     out
 }
 
-fn keyed(category: &'static str, name: &str, path: &str, detail: &str) -> Keyed {
+/// One finding about `path:line` — about the cited `symbol` there, or about
+/// the line itself when `symbol` is `None`. The summary names the same handle
+/// the evidence carries.
+fn keyed(
+    category: &'static str,
+    path: &str,
+    line: usize,
+    symbol: Option<&str>,
+    detail: &str,
+) -> Keyed {
+    let name = symbol.map_or_else(|| format!("{path}:{line}"), str::to_string);
     let finding = Finding {
         pattern: Pattern::PManifestCite,
         severity: Severity::Medium,
         task_id: path.to_string(),
         summary: format!("{category}: {name} {detail}"),
-        evidence: vec![EvidenceRef::File {
+        evidence: vec![EvidenceRef::FileLine {
             path: path.to_string(),
+            line,
+            symbol: symbol.map(str::to_string),
         }],
     };
-    ((category, name.to_string(), path.to_string()), finding)
+    ((category, name, path.to_string()), finding)
 }
 
 /// The symbols one capability-manifest line cites as grep evidence, in line
 /// order.
 ///
-/// A cite is a backtick span OPENING after the line's first `grep:`, with
-/// backticks paired from the start of the line — pairing from the marker
-/// instead would misalign every span when the marker sits inside one. A span
+/// A cite is a backtick span OPENING after the line's first free-standing
+/// `grep:` — one not glued to a preceding word byte or hyphen, so `ripgrep:`,
+/// `egrep:` and `id-grep:` are prose — with backticks paired from the start of
+/// the line: pairing from the marker instead would misalign every span when
+/// the marker sits inside one. A span
 /// is a `::`-separated symbol path with an optional trailing `()`; it yields
 /// each segment, or nothing when any segment is not identifier-shaped (a
 /// file path, a phrase, `impl Trait`). Commit-SHA-shaped segments are
 /// dropped. The grammar is pure: allow markers are the caller's business.
 // G-allow: pub for the cross-crate real-corpus floor guard in tests/pcite.rs; the production caller, check(), is same-file, and the orphan audit counts only cross-file call sites
 pub fn cited_symbols(line: &str) -> Vec<&str> {
-    let Some(evidence_at) = line.find(EVIDENCE_MARKER) else {
+    let Some(evidence_at) = evidence_marker_offset(line) else {
         return Vec::new();
     };
     backtick_spans(line)
@@ -155,6 +171,15 @@ pub fn cited_symbols(line: &str) -> Vec<&str> {
         .flat_map(|(_, span)| symbol_path_segments(span))
         .filter(|segment| !is_commit_sha_shaped(segment))
         .collect()
+}
+
+/// Offset of `line`'s first [`EVIDENCE_MARKER`] not glued to a preceding word
+/// byte or hyphen.
+fn evidence_marker_offset(line: &str) -> Option<usize> {
+    let glued = |b: u8| is_word_byte(b) || b == b'-';
+    line.match_indices(EVIDENCE_MARKER)
+        .map(|(at, _)| at)
+        .find(|&at| at == 0 || !glued(line.as_bytes()[at - 1]))
 }
 
 /// `(offset of the opening backtick, text between the pair)` for each
@@ -228,6 +253,22 @@ mod tests {
             cited_symbols("| cap | `check_expr_struct_ctor_args` in `lib.rs` | PASS |"),
             Vec::<&str>::new(),
             "backticked identifiers are cites only on a line carrying `grep:`"
+        );
+    }
+
+    #[test]
+    fn a_grep_glued_to_a_longer_word_is_not_the_marker() {
+        for glued in ["ripgrep", "egrep", "id-grep", "git_grep"] {
+            assert_eq!(
+                cited_symbols(&format!("{glued}: `some_fn`")),
+                Vec::<&str>::new(),
+                "`{glued}:` is prose, not the evidence marker"
+            );
+        }
+        assert_eq!(
+            cited_symbols("a bare id-grep: `paths` | grep: `real_fn` |"),
+            vec!["real_fn"],
+            "a glued occurrence is skipped; the first free-standing `grep:` is the marker"
         );
     }
 
