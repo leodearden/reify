@@ -482,12 +482,13 @@ pub(crate) fn scalar_list(values: &[f64], dimension: DimensionVector) -> Vec<Val
 // These constructors ARE that projection, so each conversion factor is written
 // once and every call site reads as the unit it is handed.
 
-/// Millimetres → SI metres. Same name and value as the other mm→SI boundaries
-/// in the workspace (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`,
-/// `reify-stdlib`'s `trajectory::gcode_import`), so grepping `MM_TO_M`
-/// enumerates all of them — and all of them convert, so no unconverted
-/// G-code→DSL `Value` seam is left (surveyed under task #6301).
-const MM_TO_M: f64 = 1.0e-3;
+/// Millimetres → SI metres. Shared by every mm→SI boundary in this crate
+/// (`length_mm`, `point3_length_mm`, `as_printed_material_r0.rs`). Other crates
+/// cannot reach it, so each keeps a same-named copy (`reify-fdm/src/r0.rs`,
+/// `reify-stdlib`'s `trajectory::gcode_import`); grepping `MM_TO_M` enumerates
+/// all of them — and all of them convert, so no unconverted G-code→DSL `Value`
+/// seam is left (surveyed under task #6301).
+pub(crate) const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
 /// metre × 60 seconds per minute) rather than a rounded reciprocal:
