@@ -1387,13 +1387,13 @@ fn shipped_allowlist() -> Vec<AllowEntry> {
             .iter()
             .flat_map(|(builtin, arity, indices, justification, _slots)| {
                 let expected = Expectation::Dimensionless(*justification);
-                allow_entries(*builtin, *arity, indices.clone(), expected)
+                allow_entries(builtin, *arity, indices.clone(), expected)
             });
     let angle = ANGLE_ALLOWLIST
         .iter()
         .flat_map(|(builtin, arity, indices, _slots)| {
             let expected = Expectation::GatedAt(reify_core::DimensionVector::ANGLE);
-            allow_entries(*builtin, *arity, indices.clone(), expected)
+            allow_entries(builtin, *arity, indices.clone(), expected)
         });
     dimensionless.chain(angle).collect()
 }
