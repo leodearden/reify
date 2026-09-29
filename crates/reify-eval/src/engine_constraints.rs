@@ -18,6 +18,7 @@ use reify_ir::{
     ValueMap,
 };
 
+use crate::graph::EvaluationGraph;
 use crate::topology_selectors;
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
@@ -292,18 +293,31 @@ pub struct GdtCallout {
 pub struct ConstraintUpgrade {
     entry: ConstraintCheckEntry,
     diagnostics: Vec<Diagnostic>,
+    /// The checker's `constraint {subject} indeterminate` claim this upgrade
+    /// makes false, or `None` when a constraint that stayed open shares the
+    /// subject. A claim names its constraint only by subject, and compiler
+    /// labels are unique per entity, not per module.
+    superseded_claim: Option<String>,
 }
 
 impl ConstraintUpgrade {
-    fn new(result: ConstraintResult, label: Option<&str>) -> Self {
+    /// `settled_subject` is the constraint's diagnostic subject when no open
+    /// constraint shares it, else `None`.
+    fn new(result: ConstraintResult, label: Option<&str>, settled_subject: Option<&str>) -> Self {
         debug_assert_ne!(
             result.satisfaction,
             Satisfaction::Indeterminate,
             "ConstraintUpgrade: an upgrade must carry a definite verdict ({})",
             result.id,
         );
+        let superseded_claim =
+            settled_subject.map(|subject| format!("constraint {subject} indeterminate"));
         let (entry, diagnostics) = Engine::labeled_entry(result, label);
-        Self { entry, diagnostics }
+        Self {
+            entry,
+            diagnostics,
+            superseded_claim,
+        }
     }
 
     pub fn entry(&self) -> &ConstraintCheckEntry {
@@ -319,31 +333,29 @@ impl ConstraintUpgrade {
 /// `diagnostics` with that upgrade's fresh diagnostics (appended in upgrade
 /// order).
 ///
-/// Only a `ConstraintIndeterminate` diagnostic opening with the checker's
-/// `constraint {subject} indeterminate` claim is retracted. A message off that
-/// grammar is KEPT: a wrongly dropped line is lost output, a wrongly kept one
-/// merely redundant. `Engine::build`'s 4229 re-check does the same
-/// retract-and-carry-over for its own upgrades.
+/// A `ConstraintIndeterminate` diagnostic is retracted only when every
+/// constraint that bears its subject was upgraded. A shared subject whose other
+/// holder stayed open, or a message off the checker grammar, is KEPT: a wrongly
+/// dropped line is lost output, a wrongly kept one merely redundant. (The match
+/// is textual until #7991 gives these diagnostics a structured subject.)
+/// `Engine::build`'s 4229 re-check does the same retract-and-carry-over for its
+/// own upgrades.
 pub fn replace_superseded_constraint_diagnostics(
     diagnostics: &mut Vec<Diagnostic>,
     upgrades: &[ConstraintUpgrade],
 ) {
-    if upgrades.is_empty() {
-        return;
-    }
-    let superseded_claims: Vec<String> = upgrades
+    let superseded_claims: Vec<&str> = upgrades
         .iter()
-        .map(|u| {
-            let subject = diagnostic_subject(&u.entry.id, u.entry.label.as_deref());
-            format!("constraint {subject} indeterminate")
-        })
+        .filter_map(|u| u.superseded_claim.as_deref())
         .collect();
-    diagnostics.retain(|d| {
-        d.code != Some(DiagnosticCode::ConstraintIndeterminate)
-            || !superseded_claims
-                .iter()
-                .any(|claim| d.message.starts_with(claim.as_str()))
-    });
+    if !superseded_claims.is_empty() {
+        diagnostics.retain(|d| {
+            d.code != Some(DiagnosticCode::ConstraintIndeterminate)
+                || !superseded_claims
+                    .iter()
+                    .any(|claim| d.message.starts_with(claim))
+        });
+    }
     diagnostics.extend(upgrades.iter().flat_map(|u| u.diagnostics.iter().cloned()));
 }
 
@@ -354,6 +366,27 @@ fn diagnostic_subject<'a>(id: &ConstraintNodeId, label: Option<&'a str>) -> Cow<
         Some(label) => Cow::Borrowed(label),
         None => Cow::Owned(id.to_string()),
     }
+}
+
+/// The `subjects` of a batch of upgrades that no constraint left open in
+/// `graph` still bears, i.e. those whose every holder is in the batch.
+fn settled_subjects<'s>(graph: &EvaluationGraph, subjects: &'s [Cow<'_, str>]) -> HashSet<&'s str> {
+    let mut upgraded_holders: HashMap<&str, usize> = HashMap::new();
+    for subject in subjects {
+        *upgraded_holders.entry(subject).or_default() += 1;
+    }
+    let mut graph_holders: HashMap<&str, usize> = HashMap::new();
+    for (_, cnode) in graph.constraints.iter() {
+        let subject = diagnostic_subject(&cnode.id, cnode.label.as_deref());
+        if let Some((&key, _)) = upgraded_holders.get_key_value(subject.as_ref()) {
+            *graph_holders.entry(key).or_default() += 1;
+        }
+    }
+    upgraded_holders
+        .into_iter()
+        .filter(|(subject, upgraded)| graph_holders.get(subject) == Some(upgraded))
+        .map(|(subject, _)| subject)
+        .collect()
 }
 
 /// Each re-checked constraint's result paired with its node's label.
@@ -996,11 +1029,10 @@ impl Engine {
         id: &reify_core::ConstraintNodeId,
         label: Option<&str>,
     ) {
-        if label.is_none() {
+        let Some(lbl) = label else {
             return;
-        }
+        };
         let id_str = id.to_string();
-        let subject = diagnostic_subject(id, label);
         let mut replaced_any = false;
         let mut has_error = false;
         for d in messages.iter_mut() {
@@ -1008,12 +1040,12 @@ impl Engine {
                 has_error = true;
             }
             if d.message.contains(&id_str) {
-                d.message = d.message.replace(&id_str, &subject);
+                d.message = d.message.replace(&id_str, lbl);
                 replaced_any = true;
             }
             for lbl_obj in d.labels.iter_mut() {
                 if lbl_obj.message.contains(&id_str) {
-                    lbl_obj.message = lbl_obj.message.replace(&id_str, &subject);
+                    lbl_obj.message = lbl_obj.message.replace(&id_str, lbl);
                     replaced_any = true;
                 }
             }
@@ -1116,7 +1148,7 @@ impl Engine {
     fn recheck_active_constraints(
         &self,
         values: &ValueMap,
-        include: impl Fn(&ConstraintNodeId) -> bool,
+        mut include: impl FnMut(&ConstraintNodeId) -> bool,
     ) -> Result<(LabeledConstraintResults<'_>, Vec<Diagnostic>), EngineError> {
         let state = self
             .eval_state
@@ -1212,7 +1244,7 @@ impl Engine {
         &self,
         module: &CompiledModule,
         values: &ValueMap,
-        is_candidate: impl Fn(&ConstraintNodeId) -> bool,
+        mut is_candidate: impl FnMut(&ConstraintNodeId) -> bool,
     ) -> Result<Vec<ConstraintUpgrade>, EngineError> {
         let geometric: HashSet<&ConstraintNodeId> = module
             .templates
@@ -1223,10 +1255,33 @@ impl Engine {
             .collect();
         let (results, _dispatch_diags) = self
             .recheck_active_constraints(values, |id| is_candidate(id) && !geometric.contains(id))?;
-        Ok(results
+        let definite: LabeledConstraintResults<'_> = results
             .into_iter()
             .filter(|(result, _)| result.satisfaction != Satisfaction::Indeterminate)
-            .map(|(result, label)| ConstraintUpgrade::new(result, label))
+            .collect();
+        if definite.is_empty() {
+            return Ok(Vec::new());
+        }
+        let subjects: Vec<Cow<str>> = definite
+            .iter()
+            .map(|(result, label)| diagnostic_subject(&result.id, *label))
+            .collect();
+        let graph = &self
+            .eval_state
+            .as_ref()
+            .ok_or(EngineError::NotInitialized)?
+            .snapshot
+            .graph;
+        let settled = settled_subjects(graph, &subjects);
+        Ok(definite
+            .into_iter()
+            .zip(&subjects)
+            .map(|((result, label), subject)| {
+                let settled_subject = settled
+                    .contains(subject.as_ref())
+                    .then_some(subject.as_ref());
+                ConstraintUpgrade::new(result, label, settled_subject)
+            })
             .collect())
     }
 
@@ -3761,10 +3816,14 @@ structure def Probe {
     }
 
     fn with_lengths(values: &ValueMap, cells: &[(&str, f64)]) -> ValueMap {
+        with_entity_lengths(values, "Probe", cells)
+    }
+
+    fn with_entity_lengths(values: &ValueMap, entity: &str, cells: &[(&str, f64)]) -> ValueMap {
         let mut v = values.clone();
         for (member, si_value) in cells {
             v.insert(
-                ValueCellId::new("Probe", *member),
+                ValueCellId::new(entity, *member),
                 Value::Scalar {
                     si_value: *si_value,
                     dimension: DimensionVector::LENGTH,
@@ -3954,6 +4013,15 @@ structure def Probe {
             .collect()
     }
 
+    /// The ConstraintIndeterminate diagnostics naming `subject` as a whole word,
+    /// independent of the checker's sentence around it.
+    fn claims_naming<'a>(diags: &'a [Diagnostic], subject: &str) -> Vec<&'a Diagnostic> {
+        indeterminate_claims(diags)
+            .into_iter()
+            .filter(|d| d.message.split_whitespace().any(|word| word == subject))
+            .collect()
+    }
+
     fn claim_of<'a>(
         diags: &'a [Diagnostic],
         entries: &[crate::ConstraintCheckEntry],
@@ -3961,18 +4029,10 @@ structure def Probe {
     ) -> &'a Diagnostic {
         let entry = entries.iter().find(|e| &e.id == id).expect("checked entry");
         let subject = entry.label.clone().unwrap_or_else(|| id.to_string());
-        let prefix = format!("constraint {subject} indeterminate");
-        let mut hits = indeterminate_claims(diags)
-            .into_iter()
-            .filter(|d| d.message.starts_with(&prefix));
-        let claim = hits
-            .next()
-            .unwrap_or_else(|| panic!("no `{prefix}` claim in {diags:#?}"));
-        assert!(
-            hits.next().is_none(),
-            "`{prefix}` claimed twice: {diags:#?}"
-        );
-        claim
+        match claims_naming(diags, &subject)[..] {
+            [claim] => claim,
+            ref hits => panic!("want one claim naming `{subject}`, got {hits:#?}"),
+        }
     }
 
     #[test]
@@ -4052,6 +4112,113 @@ structure def Probe {
             "every other diagnostic survives in its original relative order, \
              followed by the upgrade's fresh diagnostics"
         );
+    }
+
+    /// Two structures instantiating one constraint def: compiler labels are
+    /// scoped per entity, so both constraints carry the label `MinWall#0[0]`.
+    const SHARED_LABEL_SOURCE: &str = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2mm
+}
+structure def A {
+    param a : Length = auto
+    constraint MinWall(wall: a)
+}
+structure def B {
+    param b : Length = auto
+    constraint MinWall(wall: b)
+}
+"#;
+
+    const SHARED_LABEL: &str = "MinWall#0[0]";
+
+    /// Check [`SHARED_LABEL_SOURCE`], assert both constraints share the label and
+    /// both claim indeterminacy, then upgrade what `cells` settles.
+    fn shared_label_upgrade(
+        cells: &[(&str, &str, f64)],
+    ) -> (crate::CheckResult, Vec<ConstraintUpgrade>) {
+        let module = parse_and_compile_with_stdlib(SHARED_LABEL_SOURCE);
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        let labels: Vec<_> = checked
+            .constraint_results
+            .iter()
+            .map(|e| (e.label.as_deref(), e.satisfaction))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![(Some(SHARED_LABEL), Satisfaction::Indeterminate); 2],
+            "precondition: two open constraints share one label"
+        );
+        assert_eq!(
+            claims_naming(&checked.diagnostics, SHARED_LABEL).len(),
+            2,
+            "precondition: each claims indeterminacy under the shared label: {:#?}",
+            checked.diagnostics
+        );
+        let values = cells
+            .iter()
+            .fold(checked.values.clone(), |v, (entity, member, si)| {
+                with_entity_lengths(&v, entity, &[(member, *si)])
+            });
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        (checked, upgrades)
+    }
+
+    #[test]
+    fn replacement_keeps_a_shared_label_claim_while_another_holder_stays_open() {
+        let (checked, upgrades) = shared_label_upgrade(&[("A", "a", 0.001)]);
+        assert_eq!(
+            upgrades.len(),
+            1,
+            "only A's constraint settled: {upgrades:#?}"
+        );
+        assert_eq!(upgrades[0].entry().label.as_deref(), Some(SHARED_LABEL));
+        assert_eq!(upgrades[0].entry().satisfaction, Satisfaction::Violated);
+        assert!(
+            !upgrades[0].diagnostics().is_empty(),
+            "non-vacuity: A's violation carries a fresh diagnostic"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+        assert_eq!(
+            claims_naming(&diags, SHARED_LABEL)
+                .into_iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>(),
+            claims_naming(&checked.diagnostics, SHARED_LABEL)
+                .into_iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>(),
+            "B's claim is still true and the text cannot tell it from A's, so both stay"
+        );
+        assert_eq!(
+            diags.len(),
+            checked.diagnostics.len() + upgrades[0].diagnostics().len(),
+            "A's fresh diagnostics are still appended: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn replacement_retracts_a_shared_label_claim_once_every_holder_is_upgraded() {
+        let (checked, upgrades) = shared_label_upgrade(&[("A", "a", 0.005), ("B", "b", 0.001)]);
+        assert_eq!(upgrades.len(), 2, "both constraints settled: {upgrades:#?}");
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+        let surviving = claims_naming(&diags, SHARED_LABEL);
+        assert!(
+            surviving.is_empty(),
+            "no constraint bearing the label is open, so every claim naming it is stale: \
+             {surviving:#?}"
+        );
+        let fresh: usize = upgrades.iter().map(|u| u.diagnostics().len()).sum();
+        assert!(fresh > 0, "non-vacuity: B's constraint is violated");
+        assert_eq!(diags.len(), checked.diagnostics.len() - 2 + fresh);
     }
 
     #[test]
