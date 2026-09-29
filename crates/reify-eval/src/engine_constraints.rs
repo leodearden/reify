@@ -356,6 +356,9 @@ fn diagnostic_subject<'a>(id: &ConstraintNodeId, label: Option<&'a str>) -> Cow<
     }
 }
 
+/// Each re-checked constraint's result paired with its node's label.
+type LabeledConstraintResults<'a> = Vec<(ConstraintResult, Option<&'a str>)>;
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -1114,7 +1117,7 @@ impl Engine {
         &self,
         values: &ValueMap,
         include: impl Fn(&ConstraintNodeId) -> bool,
-    ) -> Result<(Vec<(ConstraintResult, Option<&str>)>, Vec<Diagnostic>), EngineError> {
+    ) -> Result<(LabeledConstraintResults<'_>, Vec<Diagnostic>), EngineError> {
         let state = self
             .eval_state
             .as_ref()
