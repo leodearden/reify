@@ -1191,6 +1191,54 @@ mod tests {
         assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
     }
 
+    // --- diagnostic label tests ---
+
+    /// Dimension form: no " Scalar" suffix; an unnamed dimension prints its
+    /// `Display` exponents. Deliberately different from the scalar form below.
+    #[test]
+    fn diagnostic_dimension_label_names_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length"),
+            ("MASS", DimensionVector::MASS, "Mass"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "USD\u{00B7}kg^-1",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_dimension_label(), expected, "{label}");
+        }
+    }
+
+    /// Scalar form: " Scalar" suffix; an unnamed dimension is the generic
+    /// "dimensioned". Deliberately different from the dimension form above.
+    #[test]
+    fn diagnostic_scalar_label_names_a_scalar_value_of_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless Scalar",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length Scalar"),
+            ("MASS", DimensionVector::MASS, "Mass Scalar"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "dimensioned Scalar",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_scalar_label(), expected, "{label}");
+        }
+    }
+
     #[test]
     fn content_hash_buffer_covers_slot_9() {
         // Verify that slot-9 bytes actually feed into the digest.
