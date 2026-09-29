@@ -12,7 +12,7 @@ use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
     unenforced_representation_bound_diagnostic,
 };
-use reify_eval::{CancellationHandle, CheckResult, Engine};
+use reify_eval::{CancellationHandle, CheckResult, ConstraintUpgrade, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
@@ -1353,7 +1353,8 @@ impl EngineSession {
         // hidden entity's entries, so only demanded entities can be replayed here.
         {
             let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
+            // A subset of the upgrades build_gui_state already applied to tess_diag_cache.
+            let _ = surface_geometry_derived_cells(
                 self.core.engine(),
                 self.core.compiled().unwrap(),
                 &mut values,
@@ -3931,7 +3932,7 @@ impl EngineSession {
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         // Scoped so the mutable engine borrow is released before resolve_source()
         // is called inside the diagnostics-mapping branch below.
-        let tess_result = {
+        let mut tess_result = {
             let (compiled, engine) = self.core.split_compiled_and_engine_mut();
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
@@ -3985,9 +3986,9 @@ impl EngineSession {
         // retains the last delta-resolved value per cell and re-surfaces it on such
         // a gap. Disjoint-field borrow: the cache and the engine are distinct
         // `EngineSession` fields, so split the borrow rather than cloning.
-        if let Some(result) = &tess_result {
+        if let Some(result) = &mut tess_result {
             let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
+            let upgrades = surface_geometry_derived_cells(
                 self.core.engine(),
                 self.core.compiled().unwrap(),
                 &mut values,
@@ -3995,6 +3996,10 @@ impl EngineSession {
                 &result.values,
                 &result.meshes,
                 cache,
+            );
+            reify_eval::replace_superseded_constraint_diagnostics(
+                &mut result.diagnostics,
+                &upgrades,
             );
         }
 
@@ -5308,7 +5313,9 @@ pub(crate) fn build_constraints(
 /// mirrors the post-geometry constraint re-check in `Engine::build`
 /// (engine_build.rs): a Satisfied/Violated constraint is never a candidate, so it
 /// cannot regress. Skipped entirely when this pass surfaced no cell, or when
-/// nothing is Indeterminate (the common cases).
+/// nothing is Indeterminate (the common cases). Returns the adopted upgrades
+/// (empty when skipped) so the caller can replace the Indeterminate diagnostics
+/// they supersede.
 ///
 /// ## Task #5338: the delta contract
 ///
@@ -5370,7 +5377,7 @@ fn surface_geometry_derived_cells(
     delta_values: &ValueMap,
     delta_meshes: &[reify_eval::MeshSurface],
     cache: &mut HashMap<ValueCellId, Value>,
-) {
+) -> Vec<ConstraintUpgrade> {
     // Track whether this pass surfaced any cell from Undef → Determined. If it
     // did not, `result.values` resolved nothing the kernel-less panel was
     // missing, so the constraint re-check below cannot flip any verdict (every
@@ -5555,18 +5562,20 @@ fn surface_geometry_derived_cells(
             Some(merged)
         };
         let recheck_values = merged.as_ref().unwrap_or(delta_values);
-        recheck_indeterminate_constraints(engine, module, constraints, recheck_values);
+        return recheck_indeterminate_constraints(engine, module, constraints, recheck_values);
     }
+    Vec::new()
 }
 
 /// Adopt each verdict `Engine::upgrade_indeterminate_verdicts` settles for the
-/// panel's Indeterminate constraints. An engine error leaves every status as is.
+/// panel's Indeterminate constraints and return those upgrades. An engine error
+/// leaves every status as is and returns none.
 fn recheck_indeterminate_constraints(
     engine: &Engine,
     module: &CompiledModule,
     constraints: &mut [ConstraintData],
     recheck_values: &ValueMap,
-) {
+) -> Vec<ConstraintUpgrade> {
     let indeterminate = satisfaction_token(Satisfaction::Indeterminate);
     let candidates: HashSet<&str> = constraints
         .iter()
@@ -5576,7 +5585,7 @@ fn recheck_indeterminate_constraints(
     let Ok(upgrades) = engine.upgrade_indeterminate_verdicts(module, recheck_values, |id| {
         candidates.contains(id.to_string().as_str())
     }) else {
-        return;
+        return Vec::new();
     };
     for upgrade in &upgrades {
         let node_id = upgrade.entry().id.to_string();
@@ -5584,6 +5593,7 @@ fn recheck_indeterminate_constraints(
             c.status = satisfaction_token(upgrade.entry().satisfaction).to_string();
         }
     }
+    upgrades
 }
 
 /// The trait defs a conformance check must be resolved against: the module's
