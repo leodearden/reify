@@ -437,7 +437,7 @@ structure def Asm {
 /// Here `src` is `out`, the `Fast` arm's `p` is `in` (a legal Out -> In hop, and
 /// `Fast` is the selected arm) and the `Slow` arm's `p` is `out` (Out -> Out).
 /// The sibling side-maps at this pre-pass site keep the LAST arm's answer, which
-/// would reject this assembly outright; `merge_arm_port_directions` folds the
+/// would reject this assembly outright; `cluster_port_directions` folds the
 /// arms to their intersection instead, so the contested port falls back to the
 /// `sub_port_directions` absence contract — unknown, hence unchecked. Deciding
 /// per-arm is a larger question than #7175; this pins that the fallback is a
@@ -560,6 +560,15 @@ structure def S {
     assert_has_diagnostic(&diagnostics, Severity::Error, "undefined port 'self.typo'");
 }
 
+/// The message of every undefined-port error in `diagnostics`.
+fn undefined_port_errors(diagnostics: &[Diagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .map(|d| d.message.clone())
+        .collect()
+}
+
 // ── #7880: a dotted endpoint must name something its sub's child declares ──
 
 /// The one error every non-vacuity control in this section expects: `e1.typo`
@@ -571,17 +580,13 @@ const E1_TYPO_UNDEFINED: &str = "undefined port 'e1.typo' in connect statement";
 /// undefined-port error. `Leaf` precedes `Asm`, so the child resolves.
 fn undefined_port_errors_across_leaf_subs(leaf_body: &str, left: &str, right: &str) -> Vec<String> {
     let source = format!(
-        "trait T {{ param d : Length }}\n\
+        "enum Mode {{ Fast, Slow }}\n\
+         trait T {{ param d : Length }}\n\
          structure def Inner {{ port q : in T {{ param d : Length = 1mm }} }}\n\
          structure def Leaf {{\n{leaf_body}\n}}\n\
          structure def Asm {{\n    sub e1 : Leaf\n    sub e2 : Leaf\n    connect {left} -> {right}\n}}\n"
     );
-    compile_source(&source)
-        .diagnostics
-        .into_iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-        .map(|d| d.message)
-        .collect()
+    undefined_port_errors(&compile_source(&source).diagnostics)
 }
 
 /// The #7880 probe verbatim: `motor` resolved to `Nema17`, which declares no
@@ -760,6 +765,53 @@ fn compile_connect_dotted_where_guarded_member_is_not_undefined() {
     );
 }
 
+/// Deliberate pass (2): a param declared only in a `where … else { }` arm
+/// compiles into the guarded group's else members, and is declared all the same.
+#[test]
+fn compile_connect_dotted_where_else_member_is_not_undefined() {
+    let leaf = "param on : Bool = true\n\
+                where on { param u : Length = 1mm } else { param v : Length = 2mm }";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.v", "e2.v"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.v"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (2): a geometry `let` compiles into a named realization,
+/// and is declared all the same.
+#[test]
+fn compile_connect_dotted_declared_geometry_let_member_is_not_undefined() {
+    let leaf = "let body = box(1mm, 1mm, 1mm)";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.body", "e2.body"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.body"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (2), sub-of-sub: `e1.c` names the child's own match-arm
+/// cluster by its logical name.
+#[test]
+fn compile_connect_dotted_declared_match_arm_cluster_member_is_not_undefined() {
+    let leaf = "param mode : Mode = Mode.Fast\n\
+                match mode {\n    Fast => sub c : Inner,\n    Slow => sub c : Inner\n}";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.c", "e2.c"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.c"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
 /// Deliberate pass (1), the negative control for the absence contract: with
 /// `Leaf` declared below `Asm` the child is not resolvable when `Asm` compiles,
 /// so even a true miss is left unchecked. GREEN before and after #7880; flips
@@ -842,12 +894,7 @@ structure def Asm {{
 }}
 "#
         );
-        compile_source(&source)
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-            .map(|d| d.message)
-            .collect()
+        undefined_port_errors(&compile_source(&source).diagnostics)
     };
 
     assert_eq!(undefined_port_errors("s.q"), Vec::<String>::new());
@@ -1149,10 +1196,7 @@ structure def S {
 }
 "#;
     let (_template, diagnostics) = compile_first_template(source);
-    let undef_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-        .collect();
+    let undef_errors = undefined_port_errors(&diagnostics);
     assert!(
         !undef_errors.is_empty(),
         "expected undefined port error, got: {:?}",
@@ -2438,19 +2482,14 @@ structure def S {
 }
 "#;
     let (_template, diagnostics) = compile_first_template(source);
-    let undef_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-        .collect();
+    let undef_errors = undefined_port_errors(&diagnostics);
     assert!(
         !undef_errors.is_empty(),
         "expected undefined-port error, got: {:?}",
         diagnostics
     );
     // The undefined port name is included in the error message
-    let names_nonexistent = undef_errors
-        .iter()
-        .any(|d| d.message.contains("nonexistent"));
+    let names_nonexistent = undef_errors.iter().any(|m| m.contains("nonexistent"));
     assert!(
         names_nonexistent,
         "error message should name the undefined port, got: {:?}",
@@ -2507,11 +2546,7 @@ structure def Assembly {
     // Dotted ports: no auto-match, empty port_mappings — the own-entity lookup
     // is what is skipped, not the direction check or the existence check against
     // the child's declared members (#7880); both ports are declared here.
-    let undef_errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-        .collect();
+    let undef_errors = undefined_port_errors(&module.diagnostics);
     assert!(
         undef_errors.is_empty(),
         "expected NO undefined-port errors for dotted ports, got: {:?}",
@@ -2588,10 +2623,7 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
     // (1) undefined-port error emitted for 'missing'
-    let undef_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-        .collect();
+    let undef_errors = undefined_port_errors(&diagnostics);
     assert!(
         !undef_errors.is_empty(),
         "expected undefined-port error for 'missing', got: {:?}",
