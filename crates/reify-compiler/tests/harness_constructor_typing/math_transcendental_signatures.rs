@@ -32,25 +32,12 @@
 //! exp/log rows feed a dimensionless Real, so their rows are contract pins;
 //! their behavioral RED is at the `is_math_typed_fn` recognition level.
 //!
-//! CORRECTION (task 6249). This header previously claimed eval "Undefs on a
-//! dimensioned arg (`unary_f64` rejects dimensions)". That was wrong, and was
-//! wrong before task 6249 touched this file. `unary_f64`
-//! (`crates/reify-stdlib/src/helpers.rs:31`) extracts via `Value::as_f64`,
-//! whose `Value::Scalar { si_value, .. } => Some(*si_value)` arm
-//! (`crates/reify-ir/src/value.rs:1639`) accepts ANY dimension — so `log(2mm)`
-//! silently evaluates `ln(0.002)` rather than Undefing. MEASURED 2026-08-29:
-//! `reify eval` on `let a = log(2.0mm)` prints `-6.214608098422191`, which is
-//! exactly `ln(0.002)`. That silent wrongness is what
-//! `docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b) cites, and
-//! task **#6943** owns the fix; the scope-fence test below pins that this file
-//! does not pre-empt it.
-//!
-//! CONTRAST — forward trig genuinely does reject dimensions at eval:
-//! `trig_input` (`crates/reify-stdlib/src/helpers.rs:102`) returns `None` for a
-//! non-ANGLE `Value::Scalar`, which `eval_trig`
-//! (`crates/reify-stdlib/src/trig.rs`) maps to `Value::Undef`. Task
-//! 6249 makes that a COMPILE-time `ArgTypeMismatch` instead of a silent Undef;
-//! see the "Forward-trig argument-dimension rejection" section below.
+//! The two sub-families differ on a DIMENSIONED argument. exp/log extract via
+//! `Value::as_f64`, which accepts any `Value::Scalar`, so `log(2mm)` silently
+//! evaluates `ln(0.002)` — its fix is owned by #6943, fenced below. Forward
+//! trig's `trig_input` returns `None` for a non-ANGLE scalar, which eval turns
+//! into `Value::Undef`; the "Forward-trig argument-dimension rejection" section
+//! below pins the compile-time `ArgTypeMismatch` that surfaces it instead.
 //!
 //! # Arg-independent arms
 //!
@@ -362,17 +349,13 @@ fn sin_times_mm_cascade_is_length() {
     }
 }
 
-// ── Forward-trig argument-dimension rejection (task 6249, step-3 RED) ─────────
+// ── Forward-trig argument-dimension rejection ────────────────────────────────
 //
 // `sin`/`cos`/`tan` reject a dimensioned, non-ANGLE argument at COMPILE time
-// with a coded `ArgTypeMismatch` Error. RED before step-4 wires
-// `math_signatures::check_transcendental_arg_dimensions` into
-// `expr.rs::resolve_function_overload` — verified first-hand on the base
-// commit, where `reify check` on `sin(5.0mm)` exits 0 with
-// "All constraints satisfied" and zero diagnostics.
+// with a coded `ArgTypeMismatch` Error.
 
 /// Every `ArgTypeMismatch` Error in `compiled` — mirrors the helper of the same
-/// name in `tests/harness_type_checking/builtin_arg_signature_tests.rs:214` so
+/// name in `tests/harness_type_checking/builtin_arg_signature_tests.rs` so
 /// assertions here read the same way as the established sibling suite.
 fn arg_type_mismatch_errors(compiled: &CompiledModule) -> Vec<&reify_core::Diagnostic> {
     compiled
@@ -435,10 +418,10 @@ fn tan_of_mass_raises_arg_type_mismatch() {
     assert_one_trig_arg_mismatch("tan(2.0kg)", "tan");
 }
 
-// ── Acceptance boundary + scope fence (task 6249, step-5) ─────────────────────
+// ── Acceptance boundary + scope fence ────────────────────────────────────────
 //
-// These pin the two ways step-4's wiring could be WRONG in the OVER-BROAD
-// direction. Each case is RED against a plausible mis-implementation.
+// These pin the check against being OVER-BROAD. Each case is RED against a
+// plausible mis-implementation.
 
 /// Assert `expr` raises ZERO `ArgTypeMismatch` Errors.
 fn assert_no_trig_arg_mismatch(expr: &str, why: &str) {
@@ -489,23 +472,12 @@ fn forward_trig_accepts_int_arguments() {
 // The six non-forward-trig transcendental names must ALSO stay unchecked here.
 // RED against an implementation that gates on `MATH_TRANSCENDENTAL_NAMES`
 // wholesale instead of the three forward-trig names — the most likely
-// over-broad mistake, and the one that would break
-// `dcr_langsurface_crossdim_silent.ri` under `tests/prd-gate/fixtures/`
-// (spelled split, NOT as one path — test_verify_scope.sh's PG-DRIFT scenario
-// derives "read by a compiled test target" from a comment-inclusive grep for
-// `<that dir>/<name>.ri` over every tracked `*.rs`, so writing the joined path
-// here would assert the opposite of what this sentence says), registered in
-// `scripts/verify.sh`'s `_GUI_COUPLED_RI_FIXTURES`, which must keep exiting 0
-// until #5809's leaf κ lands.
+// over-broad mistake, and one that would pre-empt #6943 and #5809.
 
 /// SCOPE FENCE — `exp`/`log` argument dimensions are OWNED BY TASK #6943
 /// (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b),
 /// Leo-ratified 2026-08-07), which delivers them as registry rows with a
 /// chartered `E_ArgDimension` code family and dimension-aware fixit hints.
-///
-/// Their failure mode is also DIFFERENT from forward trig's: `unary_f64`
-/// extracts via `Value::as_f64`, whose `Value::Scalar` arm accepts any
-/// dimension, so `log(2mm)` silently evaluates `ln(0.002)` rather than Undefing.
 ///
 /// **Implementer of #6943: FLIP this assertion, do not delete it.**
 #[test]
@@ -538,7 +510,7 @@ fn scope_fence_inverse_trig_stays_unchecked_pending_5809() {
 // (c) CORPUS GUARD ───────────────────────────────────────────────────────────
 
 /// The only live forward-trig call sites in the whole tracked `.ri` corpus are
-/// `examples/generate_bolt_circle.ri:29-30`. Compile both shapes here so the
+/// the two in `examples/generate_bolt_circle.ri`. Compile both shapes here so the
 /// corpus is covered by a fast unit-level test rather than only by the slower
 /// `examples_smoke` sweep.
 ///
@@ -564,5 +536,48 @@ structure def BoltCircleTrig {
         mismatches.is_empty(),
         "the live examples/generate_bolt_circle.ri trig call shapes must stay clean, got: \
          {mismatches:#?}"
+    );
+}
+
+// (d) USER-FN SHADOWING ──────────────────────────────────────────────────────
+
+/// A user-defined `fn sin(x : Length) -> Length` shadows the builtin AND its
+/// argument check: `sin(5.0mm)` resolves to the user fn (the cell takes its
+/// declared `Length` return, not the builtin's dimensionless result) and raises
+/// no `ArgTypeMismatch`. RED if the check runs before user-fn dispatch.
+#[test]
+fn user_defined_sin_shadows_builtin_arg_check() {
+    let src = r#"
+fn sin(x : Length) -> Length {
+    x
+}
+structure def UserSinShadow {
+    let b = sin(5.0mm)
+}
+"#;
+    let module = compile_with_stdlib_helper(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a user `fn sin(x : Length)` must accept `sin(5.0mm)` cleanly, got: {errors:#?}"
+    );
+    let cell_type = &module
+        .templates
+        .iter()
+        .find(|t| t.name == "UserSinShadow")
+        .expect("template `UserSinShadow` not found")
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "b")
+        .expect("cell `b` not found")
+        .cell_type;
+    assert_eq!(
+        *cell_type,
+        Type::length(),
+        "`sin(5.0mm)` must dispatch to the user fn's declared `Length` return"
     );
 }

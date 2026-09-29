@@ -3483,26 +3483,10 @@ fn compile_expr_guarded_with_expected_inner(
                         diagnostics,
                     );
 
-                    // task 6249: compile-time argument-DIMENSION check for the
-                    // forward-trig builtins sin/cos/tan. A third instance of
-                    // the same pure-diagnostic pattern as the two siblings
-                    // above — same insertion slot, same contract: it runs AFTER
-                    // `coerce::coerce_list_helper_args` so the COERCED types are
-                    // what gets checked, and BEFORE the result-type ladder so it
-                    // stays a pure side-effect on `diagnostics`.
-                    // `math_fn_result_type` still returns
-                    // `Type::dimensionless_scalar()` for a rejected `sin(5mm)`,
-                    // so no cascade of secondary type errors follows
-                    // (the anti-cascade discipline documented above).
-                    // Type::Error / Type::TypeParam args are skipped
-                    // (gradualism), and only the three forward-trig names are
-                    // gated — exp/log (#6943) and inverse trig (#5809) are
-                    // deliberately untouched, pinned by the scope-fence tests in
-                    // tests/harness_constructor_typing/math_transcendental_signatures.rs.
-                    // Sitting inside this `NoUserFunctions` arm also means a
-                    // user-defined `fn sin(...)` still shadows the builtin AND
-                    // its check, preserving the dispatch-precedence contract
-                    // documented at the top of this arm.
+                    // task 6249: forward-trig (sin/cos/tan) argument-dimension
+                    // check. A third parallel pure diagnostic side-effect, same
+                    // slot and contract as the two above; the rule lives on
+                    // `math_signatures::check_transcendental_arg_dimensions`.
                     math_signatures::check_transcendental_arg_dimensions(
                         name,
                         &compiled_args,
@@ -3734,17 +3718,6 @@ fn compile_expr_guarded_with_expected_inner(
                         //     → Angle; exp/log → dimensionless. Results are
                         //     arg-independent (fixed arms in math_fn_result_type,
                         //     matching eval).
-                        //     Arg-independent RESULTS, but not unvalidated
-                        //     ARGUMENTS: since task 6249 the forward-trig
-                        //     names sin/cos/tan additionally have their
-                        //     argument DIMENSION checked by
-                        //     `math_signatures::check_transcendental_arg_dimensions`,
-                        //     wired as a pure diagnostic side-effect earlier in
-                        //     this arm (a non-ANGLE dimensioned arg — which eval
-                        //     Undefs on — raises ArgTypeMismatch). The result
-                        //     type is unchanged either way, which is what keeps
-                        //     the two facts independent. exp/log (#6943) and
-                        //     the inverse-trig names (#5809) remain unchecked.
                         // `math_fn_result_type` computes the per-call result type
                         // for BOTH: for constructors it recovers the return
                         // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —

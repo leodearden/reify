@@ -136,14 +136,14 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
 }
 
 /// The forward-trig subset of [`MATH_TRANSCENDENTAL_NAMES`] whose ARGUMENT
-/// dimension is policed by [`check_transcendental_arg_dimensions`] (task 6249).
+/// dimension is policed by [`check_transcendental_arg_dimensions`].
 ///
 /// Deliberately NOT the whole transcendental slice — see that function's
 /// "Deliberately out of scope" section.
 const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
 
 /// Compile-time argument-DIMENSION check for the forward-trig builtins
-/// `sin` / `cos` / `tan` (task 6249).
+/// `sin` / `cos` / `tan`.
 ///
 /// A pure side-effect on `diagnostics`, mirroring its two siblings
 /// [`crate::builtin_signatures::check_builtin_arg_types`] and
@@ -154,33 +154,25 @@ const FORWARD_TRIG_NAMES: &[&str] = &["sin", "cos", "tan"];
 ///
 /// # The eval contract this mirrors
 ///
-/// `sin`/`cos`/`tan` route through `reify_stdlib::helpers::trig_input`
-/// (`crates/reify-stdlib/src/helpers.rs:102-118`), which returns `Some`
-/// radians for exactly three shapes — `Value::Scalar { dimension: ANGLE }`,
-/// `Value::Real`, and `Value::Int` — and `None` for a scalar of ANY other
-/// dimension, which `eval_trig` (`crates/reify-stdlib/src/trig.rs`) maps to a
-/// silent `Value::Undef`. This check rejects statically exactly the set eval
-/// already Undefs on, so no program that works today can start failing.
+/// `sin`/`cos`/`tan` route through `reify_stdlib::helpers::trig_input`, which
+/// returns `Some` radians for exactly three shapes — `Value::Scalar { dimension:
+/// ANGLE }`, `Value::Real`, and `Value::Int` — and `None` for a scalar of ANY
+/// other dimension, which `reify_stdlib::trig::eval_trig` maps to a silent
+/// `Value::Undef`. This check rejects statically exactly the set eval already
+/// Undefs on, so no program that works today can start failing.
 ///
-/// # Why BOTH `Angle` and dimensionless are accepted
+/// # Why `Angle`, dimensionless AND `Int` are all accepted
 ///
-/// Not a widening for convenience — both are load-bearing. `Value::Real`
-/// (== `Type::Scalar { DIMENSIONLESS }`) is the bare-radians input used by
-/// `examples/generate_bolt_circle.ri:29-30` and by `sin(pi)` / `cos(tau)` in
-/// `crates/reify-eval/tests/stdlib_constants_e2e.rs`; the ANGLE arm is what
-/// `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`'s
-/// `BOUNDARY_SOURCE` depends on, feeding `sin(0.5rad)` / `cos(0.0rad)` /
-/// `tan(0.5rad)` and asserting zero Error-severity diagnostics. `Type::Int` is
-/// accepted for the same reason eval accepts `Value::Int`: overload resolution
-/// carries no Int→Real widening (`coerce.rs`), so a `Scalar`-only rule would
-/// statically reject `sin(2)`, which eval happily evaluates.
+/// Each mirrors one `trig_input` arm and each has live callers: bare-radians
+/// dimensionless input (`sin(pi)`, the bolt-circle example's
+/// `cos(i * 2 * pi / bolt_count)`), a true `Angle` (`sin(0.5rad)`), and `Int`
+/// (`sin(2)`) — overload resolution carries no Int→Real widening, so a
+/// `Scalar`-only rule would reject what eval happily evaluates.
 ///
 /// # Deliberately out of scope
 ///
-/// Only the three [`FORWARD_TRIG_NAMES`] are gated. The remaining six
-/// transcendental names pass silently, and that non-enforcement is pinned by
-/// the scope-fence tests in
-/// `tests/harness_constructor_typing/math_transcendental_signatures.rs`:
+/// Only the three [`FORWARD_TRIG_NAMES`] are gated; the remaining six
+/// transcendental names pass silently, pinned by scope-fence tests:
 ///
 ///   * `exp` / `log` — owned by task **#6943**
 ///     (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b)), which
@@ -2513,15 +2505,8 @@ mod tests {
         );
     }
 
-    // ── Forward-trig argument-dimension check (task 6249, step-1 RED) ────────
-    //
-    // `check_transcendental_arg_dimensions` rejects a dimensioned, non-ANGLE
-    // argument to `sin`/`cos`/`tan`. RED until step-2 adds the function: the
-    // test module does not compile without it (the established RED idiom for a
-    // new resolver arm — cf. the `RED until S2 adds the "vec3" arm` tests above).
+    // ── Forward-trig argument-dimension check ────────────────────────────────
 
-    /// The established test-span idiom (`relation_signatures.rs:1599`,
-    /// `arg_check.rs:121`).
     fn trig_call_span() -> reify_core::SourceSpan {
         reify_core::SourceSpan::new(0, 10)
     }
@@ -2592,5 +2577,40 @@ mod tests {
     #[test]
     fn sin_rejects_mass_dimensioned_argument_not_just_length() {
         assert_single_trig_rejection("sin", mass_elem(2.0));
+    }
+
+    fn assert_no_trig_diagnostic(name: &str, args: &[CompiledExpr], why: &str) {
+        let mut diagnostics = Vec::new();
+        check_transcendental_arg_dimensions(name, args, trig_call_span(), &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "{name}: {why} must push nothing, got {diagnostics:?}"
+        );
+    }
+
+    /// A zero-arg call is an arity problem, not a dimension mismatch.
+    #[test]
+    fn forward_trig_with_no_args_pushes_nothing() {
+        assert_no_trig_diagnostic("sin", &[], "an empty arg list");
+    }
+
+    /// Gradualism: poison and unresolved args pass silently.
+    #[test]
+    fn forward_trig_skips_error_and_type_param_args() {
+        let typed = |ty: Type| CompiledExpr::literal(Value::Undef, ty);
+        assert_no_trig_diagnostic("cos", &[typed(Type::Error)], "a Type::Error arg");
+        assert_no_trig_diagnostic(
+            "tan",
+            &[typed(Type::TypeParam("T".to_string()))],
+            "a Type::TypeParam arg",
+        );
+    }
+
+    /// Only `FORWARD_TRIG_NAMES` are gated: a dimensioned arg to `exp` or
+    /// `atan` passes here.
+    #[test]
+    fn non_forward_trig_names_are_not_checked() {
+        assert_no_trig_diagnostic("exp", &[length_elem(0.005)], "exp(Length)");
+        assert_no_trig_diagnostic("atan", &[length_elem(0.005)], "atan(Length)");
     }
 }
