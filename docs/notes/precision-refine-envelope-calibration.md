@@ -66,8 +66,7 @@ reproduces the committed 20 mm rung exactly, which is what establishes that thes
 describe the ribbon rather than merely predating the repose. 0.6185 also breaks the
 `sweep / pipe / spline ≤ 0.598` row in §3.1, so that bound needs re-deriving, not just the
 spline ladder. Re-walking is deliberately **not** done inline — this note records 90 s
-walls and a timed-out 10 mm rung (Caveat 1) — and is tracked as ticket
-`tkt_0RTWAJ9RN4PSDTA2RSKPGEHJVD`.
+walls and a timed-out 10 mm rung (Caveat 1) — and is tracked as task #7251.
 
 ---
 

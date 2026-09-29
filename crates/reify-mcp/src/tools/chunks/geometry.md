@@ -129,7 +129,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `tube` | **base at z=0**, axis **+Z**, x/y centred at origin | composed from `outer cylinder − inner cylinder`, so it inherits `cylinder`'s base-at-z0 anchor |
 | `wedge` | **min-corner at origin**, occupying the **+X/+Y/+Z octant** | the one primitive anchored at a corner rather than centred or base-centred; no `wedge_centered` variant exists yet |
 | `rounded_box` | **centred at origin**, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
-| 2D profiles (`rectangle`, `circle`, `ellipse`) | planar in the **XY plane at z=0**, **centred at origin** | consumed by `extrude`/`revolve`/`sweep`/`loft` |
+| 2D profiles (`rectangle`, `circle`, `ellipse`) | planar in the **XY plane at z=0**, **centred at origin** | consumed by `extrude`/`revolve`/`sweep`/`loft`; `sweep` takes the profile **as posed**, so for a path that starts in the XY plane, pose it first (see below) |
 | `rounded_rect` (2D profile) | planar in the **XY plane at z=0**, **centred at origin** | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 | `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
@@ -139,6 +139,16 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.
 When in doubt, prefer the `_centered` variant over a manual
 `translate(primitive(...), 0mm, 0mm, -h/2)` workaround.
+
+**`sweep` takes the profile exactly as posed.** `sweep(profile, path)` never re-orients the
+profile onto the path's start frame, so the body encloses
+`(profile area) x (spine displacement . profile normal)`. An XY-plane profile swept along a path
+that starts in the XY plane is edge-on and encloses nothing. A profile whose plane lies within
+**4 degrees** of the path's start tangent is refused with a typed geometry error that reports the
+measured start tangent. Pose the profile normal along that tangent, and bind the posed profile with
+`let` first: an inline transform as the profile argument is rejected (`GeometryProfileRequired`).
+`pipe` is the contrast: it builds its circle on the path's start frame, so it needs no posing. The
+same contract is stated at the signature in `docs/reify-stdlib-reference.md` §3.6.
 
 ### Dimensioned arguments
 <!-- LENGTH-ARGS-SECTION -->

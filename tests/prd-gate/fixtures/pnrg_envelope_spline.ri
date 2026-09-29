@@ -29,7 +29,7 @@
 // d-ladder of docs/notes/precision-refine-envelope-calibration.md) — PREDATE
 // task #7248 and no longer describe this fixture: see "WHY THE PROFILE IS
 // POSED" below.  They are marked stale at each of those rows; re-measuring the
-// spline class is tracked separately.  Swapping the subject for a different
+// spline class is tracked separately, by #7251.  Swapping the subject for a different
 // CLASS would still invalidate them and is still not on the table.
 //
 // ── WHY THE PROFILE IS POSED ──
