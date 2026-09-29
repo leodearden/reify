@@ -20,8 +20,8 @@
 
 mod common;
 
-use reify_audit::pdoccover::UNITS_PATH;
-use reify_audit::pdoccover_baseline::BASELINE_PATH;
+use reify_audit::pdoccover::{DegenerateInputs, UNITS_PATH};
+use reify_audit::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger};
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
@@ -1709,24 +1709,23 @@ fn ri_keywords_never_collides_with_the_real_registry_census() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// step-19: shared-derivation contract — baseline_candidates() vs check()
+// Shared-derivation contract — baseline_ledger() vs check()
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A registry exercising every disposition at once, so the contract is proved
 /// against a mixed tree rather than an all-offenders one:
 ///
-/// - `alpha_op` — documented in a chunk → not a candidate;
-/// - `beta_op`  — well-formed allow marker → not a candidate;
-/// - `gamma_op` — baselined already → not a candidate;
-/// - `delta_op`, `epsilon_op` — bare → candidates;
+/// - `alpha_op` — documented in a chunk → not debt;
+/// - `beta_op`  — well-formed allow marker → not debt;
+/// - `delta_op`, `epsilon_op`, `gamma_op` — bare → omission debt;
 /// - `zeta_op`  — reasonless marker → an `allow-missing-reason:` finding, and
-///   deliberately NOT a candidate: adding it to the baseline would freeze a
-///   malformed marker into the ratchet instead of fixing it;
+///   deliberately NOT debt: ledgering it would freeze a malformed marker
+///   instead of prompting the fix;
 /// - `eta_op`   — documented but still allow-marked → `stale-allow-entry:`,
-///   also not a candidate.
+///   also not debt.
 ///
 /// Declared deliberately out of alphabetical order so a `check()` that happens
-/// to emit in declaration order cannot pass the same-order assertion by luck.
+/// to emit in declaration order cannot pass a same-order assertion by luck.
 const MIXED_UNITS: &str = "\
 //! Fixture registry for the PDOCCOVER shared-derivation contract.
 
@@ -1741,163 +1740,171 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
 ];
 ";
 
-/// Documents `alpha_op` and `eta_op` only.
+/// Documents `alpha_op` and `eta_op`, and claims `phantom_op`, which no source
+/// declares.
 const MIXED_CHUNK: &str = "\
 # Geometry
 
 - `alpha_op(shape, amount)` — the alpha operation.
 - `eta_op(shape)` — the eta operation.
+- `phantom_op(x)` — not real.
 ";
 
-/// `baseline_candidates()` must return EXACTLY the names `check()` reports as
-/// `undocumented-name:` — same set, same order, no duplicates.
-///
-/// This is the seam #5480 consumes: its regenerator writes
-/// `pdoccover-baseline.txt` from this list, and the ratchet compares that file
-/// against `check()`'s findings. If the two derivations could disagree by even
-/// one name, a freshly regenerated baseline would immediately fail its own
-/// ratchet — the failure mode PRD §6.6 records from `ptodo-baseline-gen`. One
-/// derivation, two callers.
+fn undocumented(name: &str) -> BaselineRow {
+    BaselineRow::Undocumented(name.to_string())
+}
+
+fn fabricated(chunk: &str, name: &str) -> BaselineRow {
+    BaselineRow::Fabricated {
+        chunk: chunk.to_string(),
+        name: name.to_string(),
+    }
+}
+
+fn ledger_of(ctx: &AuditContext<'_>) -> Ledger {
+    reify_audit::pdoccover::baseline_ledger(ctx).expect("fixture inputs are not degenerate")
+}
+
+/// Live debt must be EXACTLY the debt findings `check()` reports when no
+/// ledger is committed — one derivation, two callers. The generator writes
+/// rows from the former and the ratchet reads them back against the latter;
+/// if the two could disagree by one row, a freshly generated ledger would fail
+/// its own ratchet (PRD §6.6's `ptodo-baseline-gen` lesson).
 #[test]
-fn baseline_candidates_match_the_undocumented_name_findings_exactly() {
+fn live_debt_equals_the_debt_findings_of_an_unbaselined_run() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-
     write_file(root, FIX_UNITS, MIXED_UNITS);
     write_file(root, FIX_CHUNK, MIXED_CHUNK);
-    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
 
-    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
     let ctx = h.ctx(root);
 
     let findings = reify_audit::pdoccover::check(&ctx);
-    let from_check: Vec<String> = findings
+    let omissions: Vec<BaselineRow> = findings
         .iter()
-        .filter(|f| f.summary.starts_with("undocumented-name:"))
-        .map(|f| finding_name(f).to_string())
+        .filter(|f| finding_category(f) == "undocumented-name")
+        .map(|f| undocumented(finding_name(f)))
         .collect();
-    let candidates = reify_audit::pdoccover::baseline_candidates(&ctx);
+    let fabrications: Vec<BaselineRow> = findings
+        .iter()
+        .filter(|f| finding_category(f) == "fabricated-name")
+        .map(|f| fabricated(&f.task_id, finding_name(f)))
+        .collect();
+    assert!(
+        !omissions.is_empty() && !fabrications.is_empty(),
+        "fixture sanity — both debt kinds must be exercised; got {findings:?}"
+    );
 
-    // Sanity: the fixture must actually exercise the lane, or the equality
-    // below would be trivially satisfied by two empty vectors.
+    let from_check = omissions.into_iter().chain(fabrications).collect();
     assert_eq!(
+        ledger_of(&ctx).live,
         from_check,
-        vec!["delta_op".to_string(), "epsilon_op".to_string()],
-        "fixture sanity — `check()` must report exactly the two bare names as \
-         `undocumented-name:`. Got {from_check:?} from findings {:?}",
-        findings
-            .iter()
-            .map(|f| f.summary.as_str())
-            .collect::<Vec<_>>()
-    );
-
-    // The contract: identical content AND identical order.
-    assert_eq!(
-        candidates, from_check,
-        "`baseline_candidates()` and `check()`'s `undocumented-name:` findings \
-         must be the same list in the same order — they are one derivation with \
-         two callers. #5480's regenerator writes the former and the ratchet \
-         compares the latter; any divergence makes a freshly generated baseline \
-         fail its own ratchet."
-    );
-
-    // Sorted and deduped — a baseline file is line-diffed, so order must not
-    // depend on `units.rs` declaration order (the fixture declares them
-    // out of order on purpose).
-    let mut sorted = candidates.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(
-        candidates, sorted,
-        "`baseline_candidates()` must be sorted and deduped so the generated \
-         baseline file diffs cleanly; got {candidates:?}"
+        "live debt and check()'s debt findings are one derivation"
     );
 }
 
-/// The exclusions, asserted by name rather than by count, so a future
-/// disposition change cannot quietly leak a name into the generated baseline.
-///
-/// A baseline is residual debt. Anything documented is not debt; anything
-/// already suppressed by another channel is already accounted for; and a
-/// malformed marker is a defect to fix, not debt to freeze.
+/// Live debt never reads the committed ledger — otherwise a shrink-only
+/// regeneration could not tell kept rows from new ones. The committed rows
+/// are carried alongside, and the partition splits them.
 #[test]
-fn baseline_candidates_exclude_documented_allowed_and_baselined_names() {
+fn live_debt_is_blind_to_the_committed_baseline() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-
     write_file(root, FIX_UNITS, MIXED_UNITS);
     write_file(root, FIX_CHUNK, MIXED_CHUNK);
-    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
+    write_file(root, FIX_BASELINE, "# ledger\n\ngamma_op\nnot a row\n");
 
+    let unbaselined = ledger_of(&Harness::new(&[FIX_UNITS, FIX_CHUNK]).ctx(root));
     let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
-    let candidates = reify_audit::pdoccover::baseline_candidates(&h.ctx(root));
+    let baselined = ledger_of(&h.ctx(root));
+
+    assert!(
+        unbaselined.committed.is_empty(),
+        "an untracked ledger is inert; got {:?}",
+        unbaselined.committed
+    );
+    assert_eq!(baselined.live, unbaselined.live);
+    assert_eq!(
+        baselined.committed,
+        [undocumented("gamma_op"), undocumented("not a row")].into(),
+    );
+    assert_eq!(baselined.kept(), [undocumented("gamma_op")].into());
+    assert_eq!(baselined.stale(), [undocumented("not a row")].into());
+}
+
+/// The exclusions, asserted by name rather than by count, so a future
+/// disposition change cannot quietly leak a name into the ledger.
+#[test]
+fn live_debt_excludes_documented_allowed_and_reasonless_marked_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, MIXED_UNITS);
+    write_file(root, FIX_CHUNK, MIXED_CHUNK);
+
+    let live = ledger_of(&Harness::new(&[FIX_UNITS, FIX_CHUNK]).ctx(root)).live;
 
     for (name, why) in [
-        ("alpha_op", "documented in a chunk"),
-        ("eta_op", "documented (its allow marker is merely stale)"),
+        ("alpha_op", "is documented in a chunk"),
+        ("eta_op", "is documented (its allow marker is merely stale)"),
         ("beta_op", "carries a well-formed allow marker"),
-        ("gamma_op", "already listed in the baseline file"),
         (
             "zeta_op",
             "carries a REASONLESS marker — a defect to fix, not debt to freeze",
         ),
     ] {
         assert!(
-            !candidates.contains(&name.to_string()),
-            "`{name}` must NOT be a baseline candidate: it {why}. Got \
-             {candidates:?}"
+            !live.contains(&undocumented(name)),
+            "`{name}` must NOT be live debt: it {why}. Got {live:?}"
         );
     }
-
     for name in ["delta_op", "epsilon_op"] {
         assert!(
-            candidates.contains(&name.to_string()),
-            "`{name}` is undocumented with no exemption channel, so it MUST be \
-             a baseline candidate. Got {candidates:?}"
+            live.contains(&undocumented(name)),
+            "`{name}` is undocumented with no allow marker, so it MUST be live \
+             debt. Got {live:?}"
         );
     }
 }
 
-/// The derivation is over the omission lane only. Fabrications are a chunk
-/// defect to fix, not registry debt to ratchet, and #5480's baseline file is
-/// keyed by bare name — a fabricated name has no registry entry to key on.
+/// A fabrication is ledgered by the chunk that makes the claim, never as a
+/// bare name — it has no registry entry to key on.
 #[test]
-fn baseline_candidates_exclude_fabricated_names() {
+fn live_debt_carries_fabrications_as_path_name_rows() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-
     write_file(root, FIX_UNITS, MIXED_UNITS);
-    write_file(
-        root,
-        FIX_CHUNK,
-        "# Geometry\n\n- `alpha_op(shape, amount)` — real.\n\
-         - `eta_op(shape)` — real.\n- `phantom_op(x)` — not real.\n",
-    );
-    write_file(root, FIX_BASELINE, "# ratchet baseline\n\ngamma_op\n");
+    write_file(root, FIX_CHUNK, MIXED_CHUNK);
 
-    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
-    let ctx = h.ctx(root);
+    let live = ledger_of(&Harness::new(&[FIX_UNITS, FIX_CHUNK]).ctx(root)).live;
 
-    let findings = reify_audit::pdoccover::check(&ctx);
     assert!(
-        findings
-            .iter()
-            .any(|f| f.summary.starts_with("fabricated-name:")
-                && finding_name(f) == "phantom_op"),
-        "fixture sanity — `phantom_op` must be reported as a fabrication. Got \
-         {:?}",
-        findings
-            .iter()
-            .map(|f| f.summary.as_str())
-            .collect::<Vec<_>>()
+        live.contains(&fabricated(FIX_CHUNK, "phantom_op")),
+        "got {live:?}"
+    );
+    assert!(!live.contains(&undocumented("phantom_op")), "got {live:?}");
+}
+
+/// A ledger derived from an empty census or an empty chunk corpus would read
+/// every committed row as stale, so a shrink-only regeneration over it would
+/// wipe the file. Both enumerations are refused by name instead.
+#[test]
+fn baseline_ledger_refuses_degenerate_inputs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, MIXED_UNITS);
+    write_file(root, FIX_CHUNK, MIXED_CHUNK);
+
+    let untracked_units = Harness::new(&[FIX_CHUNK]);
+    assert_eq!(
+        reify_audit::pdoccover::baseline_ledger(&untracked_units.ctx(root)),
+        Err(DegenerateInputs::EmptyCensus),
     );
 
-    let candidates = reify_audit::pdoccover::baseline_candidates(&ctx);
-    assert!(
-        !candidates.contains(&"phantom_op".to_string()),
-        "a fabricated name must never enter the generated baseline — the \
-         baseline is the omission ratchet, keyed by registry name. Got \
-         {candidates:?}"
+    let untracked_chunks = Harness::new(&[FIX_UNITS]);
+    assert_eq!(
+        reify_audit::pdoccover::baseline_ledger(&untracked_chunks.ctx(root)),
+        Err(DegenerateInputs::NoChunks),
     );
 }
 
@@ -2144,10 +2151,10 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
             .collect::<Vec<_>>()
     );
 
-    // And it is not a baseline candidate either — one derivation, one verdict.
-    assert!(
-        reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
-        "an exempted name must not be offered as a baseline candidate"
+    // No chunk is tracked, so there is nothing to derive a ledger from.
+    assert_eq!(
+        reify_audit::pdoccover::baseline_ledger(&ctx),
+        Err(DegenerateInputs::NoChunks),
     );
 }
 
@@ -2219,11 +2226,10 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
              ({UNITS_PATH}:2); got {summaries:?}"
         );
 
-        // Deliberately not a baseline candidate: baselining a malformed marker
-        // would freeze it into the ratchet instead of prompting the fix.
-        assert!(
-            reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
-            "[{label}] a reasonless marker is a defect to fix, not debt to freeze"
+        assert_eq!(
+            reify_audit::pdoccover::baseline_ledger(&ctx),
+            Err(DegenerateInputs::NoChunks),
+            "[{label}] no chunk is tracked, so there is nothing to derive a ledger from"
         );
     }
 }
@@ -2286,9 +2292,10 @@ fn a_tracked_but_missing_file_is_skipped_fail_safe() {
         "an unreadable census source must yield NO findings rather than \
          panicking or reporting everything; got {findings:?}"
     );
-    assert!(
-        reify_audit::pdoccover::baseline_candidates(&ctx).is_empty(),
-        "the shared derivation must be fail-safe on the same terms as check()"
+    assert_eq!(
+        reify_audit::pdoccover::baseline_ledger(&ctx),
+        Err(DegenerateInputs::EmptyCensus),
+        "an unreadable census must be refused, never read as a clean ledger"
     );
 
     // The inverse half: a readable units.rs with an unreadable chunk corpus
