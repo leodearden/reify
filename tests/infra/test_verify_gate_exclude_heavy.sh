@@ -9,6 +9,11 @@
 # unchanged (strictly-additive-on-landing invariant — a malformed knob must
 # never silently create a coverage hole).
 #
+# Task 7912: the plan header `# heavy partition — HEAVY=excluded|only|included`
+# reports the RESOLVED partition for the role, derived from the same fragments
+# the nextest passes receive — so it is pinned both per role × knob and against
+# the plan's own command lines.
+#
 # Modeled on tests/infra/test_verify_role_prio.sh: drives verify.sh via
 # --print-plan (hermetic — never builds/tests anything, no cargo invoked).
 
@@ -204,5 +209,100 @@ assert "role=background, knob=1: plan has NO $NOT_PATTERN (background is not a t
 assert "role=background, knob=1: plan has NO $POSITIVE_PATTERN (background is not the offline role)" \
     bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
     _ "$BACKGROUND_HEAVY_PLAN" "$POSITIVE_PATTERN"
+
+# ---------------------------------------------------------------------------
+# heavy partition header (task 7912): the plan states the RESOLVED effect of
+# the knob for the role, never the env value — the knob being set is not the
+# knob deciding anything. Each plan is captured WITH its comment lines, and
+# every one is also checked against its own command lines, so the header can
+# never contradict what the nextest passes actually receive.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- heavy partition header (task 7912): the plan states the RESOLVED effect, not the env ---"
+
+HEAVY_HEADER_PREFIX='# heavy partition — '
+
+_heavy_header() {
+    printf '%s\n' "$1" | grep -m1 -- "^$HEAVY_HEADER_PREFIX" || true
+}
+
+_heavy_header_matches_commands() {
+    local header value commands has_not=0 has_pos=0
+    header="$(_heavy_header "$1")"
+    [ -n "$header" ] || return 1
+    value="${header##*HEAVY=}"
+    commands="$(printf '%s\n' "$1" | grep -v '^#' || true)"
+    printf '%s\n' "$commands" | grep -qF -- "$NOT_PATTERN" && has_not=1
+    printf '%s\n' "$commands" | grep -qF -- "$POSITIVE_PATTERN" && has_pos=1
+    case "$value" in
+        excluded) [ "$has_not" -eq 1 ] && [ "$has_pos" -eq 0 ] ;;
+        only)     [ "$has_not" -eq 0 ] && [ "$has_pos" -eq 1 ] ;;
+        included) [ "$has_not" -eq 0 ] && [ "$has_pos" -eq 0 ] ;;
+        *)        return 1 ;;
+    esac
+}
+
+_assert_heavy_header() {
+    local desc="$1" plan="$2" want="$3"
+    assert "$desc" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "HEAVY=$2"' \
+        _ "$(_heavy_header "$plan")" "$want"
+}
+
+_capture_full_plan() {
+    bash "$REPO_ROOT/scripts/verify.sh" "$1" --scope all --print-plan || true
+}
+
+# Case labels and their plans, kept in step so the consistency pass (5)
+# covers every plan captured by cases 1-4.
+HEAVY_CASE_LABELS=()
+HEAVY_CASE_PLANS=()
+
+_plan="$(DF_VERIFY_ROLE=background REIFY_GATE_EXCLUDE_HEAVY=1 _capture_full_plan test)"
+_assert_heavy_header \
+    "role=background, knob=1: header says HEAVY=included (env set, effect none — the knob is role-scoped)" \
+    "$_plan" included
+HEAVY_CASE_LABELS+=("role=background, knob=1"); HEAVY_CASE_PLANS+=("$_plan")
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    _gate_knob_on_want=excluded; _gate_knob_on_why=""
+else
+    _gate_knob_on_want=included; _gate_knob_on_why=" (the cargo-test fallback has no -E)"
+fi
+for _role in task merge; do
+    _plan="$(DF_VERIFY_ROLE="$_role" REIFY_GATE_EXCLUDE_HEAVY=1 _capture_full_plan test)"
+    _assert_heavy_header \
+        "role=$_role, knob=1 (nextest=$NEXTEST_AVAILABLE): header says HEAVY=$_gate_knob_on_want$_gate_knob_on_why" \
+        "$_plan" "$_gate_knob_on_want"
+    HEAVY_CASE_LABELS+=("role=$_role, knob=1"); HEAVY_CASE_PLANS+=("$_plan")
+done
+
+_plan="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=task \
+    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+_assert_heavy_header "role=task, knob unset: header says HEAVY=included" "$_plan" included
+HEAVY_CASE_LABELS+=("role=task, knob unset"); HEAVY_CASE_PLANS+=("$_plan")
+
+_plan="$(DF_VERIFY_ROLE=task REIFY_GATE_EXCLUDE_HEAVY=0 _capture_full_plan test)"
+_assert_heavy_header "role=task, knob=0: header says HEAVY=included" "$_plan" included
+HEAVY_CASE_LABELS+=("role=task, knob=0"); HEAVY_CASE_PLANS+=("$_plan")
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    _plan="$(env -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=offline \
+        bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+    _assert_heavy_header "role=offline, knob unset: header says HEAVY=only" "$_plan" only
+    HEAVY_CASE_LABELS+=("role=offline, knob unset"); HEAVY_CASE_PLANS+=("$_plan")
+else
+    echo "--- role=offline HEAVY=only header assertion SKIPPED (nextest not available on this host) ---"
+fi
+
+for _i in "${!HEAVY_CASE_PLANS[@]}"; do
+    assert "${HEAVY_CASE_LABELS[$_i]}: heavy partition header agrees with the command lines (and is present)" \
+        _heavy_header_matches_commands "${HEAVY_CASE_PLANS[$_i]}"
+done
+
+_plan="$(DF_VERIFY_ROLE=task REIFY_GATE_EXCLUDE_HEAVY=1 _capture_full_plan lint)"
+assert "role=task, knob=1, action=lint: plan has NO heavy partition header (no test passes to describe; scoping guard, green on arrival)" \
+    bash -c '! printf "%s\n" "$1" | grep -q -- "^$2"' \
+    _ "$_plan" "$HEAVY_HEADER_PREFIX"
 
 test_summary
