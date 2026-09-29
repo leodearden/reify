@@ -398,6 +398,22 @@ function queryAllByTestId(testId: string, viewportId: string | undefined): Eleme
 }
 
 /**
+ * The one non-string `viewportId` check in front of `queryAllByTestId`, shared
+ * by `resolveByTestId` (the drive path) and `buildSelectorPredicate` (the
+ * observe path) so the two cannot disagree on what a malformed pane id is.
+ * Absent stays `undefined` (document-wide); anything else but a string is
+ * rejected with `viewportIdNotString`.
+ */
+function narrowViewportId(
+  viewportId: unknown,
+): { viewportId: string | undefined } | { error: string } {
+  if (viewportId !== undefined && typeof viewportId !== 'string') {
+    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+  }
+  return { viewportId };
+}
+
+/**
  * Resolve a single element by `data-testid`, optionally scoped to one pane (#5891).
  *
  * Deliberately mirrors `pickFeaChannelSelect`'s ladder above — same param name,
@@ -428,11 +444,11 @@ function queryAllByTestId(testId: string, viewportId: string | undefined): Eleme
  */
 function resolveByTestId(
   testId: string,
-  viewportId: unknown,
+  rawViewportId: unknown,
 ): ResolvedByTestId | { error: string } {
-  if (viewportId !== undefined && typeof viewportId !== 'string') {
-    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-  }
+  const narrowed = narrowViewportId(rawViewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
   const matches = queryAllByTestId(testId, viewportId);
   if (matches.length === 0) {
     return {
@@ -601,10 +617,10 @@ function buildSelectorPredicate(opts: {
   text?: string;
   viewportId?: unknown;
 }): (() => boolean) | { error: string } {
-  const { testId, state, text, viewportId } = opts;
-  if (viewportId !== undefined && typeof viewportId !== 'string') {
-    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-  }
+  const { testId, state, text } = opts;
+  const narrowed = narrowViewportId(opts.viewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
   return () => {
     // Re-query on EVERY tick rather than hoisting the lookup: this predicate
     // exists to observe an element appearing or disappearing mid-poll, so a
