@@ -1355,6 +1355,7 @@ impl EngineSession {
             let cache = &mut self.geometry_derived_cache;
             surface_geometry_derived_cells(
                 self.core.engine(),
+                self.core.compiled().unwrap(),
                 &mut values,
                 &mut constraints,
                 &ValueMap::new(),
@@ -3988,6 +3989,7 @@ impl EngineSession {
             let cache = &mut self.geometry_derived_cache;
             surface_geometry_derived_cells(
                 self.core.engine(),
+                self.core.compiled().unwrap(),
                 &mut values,
                 &mut constraints,
                 &result.values,
@@ -5298,18 +5300,15 @@ pub(crate) fn build_constraints(
 ///
 /// Constraint re-check: `tessellate_snapshot`'s own `result.constraint_results`
 /// were checked BEFORE `run_post_processes` patched the mass-property cells, so a
-/// constraint over such a cell still reads Indeterminate there. Re-check the
-/// active constraints against the now-complete `result.values` and adopt any
-/// verdict that resolved from Indeterminate → Satisfied / Violated. This mirrors
-/// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
-/// previously Satisfied/Violated constraint cannot regress because the re-check
-/// only ADDS now-resolved geometry cells, so only Indeterminate entries are
-/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
-/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
-/// constraints that reference a cell surfaced this pass — would need a subset-checking
-/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
-/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
-/// inherently required on every warm edit regardless.
+/// constraint over such a cell still reads Indeterminate there. Only the
+/// Indeterminate candidates are re-dispatched against the now-complete
+/// `result.values`, via `Engine::upgrade_indeterminate_verdicts`, and each verdict
+/// that became Satisfied / Violated is adopted; that API also withholds a
+/// geometric Conforms, whose verdict only the measure pass may give (C1). This
+/// mirrors the post-geometry constraint re-check in `Engine::build`
+/// (engine_build.rs): a Satisfied/Violated constraint is never a candidate, so it
+/// cannot regress. Skipped entirely when this pass surfaced no cell, or when
+/// nothing is Indeterminate (the common cases).
 ///
 /// ## Task #5338: the delta contract
 ///
@@ -5365,6 +5364,7 @@ pub(crate) fn build_constraints(
 /// construction there — without fabricating a result struct.
 fn surface_geometry_derived_cells(
     engine: &Engine,
+    module: &CompiledModule,
     values: &mut [ValueData],
     constraints: &mut [ConstraintData],
     delta_values: &ValueMap,
@@ -5376,7 +5376,7 @@ fn surface_geometry_derived_cells(
     // missing, so the constraint re-check below cannot flip any verdict (every
     // constraint input is a panel cell, and an Indeterminate constraint only
     // resolves once one of its Undef inputs is surfaced here) — skip it and
-    // spare the full active-constraint dispatch on every warm rebuild.
+    // spare the re-check dispatch on every warm rebuild.
     let mut surfaced_any = false;
     // Task #5338: `(id, value)` for each cell this pass served from the retention
     // cache because the delta omitted it. `delta_values` still reads `Undef` for
@@ -5526,28 +5526,18 @@ fn surface_geometry_derived_cells(
     // constraint permanently reading Indeterminate beside the value that satisfies
     // it. It costs, per re-render, one `im::HashMap` clone (O(1), structural
     // sharing) plus one insert per cache-sourced cell, and one
-    // `check_constraints_with_values` — a kernel-LESS `values.clone()` +
-    // active-constraint scan + dispatch over the active constraints
+    // `upgrade_indeterminate_verdicts` — a kernel-LESS `values.clone()` +
+    // active-constraint scan + dispatch over the Indeterminate candidates only
     // (reify-eval `engine_constraints.rs`). No kernel query, so the P0 kernel-less
-    // edit-latency gate is untouched; the load is proportional to the constraint
-    // graph, not to mesh size.
-    //
-    // Narrowing it further needs something this scope does not have. Skipping the
-    // dispatch when only cache-sourced cells were surfaced is NOT sound on its own
-    // (the verdicts would have to come from somewhere, and dropping them is the
-    // incoherence above); memoizing verdicts on the merged value set needs an
-    // equality/fingerprint over the whole `ValueMap` AND an argument that
-    // `active_constraint_ids` cannot move while those values hold still — active
-    // constraints are derived from the engine's own snapshot, not from the values
-    // passed in, so that argument is not available here. A per-constraint subset
-    // re-check API in reify-eval would close it properly; out of this task's locked
-    // scope.
+    // edit-latency gate is untouched; the load is proportional to the candidate
+    // subset, not to mesh size.
     //
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
     //
-    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // Both Indeterminate comparisons (this guard and the candidate filter in
+    // `recheck_indeterminate_constraints`) compare through `satisfaction_token`:
     // a bare literal out of step with it would disable this entire re-check with
     // no compile error, surfacing only as a PD constraint stuck Indeterminate.
     if surfaced_any
@@ -5565,24 +5555,33 @@ fn surface_geometry_derived_cells(
             Some(merged)
         };
         let recheck_values = merged.as_ref().unwrap_or(delta_values);
+        recheck_indeterminate_constraints(engine, module, constraints, recheck_values);
+    }
+}
 
-        if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
-            for c in constraints.iter_mut() {
-                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
-                    continue;
-                }
-                let Some(new_sat) = recheck
-                    .iter()
-                    .find(|e| e.id.to_string() == c.node_id)
-                    .map(|e| e.satisfaction)
-                else {
-                    continue;
-                };
-                if new_sat == Satisfaction::Indeterminate {
-                    continue;
-                }
-                c.status = satisfaction_token(new_sat).to_string();
-            }
+/// Adopt each verdict `Engine::upgrade_indeterminate_verdicts` settles for the
+/// panel's Indeterminate constraints. An engine error leaves every status as is.
+fn recheck_indeterminate_constraints(
+    engine: &Engine,
+    module: &CompiledModule,
+    constraints: &mut [ConstraintData],
+    recheck_values: &ValueMap,
+) {
+    let indeterminate = satisfaction_token(Satisfaction::Indeterminate);
+    let candidates: HashSet<&str> = constraints
+        .iter()
+        .filter(|c| c.status == indeterminate)
+        .map(|c| c.node_id.as_str())
+        .collect();
+    let Ok(upgrades) = engine.upgrade_indeterminate_verdicts(module, recheck_values, |id| {
+        candidates.contains(id.to_string().as_str())
+    }) else {
+        return;
+    };
+    for upgrade in &upgrades {
+        let node_id = upgrade.entry().id.to_string();
+        if let Some(c) = constraints.iter_mut().find(|c| c.node_id == node_id) {
+            c.status = satisfaction_token(upgrade.entry().satisfaction).to_string();
         }
     }
 }
