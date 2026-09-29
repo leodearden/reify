@@ -70,9 +70,10 @@
 //! Every angle gate raises the same `DimensionedArgRejected` code as a length
 //! gate, so the code cannot tell them apart. The sweep instead records the
 //! dimension of the filler its rejection-free baseline holds at each position,
-//! which is the dimension that position's gate accepts, and the classifier
-//! compares that with the row. An angle slot wrongly gated with `length_spec()`
-//! therefore fires, and so does a new angle gate no row registers.
+//! which is the dimension that position's gate accepts (on the footing ACCEPTED
+//! LIMITATIONS states), and the classifier compares that with the row. An angle
+//! slot wrongly gated with `length_spec()` therefore fires, and so does a new
+//! angle gate no row registers.
 //!
 //! A SECOND universe (PRD 5's `plane_*` / `axis_*` / `point3`, `prb_*`, joints
 //! and solver readers) joins by adding a second `probe_universe`-shaped source.
@@ -96,23 +97,14 @@
 //! warn line, so no `_KLOC_WARN_KNOWN` row is owed either.
 //!
 //! **`.config/nextest.toml`: no override, deliberately.** That file is read by
-//! `cargo nextest`, so the measurement that decides the question is the nextest
-//! one: on this tree the slowest test of this module measured 23.9s, 28.6s and
-//! 25.2s across three runs at host load ~90 — the sweep is IR-build-only and
-//! never constructs a kernel — against `[profile.default]`'s `120s x 10` =
-//! 1200s ceiling. That is over forty-fold headroom, so the run-to-run variance
-//! that makes the figure a range rather than a number cannot threaten the
-//! conclusion. (Plain `cargo test` reports 22.8s for the module as a group, at
-//! load ~80, because it runs the tests as threads of ONE process so they share
-//! the sweep cache, whereas nextest gives each test its own process and every
-//! sweeping test pays the sweep itself. Quoting nextest is what keeps the basis
-//! matched to the runner the config governs.) The multi-start baseline search
-//! that reaches the ANGLE positions roughly doubles the sweep's CPU time, from
-//! about 6.5s to about 14s of user time in one process. The figures are for the
-//! tests themselves rather than for the enclosing binary, which is the quantity
-//! a per-test nextest `slow-timeout` governs either way. `harness_geometry`
-//! carries no override block today, and adding one would be dead config AND
-//! would owe a paired row in `GATE_RESIDENT_FILTERS`
+//! `cargo nextest`, so the runner that decides the question is nextest, which
+//! gives each test its own process: every sweeping test pays the sweep itself.
+//! The sweep is IR-build-only and never constructs a kernel, and the slowest test
+//! of this module runs over forty-fold inside `[profile.default]`'s `120s x 10` =
+//! 1200s ceiling, so neither run-to-run variance nor the cost of the multi-start
+//! baseline search can threaten the conclusion. `harness_geometry` carries no
+//! override block today, and adding one would be dead config AND would owe a
+//! paired row in `GATE_RESIDENT_FILTERS`
 //! (`tests/infra/test_nextest_slow_priority.sh`), whose Assertion K reds on an
 //! override classifying as neither heavy nor gate-resident. A block that does
 //! not exist cannot red.
@@ -145,6 +137,20 @@
 //! therefore loud when its owner closes. A `ProbeOutcome::NotReached` position
 //! raises no violation; that is the one place this guard is deliberately silent,
 //! and it is bounded by the residual rows that name the builtins it covers.
+//!
+//! **A rejection is credited to the planted position by INFERENCE wherever the
+//! baseline still fails.** The sweep plants a bare number at one position of a
+//! rejection-free baseline and reads any dimension rejection that follows as that
+//! position's own. Against a CLEAN baseline (no diagnostic, the op compiles) every
+//! position has been read, so that is exact. A scalar ladder cannot make a
+//! selector, a datum or a count valid, so some baselines still op-fail; the
+//! positions behind the failure read `OpCompileFailed` and need an owner, but a
+//! plant that repairs the failure can surface a rejection belonging to a slot it
+//! hid, and a plant that merely preempts the failure looks the same from the
+//! diagnostics' code and count. Telling them apart takes a slot the diagnostics do
+//! not carry, so it is not checked: a row expecting another dimension than the
+//! filler's still reds such a position, but a row-less one credited as a length
+//! gate would not.
 
 // -- Step-1: the universe --
 
@@ -306,8 +312,8 @@ impl Expectation {
 
 /// The dimension a gated position accepts when no registry row says otherwise.
 ///
-/// Contract C is PRD 1's LENGTH gate, so the ~100 length gates it ships need no
-/// row; any other dimension is a row's business.
+/// Contract C is PRD 1's LENGTH gate, so the length gates it ships need no row;
+/// any other dimension is a row's business.
 const CONTRACT_C_DIMENSION: reify_core::DimensionVector = reify_core::DimensionVector::LENGTH;
 
 /// One position the registry has a row for, and what it expects there.
@@ -444,7 +450,8 @@ struct Observation {
     /// The dimension of the filler the rejection-free baseline held at this
     /// position. Where the gate fired, it is the dimension that gate accepts:
     /// the baseline raises no rejection, so the filler it holds is one the gate
-    /// takes.
+    /// takes. That reading is exact against a CLEAN baseline and an inference
+    /// against one that still fails (ACCEPTED LIMITATIONS in the module doc).
     baseline_dimension: reify_core::DimensionVector,
 }
 
@@ -763,7 +770,7 @@ mod seeded_gate_dimension {
         );
         let rendered = violation.to_string();
         assert!(
-            rendered.contains("rotate") && rendered.contains('4') && rendered.contains('3'),
+            rendered.contains("rotate/4[3]"),
             "violation must name builtin, arity and index; got {rendered:?}"
         );
     }
@@ -805,7 +812,7 @@ mod seeded_gate_dimension {
         );
     }
 
-    /// (d) The ~107 shipped LENGTH gates keep needing no row.
+    /// (d) The length gates PRD 1 ships keep needing no row.
     #[test]
     fn a_length_gated_position_needs_no_row() {
         let violations = classify_all(
@@ -1813,7 +1820,9 @@ fn start_fillers() -> Vec<Filler> {
 }
 
 /// An argument vector for `name` at `arity` that raises no dimension rejection
-/// of its own, or `None` if no start reaches one.
+/// of its own, or `None` if no start reaches one. It is rejection-free, not
+/// necessarily CLEAN: scalar fillers cannot make a selector, a datum or a count
+/// valid, so the op may still fail.
 ///
 /// Greedy repair is enough within a start because the fillers do not interact:
 /// each position's acceptable dimension is independent of its neighbours'. But
@@ -1867,9 +1876,11 @@ fn slot_families(op: &reify_compiler::CompiledGeometryOp) -> std::collections::B
 ///
 /// For each builtin, target template and arity: establish a rejection-free
 /// baseline, then re-probe once per position with a bare number planted there.
-/// A dimension rejection that appears against that clean baseline can only be
-/// about the position under test, which is what makes per-position attribution
-/// structural rather than a matter of reading diagnostic prose.
+/// A dimension rejection that appears against that baseline is read as the
+/// planted position's own, which keeps per-position attribution structural
+/// rather than a matter of reading diagnostic prose. The reading is exact when
+/// the baseline is CLEAN and an inference when it still fails; see ACCEPTED
+/// LIMITATIONS in the module doc.
 fn sweep_universe() -> Vec<Observation> {
     let mut observations = Vec::new();
     for &builtin in probe_universe() {
@@ -1926,9 +1937,9 @@ fn sweep_universe() -> Vec<Observation> {
 /// Per process, not per binary: `cargo test` runs this binary's tests as
 /// threads of one process, so one sweep serves all five sweeping tests, while
 /// `cargo nextest` — the gate's runner — gives each test its own process and
-/// each pays its own sweep. The module doc's C7 paragraph has the measured
-/// cost of both, far inside the ceiling that keeps `.config/nextest.toml` free
-/// of an override for it.
+/// each pays its own sweep. The module doc's C7 paragraph says why that cost,
+/// far inside the ceiling, keeps `.config/nextest.toml` free of an override for
+/// it.
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
@@ -2235,18 +2246,26 @@ mod real_tree {
         }
     }
 
-    /// No position gated at ANGLE is missing from `angle_rows`.
-    fn assert_no_angle_gate_is_unregistered(
-        observations: &[Observation],
-        angle_rows: &std::collections::BTreeSet<Position>,
-    ) {
-        let unregistered: Vec<String> = observations
+    /// Every observation where the gate rejected a bare number and the baseline
+    /// held an ANGLE: the positions the sweep found gated at ANGLE.
+    fn observed_angle_gates(observations: &[Observation]) -> Vec<&Observation> {
+        observations
             .iter()
             .filter(|o| {
                 o.outcome == ProbeOutcome::ContractCRejected
                     && o.baseline_dimension == reify_core::DimensionVector::ANGLE
-                    && !angle_rows.contains(&o.position)
             })
+            .collect()
+    }
+
+    /// No position gated at ANGLE is missing from `angle_rows`.
+    fn assert_no_angle_gate_is_unregistered(
+        observed_gates: &[&Observation],
+        angle_rows: &std::collections::BTreeSet<Position>,
+    ) {
+        let unregistered: Vec<String> = observed_gates
+            .iter()
+            .filter(|o| !angle_rows.contains(&o.position))
             .map(|o| format!("  {o}"))
             .collect();
         assert!(
@@ -2309,15 +2328,16 @@ mod real_tree {
         assert_every_gated_row_is_observed(observations);
 
         let angle_rows = angle_positions();
-        assert_no_angle_gate_is_unregistered(observations, &angle_rows);
+        let observed_gates = observed_angle_gates(observations);
+        assert_no_angle_gate_is_unregistered(&observed_gates, &angle_rows);
         assert!(
-            angle_rows.len() >= 8,
-            "only {} ANGLE rows are registered; the census measured 8 (rotate, \
-             rotate_around and revolve once each, arc twice, draft twice, \
-             circular_pattern once) and this is its floor. A drop means the sweep \
-             stopped reaching an angle gate: repair the probe rather than \
-             deleting the row.",
-            angle_rows.len()
+            observed_gates.len() >= 8,
+            "the sweep observed only {} positions gated at ANGLE; the census \
+             measured 8 (rotate, rotate_around and revolve once each, arc twice, \
+             draft twice, circular_pattern once) and this is its floor. A drop \
+             means the sweep stopped reaching an angle gate, and deleting its \
+             ANGLE_ALLOWLIST row would only hide that: repair the probe.",
+            observed_gates.len()
         );
         assert_shrunken_angle_census_fires(observations, &angle_rows);
     }
