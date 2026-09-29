@@ -286,7 +286,7 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 ///     whose arms has an unresolvable child structure. Every arm declares the
 ///     same sub NAME, so the pre-pass folds the arms to their intersection and
 ///     drops the contested port rather than answering with whichever arm
-///     happened to compile last — see `merge_arm_port_directions` in
+///     happened to compile last — see `cluster_port_directions` in
 ///     `entity.rs`. Arms that AGREE resolve normally and are checked.
 fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
     if let Some(own) = own_port_name(port_ref) {

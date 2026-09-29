@@ -281,7 +281,7 @@ pub(crate) struct CompilationScope<'u> {
     /// is not a port at all (a name the child declares as nothing at all is
     /// diagnosed separately via `sub_declared_member_names`); or the sub is a
     /// match-arm cluster whose arms disagree about that port's direction, which
-    /// `merge_arm_port_directions` (entity.rs) folds out rather than answering
+    /// `cluster_port_directions` (entity.rs) folds out rather than answering
     /// with one arbitrary arm. A miss does NOT mean the direction is `Bidi` —
     /// consumers must treat it as "unknown" and decline to check, never as a
     /// default direction.
@@ -289,17 +289,22 @@ pub(crate) struct CompilationScope<'u> {
     /// `BTreeMap` inner for deterministic iteration, matching the
     /// `sub_member_types` precedent.
     pub(crate) sub_port_directions: HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
-    /// Every member name a sub's resolved child template declares (port, param,
-    /// let, sub, match-arm cluster): sub_name → names. Populated beside
-    /// `sub_port_directions` in the Sub pre-pass and read by `connect.rs` to
-    /// tell a dotted endpoint naming NOTHING (#7880) from one naming a
-    /// non-port member.
+    /// Every member name a sub's resolved child template declares (see
+    /// `declared_member_names_from_template`): sub_name → names. Populated
+    /// beside `sub_port_directions` in the Sub pre-pass and read by
+    /// `connect.rs` to tell a dotted endpoint naming NOTHING (#7880) from one
+    /// naming a non-port member.
     ///
     /// ABSENCE CONTRACT: a missing key means the child is not resolvable here,
     /// so do not check — a child declared later (#7374), a sub typed by a
     /// trait or type param, or a match-arm cluster with an unresolvable or
     /// non-`sub` arm. A present key is the COMPLETE set; for a match-arm
     /// cluster, the union over its arms (`cluster_declared_member_names`).
+    ///
+    /// Complete over what the child template RECORDS, which can fall short of
+    /// its source: a `port` inside the child's `where { }` block is dropped by
+    /// `compile_guarded_members` without a diagnostic, so an endpoint naming it
+    /// reads as undefined here.
     pub(crate) sub_declared_member_names: HashMap<String, BTreeSet<String>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.

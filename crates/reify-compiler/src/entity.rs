@@ -2235,6 +2235,7 @@ pub(crate) fn compile_entity(
                     match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
                 }
 
+                let mut arm_children = Vec::with_capacity(m.arms.len());
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_ast::MemberDecl::Sub(sub) => {
@@ -2281,21 +2282,10 @@ pub(crate) fn compile_entity(
                                     realization_name_set_from_template(child_tmpl),
                                 );
                             }
-                            // Port directions, so that a dotted connect endpoint naming
-                            // an arm sub (`connect s.p -> t.p`) is direction-checked just
-                            // like one naming a plain sub (task #7175). Folded across the
-                            // cluster's arms rather than last-write-wins like the maps
-                            // above — see `merge_arm_port_directions` for why a direction
-                            // cannot be answered by whichever arm compiled last. Called
-                            // unconditionally: an arm whose child template did not
-                            // resolve must retract the cluster's entry, not skip it.
-                            merge_arm_port_directions(
-                                &mut scope.sub_port_directions,
-                                &sub.name,
-                                child_tmpl.map(port_direction_map_from_template),
-                            );
+                            arm_children.push(child_tmpl);
                         }
                         other => {
+                            arm_children.push(None);
                             // suggestion 6: only 'sub' arms are supported in task 2372.
                             // Param/Let arms are explicitly rejected here so they are never
                             // inserted into scope.names — preserving the cluster-isolation
@@ -2320,16 +2310,17 @@ pub(crate) fn compile_entity(
                     }
                 }
 
+                // The maps read to REJECT a dotted connect endpoint — direction
+                // (#7175) and existence (#7880) — are folded over every arm's
+                // child rather than last-write-wins like the per-arm maps above:
+                // no single arm can answer for the cluster. A `None` arm (child
+                // unresolvable, or not a `sub`) reads as "not resolvable here".
                 if let Some(logical_name) = maybe_logical_name {
-                    let arm_children = m.arms.iter().map(|arm| match &*arm.member {
-                        reify_ast::MemberDecl::Sub(sub) => find_template_with_prelude(
-                            compiled_templates,
-                            prelude,
-                            &sub.structure_name,
-                        ),
-                        _ => None,
-                    });
-                    if let Some(names) = cluster_declared_member_names(arm_children) {
+                    scope.sub_port_directions.insert(
+                        logical_name.to_string(),
+                        cluster_port_directions(&arm_children),
+                    );
+                    if let Some(names) = cluster_declared_member_names(&arm_children) {
                         scope
                             .sub_declared_member_names
                             .insert(logical_name.to_string(), names);
@@ -5357,49 +5348,50 @@ fn declared_member_names_from_template(tmpl: &TopologyTemplate) -> BTreeSet<Stri
         .collect()
 }
 
-/// Fold ONE match-arm's port directions into that cluster's `sub_port_directions`
-/// entry, keeping only what every arm agrees on.
+/// A match-arm cluster's `sub_port_directions` entry, given each arm's child
+/// template (`None` for an arm whose child did not resolve): only what every
+/// arm agrees on.
 ///
-/// All arms of a cluster declare the same sub NAME, so they all write one entry.
-/// The sibling maps at the same site take the last arm's answer (see
+/// All arms of a cluster declare the same sub NAME, so they share one entry.
+/// The per-arm maps at the same site take the last arm's answer (see
 /// `CompilationScope::match_arm_group_arm_member_types` for why that is
 /// tolerable for member TYPES, which are read to RESOLVE names). A direction is
 /// read to REJECT source, so last-write-wins would turn a connect that is legal
 /// under the selected arm into a hard error whenever the arms disagree.
 ///
 /// The entry is therefore the INTERSECTION over arms: a port survives only while
-/// every arm declares it with the SAME direction, and an arm whose child
-/// template did not resolve (`None`) empties the entry outright. Anything
-/// dropped falls back to the absence contract on `sub_port_directions` — "not
-/// resolvable here", hence unchecked — never to a default direction.
-fn merge_arm_port_directions(
-    directions: &mut HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
-    sub_name: &str,
-    arm: Option<BTreeMap<String, reify_core::PortDirection>>,
-) {
-    let arm = arm.unwrap_or_default();
-    match directions.get_mut(sub_name) {
-        Some(agreed) => agreed.retain(|port, dir| arm.get(port) == Some(dir)),
-        None => {
-            directions.insert(sub_name.to_string(), arm);
-        }
-    }
+/// every arm declares it with the SAME direction, and a `None` arm empties the
+/// entry outright. Anything dropped falls back to the absence contract on
+/// `sub_port_directions` — "not resolvable here", hence unchecked — never to a
+/// default direction.
+fn cluster_port_directions(
+    arm_children: &[Option<&TopologyTemplate>],
+) -> BTreeMap<String, reify_core::PortDirection> {
+    arm_children
+        .iter()
+        .map(|child| child.map_or_else(BTreeMap::new, port_direction_map_from_template))
+        .reduce(|mut agreed, arm| {
+            agreed.retain(|port, dir| arm.get(port) == Some(dir));
+            agreed
+        })
+        .unwrap_or_default()
 }
 
-/// The member names a match-arm cluster declares: the UNION over its arms, or
-/// `None` when any arm's child template is unresolvable.
+/// The member names a match-arm cluster declares, given each arm's child
+/// template: the UNION over its arms, or `None` when any arm's child is
+/// unresolvable.
 ///
-/// The mirror image of `merge_arm_port_directions`' INTERSECTION: both maps are
+/// The mirror image of `cluster_port_directions`' INTERSECTION: both maps are
 /// read to REJECT source, so each fold keeps only what EVERY arm agrees is
 /// wrong — a contested direction is dropped (unchecked), and a name any arm
 /// declares is kept (not undeclared).
-fn cluster_declared_member_names<'t>(
-    arm_children: impl IntoIterator<Item = Option<&'t TopologyTemplate>>,
+fn cluster_declared_member_names(
+    arm_children: &[Option<&TopologyTemplate>],
 ) -> Option<BTreeSet<String>> {
     arm_children
-        .into_iter()
+        .iter()
         .try_fold(BTreeSet::new(), |mut names, child| {
-            names.extend(declared_member_names_from_template(child?));
+            names.extend(declared_member_names_from_template((*child)?));
             Some(names)
         })
 }
