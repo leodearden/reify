@@ -554,6 +554,235 @@ mod seeded_classifier {
         );
         assert_eq!(violations[0].position, SEED);
     }
+
+    /// (d) Two allowlist rows for ONE position are refused, not silently
+    /// collapsed to whichever came last.
+    ///
+    /// Two tables now feed the one map — the D14 rows and the gated-at rows — so
+    /// a position listed in both would otherwise keep only the later row and hide
+    /// the earlier one.
+    #[test]
+    #[should_panic(expected = "mirror/6[3]")]
+    fn duplicate_allow_positions_are_refused() {
+        let _ = Registry::from_allow([
+            AllowEntry {
+                position: SEED,
+                expected: Expectation::Dimensionless(Justification::UnitVectorComponent),
+            },
+            AllowEntry {
+                position: SEED,
+                expected: Expectation::GatedAt(reify_core::DimensionVector::ANGLE),
+            },
+        ]);
+    }
+}
+
+/// Gate dimensions: the classifier reads WHICH dimension a gate fired at, not
+/// merely THAT it fired.
+///
+/// Every angle gate raises the same `DimensionedArgRejected` code as the length
+/// gates, so without this an angle slot wrongly gated with `length_spec()` would
+/// stay green. These tests hand-build observations and registries for the pure
+/// [`classify_all`]; they compile no source and touch no filesystem.
+#[cfg(test)]
+mod seeded_gate_dimension {
+    use super::*;
+
+    const ANGLE: reify_core::DimensionVector = reify_core::DimensionVector::ANGLE;
+    const LENGTH: reify_core::DimensionVector = reify_core::DimensionVector::LENGTH;
+
+    /// `rotate`'s angle — measured gated at ANGLE on this tree.
+    const SEED: Position = Position {
+        builtin: "rotate",
+        arity: 4,
+        index: 3,
+    };
+
+    fn observed(
+        outcome: ProbeOutcome,
+        baseline_dimension: reify_core::DimensionVector,
+    ) -> Observation {
+        Observation {
+            position: SEED,
+            outcome,
+            baseline_dimension,
+        }
+    }
+
+    fn registry_with(expected: Expectation) -> Registry {
+        Registry::from_allow([AllowEntry {
+            position: SEED,
+            expected,
+        }])
+    }
+
+    fn the_only_violation(observation: Observation, registry: &Registry) -> Violation {
+        let violations = classify_all(&[observation], registry);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly one violation; got {violations:?}"
+        );
+        violations[0]
+    }
+
+    /// (a) A shrunken angle allowlist makes the classifier fire.
+    ///
+    /// The observation is the gate firing at ANGLE. With its `GatedAt(ANGLE)` row
+    /// the position is settled; with the row removed it defaults to Contract C's
+    /// dimension and the angle gate reads as a mismatch naming the position.
+    #[test]
+    fn a_shrunken_angle_allowlist_makes_the_classifier_fire() {
+        let gate_at_angle = observed(ProbeOutcome::ContractCRejected, ANGLE);
+
+        assert!(
+            classify_all(
+                std::slice::from_ref(&gate_at_angle),
+                &registry_with(Expectation::GatedAt(ANGLE))
+            )
+            .is_empty(),
+            "an ANGLE gate with its ANGLE row must be settled"
+        );
+
+        let violation = the_only_violation(gate_at_angle, &Registry::default());
+        assert_eq!(violation.position, SEED);
+        assert_eq!(
+            violation.reason,
+            ViolationReason::GateDimensionMismatch {
+                expected: CONTRACT_C_DIMENSION,
+                observed: ANGLE,
+            }
+        );
+        let rendered = violation.to_string();
+        assert!(
+            rendered.contains("rotate") && rendered.contains('4') && rendered.contains('3'),
+            "violation must name builtin, arity and index; got {rendered:?}"
+        );
+    }
+
+    /// (b) An ANGLE row is no license for a bare number.
+    ///
+    /// With the row PRESENT, an accepted value is still a missing gate, and an op
+    /// that failed for an unrelated reason (draft's face or plane error, say) is
+    /// still not the angle gate firing.
+    #[test]
+    fn an_angle_row_does_not_license_a_bare_number() {
+        let registry = registry_with(Expectation::GatedAt(ANGLE));
+
+        let accepted = the_only_violation(observed(ProbeOutcome::Accepted, ANGLE), &registry);
+        assert_eq!(accepted.reason, ViolationReason::BareValueAccepted);
+
+        let unrelated = ProbeOutcome::OpCompileFailed("the face selector did not resolve".into());
+        let failed = the_only_violation(observed(unrelated, ANGLE), &registry);
+        assert_eq!(
+            failed.reason,
+            ViolationReason::FailedWithoutDimensionRejection
+        );
+    }
+
+    /// (c) An ANGLE row on a position gated at LENGTH fires: the regression an
+    /// angle slot wrongly gated with `length_spec()` would be.
+    #[test]
+    fn an_angle_row_on_a_length_gated_position_fires() {
+        let violation = the_only_violation(
+            observed(ProbeOutcome::ContractCRejected, LENGTH),
+            &registry_with(Expectation::GatedAt(ANGLE)),
+        );
+        assert_eq!(
+            violation.reason,
+            ViolationReason::GateDimensionMismatch {
+                expected: ANGLE,
+                observed: LENGTH,
+            }
+        );
+    }
+
+    /// (d) The ~107 shipped LENGTH gates keep needing no row.
+    #[test]
+    fn a_length_gated_position_needs_no_row() {
+        let violations = classify_all(
+            &[observed(ProbeOutcome::ContractCRejected, LENGTH)],
+            &Registry::default(),
+        );
+        assert!(
+            violations.is_empty(),
+            "a position gated at LENGTH must need no registry row; got {violations:?}"
+        );
+    }
+
+    /// (e) A NEW builtin that ships a correctly gated but unregistered angle slot
+    /// fires until its census row is added.
+    #[test]
+    fn a_non_length_gate_with_no_row_fires() {
+        let unregistered = Position {
+            builtin: "a_future_builtin",
+            arity: 2,
+            index: 1,
+        };
+        let violation = the_only_violation(
+            Observation {
+                position: unregistered,
+                outcome: ProbeOutcome::ContractCRejected,
+                baseline_dimension: ANGLE,
+            },
+            &Registry::default(),
+        );
+        assert_eq!(violation.position, unregistered);
+        assert_eq!(
+            violation.reason,
+            ViolationReason::GateDimensionMismatch {
+                expected: CONTRACT_C_DIMENSION,
+                observed: ANGLE,
+            }
+        );
+    }
+
+    /// (f) A `Dimensionless` row on a position observed GATED is stale and fires.
+    ///
+    /// The row licenses a bare number, which a position that rejects one no
+    /// longer takes; it expects DIMENSIONLESS and the gate says otherwise.
+    #[test]
+    fn a_dimensionless_row_on_a_gated_position_fires() {
+        let violation = the_only_violation(
+            observed(ProbeOutcome::ContractCRejected, LENGTH),
+            &registry_with(Expectation::Dimensionless(
+                Justification::UnitVectorComponent,
+            )),
+        );
+        assert_eq!(
+            violation.reason,
+            ViolationReason::GateDimensionMismatch {
+                expected: reify_core::DimensionVector::DIMENSIONLESS,
+                observed: LENGTH,
+            }
+        );
+    }
+
+    /// (g) A residual that owns a position waives every outcome there, a gate
+    /// firing at an unexpected dimension included.
+    #[test]
+    fn a_residual_owned_position_is_never_a_violation() {
+        let owned = Registry::from_parts(
+            [],
+            [Residual {
+                subject: ResidualSubject::Position(SEED),
+                cite: TaskCite(7714),
+                note: "seeded",
+            }],
+        );
+        for outcome in [
+            ProbeOutcome::ContractCRejected,
+            ProbeOutcome::Accepted,
+            ProbeOutcome::OpCompileFailed("seeded failure".into()),
+            ProbeOutcome::NotReached,
+        ] {
+            let violations = classify_all(&[observed(outcome.clone(), ANGLE)], &owned);
+            assert!(
+                violations.is_empty(),
+                "a residual owns {SEED:?}, so {outcome:?} must raise nothing; got {violations:?}"
+            );
+        }
+    }
 }
 
 // -- Step-2b: residual cites --
