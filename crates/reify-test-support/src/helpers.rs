@@ -1,12 +1,9 @@
 //! Shared test helpers.
 //!
 //! Most of this module is the `eval-helpers`-gated pipeline for parsing,
-//! compiling, and evaluating Reify source in tests. Alongside it sit un-gated
-//! helpers that need no engine: [`collect_value_ref_members`], which inspects
-//! an already-compiled expression, and [`missing_paths_under`], a filesystem
-//! path-existence filter shared by the test suites' skip-list guards.
-
-use std::path::Path;
+//! compiling, and evaluating Reify source in tests. Alongside it sits one
+//! un-gated helper that needs no engine: [`collect_value_ref_members`], which
+//! inspects an already-compiled expression.
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
@@ -39,54 +36,6 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
         }
     });
     members
-}
-
-/// Return the subset of `rel_paths` that have no filesystem entry at
-/// `dir.join(rel)`.
-///
-/// This is the single source of truth for the SKIP_SET dead-key check — the
-/// guard that catches a skip-list entry naming a file that has since been
-/// renamed or deleted, which would otherwise silently disable coverage
-/// forever. It replaced the per-file copies of this `Path::exists` filter that
-/// each such guard used to open-code. This doc is the only place their shared
-/// contract is stated: a call site carries a pointer back here, not a copy.
-///
-/// # Contracts callers may rely on
-///
-/// - **The full offending set is returned.** This never short-circuits on the
-///   first miss, so a caller can report every stale key in one panic instead
-///   of forcing an operator to fix them one run at a time.
-/// - **Input order is preserved** (`filter` is order-preserving), so callers
-///   need not sort to get a stable, reviewable failure message.
-///
-/// # Arity is the caller's problem
-///
-/// Skip lists carry per-file metadata of differing shape, so this takes a
-/// plain iterator of relative paths and callers project their own tuple away
-/// at the call boundary — `SKIP_SET.iter().map(|(rel, _)| *rel)`. That is what
-/// lets skip lists of differing arity share one implementation while staying
-/// private to their own crate: no cross-crate coupling of the skip lists is
-/// created or implied.
-///
-/// # Filesystem semantics
-///
-/// Existence is [`Path::exists`], which follows symlinks and does not
-/// distinguish a file from a directory. A broken symlink therefore reports as
-/// *missing* — pinned by
-/// `test_missing_paths_under_reports_dangling_symlink_as_missing` below.
-///
-/// Any other condition under which `Path::exists` answers `false` — an
-/// unreadable parent directory, say — likewise reports as *missing*. That is a
-/// consequence of `Path::exists`, not a separately pinned behaviour: no test
-/// below exercises it.
-pub fn missing_paths_under<'a>(
-    dir: &Path,
-    rel_paths: impl IntoIterator<Item = &'a str>,
-) -> Vec<&'a str> {
-    rel_paths
-        .into_iter()
-        .filter(|rel| !dir.join(rel).exists())
-        .collect()
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
