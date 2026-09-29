@@ -113,8 +113,7 @@
 //!    unsoundness (the `Mutex` recovers poisoning), and not closable from this
 //!    crate: the fix is to compute the parse OUTSIDE the lock and install it
 //!    afterwards — a double parse under a race, no serialization — which is a
-//!    change in `reify-lsp`, filed as a task 6517 follow-up (`suggestion_hash`
-//!    `6517-lsp-same-document-parse-mutex`).
+//!    change in `reify-lsp`, tracked as task #7272.
 //!
 //! # The degradation invariant
 //!
@@ -569,21 +568,21 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// A client that AWAITS each request before issuing the next still reads its own
 /// writes, because the awaited `didChange` job has returned before the next
 /// request is submitted at all (`lsp_bridge_tests`' (n)). Reify's own frontend
-/// is NOT such a client, and saying so is the difference between a disclosure
-/// and a reassurance: `gui/src/editor/Editor.tsx` fires `lspClient.didChange`
-/// from a debounced `setTimeout` with only a `.catch()` — nothing sequences on
-/// it — while completion, hover and occurrence highlights are issued by their
-/// own independent CodeMirror sources on their own triggers. So a query
-/// submitted after a debounced `didChange` CAN overtake it on the pool, and the
-/// staleness above is reachable in the shipped app rather than only in a
-/// hypothetical non-awaiting client. It self-corrects on the next request, which
-/// is why it is disclosed here rather than fixed here.
-///
-/// One entry in the pooled set costs MORE than staleness, and
-/// [`crate::lsp_bridge::lane_for_method`] carries that disclosure in full: a
-/// `rename` result is APPLIED rather than displayed, against an unversioned
-/// `WorkspaceEdit.changes` map, so a stale one lands as wrong-offset edits.
-/// Tracked as task #7118, and enforced by a cited marker on that arm.
+/// awaits only for its position-based COMMANDS. In `gui/src/editor/Editor.tsx`,
+/// rename (F2) and find-uses (Shift-F12) go through `onceServerIsCurrent`, and
+/// every rename request through the rename guard's `syncServer`; both call
+/// `flushPendingLspChange`, which sends any still-debounced `didChange` and
+/// waits for it first. Otherwise `lspClient.didChange` fires from a `setTimeout`
+/// debounced by `EDITOR_DEBOUNCE_MS` that nothing sequences on, and completion,
+/// hover, go-to-definition and occurrence highlights are issued by their own
+/// independent CodeMirror sources on their own triggers. So the query behind a
+/// DISPLAYED answer can overtake a `didChange` on the pool, and the staleness
+/// above is reachable in the shipped app rather than only in a hypothetical
+/// non-awaiting client. It self-corrects on the next request, which is why it
+/// is disclosed here rather than fixed here. The one APPLIED answer, a `rename`
+/// edit, cannot land stale: the server version-stamps it and
+/// `gui/src/editor/rename.ts` refuses an edit whose stamped version disagrees
+/// with the one the client last sent.
 ///
 /// # One consumer or N: a POOL is an instance, not a variant (task 6517)
 ///

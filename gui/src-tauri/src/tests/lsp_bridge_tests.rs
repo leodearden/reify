@@ -1234,9 +1234,10 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
 ///
 /// It pins the AWAITING client, which is not the whole of the shipped app, and
 /// the scope is worth stating so this test is not read as covering more than it
-/// does: `Editor.tsx` fires `didChange` from a debounced `setTimeout` that
-/// nothing sequences on, and CodeMirror issues completion/hover/highlight from
-/// independent sources, so a real query CAN overtake a real `didChange`. That
+/// does: `Editor.tsx` fires `didChange` from a debounced `setTimeout` that only
+/// its rename and find-uses commands wait for, and CodeMirror issues
+/// completion/hover/highlight from independent sources, so a real query CAN
+/// overtake a real `didChange`. That
 /// interleaving is disclosed on [`crate::large_stack::Lane`] as reachable
 /// staleness; it is deliberately not asserted here, because the only property
 /// available to assert about it — that neither answer is self-inconsistent — is
