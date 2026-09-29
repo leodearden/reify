@@ -783,6 +783,109 @@ structure def Leaf {
     assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
 }
 
+/// A match-arm sub is a sub too: `s.typo` names nothing either arm declares.
+#[test]
+fn compile_connect_match_arm_sub_undeclared_member_error() {
+    let source = r#"
+enum Mode { Fast, Slow }
+trait T { param d : Length }
+structure def FastLeaf {
+    port p : in T { param d : Length = 1mm }
+}
+structure def SlowLeaf {
+    port p : in T { param d : Length = 2mm }
+}
+structure def Asm {
+    param mode : Mode = Mode.Fast
+    match mode {
+        Fast => sub s : FastLeaf,
+        Slow => sub s : SlowLeaf
+    }
+    port src : out T { param d : Length = 1mm }
+    connect src -> s.typo
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "undefined port 's.typo' in connect statement",
+    );
+}
+
+/// A name SOME arm declares (`q`, only on `FastLeaf`) is not a true miss — the
+/// member-name analogue of the contested-direction pass. `s.typo` on the same
+/// fixture is the non-vacuity control.
+#[test]
+fn compile_connect_match_arm_sub_member_declared_by_one_arm_is_not_undefined() {
+    let undefined_port_errors = |right: &str| -> Vec<String> {
+        let source = format!(
+            r#"
+enum Mode {{ Fast, Slow }}
+trait T {{ param d : Length }}
+structure def FastLeaf {{
+    port p : in T {{ param d : Length = 1mm }}
+    param q : Length = 1mm
+}}
+structure def SlowLeaf {{
+    port p : in T {{ param d : Length = 2mm }}
+}}
+structure def Asm {{
+    param mode : Mode = Mode.Fast
+    match mode {{
+        Fast => sub s : FastLeaf,
+        Slow => sub s : SlowLeaf
+    }}
+    port src : out T {{ param d : Length = 1mm }}
+    connect src -> {right}
+}}
+"#
+        );
+        compile_source(&source)
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+            .map(|d| d.message)
+            .collect()
+    };
+
+    assert_eq!(undefined_port_errors("s.q"), Vec::<String>::new());
+    assert_eq!(
+        undefined_port_errors("s.typo"),
+        vec!["undefined port 's.typo' in connect statement"]
+    );
+}
+
+/// Deliberate pass (3): `SlowLeaf` is declared after `Asm`, so that arm's child
+/// is unresolvable and the whole cluster reads as "not resolvable here" — the
+/// same shape as #7374. GREEN before and after the match-arm member-name entry.
+#[test]
+fn compile_connect_match_arm_sub_with_unresolvable_arm_unchecked() {
+    let source = r#"
+enum Mode { Fast, Slow }
+trait T { param d : Length }
+structure def FastLeaf {
+    port p : in T { param d : Length = 1mm }
+}
+structure def Asm {
+    param mode : Mode = Mode.Fast
+    match mode {
+        Fast => sub s : FastLeaf,
+        Slow => sub s : SlowLeaf
+    }
+    port src : out T { param d : Length = 1mm }
+    connect src -> s.typo
+}
+structure def SlowLeaf {
+    port p : in T { param d : Length = 2mm }
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
+}
+
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
 
 #[test]
