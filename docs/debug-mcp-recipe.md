@@ -156,7 +156,7 @@ the wait whenever the follow-up action is scoped.
 This subsection is the canonical statement — the tool's own `viewportId` schema
 description and `buildSelectorPredicate` in `gui/src/debug/bridge.ts` each carry
 the one-line rule and point here. The rule and the remaining trap are pinned by
-cases (h)–(l) of `gui/src/__tests__/waitFor.test.ts`. The drive tools
+cases (h)–(l2) of `gui/src/__tests__/waitFor.test.ts`. The drive tools
 (`click_element` and friends) are a different question: they stay first-match
 plus a reported `viewportId`/`matchCount`, by #5891's back-compat contract.
 

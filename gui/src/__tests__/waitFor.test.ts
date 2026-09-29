@@ -710,7 +710,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result).toEqual({ error: 'timeout' });
   });
 
-  // (h)–(l) pin the OBSERVE-path rule for a multi-match, and the one caveat that
+  // (h)–(l2) pin the OBSERVE-path rule for a multi-match, and the one caveat that
   // survives it.
   //
   // THE RULE, stated once: a wait quantifies over EVERY match in its scope —
@@ -719,7 +719,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
   // textContent must equal it. 'gone' holds iff EVERY match is hidden or absent,
   // which is vacuously true for zero matches — the reason (g) holds. Nothing is
   // picked first: a hidden copy early in document order neither blocks a
-  // 'visible' wait (i) nor satisfies a 'gone' wait on its own (j). The DRIVE
+  // 'visible' wait (i) nor satisfies a 'gone' wait on its own (j1). The DRIVE
   // tools (click_element and friends) still act on the first match and report
   // the guess — #5891's back-compat contract, a different question from this one.
   //
@@ -794,7 +794,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(scoped.result).toEqual({ error: 'timeout' });
   });
 
-  it('(j) UNSCOPED state:"gone" TIMES OUT while a VISIBLE copy is still mounted in a later pane', async () => {
+  it('(j1) UNSCOPED state:"gone" TIMES OUT while a VISIBLE copy is still mounted in a later pane', async () => {
     // Same fixture as (i), read through the other arm: design-main's hidden copy
     // comes first, pane-1's visible copy is still there. A 'gone' wait needs
     // EVERY copy hidden or absent, so the hidden first match alone cannot
@@ -815,7 +815,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(scoped.result).toEqual({ error: 'timeout' });
   });
 
-  it('(j) UNSCOPED state:"gone" is satisfied once the only VISIBLE copy is removed — a HIDDEN copy still mounted counts as gone', async () => {
+  it('(j2) UNSCOPED state:"gone" is satisfied once the only VISIBLE copy is removed — a HIDDEN copy still mounted counts as gone', async () => {
     // Guards against over-correcting 'gone' into "zero matches": design-main's
     // hidden copy stays mounted, and 'gone' has always meant "not visible".
     mountPanes({ visible: 'pane-1' });
@@ -829,7 +829,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(unscoped.settledBeforePolling).toBe(true);
   });
 
-  it('(k) UNSCOPED state:"visible" with `text` is satisfied by a LATER visible match carrying that text', async () => {
+  it('(k1) UNSCOPED state:"visible" with `text` is satisfied by a LATER visible match carrying that text', async () => {
     mountPanes(); // both copies visible
     root!.querySelector('[data-viewport-id="design-main"] [data-testid="scoped-el"]')!.textContent = 'loading';
     root!.querySelector('[data-viewport-id="pane-1"] [data-testid="scoped-el"]')!.textContent = 'ready';
@@ -841,7 +841,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('(k) visibility and `text` must hold on the SAME match — a hidden copy with the text plus a visible copy without it times out', async () => {
+  it('(k2) visibility and `text` must hold on the SAME match — a hidden copy with the text plus a visible copy without it times out', async () => {
     // Rejects a split `some(visible) && some(text)` reading, which would go green
     // here off two different elements.
     mountPanes({ visible: 'pane-1' });
@@ -855,7 +855,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result).toEqual({ error: 'timeout' });
   });
 
-  it('(l) SCOPED state:"visible" quantifies inside the pane — a hidden first copy does not block a visible second one', async () => {
+  it('(l1) SCOPED state:"visible" quantifies inside the pane — a hidden first copy does not block a visible second one', async () => {
     // Naming a pane narrows the candidate set but does not guarantee it to one:
     // pane-1 now holds a hidden FIRST copy (jsdom's zero rect) and a visible
     // second copy.
@@ -870,7 +870,7 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('(l) SCOPED state:"gone" quantifies inside the pane — a hidden first copy does not satisfy it while a visible second one remains', async () => {
+  it('(l2) SCOPED state:"gone" quantifies inside the pane — a hidden first copy does not satisfy it while a visible second one remains', async () => {
     mountPanes({ visible: 'pane-1' });
     root!.querySelector('[data-viewport-id="pane-1"]')!
       .insertAdjacentHTML('afterbegin', '<div data-testid="scoped-el"></div>');
