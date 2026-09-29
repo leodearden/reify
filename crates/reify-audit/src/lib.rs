@@ -48,6 +48,7 @@ pub mod ptodo;
 pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
+pub mod pdoccover_baseline;
 pub mod pdcheck;
 pub mod pattern_flag;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
