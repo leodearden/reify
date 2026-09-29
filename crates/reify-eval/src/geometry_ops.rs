@@ -3778,7 +3778,7 @@ fn transform_rotate(
             };
             [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
         };
-        let angle_rad = required_angle_arg(
+        let angle_rad = required_length_arg( // MUTATION-5783 (revert me)
             "angle",
             kind,
             args,

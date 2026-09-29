@@ -45,25 +45,37 @@
 //! * **Step-1 — the universe.** [`probe_universe`] plus the arity bound, and the
 //!   seeded floor test that keeps the sweep from silently collapsing.
 //! * **Step-2 — the registry and the classifier.** `Position`, `Justification`,
-//!   `AllowEntry`, `Residual`, `Registry`, `Violation` and the pure
-//!   `classify_all`, exercised by SEEDED in-memory self-tests that prove the
-//!   classifier FIRES, that an entry suppresses EXACTLY its own position, and
-//!   that a stubbed-out gate is caught. These tests build their observations by
-//!   hand; they compile no source and touch no filesystem.
+//!   `Expectation`, `AllowEntry`, `Residual`, `Registry`, `Violation` and the
+//!   pure `classify_all`, exercised by SEEDED in-memory self-tests that prove
+//!   the classifier FIRES, that an entry suppresses EXACTLY its own position,
+//!   that a gate is judged at the DIMENSION it fired at, and that a stubbed-out
+//!   gate is caught. These tests build their observations by hand; they compile
+//!   no source and touch no filesystem.
 //! * **Step-3 — the real tree.** The sweep over the shipped universe and the
-//!   shipped registry, plus its two anti-vacuity companions (shrink the
-//!   allowlist by one entry; stub one observed gate) which prove the green
-//!   result in between them is load-bearing.
+//!   shipped registry, plus its anti-vacuity companions (shrink the allowlist by
+//!   one entry; stub one observed gate; shrink the ANGLE census) which prove the
+//!   green result in between them is load-bearing.
 //!
-//! # Extension points — PRD 3 and PRD 5 are ADDITIONS, never a rewrite
+//! # Extension points — what a row's `Expectation` means
 //!
-//! `Registry` is a PARAMETER of [`classify_all`], never a global, and
-//! [`AllowEntry`] carries the `DimensionVector` it expects. So the ANGLE
-//! positions of `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) join
-//! by adding rows with `expected: DimensionVector::ANGLE`, and a SECOND universe
-//! (PRD 5's `plane_*` / `axis_*` / `point3`, `prb_*`, joints and solver readers)
-//! joins by adding a second `probe_universe`-shaped source. Neither touches the
-//! classifier, and both inherit the anti-vacuity tests for free.
+//! `Registry` is a PARAMETER of [`classify_all`], never a global, and the
+//! classifier reads each [`AllowEntry`]'s [`Expectation`]. A position with NO
+//! row is expected to be gated at [`CONTRACT_C_DIMENSION`], LENGTH, so the
+//! length gates PRD 1 ships need none. `Expectation::GatedAt(d)` declares a gate
+//! at any other dimension: the ANGLE positions of
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3, task ν) landed as
+//! `ANGLE_ALLOWLIST`. `Expectation::Dimensionless(reading)` is decision D14's
+//! licence for a bare number, and the only row that is one.
+//!
+//! Every angle gate raises the same `DimensionedArgRejected` code as a length
+//! gate, so the code cannot tell them apart. The sweep instead records the
+//! dimension of the filler its rejection-free baseline holds at each position,
+//! which is the dimension that position's gate accepts, and the classifier
+//! compares that with the row. An angle slot wrongly gated with `length_spec()`
+//! therefore fires, and so does a new angle gate no row registers.
+//!
+//! A SECOND universe (PRD 5's `plane_*` / `axis_*` / `point3`, `prb_*`, joints
+//! and solver readers) joins by adding a second `probe_universe`-shaped source.
 //!
 //! # C7 drift-guard registrations — answered here, not deferred
 //!
@@ -85,19 +97,21 @@
 //!
 //! **`.config/nextest.toml`: no override, deliberately.** That file is read by
 //! `cargo nextest`, so the measurement that decides the question is the nextest
-//! one: on this tree the slowest test of this module measured 5.0s, 7.1s and
-//! 8.4s across three runs — the sweep is IR-build-only and never constructs a
-//! kernel — against `[profile.default]`'s `120s x 10` = 1200s ceiling. That is
-//! over two orders of magnitude of headroom, so the run-to-run variance that
-//! makes the figure a range rather than a number cannot threaten the
-//! conclusion. (Plain `cargo test` reports 5.3s for these tests as a group, at
-//! the bottom of that range, because it runs them as threads of ONE process
-//! so they share the sweep cache, whereas nextest gives each test its own
-//! process and every Step-3 test pays the sweep itself. Quoting nextest is
-//! what keeps the basis matched to the runner the config governs.) Those
-//! figures were measured before the C1 move, on the tests themselves rather
-//! than on the enclosing binary, which is the quantity a per-test nextest
-//! `slow-timeout` governs either way. `harness_geometry` carries no override
+//! one: on this tree the slowest test of this module measured 13.0s, 12.8s and
+//! 14.4s across three runs at host load ~46 — the sweep is IR-build-only and
+//! never constructs a kernel — against `[profile.default]`'s `120s x 10` =
+//! 1200s ceiling. That is nearly two orders of magnitude of headroom, so the
+//! run-to-run variance that makes the figure a range rather than a number
+//! cannot threaten the conclusion. (Plain `cargo test` reports 10.4s for the
+//! module as a group, because it runs the tests as threads of ONE process so
+//! they share the sweep cache, whereas nextest gives each test its own process
+//! and every sweeping test pays the sweep itself. Quoting nextest is what keeps
+//! the basis matched to the runner the config governs.) The multi-start
+//! baseline search that reaches the ANGLE positions more than doubles the
+//! sweep's CPU time, 6.5s to 14.8s of user time in one process. The figures are
+//! for the tests themselves rather than for the enclosing binary, which is the
+//! quantity a per-test nextest `slow-timeout` governs either way.
+//! `harness_geometry` carries no override
 //! block today, and adding one would be dead config AND would owe a paired row
 //! in `GATE_RESIDENT_FILTERS` (`tests/infra/test_nextest_slow_priority.sh`),
 //! whose Assertion K reds on an override classifying as neither heavy nor
@@ -951,10 +965,7 @@ fn this_file() -> String {
 /// `<name>(<scalar literals>)` under any of the three target templates. Their
 /// arguments are geometry operands, not quantities — the booleans take two
 /// solids, `sweep`/`sweep_guided` a profile and a path — or they desugar into a
-/// shape the probe's last-op attribution cannot read. `arc` is here for a
-/// different reason: its baseline keeps one dimension rejection under every
-/// filler combination, because its angle slots are not satisfiable until
-/// #5783's ANGLE rows land.
+/// shape the probe's last-op attribution cannot read.
 // TODO(#7714): deepen the probe's argument synthesis (geometry operands, Int
 // counts, coordinate lists, grids) so these builtins are swept rather than
 // recorded, then delete the rows they own here.
@@ -970,17 +981,15 @@ const UNSWEPT_BUILTINS: &[(&str, TaskCite)] = &[
     ("zone_profile", TaskCite(7714)),
     ("rounded_box", TaskCite(7714)),
     ("rounded_rect", TaskCite(7714)),
-    ("arc", TaskCite(5783)),
 ];
 
 /// Contiguous position spans the sweep REACHES but cannot read cleanly, each
 /// with the reason and its owner.
 ///
 /// `(builtin, arity, index range, cite, note)`.
-// TODO(#5783): the ANGLE positions. angle-units ν extends this guard's
-// allowlist with `expected: DimensionVector::ANGLE` rows; until it lands the
-// two `circular_pattern` angle slots are recorded here rather than justified,
-// because "dimensionless" is exactly what they are NOT.
+// TODO(#7714): deepen the probe's argument synthesis (Int counts, coordinate
+// lists, grid and Axis operands) so these positions are read rather than
+// recorded, then delete the rows they own here.
 const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] = &[
     (
         "linear_pattern_2d",
@@ -1012,15 +1021,10 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
         "circular_pattern",
         3,
         2..3,
-        TaskCite(5783),
-        "the short form's `angle` — an ANGLE position, owned by PRD 3",
-    ),
-    (
-        "circular_pattern",
-        8,
-        7..8,
-        TaskCite(5783),
-        "the long form's `angle` — an ANGLE position, owned by PRD 3",
+        TaskCite(7714),
+        "the short form's `angle` IS gated (PRD 3 leaf ε), but `decode_axis` \
+         rejects every scalar filler at `axis` before the angle is read, so the \
+         probe cannot show it",
     ),
 ];
 
@@ -1028,6 +1032,8 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
 /// sweep is never read as covering them.
 // TODO(#5810): PRD 5's second universe of reify-stdlib `eval_builtin` names.
 // TODO(#7484): the five construction-datum constructors, in neither universe.
+// TODO(#8001): the topology selectors' dimensioned arguments, read by the
+// kernel-free selector builder rather than the op compiler.
 const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
     (
         "reify-stdlib eval_builtin names: plane_*/axis_*/point3, prb_*, joints, \
@@ -1041,6 +1047,15 @@ const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
         TaskCite(7484),
         "the five construction-datum constructors are in NEITHER this universe \
          nor C5's named second universe",
+    ),
+    (
+        "the directional topology selectors' ANGLE `tol` (faces_by_normal, \
+         edges_parallel_to, faces_perpendicular_to, edges_perpendicular_to) and \
+         edges_at_height's LENGTH z/tol",
+        TaskCite(8001),
+        "members of GEOMETRY_TOPOLOGY_SELECTOR_NAMES, not of this universe, read \
+         by the kernel-free selector builder that `compile_geometry_op` never \
+         calls; gated today at eval and compile, but no closure guard sees them",
     ),
 ];
 
@@ -1056,6 +1071,13 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     // the ORIGIN triple of an axis or plane is gated, its DIRECTION triple is
     // not, because a unit vector legitimately has bare components and gating it
     // would reject correct `.ri`. This is the D3 adversary finding (BINDING).
+    (
+        "arc",
+        9,
+        6..9,
+        Justification::UnitVectorComponent,
+        "ax/ay/az — the arc's axis direction, beside the gated centre and radius",
+    ),
     (
         "circular_pattern",
         8,
@@ -1132,6 +1154,13 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "circular_pattern",
         3,
         1..2,
+        Justification::Count,
+        "count — how many instances",
+    ),
+    (
+        "circular_pattern",
+        8,
+        6..7,
         Justification::Count,
         "count — how many instances",
     ),
@@ -1308,13 +1337,16 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
 /// `(builtin, arity, index range, the slots the range covers)`. Unlike an
 /// [`ALLOWLIST`] row this is a gate, not a licence: each position must be
 /// observed REJECTING a bare number with an ANGLE baseline, which is what tells
-/// it from a length gate, and a row that is not observed so fails the guard.
+/// an angle gate from a length one. The one producer angle the probe cannot
+/// reach, `circular_pattern`'s short form, is a residual instead.
 const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
-    ("rotate", 4, 3..4, "angle"),
-    ("rotate_around", 7, 6..7, "angle"),
-    ("revolve", 7, 6..7, "angle"),
+    ("arc", 9, 4..6, "start_angle/end_angle"),
+    ("circular_pattern", 8, 7..8, "angle, the long form"),
     ("draft", 2, 0..1, "angle, the 3-arg form"),
     ("draft", 3, 1..2, "angle, the 4-arg form"),
+    ("revolve", 7, 6..7, "angle"),
+    ("rotate", 4, 3..4, "angle"),
+    ("rotate_around", 7, 6..7, "angle"),
 ];
 
 /// One entry per index of `indices`, all expecting `expected`.
@@ -1396,7 +1428,7 @@ mod seeded_cites {
     fn a_cite_renders_as_hash_followed_by_digits_only() {
         assert_eq!(TaskCite(6089).to_string(), "#6089");
 
-        for cite in [TaskCite(1), TaskCite(5783), TaskCite(7714)] {
+        for cite in [TaskCite(1), TaskCite(8001), TaskCite(7714)] {
             let rendered = cite.to_string();
             let mut chars = rendered.chars();
             assert_eq!(chars.next(), Some('#'), "{rendered:?} must start with '#'");
@@ -1662,6 +1694,14 @@ struct Probed {
     diagnostics: Vec<reify_core::Diagnostic>,
 }
 
+/// How unusable a call is as a BASELINE, worst first: dimension rejections,
+/// then any other diagnostic, then a failed op compile (0 or 1). Compared
+/// lexicographically.
+type Badness = (usize, usize, usize);
+
+/// A call with nothing left to repair. Nothing is strictly better than this.
+const CLEAN_BASELINE: Badness = (0, 0, 0);
+
 impl Probed {
     fn dimension_rejections(&self) -> usize {
         self.diagnostics
@@ -1670,9 +1710,7 @@ impl Probed {
             .count()
     }
 
-    /// How unusable this call is as a BASELINE, worst first: dimension
-    /// rejections, then any other diagnostic, then a failed op compile.
-    fn baseline_badness(&self) -> (usize, usize, usize) {
+    fn baseline_badness(&self) -> Badness {
         (
             self.dimension_rejections(),
             self.diagnostics.len(),
@@ -1714,21 +1752,24 @@ fn probe_call(name: &str, template: TargetTemplate, args: &[String]) -> Option<P
     })
 }
 
-/// An argument vector for `name` at `arity` that raises no dimension rejection
-/// of its own, or `None` if no combination of [`BASELINE_FILLERS`] achieves one.
-///
-/// Greedy, one position at a time, which is enough because the fillers do not
-/// interact: each position's acceptable dimension is independent of its
-/// neighbours'. Two passes let a later repair unblock an earlier one.
-fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
-    let mut args = vec![BASELINE_FILLERS[0]; arity];
+/// Repair `arity` copies of `start` one position at a time, keeping any
+/// [`BASELINE_FILLERS`] entry that strictly lowers the badness. Two passes let a
+/// later repair unblock an earlier one; the search stops the moment the call is
+/// clean. `None` if the call compiles to no op.
+fn greedy_repair(
+    name: &str,
+    template: TargetTemplate,
+    arity: usize,
+    start: Filler,
+) -> Option<(Vec<Filler>, Badness)> {
+    let mut args = vec![start; arity];
     let mut badness = probe_call(name, template, &filler_sources(&args))?.baseline_badness();
     for _ in 0..2 {
-        if badness == (0, 0, 0) {
-            break;
-        }
         for index in 0..arity {
             for filler in BASELINE_FILLERS {
+                if badness == CLEAN_BASELINE {
+                    return Some((args, badness));
+                }
                 let mut candidate = args.clone();
                 candidate[index] = filler;
                 let Some(probed) = probe_call(name, template, &filler_sources(&candidate)) else {
@@ -1741,7 +1782,54 @@ fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<V
             }
         }
     }
-    (badness.0 == 0).then_some(args)
+    Some((args, badness))
+}
+
+/// The first ladder entry of each distinct dimension, in ladder order, so the
+/// default start ([`BASELINE_FILLERS`]`[0]`) comes first.
+fn start_fillers() -> Vec<Filler> {
+    let mut starts: Vec<Filler> = Vec::new();
+    for filler in BASELINE_FILLERS {
+        if starts.iter().all(|s| s.dimension != filler.dimension) {
+            starts.push(filler);
+        }
+    }
+    starts
+}
+
+/// An argument vector for `name` at `arity` that raises no dimension rejection
+/// of its own, or `None` if no start reaches one.
+///
+/// Greedy repair is enough within a start because the fillers do not interact:
+/// each position's acceptable dimension is independent of its neighbours'. But
+/// a partial repair can look WORSE than the state it repairs — a non-length
+/// filler in a `?`-chained length group HIDES the rejections behind it, and
+/// fixing an early slot can EXPOSE a later gate — and a greedy that only takes
+/// strict improvements then never leaves an all-length start. So the repair runs
+/// once per filler DIMENSION and keeps the strictly best result: a slot's verdict
+/// turns on its filler's dimension, so one start per dimension reaches every
+/// basin that matters, where a start per filler would only repeat them.
+///
+/// The default start goes first and ties keep the earlier result, so every call
+/// the default start already repairs cleanly is unchanged and costs no further
+/// start. A call the default start finds compiling to no op returns `None`
+/// outright: whether an op is emitted is decided by the arity, not by the values.
+fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
+    let mut starts = start_fillers().into_iter();
+    let mut best = greedy_repair(name, template, arity, starts.next()?)?;
+    for start in starts {
+        if best.1 == CLEAN_BASELINE {
+            break;
+        }
+        let Some(repaired) = greedy_repair(name, template, arity, start) else {
+            continue;
+        };
+        if repaired.1 < best.1 {
+            best = repaired;
+        }
+    }
+    let (args, (dimension_rejections, ..)) = best;
+    (dimension_rejections == 0).then_some(args)
 }
 
 /// The argument-slot FAMILIES an op exposes — slot names with their trailing
@@ -1818,14 +1906,14 @@ fn sweep_universe() -> Vec<Observation> {
     observations
 }
 
-/// The sweep, run once per PROCESS and shared by every Step-3 test in it.
+/// The sweep, run once per PROCESS and shared by every sweeping test in it.
 ///
 /// Per process, not per binary: `cargo test` runs this binary's tests as
-/// threads of one process, so one sweep serves all four Step-3 tests, while
+/// threads of one process, so one sweep serves all five sweeping tests, while
 /// `cargo nextest` — the gate's runner — gives each test its own process and
-/// each pays its own sweep. That is why the binary costs 5.3s under the former
-/// and 7-8s under the latter, both far inside the ceiling that keeps
-/// `.config/nextest.toml` free of an override for it.
+/// each pays its own sweep. That is why the module costs 10.4s under the former
+/// and 13-14s per sweeping test under the latter, both far inside the ceiling
+/// that keeps `.config/nextest.toml` free of an override for it.
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
@@ -1839,8 +1927,6 @@ fn observe_universe() -> &'static [Observation] {
 #[cfg(test)]
 mod baseline_search {
     use super::*;
-
-    const CLEAN_BASELINE: (usize, usize, usize) = (0, 0, 0);
 
     fn assert_baseline_is_clean(name: &str, template: TargetTemplate, arity: usize) {
         let fillers = baseline_args(name, template, arity)
@@ -2054,8 +2140,8 @@ mod real_tree {
 
         assert!(
             observations.len() >= 150,
-            "the sweep produced {} observations; 187 were measured when this \
-             guard was written and the floor is 150. A collapse means the probe \
+            "the sweep produced {} observations; 196 were measured when the \
+             ANGLE rows landed and the floor is 150. A collapse means the probe \
              stopped compiling its synthesized calls, which would make the gate \
              above vacuously green.",
             observations.len()
@@ -2063,7 +2149,7 @@ mod real_tree {
         assert!(
             rejected >= 80,
             "only {rejected} of {} observed positions are Contract-C-rejected; \
-             107 were measured and the floor is 80. A drop means gates \
+             113 were measured and the floor is 80. A drop means gates \
              disappeared from `geometry_ops`.",
             observations.len()
         );
