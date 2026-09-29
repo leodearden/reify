@@ -5,6 +5,7 @@
 use reify_core::*;
 use reify_test_support::{
     assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source,
+    compile_source_with_stdlib,
 };
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
@@ -557,6 +558,229 @@ structure def S {
 
     let (_template, diagnostics) = compile_first_template(source);
     assert_has_diagnostic(&diagnostics, Severity::Error, "undefined port 'self.typo'");
+}
+
+// ── #7880: a dotted endpoint must name something its sub's child declares ──
+
+/// The one error every non-vacuity control in this section expects: `e1.typo`
+/// names nothing `Leaf` declares.
+const E1_TYPO_UNDEFINED: &str = "undefined port 'e1.typo' in connect statement";
+
+/// Compile `connect <left> -> <right>` inside `Asm`, whose subs `e1`/`e2` are
+/// both a `Leaf` with body `leaf_body`, and return the message of every
+/// undefined-port error. `Leaf` precedes `Asm`, so the child resolves.
+fn undefined_port_errors_across_leaf_subs(leaf_body: &str, left: &str, right: &str) -> Vec<String> {
+    let source = format!(
+        "trait T {{ param d : Length }}\n\
+         structure def Inner {{ port q : in T {{ param d : Length = 1mm }} }}\n\
+         structure def Leaf {{\n{leaf_body}\n}}\n\
+         structure def Asm {{\n    sub e1 : Leaf\n    sub e2 : Leaf\n    connect {left} -> {right}\n}}\n"
+    );
+    compile_source(&source)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .map(|d| d.message)
+        .collect()
+}
+
+/// The #7880 probe verbatim: `motor` resolved to `Nema17`, which declares no
+/// member called `nonexistent`. Before #7880 this compiled clean and `reify
+/// check` reported the connection's compat constraint Satisfied over a port
+/// that does not exist. The real endpoint `coupler.bore` must not be blamed.
+#[test]
+fn compile_connect_dotted_undeclared_member_error() {
+    let source = r#"
+trait Shaftish : Port { param diameter : Length }
+structure def Nema17 { port shaft : out Shaftish { param diameter : Length = 5mm } }
+structure def Coupler { port bore : in Shaftish { param diameter : Length = 5mm } }
+structure def MotorMount {
+    sub motor = Nema17()
+    sub coupler = Coupler()
+    connect motor.nonexistent -> coupler.bore
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "undefined port 'motor.nonexistent' in connect statement",
+    );
+    assert_no_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "undefined port 'coupler.bore'",
+    );
+    let mount = module
+        .templates
+        .iter()
+        .find(|t| t.name == "MotorMount")
+        .expect("expected template MotorMount");
+    assert_eq!(mount.connections.len(), 1);
+}
+
+/// `vents[0].typo`: the `[0]` indexer is stripped before the member lookup, so
+/// the endpoint is checked against `Vent`'s declared members.
+#[test]
+fn compile_connect_indexed_collection_sub_undeclared_member_error() {
+    let source = r#"
+trait Flow {}
+structure def Vent {
+    port inlet : out Flow {}
+}
+structure def Manifold {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    port src : in Flow {}
+    connect src -> vents[0].typo
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "undefined port 'vents[0].typo' in connect statement",
+    );
+}
+
+/// `vents["intake"].typo`: a keyed sub is checked against its ELEMENT
+/// structure `Vent`, like the direction check it mirrors.
+#[test]
+fn compile_connect_keyed_sub_undeclared_member_error() {
+    let source = r#"
+trait Flow {}
+structure def Vent {
+    param area : Length = 1mm
+    port inlet : in Flow {}
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+    port src : in Flow {}
+    connect src -> vents["intake"].typo
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        r#"undefined port 'vents["intake"].typo'"#,
+    );
+}
+
+/// A `forall` body's `v.typo` is checked after substitution to `vents[0].typo`.
+/// `Vent.inlet` is `out`, so no direction error can stand in for the miss.
+#[test]
+fn compile_connect_forall_substituted_undeclared_member_error() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.typo -> air_channel
+}
+"#;
+
+    let module = compile_source(source);
+    assert_has_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "undefined port 'vents[0].typo'",
+    );
+}
+
+/// Deliberate pass (2): a declared non-port member (a param) is not undefined.
+#[test]
+fn compile_connect_dotted_declared_param_member_is_not_undefined() {
+    let leaf = "param w : Length = 1mm\nport p : in T { param d : Length = 1mm }";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.w", "e2.w"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.w"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (2), sub-of-sub: `e1.inner` names the child's own sub.
+#[test]
+fn compile_connect_dotted_declared_sub_member_is_not_undefined() {
+    let leaf = "sub inner : Inner";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.inner", "e2.inner"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.inner"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (2): a declared `let` is not undefined.
+#[test]
+fn compile_connect_dotted_declared_let_member_is_not_undefined() {
+    let leaf = "let w = 2mm";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.w", "e2.w"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.w"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (2): `where`-guarded params compile into the child's
+/// guarded groups rather than its value cells, and are declared all the same.
+#[test]
+fn compile_connect_dotted_where_guarded_member_is_not_undefined() {
+    let leaf = "param on : Bool = true\n\
+                param w : Length = 1mm where on\n\
+                where on { param v : Length = 1mm }";
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.w", "e2.w"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.v", "e2.v"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        undefined_port_errors_across_leaf_subs(leaf, "e1.typo", "e2.w"),
+        vec![E1_TYPO_UNDEFINED]
+    );
+}
+
+/// Deliberate pass (1), the negative control for the absence contract: with
+/// `Leaf` declared below `Asm` the child is not resolvable when `Asm` compiles,
+/// so even a true miss is left unchecked. GREEN before and after #7880; flips
+/// to expecting the error when #7374 lands (see
+/// `compile_connect_dotted_child_declared_later_unchecked`).
+#[test]
+fn compile_connect_dotted_undeclared_member_child_declared_later_unchecked() {
+    let source = r#"
+trait T { param d : Length }
+structure def Asm {
+    sub e1 : Leaf
+    sub e2 : Leaf
+    connect e1.typo -> e2.p
+}
+structure def Leaf {
+    port p : in T { param d : Length = 1mm }
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
 }
 
 // ── Step 23: connector_sub_content_hash_includes_type_and_params ─────
