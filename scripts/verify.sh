@@ -862,6 +862,17 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# Resolved effect of the two role-scoped fragments above as the nextest passes
+# receive them; the cargo-test fallback has no -E, so it runs everything. Read
+# lazily (NEXTEST is set later). Why: docs/prds/offline-deep-test-lane.md DA6.
+_heavy_partition() {
+    if [ "$NEXTEST" -ne 1 ]; then echo included
+    elif [ -n "$_GATE_HEAVY_EXCLUDE" ]; then echo excluded
+    elif [ -n "$_OFFLINE_HEAVY_SELECT" ]; then echo only
+    else echo included
+    fi
+}
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -3991,6 +4002,7 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # would be satisfiable by an implementation that simply stopped computing the
     # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
+    if [ "$DO_TEST" -eq 1 ]; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
