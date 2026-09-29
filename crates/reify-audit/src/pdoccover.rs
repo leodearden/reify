@@ -259,6 +259,7 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
+use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
 use crate::scan_util::{allow_marker_body, contains_word, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::borrow::Cow;
@@ -273,10 +274,6 @@ pub const UNITS_PATH: &str = "crates/reify-compiler/src/units.rs";
 
 /// The documentation chunk corpus directory prefix.
 pub const CHUNKS_PREFIX: &str = "crates/reify-mcp/src/tools/chunks/";
-
-/// Ratchet baseline. **Seeded by #5480, not by this task** — absent or empty
-/// is a supported state and yields an empty allow-set with no error.
-pub const BASELINE_PATH: &str = "crates/reify-audit/pdoccover-baseline.txt";
 
 // -----------------------------------------------------------------------
 // Registry model
@@ -1459,24 +1456,9 @@ struct Inputs {
     registries: Vec<Registry>,
     /// Pre-read `(path, content)` for every tracked `chunks/*.md`, path-sorted.
     chunk_sources: Vec<(String, String)>,
-    /// Names listed in the ratchet baseline; empty when the file is absent,
-    /// untracked, unreadable or empty.
-    baseline: BTreeSet<String>,
-}
-
-/// Names listed in a `pdoccover-baseline.txt`.
-///
-/// One name per line. Blank lines and `#` comment lines are skipped, so the
-/// file can carry a regeneration header. An empty file yields an empty set —
-/// indistinguishable from an absent one, which is exactly PRD leaf γ's
-/// "baseline may be empty/absent at this stage" contract.
-fn parse_baseline(content: &str) -> BTreeSet<String> {
-    content
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
-        .collect()
+    /// Rows of the ratchet ledger; empty when the file is absent, untracked,
+    /// unreadable or empty.
+    baseline: BTreeSet<BaselineRow>,
 }
 
 /// `true` when `path` is a documentation chunk in the MCP corpus.
@@ -1648,6 +1630,9 @@ fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
         .into_iter()
         .map(|c| {
             let name = c.name.as_str();
+            let baselined = inputs
+                .baseline
+                .contains(&BaselineRow::Undocumented(c.name.clone()));
 
             // (1) A malformed escape hatch is a defect on its own terms.
             let d = if c.allow_missing_reason {
@@ -1655,12 +1640,12 @@ fn omission_dispositions(inputs: &Inputs) -> Vec<(CensusName, Disposition)> {
             } else if documented.contains(name) {
                 // (2) Documented: the name is covered, so any surviving
                 // suppression channel is stale.
-                match (&c.allow, inputs.baseline.contains(name)) {
+                match (&c.allow, baselined) {
                     (Some(reason), _) => Disposition::StaleAllow(reason.clone()),
                     (None, true) => Disposition::StaleBaseline,
                     (None, false) => Disposition::Clean,
                 }
-            } else if c.allow.is_some() || inputs.baseline.contains(name) {
+            } else if c.allow.is_some() || baselined {
                 // (3) Undocumented, but a well-formed channel exempts it.
                 Disposition::Exempt
             } else {

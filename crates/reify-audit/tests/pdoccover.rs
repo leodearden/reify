@@ -20,7 +20,8 @@
 
 mod common;
 
-use reify_audit::pdoccover::{BASELINE_PATH, UNITS_PATH};
+use reify_audit::pdoccover::UNITS_PATH;
+use reify_audit::pdoccover_baseline::BASELINE_PATH;
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
