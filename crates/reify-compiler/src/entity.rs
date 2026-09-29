@@ -2319,6 +2319,22 @@ pub(crate) fn compile_entity(
                         }
                     }
                 }
+
+                if let Some(logical_name) = maybe_logical_name {
+                    let arm_children = m.arms.iter().map(|arm| match &*arm.member {
+                        reify_ast::MemberDecl::Sub(sub) => find_template_with_prelude(
+                            compiled_templates,
+                            prelude,
+                            &sub.structure_name,
+                        ),
+                        _ => None,
+                    });
+                    if let Some(names) = cluster_declared_member_names(arm_children) {
+                        scope
+                            .sub_declared_member_names
+                            .insert(logical_name.to_string(), names);
+                    }
+                }
             }
             reify_ast::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -5368,6 +5384,24 @@ fn merge_arm_port_directions(
             directions.insert(sub_name.to_string(), arm);
         }
     }
+}
+
+/// The member names a match-arm cluster declares: the UNION over its arms, or
+/// `None` when any arm's child template is unresolvable.
+///
+/// The mirror image of `merge_arm_port_directions`' INTERSECTION: both maps are
+/// read to REJECT source, so each fold keeps only what EVERY arm agrees is
+/// wrong — a contested direction is dropped (unchecked), and a name any arm
+/// declares is kept (not undeclared).
+fn cluster_declared_member_names<'t>(
+    arm_children: impl IntoIterator<Item = Option<&'t TopologyTemplate>>,
+) -> Option<BTreeSet<String>> {
+    arm_children
+        .into_iter()
+        .try_fold(BTreeSet::new(), |mut names, child| {
+            names.extend(declared_member_names_from_template(child?));
+            Some(names)
+        })
 }
 
 /// Collect the `(declaring_trait, fn_name)` keys of a conformer template's

@@ -280,11 +280,11 @@ pub(crate) struct CompilationScope<'u> {
     /// structure is declared later in the module (task #7374); the named member
     /// is not a port at all (a name the child declares as nothing at all is
     /// diagnosed separately via `sub_declared_member_names`); or the sub is a
-    /// match-arm cluster whose arms
-    /// disagree about that port's direction, which `merge_arm_port_directions`
-    /// (entity.rs) folds out rather than answering with one arbitrary arm. A
-    /// miss does NOT mean the direction is `Bidi` — consumers must treat it as
-    /// "unknown" and decline to check, never as a default direction.
+    /// match-arm cluster whose arms disagree about that port's direction, which
+    /// `merge_arm_port_directions` (entity.rs) folds out rather than answering
+    /// with one arbitrary arm. A miss does NOT mean the direction is `Bidi` —
+    /// consumers must treat it as "unknown" and decline to check, never as a
+    /// default direction.
     ///
     /// `BTreeMap` inner for deterministic iteration, matching the
     /// `sub_member_types` precedent.
@@ -298,7 +298,8 @@ pub(crate) struct CompilationScope<'u> {
     /// ABSENCE CONTRACT: a missing key means the child is not resolvable here,
     /// so do not check — a child declared later (#7374), a sub typed by a
     /// trait or type param, or a match-arm cluster with an unresolvable or
-    /// non-`sub` arm. A present key is the COMPLETE set.
+    /// non-`sub` arm. A present key is the COMPLETE set; for a match-arm
+    /// cluster, the union over its arms (`cluster_declared_member_names`).
     pub(crate) sub_declared_member_names: HashMap<String, BTreeSet<String>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
