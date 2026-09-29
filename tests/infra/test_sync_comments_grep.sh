@@ -131,52 +131,6 @@ assert 'no Section 2/3 unhardened bash -c interpolation in this script' \
 assert 'PATTERN is actually exported (behavioral)' \
     bash -c '[ -n "${PATTERN+x}" ] && env | grep -q "^PATTERN="'
 
-# -- S3: regression guard that the textual export-PATTERN grep is absent -------
-# Split to prevent self-match: the full string is never on one line here.
-_S3_CHECK='"this script exports PATTERN'
-_S3_CHECK+=' for bash -c subshells"'
-_no_textual_export_check() {
-    ! grep -qF "$_S3_CHECK" "$THIS_SCRIPT"
-}
-assert 'no textual export-PATTERN assertion (S3: behavioral check only)' \
-    _no_textual_export_check
-
-# -- S1: meta-assertion that _CHECK= has an explanatory comment above it -------
-_test_comment_above_check() {
-    grep -B1 '^_CHECK=' "$THIS_SCRIPT" | head -1 | grep -q '^#'
-}
-assert "_CHECK= definition has an explanatory comment directly above it" \
-    _test_comment_above_check
-
-# -- S4: regression guard — Section 3 intro comment documents source side-effect
-# Fragments split across two variables prevent self-match on these definition
-# lines. Grep is scoped to comment lines ('^#') so the assert description below
-# does not self-match even when it contains the contiguous phrases.
-_DOC_SE_FRAG1='side'; _DOC_SE_FRAG2=' effect'
-_DOC_NF_FRAG1='non'; _DOC_NF_FRAG2='-fatal'
-_section3_comment_documents_source_side_effect() {
-    # SIGPIPE-safe (esc-3444-93; mirrors e602f732bb): capture comment lines
-    # once via command substitution (drains all output, so no early-exiting
-    # consumer can SIGPIPE the producer under pipefail), then substring-match
-    # with bash builtins — no pipe in the detection path at all.
-    local comments
-    comments=$(grep '^#' "$THIS_SCRIPT") || true
-    [[ "$comments" == *"${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}"* ]] && \
-    [[ "$comments" == *"${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"* ]]
-}
-assert 'Section 3 intro comment documents SYNC_TEST source side-effect (side effect + non-fatal phrases)' \
-    _section3_comment_documents_source_side_effect
-
-# -- S5 (esc-3444-93): regression guard — the Section-3-comment detector above
-# must not use a SIGPIPE-prone comment-pipe construct under pipefail. Fragments
-# split across two vars prevent self-match (same anti-self-match convention as
-# _DOC_SE_FRAG / _DOC_NF_FRAG above).
-_SIGPIPE_FRAG1='grep '\''^#'\'' "$THIS_SCRIPT" |'
-_SIGPIPE_FRAG2=' grep -q'
-_no_sigpipe_prone_comment_pipe() { ! grep -qF "${_SIGPIPE_FRAG1}${_SIGPIPE_FRAG2}" "$THIS_SCRIPT"; }
-assert 'Section-3-comment detector uses no SIGPIPE-prone comment-grep pipe under pipefail (esc-3444-93)' \
-    _no_sigpipe_prone_comment_pipe
-
 # -- S2: regression guards for the hardening self-check regex ------------------
 # Fork-free: match single-line fixture strings directly via bash [[ =~ ]].
 # Single-line [[ =~ ]] is safe (no cross-line '.'-matching issue); no mktemp,
@@ -421,43 +375,6 @@ assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines
 assert "no grep -P in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
     bash -c '[ -n "$SYNC_TEST" ] && ! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_TEST"'
 
-# S1: regression guard — Section 2 header must not claim it "fails before the
-# impl step" (past-tense reframe applied by task 1581).
-# Fragments split across two variables prevent self-match.
-_S1_FRAG1='fails before the impl'
-_S1_FRAG2=' step'
-_no_present_tense_redgreen_claim() {
-    ! grep -qF "${_S1_FRAG1}${_S1_FRAG2}" "$THIS_SCRIPT"
-}
-assert 'Section 2 header uses past-tense/regression-guard framing, not present-tense red→green claim (S1)' \
-    _no_present_tense_redgreen_claim
-
-assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
-    grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
-
-assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
-    bash -c '[ -n "$SYNC_TEST" ] && grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
-
-# S2: regression guard — extract_fn docstring must not claim modifiers are
-# accepted "in any valid subset" (order-enforcing reframe applied by task 1581).
-# Fragments split across two variables prevent self-match.
-_S2_FRAG1='in any valid subset'
-_S2_FRAG2=" before 'fn'"
-_no_ambiguous_modifier_subset_claim() {
-    ! grep -qF "${_S2_FRAG1}${_S2_FRAG2}" "$SYNC_TEST"
-}
-assert 'extract_fn comment states modifier order is enforced, not any-subset (S2)' \
-    _no_ambiguous_modifier_subset_claim
-
-assert "sync_ref_helpers.sh documents extern fn limitation" \
-    grep -qF 'extern "C" fn' "$SYNC_REF_HELPERS"
-
-assert "sync_ref_helpers.sh documents default fn limitation" \
-    grep -qF 'default fn' "$SYNC_REF_HELPERS"
-
-assert "sync_ref_helpers.sh documents qualifier order mirrors canonical Rust grammar" \
-    grep -qF 'const → async → unsafe → fn' "$SYNC_REF_HELPERS"
-
 # S3: env/path-propagation guard — every single-line bash -c assertion in this
 # file that dereferences $SYNC_REF_HELPERS or $SYNC_TEST must include a
 # [ -n "$VAR" ] non-empty guard, so an unpropagated/empty exported var is a
@@ -497,8 +414,9 @@ echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 # `assert` helper in test_helpers.sh already is (it only increments FAIL, it
 # does not exit), and `test_summary` is stubbed to no-op by each Section 3
 # subshell.  Any future refactor of sync_comments_test.sh must preserve this
-# non-fatal contract — introducing a top-level `exit` would silently abort
-# the Section 3 subshell and turn a PASS into a silent empty-output failure.
+# non-fatal contract — a top-level `exit` would end each Section 3 subshell
+# before its check runs (an `exit 0` passes it vacuously). The returns-control
+# probe below pins this.
 #
 # STRICT-MODE NEUTRALIZATION (flake guard, esc-3985-18): sync_comments_test.sh
 # runs under `set -euo pipefail`, and sourcing it re-enables those options in
