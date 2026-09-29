@@ -1831,6 +1831,56 @@ fn observe_universe() -> &'static [Observation] {
     SWEEP.get_or_init(sweep_universe)
 }
 
+/// Baseline-search regression tests.
+///
+/// Each probes ONE `(builtin, template, arity)` — no full sweep — and pins a
+/// general trap the search must escape. The builtin it names is the measured
+/// witness on this tree, not a restated universe.
+#[cfg(test)]
+mod baseline_search {
+    use super::*;
+
+    const CLEAN_BASELINE: (usize, usize, usize) = (0, 0, 0);
+
+    fn assert_baseline_is_clean(name: &str, template: TargetTemplate, arity: usize) {
+        let fillers = baseline_args(name, template, arity)
+            .unwrap_or_else(|| panic!("{name}/{arity} has no rejection-free baseline"));
+        let probed = probe_call(name, template, &filler_sources(&fillers))
+            .unwrap_or_else(|| panic!("{name}/{arity}'s baseline compiles to no op"));
+        assert_eq!(
+            probed.baseline_badness(),
+            CLEAN_BASELINE,
+            "{name}/{arity}'s baseline still raises rejections, diagnostics or an op \
+             failure, so no position of it can be read cleanly: {:?}",
+            probed.diagnostics
+        );
+    }
+
+    /// TRAP: a repair that HIDES a rejection instead of removing it.
+    ///
+    /// A length group is read with `?`, so the first slot holding a non-length
+    /// filler ends the read and every later slot's rejection vanishes with it.
+    /// A greedy that starts from all-length fillers scores that as an
+    /// improvement and cannot leave it. Witness: `arc` at arity 9, a centre and
+    /// radius length group followed by two angles.
+    #[test]
+    fn the_baseline_search_escapes_a_short_circuiting_length_group() {
+        assert_baseline_is_clean("arc", TargetTemplate::None, 9);
+    }
+
+    /// TRAP: a repair that EXPOSES a later gate.
+    ///
+    /// An op that fails early never reads its later arguments, so repairing the
+    /// early slot surfaces the later slot's rejection — which a search accepting
+    /// only strict improvements reads as WORSE and refuses. Witness:
+    /// `circular_pattern` at arity 8, where a length-filled count is invalid and
+    /// hides the angle behind it.
+    #[test]
+    fn the_baseline_search_escapes_a_repair_that_exposes_a_later_gate() {
+        assert_baseline_is_clean("circular_pattern", TargetTemplate::Solid, 8);
+    }
+}
+
 #[cfg(test)]
 mod seeded_stubbed_gate {
     use super::*;
@@ -2052,6 +2102,96 @@ mod real_tree {
                 render(&violations)
             );
         }
+    }
+
+    /// The positions the shipped registry expects to be gated at ANGLE.
+    fn angle_positions() -> std::collections::BTreeSet<Position> {
+        shipped_allowlist()
+            .into_iter()
+            .filter(|e| e.expected == Expectation::GatedAt(reify_core::DimensionVector::ANGLE))
+            .map(|e| e.position)
+            .collect()
+    }
+
+    /// THE ANGLE CENSUS (B11) — every gated row is observed gated AT its
+    /// dimension, and shrinking the angle rows fires.
+    ///
+    /// Affirmative evidence, not the mere absence of violations: a `GatedAt` row
+    /// whose position the sweep no longer reaches fails here naming it, so a
+    /// census row cannot outlive the reading it was authored from.
+    #[test]
+    fn every_gated_row_is_observed_at_its_dimension_and_the_angle_census_is_complete() {
+        let observations = observe_universe();
+        let angle = reify_core::DimensionVector::ANGLE;
+
+        for entry in shipped_allowlist() {
+            let Expectation::GatedAt(dimension) = entry.expected else {
+                continue;
+            };
+            let observed = observations.iter().find(|o| o.position == entry.position);
+            assert!(
+                matches!(observed, Some(o)
+                    if o.outcome == ProbeOutcome::ContractCRejected
+                        && o.baseline_dimension == dimension),
+                "`{entry}` is not observed rejecting a bare number with a {dimension} \
+                 baseline; the sweep saw {observed:?}"
+            );
+        }
+
+        let angle_rows = angle_positions();
+        assert!(
+            angle_rows.len() >= 8,
+            "only {} ANGLE rows are registered; the census measured 8 (rotate, \
+             rotate_around and revolve once each, arc twice, draft twice, \
+             circular_pattern once) and this is its floor. A drop means the sweep \
+             stopped reaching an angle gate.",
+            angle_rows.len()
+        );
+
+        let without_angle_rows = Registry::from_parts(
+            shipped_allowlist()
+                .into_iter()
+                .filter(|e| !angle_rows.contains(&e.position)),
+            shipped_residuals(),
+        );
+        let violations = classify_all(observations, &without_angle_rows);
+        let angle_gate_read_as_length = ViolationReason::GateDimensionMismatch {
+            expected: CONTRACT_C_DIMENSION,
+            observed: angle,
+        };
+        let fired: std::collections::BTreeSet<Position> = violations
+            .iter()
+            .filter(|v| v.reason == angle_gate_read_as_length)
+            .map(|v| v.position)
+            .collect();
+        assert_eq!(
+            fired,
+            angle_rows,
+            "shrinking the angle allowlist to nothing must make the guard fire at \
+             exactly the removed positions. Violations seen:\n{}",
+            render(&violations)
+        );
+        assert_eq!(
+            violations.len(),
+            angle_rows.len(),
+            "shrinking only the angle rows must raise nothing else. Violations \
+             seen:\n{}",
+            render(&violations)
+        );
+
+        let unregistered: Vec<&Observation> = observations
+            .iter()
+            .filter(|o| {
+                o.outcome == ProbeOutcome::ContractCRejected
+                    && o.baseline_dimension == angle
+                    && !angle_rows.contains(&o.position)
+            })
+            .collect();
+        assert!(
+            unregistered.is_empty(),
+            "positions gated at ANGLE that no ANGLE_ALLOWLIST row registers: \
+             {unregistered:?}. Add each to ANGLE_ALLOWLIST."
+        );
     }
 
     /// ANTI-VACUITY II — the gates are OBSERVED, not assumed.
