@@ -4896,11 +4896,12 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // The TESTID escape — this resolver's busiest arm, since every #5891 scoped
-  // tool reaches it — is pinned by the `resolveByTestId testId` row of the
-  // `debug bridge escapeAttrValue` table at the end of this file, so this block
-  // carries no case for it. Case (f) above keeps the sibling VIEWPORTID arm,
-  // which no row covers.
+  // The TESTID escape — it lives in `queryAllByTestId`, beneath this resolver
+  // and `buildSelectorPredicate`, so every #5891 scoped tool reaches it — is
+  // pinned by the `queryAllByTestId testId` row of the `debug bridge
+  // escapeAttrValue` table at the end of this file, so this block carries no
+  // case for it. Case (f) above keeps the sibling VIEWPORTID arm, which no row
+  // covers.
 });
 
 // ---------------------------------------------------------------------------
@@ -4985,13 +4986,13 @@ type EscapeSite = {
  *
  * INVENTORY CAVEAT — these rows are the `escapeAttrValue` call sites reachable
  * with a caller-supplied value, with ONE deliberate omission:
- * `resolveByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
+ * `queryAllByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
  * `debug bridge resolveByTestId viewport scoping` block (which also asserts the
  * no-cross-pane-bleed property, that no row here has). Case (f) is MISS-only,
  * and — that block installing no CSS stub — runs under the fallback arm alone.
  * Both omissions follow from the split above rather than contradicting it: MISS
  * is the half that carries the site-level pin, and the semantics an added HIT
- * half would re-prove belong to the shared helper, which the `resolveByTestId
+ * half would re-prove belong to the shared helper, which the `queryAllByTestId
  * testId` row below already pins on BOTH arms. What (f) genuinely lacks is a
  * success-SHAPE assertion of its own — the one thing promoting it to a row here
  * would add. This table is NOT a proof that every selector interpolation in
@@ -5005,13 +5006,13 @@ type EscapeSite = {
  * escape` block below.
  */
 const ESCAPE_SITES: EscapeSite[] = [
-  // resolveByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
+  // queryAllByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
   // tools (dom_query, click_element, focus_element, scroll, element_screenshot,
-  // wait_for_selector and wait_for's selector arm) reach the escape here, over
-  // six `resolveByTestId(…)` call sites — `buildSelectorPredicate` serves the
-  // last two from one.
+  // wait_for_selector and wait_for's selector arm) reach the escape here — the
+  // first five through `resolveByTestId(…)`'s five call sites, the two waiters
+  // through `buildSelectorPredicate`.
   {
-    label: 'resolveByTestId testId',
+    label: 'queryAllByTestId testId',
     prefix: 'row',
     dispatch: (value) => ['click_element', { testId: value }],
     setUpMiss: () => () => {},
@@ -5218,7 +5219,7 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
-   * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
+   * one row per CALL SITE and seven tools ride on its `queryAllByTestId testId`
    * row. The guards are TWELVE independent hand-written copies, so a row here
    * that covered only one of them would leave the other eleven free to regress with
    * the suite green — which is what #6178 measured for the five guards it
@@ -5341,8 +5342,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
       expected: { error: 'testId is required' },
     },
     {
-      // wait_for reaches the same resolver through `buildSelectorPredicate`, and
-      // guards the NESTED `predicate.testId` — hence its own distinct wording.
+      // wait_for reaches the same testid query through `buildSelectorPredicate`,
+      // and guards the NESTED `predicate.testId` — hence its own distinct wording.
       label: 'wait_for (selector predicate)',
       decoyTestId: '3',
       dispatch: () => [
