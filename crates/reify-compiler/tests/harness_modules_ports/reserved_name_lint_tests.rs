@@ -351,9 +351,8 @@ structure Beam {
 /// win in type position. The Orientation counterpart of
 /// `structure_named_frame_emits_reserved_type_name_warning` and
 /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`
-/// above; the use-site half is
-/// `builtin_orientation_shadows_same_named_alias_and_structure` in that
-/// unit module.
+/// above; the use-site half is pinned by the resolver unit tests in
+/// type_resolution.rs.
 #[test]
 fn orientation_declaration_draws_reserved_type_name_warning() {
     for (label, source) in [
@@ -413,7 +412,9 @@ fn orientation_declaration_draws_reserved_type_name_warning() {
 
     // NON-VACUITY control: a structure whose name has no builtin arm must
     // draw NO ReservedTypeName warning, so the assertions above cannot pass
-    // by the lint firing indiscriminately.
+    // by the lint firing indiscriminately. Filtered on the code alone, at ANY
+    // severity — unlike the per-row count above, which is warnings-only — so
+    // a wrongly-graded emission cannot slip past the control.
     let control = compile_source_with_stdlib("structure def Rotor {}");
     let control_reserved: Vec<_> = control
         .diagnostics

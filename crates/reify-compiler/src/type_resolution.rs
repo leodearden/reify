@@ -5765,10 +5765,8 @@ mod tests {
     //    use-site half is pinned below
     //    (`builtin_orientation_shadows_same_named_alias_and_structure`); the
     //    declaration-site half and end-to-end annotation coverage are pinned
-    //    in `tests/harness_modules_ports/reserved_name_lint_tests.rs`
-    //    (`orientation_declaration_draws_reserved_type_name_warning`,
-    //    `orientation_annotations_compile_clean`). Both halves are pinned,
-    //    being a behaviour change rather than an accident.
+    //    in `tests/harness_modules_ports/reserved_name_lint_tests.rs`. Both
+    //    halves are pinned, being a behaviour change rather than an accident.
     //
     // Arity: bare `Orientation` takes 3 per the `"Frame" => Type::Frame(3)`
     // precedent. Parameterised `Orientation<N>` is not DISTINGUISHED — the
@@ -5826,8 +5824,7 @@ mod tests {
         );
     }
 
-    /// (d) The use-site half of trade 2 above; the declaration-site half is
-    /// `orientation_declaration_draws_reserved_type_name_warning` in
+    /// (d) The use-site half of trade 2 above; the declaration-site half is in
     /// `tests/harness_modules_ports/reserved_name_lint_tests.rs`. Same shape
     /// as `builtin_dimension_shadows_same_named_alias_with_different_dimension`
     /// (task #5892).
