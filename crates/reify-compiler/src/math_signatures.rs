@@ -2519,20 +2519,6 @@ mod tests {
     // test module does not compile without it (the established RED idiom for a
     // new resolver arm — cf. the `RED until S2 adds the "vec3" arm` tests above).
 
-    /// A `Scalar<Mass>` element expression — the second dimension used to pin
-    /// that the rejection is "any non-ANGLE dimension", not a LENGTH special case.
-    fn mass_elem(v: f64) -> CompiledExpr {
-        CompiledExpr::literal(
-            Value::Scalar {
-                si_value: v,
-                dimension: DimensionVector::MASS,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::MASS,
-            },
-        )
-    }
-
     /// The established test-span idiom (`relation_signatures.rs:1204-1205`,
     /// `arg_check.rs:121`).
     fn trig_call_span() -> reify_core::SourceSpan {
