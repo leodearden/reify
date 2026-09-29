@@ -16,6 +16,7 @@ pub mod lsp_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
 pub mod prd_gate_probe_set;
+pub mod skip_sets;
 pub mod specialization_fixtures;
 pub mod temp_dirs;
 pub mod tensegrity_fixtures;
