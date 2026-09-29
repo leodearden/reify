@@ -236,7 +236,9 @@
 //! exists to prevent.
 
 use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
-use crate::scan_util::{allow_marker_body, contains_word, find_word_boundary_token, is_word_byte};
+use crate::scan_util::{
+    allow_marker_body, contains_word, find_word_boundary_token, is_identifier_shaped, is_word_byte,
+};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -958,20 +960,6 @@ pub fn documented_names(names: &[String], chunk_sources: &[(String, String)]) ->
         })
         .cloned()
         .collect()
-}
-
-/// `true` when `s` is identifier-shaped end-to-end: `[A-Za-z_][A-Za-z0-9_]*`.
-///
-/// The admission test for existence evidence. Without it a message template
-/// (`"unresolved type: {}"`), a phrase or a chunk id would enter the oracle and
-/// arbitrary prose could vouch for a fabricated call.
-fn is_identifier_shaped(s: &str) -> bool {
-    let mut bytes = s.bytes();
-    match bytes.next() {
-        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
-        _ => return false,
-    }
-    bytes.all(is_word_byte)
 }
 
 /// Leading `[A-Za-z0-9_]` run of `tok` — the identifier at the head of a token
