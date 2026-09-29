@@ -33,7 +33,7 @@ structure def GdtZones {
     let ann_zone = zone_annulus(axis, R, 4mm, 20mm)
 
     // ── zone_profile(solid: Geometry, width: Length) ──────────────────────────
-    // Profile zone shell: lowers to Difference(Thicken(solid, +w/2), Thicken(solid, −w/2)).
+    // Profile zone shell: lowers to Difference(offset_solid(solid, +w/2), offset_solid(solid, −w/2)).
     let prof_zone = zone_profile(box(10mm, 10mm, 10mm), 1mm)
 
     // ── zone_slab(face: Geometry, width: Length) ─────────────────────────────

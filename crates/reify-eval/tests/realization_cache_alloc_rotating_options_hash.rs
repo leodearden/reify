@@ -28,10 +28,11 @@
 
 use std::sync::atomic::Ordering;
 
-mod common;
+#[path = "common/alloc_counter.rs"]
+mod alloc_counter;
 
 #[global_allocator]
-static GLOBAL: common::alloc_counter::CountingAllocator = common::alloc_counter::CountingAllocator;
+static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocator;
 
 /// Rejected inserts at rotating `options_hash` values under an existing entity must not
 /// allocate a new `String` key — locking the "regardless of `options_hash`" clause of the
@@ -73,7 +74,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     }
 
     // Snapshot after warm-up — all legitimate allocations already counted.
-    let before = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
+    let before = alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
 
     // Rejected inserts: loose tol 0.1 >> warm-up 0.001, so ToleranceBucket
     // short-circuits immediately without touching the Vec.
@@ -87,7 +88,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
         );
     }
 
-    let after = common::alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
+    let after = alloc_counter::ALLOCATIONS.load(Ordering::Relaxed);
     let delta = after.saturating_sub(before);
 
     // Same reasoning as the sibling test (realization_cache_alloc.rs): background-thread

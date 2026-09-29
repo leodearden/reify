@@ -34,7 +34,7 @@ reify-audit \
 { "window": "14d" }
 ```
 
-**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, no `--pattern` restriction).
+**Detectors run:** every default-sweep detector (`references/severity-routing.md` §0), no `--pattern` restriction.
 
 ---
 
@@ -62,7 +62,7 @@ reify-audit \
 { "task": "<id>" }
 ```
 
-**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, no `--pattern` restriction).
+**Detectors run:** every default-sweep detector (`references/severity-routing.md` §0), no `--pattern` restriction.
 
 ---
 
@@ -88,20 +88,20 @@ reify-audit \
 { "window": "<iso-date>..now" }
 ```
 
-**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, unless `--pattern` also supplied — see §6).
+**Detectors run:** every default-sweep detector (`references/severity-routing.md` §0), unless `--pattern` also supplied — see §6.
 
 ---
 
-## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER`)
+## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK`)
 
-**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, or `/audit --pattern PDEAD`.
+**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, `/audit --pattern PDEAD`, or `/audit --pattern PDOCCOVER`.
 
 **Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --pattern <P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER> \
+  --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK> \
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
@@ -114,28 +114,51 @@ reify-audit \
 ```json
 { "patterns": ["P1"] }        // or ["P2"] or ["P5"]
 { "patterns": ["PTODO"] }     // TODO-tracking invariant (default-sweep, deterministic)
+{ "patterns": ["PDSSENTINEL"] } // ds-sentinel reintroduction guard (default-sweep, deterministic)
 { "patterns": ["PDEAD"] }     // advisory: dead code
 { "patterns": ["PUNTESTED"] } // advisory: untested symbols
 { "patterns": ["PLAYER"] }    // advisory: layer/import-boundary violations
+{ "patterns": ["PDIAG"] }     // structural opt-in: codes-mandatory diagnostic ratchet
+{ "patterns": ["PDOCCOVER"] } // structural opt-in: registry <-> MCP chunk name drift
+{ "patterns": ["PDCHECK"] }   // structural opt-in: dead delivered_checks paths (needs tasks.db)
 ```
 
 **Detectors run:** The named detector only.
 
 ### PTODO — notes
 
-PTODO (`--pattern PTODO`) is **part of the no-`--pattern` default all-detector sweep** (P1/P2/P5/PTODO) — this section documents its explicit invocation. It is distinct from the opt-in advisory P-* patterns below.
+PTODO (`--pattern PTODO`) is **part of the no-`--pattern` default all-detector sweep** (`references/severity-routing.md` §0) — this section documents its explicit invocation. It is distinct from the opt-in advisory P-* patterns below.
 
-- **Severity:** All PTODO violation kinds emit **Severity Medium** → file a deferred follow-up task per `references/severity-routing.md` PTODO row.
-- **Implementation:** Deterministic grep + read-only sqlite; **no jcodemunch/LLM/MCP**. Unaffected by jcodemunch outages. Only its liveness lane degrades gracefully when `tasks.db` is absent (one stderr breadcrumb; structural lane still runs). See `references/cli-invocation.md` §4.1 PTODO note.
-- **Exit-neutrality:** PTODO emits Medium only; exit code = High-severity count, so a PTODO-only run always exits 0 on a clean tree.
+- **Severity:** split by kind since η (#4559), so route each finding by its own `severity` field. The High kinds (`untracked`, `bare-ignore`, `orphaned`, `g-allow-orphaned`) escalate per `references/severity-routing.md` §1; every Medium kind files a deferred follow-up task (§2 PTODO notes).
+- **Implementation:** Deterministic grep + read-only sqlite; **no jcodemunch/LLM/MCP**, so unaffected by jcodemunch outages. How its `tasks.db`-backed lanes degrade without the DB: `references/cli-invocation.md` §4.1.
+- **Exit code:** the High count, so a PTODO-only run exits non-zero whenever a High kind is present. On main that is the steady state, not a regression (SKILL.md "Default-sweep membership"). The merge gate is the fingerprint ratchet in `tests/infra/test_reify_audit_ptodo.sh`, not this exit code.
+
+### PDSSENTINEL — notes
+
+PDSSENTINEL (`--pattern PDSSENTINEL`) is **part of the no-`--pattern` default all-detector sweep** (`references/severity-routing.md` §0). This section documents its explicit invocation.
+
+- **Severity:** Medium only, so it is exit-neutral: a PDSSENTINEL-only run exits 0 whatever it finds.
+- **Scope:** `crates/reify-compiler/src/{entity,functions,traits,expr}.rs` and `crates/reify-compiler/src/conformance/*.rs`, hardcoded in `crates/reify-audit/src/pdssentinel.rs`. A hit is a `dimensionless_scalar()` call within a bounded window after an `UnresolvedType` diagnostic push, with no `// ds-sentinel:allow <reason>` marker in that window.
+- **Finding shape:** `task_id` is the offending file's repo path, and the summary reads `ds-sentinel: line <n>: <text>`.
+- **Implementation:** tracked-file enumeration plus working-tree reads; no jcodemunch, no task DB.
+- **Measured:** 0 findings on main `0bbb9075d3`, 2026-09-23.
 
 ### Advisory P-* patterns (PDEAD / PUNTESTED / PLAYER) — notes
 
-These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (which runs P1/P2/P5/PTODO). They fire only when named explicitly via `--pattern`.
+These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (`references/severity-routing.md` §0). They fire only when named explicitly via `--pattern`.
 
 - **Severity:** All three emit Severity Low — log-only, advisory, **never auto-filed** as a follow-up task. See `references/severity-routing.md` for routing details.
 - **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require a serve for the duration of the run. When no serve answers, they degrade to **zero findings** (same fail-soft path as P1; P2/P5/PTODO are unaffected — NOT exit 125). One asymmetry to know: because all three are jcodemunch-backed, invoking them alone (`--pattern PDEAD`, `--pattern PDEAD,PUNTESTED`, …) is an all-jcodemunch run set, so a serve that IS reachable but whose index is stale/empty/unreadable hard-exits 125 instead of fail-softing. See `references/cli-invocation.md` §4.1 for both arms, the refusal codes and their remedies.
 - **Activation:** Bring a serve up by wrapping the invocation in `scripts/with-jcodemunch-serve.sh`; there is no persistent unit to start. `docs/architecture-audit/jcodemunch-serve-activation.md` remains the identifier and runbook record.
+
+### Structural opt-in patterns (PDIAG / PDOCCOVER / PDCHECK) — notes
+
+These three are **opt-in only**, because each can emit High findings and the exit code is the High count. A default-sweep member that can emit High would turn every bare `/audit` run non-zero. Each fires only when named via `--pattern`. As with PTODO, a finding's kind is its summary prefix (`pdiag-ratchet: …`, `undocumented-name: …`, `delivered-check-unsatisfiable-path: …`).
+
+- **No jcodemunch:** none of the three is jcodemunch-backed, so adding one to a jcodemunch-backed pattern set makes it *mixed*, and a jcodemunch-side problem then fail-softs instead of exiting 125 (`references/cli-invocation.md` §4.1).
+- **PDIAG** — the INV-SF-6 codes-mandatory ratchet over code-less `Diagnostic::error`/`Diagnostic::warning` sites, counted per file against `crates/reify-audit/pdiag-baseline.txt`. The High kinds are `pdiag-ratchet` (a file above its baseline count, or new to the baseline), `pdiag-baseline-unreadable` and `pdiag-census-empty`. `pdiag-baseline-stale` is Medium: a count fell below its row, or a row outlived its file's last site. Regenerate with `cargo run -p reify-audit --bin pdiag-baseline-gen`; site remedies are in `docs/notes/diagnostic-severity-policy.md`. The merge gate `tests/infra/test_reify_audit_pdiag.sh` enforces the ratchet independently of this skill. Measured on main `0bbb9075d3`, 2026-09-23: 2 findings, both Medium `pdiag-baseline-stale`, exit 0.
+- **PDOCCOVER** — name drift between the builtin `*_NAMES` registries in `crates/reify-compiler/src/units.rs` and the MCP language chunks `crates/reify-mcp/src/tools/chunks/*.md`. Its categories are `undocumented-name`, `fabricated-name`, `stale-baseline-entry`, `stale-allow-entry` and `allow-missing-reason`, all High. Measured on main `0bbb9075d3`, 2026-09-23: 41 High, exit 41 — 38 `undocumented-name` keyed to `units.rs` and 3 `fabricated-name` keyed to `chunks/geometry.md`. That backlog, the `pdoccover-baseline.txt` seed and the gate are owned by #6931.
+- **PDCHECK** — `metadata.delivered_checks` grep rows on non-terminal tasks whose pathspec names no tracked path. `delivered-check-unsatisfiable-path` (`expect: present`) is High, because every dependent blocks at `DEP_CAPABILITY_NOT_DELIVERED`. `delivered-check-vacuous-absent-path` (`expect: absent`) is Medium: the check passes while asserting nothing. It reads `<project-root>/.taskmaster/tasks/tasks.db`, or `REIFY_PTODO_TASKS_DB` when set. Without that DB the lane is skipped, so an empty result then means "not checked" (breadcrumb: `references/cli-invocation.md` §4.1). Last full sweep: 0 findings over 755 rows, 2026-09-19 (#7697). #7712 is weighing a standing gate.
 
 ---
 
@@ -169,8 +192,10 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 |---|---|
 | `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
-| `--since <date> --pattern PTODO` | Window sweep from `<date>`, PTODO only (Medium; deterministic, no jcodemunch) |
+| `--since <date> --pattern PTODO` | PTODO only, over the whole tree — `<date>` does not narrow it (Medium; deterministic, no jcodemunch) |
 | `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
+| `--task <id> --pattern PDCHECK` | PDCHECK only, checking just task `<id>`'s `delivered_checks` rows (needs `tasks.db`); `--since` does not narrow PDCHECK |
+| `--task` or `--since` with PTODO, PDSSENTINEL, PDIAG or PDOCCOVER | No narrowing: these structural lanes ignore both flags and always sweep the whole tracked tree |
 | `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
 

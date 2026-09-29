@@ -219,4 +219,4 @@ merge.
    `--scope staged` selector.
 3. Any new unattended job that commits to `/home/leo/src/reify`: add it to §1
    and re-check §3. `scripts/review-readme.sh`, an unattended writer outside
-   this file's legibility scope, is #7790's.
+   this file's legibility scope, is covered by `docs/notes/unattended-writers-of-main.md`.

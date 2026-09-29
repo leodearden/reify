@@ -64,6 +64,17 @@ before-image in a header comment so the RED is re-checkable at dispatch (D4).
 | `dcr_dimension_rejection_channel_fires.ri` | rejection-mechanism binding | `reify eval` **exit 1** `E_StackupDimMismatch`; `reify check` prints it and **exits 0** |
 | `dcr_fn_force_param_already_rejects.ri` | ι **vacuity guard** | exit 1 on both `eval` and `check` — *already true* |
 
+> **AMENDMENT 2026-09-29 (Leo, esc-7372-3 follow-on).** The "Measured today" column is the
+> 2026-07-28 decompose record. Since #5306 made struct-ctor conformance a compile-time
+> `ArgTypeMismatch` Error, every fixture above that builds its wrong value through a ctor call
+> exits 1 at compile. That includes `dcr_solver_load_dropped_dimensioned.ri`, whose units-correct
+> `force: 1000N` fails against the still-`Real` `PointLoad.force` until γ2. So none of those files
+> can carry a `DimensionedArgRejected` signal from `.ri`. The PRD's §8 amendment re-scopes B1, B2,
+> B4 and B5 and the leaf signals to reader-level tests on hand-built values. It also moves γ1's
+> end-to-end `.ri` check to γ2. Each fixture's own POST-δ block holds the current measurement.
+> No `delivered_check` changes: every one is a source or fixture grep, and none asserts an exit
+> code.
+
 ---
 
 ## The four headline defects, measured end to end
@@ -108,7 +119,10 @@ paths (the correct host) · 7 `yield_stress` production readers confirmed. **all
 ### γ1 — one shared solver load reader
 Inversion measured end to end · **B1 as written is not expressible** (both result types
 deliberately frozen; re-specified onto `max_von_mises`) · buckling has no `type_name` guard,
-`panic!`s on a non-List, and carries a 1.0 N sentinel. **all PASS**
+`panic!`s on a non-List, and carries a 1.0 N sentinel. **all PASS** · *Amended 2026-09-29:* γ1
+reads B1 below the compiler: a hand-built 1000 N FORCE Scalar gives `max_von_mises`
+5139325.408614099 with iterations > 0. The end-to-end `.ri` check on the dimensioned fixture
+moves to γ2 (#6941).
 
 ### γ2 — retype the four load fields + migrate
 Retype target is existing grammar (probe-verified) · **PRD's blast-radius figures are
@@ -183,7 +197,8 @@ an index entry, not a playbook · **FALSIFIED:** `thermal_conductivity` is *not*
 Every prerequisite upstream (9 edges) · B1 expressible after the re-specification ·
 **UNLISTED:** gate residency is **per-binary**, and sizing is load-bearing (a 20×20×800 mm
 column costs ~100 s debug; the committed B1 fixtures cost 0.33 s / 0.18 s) — tiny geometry is
-mandatory. **all PASS**
+mandatory. **all PASS** · *Amended 2026-09-29:* the dimensioned B1 fixture compiles only after
+γ2's retype. B2 is asserted at the reader on a hand-built bare value, never on a `.ri` exit code.
 
 ### ρ (#5799) / σ (#5800) / τ (#5801) — the three live cite targets, filed at decompose
 Each exists so an in-source `#NNNN` cite is never a forward reference and "no task yet owns it"
@@ -202,7 +217,7 @@ is impossible (INV-SF-5).
 | Gate | Verdict |
 |---|---|
 | **G1** consumer named | PASS — every mechanism names a `.ri`-author surface, a solver, the merge gate, or a sibling PRD. |
-| **G2** user-observable leaf | PASS — every leaf carries a `reify eval` exit-code + `DiagnosticCode`-identity signal with a measured before-image. α is the sole INTERMEDIATE, roped to π (C-as-integration-gate). |
+| **G2** user-observable leaf | PASS — every leaf carries a `reify eval` exit-code + `DiagnosticCode`-identity signal with a measured before-image. α is the sole INTERMEDIATE, roped to π (C-as-integration-gate). *Amended 2026-09-29:* where #5306's compile-time `ArgTypeMismatch` pre-empts a reader (B2, B4 and B5, and β/γ3/ε/ζ/η), the `DiagnosticCode`-identity half is asserted below the compiler instead. γ1 likewise reads B1's applied force below the compiler until γ2's retype. See the amendment under the fixture table. |
 | **G3** substrate verified | PASS — no novel grammar (all four retype targets probe-verified); 6 grammar probes at 0 ERROR nodes; every anchor re-read at HEAD. |
 | **G4** seam ownership | PASS — 3 real cross-PRD edges (λ #5810→#5752, γ2 #5798→#5627, μ #5811→#5403). `arg_acceptance` core frozen; ANGLE policy untouched; conformance untouched; `JointValue` left to #5412. |
 | **G5** B+H | PASS — §7 contract + §8 two-way boundary sketch present; π is the integration gate and names the table. |

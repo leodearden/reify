@@ -39,11 +39,10 @@
 //! than a gap is stated once, on the `mirror` / `circular_pattern` arms of
 //! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_eval::{BuildResult, Engine};
-use reify_ir::{ExportFormat, GeometryOp};
+use reify_core::Severity;
+use reify_ir::GeometryOp;
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
 };
 
 // ── step-5: mirror consumer tests ─────────────────────────────────────────────
@@ -63,16 +62,9 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -82,10 +74,9 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
         error_diags
     );
 
-    let ops = ops_ref.lock().unwrap();
     let mirror_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::Mirror { .. }))
+        .filter(|op| matches!(op, GeometryOp::Mirror { .. }))
         .collect();
     assert_eq!(
         mirror_ops.len(),
@@ -94,7 +85,7 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
         mirror_ops.len()
     );
 
-    match &mirror_ops[0].op {
+    match mirror_ops[0] {
         GeometryOp::Mirror {
             plane_origin,
             plane_normal,
@@ -149,16 +140,9 @@ fn mirror_scalar_back_compat_emits_correct_plane() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -168,14 +152,13 @@ fn mirror_scalar_back_compat_emits_correct_plane() {
         error_diags
     );
 
-    let ops = ops_ref.lock().unwrap();
     let mirror_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::Mirror { .. }))
+        .filter(|op| matches!(op, GeometryOp::Mirror { .. }))
         .collect();
     assert_eq!(mirror_ops.len(), 1, "expected exactly one Mirror op");
 
-    match &mirror_ops[0].op {
+    match mirror_ops[0] {
         GeometryOp::Mirror { plane_normal, .. } => {
             assert!(
                 (plane_normal[0] - 1.0).abs() < 1e-9,
@@ -212,29 +195,21 @@ fn mirror_wrong_variant_axis_rejected_with_error_diagnostic() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic for wrong-variant axis→mirror, got: {:?}",
-        result.diagnostics
+        diagnostics
     );
 
-    let ops = ops_ref.lock().unwrap();
     let mirror_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::Mirror { .. }))
+        .filter(|op| matches!(op, GeometryOp::Mirror { .. }))
         .collect();
     assert!(
         mirror_ops.is_empty(),
@@ -261,16 +236,9 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -280,10 +248,9 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
         error_diags
     );
 
-    let ops = ops_ref.lock().unwrap();
     let cp_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
         .collect();
     assert_eq!(
         cp_ops.len(),
@@ -292,7 +259,7 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
         cp_ops.len()
     );
 
-    match &cp_ops[0].op {
+    match cp_ops[0] {
         GeometryOp::CircularPattern {
             axis_origin,
             axis_dir,
@@ -352,16 +319,9 @@ fn circular_pattern_scalar_back_compat_emits_correct_op() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -371,14 +331,13 @@ fn circular_pattern_scalar_back_compat_emits_correct_op() {
         error_diags
     );
 
-    let ops = ops_ref.lock().unwrap();
     let cp_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
         .collect();
     assert_eq!(cp_ops.len(), 1, "expected exactly one CircularPattern op");
 
-    match &cp_ops[0].op {
+    match cp_ops[0] {
         GeometryOp::CircularPattern { count, .. } => {
             assert_eq!(*count, 6, "count should be 6, got {}", count);
         }
@@ -402,29 +361,21 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
         !error_diags.is_empty(),
         "expected at least one Error diagnostic for wrong-variant plane→circular_pattern, got: {:?}",
-        result.diagnostics
+        diagnostics
     );
 
-    let ops = ops_ref.lock().unwrap();
     let cp_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
         .collect();
     assert!(
         cp_ops.is_empty(),
@@ -440,6 +391,7 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
 /// mm-origin pair below, which differ only in the source and expected counts.
 /// Modelled on `pattern_spacing_units_e2e.rs`'s `build_and_count`, but returns
 /// the ops themselves so the positive control can inspect `axis_origin`.
+#[track_caller]
 fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
     build_circular_ops_compiled(parse_and_compile(source))
 }
@@ -450,6 +402,7 @@ fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
 /// compile-layer LENGTH slot, so the bare source below no longer compiles clean
 /// and the strict `parse_and_compile` — which hard-asserts zero Error
 /// diagnostics — would panic before eval ever ran.
+#[track_caller]
 fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
     build_circular_ops_compiled(compile_bare_origin(source))
 }
@@ -457,16 +410,17 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// Compile a source whose `mirror` / `circular_pattern` ORIGIN components are
 /// deliberately BARE (task 5662).
 ///
-/// Modelled on `compile_bare_spacing` in
-/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs` (task 5652) and
-/// `compile_bare_length` in
-/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
-/// (task 5750), which the two preceding leaves had to introduce for exactly this
-/// reason.
+/// Task 5662 gave those origin triples a compile-layer LENGTH slot, so the bare
+/// sources in this file no longer compile clean and the strict
+/// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
+/// before eval ever ran. Delegates to the shared
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which is
+/// where that idiom now lives for every bare-argument e2e suite.
 ///
-/// Swapping the lenient `compile_source` in for the strict `parse_and_compile`
-/// is a TIGHTENING, not a loosening, because this helper re-asserts BOTH halves
-/// of what the strict one used to guarantee:
+/// That shared helper's two assertions are what make swapping the lenient
+/// `compile_source` in for the strict `parse_and_compile` a TIGHTENING rather
+/// than a loosening — they re-assert BOTH halves of what the strict one used to
+/// guarantee:
 ///
 /// (i) the compile-layer `ArgTypeMismatch` really IS emitted, so this file
 ///     cannot silently stop noticing if task 5662's slots regress; and
@@ -478,58 +432,25 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics` and
 /// never lowering, so the op is still emitted and must still be DROPPED at build
 /// by the eval gate — which is the thing these rows actually test.
+#[track_caller]
 fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a bare scalar mirror/circular_pattern origin must ALSO be rejected at \
-         compile time (task 5662 ArgTypeMismatch), not only at eval; got no Error \
-         diagnostics in: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors
-            .iter()
-            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
-         callers' \"no op reached the kernel\" assertions could pass because \
-         compilation broke rather than because the eval gate dropped the op; \
-         unexpected errors: {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
-            .collect::<Vec<_>>()
-    );
-    compiled
+    compile_expecting_only_arg_type_mismatch(source, "scalar mirror/circular_pattern origin")
 }
 
 /// The kernel half of [`build_circular_ops`], shared with its bare counterpart.
+#[track_caller]
 fn build_circular_ops_compiled(
     compiled: reify_compiler::CompiledModule,
 ) -> (usize, Vec<GeometryOp>) {
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_count = result
-        .diagnostics
+    let error_count = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .count();
-    let ops = ops_ref.lock().unwrap();
     let circular_ops: Vec<GeometryOp> = ops
-        .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
-        .map(|r| r.op.clone())
+        .into_iter()
+        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
         .collect();
     (error_count, circular_ops)
 }
@@ -653,6 +574,7 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
 /// op-compile Error which accompanies every rejection ALSO names the argument
 /// and the word "Length", so a looser shape would pass without the gate ever
 /// having fired.
+#[track_caller]
 fn build_value_form(
     source: &str,
     want: fn(&GeometryOp) -> bool,
@@ -663,6 +585,7 @@ fn build_value_form(
 /// The BARE-source counterpart of [`build_value_form`], narrowed to `Mirror`
 /// ops (task 5662) — see [`compile_bare_origin`] for why the strict helper can
 /// no longer be used on a bare SCALAR origin.
+#[track_caller]
 fn build_mirror_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     build_value_form_compiled(compile_bare_origin(source), |op| {
         matches!(op, GeometryOp::Mirror { .. })
@@ -670,32 +593,24 @@ fn build_mirror_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geometry
 }
 
 /// The kernel half of [`build_value_form`], shared with its bare counterpart.
+#[track_caller]
 fn build_value_form_compiled(
     compiled: reify_compiler::CompiledModule,
     want: fn(&GeometryOp) -> bool,
 ) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
-    let ops = ops_ref.lock().unwrap();
-    let kept: Vec<GeometryOp> = ops
-        .iter()
-        .filter(|r| want(&r.op))
-        .map(|r| r.op.clone())
-        .collect();
-    (result.diagnostics.clone(), kept)
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
+    let kept: Vec<GeometryOp> = ops.into_iter().filter(want).collect();
+    (diagnostics, kept)
 }
 
 /// `build_value_form` narrowed to `Mirror` ops.
+#[track_caller]
 fn build_mirror(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     build_value_form(source, |op| matches!(op, GeometryOp::Mirror { .. }))
 }
 
 /// `build_value_form` narrowed to `CircularPattern` ops.
+#[track_caller]
 fn build_circular(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     build_value_form(source, |op| matches!(op, GeometryOp::CircularPattern { .. }))
 }

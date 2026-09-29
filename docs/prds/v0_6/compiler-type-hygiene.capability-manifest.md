@@ -80,7 +80,7 @@ Evidence forms per the reify overlay: `grep:<file>:<line>` = wired-on-main; `pro
 |---|---|---|
 | Exactly three copies, differences enumerated | grep:`crates/reify-compiler/src/entity.rs:2024-2064` (Site 1, priv-aware, real solver_hints), `:3264-3300` (Site 2, Public, `Vec::new()` hints), `crates/reify-compiler/src/guards.rs:413-446` (guarded, `compile_expr_guarded`) | PASS |
 | Extraction substrate (task 1333) landed | `extract_auto_free` referenced at all three sites (grep above); task 1333 status done | PASS |
-| Behavior signal producible | auto(free) end-to-end tests exist: `crates/reify-compiler/tests/boundary2_producer.rs` auto-free coverage (task 1335) | PASS |
+| Behavior signal producible | auto(free) end-to-end tests exist: `crates/reify-compiler/tests/harness_diagnostics_robustness/boundary2_producer.rs` auto-free coverage (task 1335) | PASS |
 
 ## λ — integration gate (leaf)
 

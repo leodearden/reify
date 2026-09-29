@@ -6,7 +6,7 @@
 //! the `Mesh.MeshSizeMin`/`MeshSizeMax` pair leaving
 //! [`reify_kernel_gmsh::GmshKernel::mesh_to_volume`]; #6968 widened it from
 //! that pair to all five size options, and from one entry point to four.
-//! Hence the rename from `mesh_to_volume_clamp_hermeticity.rs`.
+//! Hence its rename from a name that covered only the clamp pair.
 //!
 //! # What this binary is for that the per-entry-point guards are not
 //!
@@ -60,6 +60,11 @@ mod common;
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
+// The uniform size field the refine entry point remeshes under, shared by
+// `#[path]` with `tests/mesher_poison_recovery.rs`.
+#[path = "common/size_field.rs"]
+mod size_field;
+
 use clamp_probe::{
     CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, assert_all_size_options_at_gmsh_defaults,
     poison_all_size_options, probe_triangle_count, set_all_size_options_to_defaults,
@@ -69,6 +74,7 @@ use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
 #[cfg(feature = "mesh-morph")]
 use reify_kernel_gmsh::{EntityAttribution, mesh_surface_to_volume_with_attribution};
+use size_field::uniform_unit_cube_size_field;
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
@@ -109,14 +115,13 @@ fn mesh_to_volume_default_tet_count() -> usize {
 /// `refine_volume_with_size_field` on the unit cube with a uniform field.
 fn refine_tet_count() -> usize {
     let cube = common::unit_cube_mesh();
-    let n_surface_verts = cube.vertices.len() / 3;
     let opts = MeshingOptions {
         deterministic: true,
         ..Default::default()
     };
     refine_volume_with_size_field(
         &cube,
-        &vec![0.5_f64; n_surface_verts],
+        &uniform_unit_cube_size_field(0.5),
         &opts,
         ElementOrderTag::P1,
     )
@@ -345,11 +350,15 @@ fn mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_c
 /// The row-2 numbers (141 / 367) are worth naming because they are the ones
 /// #6211's table records for `refine(uniform 0.5)` / `refine(uniform 0.125)`
 /// *alone*: with the inbound writes gone, refine runs under gmsh's default
-/// clamp and the per-corner size field alone drives the mesh. Today's 181 /
-/// 2420 are denser because the inbound `MeshSizeMax = max(vertex_sizes)` write
-/// caps interior growth that `Mesh.MeshSizeExtendFromBoundary = 0` would
-/// otherwise leave unbounded — the effect its own inline rationale in
-/// `refine_volume.rs` claims, here observed.
+/// clamp and the per-corner size field alone drives the mesh. Row 1's 181 /
+/// 2420 were denser because the inbound `MeshSizeMax = max(vertex_sizes)`
+/// write capped interior growth that `Mesh.MeshSizeExtendFromBoundary = 0`
+/// would otherwise leave unbounded — the effect its own inline rationale in
+/// `refine_volume.rs` claims, there observed.
+///
+/// The whole table predates task #7447, which replaced the per-corner hints
+/// with a background size field; it is kept as the falsifiability evidence it
+/// was. Re-measured on the background field, today's row 1 reads 181 / 2481.
 #[test]
 fn refine_after_mesh_to_volume_honours_its_own_size_field() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
@@ -359,12 +368,11 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
     const SEED: f64 = 0.5;
 
     let cube = common::unit_cube_mesh();
-    let n_surface_verts = cube.vertices.len() / 3;
 
     // Seed through the real producer, then refine with a uniform field.
     //
     // `refine_volume_with_size_field` never reads `options.mesh_size` — the
-    // per-vertex field is what decides element size — so `opts` deliberately
+    // size field is what decides element size — so `opts` deliberately
     // leaves it `None`. Passing a size there would imply a dependency that
     // does not exist.
     let refine_after_seed = |field: f64| -> usize {
@@ -375,7 +383,7 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
         };
         refine_volume_with_size_field(
             &cube,
-            &vec![field; n_surface_verts],
+            &uniform_unit_cube_size_field(field),
             &opts,
             ElementOrderTag::P1,
         )

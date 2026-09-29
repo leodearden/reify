@@ -1670,7 +1670,7 @@ IndexAccess {
 // The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
 // (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
 // (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
-// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31) all call one.
+// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri) all call one.
 //
 // WHY THE CALLEE AND NOT THE RESERVATION. `some` and `none` appear NOWHERE in
 // tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary call

@@ -246,6 +246,248 @@ mod cli {
         }
     }
 
+    /// `--print-repo-id` must print exactly the same identity
+    /// `reify_audit::jcodemunch_index::resolve_repo_id` derives in-process —
+    /// this is the single derivation task #6459 collapses onto, replacing
+    /// `scripts/jcodemunch-index-reify.sh`'s independent bash re-derivation.
+    /// Exercised against a real tempdir (not a nonexistent path) so the CLI
+    /// path is proven end to end, including its own `Path::new` + stdout
+    /// round trip, not just the pure derivation function in isolation.
+    #[test]
+    fn print_repo_id_matches_resolve_repo_id_derivation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let project_root = tmp.path();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(project_root)
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--print-repo-id must exit 0; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected = reify_audit::jcodemunch_index::resolve_repo_id(project_root);
+        assert_eq!(
+            printed, expected,
+            "--print-repo-id must print exactly what resolve_repo_id derives"
+        );
+    }
+
+    /// `--jcodemunch-repo` overrides the derived identity for
+    /// `--print-repo-id` too — the same override precedence `main` applies
+    /// when constructing the real jcodemunch seam.
+    #[test]
+    fn print_repo_id_honours_jcodemunch_repo_override() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(tmp.path())
+            .args(["--jcodemunch-repo", "leodearden/reify"])
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(out.status.code(), Some(0));
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(printed, "leodearden/reify");
+    }
+
+    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`.
+    ///
+    /// `--dry-run` is the hermetic mode: it prints the summary and the argv it
+    /// WOULD run, then exits, so no uvx, sqlite3 or network is involved. A
+    /// tempdir `CODE_INDEX_PATH` keeps the host store (and its config.jsonc)
+    /// out of the run entirely.
+    fn run_index_script(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> std::process::Output {
+        let script = repo_root().join("scripts/jcodemunch-index-reify.sh");
+        Command::new("bash")
+            .arg(&script)
+            .args(["--dry-run", "--project-root"])
+            .arg(project_root)
+            .env("REIFY_JC_REPO_ID_BIN", repo_id_bin)
+            .env("CODE_INDEX_PATH", code_index)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()))
+    }
+
+    /// A successful `--dry-run`, as its `(repo-id, repo-id-from)` summary pair
+    /// plus the whole run's stderr.
+    ///
+    /// stderr is RETURNED rather than only quoted into panic messages because
+    /// the degradation warnings are themselves part of the contract: the
+    /// found-but-failed case is only distinguishable from a cold checkout
+    /// because the script says so out loud.
+    fn index_script_repo_id(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> (String, String, String) {
+        let out = run_index_script(project_root, code_index, repo_id_bin);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--dry-run must exit 0; got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        let field = |name: &str| -> String {
+            let prefix = format!("jcodemunch-index-reify: {name} ");
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(&prefix))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| {
+                    panic!("no `{name}` summary line in:\n{stdout}\nstderr:\n{stderr}")
+                })
+        };
+        (field("repo-id"), field("repo-id-from"), stderr)
+    }
+
+    /// An executable stub standing in for `reify-audit --print-repo-id` that
+    /// exits 0 having printed `line`.
+    ///
+    /// Drives the script's malformed-identity refusals, which are otherwise
+    /// unreachable: the real binary can only ever print a well-formed id, so a
+    /// producer that answers 0 with something else has to be fabricated.
+    fn fake_repo_id_producer(dir: &Path, name: &str, line: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"))
+            .expect("write fake repo-id producer");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake repo-id producer");
+        path
+    }
+
+    /// The two producers of jcodemunch's repo identity must agree.
+    ///
+    /// `scripts/jcodemunch-index-reify.sh` prefers this binary's
+    /// `--print-repo-id` (the single Rust derivation) and keeps an inline bash
+    /// pipeline for a cold checkout. Which one answers is AMBIENT — it depends
+    /// on whether `target/{release,debug}/reify-audit` happens to exist — so
+    /// the script's own suite silently covers a different branch run to run and
+    /// never covers both. This drives BOTH branches over each root below and
+    /// asserts the printed identity is byte-identical, which is the
+    /// cross-language contract task #6459 is actually about.
+    ///
+    /// SHAPED ROOTS, not one tempdir. `basename`/`Path::file_name()` and
+    /// `basename`/`sha1` agree trivially on an ordinary path, so a single
+    /// point proves almost nothing about the bash half of the formula. `/` is
+    /// the measured counter-example: `basename -- /` prints `/` while
+    /// `Path('/').name` is empty, which shipped as a real divergence
+    /// (`local//-<sha8>` against `local/-<sha8>`) until the script special-
+    /// cased it. A name containing a space covers the quoting half.
+    ///
+    /// Non-vacuous by construction: `repo-id-from` is asserted too, so a leg
+    /// that silently fell back to bash when it was supposed to be exercising
+    /// the binary fails here rather than agreeing with itself.
+    #[test]
+    fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
+        // A path that cannot exec forces the cold-checkout branch.
+        let absent = tmp.path().join("no-such-reify-audit");
+
+        let ordinary = tmp.path().join("some-project");
+        let spaced = tmp.path().join("has space");
+        for dir in [&ordinary, &spaced] {
+            std::fs::create_dir(dir).expect("create project root");
+        }
+
+        for project_root in [ordinary.as_path(), spaced.as_path(), Path::new("/")] {
+            let (rust_id, rust_from, rust_err) =
+                index_script_repo_id(project_root, &code_index, bin);
+            assert!(
+                rust_from.contains("--print-repo-id"),
+                "the binary leg must be answered by reify-audit for {}; \
+                 got repo-id-from `{rust_from}`",
+                project_root.display()
+            );
+            assert!(
+                !rust_err.contains("WARNING"),
+                "the binary leg answered, so nothing should warn about degradation; \
+                 got stderr:\n{rust_err}"
+            );
+
+            let (bash_id, bash_from, bash_err) =
+                index_script_repo_id(project_root, &code_index, &absent);
+            assert!(
+                bash_from.contains("inline bash fallback"),
+                "the fallback leg must be answered by the inline pipeline for {}; \
+                 got repo-id-from `{bash_from}`",
+                project_root.display()
+            );
+            // The degradation must be SAID, not merely taken: a cold checkout
+            // and a broken binary both end up here, and only the warning tells
+            // them apart. 127 is the shell's status for an unexecutable path.
+            assert!(
+                bash_err.contains("WARNING") && bash_err.contains("exited 127"),
+                "the fallback leg must warn, naming the producer's exit status; \
+                 got stderr:\n{bash_err}"
+            );
+
+            assert_eq!(
+                rust_id, bash_id,
+                "the Rust and bash producers derived different identities for {} \
+                 — the gate would then probe an identity the indexer never wrote",
+                project_root.display()
+            );
+        }
+    }
+
+    /// A producer that exits 0 with an identity the DB path cannot express is
+    /// refused, not silently written to a nonexistent directory.
+    ///
+    /// Both shapes are reachable through `REIFY_JC_REPO_ID_BIN`, and the
+    /// slashed one was reachable through the bash fallback too, via
+    /// `--project-root /`. `local/?*` alone does not catch it: `?*` matches
+    /// `/-abc` happily, and `$CODE_INDEX_DIR/local-/-abc.db` then names a file
+    /// under a directory that does not exist.
+    #[test]
+    fn index_script_refuses_a_repo_id_it_cannot_turn_into_a_db_path() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let project_root = tmp.path().join("some-project");
+        std::fs::create_dir(&project_root).expect("create project root");
+
+        for (name, line, expected) in [
+            ("slashed", "local//-42099b4a", "contains a slash"),
+            ("not-local", "leodearden/reify", "malformed"),
+        ] {
+            let producer = fake_repo_id_producer(tmp.path(), name, line);
+            let out = run_index_script(&project_root, &code_index, &producer);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+            assert_ne!(
+                out.status.code(),
+                Some(0),
+                "a producer printing `{line}` must be refused, not accepted\nstderr:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(expected) && stderr.contains(line),
+                "the refusal must name the offending id `{line}` and say `{expected}`; \
+                 got stderr:\n{stderr}"
+            );
+        }
+    }
+
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
     /// table should produce a P5PhantomDone High finding and exit non-zero.
     #[test]
@@ -2626,20 +2868,28 @@ mod cli {
     /// EMPTY — deliberately the fail-loud direction: every code-less file
     /// surfaces as a `NewFile` High rather than passing vacuously.
     ///
-    /// Three claims, in order of what would break first:
+    /// Five claims, in order of what would break first:
     ///
     /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
     ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
     ///    literal "the detector is reachable from the binary" claim.
     /// 2. The exit code is the count of High FINDINGS — one per code-less
-    ///    file, not one per site. The fixture tree holds 4 code-less sites
-    ///    across 3 files, so exit 3 (not 4) is what pins the ratchet as
+    ///    file, not one per site. The fixture tree holds 6 code-less sites
+    ///    across 4 files, so exit 4 (not 6) is what pins the ratchet as
     ///    per-file.
     /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
     /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
-    ///    code-less site immediately above a reviewed `pdiag:allow`, so it is
-    ///    the end-to-end proof that an opt-out cannot reach backwards over the
+    ///    code-less site immediately above a reviewed opt-out, so it is the
+    ///    end-to-end proof that an opt-out cannot reach backwards over the
     ///    site above it — the hard-gate bypass no other test in this suite saw.
+    /// 5. `scenario07_code_absorption.rs` is counted, TWICE over. It holds one
+    ///    code-less site directly ABOVE a coded one and one to the LEFT of a
+    ///    coded one on a single line, so it is the end-to-end proof that a
+    ///    NEIGHBOURING constructor's code cannot absorb a brand-new site —
+    ///    the other bypass no other fixture sees, and the only one reachable
+    ///    without an opt-out anywhere in the file. Its summary is asserted to
+    ///    name BOTH code-less lines, so the two halves are distinguished here
+    ///    rather than one of them passing on the other's back.
     ///
     /// RED until the dispatch arm and the `--pattern` token validator are
     /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
@@ -2688,17 +2938,18 @@ mod cli {
         // (2) Exit code = High-severity finding count = one per code-less FILE.
         assert_eq!(
             out.status.code(),
-            Some(3),
-            "PDIAG fixture sweep must exit 3 — one NewFile High per code-less file \
+            Some(4),
+            "PDIAG fixture sweep must exit 4 — one NewFile High per code-less file \
              (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
-             above its reviewed escape; 4 sites but 3 files)\nstderr: {stderr}"
+             above its reviewed escape, scenario07 has 2 sites a neighbouring \
+             constructor's code used to absorb; 6 sites but 4 files)\nstderr: {stderr}"
         );
 
         let findings = parse_findings_from_stderr(&stderr);
         assert_eq!(
             findings.len(),
-            3,
-            "PDIAG fixture sweep must emit exactly 3 findings; got:\n{:#}",
+            4,
+            "PDIAG fixture sweep must emit exactly 4 findings; got:\n{:#}",
             serde_json::Value::Array(findings.clone())
         );
 
@@ -2715,9 +2966,9 @@ mod cli {
             );
         }
 
-        // (3) Exactly the two code-less files, keyed by path. Membership is
+        // (3) Exactly the code-less files, keyed by path. Membership is
         // asserted as a set, so the coded / escaped / `tests`-segment fixtures
-        // being absent is the same assertion as these two being present.
+        // being absent is the same assertion as these being present.
         let mut keyed: Vec<&str> =
             findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
         keyed.sort_unstable();
@@ -2727,12 +2978,31 @@ mod cli {
                 "crates/reify-compiler/src/scenario05_codeless_pair.rs",
                 "crates/reify-eval/src/scenario01_codeless.rs",
                 "crates/reify-eval/src/scenario06_escape_leak.rs",
+                "crates/reify-eval/src/scenario07_code_absorption.rs",
             ],
             "only the code-less swept files may be keyed — the coded, escaped and \
              `tests`-segment fixtures must each contribute nothing, while scenario06 \
-             MUST be keyed: its unreviewed site sits inside the forward window of the \
-             reviewed opt-out below it, and an escape that reaches backwards over it is \
-             a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+             and scenario07 MUST be keyed: scenario06's unreviewed site sits inside the \
+             forward window of the reviewed opt-out below it, and scenario07's two sites \
+             sit where a neighbouring constructor's code used to reach them. Either \
+             absorption is a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+        );
+
+        // (5) Both of scenario07's sites are named, so a fix that closed only
+        // one half of the probe cannot pass here on the other half's back.
+        // `format_site_lines` spells them into the High summary.
+        let absorption = findings
+            .iter()
+            .find(|f| {
+                f["task_id"].as_str() == Some("crates/reify-eval/src/scenario07_code_absorption.rs")
+            })
+            .expect("scenario07 must be keyed");
+        let summary = absorption["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("at lines 19, 23"),
+            "scenario07's summary must name BOTH code-less lines — 19 (the site above \
+             a coded one) and 23 (the site left of a coded one on one line); got: \
+             {summary:?}"
         );
 
         // Every hard-gate summary must route the reader to the policy doc;

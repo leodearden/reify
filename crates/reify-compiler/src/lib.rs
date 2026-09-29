@@ -537,6 +537,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         parsed,
         &mut compile_ctx.diagnostics,
     );
+    compile_builder::sketch_unsupported::validate_module(parsed, &mut compile_ctx.diagnostics);
 
     // Respect #no_prelude: if the pragma is present, treat as empty prelude.
     let prelude_refs: &[&CompiledModule] =

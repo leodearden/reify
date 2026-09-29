@@ -47,7 +47,7 @@ PLACEMENT IS LOAD-BEARING — do NOT tidy this pointer back into "Key Geometry O
 as a `**Queries:**` row. stdlib_chunk_geometry_ops_smoke.rs::documented_geometry_op_forms
 scans ONLY that section's `**`-prefixed lines, and two live tests then hold every name it
 finds to GEOMETRY_FUNCTION_NAMES + GEOMETRY_TOPOLOGY_SELECTOR_NAMES — which EXCLUDE the
-query family — and to having a call in tests/fixtures/stdlib_geometry_ops_smoke.ri. So
+query family — and to having a call in crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri. So
 `intersects` and `distance` on such a row are RED as phantom names. Its own `##` heading
 resets that scanner, leaving the scanned line set above byte-identical.
 

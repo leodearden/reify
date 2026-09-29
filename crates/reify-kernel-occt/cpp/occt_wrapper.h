@@ -818,6 +818,11 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 
 // --- Thicken / Shell / Offset Solid ---
 
+/// Offset a solid: every face moves |distance| along its outward normal
+/// (inward when `distance` is negative), and sharp edges stay sharp (adjacent
+/// faces are extended/trimmed to meet). Throws (surfaced as `Err`) on a zero
+/// distance, a non-solid input, a collapse (inward offset past the inradius),
+/// or an invalid/degenerate result.
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
 /// Offset a single open face by `distance` along its normal using

@@ -1329,6 +1329,13 @@ pub struct EvaluationStatus {
     pub progress: Option<f64>,
 }
 
+/// The `eval-generation` payload: an edit or evaluation of `generation` is
+/// about to run (mirrors frontend EvalGeneration interface).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalGeneration {
+    pub generation: u64,
+}
+
 /// A node in the hierarchical entity tree emitted by `get_entity_tree`.
 ///
 /// Root nodes correspond to top-level topology templates (structures/occurrences).

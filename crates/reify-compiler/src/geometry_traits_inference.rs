@@ -826,7 +826,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
-        // zone_profile lowers to [Thicken(+w/2), Thicken(-w/2), Boolean{Difference}] on
+        // zone_profile lowers to [OffsetSolid(+w/2), OffsetSolid(-w/2), Boolean{Difference}] on
         // a solid target — a boolean-of-modifies result, not a sweep — so it belongs here
         // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
         // identical InferredTraits for any solid input, but grouping by lowering semantics

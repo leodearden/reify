@@ -862,6 +862,17 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# Resolved effect of the two role-scoped fragments above as the nextest passes
+# receive them; the cargo-test fallback has no -E, so it runs everything. Read
+# lazily (NEXTEST is set later). Why: docs/prds/offline-deep-test-lane.md DA6.
+_heavy_partition() {
+    if [ "$NEXTEST" -ne 1 ]; then echo included
+    elif [ -n "$_GATE_HEAVY_EXCLUDE" ]; then echo excluded
+    elif [ -n "$_OFFLINE_HEAVY_SELECT" ]; then echo only
+    else echo included
+    fi
+}
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -1199,6 +1210,10 @@ is_occt_crate() {
 #     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
 #     qualified-reference probes held as qualified_ref_grammar_tests.rs's
 #     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495);
+#     sketch_auto_seed_target.ri, sketch_aux_let_premise.ri,
+#     sketch_block_target.ri, sketch_member_extrude_premise.ri (the two α-target
+#     + two premise fixtures held as sketch_grammar_tests.rs's include_str!
+#     baselines, task 5506);
 #     adt_mirror_of_arm.ri, adt_relation_verbs.ri (the derived sub arm's
 #     signal and its relation-verb regression floor, held as
 #     derived_sub_grammar_tests.rs's derived_sub_fixture_parses_with_zero_error_nodes
@@ -1222,6 +1237,10 @@ is_occt_crate() {
 #     against the warning it excuses, so an edit to one of these files makes its
 #     entry stale or its warning unexplained — two RED outcomes a docs-only
 #     commit would otherwise carry to main ungated.
+#   named by the SAME target's rejection table (task 5306): the five
+#     struct_ctor_conformance_*.ri boundary-row fixtures keyed by (file, param)
+#     in CTOR_CONFORMANCE_REJECTION_FIXTURES, whose entries that target also
+#     cross-checks against the probe-set asserting each file is rejected.
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
@@ -1251,7 +1270,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1286,6 +1305,14 @@ _RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_
 # re-apply the retired "pinning adds a PG-DRIFT-GUI obligation for no signal"
 # reasoning to a future gap without re-deriving the sets first — that policy is
 # what #6605 reversed.
+# ONE EXCEPTION (task 5506): the four sketch_*.ri (sketch_auto_seed_target.ri,
+# sketch_aux_let_premise.ri, sketch_block_target.ri,
+# sketch_member_extrude_premise.ri) are RUST-coupled but NOT grammar-ledger
+# pins. The GUI Lezer mirror lags the tree-sitter grammar by design, so the two
+# α-target fixtures' `sketch { … }` and positional `auto(seed)` syntax is not
+# Lezer-parseable yet, and extending the mirror is outside constrained-2d-sketch
+# α's scope. Nothing gates RUST_COUPLED ⊆ GUI_COUPLED (the ledger reports
+# unpinnedClean without gating it), so the exception is recorded here in prose.
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
@@ -2871,6 +2898,10 @@ emit_nextest_pass() {
     add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
 }
 
+# The plan carries add_test_passes' passes iff this holds; the `# heavy
+# partition —` header describes those passes, so it shares this gate.
+_plan_has_test_passes() { [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; }
+
 add_test_passes() {
     # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
     # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
@@ -3789,7 +3820,7 @@ build_plan() {
     # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
     # nextest run + OCCT-gated passes). All cheap gates run before this.
     # (task #4448 fail-fast reorder)
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    if _plan_has_test_passes; then
         add_test_passes
     fi
 
@@ -3975,6 +4006,7 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # would be satisfiable by an implementation that simply stopped computing the
     # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
+    if _plan_has_test_passes; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"

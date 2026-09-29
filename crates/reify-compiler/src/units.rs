@@ -2016,7 +2016,7 @@ mod tests {
 
     /// `offset_surface` (θ, task 4192) offsets a face along its normal by a
     /// scalar distance (Skin mode of `BRepOffsetAPI_MakeOffsetShape`, distinct
-    /// from `offset_solid`'s `PerformBySimple` solid mode), producing a fresh
+    /// from `offset_solid`, which takes a solid, not a face), producing a fresh
     /// Surface. It must be recognised as a geometry-handle producer so the
     /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
     /// RED until step-6 adds "offset_surface" to GEOMETRY_FUNCTION_NAMES.

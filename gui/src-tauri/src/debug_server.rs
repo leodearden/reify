@@ -191,7 +191,13 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "fit_to_view",
-            description: "Reset the camera to fit all geometry in the viewport.",
+            description: "Frame all geometry in the viewport, AND establish the orbit \
+                          distance FLOOR from the resulting model bounds. \
+                          The floor is a fixed fraction of the fitted distance, so it tracks \
+                          the model at any scale — which is what makes a subsequent close-in \
+                          zoom_camera or set_camera request applicable rather than silently \
+                          clamped back out. Only the near limit is derived; the far limit \
+                          stays a fixed absolute, so zoom-out does not track the model.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -204,7 +210,16 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_camera",
-            description: "Set the viewport camera to an explicit pose. Used by the visual regression harness for deterministic framing — same input → same camera frame → same pixels.",
+            description: "Set the viewport camera to an explicit pose. \
+                          Used by the visual regression harness for deterministic framing — \
+                          same input → same camera frame → same pixels. \
+                          Returns {ok, applied:{position, target, up, zoom}}, where `applied` is \
+                          READ BACK from the live camera AFTER OrbitControls has applied its \
+                          constraints — so a pose the controls relocated (distance or target \
+                          clamping) is reported as relocated, not as requested. Compare your \
+                          request against `applied` to detect that. Note `applied.position` \
+                          round-trips through spherical coordinates and so may differ from the \
+                          request by ~1 ulp even when nothing clamped.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -920,7 +935,10 @@ fn tool_defs() -> Vec<ToolDef> {
                           Coords are CSS-logical-px from window origin (clientX/clientY). \
                           Omitted x/y default to canvas center (NDC origin, ray through look-at target). \
                           Returns {hit:true, entityPath, point:{x,y,z}, distance} on hit; \
-                          {hit:false} on miss; {error} for unknown viewport or non-finite coords.",
+                          {hit:false} on miss; {error} for unknown viewport or non-finite coords. \
+                          The raycast uses the live camera pose, so a pick issued immediately \
+                          after set_camera resolves against the pose set_camera reported, with \
+                          no intervening render required.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -991,7 +1009,11 @@ fn tool_defs() -> Vec<ToolDef> {
             description: "Zoom the viewport camera via OrbitControls' public dollyIn API. \
                           scale is a multiplicative distance factor: scale>1 moves farther, scale<1 closer. \
                           (dollyIn(scale) multiplies the orbit radius by scale per OrbitControls internals.) \
-                          Returns {ok, distance, distanceDelta, camera:{position}}.",
+                          The orbit distance floor is derived from the framed model bounds — a fixed \
+                          fraction of the fitted distance, established by fit_to_view — so a small \
+                          part can be dollied into rather than held at a fixed absolute distance. \
+                          Returns {ok, distance, distanceDelta, camera:{position}}; \
+                          distanceDelta == 0 means the request saturated a distance limit.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1189,11 +1211,11 @@ struct DebugServerState {
     #[allow(dead_code)]
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
-    /// Shared delta baseline — the SAME `Arc` as `AppState::last_state`
-    /// (INV-GUI-2, task 5035 L6). Refreshed by
-    /// `open_source_into_engine_and_refresh_baseline` /
-    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent normal
-    /// Tauri command diffs against the post-debug-mutation state.
+    /// Shared delta baseline — the SAME `Arc` the evaluation queue publishes
+    /// against (`eval_queue::SnapshotPublisher`; INV-GUI-2, task 5035 L6).
+    /// Refreshed by `open_source_into_engine_and_refresh_baseline` /
+    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent queued
+    /// evaluation diffs against the post-debug-mutation state.
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 }
 
@@ -1552,13 +1574,13 @@ async fn open_path_into_engine(
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
     // Load into engine, build GUI state, and refresh the delta baseline
-    // (INV-GUI-2, task 5035 L6) through the same compute_delta choke-point
-    // main.rs's normal command path uses. NOTE: the baseline is refreshed
-    // here, BEFORE the query_frontend push below lands S1 on the frontend —
-    // a normal command interleaved in that window would diff against S1
-    // while the frontend is still at S0. Safe only because debug sessions
-    // (the e2e visual-regression harness) run serially and never overlap a
-    // debug op with a normal command; see PRD §4 D7.
+    // (INV-GUI-2, task 5035 L6) through `diff::advance_baseline`, the same
+    // choke-point the evaluation queue publishes through. NOTE: the baseline
+    // is refreshed here, BEFORE the query_frontend push below lands S1 on the
+    // frontend — a normal command interleaved in that window would diff
+    // against S1 while the frontend is still at S0. Safe only because debug
+    // sessions (the e2e visual-regression harness) run serially and never
+    // overlap a debug op with a normal command; see PRD §4 D7.
     let gui_state =
         open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;

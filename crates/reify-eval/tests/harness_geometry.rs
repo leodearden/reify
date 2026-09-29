@@ -51,6 +51,8 @@ mod geometry_query_kernel_dispatch;
 mod geometry_sub_ref_e2e;
 #[path = "harness_geometry/modify_sweep_length_units_e2e.rs"]
 mod modify_sweep_length_units_e2e;
+#[path = "harness_geometry/nested_selector_ctor_eval.rs"]
+mod nested_selector_ctor_eval;
 #[path = "harness_geometry/offset_surface_e2e.rs"]
 mod offset_surface_e2e;
 #[path = "harness_geometry/primitive_profile_length_units_e2e.rs"]

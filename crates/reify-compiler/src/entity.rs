@@ -1,5 +1,6 @@
 use super::*;
 use crate::compile_builder::hash::hash_pragma;
+use crate::compile_builder::sketch_unsupported;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -2725,6 +2726,11 @@ pub(crate) fn compile_entity(
             // `sub … at … where {}` twin runs the SAME check in the
             // `MemberDecl::Sub` arm below. ζ (task 4386) threads the compiled
             // relations onto `TopologyTemplate.relations` for the relate-solve.
+            // A member-level `sketch { … }` block: rejected loudly, once per
+            // block, until constrained-2d-sketch γ — see `sketch_unsupported`.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(sketch_unsupported::diagnostic(sketch.span));
+            }
             reify_ast::MemberDecl::Relate(relate) => {
                 relations.extend(check_relate_relations(
                     &relate.relations,

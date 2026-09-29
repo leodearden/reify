@@ -4065,19 +4065,20 @@ pub enum DiagnosticCode {
     /// not `Warning` (open Q4): an absent optional external tool is not a defect
     /// in the user's model.
     FdmSlicerUnavailable,
-    /// Origin: `crates/reify-eval/src/engine_eval.rs` — the main eval objective-solve
-    /// path (inside `for template in &module.templates`).
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::optimality_unproven_finding`,
+    /// called from both the main eval objective-solve path (inside
+    /// `for template in &module.templates`) and its merged-cluster generalisation for
+    /// spanning objectives.
     ///
     /// Emitted as a `Severity::Warning` when an objective solve returns
-    /// `OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }`
-    /// (i.e. `TerminationReason::MaxItersReached` on the Nelder-Mead path).  The
-    /// solve still returns a best-found value (B5: byte-identical to
+    /// `OptimalityStatus::BestFound` with a reason for which
+    /// `BestFoundReason::stopped_at_budget()` holds — the one classification of which
+    /// reasons fire. The solve still returns a best-found value (B5: byte-identical to
     /// `ConstraintSolver::solve()`), but optimality is unproven.
     ///
-    /// The gate is a variant match on `BestFoundReason::IterationLimit`, not a
-    /// string-contains check (task #4871, S2 — structurally immune to rewording):
-    /// `BestFoundReason::ConvergedWithinBudget` solves share the `BestFound` variant
-    /// but must NOT trigger this warning (B6 — no false-positive).
+    /// The gate branches on the reason variant, not on the message text (task #4871,
+    /// S2 — structurally immune to rewording); a converged `BestFound` solve must NOT
+    /// trigger this warning (B6 — no false-positive).
     ///
     /// Canonical message prefix: `"W_SOLVER_OPTIMALITY_UNPROVEN: ..."`.
     /// The PRD-prose mnemonic is `W_SOLVER_OPTIMALITY_UNPROVEN` (task #4804).

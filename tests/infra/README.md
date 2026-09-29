@@ -314,6 +314,54 @@ held-after-exit rates are **not repeated here** — same reason as the soak
 section above: they live in the `LANE-LOCK RELEASE CONTRACT` block at the flock
 acquire in `scripts/seed-warm-lane.sh`.
 
+## Self-referential fd-probe guard (`fdprobe:allow`)
+
+Inside `$(...)`, backticks or `<(...)`, fd 1 **is** the pipe bash uses to
+capture the construct's output. So `$(readlink /proc/self/fd/1)` reads back
+`pipe:*` whatever the probed process really inherited: `/proc/self` is the
+`readlink` process itself, running inside the capture. `$BASHPID` spelled
+*inside* the substitution expands to the substitution subshell's PID, so
+`/proc/$BASHPID/fd/1` there is equally vacuous, as are the aliases `/dev/fd/1`
+and `/proc/thread-self/fd/1`. Census origin: codebook entry
+`entry-cand-20260818-22` — task #6219's Block V in `test_seed_warm_lane.sh`
+measured a memory-prescribed probe reading `pipe:*` unconditionally, fix or no
+fix. The correct idiom captures the PID **outside** any substitution:
+
+```bash
+_pid=$BASHPID
+fd1=$(readlink "/proc/$_pid/fd/1")
+```
+
+fd 0 and fd 2 are not flagged: a command substitution inherits them, so
+`test_run_gui_scripts.sh`'s `$(readlink /proc/self/fd/0 ...)` probe is
+correct. One caution the guard does **not** enforce: a probe must not redirect
+the fd it reads — `$(readlink /proc/self/fd/2 2>/dev/null)` reads `/dev/null`.
+
+`scripts/check-fd-probe-self-reference.py` flags a non-comment line on which a
+path naming the current process's fd 1 sits inside such a span; its
+`SELF_FD1` regex is the one list of spellings. The corpus is
+`git ls-files -- '*.sh' 'hooks/*'`, shared with the flock guard above. A line
+carrying `fdprobe:allow` is exempt.
+
+**Scope, honestly.** Spans are line-local, so a `$(` split across lines is not
+followed. Span ends are found by counting parentheses without regard to
+quoting, so a quoted `)` truncates a span:
+`$(echo ")"; readlink /proc/self/fd/1)` is missed. Not covered: a probe inside
+a function whose *caller* wrapped it in `$(...)`, a probe reaching fd 1
+through a pipeline or its own redirect, and bash embedded in `.py` files (a
+line scanner cannot tell code from docstring). `/dev/stdout` is deliberately
+not a `SELF_FD1` spelling: inside a substitution it is an idiomatic *write*
+target (`$(curl -so /dev/stdout ...)`) that a spelling scan cannot tell from a
+probe, so the vacuous `$(readlink -f /dev/stdout)` goes unflagged. The corpus
+is code only: the machine-written mention corpus
+(`docs/legibility/confusion-codebook.yaml`, `plans/confusion-census-*.md`)
+quotes the banned spelling but is structurally outside it, so
+`docs/legibility/landing-contract.md` §5 trigger 2 (a mention-corpus exclusion
+plus a `--scope staged` selector) does not apply.
+
+Premise, detection cases and the all-clear's liveness controls:
+`test_fd_probe_self_reference.py`.
+
 ## Cited test-path resolution (`cited-test-path-baseline.manifest`)
 
 `test_cited_test_paths_resolve.sh` guards a single contract: **prose that
@@ -408,6 +456,43 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Assert behaviour, not source prose
+
+An infra assertion's subject is something the code **does**: an exit code,
+stdout/stderr, a constructed argv, files written, process state. It is never
+the natural-language text of a script or test: a comment, header or docstring,
+another test's description label, or the *absence* of phrasing or literals
+that a past review round removed. Such a pin is wrong in both directions.
+Rewording a comment reds the gate with no regression, and a real regression
+outside the comment (a flag leaking into a non-comment string) stays green.
+Census origin: `docs/legibility/confusion-codebook.yaml` entry
+`entry-cand-20260813-12`.
+
+**The tell** is a needle assembled from fragments (`'ex''it'`, `printf '%s'`
+pieces, `_FRAG1`/`_FRAG2`) so the check does not match its own file. Split
+literals *are* legitimate as the self-match-safety convention of a **construct
+lint**: a lint whose subject has a runtime consequence, and whose hermetic
+fixtures prove that it both flags and clears. This README's own guards are the
+examples: the wall-clock upper-bound guard, the bare holder-grace sleep guard,
+the lock-held-across-a-detached-fork guard and the self-referential fd-probe
+guard. Split literals that pin prose, or the file's own edit history, are the
+anti-pattern.
+
+**Review feedback about a comment** is fixed in the comment, with no test.
+Test-first applies to behaviour.
+
+**A real guarantee visible only in source** is tested by driving the behaviour,
+plus a hermetic fixture that must fail (a sensitivity pin). Worked example:
+`test_sync_comments_grep.sh`'s sourcing-returns-control probe replaced a pin on
+a Section 3 comment ("sourcing must stay non-fatal"). The comment pin could not
+see a top-level `exit 0`, which would let every Section 3 assert pass
+vacuously. The probe fails on it, and its `exit 0` fixture proves that.
+
+**Scope.** The rule covers comments and prose inside scripts and tests. It does
+not cover referential-integrity checks (`test_cited_test_paths_resolve.sh`) or
+doc-truth gates over operator documentation (the E-SKILL/E-CLI rows of
+`test_jcodemunch_index_units.sh`). Those are separate contracts.
+
 ## Whole-tree gates and unattended writers of `main`
 
 Dark-factory's legibility jobs commit machine-written files straight to `main`,
@@ -427,6 +512,8 @@ selector.  Why, and the existing instances:
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
 | `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
+| `test_fd_probe_self_reference.sh` | Regression guard: a /proc probe of the current process's fd 1 inside a command substitution (reads the capture pipe) |
+| `test_fd_probe_self_reference.py` | Its stdlib-unittest body, driving `scripts/check-fd-probe-self-reference.py` |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

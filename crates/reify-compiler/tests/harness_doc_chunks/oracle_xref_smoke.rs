@@ -60,8 +60,10 @@
 //! `section_body`, `call_sites`, `called_names`, `registry_family` and
 //! `phantom_name_panic` are all `geometry_chunk_smoke.rs`'s, already `pub(crate)`
 //! and already parameterised by `chunk_path` so a `constraints.md` failure names
-//! `constraints.md`. The ONE helper added here is [`strip_html_comments`], and it
-//! is pinned directly by the unit tests at the foot of this file.
+//! `constraints.md`. The ONE helper this file added, [`strip_html_comments`],
+//! now lives in `chunk_prose.rs` beside the prose model that shares its comment
+//! grammar, and is still pinned directly by the unit tests at the foot of this
+//! file.
 //!
 //! That follows task 5759's precedent (`units_chunk_smoke.rs`) exactly: the
 //! harness binary now holds FIVE chunk modules and STILL THREE scrapers. The
@@ -69,6 +71,7 @@
 //! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse inside the
 //! existing binary is what is available today, not a substitute for it.
 
+use crate::chunk_prose::{EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, strip_html_comments};
 use crate::geometry_chunk_smoke::{
     CHUNK_PATH as GEOMETRY_CHUNK_PATH, GEOMETRY_ORACLE_NAMES, call_sites, called_names,
     phantom_name_panic, registry_family, section_body,
@@ -214,7 +217,15 @@ const MAXIMUM_XREF_WORDS: usize = 150;
 /// `stdlib_chunk_geometry_ops_smoke.rs::geometry_op_doc_coverage_violations` is,
 /// so the controls below pin every class with synthetic data.
 fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
-    let prose = strip_html_comments(region);
+    let prose = match strip_html_comments(region) {
+        Ok(prose) => prose,
+        Err(error) => {
+            return vec![format!(
+                "{chunk_path}'s `{ORACLE_XREF_MARKER}` region cannot be read: {error} — so none \
+                 of its pointer checks can run. FIX: repair the markup."
+            )];
+        }
+    };
     let mut out = Vec::new();
 
     if prose.contains(HTML_COMMENT_CLOSE) {
@@ -223,12 +234,9 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
              `{HTML_COMMENT_CLOSE}` after its HTML comments were stripped. A terminator that \
              survives stripping was never opened, so an editor note in this region CLOSED \
              EARLIER than its author intended: the tail of the note is now rendered text the \
-             reader sees, and it is being charged to the pointer's word budget. HTML comments \
-             do not nest and HTML defines no escape inside one, so backticks do not protect a \
-             quoted terminator — writing a marker out in full is what ends the note. FIX: name \
-             the marker WITHOUT its closing bracket (`ORACLE-XREF`, not the whole comment), or \
-             move that sentence out of the comment. Do NOT reword the pointer; the pointer is \
-             not what is wrong."
+             reader sees, and it is being charged to the pointer's word budget. \
+             {EARLY_CLOSED_NOTE_FIX} Do NOT reword the pointer; the pointer is not what is \
+             wrong."
         ));
     }
 
@@ -281,34 +289,6 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
         ));
     }
 
-    out
-}
-
-/// The HTML comment grammar, as ONE definition shared by the stripper below and
-/// by [`xref_region_violations`]' comment-integrity class. A stripper and a
-/// debris check that disagreed about what closes a comment would each be
-/// reporting on a document the other never saw.
-const HTML_COMMENT_OPEN: &str = "<!--";
-const HTML_COMMENT_CLOSE: &str = "-->";
-
-/// `markdown` with every `<!-- … -->` comment removed.
-///
-/// An UNTERMINATED comment consumes the remainder, which is exactly what a
-/// markdown renderer does with it — so a region whose pointer has been swallowed
-/// by a stray `<!--` reports as missing its call forms, which is the true
-/// description of what the reader can now see.
-fn strip_html_comments(markdown: &str) -> String {
-    let mut out = String::with_capacity(markdown.len());
-    let mut rest = markdown;
-
-    while let Some(open) = rest.find(HTML_COMMENT_OPEN) {
-        out.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find(HTML_COMMENT_CLOSE) else {
-            return out;
-        };
-        rest = &rest[open + close + HTML_COMMENT_CLOSE.len()..];
-    }
-    out.push_str(rest);
     out
 }
 
@@ -436,6 +416,22 @@ fn a_pointer_sized_region_naming_both_call_forms_and_the_destination_is_clean() 
         Vec::<String>::new(),
         "the clean control must decide NOTHING is wrong — otherwise every other \
          control below is passing for the wrong reason"
+    );
+}
+
+/// A region whose fences cannot be read is one violation, not a region judged
+/// on whatever text a misread fence left behind.
+#[test]
+fn a_region_with_an_unterminated_fence_is_reported_as_unreadable() {
+    let region = format!("{POINTER_SIZED_REGION}\n```text\nnever closed\n");
+
+    let violations = xref_region_violations(&region, "synthetic.md");
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("synthetic.md") && violations[0].contains("cannot be read"),
+        "got: {}",
+        violations[0]
     );
 }
 
@@ -706,18 +702,19 @@ The posed form and the traps are in the `geometry` chunk — topic `geometry` of
 
 // ── Scanner unit tests ───────────────────────────────────────────────────────
 //
-// `strip_html_comments` is this module's only hand-rolled text helper, and every
-// class of `xref_region_violations` runs downstream of it. It is pinned DIRECTLY
-// here rather than only through the controls above, following the posture
-// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes: the
-// failure it guards against is self-concealing. A stripper that quietly returned
+// `strip_html_comments` (chunk_prose.rs's renderer-faithful stripper) is the
+// one text helper every class of `xref_region_violations` runs downstream of. It
+// is pinned DIRECTLY here rather than only through the controls above, following
+// the posture `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block
+// establishes: the failure it guards against is self-concealing. A stripper that quietly returned
 // nothing would empty every scan, and the call-form class would then blame the
 // chunk for a defect in this function.
 
 #[test]
 fn html_comments_are_removed_and_the_prose_around_them_is_kept() {
     assert_eq!(
-        strip_html_comments("before\n<!-- an editor note\n   spanning lines -->\nafter\n"),
+        strip_html_comments("before\n<!-- an editor note\n   spanning lines -->\nafter\n")
+            .expect("no fence to misread"),
         "before\n\nafter\n"
     );
 }
@@ -728,7 +725,8 @@ fn an_unterminated_html_comment_consumes_the_remainder() {
     // region then reports as missing its call forms, which is TRUE of the
     // rendered chunk — not a scanner defect to be worked around.
     assert_eq!(
-        strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n"),
+        strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n")
+            .expect("no fence to misread"),
         "visible\n"
     );
 }
@@ -761,7 +759,8 @@ fn a_quoted_terminator_closes_the_comment_early() {
              `<!-- ORACLE-XREF -->` marker line — retitling is free.\n\
              -->\n\
              prose below\n"
-        ),
+        )
+        .expect("no fence to misread"),
         "prose above\n` marker line — retitling is free.\n-->\nprose below\n"
     );
 }

@@ -1,0 +1,469 @@
+//! Documented call FORMS — `(name, arity)` — read from markdown spans and from
+//! parsed sources, and paired: a documented form is exercised when a source
+//! calls that name at a matching arity.
+//!
+//! A span is a documented form only when it is SIGNATURE-SHAPED, whole: a
+//! lowercase snake_case name, then `(params)` of metavariables, `label: metavar`
+//! named arguments, a bare `…` or an `ident…` (U+2026 — the ASCII `...` elides
+//! an argument list rather than declaring one variadic), then optionally
+//! `-> Type`. Concrete idioms, expressions, declarations, qualified or
+//! capitalised names and lambdas are prose, never signatures — see
+//! [`doc_form_of_span`].
+
+use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
+use reify_compiler::parse_with_stdlib;
+use reify_core::ModulePath;
+
+/// A documented form's declared argument count: either an exact arity, or a
+/// variadic form carrying the given MINIMUM arity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Arity {
+    Exact(usize),
+    AtLeast(usize),
+}
+
+/// One documented (name, arity) overload. A single row commonly documents
+/// several of these for the same name (e.g. `mirror(geo, plane)` and
+/// `mirror(geo, ox, oy, oz, nx, ny, nz)`) — they are deliberately NOT
+/// collapsed, which is the whole point of pairing at FORM granularity rather
+/// than by name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DocForm {
+    pub(crate) name: String,
+    pub(crate) arity: Arity,
+}
+
+impl DocForm {
+    /// Does any `(name, arg count)` call exercise this form? `Exact(n)` needs a
+    /// call with exactly `n` arguments, `AtLeast(n)` one with `n` or more.
+    pub(crate) fn is_exercised_by(&self, calls: &[(String, usize)]) -> bool {
+        calls.iter().any(|(name, count)| {
+            *name == self.name
+                && match self.arity {
+                    Arity::Exact(n) => *count == n,
+                    Arity::AtLeast(n) => *count >= n,
+                }
+        })
+    }
+}
+
+/// The documented form a code span declares, or `None` when the span is not
+/// signature-shaped as a WHOLE (see the module doc).
+///
+/// A bare `…` or an `ident…` argument contributes nothing to the count and
+/// makes the form `AtLeast`; every other argument counts one.
+pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
+    let span = span.trim();
+    let open = span.find('(')?;
+    let close = open + span[open..].find(')')?;
+    let name = &span[..open];
+    let params = &span[open + 1..close];
+    if !is_metavariable(name) || params.contains('(') || !is_return_annotation(&span[close + 1..]) {
+        return None;
+    }
+
+    if params.trim().is_empty() {
+        return Some(DocForm {
+            name: name.to_string(),
+            arity: Arity::Exact(0),
+        });
+    }
+    let mut count = 0;
+    let mut variadic = false;
+    for param in params.split(',').map(str::trim) {
+        match param.strip_suffix('…') {
+            Some(stem) if stem.is_empty() || is_metavariable(stem) => variadic = true,
+            Some(_) => return None,
+            None if is_argument(param) => count += 1,
+            None => return None,
+        }
+    }
+    Some(DocForm {
+        name: name.to_string(),
+        arity: if variadic {
+            Arity::AtLeast(count)
+        } else {
+            Arity::Exact(count)
+        },
+    })
+}
+
+/// A lowercase snake_case identifier: the only shape a documented name or a
+/// metavariable takes.
+fn is_metavariable(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A metavariable, or a `label: metavar` named argument.
+fn is_argument(param: &str) -> bool {
+    match param.split_once(':') {
+        Some((label, value)) => is_metavariable(label.trim()) && is_metavariable(value.trim()),
+        None => is_metavariable(param),
+    }
+}
+
+/// Nothing at all, or `-> Type` with a capitalised type (generics, commas and
+/// parenthesised arguments allowed).
+fn is_return_annotation(rest: &str) -> bool {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return true;
+    }
+    let Some(return_type) = rest.strip_prefix("->").map(str::trim) else {
+        return false;
+    };
+    return_type.starts_with(|c: char| c.is_ascii_uppercase())
+        && return_type.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '<' | '>' | ',' | ' ' | '(' | ')')
+        })
+}
+
+/// Every documented form no call exercises, sorted and deduped so a failure
+/// names the exact form(s).
+pub(crate) fn unmirrored_forms(documented: &[DocForm], calls: &[(String, usize)]) -> Vec<DocForm> {
+    let mut unmirrored: Vec<DocForm> = documented
+        .iter()
+        .filter(|form| !form.is_exercised_by(calls))
+        .cloned()
+        .collect();
+    unmirrored.sort();
+    unmirrored.dedup();
+    unmirrored
+}
+
+/// `source` parsed prelude-aware (the `compile_with_stdlib` companion). A parse
+/// error is a bug in the fixture or snippet, not the property under test, so it
+/// panics distinctly rather than being skipped.
+pub(crate) fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
+    let parsed = parse_with_stdlib(source, ModulePath::single("doc_forms_source"));
+    assert!(
+        parsed.errors.is_empty(),
+        "{label} must parse cleanly, got parse errors:\n{}",
+        parsed
+            .errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    parsed
+}
+
+/// Every `(call name, arg count)` form in `source`, deduped and sorted for
+/// deterministic output. A named argument counts one, exactly as a documented
+/// form counts it.
+///
+/// `source` must be `structure def`s whose members are all `let` bindings — the
+/// shape of the signature fixtures. Anything else PANICS rather than being
+/// skipped, so growing a fixture a new declaration or member kind is a loud
+/// "extend the walker", never a silent coverage hole.
+pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
+    let parsed = parse_or_panic(source, label);
+
+    let mut forms = Vec::new();
+    for decl in &parsed.declarations {
+        let Declaration::Structure(structure) = decl else {
+            panic!(
+                "{label}: `call_forms` only walks `structure def` declarations, but this source \
+                 has another declaration kind — extend `call_forms` rather than leaving those \
+                 call sites unchecked"
+            );
+        };
+        for member in &structure.members {
+            let MemberDecl::Let(binding) = member else {
+                panic!(
+                    "{label}: `call_forms` only walks `let` members of `{}`, but it has another \
+                     member kind — extend `call_forms` rather than leaving those call sites \
+                     unchecked",
+                    structure.name
+                );
+            };
+            collect_call_forms(&binding.value, &mut forms);
+        }
+    }
+
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
+/// subtree onto `out`.
+///
+/// The match is intentionally exhaustive with **no `_` wildcard**, so adding an
+/// `ExprKind` variant breaks this file at compile time rather than silently
+/// dropping a whole class of call site from the guard (same posture as
+/// `find_node` in `tests/harness_langcore/type_error_propagation_tests.rs`).
+/// Walking the parsed AST — rather than lexing the source — means no comment or
+/// string-literal blind spots and no keyword/heuristic allowlists.
+///
+/// Non-`FunctionCall` callee names (a trait method, an ad-hoc port selector)
+/// are deliberately NOT collected: they are dispatched through a different
+/// resolver and are not documented call forms.
+fn collect_call_forms(expr: &Expr, out: &mut Vec<(String, usize)>) {
+    match &expr.kind {
+        // Leaves — no subexpressions, no callee name.
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Ident(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Undef => {}
+
+        // The variant under test.
+        ExprKind::FunctionCall { name, args, .. } => {
+            out.push((name.clone(), args.len()));
+            for arg in args {
+                collect_call_forms(arg, out);
+            }
+        }
+
+        // Compound variants — recurse into every child subexpression.
+        ExprKind::BinOp { left, right, .. } => {
+            collect_call_forms(left, out);
+            collect_call_forms(right, out);
+        }
+        ExprKind::UnOp { operand, .. } => collect_call_forms(operand, out),
+        ExprKind::MemberAccess { object, .. } => collect_call_forms(object, out),
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_call_forms(condition, out);
+            collect_call_forms(then_branch, out);
+            collect_call_forms(else_branch, out);
+        }
+        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
+            for item in items {
+                collect_call_forms(item, out);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (key, value) in entries {
+                collect_call_forms(key, out);
+                collect_call_forms(value, out);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            collect_call_forms(object, out);
+            collect_call_forms(index, out);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            collect_call_forms(discriminant, out);
+            for arm in arms {
+                collect_call_forms(&arm.body, out);
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, value) in params {
+                collect_call_forms(value, out);
+            }
+        }
+        ExprKind::Lambda { body, .. } => collect_call_forms(body, out),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            collect_call_forms(collection, out);
+            collect_call_forms(predicate, out);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            collect_call_forms(base, out);
+            for arg in args {
+                collect_call_forms(arg, out);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => collect_call_forms(qualifier, out),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            collect_call_forms(object, out);
+            collect_call_forms(qualified, out);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(lower) = lower {
+                collect_call_forms(lower, out);
+            }
+            if let Some(upper) = upper {
+                collect_call_forms(upper, out);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            collect_call_forms(object, out);
+            for arg in args {
+                collect_call_forms(arg, out);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for arg in args {
+                collect_call_forms(arg, out);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, value) in fields {
+                collect_call_forms(value, out);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                match part {
+                    StringPart::Literal(_) => {}
+                    StringPart::Hole(inner) => collect_call_forms(inner, out),
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic tests — synthetic spans and sources only.
+// ---------------------------------------------------------------------------
+
+fn form(name: &str, arity: Arity) -> DocForm {
+    DocForm {
+        name: name.to_string(),
+        arity,
+    }
+}
+
+#[test]
+fn doc_form_of_span_reads_a_signature_shaped_span() {
+    let cases = [
+        (
+            "rotate(geo, ax, ay, az, angle)",
+            form("rotate", Arity::Exact(5)),
+            "each metavariable counts one",
+        ),
+        (
+            "mechanism()",
+            form("mechanism", Arity::Exact(0)),
+            "an empty list is Exact(0)",
+        ),
+        (
+            "union_all(a, b, …)",
+            form("union_all", Arity::AtLeast(2)),
+            "a bare `…` marks the form variadic and counts nothing",
+        ),
+        (
+            "nurbs(degree, n_points, coords…, weights…)",
+            form("nurbs", Arity::AtLeast(2)),
+            "an `ident…` marks the form variadic and counts nothing",
+        ),
+        (
+            "loft_guided(profile1, profile2, …, guide)",
+            form("loft_guided", Arity::AtLeast(3)),
+            "an argument after the `…` still counts",
+        ),
+        (
+            "isosurface(grid, iso: level)",
+            form("isosurface", Arity::Exact(2)),
+            "a `label: metavar` named argument counts one",
+        ),
+        (
+            "volume(solid) -> Scalar<Volume>",
+            form("volume", Arity::Exact(1)),
+            "a return type may follow",
+        ),
+        (
+            "curvature(surface, at) -> Matrix<2, 2, Curvature>",
+            form("curvature", Arity::Exact(2)),
+            "the return type may carry commas and generics",
+        ),
+        (
+            "  mechanism()  ",
+            form("mechanism", Arity::Exact(0)),
+            "surrounding whitespace is trimmed",
+        ),
+    ];
+
+    for (span, expected, why) in cases {
+        assert_eq!(doc_form_of_span(span), Some(expected), "`{span}`: {why}");
+    }
+}
+
+#[test]
+fn doc_form_of_span_reads_nothing_else_as_a_signature() {
+    let cases = [
+        (
+            "translate(z=-height/2)",
+            "a keyword snippet with an expression",
+        ),
+        (
+            "translate(cylinder(r, h), 0mm, 0mm, -h/2)",
+            "a concrete idiom: nested call, literals, expression",
+        ),
+        ("box(20, 20, 10)", "literal arguments"),
+        ("scale(g, 2mm)", "a quantity literal"),
+        ("2*corner_r < min(width, depth)", "an expression"),
+        ("distance(a, b) > tol", "a comparison"),
+        ("some(c) => ...", "a match arm"),
+        ("alt = some(0.25mm)", "an assignment"),
+        ("let all_faces = faces(b)", "a let binding"),
+        (
+            "fn faces(solid: Solid) -> List<Surface>",
+            "a declaration with typed parameters",
+        ),
+        ("Selector(Face)", "a capitalised type"),
+        ("ScalarForce(Real)", "a capitalised variant"),
+        ("Engine::new(.., None)", "a qualified call"),
+        ("Trait::fn(args)", "a qualified call"),
+        ("point3(...)", "an ASCII elision of an argument list"),
+        ("map_or(o, dflt, |x: T| ...)", "a lambda parameter"),
+        ("broken(a, b", "unbalanced parentheses"),
+        ("List<Geometry>", "a type, with no call at all"),
+    ];
+
+    for (span, why) in cases {
+        assert_eq!(
+            doc_form_of_span(span),
+            None,
+            "`{span}` must not read as a signature: {why}"
+        );
+    }
+}
+
+#[test]
+fn is_exercised_by_matches_exact_by_equality_and_at_least_by_minimum() {
+    let calls = vec![("rotate".to_string(), 5), ("union_all".to_string(), 3)];
+
+    assert!(form("rotate", Arity::Exact(5)).is_exercised_by(&calls));
+    assert!(
+        !form("rotate", Arity::Exact(2)).is_exercised_by(&calls),
+        "Exact needs a call with exactly that many arguments"
+    );
+    assert!(
+        form("union_all", Arity::AtLeast(2)).is_exercised_by(&calls),
+        "AtLeast accepts more arguments"
+    );
+    assert!(
+        form("union_all", Arity::AtLeast(3)).is_exercised_by(&calls),
+        "AtLeast accepts exactly the minimum"
+    );
+    assert!(
+        !form("union_all", Arity::AtLeast(4)).is_exercised_by(&calls),
+        "AtLeast rejects fewer arguments"
+    );
+    assert!(
+        !form("translate", Arity::Exact(5)).is_exercised_by(&calls),
+        "a call to a different name never exercises the form"
+    );
+}
+
+#[test]
+fn call_forms_counts_a_named_argument_as_one() {
+    let source = r#"
+structure def NamedArgument {
+    let s = sphere(5mm)
+    let shell = isosurface(s, iso: 3mm)
+}
+"#;
+
+    assert_eq!(
+        call_forms(source, "named-argument snippet"),
+        vec![("isosurface".to_string(), 2), ("sphere".to_string(), 1)],
+        "a named argument is one argument, in the same currency the documented form is read in"
+    );
+}

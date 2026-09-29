@@ -1125,13 +1125,14 @@ pub enum GeometryOp {
         width: Value,
     },
     /// Offset a solid outward (positive) or inward (negative) by distance.
+    /// Every face moves |distance| along its normal and sharp edges stay sharp.
     OffsetSolid {
         target: GeometryHandleId,
         distance: Value,
     },
     /// Offset a surface along its normal by `distance`, using the Skin
     /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape` — distinct from
-    /// [`GeometryOp::OffsetSolid`]'s `PerformBySimple` solid mode. Produces
+    /// [`GeometryOp::OffsetSolid`], which takes a solid, not a face. Produces
     /// fresh `BRepKind::Face` geometry via the early-return execute path,
     /// like the profile producers (e.g. [`GeometryOp::RectangleProfile`]).
     ///

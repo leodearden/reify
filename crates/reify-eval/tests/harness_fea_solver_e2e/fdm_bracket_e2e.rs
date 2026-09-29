@@ -13,7 +13,7 @@
 //!
 //! All tests are gated on `reify_kernel_occt::OCCT_AVAILABLE`.
 
-mod common;
+use crate::common;
 
 use reify_core::{ContentHash, Severity, Type, ValueCellId};
 use reify_ir::{

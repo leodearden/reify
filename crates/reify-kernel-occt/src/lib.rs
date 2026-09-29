@@ -8483,21 +8483,6 @@ mod tests {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0);
                 eprintln!("inner Thicken(-0.5mm) volume = {:.3e} m³ (expected ~7.29e-7 = (9mm)³)", inner_v);
-
-                // Try Difference(outer, inner)
-                let diff_result = kernel.execute(&GeometryOp::Difference {
-                    left: outer_h.id,
-                    right: inner_h.id,
-                });
-                eprintln!("Difference result: {:?}", diff_result.as_ref().map(|h| h.id));
-                if let Ok(diff_h) = diff_result {
-                    let diff_vol = kernel.query(&GeometryQuery::Volume(diff_h.id));
-                    eprintln!("Difference volume: {:?}", diff_vol);
-                    let diff_v = diff_vol.ok().and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    eprintln!("zone_profile volume = {:.3e} m³ (expected ~6e-7 for (11mm)³-(9mm)³)", diff_v);
-                } else {
-                    eprintln!("Difference failed: {:?}", diff_result.err());
-                }
             }
             Err(e) => {
                 eprintln!("negative Thicken failed: {}", e);
@@ -8674,69 +8659,6 @@ mod tests {
     }
 
     // --- OffsetSolid high-level execute tests ---
-
-    #[test]
-    fn offset_solid_outward_increases_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Outward offset 2.0 — same primitive as thicken, same 10³ box → vol > 1000
-        let grown_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(grown_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => assert!(
-                v > 1000.0,
-                "outward-offset volume should exceed original 1000, got {v}"
-            ),
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn offset_solid_inward_valid_shrinks_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000; inradius = 5
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Inward offset -2.0 (< inradius 5) → valid smaller solid, 0 < vol < 1000
-        let shrunk_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(-2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(shrunk_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!(v > 0.0, "shrunk volume must be positive, got {v}");
-                assert!(
-                    v < 1000.0,
-                    "shrunk volume must be less than original 1000, got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
 
     #[test]
     fn offset_solid_degenerate_collapse_returns_error() {

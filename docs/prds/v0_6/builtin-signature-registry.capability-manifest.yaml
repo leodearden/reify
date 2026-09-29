@@ -254,6 +254,19 @@ tasks:
       paths:
       - crates/reify-builtins
       expect: present
+  - name: representation-within-is-engine-dispatched
+    binding: wired — crates/reify-eval/src/tolerance_combine.rs match_representation_within_shape
+      (exact-name recogniser) reached from Engine::dispatch_constraints (crates/reify-eval/src/engine_constraints.rs);
+      no eval_builtin arm exists; manifested today in crates/reify-compiler/src/unresolved_function.rs
+      EVAL_DEFERRED_BUILTIN_NAMES. Owner ruled by task 7035 (verified 2026-09-24 against
+      main de1ed5dd52)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"RepresentationWithin"'
+      paths:
+      - crates/reify-builtins
+      expect: present
 - label: tau9
   task_id: 6011
   title: relations/markers/geometry-ops migration (CompileOnly + GeometryOp kinds)

@@ -1258,16 +1258,38 @@ string), anything under `examples/**`, or anything inside a `tests/` tree or a
 rather than reading them. Re-running the sweep therefore yields many hits for both
 properties below; none of them is a reader.
 
-| Property | Declared at | Production readers | Owner |
+| Property | Declared at | Production readers | Ruling |
 |---|---|---|---|
-| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
-| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+
+Both rows record a CLOSED decision (#5801), not an open tracking cite. This
+subsection is the single home for that ruling and its rationale; each declaration
+site carries only a pointer back here.
+
+- **No consumer is landed.** Nothing consumes either value: there is no thermal
+  solver to read `thermal_expansion`, and no orthotropic-shear path that would read
+  `shear_modulus` on its own. Building either is out of scope for
+  `docs/prds/v0_6/dimension-checked-readers.md` §10.
+- **Neither is retired.** `thermal_expansion` is a *required* member of
+  `ThermallyCharacterized`, so deleting it would break every conformer and drop the
+  trait contract shown above. `shear_modulus` is optional (`= undef`), so keeping
+  it inert costs conformers nothing, and the conformers that do supply it keep a
+  real datasheet value.
+- **Neither is an INV-SF-5 placeholder.** Each is fully typed, dimensioned and
+  *data-carrying*. That is a runtime claim, so it is pinned in code rather than
+  only here: `crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that
+  `shear_modulus` reaches eval in SI (`eval_with_prelude_trait_conformance`), and
+  that all three required `ThermallyCharacterized` scalars do
+  (`eval_carries_thermally_characterized_scalars_in_si`). With no reader to notice
+  a value going missing, that suite is what goes red if one stops arriving, so the
+  ruling must then be revisited rather than quietly becoming false.
 
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
 
-- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
-  **not** declared-only — `structural_physical.ri:150` carries
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:157`) is
+  **not** declared-only — `structural_physical.ri:159` carries
   `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
   the zero-reader claim holds only when scoped to **Rust/host** readers.
 - `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
@@ -1278,9 +1300,21 @@ declared at two independent sites, and they differ:
 The second site is nonetheless **not** registered above. The ratified ruling in
 **#5801** names both declaration sites and treats `thermal_conductivity` as one
 property that it explicitly does not own, so adding a row against #5801 would
-assign it an ownership it declines. Splitting the two sites — and deciding whether
-the trait-scoped one needs its own owner — is #5801's call, not this reference's;
-it is recorded here so the distinction is not silently lost.
+assign it an ownership it declines.
+
+#5801 has since answered the split question this reference left to it: **no
+separate owner is needed, because the ruling is trait-scoped.** Inertness at
+`ThermallyCharacterized` follows from what the trait *is* — a material-datasheet
+characterization surface with no thermal solver behind it — and not from any one
+param. The measurement behind that: the trait's **entire** required scalar triple
+is reader-free — `thermal_conductivity` (`:39`), `specific_heat` (`:40`) and
+`thermal_expansion` (`:41`) — where `specific_heat`'s only non-declaration hit
+repo-wide is a test fn name below the `#[cfg(test)]` boundary in
+`crates/reify-core/src/dimension.rs`. Registering one of the three while leaving
+two unmentioned is what made this table look arbitrary and invited re-filing; a
+trait-scoped ruling removes that without minting a speculative new owner, and
+without the ownership #5801 declines. The distinction between the two
+`thermal_conductivity` sites stays recorded above so it is not silently lost.
 
 This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
 and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
@@ -1779,8 +1813,9 @@ you apply. They are documented here so the operator `curl` and the result
 channel `curl` sit adjacent and cannot be confused.
 
 ```
-ElasticResult.curl     : Field<Point3<Length>, Vector3<Real>>    // ∇×u
-ElasticResult.rotation : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation     : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.shear_angles : Field<Point3<Length>, Vector3<Angle>>   // (γ_yz, γ_zx, γ_xy)
 ```
 
 (`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
@@ -1818,6 +1853,22 @@ Having `rotation` carry a real ANGLE unlocks three things that
   yet — a per-component `deg` comparison is still out of reach;
 - a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
   than a bare frequency (1/s).
+
+`shear_angles` (task #6183) is the second named crossing, built the same way
+from `gradient`. Its components are the Voigt-order **engineering** shear
+strains (γ_yz, γ_zx, γ_xy), with γ_ij = ∂u_i/∂x_j + ∂u_j/∂x_i = 2·ε_ij — the
+doubled symmetric off-diagonals of `gradient`, read as angles (× η = 1 rad).
+`gradient` itself stays `Tensor<2,3,Real>`: a tensor has one quantity slot, so
+an angle reading of it is extracted by a named channel, never by retyping it.
+The same small-deformation proviso applies (‖∇u‖ ≪ 1). It is populated on the
+tet/solid path and `undef` on the shell path.
+
+Worked example: `examples/differential_field_ops.ri` carries
+`constraint shear_probe < shear_allowable`, where `shear_probe` is `magnitude`
+of the sampled `Vector3<Angle>`, gated in CI by `differential_field_ops_e2e`.
+Bounding the magnitude is conservative, since ‖γ‖₂ ≥ max_i |γ_i|.
+Per-component `deg` comparisons stay in the Rust harness until in-language
+Vector3 component access exists.
 
 See `docs/prds/v0_6/differential-field-operators.md` for the decision table
 and the full channel specification.
@@ -1959,7 +2010,7 @@ fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionV
 fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. It re-drives that joint's whole geometry at the derived value — the parent's axis *and* its mount (the optional pivot third argument of `prismatic`/`revolute`, a `point3` or `frame3`) — so `transform_at(couple(p, r, o), v)` equals `transform_at(p, r * v + o)`: a lead-screw follower on a corner-pivoted lift travels at that corner, not at the world origin. The coupling captures its parent by value when it is built, so only a mount the parent already carries at that point is inherited: a `relate`-solved mount (a `sub … at auto` placement), which the engine writes into the parent joint's cell after evaluation, does not reach a coupling of that joint (task #7194). A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
 **`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
@@ -1975,10 +2026,10 @@ fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+These are the registered builtin names (the `"joint_axis"`, `"joint_range"`, `"joint_ratio"`, and `"joint_offset"` arms of `eval_joints` in `crates/reify-stdlib/src/joints.rs`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
-**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
+**Jacobian.** `joint_jacobian` is a live builtin (the `"joint_jacobian"` arm of `eval_joints` in
+`crates/reify-stdlib/src/joints.rs`, delegating to `joint_jacobian_value`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned type is `JacobianColumn`: the partial derivative of pose with respect

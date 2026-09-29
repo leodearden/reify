@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-mod common;
+use crate::common;
 use common::as_printed::{
     FEA_H, FEA_L, FEA_W, as_printed_options, box_mesh, elastic_options, fdm_process,
     point_load_list, r0_toolpath_gcode, support_list,
