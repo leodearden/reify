@@ -425,6 +425,34 @@ impl DimensionVector {
         self.0.iter().all(|r| r.is_zero())
     }
 
+    /// Names this DIMENSION for a diagnostic that has already named the value
+    /// (`"… must be Vector3<Length>; got {label}"`): the canonical name, else
+    /// the `Display` exponents (so `DIMENSIONLESS` renders `"dimensionless"`).
+    ///
+    /// Intentionally separate from [`Self::diagnostic_scalar_label`] — do not
+    /// merge; `diagnostic_dimension_label_names_the_dimension` pins the difference.
+    pub fn diagnostic_dimension_label(&self) -> String {
+        self.canonical_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| self.to_string())
+    }
+
+    /// Names a `Value::Scalar` carrying this dimension, for an argument
+    /// rejection's `got` slot: `"{qualifier} Scalar"`, where an unnamed
+    /// dimension is the generic `"dimensioned"`.
+    ///
+    /// Intentionally separate from [`Self::diagnostic_dimension_label`] — do not
+    /// merge; `diagnostic_scalar_label_names_a_scalar_value_of_the_dimension`
+    /// pins the difference.
+    pub fn diagnostic_scalar_label(&self) -> String {
+        let qualifier = if self.is_dimensionless() {
+            "dimensionless"
+        } else {
+            self.canonical_name().unwrap_or("dimensioned")
+        };
+        format!("{qualifier} Scalar")
+    }
+
     /// Multiply dimensions (add exponents).
     pub fn mul(&self, other: &DimensionVector) -> DimensionVector {
         let mut result = [Rational::ZERO; 10];
