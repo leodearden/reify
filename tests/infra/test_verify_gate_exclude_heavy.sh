@@ -12,7 +12,7 @@
 # Task 7912: the plan header `# heavy partition — HEAVY=excluded|only|included`
 # reports the RESOLVED partition for the role, derived from the same fragments
 # the nextest passes receive — so it is pinned both per role × knob and against
-# the plan's own command lines.
+# the plan's own command lines. It is emitted iff the plan carries test passes.
 #
 # Modeled on tests/infra/test_verify_role_prio.sh: drives verify.sh via
 # --print-plan (hermetic — never builds/tests anything, no cargo invoked).
@@ -221,17 +221,23 @@ echo ""
 echo "--- heavy partition header (task 7912): the plan states the RESOLVED effect, not the env ---"
 
 HEAVY_HEADER_PREFIX='# heavy partition — '
+# A test pass on either path: nextest, or the cargo-test fallback.
+TEST_PASS_PATTERN='cargo (nextest run|test) '
 
 _heavy_header() {
     printf '%s\n' "$1" | grep -m1 -- "^$HEAVY_HEADER_PREFIX" || true
 }
 
+# Non-vacuous by construction: fails when the header is absent, and fails when
+# the plan has no test pass for the header to describe (else `included` —
+# neither fragment present — would also match a plan with no tests at all).
 _heavy_header_matches_commands() {
     local header value commands has_not=0 has_pos=0
     header="$(_heavy_header "$1")"
     [ -n "$header" ] || return 1
     value="${header##*HEAVY=}"
     commands="$(printf '%s\n' "$1" | grep -v '^#' || true)"
+    printf '%s\n' "$commands" | grep -qE -- "$TEST_PASS_PATTERN" || return 1
     printf '%s\n' "$commands" | grep -qF -- "$NOT_PATTERN" && has_not=1
     printf '%s\n' "$commands" | grep -qF -- "$POSITIVE_PATTERN" && has_pos=1
     case "$value" in
@@ -296,12 +302,32 @@ else
 fi
 
 for _i in "${!HEAVY_CASE_PLANS[@]}"; do
-    assert "${HEAVY_CASE_LABELS[$_i]}: heavy partition header agrees with the command lines (and is present)" \
+    assert "${HEAVY_CASE_LABELS[$_i]}: heavy partition header is present and agrees with the plan's test-pass command lines" \
         _heavy_header_matches_commands "${HEAVY_CASE_PLANS[$_i]}"
 done
 
 _plan="$(DF_VERIFY_ROLE=task REIFY_GATE_EXCLUDE_HEAVY=1 _capture_full_plan lint)"
 assert "role=task, knob=1, action=lint: plan has NO heavy partition header (no test passes to describe; scoping guard, green on arrival)" \
+    bash -c '! printf "%s\n" "$1" | grep -q -- "^$2"' \
+    _ "$_plan" "$HEAVY_HEADER_PREFIX"
+
+# A TEST action can still carry no test passes: `--scope staged` on a clean
+# index classifies RUN_RUST=0. Captured in a throwaway repo (scripts/ and
+# .config/ committed, nothing staged) so neither the host checkout's index nor
+# a MERGE_HEAD in it (which forces --scope all) can change that classification.
+CLEAN_INDEX_FIX="$(mktemp -d)"
+trap 'rm -rf "$CLEAN_INDEX_FIX"' EXIT
+cp -R "$REPO_ROOT/scripts" "$REPO_ROOT/.config" "$CLEAN_INDEX_FIX/"
+git -C "$CLEAN_INDEX_FIX" init -q
+git -C "$CLEAN_INDEX_FIX" add scripts .config
+git -C "$CLEAN_INDEX_FIX" -c user.email=test@invalid.local -c user.name=test commit -q -m base
+
+_plan="$(DF_VERIFY_ROLE=task REIFY_GATE_EXCLUDE_HEAVY=1 \
+    bash "$CLEAN_INDEX_FIX/scripts/verify.sh" test --scope staged --print-plan || true)"
+assert "role=task, knob=1, action=test, --scope staged, clean index: plan classifies RUN_RUST=0 (precondition — a test action with no test passes)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "# scope decision — RUN_RUST=0 "' \
+    _ "$_plan"
+assert "role=task, knob=1, action=test, --scope staged, clean index: plan has NO heavy partition header (it describes test passes, and there are none)" \
     bash -c '! printf "%s\n" "$1" | grep -q -- "^$2"' \
     _ "$_plan" "$HEAVY_HEADER_PREFIX"
 

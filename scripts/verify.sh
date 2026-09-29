@@ -2898,6 +2898,10 @@ emit_nextest_pass() {
     add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
 }
 
+# The plan carries add_test_passes' passes iff this holds; the `# heavy
+# partition —` header describes those passes, so it shares this gate.
+_plan_has_test_passes() { [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; }
+
 add_test_passes() {
     # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
     # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
@@ -3816,7 +3820,7 @@ build_plan() {
     # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
     # nextest run + OCCT-gated passes). All cheap gates run before this.
     # (task #4448 fail-fast reorder)
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    if _plan_has_test_passes; then
         add_test_passes
     fi
 
@@ -4002,7 +4006,7 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # would be satisfiable by an implementation that simply stopped computing the
     # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
-    if [ "$DO_TEST" -eq 1 ]; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
+    if _plan_has_test_passes; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
