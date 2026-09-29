@@ -265,29 +265,58 @@ impl std::fmt::Display for Justification {
     }
 }
 
-/// A position that is dimensionless BY DESIGN, with the dimension it expects and
-/// the D14 reading that licenses it.
+/// What the registry expects to find at a position it has a row for.
 ///
-/// `expected` is carried even though every shipped row is dimensionless today:
-/// it is what lets PRD 3 add ANGLE rows without touching the classifier.
+/// The two shapes are different KINDS of row, not two values of one field: only
+/// a `Dimensionless` row carries a D14 reading and only it licenses a bare
+/// number, while a `GatedAt` row asserts that the gate fires and at which
+/// dimension. Making them one enum leaves an ANGLE row with a D14 reading, or a
+/// dimensionless row without one, unrepresentable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Expectation {
+    /// A bare number is correct here, for the given D14 reason.
+    Dimensionless(Justification),
+    /// The Contract C gate fires here and accepts this dimension.
+    GatedAt(reify_core::DimensionVector),
+}
+
+impl Expectation {
+    /// The dimension the gate at this position must accept if it fires.
+    fn dimension(self) -> reify_core::DimensionVector {
+        match self {
+            Expectation::Dimensionless(_) => reify_core::DimensionVector::DIMENSIONLESS,
+            Expectation::GatedAt(dimension) => dimension,
+        }
+    }
+}
+
+/// The dimension a gated position accepts when no registry row says otherwise.
+///
+/// Contract C is PRD 1's LENGTH gate, so the ~100 length gates it ships need no
+/// row; any other dimension is a row's business.
+const CONTRACT_C_DIMENSION: reify_core::DimensionVector = reify_core::DimensionVector::LENGTH;
+
+/// One position the registry has a row for, and what it expects there.
 #[derive(Clone, Copy, Debug)]
 struct AllowEntry {
     position: Position,
-    expected: reify_core::DimensionVector,
-    justification: Justification,
+    expected: Expectation,
 }
 
 impl std::fmt::Display for AllowEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}/{}[{}] expects {:?} because it is {}",
-            self.position.builtin,
-            self.position.arity,
-            self.position.index,
-            self.expected,
-            self.justification
-        )
+        let Position {
+            builtin,
+            arity,
+            index,
+        } = self.position;
+        write!(f, "{builtin}/{arity}[{index}] ")?;
+        match self.expected {
+            Expectation::Dimensionless(reading) => {
+                write!(f, "expects DIMENSIONLESS because it is {reading}")
+            }
+            Expectation::GatedAt(dimension) => write!(f, "is gated at {dimension}"),
+        }
     }
 }
 
@@ -302,17 +331,25 @@ enum ViolationReason {
     /// The op did not compile, but no Contract C rejection was raised, so
     /// whatever stopped it was NOT the dimension gate.
     FailedWithoutDimensionRejection,
+    /// The gate fired, but at a different dimension than the registry expects
+    /// for the position.
+    GateDimensionMismatch {
+        expected: reify_core::DimensionVector,
+        observed: reify_core::DimensionVector,
+    },
 }
 
 impl std::fmt::Display for ViolationReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            ViolationReason::BareValueAccepted => "a bare number was ACCEPTED",
+        match self {
+            ViolationReason::BareValueAccepted => f.write_str("a bare number was ACCEPTED"),
             ViolationReason::FailedWithoutDimensionRejection => {
-                "op compile failed WITHOUT a Contract C rejection"
+                f.write_str("op compile failed WITHOUT a Contract C rejection")
             }
-        };
-        f.write_str(s)
+            ViolationReason::GateDimensionMismatch { expected, observed } => {
+                write!(f, "gated at {observed} but the registry expects {expected}")
+            }
+        }
     }
 }
 
@@ -390,6 +427,11 @@ fn outcome_from_probe(
 struct Observation {
     position: Position,
     outcome: ProbeOutcome,
+    /// The dimension of the filler the rejection-free baseline held at this
+    /// position. Where the gate fired, it is the dimension that gate accepts:
+    /// the baseline raises no rejection, so the filler it holds is one the gate
+    /// takes.
+    baseline_dimension: reify_core::DimensionVector,
 }
 
 /// The allowlist, keyed by [`Position`].
@@ -408,12 +450,20 @@ impl Registry {
         Registry::from_parts(entries, [])
     }
 
+    /// Panics if two entries claim one position: the map would otherwise keep
+    /// the later row and silently hide the earlier one.
     fn from_parts(
         entries: impl IntoIterator<Item = AllowEntry>,
         residuals: impl IntoIterator<Item = Residual>,
     ) -> Self {
+        let mut allowed = std::collections::BTreeMap::new();
+        for entry in entries {
+            if let Some(earlier) = allowed.insert(entry.position, entry) {
+                panic!("two allowlist rows for one position: `{earlier}` and `{entry}`");
+            }
+        }
         Registry {
-            allowed: entries.into_iter().map(|e| (e.position, e)).collect(),
+            allowed,
             residuals: residuals.into_iter().collect(),
         }
     }
@@ -435,14 +485,26 @@ impl Registry {
         })
     }
 
-    /// Whether `position` is accounted for and therefore raises no violation.
+    /// Whether `position` may be observed NOT rejecting a bare number without a
+    /// violation: a `Dimensionless` row licenses it, and so does a residual that
+    /// owns the position. A `GatedAt` row does not — it asserts a gate.
     fn covers(&self, position: &Position) -> bool {
-        self.allow(position).is_some() || self.residual(position).is_some()
+        let licensed = matches!(
+            self.allow(position).map(|entry| entry.expected),
+            Some(Expectation::Dimensionless(_))
+        );
+        licensed || self.residual(position).is_some()
+    }
+
+    /// The dimension the gate at `position` must accept if it fires.
+    fn expected_gate(&self, position: &Position) -> reify_core::DimensionVector {
+        self.allow(position)
+            .map_or(CONTRACT_C_DIMENSION, |entry| entry.expected.dimension())
     }
 }
 
-/// Every observation that is neither Contract-C-rejected nor accounted for by
-/// `registry`, in observation order.
+/// Every observation that `registry` does not account for, in observation
+/// order.
 ///
 /// Pure: no I/O, no globals, no interior mutation. Both inputs are borrowed
 /// values, which is what lets the anti-vacuity tests re-run it against a
@@ -451,19 +513,36 @@ fn classify_all(observations: &[Observation], registry: &Registry) -> Vec<Violat
     observations
         .iter()
         .filter_map(|obs| {
-            let reason = match obs.outcome {
-                ProbeOutcome::ContractCRejected | ProbeOutcome::NotReached => return None,
-                ProbeOutcome::Accepted => ViolationReason::BareValueAccepted,
-                ProbeOutcome::OpCompileFailed(_) => {
-                    ViolationReason::FailedWithoutDimensionRejection
-                }
-            };
-            (!registry.covers(&obs.position)).then_some(Violation {
+            violation_reason(obs, registry).map(|reason| Violation {
                 position: obs.position,
                 reason,
             })
         })
         .collect()
+}
+
+fn violation_reason(obs: &Observation, registry: &Registry) -> Option<ViolationReason> {
+    match obs.outcome {
+        ProbeOutcome::NotReached => None,
+        ProbeOutcome::ContractCRejected => gate_mismatch(obs, registry),
+        ProbeOutcome::Accepted => {
+            (!registry.covers(&obs.position)).then_some(ViolationReason::BareValueAccepted)
+        }
+        ProbeOutcome::OpCompileFailed(_) => (!registry.covers(&obs.position))
+            .then_some(ViolationReason::FailedWithoutDimensionRejection),
+    }
+}
+
+/// The gate fired: it is settled only if it fired at the dimension `registry`
+/// expects there, or a residual owns the position.
+fn gate_mismatch(obs: &Observation, registry: &Registry) -> Option<ViolationReason> {
+    let expected = registry.expected_gate(&obs.position);
+    let mismatched =
+        obs.baseline_dimension != expected && registry.residual(&obs.position).is_none();
+    mismatched.then_some(ViolationReason::GateDimensionMismatch {
+        expected,
+        observed: obs.baseline_dimension,
+    })
 }
 
 #[cfg(test)]
@@ -480,14 +559,14 @@ mod seeded_classifier {
         Observation {
             position,
             outcome: ProbeOutcome::Accepted,
+            baseline_dimension: reify_core::DimensionVector::LENGTH,
         }
     }
 
     fn allow(position: Position) -> AllowEntry {
         AllowEntry {
             position,
-            expected: reify_core::DimensionVector::DIMENSIONLESS,
-            justification: Justification::UnitVectorComponent,
+            expected: Expectation::Dimensionless(Justification::UnitVectorComponent),
         }
     }
 
@@ -1223,21 +1302,53 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     ),
 ];
 
+/// Every position the sweep reaches that is gated at ANGLE — the producer angle
+/// census of PRD 3 (`docs/prds/v0_6/angle-units-surface-convergence.md`, task ν).
+///
+/// `(builtin, arity, index range, the slots the range covers)`. Unlike an
+/// [`ALLOWLIST`] row this is a gate, not a licence: each position must be
+/// observed REJECTING a bare number with an ANGLE baseline, which is what tells
+/// it from a length gate, and a row that is not observed so fails the guard.
+const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
+    ("rotate", 4, 3..4, "angle"),
+    ("rotate_around", 7, 6..7, "angle"),
+    ("revolve", 7, 6..7, "angle"),
+    ("draft", 2, 0..1, "angle, the 3-arg form"),
+    ("draft", 3, 1..2, "angle, the 4-arg form"),
+];
+
+/// One entry per index of `indices`, all expecting `expected`.
+fn allow_entries(
+    builtin: &'static str,
+    arity: usize,
+    indices: std::ops::Range<usize>,
+    expected: Expectation,
+) -> impl Iterator<Item = AllowEntry> {
+    indices.map(move |index| AllowEntry {
+        position: Position {
+            builtin,
+            arity,
+            index,
+        },
+        expected,
+    })
+}
+
 fn shipped_allowlist() -> Vec<AllowEntry> {
-    ALLOWLIST
+    let dimensionless =
+        ALLOWLIST
+            .iter()
+            .flat_map(|(builtin, arity, indices, justification, _slots)| {
+                let expected = Expectation::Dimensionless(*justification);
+                allow_entries(*builtin, *arity, indices.clone(), expected)
+            });
+    let angle = ANGLE_ALLOWLIST
         .iter()
-        .flat_map(|(builtin, arity, indices, justification, _slots)| {
-            indices.clone().map(move |index| AllowEntry {
-                position: Position {
-                    builtin,
-                    arity: *arity,
-                    index,
-                },
-                expected: reify_core::DimensionVector::DIMENSIONLESS,
-                justification: *justification,
-            })
-        })
-        .collect()
+        .flat_map(|(builtin, arity, indices, _slots)| {
+            let expected = Expectation::GatedAt(reify_core::DimensionVector::ANGLE);
+            allow_entries(*builtin, *arity, indices.clone(), expected)
+        });
+    dimensionless.chain(angle).collect()
 }
 
 fn shipped_residuals() -> Vec<Residual> {
@@ -1327,6 +1438,7 @@ mod seeded_cites {
                 &[Observation {
                     position,
                     outcome: ProbeOutcome::Accepted,
+                    baseline_dimension: reify_core::DimensionVector::LENGTH,
                 }],
                 &registry
             )
@@ -1419,6 +1531,17 @@ impl TargetTemplate {
     }
 }
 
+/// A value tried at a position NOT under test, and the dimension it carries.
+///
+/// The dimension is data recorded when the filler is chosen, so what a gated
+/// position accepts is read from the baseline rather than parsed out of source
+/// text.
+#[derive(Clone, Copy, Debug)]
+struct Filler {
+    source: &'static str,
+    dimension: reify_core::DimensionVector,
+}
+
 /// Values tried at the positions NOT under test, while a rejection-free baseline
 /// is sought.
 ///
@@ -1426,8 +1549,39 @@ impl TargetTemplate {
 /// read, so a call whose other arguments are themselves being rejected cannot be
 /// mistaken for evidence about the one position under test. The ladder spans the
 /// dimensions and shapes those other positions expect: a length, an angle, small
-/// integers for counts and degrees, and a fraction.
-const BASELINE_FILLERS: [&str; 6] = ["1mm", "1deg", "2", "0.5", "3", "1"];
+/// integers for counts and degrees, and a fraction. Its ORDER matters: the first
+/// entry is the default start, and ties between equally good candidates go to
+/// the earlier one.
+const BASELINE_FILLERS: [Filler; 6] = [
+    Filler {
+        source: "1mm",
+        dimension: reify_core::DimensionVector::LENGTH,
+    },
+    Filler {
+        source: "1deg",
+        dimension: reify_core::DimensionVector::ANGLE,
+    },
+    Filler {
+        source: "2",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+    },
+    Filler {
+        source: "0.5",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+    },
+    Filler {
+        source: "3",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+    },
+    Filler {
+        source: "1",
+        dimension: reify_core::DimensionVector::DIMENSIONLESS,
+    },
+];
+
+fn filler_sources(fillers: &[Filler]) -> Vec<String> {
+    fillers.iter().map(|f| f.source.to_string()).collect()
+}
 
 /// The bare, dimensionless value planted at the position under test.
 ///
@@ -1566,9 +1720,9 @@ fn probe_call(name: &str, template: TargetTemplate, args: &[String]) -> Option<P
 /// Greedy, one position at a time, which is enough because the fillers do not
 /// interact: each position's acceptable dimension is independent of its
 /// neighbours'. Two passes let a later repair unblock an earlier one.
-fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<String>> {
-    let mut args: Vec<String> = vec![BASELINE_FILLERS[0].to_string(); arity];
-    let mut badness = probe_call(name, template, &args)?.baseline_badness();
+fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
+    let mut args = vec![BASELINE_FILLERS[0]; arity];
+    let mut badness = probe_call(name, template, &filler_sources(&args))?.baseline_badness();
     for _ in 0..2 {
         if badness == (0, 0, 0) {
             break;
@@ -1576,8 +1730,8 @@ fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<V
         for index in 0..arity {
             for filler in BASELINE_FILLERS {
                 let mut candidate = args.clone();
-                candidate[index] = filler.to_string();
-                let Some(probed) = probe_call(name, template, &candidate) else {
+                candidate[index] = filler;
+                let Some(probed) = probe_call(name, template, &filler_sources(&candidate)) else {
                     continue;
                 };
                 if probed.baseline_badness() < badness {
@@ -1619,9 +1773,10 @@ fn sweep_universe() -> Vec<Observation> {
         let mut families_seen: std::collections::BTreeSet<String> = Default::default();
         for template in TargetTemplate::ALL {
             for arity in 1..=MAX_PROBED_ARITY {
-                let Some(args) = baseline_args(builtin, template, arity) else {
+                let Some(fillers) = baseline_args(builtin, template, arity) else {
                     continue;
                 };
+                let args = filler_sources(&fillers);
                 let Some(baseline) = probe_call(builtin, template, &args) else {
                     continue;
                 };
@@ -1651,7 +1806,11 @@ fn sweep_universe() -> Vec<Observation> {
                             outcome_from_probe(&probed.result, &probed.diagnostics, &position)
                         }
                     };
-                    observations.push(Observation { position, outcome });
+                    observations.push(Observation {
+                        position,
+                        outcome,
+                        baseline_dimension: fillers[index].dimension,
+                    });
                 }
             }
         }
@@ -1700,6 +1859,7 @@ mod seeded_stubbed_gate {
             &[Observation {
                 position: GATED_TODAY,
                 outcome: ProbeOutcome::Accepted,
+                baseline_dimension: reify_core::DimensionVector::LENGTH,
             }],
             &registry,
         );
@@ -1719,6 +1879,7 @@ mod seeded_stubbed_gate {
             &[Observation {
                 position: GATED_TODAY,
                 outcome: ProbeOutcome::ContractCRejected,
+                baseline_dimension: reify_core::DimensionVector::LENGTH,
             }],
             &registry,
         );
@@ -1746,6 +1907,7 @@ mod seeded_stubbed_gate {
             &[Observation {
                 position: GATED_TODAY,
                 outcome: failed,
+                baseline_dimension: reify_core::DimensionVector::LENGTH,
             }],
             &Registry::default(),
         );
@@ -1793,8 +1955,9 @@ mod real_tree {
             .join("\n")
     }
 
-    /// THE GATE. Every position the sweep reaches is Contract-C-rejected, or
-    /// allowlisted with a D14 reading, or owned by a residual row.
+    /// THE GATE. Every position the sweep reaches is Contract-C-rejected at the
+    /// dimension the registry expects there, or allowlisted with a D14 reading,
+    /// or owned by a residual row.
     ///
     /// The two tests below it are what make a green run here mean something:
     /// one proves no allowlist entry is dead weight, the other proves the
@@ -1806,14 +1969,18 @@ mod real_tree {
 
         assert!(
             violations.is_empty(),
-            "{} un-gated, unjustified position(s):\n{}\n\n\
-             Each one is a numeric argument slot that ACCEPTS a bare number. \
-             Either gate it — route it through `accept_arg(&value, &length_spec())` \
-             in `geometry_ops`, the Contract C chokepoint — or, if it is \
-             legitimately dimensionless, add a row to ALLOWLIST with the D14 \
-             `Justification` that licenses it. If it is neither settled nor \
-             justified, add a `Residual` row with a LIVE task cite and its \
-             matching PTODO marker comment. Do not add a row whose \
+            "{} position(s) the registry does not account for:\n{}\n\n\
+             A numeric slot that ACCEPTS a bare number is un-gated. Either gate \
+             it — route it through `accept_arg(&value, &length_spec())` in \
+             `geometry_ops`, the Contract C chokepoint, or through \
+             `angle_spec()` for an angle — or, if it is legitimately \
+             dimensionless, add a row to ALLOWLIST with the D14 `Justification` \
+             that licenses it. A slot gated at a dimension the registry does not \
+             expect is a census gap or a mis-gate: a position gated at ANGLE \
+             needs a row in ANGLE_ALLOWLIST, and a bare angle slot is gated \
+             through `angle_spec()`, never `length_spec()`. If it is neither \
+             settled nor justified, add a `Residual` row with a LIVE task cite \
+             and its matching PTODO marker comment. Do not add a row whose \
              justification you cannot defend: that is the prose completeness \
              claim this guard replaced.",
             violations.len(),
@@ -1879,29 +2046,10 @@ mod real_tree {
                 "dropping the allowlist entry `{dropped}` produced no violation \
                  naming it, so that entry suppresses nothing. Either the sweep \
                  no longer reaches the position — in which case delete the row \
-                 — or the position is now gated, in which case delete it too. \
+                 — or the position is gated at Contract C's own dimension, \
+                 which needs no row — in which case delete it too. \
                  Violations seen:\n{}",
                 render(&violations)
-            );
-        }
-    }
-
-    /// Every shipped allowlist row claims DIMENSIONLESS, and names its reading.
-    ///
-    /// This is the extension point held open rather than left implicit: an
-    /// ANGLE row belongs to PRD 3 (#5783) and must arrive with its own observed
-    /// evidence, not by re-dimensioning a row that was authored from a
-    /// dimensionless observation.
-    #[test]
-    fn every_allowlist_row_expects_dimensionless_and_names_its_reading() {
-        for entry in shipped_allowlist() {
-            assert_eq!(
-                entry.expected,
-                reify_core::DimensionVector::DIMENSIONLESS,
-                "`{entry}` expects a non-dimensionless dimension. Every row this \
-                 guard ships was authored from an observation of a BARE value \
-                 being accepted, which is a dimensionless reading. A row for \
-                 another dimension needs its own observation."
             );
         }
     }
@@ -1936,6 +2084,7 @@ mod real_tree {
                     } else {
                         o.outcome.clone()
                     },
+                    baseline_dimension: o.baseline_dimension,
                 })
                 .collect();
             let violations = classify_all(&stubbed, &registry);
