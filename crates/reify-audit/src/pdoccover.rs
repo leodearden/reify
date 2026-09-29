@@ -128,7 +128,7 @@
 //! updating this section and the floor guard's anchor set. A residual false
 //! positive is settled by a `pdoccover:allow — <reason>` marker on its line
 //! or a `<chunk path>:<name>` ledger row, never by widening a filter — so
-//! the gate covers all five categories.
+//! the gate covers every category.
 //!
 //! **No residual count is pinned in this comment as an invariant.** The two
 //! SHAPES above are the invariant; any site or count cited is a dated
@@ -143,7 +143,7 @@
 //!
 //! ## Finding categories
 //!
-//! All five ride at [`Severity::High`] under the single [`Pattern::PDocCover`]
+//! All ride at [`Severity::High`] under the single [`Pattern::PDocCover`]
 //! variant, carried as a stable summary prefix (PTODO's `kind`-as-prefix
 //! convention, `lib.rs` §PTodo):
 //!
@@ -154,6 +154,7 @@
 //! | `stale-baseline-entry:` | ledger row that settles no live debt — ratchet honesty |
 //! | `stale-allow-entry:` | allow-marked name that IS documented — ratchet honesty |
 //! | `allow-missing-reason:` | `pdoccover:allow` with no reason body — confers NO exemption |
+//! | `census-empty:` / `no-chunks:` | a [`DegenerateInputs`] tree — the ONLY finding, never a vacuous clean |
 //!
 //! ## Escape hatch
 //!
@@ -1416,8 +1417,8 @@ struct Inputs {
     /// does not have to re-run `ls_files()`.
     tracked: Vec<String>,
     /// `*_NAMES` registries from `units.rs`; empty when it is untracked or
-    /// unreadable (fail-safe: a missing census reports nothing, it does not
-    /// report everything).
+    /// unreadable — [`DegenerateInputs::EmptyCensus`], one finding rather
+    /// than nothing or everything.
     registries: Vec<Registry>,
     /// Pre-read `(path, content)` for every tracked `chunks/*.md`, path-sorted.
     chunk_sources: Vec<(String, String)>,
@@ -1814,9 +1815,12 @@ fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> LaneResults 
 // check() — entry point
 // -----------------------------------------------------------------------
 
-/// Why [`baseline_ledger`] refused to derive a ledger. Either enumeration
-/// coming back empty makes every committed row of one kind read as stale, so
-/// a shrink-only regeneration over it would silently wipe the file.
+/// Why the tree cannot be audited. Either enumeration coming back empty makes
+/// every committed row of one kind read as stale — so a shrink-only
+/// regeneration would silently wipe the file — and a failed `git ls-files`
+/// empties both, so a quiet [`check`] would be an all-clear from a run that
+/// scanned nothing. [`baseline_ledger`] refuses the tree; [`check`] reports it
+/// as its only finding.
 ///
 /// There is no empty-oracle variant: `units.rs` is itself in oracle scope, so
 /// a non-empty census always seeds a non-empty oracle.
@@ -1836,32 +1840,29 @@ impl fmt::Display for DegenerateInputs {
         };
         write!(
             f,
-            "{empty} — refusing to derive a ledger that would read every committed \
-             row of {BASELINE_PATH} as stale. Check that the run is inside the git \
-             worktree, that --project-root points at it, and that `git ls-files` \
-             succeeds there."
+            "{empty}, so {BASELINE_PATH} cannot be settled — every committed row \
+             would read as stale. Check that the run is inside the git worktree, \
+             that --project-root points at it, and that `git ls-files` succeeds there."
         )
     }
 }
 
 /// Both lanes over the working tree, plus the committed ledger their debt is
 /// settled against — the one computation behind [`check`] and
-/// [`baseline_ledger`].
+/// [`baseline_ledger`], and so the one place a degenerate tree is refused.
 struct Audit {
     lanes: LaneResults,
     ledger: Ledger,
-    degenerate: Option<DegenerateInputs>,
 }
 
-fn audit(ctx: &AuditContext<'_>) -> Audit {
+fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
     let inputs = load_inputs(ctx);
-    let degenerate = if census_names(&inputs.registries).is_empty() {
-        Some(DegenerateInputs::EmptyCensus)
-    } else if inputs.chunk_sources.is_empty() {
-        Some(DegenerateInputs::NoChunks)
-    } else {
-        None
-    };
+    if census_names(&inputs.registries).is_empty() {
+        return Err(DegenerateInputs::EmptyCensus);
+    }
+    if inputs.chunk_sources.is_empty() {
+        return Err(DegenerateInputs::NoChunks);
+    }
     let mut lanes = omission_findings(&inputs);
     let fabrication = fabrication_findings(ctx, &inputs);
     lanes.findings.extend(fabrication.findings);
@@ -1870,11 +1871,17 @@ fn audit(ctx: &AuditContext<'_>) -> Audit {
         live: lanes.debt.keys().cloned().collect(),
         committed: committed_baseline(ctx, &inputs.tracked),
     };
-    Audit {
-        lanes,
-        ledger,
-        degenerate,
-    }
+    Ok(Audit { lanes, ledger })
+}
+
+/// [`check`]'s whole answer for a degenerate tree: one finding naming the
+/// empty input, instead of verdicts settled against inputs it never read.
+fn degenerate_inputs_finding(degenerate: DegenerateInputs) -> Keyed {
+    let (category, input) = match degenerate {
+        DegenerateInputs::EmptyCensus => ("census-empty", UNITS_PATH),
+        DegenerateInputs::NoChunks => ("no-chunks", CHUNKS_PREFIX),
+    };
+    keyed(category, input, input, format!("— {degenerate}"))
 }
 
 /// The finding for a committed row that absorbs nothing, named by the row's
@@ -1900,13 +1907,20 @@ fn stale_baseline_entry(row: &BaselineRow) -> Keyed {
 /// The invariant, for both row kinds: **a baseline row is stale iff removing
 /// it would change no other finding.**
 ///
+/// A degenerate tree ([`DegenerateInputs`]) yields exactly one
+/// `census-empty:` or `no-chunks:` finding instead, so a failed `git ls-files`
+/// reds the gate rather than passing it.
+///
 /// Findings are deterministically ordered by `(category, name, path)` — the
 /// category prefixes sort lexicographically, so the emitted list is
 /// byte-identical between runs over an unchanged tree and diffs cleanly
-/// between runs over a changed one. Unreadable files are skipped fail-safe
-/// (no finding, no panic).
+/// between runs over a changed one. An unreadable file is skipped (no
+/// finding, no panic).
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
-    let Audit { lanes, ledger, .. } = audit(ctx);
+    let Audit { lanes, ledger } = match audit(ctx) {
+        Ok(audit) => audit,
+        Err(degenerate) => return vec![degenerate_inputs_finding(degenerate).finding],
+    };
     let LaneResults {
         mut findings,
         mut debt,
@@ -1927,11 +1941,7 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
 /// ledger that would wipe the committed one.
 pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
-    let audit = audit(ctx);
-    match audit.degenerate {
-        Some(degenerate) => Err(degenerate),
-        None => Ok(audit.ledger),
-    }
+    audit(ctx).map(|audit| audit.ledger)
 }
 
 // -----------------------------------------------------------------------

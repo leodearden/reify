@@ -228,7 +228,7 @@ pub enum Pattern {
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
-    /// directions, five finding categories carried as a stable summary prefix
+    /// directions, its finding categories carried as a stable summary prefix
     /// (PTODO's `kind`-as-prefix convention above), all at
     /// [`Severity::High`]:
     ///
@@ -244,6 +244,9 @@ pub enum Pattern {
     ///   with a blank reason body confers NO exemption and is itself a finding.
     /// - `stale-baseline-entry:` — a row of the committed ledger
     ///   `crates/reify-audit/pdoccover-baseline.txt` that settles no live debt.
+    /// - `census-empty:` / `no-chunks:` — no registry name, or no readable
+    ///   chunk (a failed `git ls-files` is both): the run's ONLY finding, so a
+    ///   tree PDOCCOVER never read cannot report clean.
     ///
     /// **Opt-in only**, like PDIAG: the exit code is the High-severity count,
     /// so a drifting ledger in the no-`--pattern` default sweep would move

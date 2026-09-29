@@ -60,7 +60,6 @@ fn parse_args() -> Args {
                 eprintln!("{USAGE}");
                 std::process::exit(2);
             }
-            other if !other.starts_with('-') => args.project_root = PathBuf::from(other),
             other => refuse(&format!("unknown argument {other:?}")),
         }
     }

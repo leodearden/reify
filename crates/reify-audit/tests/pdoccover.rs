@@ -20,13 +20,13 @@
 
 mod common;
 
-use reify_audit::pdoccover::{DegenerateInputs, UNITS_PATH};
+use reify_audit::pdoccover::{CHUNKS_PREFIX, DegenerateInputs, UNITS_PATH};
 use reify_audit::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger};
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
@@ -132,6 +132,10 @@ const ALPHA_CHUNK: &str = "\
 
 - `alpha_op(shape, amount)` — the alpha operation.
 ";
+
+/// A tracked chunk that documents nothing. An omission fixture with no chunk
+/// at all is a degenerate tree, which `check()` reports as `no-chunks:` alone.
+const SILENT_CHUNK: &str = "# Geometry\n";
 
 /// With all three exemption channels populated, `check()` reports exactly the
 /// one bare name, as a High `undocumented-name:` finding whose evidence points
@@ -847,10 +851,12 @@ fn fabrication_lane_dedupes_repeat_mentions_within_a_chunk() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
+    // An allow-marked census entry: silent, and the tree is not degenerate.
     write_file(
         root,
         FIX_UNITS,
-        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[];\n",
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
+         \"filler_op\", // pdoccover:allow — fixture census\n];\n",
     );
     write_file(
         root,
@@ -1016,9 +1022,10 @@ fn reasonless_allow_marker_is_reported_and_confers_no_exemption() {
          \"epsilon_op\", // pdoccover:allow\n    \
          \"zeta_op\", // pdoccover:allow —\n];\n",
     );
-    // No chunks at all: both names are undocumented on the merits.
+    // A chunk that documents nothing: both names are undocumented on the merits.
+    write_file(root, FIX_CHUNK, SILENT_CHUNK);
 
-    let h = Harness::new(&[FIX_UNITS]);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
     let findings = reify_audit::pdoccover::check(&h.ctx(root));
 
     let cats: Vec<&str> = findings.iter().map(finding_category).collect();
@@ -1066,8 +1073,9 @@ fn legacy_unprefixed_doccover_allow_confers_no_exemption() {
         "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
          \"theta_op\", // doccover:allow — legacy unprefixed token\n];\n",
     );
+    write_file(root, FIX_CHUNK, SILENT_CHUNK);
 
-    let h = Harness::new(&[FIX_UNITS]);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
     let findings = reify_audit::pdoccover::check(&h.ctx(root));
 
     assert_eq!(
@@ -1908,47 +1916,95 @@ fn live_debt_carries_fabrications_as_path_name_rows() {
 
 /// A ledger derived from an empty census or an empty chunk corpus would read
 /// every committed row as stale, so a shrink-only regeneration over it would
-/// wipe the file. Both enumerations are refused by name instead.
+/// wipe the file — and an empty index, what any git failure degrades to,
+/// scans nothing at all. Both entry points refuse the same trees:
+/// `baseline_ledger` by name, `check()` as exactly one High finding naming the
+/// empty input, so the hard gate reds rather than passing a tree it never read.
 #[test]
-fn baseline_ledger_refuses_degenerate_inputs() {
+fn check_and_baseline_ledger_refuse_the_same_degenerate_trees() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     write_file(root, FIX_UNITS, MIXED_UNITS);
     write_file(root, FIX_CHUNK, MIXED_CHUNK);
+    write_file(root, FIX_BASELINE, "phantom_op\n");
 
-    let untracked_units = Harness::new(&[FIX_CHUNK]);
-    assert_eq!(
-        reify_audit::pdoccover::baseline_ledger(&untracked_units.ctx(root)),
-        Err(DegenerateInputs::EmptyCensus),
-    );
+    for (tracked, refusal, category, input) in [
+        (
+            &[][..],
+            DegenerateInputs::EmptyCensus,
+            "census-empty",
+            UNITS_PATH,
+        ),
+        (
+            &[FIX_CHUNK, FIX_BASELINE][..],
+            DegenerateInputs::EmptyCensus,
+            "census-empty",
+            UNITS_PATH,
+        ),
+        (
+            &[FIX_UNITS, FIX_BASELINE][..],
+            DegenerateInputs::NoChunks,
+            "no-chunks",
+            CHUNKS_PREFIX,
+        ),
+    ] {
+        let h = Harness::new(tracked);
+        let ctx = h.ctx(root);
+        assert_eq!(
+            reify_audit::pdoccover::baseline_ledger(&ctx),
+            Err(refusal),
+            "tracked {tracked:?}"
+        );
 
-    let untracked_chunks = Harness::new(&[FIX_UNITS]);
-    assert_eq!(
-        reify_audit::pdoccover::baseline_ledger(&untracked_chunks.ctx(root)),
-        Err(DegenerateInputs::NoChunks),
-    );
+        let findings = reify_audit::pdoccover::check(&ctx);
+        assert_eq!(findings.len(), 1, "tracked {tracked:?}: got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.severity, Severity::High, "tracked {tracked:?}");
+        assert_eq!(f.pattern, Pattern::PDocCover, "tracked {tracked:?}");
+        assert_eq!(
+            finding_category(f),
+            category,
+            "tracked {tracked:?}: {:?}",
+            f.summary
+        );
+        assert_eq!(
+            f.evidence,
+            vec![EvidenceRef::File {
+                path: input.to_string()
+            }],
+            "tracked {tracked:?}"
+        );
+        assert!(
+            f.summary.contains(&refusal.to_string()),
+            "the finding carries the same explanation the generator prints; got {:?}",
+            f.summary
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-23: real-repo smoke — PRD leaf γ's observable signal
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The five stable category prefixes. A summary carrying anything else means
-/// a category was added without updating the module header's contract table.
+/// The stable category prefixes. A summary carrying anything else means a
+/// category was added without updating the module header's contract table.
 const KNOWN_CATEGORIES: &[&str] = &[
     "undocumented-name",
     "fabricated-name",
     "stale-baseline-entry",
     "stale-allow-entry",
     "allow-missing-reason",
+    "census-empty",
+    "no-chunks",
 ];
 
 /// `check()` over the REAL repo, via `RealGitOps`.
 ///
 /// Deliberately NOT a zero-on-main guard: zero-on-main is the hard gate's job
-/// (`tests/infra/test_reify_audit_pdoccover.sh` against the committed ledger),
-/// and the fabrication half is also held here by
-/// `the_real_chunk_corpus_reports_no_unledgered_fabrication`.
+/// alone (`tests/infra/test_reify_audit_pdoccover.sh` against the committed
+/// ledger). A cargo copy of it would read chunks and `units.rs` this crate
+/// does not own, so a chunk edit that stales a ledger row would red the next
+/// unrelated reify-audit task rather than the change that caused it.
 ///
 /// So this asserts only invariants that no concurrent chunk edit can flip:
 /// the census is non-empty, every finding is well-formed, and the order is
@@ -2119,53 +2175,6 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
     );
 }
 
-/// `check()` over the real tree through `RealGitOps`.
-fn real_repo_check() -> Vec<Finding> {
-    let root = repo_root().canonicalize().expect("canonicalize repo root");
-    let git = reify_audit::RealGitOps::new(root.clone());
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
-    reify_audit::pdoccover::check(&ctx)
-}
-
-/// No chunk claim the ledger does not account for (the #6213 follow-up): the
-/// gate-level property, on REPORTED findings, so a ledgered `<chunk>:<name>`
-/// row passes and a new fabricated claim does not.
-///
-/// Non-vacuous only while the mention scanner still sees the corpus —
-/// `chunk_call_mention_floor_guard_against_real_chunks` reds if it goes
-/// blind, which would otherwise pass this silently.
-#[test]
-fn the_real_chunk_corpus_reports_no_unledgered_fabrication() {
-    let findings = real_repo_check();
-    let offenders: Vec<&str> = findings
-        .iter()
-        .filter(|f| finding_category(f) == "fabricated-name")
-        .map(|f| f.summary.as_str())
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "{} chunk claim(s) name something no compiler or stdlib source \
-         declares:\n  {}\nFix the chunk; or mark the line `pdoccover:allow — \
-         <reason>`; or, for a deliberate false positive, ledger it with \
-         `cargo run -p reify-audit --bin pdoccover-baseline-gen -- --admit-new \
-         --project-root . > {BASELINE_PATH}` and justify the row in review.",
-        offenders.len(),
-        offenders.join("\n  ")
-    );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // amendments: contracts the plan's fixtures left unexercised
 //
@@ -2201,8 +2210,9 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
 ];
 ",
     );
+    write_file(root, FIX_CHUNK, SILENT_CHUNK);
 
-    let h = Harness::new(&[FIX_UNITS]);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
     let ctx = h.ctx(root);
     let findings = reify_audit::pdoccover::check(&ctx);
 
@@ -2218,10 +2228,10 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
             .collect::<Vec<_>>()
     );
 
-    // No chunk is tracked, so there is nothing to derive a ledger from.
+    // An exempt name is not debt, so there is nothing for the ledger to hold.
     assert_eq!(
-        reify_audit::pdoccover::baseline_ledger(&ctx),
-        Err(DegenerateInputs::NoChunks),
+        reify_audit::pdoccover::baseline_ledger(&ctx).map(|ledger| ledger.live),
+        Ok(BTreeSet::new()),
     );
 }
 
@@ -2264,8 +2274,9 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         write_file(root, FIX_UNITS, src);
+        write_file(root, FIX_CHUNK, SILENT_CHUNK);
 
-        let h = Harness::new(&[FIX_UNITS]);
+        let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
         let ctx = h.ctx(root);
         let findings = reify_audit::pdoccover::check(&ctx);
 
@@ -2294,9 +2305,9 @@ pub const DYNAMICS_QUERY_NAMES: &[&str] = &[
         );
 
         assert_eq!(
-            reify_audit::pdoccover::baseline_ledger(&ctx),
-            Err(DegenerateInputs::NoChunks),
-            "[{label}] no chunk is tracked, so there is nothing to derive a ledger from"
+            reify_audit::pdoccover::baseline_ledger(&ctx).map(|ledger| ledger.live),
+            Ok(BTreeSet::new()),
+            "[{label}] a malformed marker is fixed, never ledgered"
         );
     }
 }
@@ -2321,8 +2332,9 @@ fn an_untracked_chunk_documents_nothing() {
         "# Scratch\n\n`alpha_op(x)` `beta_op(x)` `gamma_op(x)` `delta_op(x)`\n",
     );
 
-    // FIX_CHUNK is deliberately absent from both disk and the tracked list.
-    let h = Harness::new(&[FIX_UNITS]);
+    // The only TRACKED chunk documents nothing.
+    write_file(root, FIX_CHUNK, SILENT_CHUNK);
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
     let ctx = h.ctx(root);
     let findings = reify_audit::pdoccover::check(&ctx);
 
@@ -2338,12 +2350,12 @@ fn an_untracked_chunk_documents_nothing() {
 }
 
 /// A file that is TRACKED but unreadable (listed in the index, absent from the
-/// work tree) is skipped fail-safe: no panic, no finding.
+/// work tree) is skipped without a panic.
 ///
-/// This is the detector's core safety property — "a missing census reports
-/// nothing, it does not report everything". The opposite behaviour (treating an
-/// unreadable units.rs as an empty chunk corpus, or vice versa) would turn a
-/// mid-rebase working tree into a wall of false findings.
+/// When that empties the census or the chunk corpus, the tree is degenerate:
+/// ONE finding naming the empty input. Never a wall of false findings (every
+/// name undocumented, every ledger row stale — a mid-rebase working tree), and
+/// never silence (a clean pass over a tree nobody read).
 #[test]
 fn a_tracked_but_missing_file_is_skipped_fail_safe() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2354,10 +2366,10 @@ fn a_tracked_but_missing_file_is_skipped_fail_safe() {
     let ctx = h.ctx(root);
 
     let findings = reify_audit::pdoccover::check(&ctx);
-    assert!(
-        findings.is_empty(),
-        "an unreadable census source must yield NO findings rather than \
-         panicking or reporting everything; got {findings:?}"
+    assert_eq!(
+        findings.iter().map(finding_category).collect::<Vec<_>>(),
+        vec!["census-empty"],
+        "an unreadable census source is one finding naming it; got {findings:?}"
     );
     assert_eq!(
         reify_audit::pdoccover::baseline_ledger(&ctx),
@@ -2365,16 +2377,13 @@ fn a_tracked_but_missing_file_is_skipped_fail_safe() {
         "an unreadable census must be refused, never read as a clean ledger"
     );
 
-    // The inverse half: a readable units.rs with an unreadable chunk corpus
-    // must report the census as undocumented, not silently exempt it.
+    // The inverse half: a readable units.rs over an unreadable chunk corpus is
+    // the one `no-chunks:` finding, not every name reported undocumented.
     write_file(root, FIX_UNITS, FOUR_WAY_UNITS);
     let findings = reify_audit::pdoccover::check(&ctx);
-    let names: Vec<&str> = findings.iter().map(finding_name).collect();
     assert_eq!(
-        names,
-        vec!["alpha_op", "delta_op", "gamma_op"],
-        "with the chunk corpus unreadable, every non-exempt name is \
-         undocumented — the lane fails LOUD on a readable census, and silent \
-         only when it has no census at all; got {findings:?}"
+        findings.iter().map(finding_category).collect::<Vec<_>>(),
+        vec!["no-chunks"],
+        "with the chunk corpus unreadable, the one finding names it; got {findings:?}"
     );
 }

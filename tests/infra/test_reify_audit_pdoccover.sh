@@ -9,7 +9,8 @@
 #                 crates/reify-audit/pdoccover-baseline.txt.  reify-audit's exit
 #                 code is its High count, and every PDOCCOVER category is High:
 #                 new omission or fabrication debt, a stale ledger row, a stale
-#                 allow marker, and a reasonless allow marker all red the gate.
+#                 allow marker, a reasonless allow marker, and a tree it could
+#                 not read (census-empty / no-chunks) all red the gate.
 #
 #   (b) MATRIX  — tests/infra/test_reify_audit_pdoccover.py drives the same
 #                 binary over hermetic staged fixture repos (stdlib unittest).

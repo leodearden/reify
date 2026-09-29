@@ -169,17 +169,22 @@ fn the_generator_refuses_to_report_success_for_help() {
     }
 }
 
+/// Only `--project-root` names the root: a stray positional — say a
+/// mistyped flag value — is refused like an unknown flag, never silently taken
+/// as a different tree to regenerate from.
 #[test]
-fn the_generator_rejects_an_unknown_flag() {
-    if !git_available("the_generator_rejects_an_unknown_flag") {
+fn the_generator_rejects_an_unknown_argument() {
+    if !git_available("the_generator_rejects_an_unknown_argument") {
         return;
     }
     let dir = ledger_fixture();
 
-    let out = run_generator(dir.path(), &["--rebless"]);
+    for arg in ["--rebless", "elsewhere"] {
+        let out = run_generator(dir.path(), &[arg]);
 
-    assert_eq!(out.status.code(), Some(2), "stderr:\n{}", stderr_of(&out));
-    assert!(out.stdout.is_empty(), "got:\n{}", stdout_of(&out));
+        assert_eq!(out.status.code(), Some(2), "{arg}: {}", stderr_of(&out));
+        assert!(out.stdout.is_empty(), "{arg}: got:\n{}", stdout_of(&out));
+    }
 }
 
 /// The default regeneration writes `Ledger::kept()`: stale rows go, and new
@@ -269,7 +274,11 @@ fn committed_ledger(root: &Path) -> String {
 }
 
 /// The ledger is tracked (PDOCCOVER ignores an untracked one), carries the
-/// generated preamble, and is in the exact form the generator renders.
+/// generated preamble, and is in the exact form the generator renders — a
+/// property of the committed file alone. Whether its rows still match live
+/// debt reads chunks and `units.rs` this crate does not own, so that is the
+/// hard gate's ratchet (`tests/infra/test_reify_audit_pdoccover.sh`), not a
+/// cargo test here.
 #[test]
 fn the_committed_baseline_is_tracked_and_carries_the_generated_header() {
     let Some(root) =
@@ -296,24 +305,5 @@ fn the_committed_baseline_is_tracked_and_carries_the_generated_header() {
         render_baseline(&parse_baseline(&content)),
         content,
         "{BASELINE_PATH} must be in generated form (sorted, one row per line)"
-    );
-}
-
-/// A shrink-only regeneration over the committed tree reproduces the ledger
-/// byte for byte: no stale row, header current. A green captured before a
-/// rebase does not prove this — rerun it on the tree that lands.
-#[test]
-fn regenerating_the_committed_baseline_is_a_no_op() {
-    let Some(root) = live_checkout("regenerating_the_committed_baseline_is_a_no_op") else {
-        return;
-    };
-    let ledger = with_ctx(&root, reify_audit::pdoccover::baseline_ledger)
-        .unwrap_or_else(|degenerate| panic!("{degenerate}"));
-
-    assert_eq!(
-        render_baseline(&ledger.kept()),
-        committed_ledger(&root),
-        "regenerate: cargo run -p reify-audit --bin pdoccover-baseline-gen -- \
-         --project-root . > {BASELINE_PATH}"
     );
 }
