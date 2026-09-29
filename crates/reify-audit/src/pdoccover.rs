@@ -1964,7 +1964,6 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// derivation [`check`] settles, so a regenerated ledger is by construction
 /// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
 /// ledger that would wipe the committed one.
-// G-allow: the pdoccover-baseline-gen bin's entry point (#6931, lands with the bin); tests/pdoccover.rs consumes it meanwhile.
 pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
     let audit = audit(ctx);
     match audit.degenerate {
