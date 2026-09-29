@@ -862,6 +862,17 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# Resolved effect of the two role-scoped fragments above as the nextest passes
+# receive them; the cargo-test fallback has no -E, so it runs everything. Read
+# lazily (NEXTEST is set later). Why: docs/prds/offline-deep-test-lane.md DA6.
+_heavy_partition() {
+    if [ "$NEXTEST" -ne 1 ]; then echo included
+    elif [ -n "$_GATE_HEAVY_EXCLUDE" ]; then echo excluded
+    elif [ -n "$_OFFLINE_HEAVY_SELECT" ]; then echo only
+    else echo included
+    fi
+}
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -2887,6 +2898,10 @@ emit_nextest_pass() {
     add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
 }
 
+# The plan carries add_test_passes' passes iff this holds; the `# heavy
+# partition —` header describes those passes, so it shares this gate.
+_plan_has_test_passes() { [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; }
+
 add_test_passes() {
     # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
     # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
@@ -3805,7 +3820,7 @@ build_plan() {
     # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
     # nextest run + OCCT-gated passes). All cheap gates run before this.
     # (task #4448 fail-fast reorder)
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    if _plan_has_test_passes; then
         add_test_passes
     fi
 
@@ -3991,6 +4006,7 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # would be satisfiable by an implementation that simply stopped computing the
     # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
+    if _plan_has_test_passes; then echo "# heavy partition — HEAVY=$(_heavy_partition)"; fi
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
