@@ -1324,6 +1324,10 @@ const PRD_NAMED_REGISTRIES: &[&str] = &[
     "DYNAMICS_QUERY_NAMES",
 ];
 
+/// Registries whose chunk coverage PDOCCOVER is the named owner of, so the
+/// census must keep extracting them (docs/notes/angle-crossing-doctrine-placement-2026-08-19.md §4).
+const COVERAGE_OWNED_REGISTRIES: &[&str] = &["FIELD_OP_NAMES"];
+
 /// Conservative floor on the total distinct name census, set well below the
 /// count on main (151 distinct at the time of writing; the PRD cites ~133 for
 /// its 8-registry subset) so ordinary additions and removals never flip this
@@ -1389,6 +1393,18 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
         if found.len() == 1 { "y" } else { "ies" },
         found,
     );
+
+    // (i') A coverage-owned registry that vanished from the census would drop
+    // its names' chunk coverage silently, not RED.
+    for owned in COVERAGE_OWNED_REGISTRIES {
+        assert!(
+            regs.iter()
+                .any(|r| r.const_name == *owned && !r.entries.is_empty()),
+            "coverage-owned registry {owned} is no longer extracted (with entries) \
+             from the real units.rs, so PDOCCOVER silently stopped checking its \
+             names against the chunks. Found: {found:?}"
+        );
+    }
 
     // (ii) No discovered registry may be empty — an empty entry list is the
     // signature of a header that matched but whose body did not parse.
@@ -1929,12 +1945,14 @@ const KNOWN_CATEGORIES: &[&str] = &[
 
 /// `check()` over the REAL repo, via `RealGitOps`.
 ///
-/// Deliberately NOT a zero-on-main guard — the inverse of its
-/// `tests/pdssentinel.rs` sibling. PDOCCOVER is expected non-zero until #5480
-/// seeds the baseline; that residual IS the signal PRD leaf γ asks for.
+/// Deliberately NOT a zero-on-main guard: zero-on-main is the hard gate's job
+/// (`tests/infra/test_reify_audit_pdoccover.sh` against the committed ledger),
+/// and the fabrication half is also held here by
+/// `the_real_chunk_corpus_reports_no_unledgered_fabrication`.
 ///
 /// So this asserts only invariants that no concurrent chunk edit can flip:
-/// findings exist, every one is well-formed, and the order is deterministic.
+/// the census is non-empty, every finding is well-formed, and the order is
+/// deterministic.
 /// It names no specific name and freezes no count — #5434 (owns
 /// `chunks/stdlib.md`), #5347 and #5389 are all editing chunk content, and any
 /// count or name assertion here would flip RED on their merge rather than on a
@@ -1991,12 +2009,9 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
     // the census still has a residual.
     //
     // Asserting `undocumented >= 1` unconditionally would couple this test to
-    // the ABSENCE of `pdoccover-baseline.txt`, which #5480 is chartered to
-    // seed. Once it does, every census name resolves to Exempt, the residual
-    // drops to zero and this test would flip RED on the intended improvement —
-    // a hidden dependency forcing #5480 to edit this file as part of its own
-    // landing. So: the census must be non-empty always, and the residual must
-    // be non-empty only while nothing has been baselined yet.
+    // the ABSENCE of `pdoccover-baseline.txt`: the committed ledger absorbs the
+    // residual. So: the census must be non-empty always, and the residual must
+    // be non-empty only while nothing is ledgered.
     let units_src = std::fs::read_to_string(repo_root.join(UNITS_PATH))
         .expect("the real units.rs must be readable");
     let census: std::collections::BTreeSet<String> =
@@ -2101,6 +2116,53 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
         first, second,
         "two consecutive check() runs over an unchanged tree must produce a \
          byte-identical finding sequence"
+    );
+}
+
+/// `check()` over the real tree through `RealGitOps`.
+fn real_repo_check() -> Vec<Finding> {
+    let root = repo_root().canonicalize().expect("canonicalize repo root");
+    let git = reify_audit::RealGitOps::new(root.clone());
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jc = MockJCodemunchOps::new();
+    let ctx = AuditContext {
+        project_root: root,
+        conn: &conn,
+        git: &git,
+        jcodemunch: &jc,
+        task_metadata: HashMap::new(),
+        target_task_id: None,
+        window: None,
+        now: None,
+        producer_branch: None,
+    };
+    reify_audit::pdoccover::check(&ctx)
+}
+
+/// No chunk claim the ledger does not account for (the #6213 follow-up): the
+/// gate-level property, on REPORTED findings, so a ledgered `<chunk>:<name>`
+/// row passes and a new fabricated claim does not.
+///
+/// Non-vacuous only while the mention scanner still sees the corpus —
+/// `chunk_call_mention_floor_guard_against_real_chunks` reds if it goes
+/// blind, which would otherwise pass this silently.
+#[test]
+fn the_real_chunk_corpus_reports_no_unledgered_fabrication() {
+    let findings = real_repo_check();
+    let offenders: Vec<&str> = findings
+        .iter()
+        .filter(|f| finding_category(f) == "fabricated-name")
+        .map(|f| f.summary.as_str())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{} chunk claim(s) name something no compiler or stdlib source \
+         declares:\n  {}\nFix the chunk; or mark the line `pdoccover:allow — \
+         <reason>`; or, for a deliberate false positive, ledger it with \
+         `cargo run -p reify-audit --bin pdoccover-baseline-gen -- --admit-new \
+         --project-root . > {BASELINE_PATH}` and justify the row in review.",
+        offenders.len(),
+        offenders.join("\n  ")
     );
 }
 

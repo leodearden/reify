@@ -8,11 +8,13 @@
 //! what the binary alone can break: stdout purity, the exit-code contract, and
 //! that growth needs `--admit-new`.
 
-use reify_audit::pdoccover_baseline::{BASELINE_PATH, BaselineRow, render_baseline};
+use reify_audit::pdoccover_baseline::{
+    BASELINE_HEADER, BASELINE_PATH, BaselineRow, parse_baseline, render_baseline,
+};
 use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// `git` on PATH. `false` means "skipped", with the reason already on stderr.
@@ -56,6 +58,26 @@ fn staged_fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
     }
     git_in(dir.path(), &["add", "-A"]);
     dir
+}
+
+/// A `RealGitOps` context over `root` — PDOCCOVER reads only `ls_files` and
+/// the working tree, so the sqlite and jcodemunch seams are inert.
+fn with_ctx<R>(root: &Path, f: impl FnOnce(&AuditContext<'_>) -> R) -> R {
+    let git = RealGitOps::new(root.to_path_buf());
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jc = MockJCodemunchOps::new();
+    let ctx = AuditContext {
+        project_root: root.to_path_buf(),
+        conn: &conn,
+        git: &git,
+        jcodemunch: &jc,
+        task_metadata: HashMap::new(),
+        target_task_id: None,
+        window: None,
+        now: None,
+        producer_branch: None,
+    };
+    f(&ctx)
 }
 
 /// The real generator aimed at `root`. Sanitized directly: the program is a
@@ -213,23 +235,85 @@ fn admit_new_ledgers_all_live_debt_and_the_ratchet_accepts_it() {
 
     write_file(root, BASELINE_PATH, &ledger);
     git_in(root, &["add", "-A"]);
-    let git = RealGitOps::new(root.to_path_buf());
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
-    let findings = reify_audit::pdoccover::check(&ctx);
+    let findings = with_ctx(root, reify_audit::pdoccover::check);
     assert!(
         findings.is_empty(),
         "a freshly admitted ledger must satisfy its own ratchet; got {findings:?}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// The committed ledger
+// -----------------------------------------------------------------------
+
+/// The repo root, when this run is inside a git checkout with `git` on PATH;
+/// `None` means skipped, with the reason on stderr.
+fn live_checkout(check: &str) -> Option<PathBuf> {
+    if !git_available(check) {
+        return None;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize repo root");
+    if !root.join(".git").exists() {
+        eprintln!("pdoccover_baseline: skipping {check} — {root:?} is not a git checkout");
+        return None;
+    }
+    Some(root)
+}
+
+fn committed_ledger(root: &Path) -> String {
+    std::fs::read_to_string(root.join(BASELINE_PATH))
+        .unwrap_or_else(|e| panic!("{BASELINE_PATH} must exist: {e}"))
+}
+
+/// The ledger is tracked (PDOCCOVER ignores an untracked one), carries the
+/// generated preamble, and is in the exact form the generator renders.
+#[test]
+fn the_committed_baseline_is_tracked_and_carries_the_generated_header() {
+    let Some(root) =
+        live_checkout("the_committed_baseline_is_tracked_and_carries_the_generated_header")
+    else {
+        return;
+    };
+    let content = committed_ledger(&root);
+
+    let tracked = reify_audit::git_env::command(&root)
+        .args(["ls-files", "--error-unmatch", BASELINE_PATH])
+        .output()
+        .expect("git ls-files spawns");
+    assert!(
+        tracked.status.success(),
+        "{BASELINE_PATH} must be git-tracked — an untracked ledger is inert"
+    );
+    assert!(
+        content.starts_with(BASELINE_HEADER),
+        "{BASELINE_PATH} must start with BASELINE_HEADER; regenerate it rather than \
+         hand-editing"
+    );
+    assert_eq!(
+        render_baseline(&parse_baseline(&content)),
+        content,
+        "{BASELINE_PATH} must be in generated form (sorted, one row per line)"
+    );
+}
+
+/// A shrink-only regeneration over the committed tree reproduces the ledger
+/// byte for byte: no stale row, header current. A green captured before a
+/// rebase does not prove this — rerun it on the tree that lands.
+#[test]
+fn regenerating_the_committed_baseline_is_a_no_op() {
+    let Some(root) = live_checkout("regenerating_the_committed_baseline_is_a_no_op") else {
+        return;
+    };
+    let ledger = with_ctx(&root, reify_audit::pdoccover::baseline_ledger)
+        .unwrap_or_else(|degenerate| panic!("{degenerate}"));
+
+    assert_eq!(
+        render_baseline(&ledger.kept()),
+        committed_ledger(&root),
+        "regenerate: cargo run -p reify-audit --bin pdoccover-baseline-gen -- \
+         --project-root . > {BASELINE_PATH}"
     );
 }
