@@ -286,6 +286,10 @@ sequential_lint_first: true
 # because incremental and sccache are mutually exclusive.
 verify_env:
   REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: "1"
+  # Setting this decides nothing by itself: scripts/verify.sh role-scopes its EFFECT (the
+  # _GATE_HEAVY_EXCLUDE guard), so not every role this env reaches skips heavy members.
+  # Resolved effect per role: the `# heavy partition — HEAVY=` line of `DF_VERIFY_ROLE=<role>
+  # scripts/verify.sh test --scope all --print-plan`; why: docs/prds/offline-deep-test-lane.md DA6.
   REIFY_GATE_EXCLUDE_HEAVY: "1"
   # Durable FLAKY-ledger path (merge-gate-health W5a, 2026-07-19). Without this the
   # Phase-2.5 ledger defaults to the RUNNING checkout's data/verify-logs/ — i.e. the
