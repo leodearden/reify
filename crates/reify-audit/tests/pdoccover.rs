@@ -1091,6 +1091,210 @@ fn legacy_unprefixed_doccover_allow_confers_no_exemption() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The ledger's second row kind — `<chunk path>:<name>` fabrication debt — and
+// the one honesty rule both kinds obey: a baseline row is stale iff removing it
+// would change no other finding.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The only registry name in the ledger fixtures, documented by every chunk
+/// below so the omission lane stays quiet unless a case says otherwise.
+const EXTRUDE_UNITS: &str = "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n";
+
+/// Documents `extrude` and mentions `ghost_op`, which no source declares.
+const GHOST_CHUNK: &str = "\
+# Stdlib
+
+- `extrude(profile, height)` — real.
+- `ghost_op(x)` — ahead of the implementation.
+";
+
+/// The same chunk once the `ghost_op` mention is gone.
+const EXTRUDE_ONLY_CHUNK: &str = "# Stdlib\n\n- `extrude(profile, height)` — real.\n";
+
+/// The fabrication-debt row for `ghost_op` in the stdlib chunk.
+const GHOST_ROW: &str = "crates/reify-mcp/src/tools/chunks/stdlib.md:ghost_op";
+
+fn category_name_pairs(findings: &[Finding]) -> Vec<(&str, &str)> {
+    findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect()
+}
+
+fn cites_baseline(f: &Finding) -> bool {
+    f.evidence
+        .iter()
+        .any(|e| matches!(e, EvidenceRef::File { path } if path == BASELINE_PATH))
+}
+
+#[test]
+fn a_path_name_row_absorbs_its_fabrication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, EXTRUDE_UNITS);
+    write_file(root, FIX_STDLIB_CHUNK, GHOST_CHUNK);
+    write_file(root, FIX_BASELINE, &format!("{GHOST_ROW}\n"));
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert!(
+        findings.is_empty(),
+        "a `<chunk>:<name>` row is ledgered fabrication debt: it absorbs the \
+         `fabricated-name:` verdict and, matching live debt, is not stale. \
+         Got {findings:?}"
+    );
+}
+
+#[test]
+fn a_path_name_row_whose_mention_is_gone_is_stale() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, EXTRUDE_UNITS);
+    write_file(root, FIX_STDLIB_CHUNK, EXTRUDE_ONLY_CHUNK);
+    write_file(root, FIX_BASELINE, &format!("{GHOST_ROW}\n"));
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![("stale-baseline-entry", GHOST_ROW)],
+        "a fabrication row whose chunk no longer mentions the name is dead \
+         weight, reported under its full row text; got {findings:?}"
+    );
+    assert!(
+        cites_baseline(&findings[0]),
+        "evidence must point at {BASELINE_PATH}, the file to edit; got {:?}",
+        findings[0].evidence
+    );
+}
+
+#[test]
+fn a_path_name_row_absorbs_only_its_own_chunk() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, EXTRUDE_UNITS);
+    write_file(root, FIX_CHUNK, "# Geometry\n\nNothing call-shaped here.\n");
+    write_file(root, FIX_STDLIB_CHUNK, GHOST_CHUNK);
+    let geometry_row = format!("{FIX_CHUNK}:ghost_op");
+    write_file(root, FIX_BASELINE, &format!("{geometry_row}\n"));
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![
+            ("fabricated-name", "ghost_op"),
+            ("stale-baseline-entry", geometry_row.as_str()),
+        ],
+        "a row keyed to one chunk must neither absorb the same name mentioned \
+         in another chunk nor survive as if it did; got {findings:?}"
+    );
+    let fabrication = &findings[0];
+    assert!(
+        fabrication
+            .evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::File { path } if path == FIX_STDLIB_CHUNK)),
+        "the fabrication is the stdlib chunk's; got {:?}",
+        fabrication.evidence
+    );
+}
+
+#[test]
+fn a_path_name_row_for_a_name_the_oracle_now_vouches_for_is_stale() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, EXTRUDE_UNITS);
+    write_file(root, FIX_RI, "pub fn ghost_op(x: Real) -> Real { x }\n");
+    write_file(root, FIX_STDLIB_CHUNK, GHOST_CHUNK);
+    write_file(root, FIX_BASELINE, &format!("{GHOST_ROW}\n"));
+
+    let h = Harness::new(&[FIX_UNITS, FIX_RI, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![("stale-baseline-entry", GHOST_ROW)],
+        "once the stdlib declares `ghost_op` the mention is no fabrication, so \
+         its row is stale; got {findings:?}"
+    );
+}
+
+#[test]
+fn a_bare_row_for_a_name_no_registry_declares_is_stale() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(root, FIX_UNITS, EXTRUDE_UNITS);
+    write_file(root, FIX_STDLIB_CHUNK, EXTRUDE_ONLY_CHUNK);
+    write_file(root, FIX_BASELINE, "vanished_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![("stale-baseline-entry", "vanished_op")],
+        "a bare row naming a name the census no longer holds absorbs nothing \
+         and must be reported, not silently ignored; got {findings:?}"
+    );
+    assert!(cites_baseline(&findings[0]), "got {:?}", findings[0].evidence);
+}
+
+#[test]
+fn a_bare_row_for_an_allow_marked_name_is_stale() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n    \
+         \"shim_op\", // pdoccover:allow — internal lowering shim\n];\n",
+    );
+    write_file(root, FIX_STDLIB_CHUNK, EXTRUDE_ONLY_CHUNK);
+    write_file(root, FIX_BASELINE, "shim_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![("stale-baseline-entry", "shim_op")],
+        "the allow marker already exempts `shim_op`, so its baseline row \
+         changes nothing and is stale; got {findings:?}"
+    );
+}
+
+#[test]
+fn a_documented_allow_marked_and_baselined_name_reports_both_dead_channels_at_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \
+         \"alpha_op\", // pdoccover:allow — internal lowering shim\n];\n",
+    );
+    write_file(root, FIX_CHUNK, ALPHA_CHUNK);
+    write_file(root, FIX_BASELINE, "alpha_op\n");
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK, FIX_BASELINE]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    assert_eq!(
+        category_name_pairs(&findings),
+        vec![
+            ("stale-allow-entry", "alpha_op"),
+            ("stale-baseline-entry", "alpha_op"),
+        ],
+        "both suppression channels are dead for a documented name and one run \
+         must report both; got {findings:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-3: brittle-parse floor guard — REGISTRY scan path
 // ─────────────────────────────────────────────────────────────────────────────
 
