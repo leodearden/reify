@@ -91,31 +91,31 @@
 //! `transform_translation_length_units_e2e`) it generalizes. Consequences to
 //! know: its tests are named `units_length_closure_guard::<test>` in the
 //! `reify-eval::harness_geometry` binary, not bare in a binary of their own, and
-//! the whole `harness_geometry` compile unit measures ~11.8 kLOC against
+//! the whole `harness_geometry` compile unit measures ~12.8 kLOC against
 //! `test_harness_kloc_cap.sh`'s `CAP_LINES=20000` — well under the 90% advisory
 //! warn line, so no `_KLOC_WARN_KNOWN` row is owed either.
 //!
 //! **`.config/nextest.toml`: no override, deliberately.** That file is read by
 //! `cargo nextest`, so the measurement that decides the question is the nextest
-//! one: on this tree the slowest test of this module measured 13.0s, 12.8s and
-//! 14.4s across three runs at host load ~46 — the sweep is IR-build-only and
+//! one: on this tree the slowest test of this module measured 23.9s, 28.6s and
+//! 25.2s across three runs at host load ~90 — the sweep is IR-build-only and
 //! never constructs a kernel — against `[profile.default]`'s `120s x 10` =
-//! 1200s ceiling. That is nearly two orders of magnitude of headroom, so the
-//! run-to-run variance that makes the figure a range rather than a number
-//! cannot threaten the conclusion. (Plain `cargo test` reports 10.4s for the
-//! module as a group, because it runs the tests as threads of ONE process so
-//! they share the sweep cache, whereas nextest gives each test its own process
-//! and every sweeping test pays the sweep itself. Quoting nextest is what keeps
-//! the basis matched to the runner the config governs.) The multi-start
-//! baseline search that reaches the ANGLE positions more than doubles the
-//! sweep's CPU time, 6.5s to 14.8s of user time in one process. The figures are
-//! for the tests themselves rather than for the enclosing binary, which is the
-//! quantity a per-test nextest `slow-timeout` governs either way.
-//! `harness_geometry` carries no override
-//! block today, and adding one would be dead config AND would owe a paired row
-//! in `GATE_RESIDENT_FILTERS` (`tests/infra/test_nextest_slow_priority.sh`),
-//! whose Assertion K reds on an override classifying as neither heavy nor
-//! gate-resident. A block that does not exist cannot red.
+//! 1200s ceiling. That is over forty-fold headroom, so the run-to-run variance
+//! that makes the figure a range rather than a number cannot threaten the
+//! conclusion. (Plain `cargo test` reports 22.8s for the module as a group, at
+//! load ~80, because it runs the tests as threads of ONE process so they share
+//! the sweep cache, whereas nextest gives each test its own process and every
+//! sweeping test pays the sweep itself. Quoting nextest is what keeps the basis
+//! matched to the runner the config governs.) The multi-start baseline search
+//! that reaches the ANGLE positions roughly doubles the sweep's CPU time, from
+//! about 6.5s to about 14s of user time in one process. The figures are for the
+//! tests themselves rather than for the enclosing binary, which is the quantity
+//! a per-test nextest `slow-timeout` governs either way. `harness_geometry`
+//! carries no override block today, and adding one would be dead config AND
+//! would owe a paired row in `GATE_RESIDENT_FILTERS`
+//! (`tests/infra/test_nextest_slow_priority.sh`), whose Assertion K reds on an
+//! override classifying as neither heavy nor gate-resident. A block that does
+//! not exist cannot red.
 //!
 //! **`tests/infra/run-all-classification.manifest`: nothing owed.** No
 //! `tests/infra/test_*.sh` is added — this is a Rust integration test, reached
@@ -446,6 +446,21 @@ struct Observation {
     /// the baseline raises no rejection, so the filler it holds is one the gate
     /// takes.
     baseline_dimension: reify_core::DimensionVector,
+}
+
+impl std::fmt::Display for Observation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Position {
+            builtin,
+            arity,
+            index,
+        } = self.position;
+        write!(
+            f,
+            "{builtin}/{arity}[{index}]: {:?} with a {} baseline",
+            self.outcome, self.baseline_dimension
+        )
+    }
 }
 
 /// The allowlist, keyed by [`Position`].
@@ -1911,9 +1926,9 @@ fn sweep_universe() -> Vec<Observation> {
 /// Per process, not per binary: `cargo test` runs this binary's tests as
 /// threads of one process, so one sweep serves all five sweeping tests, while
 /// `cargo nextest` — the gate's runner — gives each test its own process and
-/// each pays its own sweep. That is why the module costs 10.4s under the former
-/// and 13-14s per sweeping test under the latter, both far inside the ceiling
-/// that keeps `.config/nextest.toml` free of an override for it.
+/// each pays its own sweep. The module doc's C7 paragraph has the measured
+/// cost of both, far inside the ceiling that keeps `.config/nextest.toml` free
+/// of an override for it.
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
@@ -2182,9 +2197,11 @@ mod real_tree {
                 "dropping the allowlist entry `{dropped}` produced no violation \
                  naming it, so that entry suppresses nothing. Either the sweep \
                  no longer reaches the position — in which case delete the row \
-                 — or the position is gated at Contract C's own dimension, \
-                 which needs no row — in which case delete it too. \
-                 Violations seen:\n{}",
+                 — or the position is now gated at Contract C's own dimension, \
+                 which needs no row. That makes a stale ALLOWLIST row \
+                 deletable, but an ANGLE_ALLOWLIST row means the slot is gated \
+                 with `length_spec()` where it needs `angle_spec()`: fix the \
+                 gate and keep the row. Violations seen:\n{}",
                 render(&violations)
             );
         }
@@ -2199,17 +2216,9 @@ mod real_tree {
             .collect()
     }
 
-    /// THE ANGLE CENSUS (B11) — every gated row is observed gated AT its
-    /// dimension, and shrinking the angle rows fires.
-    ///
-    /// Affirmative evidence, not the mere absence of violations: a `GatedAt` row
-    /// whose position the sweep no longer reaches fails here naming it, so a
-    /// census row cannot outlive the reading it was authored from.
-    #[test]
-    fn every_gated_row_is_observed_at_its_dimension_and_the_angle_census_is_complete() {
-        let observations = observe_universe();
-        let angle = reify_core::DimensionVector::ANGLE;
-
+    /// Every `GatedAt` row is observed rejecting a bare number at exactly its
+    /// position, with a baseline of its own dimension.
+    fn assert_every_gated_row_is_observed(observations: &[Observation]) {
         for entry in shipped_allowlist() {
             let Expectation::GatedAt(dimension) = entry.expected else {
                 continue;
@@ -2220,20 +2229,40 @@ mod real_tree {
                     if o.outcome == ProbeOutcome::ContractCRejected
                         && o.baseline_dimension == dimension),
                 "`{entry}` is not observed rejecting a bare number with a {dimension} \
-                 baseline; the sweep saw {observed:?}"
+                 baseline; the sweep saw {}",
+                observed.map_or_else(|| "nothing there".to_string(), |o| o.to_string())
             );
         }
+    }
 
-        let angle_rows = angle_positions();
+    /// No position gated at ANGLE is missing from `angle_rows`.
+    fn assert_no_angle_gate_is_unregistered(
+        observations: &[Observation],
+        angle_rows: &std::collections::BTreeSet<Position>,
+    ) {
+        let unregistered: Vec<String> = observations
+            .iter()
+            .filter(|o| {
+                o.outcome == ProbeOutcome::ContractCRejected
+                    && o.baseline_dimension == reify_core::DimensionVector::ANGLE
+                    && !angle_rows.contains(&o.position)
+            })
+            .map(|o| format!("  {o}"))
+            .collect();
         assert!(
-            angle_rows.len() >= 8,
-            "only {} ANGLE rows are registered; the census measured 8 (rotate, \
-             rotate_around and revolve once each, arc twice, draft twice, \
-             circular_pattern once) and this is its floor. A drop means the sweep \
-             stopped reaching an angle gate.",
-            angle_rows.len()
+            unregistered.is_empty(),
+            "positions gated at ANGLE that no ANGLE_ALLOWLIST row registers; add \
+             each one to ANGLE_ALLOWLIST:\n{}",
+            unregistered.join("\n")
         );
+    }
 
+    /// Shrinking the angle rows to nothing makes the guard fire at exactly the
+    /// removed positions, each read as a length gate, and raises nothing else.
+    fn assert_shrunken_angle_census_fires(
+        observations: &[Observation],
+        angle_rows: &std::collections::BTreeSet<Position>,
+    ) {
         let without_angle_rows = Registry::from_parts(
             shipped_allowlist()
                 .into_iter()
@@ -2243,7 +2272,7 @@ mod real_tree {
         let violations = classify_all(observations, &without_angle_rows);
         let angle_gate_read_as_length = ViolationReason::GateDimensionMismatch {
             expected: CONTRACT_C_DIMENSION,
-            observed: angle,
+            observed: reify_core::DimensionVector::ANGLE,
         };
         let fired: std::collections::BTreeSet<Position> = violations
             .iter()
@@ -2251,7 +2280,7 @@ mod real_tree {
             .map(|v| v.position)
             .collect();
         assert_eq!(
-            fired,
+            &fired,
             angle_rows,
             "shrinking the angle allowlist to nothing must make the guard fire at \
              exactly the removed positions. Violations seen:\n{}",
@@ -2264,20 +2293,33 @@ mod real_tree {
              seen:\n{}",
             render(&violations)
         );
+    }
 
-        let unregistered: Vec<&Observation> = observations
-            .iter()
-            .filter(|o| {
-                o.outcome == ProbeOutcome::ContractCRejected
-                    && o.baseline_dimension == angle
-                    && !angle_rows.contains(&o.position)
-            })
-            .collect();
+    /// THE ANGLE CENSUS (B11) — every gated row is observed gated AT its
+    /// dimension, and shrinking the angle rows fires.
+    ///
+    /// Affirmative evidence, not the mere absence of violations: a `GatedAt` row
+    /// whose position the sweep no longer reaches fails here naming it, so a
+    /// census row cannot outlive the reading it was authored from. One test, not
+    /// one per check, because each sweeping test pays the sweep in its own
+    /// nextest process.
+    #[test]
+    fn every_gated_row_is_observed_at_its_dimension_and_the_angle_census_is_complete() {
+        let observations = observe_universe();
+        assert_every_gated_row_is_observed(observations);
+
+        let angle_rows = angle_positions();
+        assert_no_angle_gate_is_unregistered(observations, &angle_rows);
         assert!(
-            unregistered.is_empty(),
-            "positions gated at ANGLE that no ANGLE_ALLOWLIST row registers: \
-             {unregistered:?}. Add each to ANGLE_ALLOWLIST."
+            angle_rows.len() >= 8,
+            "only {} ANGLE rows are registered; the census measured 8 (rotate, \
+             rotate_around and revolve once each, arc twice, draft twice, \
+             circular_pattern once) and this is its floor. A drop means the sweep \
+             stopped reaching an angle gate: repair the probe rather than \
+             deleting the row.",
+            angle_rows.len()
         );
+        assert_shrunken_angle_census_fires(observations, &angle_rows);
     }
 
     /// ANTI-VACUITY II — the gates are OBSERVED, not assumed.
