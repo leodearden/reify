@@ -13046,32 +13046,43 @@ mod tests {
         sizes[best]
     }
 
-    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
-    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
-    /// `surface` is that gmsh mesh's own extracted boundary.
+    /// The bit-stable gmsh options every realized-mesh test meshes with.
+    fn deterministic_meshing_options(mesh_size: f64) -> reify_solver_elastic::MeshingOptions {
+        reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(mesh_size),
+            deterministic: true,
+            ..Default::default()
+        }
+    }
+
+    /// REAL GMSH OUTPUT for the fea_body_cantilever_adaptive.ri box
+    /// (1.0 × 0.1 × 0.1 m): a hand-built box's extracted boundary remeshed at
+    /// the uniform size `seed_size`.
     ///
     /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
     /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
     /// `inventory::submit!` in and break OCCT-only registry assertions
     /// (reify-eval/Cargo.toml's dead-strip invariant).
-    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
-        let opts = reify_solver_elastic::MeshingOptions {
-            mesh_size: Some(seed_size),
-            deterministic: true,
-            ..Default::default()
-        };
+    fn gmsh_box_volume_mesh(seed_size: f64) -> reify_ir::VolumeMesh {
         let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
         let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
             .expect("a P1 tet box has an extractable boundary");
         let (_, seed_tets) =
             volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
-        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+        reify_solver_elastic::refine_with_size_field(
             &seed_surface,
             &seed,
             &vec![seed_size; seed_tets.len()],
-            &opts,
+            &deterministic_meshing_options(seed_size),
         )
-        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        .expect("seeding a real gmsh volume from the box boundary must succeed")
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is
+    /// [`gmsh_box_volume_mesh`] and whose `surface` is that gmsh mesh's own
+    /// extracted boundary.
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let volume_mesh = gmsh_box_volume_mesh(seed_size);
         let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
             .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
 
@@ -13082,7 +13093,7 @@ mod tests {
             },
             volume_mesh,
             surface,
-            opts,
+            deterministic_meshing_options(seed_size),
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
@@ -13201,6 +13212,169 @@ mod tests {
              empty-mark remesh of the same seed: marked={n_after}, \
              unmarked={}",
             conns_unmarked.len(),
+        );
+    }
+
+    /// Task 7448: the tip load the realized arm applies keeps its resultant
+    /// and line of action (the tip-face centroid) across real gmsh remeshes
+    /// of the fea_body_cantilever_adaptive.ri box, so consecutive adaptive
+    /// iterations solve the same boundary-value problem.
+    ///
+    /// The tip set is the solve's own coordinate selection (`fea.tip_nodes`)
+    /// and the load is the solve's own load step (`cantilever_tip_load`), so
+    /// an equal split fails the line-of-action check on the graded mesh.
+    ///
+    /// The marks are chosen here, not by Dörfler: a consistent traction puts
+    /// no Dirac loads on the tip, so Dörfler marks gather at the root clamp
+    /// and need not touch the tip face, which would leave the tip set
+    /// unchanged and the invariance vacuous. Marking the -y half of the tip
+    /// region grades the tip face one-sidedly, the adversarial case for an
+    /// equal split. The gmsh-free discrimination is patch_load's graded test
+    /// and `tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face`.
+    #[test]
+    fn realized_tip_load_keeps_its_resultant_and_line_of_action_across_remeshes() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const TIP_FORCE: [f64; 3] = [0.0, 0.0, -1000.0];
+        const SEED_SIZE: f64 = 0.05;
+        const REFINE_PASSES: usize = 2;
+        // Measured ≤ 3e-16 m; the bound also absorbs gmsh's f32 vertex rounding
+        // (≤ ~1e-7 m at x ≈ 1.0) should a tip-face vertex sit off the plane.
+        const CENTROID_TOL_M: f64 = 1e-6;
+        // Measured 1.9e-2 m on the last mesh (tip nodes 20 -> 76 -> 312).
+        const MIN_EQUAL_SPLIT_OFFSET_M: f64 = 1e-3;
+        let in_graded_region = |c: [f64; 3]| c[0] > 0.9 && c[1] < 0.05;
+
+        let seed = gmsh_box_volume_mesh(SEED_SIZE);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+        let mut meshes = vec![seed];
+        for _ in 0..REFINE_PASSES {
+            let current = meshes.last().expect("the seed is pushed first");
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(current).expect("gmsh output is widenable");
+            let marked: Vec<usize> = (0..tets.len())
+                .filter(|&e| in_graded_region(tet_centroid_of(&coords, &tets[e])))
+                .collect();
+            let refined = reify_solver_elastic::refine_marked_elements(
+                &surface,
+                current,
+                &marked,
+                &characteristic_sizes_from_solver_mesh(&coords, &tets),
+                &deterministic_meshing_options(SEED_SIZE),
+            )
+            .expect("a mark-driven gmsh remesh of the box must succeed");
+            meshes.push(refined);
+        }
+
+        struct TipLoadReading {
+            n_tip: usize,
+            resultant: [f64; 3],
+            line_of_action: [f64; 3],
+            face_centroid: [f64; 3],
+            equal_split_line_of_action: [f64; 3],
+        }
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let f_norm_sq: f64 = TIP_FORCE.iter().map(|c| c * c).sum();
+        let read_tip_load = |mesh: &reify_ir::VolumeMesh| {
+            let solver_mesh = volume_mesh_to_solver_mesh(mesh).expect("gmsh output is widenable");
+            let (fea, _warm) = solve_cantilever_fea(
+                &model,
+                1.0,
+                1.0,
+                1.0,
+                Some(solver_mesh),
+                TIP_FORCE,
+                None,
+                &[],
+                [0.0; 3],
+                true,
+                None,
+                None,
+                None,
+                None,
+            );
+            let f = cantilever_tip_load(
+                &fea.coords,
+                &fea.tet_connectivity,
+                &fea.tip_nodes,
+                TIP_FORCE,
+            );
+            let mut resultant = [0.0; 3];
+            let mut line_of_action = [0.0; 3];
+            for (n, x) in fea.coords.iter().enumerate() {
+                let f_n = [f[3 * n], f[3 * n + 1], f[3 * n + 2]];
+                let share = (0..3).map(|a| f_n[a] * TIP_FORCE[a]).sum::<f64>() / f_norm_sq;
+                for a in 0..3 {
+                    resultant[a] += f_n[a];
+                    line_of_action[a] += share * x[a];
+                }
+            }
+            let (lo, hi) = fea.coords.iter().fold(
+                ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+                |(lo, hi), x| {
+                    (
+                        std::array::from_fn(|a| lo[a].min(x[a])),
+                        std::array::from_fn(|a| hi[a].max(x[a])),
+                    )
+                },
+            );
+            let n_tip = fea.tip_nodes.len();
+            TipLoadReading {
+                n_tip,
+                resultant,
+                line_of_action,
+                face_centroid: [hi[0], 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])],
+                equal_split_line_of_action: std::array::from_fn(|a| {
+                    fea.tip_nodes.iter().map(|&n| fea.coords[n][a]).sum::<f64>() / n_tip as f64
+                }),
+            }
+        };
+        let readings: Vec<TipLoadReading> = meshes.iter().map(read_tip_load).collect();
+
+        let seed_reading = &readings[0];
+        let last_reading = readings.last().expect("at least the seed was read");
+        for (pass, r) in readings.iter().enumerate() {
+            for a in 0..3 {
+                assert!(
+                    (r.resultant[a] - TIP_FORCE[a]).abs() <= 1e-12 * f_norm_sq.sqrt(),
+                    "pass {pass}: tip-load resultant {:?} != {TIP_FORCE:?}",
+                    r.resultant,
+                );
+                assert!(
+                    (r.line_of_action[a] - r.face_centroid[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} is off the tip-face \
+                     centroid {:?}",
+                    r.line_of_action,
+                    r.face_centroid,
+                );
+                assert!(
+                    (r.line_of_action[a] - seed_reading.line_of_action[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} moved from the seed's {:?}",
+                    r.line_of_action,
+                    seed_reading.line_of_action,
+                );
+            }
+        }
+
+        assert!(
+            last_reading.n_tip > seed_reading.n_tip,
+            "fixture: the refine passes must re-triangulate the tip face: tip nodes \
+             {} -> {}",
+            seed_reading.n_tip,
+            last_reading.n_tip,
+        );
+        let equal_split_offset_y =
+            (last_reading.equal_split_line_of_action[1] - last_reading.face_centroid[1]).abs();
+        assert!(
+            equal_split_offset_y >= MIN_EQUAL_SPLIT_OFFSET_M,
+            "fixture: the graded tip face must move an equal split's line of action \
+             off the centroid in y, but it is only {equal_split_offset_y:e} m off",
         );
     }
 
