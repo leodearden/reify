@@ -3522,11 +3522,12 @@ assert "S2d: positive control: STDOUT is exactly <lane>/target" \
 # sub-second inversion holes cargo still mis-gates on (§9.5 inv.12).
 #
 # WHY the delta path here is itself a replay file: the seed stamps every delta
-# path to NOW (`touch "${TOUCH_PATHS[@]}"`, no -d), so a fixture CANNOT pre-arrange
-# a tie against a base-stamped `output` — the pre-stamp is overwritten during the
-# run. Passing the lane's own `output` via --touch makes the oldest delta and the
-# newest `output` the SAME inode, which is a tie by construction and needs no
-# wall-clock luck. Artificial as a delta path, exact as an operator pin.
+# path to NOW (`_touch_explicit_delta`'s plain `touch`, no -d), so a fixture
+# CANNOT pre-arrange a tie against a base-stamped `output` — the pre-stamp is
+# overwritten during the run. Passing the lane's own `output` via --touch makes
+# the oldest delta and the newest `output` the SAME inode, which is a tie by
+# construction and needs no wall-clock luck. Artificial as a delta path, exact as
+# an operator pin.
 IFS='|' read -r S2T_BASE S2T_LANE S2T_DELTA \
     <<< "$(_s_make_fixture S2t "2024-06-01 00:00:00.123456789")"
 S2T_OUTPUT="$S2T_LANE/target/debug/build/fakecc-1111/output"
