@@ -287,6 +287,12 @@ session, with this §8 + the session's formalisms survey as inputs.
 
 ## 10. Decomposition plan (task IDs assigned at decompose, 2026-08-26)
 
+> **D17 exclusion-mechanism seam on #6618 (step-assembly-import ο #8067).** The descendant-
+> exclusion mechanism and its diagnostics that A-δ #6618's derived-body `exclude` consumes are
+> delivered by `docs/prds/v0_6/step-assembly-import.md` θ (#8058, decision D17); that PRD owns
+> the mechanism, this PRD owns derived-body lowering. Its ι (#8062) adds dotted overrides to
+> derived bodies. Wire #6618 against θ rather than building a second exclusion path.
+
 - **A-α = #6615 — grammar producer** [high]: fourth `sub` arm (`mirror of <ident>
   across <expr> { … }` / `image of <ident> under <expr> { … }`; block items:
   param assignment incl. `= default`, `keep <path>` (reserving `using
