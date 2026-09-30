@@ -701,8 +701,8 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // exception, `-> <Type>`, is stated in the module doc's "The one doc-FORMAT
     // pin this file does impose" — read it before tabulating this section.) The real
     // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
-    // by `reify_tagged_fences_in_geometry_chunk_compile`'s per-name sentinels,
-    // which require each call form inside a COMPILING fence — a strictly stronger
+    // by `geometry_reify_fences_call_every_documented_query_form`'s per-name
+    // sentinels, which require each call form inside a COMPILING fence — a strictly stronger
     // property than any string match here.
     //
     // (Placement WITHIN the section is not further constrained: a name mentioned
@@ -1007,45 +1007,25 @@ fn topology_selector_family_documented_in_geometry_chunk() {
     }
 }
 
-/// Every ```` ```reify ````-tagged fence in geometry.md must actually compile.
+/// Every query form the chunk documents is CALLED, outside a comment, by one of
+/// geometry.md's ```` ```reify ```` fences.
 ///
-/// This upgrades the interference/clearance worked examples from unchecked prose
-/// into artifacts that at least parse and lower: a designer copying a fence out
-/// of the chunk gets something the compiler accepts, or this test is RED.
+/// That is what makes each form compile-verified: the fence gate
+/// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
+/// bare ```` ```reify ```` fence of every chunk VERBATIM, and its
+/// `REIFY_FENCE_FLOORS` entry for geometry.md, held EXACT, is the one floor on
+/// how many there are. This test owns only the per-name half: a fence that
+/// silently stops calling a documented form would leave that gate green. The
+/// sentinel set is its own anti-vacuity.
 ///
-/// SCOPE — this is a parse/compile-acceptance guard, NOT a signature pin. The
-/// module doc's "What is NOT established" is the canonical statement of what
-/// that does and does not buy (arity, argument dimension, unknown call names);
-/// read it before relying on this test. It is deliberately not restated here,
-/// so the claims cannot drift apart.
+/// SCOPE — this is a call-presence guard, NOT a signature pin. The module doc's
+/// "What is NOT established" is the canonical statement of what compile
+/// acceptance does and does not buy (arity, argument dimension, unknown call
+/// names); read it before relying on this test.
 #[test]
-fn reify_tagged_fences_in_geometry_chunk_compile() {
+fn geometry_reify_fences_call_every_documented_query_form() {
     let markdown = read_chunk(CHUNK_PATH);
-    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
-    // Anti-vacuity. Without these, dropping the ```reify tags (or
-    // rewriting the fences as plain prose) would leave the scan empty and the
-    // loop below would iterate zero times — GREEN, protecting nothing. The
-    // sentinels additionally prove the scan reaches BOTH documented forms, not
-    // just whichever fence happens to come first.
-    //
-    // FOUR, not the three this floor would need to name the new fence, because
-    // the floor was ALREADY one below live when task 5581 came to raise it: the
-    // chunk carried three ```reify fences (the length-arguments worked example,
-    // plus the FORM B and FORM A clearance examples) against a floor of two, so
-    // the FORM A fence could have been deleted wholesale and this stayed green.
-    // Set to the EXACT live count per the re-measurement protocol on
-    // [`MINIMUM_FN_CITES`] — a floor under live is the measured incident that
-    // protocol exists to prevent, not a safety margin.
-    assert!(
-        fences.len() >= 4,
-        "the ```reify fence scan found only {} fence(s) in {CHUNK_PATH} — expected at least 4 \
-         (the length-arguments worked example, the FORM B raw-geometry clearance example, the \
-         FORM A mechanism-snapshot example, and the measurement / mass-property example). The \
-         scan is vacuous (fence tags dropped, or the examples rewritten as untagged prose) and \
-         gives NO protection.",
-        fences.len()
-    );
     // ALL FIVE oracle names, so coverage is symmetric. Before task 5389's
     // amendment pass, `interferes(`/`interferes_with(` appeared only in the FORM A
     // bullet list, so their sole guard was a `section.contains(...)` string match —
@@ -1071,7 +1051,10 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
     // documented call form that the compiler rejects would be indistinguishable,
     // to a reader, from the arithmetic it is meant to replace. Requiring each
     // inside a COMPILING fence is what makes the replacement credible.
-    let code: Vec<String> = fences.iter().map(|f| strip_reify_comments(f)).collect();
+    let code: Vec<String> = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH)
+        .iter()
+        .map(|fence| strip_reify_comments(fence))
+        .collect();
     for sentinel in [
         "min_clearance(",
         "interferes(",
@@ -1086,15 +1069,11 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
         assert!(
             code.iter().any(|fence| fence.contains(sentinel)),
             "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` OUTSIDE A \
-             COMMENT — the worked clearance examples are no longer compile-verified, so a \
-             documented call form the compiler outright rejects would ship unnoticed. (A call \
-             form mentioned only in a fence's `//` annotation does not count; it is never \
+             COMMENT — the worked examples no longer compile-verify that form, so a documented \
+             call form the compiler outright rejects would ship unnoticed. (A call form \
+             mentioned only in a fence's `//` annotation does not count; it is never \
              compiled.)"
         );
-    }
-
-    for (index, fence) in fences.iter().enumerate() {
-        assert_module_compiles(CHUNK_PATH, &format!("```reify fence #{}", index + 1), fence);
     }
 }
 
@@ -1108,7 +1087,7 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
 /// `// MUST be let-bound. Writing `constraint min_clearance(s, id_a, id_b) > 2mm``,
 /// whose 3-arg `min_clearance(` is exactly the documented arity — so deleting the
 /// fence's REAL `let clr = min_clearance(s, id_a, id_b)` left both
-/// `reify_tagged_fences_in_geometry_chunk_compile` and
+/// `geometry_reify_fences_call_every_documented_query_form` and
 /// `documented_oracle_arities_are_exercised_by_a_compiling_fence` green while
 /// their panic text claimed the form was "compile-verified" / "exercised by a
 /// compiling fence". A commented-out call is not a call.
@@ -1808,8 +1787,9 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
         "a fence-shaped source whose clearance query is misspelled must be rejected by the \
          downstream comparison with DiagnosticCode::CmpOperandKind. Got these Error \
          diagnostics instead: {:#?}\n\
-         If the list is EMPTY, `reify_tagged_fences_in_geometry_chunk_compile` has lost even \
-         its indirect discriminating power over query names and is a pure parse check. If it \
+         If the list is EMPTY, the fence compile gate \
+         (fence_gate.rs::every_reify_tagged_fence_compiles_clean) has lost even its indirect \
+         discriminating power over query names and is a pure parse check. If it \
          is non-empty but carries a different code, the rejection mechanism moved (e.g. \
          unresolved names became an error in their own right) — either way, re-verify what the \
          fence guard still establishes and update the module doc's \"What is NOT established\" \
@@ -1853,10 +1833,8 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// lost. Any gap between floor and live re-opens exactly that hole, which is why
 /// these track the tree rather than sitting at a round number under it.
 ///
-/// The `.ri` floor covers the six worked references (clearance_oracle,
-/// vc_bolt_pattern_clearance, dock_pickup, intersects_smoke, and task 5581's
-/// all_queries_walk and all_topology_selectors_wiring) a designer is sent to
-/// next; losing one is the same discoverability regression task 5389 closed.
+/// The `.ri` floor covers the worked references a designer is sent to next;
+/// losing one is the same discoverability regression task 5389 closed.
 ///
 /// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in
 /// `units_chunk_smoke.rs` — stated once, here, and cross-referenced rather than
@@ -1873,9 +1851,9 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 25;
-const MINIMUM_RS_FILES: usize = 11;
-const MINIMUM_RI_FILES: usize = 6;
+const MINIMUM_FN_CITES: usize = 26;
+const MINIMUM_RS_FILES: usize = 12;
+const MINIMUM_RI_FILES: usize = 10;
 
 /// Every test the chunk cites as PINNING a runtime claim must still exist.
 ///

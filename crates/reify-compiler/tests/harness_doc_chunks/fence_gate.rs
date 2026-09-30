@@ -49,30 +49,25 @@
 //! because retagging a fence away from `reify` is a one-line diff a reviewer
 //! sees and can challenge.
 //!
-//! # Cross-harness contract (read before retagging anything)
+//! # One fence parser (read before retagging anything)
 //!
-//! Two sibling modules in this same compile unit already scrape these chunks,
-//! and they disagreed about what ```` ```reify ```` means:
+//! Every harness module that reads chunk fences reads them through
+//! `chunk_markdown::parse_fences`, so no two can disagree about where a fence
+//! starts or ends, or about what its tag is:
 //!
-//! - `chunk_markdown::tagged_fence_bodies` matches
-//!   ```` line.trim_end() == format!("```{tag}") ```` — BYTE-EXACT on
-//!   the whole info string, so `reify-fragment`/`reify-schematic` can never
-//!   false-match it — and `reify_tagged_fences_in_geometry_chunk_compile`
-//!   compiles each hit VERBATIM behind its own anti-vacuity floor of
-//!   `>= 4`, the EXACT live count of geometry.md's four bare
-//!   ```` ```reify ```` fences. Retagging one therefore fails that suite
-//!   LOUDLY, not silently.
-//!   `geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite`
-//!   below pins the coupling anyway, so the retag is named as the cause in its
-//!   own diff instead of being diagnosed from a count in another module.
-//! - `enums_chunk_option_smoke.rs:106` selects fences TAG-AGNOSTICALLY via
-//!   `strip_prefix("```")` and WRAPS each body in `structure def OptionDemo
-//!   {{ … }}` (:132). Its comment at :96 explicitly defers tag discipline to
-//!   this module by name.
+//! - `geometry_chunk_smoke` and `units_chunk_smoke` select fences by EXACT info
+//!   string through `chunk_markdown::tagged_fence_bodies`, so
+//!   `reify-fragment` / `reify-schematic` can never false-match `reify`.
+//! - `enums_chunk_option_smoke` reads its `## Option Type` section through
+//!   `chunk_markdown::section_body`, takes every fence there TAG-AGNOSTICALLY,
+//!   and WRAPS each body in `structure def OptionDemo { … }`. Tag discipline is
+//!   this gate's, not that module's.
 //!
-//! This gate settles the disagreement in favour of the standalone reading, so
-//! `enums.md`'s `## Option Type` fence — which passes today only because of
-//! that injected wrapper — is `reify-fragment`, not `reify`.
+//! This gate reads ```` ```reify ```` in the standalone sense, so `enums.md`'s
+//! `## Option Type` fence — which compiles only inside that injected wrapper —
+//! is `reify-fragment`, not `reify`. Check 1 is the one place a bare
+//! ```` ```reify ```` fence is compiled, and `REIFY_FENCE_FLOORS` is the one
+//! floor on how many each chunk carries.
 //!
 //! # What this gate structurally CANNOT reach (do not read green as "verified")
 //!
@@ -153,7 +148,7 @@ use crate::chunk_io::{
     CHUNK_FILE_COUNT, CHUNKS_DIR, chunk_label, discover_chunk_stems, read_chunk_file, repo_root,
     report,
 };
-use crate::chunk_markdown::{Fence, parse_fences, tagged_fence_bodies};
+use crate::chunk_markdown::{Fence, parse_fences};
 
 // ---------------------------------------------------------------------------
 // Check 2 — the bare-fence ban
@@ -1370,11 +1365,9 @@ const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 ///
 /// A gate whose entire purpose is catching omission drift can itself drift into
 /// silence: a parser regression that discovers nothing would leave every loop
-/// below iterating zero times and every check GREEN, protecting nothing. This
-/// is the same defence `reify_tagged_fences_in_geometry_chunk_compile` already
-/// carries for its own scrape, applied
-/// to all three axes the checks depend on — files discovered, fences parsed,
-/// and bare ```` ```reify ```` fences actually reached.
+/// below iterating zero times and every check GREEN, protecting nothing. So
+/// all three axes the checks depend on are floored — files discovered, fences
+/// parsed, and bare ```` ```reify ```` fences actually reached.
 fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
     // A file that failed to PARSE contributes zero fences, which would drag the
     // counts below toward a misleading "the parser has regressed" verdict. Name
@@ -1580,13 +1573,9 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
 /// `assert_corpus_is_not_vacuous` only ever asserts `live >= floor` and that an
 /// entry EXISTS; neither looks at its VALUE, so nothing there stops an entry
 /// going slack. Why slack is not a safety margin is argued on
-/// `REIFY_FENCE_FLOORS` and restated in this test's own failure message.
-///
-/// The EXACT-count rule is imported, not invented:
-/// `reify_tagged_fences_in_geometry_chunk_compile` already sets its own floor
-/// "to the EXACT live count per the re-measurement protocol ... a floor under
-/// live is the measured incident that protocol exists to prevent, not a safety
-/// margin".
+/// `REIFY_FENCE_FLOORS` and restated in this test's own failure message: a
+/// floor under live is the incident this test exists to report, not a safety
+/// margin.
 #[test]
 fn reify_fence_floors_are_exact_not_slack() {
     let corpus = corpus();
@@ -1645,188 +1634,3 @@ fn total_fence_count_is_exact_not_slack() {
          number of fences that can later vanish unremarked."
     );
 }
-
-// ---------------------------------------------------------------------------
-// CROSS-HARNESS PIN
-//
-// A retag sweep's damaging move is never a failing test — it is a PASSING one
-// that quietly stopped protecting anything. The sibling geometry suite defends
-// itself against that with a floor at its EXACT live count, so a retag fails it
-// loudly. This pin adds the three things that floor cannot: attribution inside
-// the retag's own diff, a second literal that has to be lowered deliberately
-// alongside the sibling's, and an agreement check between the two harnesses'
-// idea of what a ```reify fence is.
-// ---------------------------------------------------------------------------
-
-/// The sibling suite's OWN scanner, with this pin's arguments bound once.
-///
-/// A call, not a copy. What this replaced claimed to reproduce
-/// `tagged_fence_bodies` verbatim so the two could be seen to drift apart, but
-/// never did: the real one has been tag-parameterized since task 5759 and
-/// carries an unterminated-fence assert the copy lacked, so the
-/// drift-detection rationale did not hold. Calling it makes this pin exercise
-/// the ACTUAL coupling and turns a rename or signature change over there into
-/// a compile error here rather than silent rot.
-fn sibling_reify_fence_count(markdown: &str) -> usize {
-    tagged_fence_bodies(markdown, "reify", &chunk_label("geometry")).len()
-}
-
-/// The stem whose bare-```` ```reify ```` fences the sibling suite compiles.
-const SIBLING_GEOMETRY_STEM: &str = "geometry";
-
-/// The sibling suite's own anti-vacuity floor on `geometry.md`'s bare
-/// ```` ```reify ```` fences, so a retag sweep has to lower TWO deliberate
-/// literals rather than walk under one.
-///
-/// READ OUT of `REIFY_FENCE_FLOORS` rather than restated. Both this pin and
-/// that table describe the same quantity — how many bare ```` ```reify ````
-/// fences `geometry.md` carries — and a second literal spelling it could drift
-/// from the first while every test stayed green, leaving the pin to fail for a
-/// reason its own message misdescribes. One literal, in the table that already
-/// owns per-file counts and that `reify_fence_floors_are_exact_not_slack`
-/// already holds to the EXACT live value.
-///
-/// The sibling's own inline `fences.len() >= 4` remains a genuinely
-/// independent literal over in `reify_tagged_fences_in_geometry_chunk_compile`,
-/// which is what makes this a mirror of something rather than a restatement of
-/// itself. Nothing here can enforce equality with it — it is a local in another
-/// module — so the pin's failure message names it explicitly as the second
-/// place to look.
-fn sibling_geometry_reify_fence_floor() -> usize {
-    REIFY_FENCE_FLOORS
-        .iter()
-        .find(|(stem, _)| *stem == SIBLING_GEOMETRY_STEM)
-        .map(|(_, floor)| *floor)
-        .unwrap_or_else(|| {
-            panic!(
-                "REIFY_FENCE_FLOORS has no `{SIBLING_GEOMETRY_STEM}` entry, but a \
-                 sibling suite compiles that file's bare ```reify fences and this \
-                 pin mirrors its floor. Removing the entry does not retire the \
-                 coupling — it hides it. Restore the entry at the file's exact \
-                 live count, or retire the sibling's subject and this pin together."
-            )
-        })
-}
-
-/// Does `markdown` still carry enough bare ```` ```reify ```` fences to keep the
-/// sibling suite's compile subjects?
-///
-/// A named predicate rather than an inline comparison, so the pin below and the
-/// hermetic controls that falsify it share ONE floor. A control that re-spelled
-/// the comparison could drift away from the assertion it claims to exercise,
-/// which is the same class of defect this whole pin exists to catch.
-fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
-    sibling_reify_fence_count(markdown) >= sibling_geometry_reify_fence_floor()
-}
-
-/// `geometry.md` must keep ALL FOUR of its bare ```` ```reify ```` fences,
-/// because a sibling suite in this same compile unit selects them by that exact
-/// string and compiles what it finds — the coupling the module header sets out.
-///
-/// A retag over there therefore fails LOUDLY already. This pin is NOT a
-/// backstop against a silent loss; read it as adding three things the sibling's
-/// floor cannot:
-///
-/// - ATTRIBUTION IN THE RETAG'S OWN DIFF. The sibling reports a count from a
-///   file whose subject is geometry queries; this test names the retag as the
-///   cause, in the module whose subject is fence tags.
-/// - A SECOND DELIBERATE LITERAL. `geometry`'s `REIFY_FENCE_FLOORS` entry has
-///   to be lowered alongside the sibling's own inline floor, so retiring a
-///   compile subject is a decision taken twice rather than a number walked down
-///   once. See `sibling_geometry_reify_fence_floor` for why this side reads
-///   that entry instead of spelling a third copy of the same count.
-/// - THE AGREEMENT CHECK, which nothing else performs: the sibling's real
-///   scanner and this module's parser must find the SAME fences. Either side
-///   alone can be green while the two harnesses have already drifted apart on
-///   what ```` ```reify ```` means.
-#[test]
-fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
-    let content = read_chunk_file("geometry");
-    let label = chunk_label("geometry");
-
-    assert!(
-        meets_sibling_geometry_reify_floor(&content),
-        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected {} — \
-         the floor \
-         `reify_tagged_fences_in_geometry_chunk_compile` asserts for itself over this same \
-         file. That suite compiles each of these fences \
-         VERBATIM, so the retag that produced this failure is failing it too: expect two \
-         red tests, and do not read this one as the whole consequence. If a fence genuinely \
-         stopped compiling standalone, fix the fence — or retire the sibling's subject \
-         deliberately and lower BOTH floors in the same diff. Do NOT quietly retag it to \
-         `reify-fragment`.",
-        sibling_reify_fence_count(&content),
-        sibling_geometry_reify_fence_floor()
-    );
-
-    let parsed_bare_reify = parse_fences(&content)
-        .unwrap_or_else(|e| panic!("{label}: {e}"))
-        .into_iter()
-        .filter(|f| f.tag.as_deref() == Some("reify"))
-        .collect::<Vec<_>>();
-
-    let scraped = sibling_reify_fence_count(&content);
-    assert_eq!(
-        scraped,
-        parsed_bare_reify.len(),
-        "the sibling's exact-string scrape finds {scraped} bare ```reify opening line(s) in \
-         {label} but this module's parser finds {}. The two harnesses have DRIFTED: whatever \
-         one of them now believes is a `reify` fence, the other does not. Reconcile them \
-         before touching any tag.",
-        parsed_bare_reify.len()
-    );
-
-    // NEGATIVE CONTROL, hermetic — proves the assertions above can actually go
-    // RED. Retag geometry.md's own opening delimiters in memory (the real file
-    // is never written) and confirm BOTH sides stop counting them, i.e. that
-    // `reify-fragment` is not swept in by a prefix match on either side.
-    let retagged = content.replace("\n```reify\n", "\n```reify-fragment\n");
-    assert_ne!(
-        retagged, content,
-        "the negative control rewrote nothing — its `\\n```reify\\n` pattern no longer matches \
-         {label}, so it is proving nothing and must be updated with the file"
-    );
-    assert_eq!(
-        sibling_reify_fence_count(&retagged),
-        0,
-        "the sibling scrape still counted bare `reify` fences after every one was retagged to \
-         `reify-fragment` — its exact match has become a prefix match, and `reify-fragment` / \
-         `reify-schematic` bodies are now being compiled as if they were standalone modules"
-    );
-    assert_eq!(
-        parse_fences(&retagged)
-            .unwrap_or_else(|e| panic!("{label} (retagged): {e}"))
-            .into_iter()
-            .filter(|f| f.tag.as_deref() == Some("reify"))
-            .count(),
-        0,
-        "this module's parser still reported fences tagged `reify` after every one was retagged \
-         to `reify-fragment` — the EXACT-match tag contract has regressed to a prefix match"
-    );
-
-    // NEGATIVE CONTROL, PARTIAL — the case the control above cannot reach. A
-    // sweep that empties the file is caught by any floor at all; the damaging
-    // one retags SOME fences and leaves the rest, and a floor set under the live
-    // count accepts exactly that. Same hermetic shape: the real file is never
-    // written.
-    let live = sibling_reify_fence_count(&content);
-    let partly_retagged = content.replacen("\n```reify\n", "\n```reify-fragment\n", 2);
-    assert_eq!(
-        sibling_reify_fence_count(&partly_retagged) + 2,
-        live,
-        "the partial control did not retag exactly two opening delimiters in {label} — its \
-         `\\n```reify\\n` pattern no longer matches the file the way it assumes, so it is not \
-         exercising the case it names and must be updated with the file"
-    );
-    assert!(
-        !meets_sibling_geometry_reify_floor(&partly_retagged),
-        "retagging two of {label}'s {live} bare ```reify fences to `reify-fragment` still \
-         satisfies the mirrored floor ({}). \
-         A floor under the live count pins nothing above itself: those two fences could be \
-         retagged in any future sweep and this pin — the one test whose whole purpose is \
-         naming that retag as the cause — would stay green. Raise the floor to the sibling \
-         suite's own live count.",
-        sibling_geometry_reify_fence_floor()
-    );
-}
-
