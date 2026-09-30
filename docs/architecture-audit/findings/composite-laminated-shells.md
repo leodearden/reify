@@ -261,10 +261,11 @@
 >   `tests/`, `git grep -n shell_element_stiffness_degenerate -- crates
 >   ':!crates/reify-solver-elastic/src/shell_assembly.rs' ':!crates/reify-solver-elastic/tests'` finds the
 >   `lib.rs` re-export and crate-doc example, `// G-allow:` comment lines in
->   `elements/degenerate_shell.rs`, and mentions in a `reify-audit` test that pins those markers — no call
->   expression. (Those G-allow comments describe the wrappers as reached on the shell-routing compute path;
->   this overlay found no by-name call site for that, and the next bullet shows the engine route calling
->   the MITC3+ kernel.)
+>   `elements/degenerate_shell.rs`, and mentions in a `reify-audit` test that pins those markers; the
+>   crate-doc example is the only call expression among them. (The G-allow comments describe three helpers
+>   as "reached via `shell_element_stiffness_degenerate` on the compute-target-wired shell-routing path";
+>   this overlay found no by-name call site for that path, and the next bullet shows the engine route
+>   calling the MITC3+ kernel.)
 > - **The engine shell route is isotropic-only.** `solve_flat_plate_shell`
 >   (`crates/reify-solver-elastic/src/shell_solve.rs:102`) calls `shell_element_stiffness_mitc3_plus`
 >   (`:151`) with a `&IsotropicElastic`. The `solve_elastic_static` trampoline
