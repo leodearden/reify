@@ -45,11 +45,6 @@ use reify_kernel_gmsh::MeshingOptions;
 use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
 use reify_ir::ElementOrderTag;
 
-// `subdivided_unit_cube_surface` is shared with
-// `tests/node_attachment_producer.rs` through `tests/common/mod.rs` (#7224):
-// it was duplicated here verbatim and had to be updated in lockstep. This
-// file is `#![cfg(has_gmsh)]` as a whole, so a top-level `use` of the
-// (ungated) fixture resolves fine here.
 mod common;
 use common::subdivided_unit_cube_surface;
 

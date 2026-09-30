@@ -1,6 +1,7 @@
 //! What this crate's test binaries share: a re-export shim over the
-//! workspace-canonical fixtures in [`reify_test_support::fixtures`], plus the
-//! raw-FFI entity census [`entity_census`].
+//! workspace-canonical fixtures in [`reify_test_support::fixtures`], one
+//! not-yet-hoisted fixture [`subdivided_unit_cube_surface`], and the raw-FFI
+//! entity census [`entity_census`].
 //!
 //! A `tests/common/` subdirectory (rather than a sibling `tests/*.rs` file) is
 //! the cargo idiom for both: files under `tests/` are each compiled as their
@@ -20,7 +21,9 @@
 //! `tkt_0RTBP18NC8PBRZGQ49RYZD7ATJ` (escalation id `agent-followup-6387`)
 //! changes those import lines plus `volume_fill_fraction.rs`'s
 //! `common::assert_rel` call sites. No new shared FIXTURE belongs here — put it
-//! in `reify_test_support`.
+//! in `reify_test_support`. The one exception, [`subdivided_unit_cube_surface`],
+//! is pending that same move under ticket `tkt_0RV8B67RPR9YXPT9GQ8WPSX3Q1`
+//! (escalation id `agent-followup-7224`).
 //!
 //! # The census is NOT a fixture, and stays (#6830)
 //!
@@ -46,7 +49,7 @@
 //! part of it, so the unused remainder must not be an error under
 //! `-D warnings`. A `pub use` a given binary does not exercise is an
 //! `unused_imports` warning rather than the `dead_code` the pre-#6387 inlined
-//! fixture bodies produced, and `entity_census` is `dead_code` in every binary
+//! fixture bodies produced, and each local `fn` is `dead_code` in every binary
 //! that compiles it without calling it, so both are allowed.
 
 #![allow(dead_code, unused_imports)]
@@ -64,29 +67,12 @@ pub use reify_test_support::fixtures::{
 use reify_ir::Mesh;
 
 // ---------------------------------------------------------------------------
-// subdivided_unit_cube_surface (pure Mesh construction, no gate) — #7224
+// subdivided_unit_cube_surface — awaiting its hoist, see the module docs
 // ---------------------------------------------------------------------------
-
-// This IS a fixture in the sense the module doc above says belongs in
-// `reify_test_support`, not here — unlike `entity_census` it has no
-// structural reason to stay local (pure `reify_ir::Mesh` construction, no
-// libgmsh dependency). It stays local anyway because #7224's file set is
-// exactly the two consumers below, both in THIS crate, with no
-// reify_test_support edge locked for this task — the same scope-wall
-// reasoning that kept #6314/#6830 from widening into files outside their
-// lock. A future task may still hoist it into `reify_test_support::fixtures`
-// alongside `prismatic_box_mesh`.
 
 /// Build a 2×2-subdivided unit cube (side 1.0, centred at origin):
 /// 8 corners + 12 edge midpoints + 6 face centres = 26 unique vertices, 48
 /// triangles (6 faces × 8 sub-triangles, outward-facing).
-///
-/// Shared by `tests/node_attachment_producer.rs` and
-/// `tests/gmsh_classify_diagnostics.rs` (#7224) — deliberately NOT
-/// `#[cfg(has_gmsh)]`-gated, since it is pure `reify_ir::Mesh` construction
-/// with no libgmsh dependency. `fill_metrics_tests.rs` includes this module
-/// UNCONDITIONALLY, so an ungated fixture here is correct and matches the
-/// `prismatic_box_mesh` / `tessellated_cylinder_mesh` re-exports above.
 pub fn subdivided_unit_cube_surface() -> Mesh {
     #[rustfmt::skip]
     let corners: [[f32; 3]; 8] = [
@@ -111,6 +97,8 @@ pub fn subdivided_unit_cube_surface() -> Mesh {
     for c in &corners { vertices.extend_from_slice(c); }
     for e in &edges   { vertices.extend_from_slice(e); }
     for f in &face_centers { vertices.extend_from_slice(f); }
+    assert_eq!(vertices.len(), 26 * 3);
+
     #[rustfmt::skip]
     let indices: Vec<u32> = vec![
         // Bottom (z=-0.5): vertex indices 8=edge[0], 9=edge[1], 10=edge[2], 11=edge[3], 20=fc[0]
@@ -132,6 +120,8 @@ pub fn subdivided_unit_cube_surface() -> Mesh {
         1,10,25,  1,25,17, 10, 3,19, 10,19,25,
        17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
     ];
+    assert_eq!(indices.len(), 48 * 3);
+
     Mesh { vertices, indices, normals: None }
 }
 

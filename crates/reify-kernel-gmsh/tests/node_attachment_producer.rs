@@ -13,22 +13,16 @@
 use reify_kernel_gmsh::EntityAttribution;
 use reify_ir::{GeometryHandleId, NodeAttachment};
 
-// `entity_census`, `prismatic_box_mesh` and `subdivided_unit_cube_surface` are
-// shared with `tests/classify_feature_angle.rs` / `tests/gmsh_classify_diagnostics.rs`
-// through `tests/common/mod.rs` (#6830, #7224): the raw-FFI classify prelude
-// and the subdivided-cube fixture were duplicated here verbatim and had to be
-// updated in lockstep. Only those are shared — the assertions below are this
-// file's own contract. The module's file-level `#![allow(dead_code)]` covers
-// the parts this binary does not use.
+// `entity_census`, `prismatic_box_mesh` and `subdivided_unit_cube_surface` come
+// from `tests/common/mod.rs`; the assertions below are this file's own
+// contract. The module's file-level `#![allow(dead_code)]` covers the parts
+// this binary does not use.
 //
 // Call sites stay path-qualified rather than taking a top-level
 // `use common::{entity_census, prismatic_box_mesh};` the way
 // classify_feature_angle.rs does: THAT file is `#![cfg(has_gmsh)]` as a whole,
 // this one is not, and `common::entity_census` exists only under `has_gmsh` —
 // so a top-level `use` of it would fail to resolve on a stub-host build.
-// `common::subdivided_unit_cube_surface` is ungated and would resolve either
-// way, but stays path-qualified here too for consistency with the other
-// `common::` call sites in this file.
 mod common;
 
 // ---------------------------------------------------------------------------
