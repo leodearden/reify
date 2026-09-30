@@ -552,7 +552,9 @@ mod tests {
     use crate::math_signatures::{
         MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
     };
-    use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+    use crate::orientation_signatures::{
+        ORIENTATION_DECOMPOSER_FN_NAMES, ORIENTATION_TYPED_FN_NAMES,
+    };
     use crate::relation_signatures::RELATION_FN_NAMES;
     use crate::units::{
         AFFINE_MAP_CONSTRUCTOR_NAMES, DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES,
@@ -595,6 +597,10 @@ mod tests {
         ("RELATION_FN_NAMES", RELATION_FN_NAMES),
         ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
         ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
+        (
+            "ORIENTATION_DECOMPOSER_FN_NAMES",
+            ORIENTATION_DECOMPOSER_FN_NAMES,
+        ),
     ];
 
     /// The four families promoted from resolver-only `match` arms to real
