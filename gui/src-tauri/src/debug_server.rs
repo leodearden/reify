@@ -41,8 +41,21 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_state",
-            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message. The DEFAULT reply is the full payload, and files[].content inlines every source file, which can be megabytes on a large design. Pass summary_only: true for counts plus a content-free file list, or fields for only the named top-level keys. The two are mutually exclusive, and an unknown field name is refused with the valid list.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "summary_only": {
+                        "type": "boolean",
+                        "description": "Optional. When true, reply {counts: {<array key>: length}, files: [{path, bytes, lines}], ...every non-array key verbatim} instead of the full payload. Mutually exclusive with fields."
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Reply only these top-level keys of the full payload (e.g. [\"values\", \"stale\"]). An unknown name is refused with the list of valid names. Mutually exclusive with summary_only."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "mesh_stats",
@@ -1325,7 +1338,7 @@ async fn dispatch_tool(
         return result;
     }
     match name {
-        "engine_state" => handle_engine_state(state).await,
+        "engine_state" => handle_engine_state(state, params).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         // ONE funnel (`open_path_into_engine`), two advertised names: the
@@ -1389,11 +1402,14 @@ where
     rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
-async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
-    run_on_engine(&state.engine, |session| {
+async fn handle_engine_state(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    // Parsed first: a malformed view must not pay a full-scene rebuild.
+    let view = crate::engine_state_view::EngineStateView::from_params(&params)?;
+    let full = run_on_engine(&state.engine, |session| {
         crate::commands::engine_state_json(session)
     })
-    .await
+    .await?;
+    view.apply(full)
 }
 
 /// Engine-routing core of the `demand_dispatch` MCP tool (selective-demand ε,

@@ -21,6 +21,7 @@ pub mod display_units;
 pub mod engine;
 pub mod engine_activity;
 pub mod engine_lock;
+pub mod engine_state_view;
 pub mod eval_queue;
 pub mod gui_state_schema;
 pub mod kernel_status;
