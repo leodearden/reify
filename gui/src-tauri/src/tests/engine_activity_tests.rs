@@ -10,7 +10,8 @@ use reify_test_support::MockGeometryKernel;
 
 use crate::engine::EngineSession;
 use crate::engine_activity::{
-    EngineActivity, SettleRequest, SettleVerdict, WaitOutcome, probe, verdict, wait_until_settled,
+    EngineActivity, SettleRequest, SettleVerdict, WaitOutcome, probe, stamp_generation, verdict,
+    wait_until_settled,
 };
 use crate::eval_queue::{EvalOutcome, EvalProgress, EvalRequest};
 use crate::tests::make_test_engine;
@@ -472,5 +473,84 @@ async fn a_never_loaded_session_is_reported_not_started_rather_than_timed_out() 
     assert!(
         matches!(outcome, WaitOutcome::NotStarted),
         "got {outcome:?}"
+    );
+}
+
+// ── Replies: what wait_for_idle and health say ───────────────────────────────
+
+#[test]
+fn a_not_started_wait_replies_the_engine_not_started_token() {
+    assert_eq!(
+        WaitOutcome::NotStarted.early_reply(),
+        Some(serde_json::json!({"error": "engine_not_started"}))
+    );
+}
+
+#[test]
+fn a_timed_out_wait_replies_the_timeout_token_with_its_last_reading() {
+    let busy = WaitOutcome::TimedOut {
+        last: activity(true, None, 5, 0),
+        awaiting_generation: false,
+    };
+    let awaiting = WaitOutcome::TimedOut {
+        last: activity(false, Some(true), 3, 0),
+        awaiting_generation: true,
+    };
+
+    assert_eq!(
+        busy.early_reply(),
+        Some(serde_json::json!({
+            "error": "timeout",
+            "engine_busy": true,
+            "generation": 5,
+            "awaiting_generation": false,
+        }))
+    );
+    assert_eq!(
+        awaiting.early_reply(),
+        Some(serde_json::json!({
+            "error": "timeout",
+            "engine_busy": false,
+            "generation": 3,
+            "awaiting_generation": true,
+        }))
+    );
+}
+
+#[test]
+fn a_settled_wait_has_no_early_reply_so_the_frontend_is_asked_next() {
+    let settled = WaitOutcome::Settled {
+        generation: 2,
+        waited: Duration::ZERO,
+    };
+
+    assert_eq!(settled.early_reply(), None);
+}
+
+#[test]
+fn stamping_adds_the_generation_to_an_object_reply_and_keeps_its_keys() {
+    assert_eq!(
+        stamp_generation(serde_json::json!({"ok": true, "idle_after_ms": 12}), 4),
+        serde_json::json!({"ok": true, "idle_after_ms": 12, "generation": 4})
+    );
+    assert_eq!(
+        stamp_generation(serde_json::json!("not an object"), 4),
+        serde_json::json!("not an object")
+    );
+}
+
+#[test]
+fn health_replies_ok_and_whether_the_engine_is_busy() {
+    assert_eq!(
+        activity(false, Some(true), 0, 0).health_reply(),
+        serde_json::json!({"ok": true, "engine_busy": false})
+    );
+    assert_eq!(
+        activity(true, None, 0, 0).health_reply(),
+        serde_json::json!({"ok": true, "engine_busy": true})
+    );
+    assert_eq!(
+        activity(false, Some(true), 1, 1).health_reply(),
+        serde_json::json!({"ok": true, "engine_busy": true})
     );
 }

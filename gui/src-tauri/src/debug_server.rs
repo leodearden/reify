@@ -5056,6 +5056,10 @@ mod tests {
     // `use super::*` and needed nothing here widened. ──
     mod write_tools;
 
+    // ── Task 6752: the wait/status/view/image tools' params are advertised
+    // under the names their parsers read. ──
+    mod advertised_params;
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
