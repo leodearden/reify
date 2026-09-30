@@ -1,10 +1,22 @@
-//! Construct lint: every tracing subscriber that test code installs must come
-//! from this crate's auto-priming constructors ([`crate::CapturingSubscriberBuilder`],
+//! Construct lint: every tracing subscriber in the workspace must come from
+//! this crate's auto-priming constructors ([`crate::CapturingSubscriberBuilder`],
 //! [`crate::CountingSubscriberBuilder`], [`crate::warn_counting_subscriber`] and
 //! their wrappers). A hand-rolled subscriber bypasses
 //! [`crate::prime_tracing_callsite_cache`] and re-opens the intermittent
 //! zero-event flake that tasks 6273 and 5624 closed. That function's docs are
 //! the authoritative account of the mechanism.
+//!
+//! # Scope: the whole workspace, production code included
+//!
+//! The ratchet scans every `.rs` file, `src/` as well as `tests/`. No path
+//! rule can tell test code from production code, because in-crate
+//! `#[cfg(test)] mod tests` blocks live under `src/`. Covering production code
+//! is also deliberate: a `tracing_subscriber` global default installed in any
+//! process that runs tests breaks priming's "nothing else installs a global
+//! default" precondition. Production logging setup that never runs in a test
+//! process, such as a binary's `main`, opts out one line at a time with a
+//! trailing `// tracing-hygiene:allow — <reason>` comment. Test code never
+//! opts out; it extends the constructors instead.
 //!
 //! The scanner and collector here are pure: which directories may define a
 //! subscriber is policy, and it lives in this module's workspace ratchet test.
@@ -19,6 +31,10 @@ const TRAIT_IMPL_NEEDLE: &str = "Subscriber for ";
 
 /// Matches any use of the `tracing-subscriber` crate, whose subscribers never prime.
 const TRACING_SUBSCRIBER_CRATE_NEEDLE: &str = "tracing_subscriber::";
+
+/// A line carrying this marker is exempt. It is reserved for production
+/// logging setup; see the module docs.
+const ALLOW_MARKER: &str = "tracing-hygiene:allow";
 
 /// Which hand-rolled subscriber construct a source line carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,14 +81,16 @@ impl fmt::Display for WorkspaceSubscriberSite {
 /// every hit in source order.
 ///
 /// Whole-line `//` comments (`///`, `//!` and regular `//`) are skipped: a
-/// commented-out subscriber has no runtime consequence. Known limits of this
+/// commented-out subscriber has no runtime consequence. Lines carrying the
+/// `tracing-hygiene:allow` marker are skipped too. Known limits of this
 /// line-oriented scan: `/* */` block comments and string literals are not
-/// excluded, and a trailing `// ...` on a code line is still scanned.
+/// excluded, and any other trailing `// ...` on a code line is still scanned.
 pub fn find_hand_rolled_subscriber_sites(source: &str) -> Vec<HandRolledSubscriberSite> {
     source
         .lines()
         .enumerate()
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| !line.contains(ALLOW_MARKER))
         .filter_map(|(idx, line)| {
             let construct = if line.contains(TRAIT_IMPL_NEEDLE) {
                 SubscriberConstruct::TraitImpl
@@ -215,6 +233,22 @@ mod tests {
     }
 
     #[test]
+    fn skips_only_the_lines_carrying_the_allow_marker() {
+        let source = "fn main() {\n\
+                      \x20   tracing_subscriber::fmt().init(); // tracing-hygiene:allow — CLI logging\n\
+                      \x20   tracing_subscriber::fmt().init();\n\
+                      }\n";
+
+        assert_eq!(
+            find_hand_rolled_subscriber_sites(source)
+                .iter()
+                .map(|site| site.line)
+                .collect::<Vec<_>>(),
+            vec![3],
+        );
+    }
+
+    #[test]
     fn collector_reports_relative_paths_and_honours_include() {
         let guard = crate::temp_dirs::prefixed_tempdir("tracing-hygiene-");
         let root = guard.path();
@@ -267,6 +301,10 @@ mod tests {
     /// `ForwardingSubscriber`) hand-roll deliberately.
     const SUBSCRIBER_OWNER: &str = "crates/reify-test-support";
 
+    /// A GUI-crate file that installs tracing subscribers. Walking it proves
+    /// the sweep reaches `gui/src-tauri`, which sits outside `crates/`.
+    const REACH_SENTINEL: &str = "gui/src-tauri/src/tests/engine_tests.rs";
+
     #[test]
     fn workspace_tracing_subscribers_are_built_only_by_reify_test_support() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -275,32 +313,13 @@ mod tests {
             .parent()
             .expect("crates/ has a parent (the repo root)");
 
-        let all_rs_files = walk_rs_files(repo_root, |_| true);
-        assert!(
-            all_rs_files.len() > 500,
-            "walker found only {} .rs file(s) — expected >500; the walker may \
-             be broken, or repo_root resolved to the wrong directory",
-            all_rs_files.len()
-        );
-        let sentinel = repo_root.join("gui/src-tauri/src/tests/engine_tests.rs");
-        assert!(
-            all_rs_files.contains(&sentinel),
-            "sentinel file {sentinel:?} not found in walker output — the sweep \
-             no longer reaches the GUI crate's tracing tests"
-        );
-        let readable = crate::temp_dirs::count_readable_rs_files(&all_rs_files);
-        let unread = all_rs_files.len().saturating_sub(readable);
-        assert!(
-            unread <= 5,
-            "the walker found {} .rs file(s) but only {readable} could be \
-             read — {unread} file(s) silently failed; the sweep may be blind \
-             to real hand-rolled subscribers in those files",
-            all_rs_files.len(),
-        );
+        crate::workspace_sweep::assert_workspace_rs_walk_is_healthy(repo_root, REACH_SENTINEL);
 
-        let owner_sites = collect_workspace_hand_rolled_subscriber_sites(repo_root, |rel| {
-            rel.starts_with(SUBSCRIBER_OWNER)
-        });
+        let (owner_sites, enforced): (Vec<_>, Vec<_>) =
+            collect_workspace_hand_rolled_subscriber_sites(repo_root, |_| true)
+                .into_iter()
+                .partition(|found| found.path.starts_with(SUBSCRIBER_OWNER));
+
         let owner_impl_file = Path::new(SUBSCRIBER_OWNER).join("src/tracing_support.rs");
         assert!(
             owner_sites.iter().any(|found| found.path == owner_impl_file
@@ -311,20 +330,21 @@ mod tests {
              enforced sweep below would be vacuous. Owner sites found: {owner_sites:?}"
         );
 
-        let enforced = collect_workspace_hand_rolled_subscriber_sites(repo_root, |rel| {
-            !rel.starts_with(SUBSCRIBER_OWNER)
-        });
         assert!(
             enforced.is_empty(),
             "Found {} hand-rolled tracing subscriber construct(s) outside {SUBSCRIBER_OWNER}:\n  {}\n\n\
-             Build the subscriber with reify_test_support's \
+             In test code, build the subscriber with reify_test_support's \
              CapturingSubscriberBuilder / CountingSubscriberBuilder / \
              warn_capturing_subscriber / warn_counting_subscriber (/ \
              warn_counting_guard), which prime tracing's process-global \
              callsite-Interest cache; see prime_tracing_callsite_cache. If \
              none fits, extend them in \
              crates/reify-test-support/src/tracing_support.rs rather than \
-             hand-rolling.",
+             hand-rolling.\n\n\
+             Production logging setup that never runs in a test process (a \
+             binary's main) may instead end each such line with \
+             `// {ALLOW_MARKER} — <reason>`; see the \
+             reify_test_support::tracing_hygiene module docs.",
             enforced.len(),
             enforced
                 .iter()

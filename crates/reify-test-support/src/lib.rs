@@ -25,6 +25,7 @@ pub mod tracing_hygiene;
 pub mod tracing_support;
 pub mod value_decompose;
 pub mod values;
+pub mod workspace_sweep;
 
 pub use builders::*;
 pub use ctor_conformance::*;
