@@ -1541,8 +1541,8 @@ async fn abandoned_didopen_outcome(
 }
 
 /// (o) An ABANDONED request to a DISCARDING destination produces no server-side
-/// effect and does not keep a lane consumer — the end-to-end counterpart of
-/// `large_stack_tests`' (ah), through the REAL composition.
+/// effect — the end-to-end counterpart of `large_stack_tests`' (ah), through
+/// the REAL composition.
 ///
 /// (ah) proves the mechanism with a synthetic sender and an `AtomicBool`. This
 /// proves it against a real lane, a real `InProcessLsp` and a real notification
@@ -1554,7 +1554,7 @@ async fn abandoned_didopen_outcome(
 /// declared policy differs, which is what makes the pair a contrast rather than
 /// two similar-looking tests.
 #[tokio::test]
-async fn an_abandoned_request_does_not_occupy_a_lane_consumer() {
+async fn an_abandoned_request_on_a_discarding_lane_has_no_server_side_effect() {
     use crate::large_stack::Lane;
 
     const LANE_NAME: &str = "t6517-canc";
@@ -1983,9 +1983,10 @@ fn each_production_lane_declares_the_abandon_policy_its_work_requires() {
         OnAbandon::Run,
         "the ENGINE lane must run an abandoned job anyway: it carries the \
          projection / incremental-re-eval commands, several of which mutate \
-         session state. It is also fed only by the BLOCKING seam today, whose \
-         submitter is parked in `recv()` and cannot be dropped — so this is the \
-         declaration that keeps it correct if an async submitter is ever added."
+         session state. Today it is fed only by the fire-and-forget \
+         `post_to_worker`, and `post` always runs its job without consulting \
+         this policy — so no current path reads it, and this row guards the \
+         day a `dispatch_async` submitter to the engine lane is added."
     );
     assert_eq!(
         LSP_POOL.on_abandon(),

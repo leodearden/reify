@@ -1321,9 +1321,10 @@ where
         // it is the only one that must restore both by hand: `handle.enter()`,
         // because a tokio resource's destructor panics "there is no reactor
         // running" on a lane consumer's plain `std` thread; and `catch_unwind`,
-        // because a panicking destructor escaping here would kill a consumer,
-        // which on the size-1 `LSP_LANE` costs the ordered lane its only one.
-        // The payload is dropped rather than re-raised because `reply_tx` is
+        // because a panicking destructor escaping here would kill a consumer of
+        // this `Discard` destination (today `LSP_POOL`), silently narrowing the
+        // pool and so its head-of-line bound — a loss neither `Lane::size` nor
+        // `Lane::started` would show. The payload is dropped rather than re-raised because `reply_tx` is
         // already closed — by construction there is no submitter left to raise
         // it on. `AssertUnwindSafe` is sound for the same reason it is below.
         if on_abandon == OnAbandon::Discard && reply_tx.is_closed() {
