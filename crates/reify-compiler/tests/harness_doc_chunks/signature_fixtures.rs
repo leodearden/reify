@@ -5,7 +5,7 @@
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
-use crate::fence_gate::repo_root;
+use crate::chunk_io::repo_root;
 
 /// The executable transcription of stdlib.md's "Key Geometry Operations" and
 /// "Curves" sections, repo-relative.

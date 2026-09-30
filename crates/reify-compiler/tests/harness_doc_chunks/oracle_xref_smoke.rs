@@ -71,10 +71,11 @@
 //! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse inside the
 //! existing binary is what is available today, not a substitute for it.
 
+use crate::chunk_io::{CONSTRAINTS_CHUNK_PATH, GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH, read_chunk};
 use crate::chunk_prose::{EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, strip_html_comments};
 use crate::geometry_chunk_smoke::{
-    CHUNK_PATH as GEOMETRY_CHUNK_PATH, GEOMETRY_ORACLE_NAMES, call_sites, called_names,
-    phantom_name_panic, registry_family, section_body,
+    GEOMETRY_ORACLE_NAMES, call_sites, called_names, phantom_name_panic, registry_family,
+    section_body,
 };
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
@@ -86,25 +87,6 @@ use crate::geometry_chunk_smoke::{
 /// heading above it free to be retitled. Scoping by the heading instead would
 /// make every check below a wording pin on shipped prose.
 const ORACLE_XREF_MARKER: &str = "<!-- ORACLE-XREF -->";
-
-/// First referring chunk: where a designer writes the GATE.
-///
-/// Read (never written) at RUNTIME rather than `include_str!`d, mirroring
-/// `geometry_chunk_smoke.rs`'s `CHUNK_PATH`, so an edit to the markdown is seen
-/// by `cargo test` without a rebuild of this crate. If the chunk moves, this
-/// const must move with it — the failure mode is a loud `expect` on the read,
-/// not a silent skip.
-const CONSTRAINTS_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/constraints.md"
-);
-
-/// Second referring chunk: where a designer looks up WHAT THE CALL IS CALLED.
-/// Same runtime-read contract as [`CONSTRAINTS_CHUNK_PATH`].
-const STDLIB_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/stdlib.md"
-);
 
 /// The oracle call forms every pointer must name — `geometry_chunk_smoke.rs`'s
 /// list, ALIASED rather than copied.
@@ -314,12 +296,7 @@ const XREF_REGION_TITLE: &str = "interference/clearance cross-reference";
 /// deliberately NOT checked: this module's doc.
 #[test]
 fn the_constraints_chunk_points_at_the_oracle() {
-    let markdown = std::fs::read_to_string(CONSTRAINTS_CHUNK_PATH).unwrap_or_else(|e| {
-        panic!(
-            "{CONSTRAINTS_CHUNK_PATH} must be readable ({e}) — update \
-             CONSTRAINTS_CHUNK_PATH if the chunk moved"
-        )
-    });
+    let markdown = read_chunk(CONSTRAINTS_CHUNK_PATH);
 
     let region = section_body(
         &markdown,
@@ -342,12 +319,7 @@ fn the_constraints_chunk_points_at_the_oracle() {
 /// different question. Scope: this module's doc.
 #[test]
 fn the_stdlib_chunk_points_at_the_oracle() {
-    let markdown = std::fs::read_to_string(STDLIB_CHUNK_PATH).unwrap_or_else(|e| {
-        panic!(
-            "{STDLIB_CHUNK_PATH} must be readable ({e}) — update STDLIB_CHUNK_PATH \
-             if the chunk moved"
-        )
-    });
+    let markdown = read_chunk(STDLIB_CHUNK_PATH);
 
     let region = section_body(
         &markdown,

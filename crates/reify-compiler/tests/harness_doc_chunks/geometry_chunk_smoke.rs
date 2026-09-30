@@ -111,6 +111,7 @@
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk};
 
 /// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
 /// diagnostics. The source is echoed in the panic so a failing scraped fence is
@@ -484,19 +485,6 @@ fn isosurface_with_named_options_compiles() {
 // (see `ORACLE_SECTION_MARKER`), never by the section's title, so retitling
 // `## Interference & Clearance Queries` is free.
 
-/// The chunk this file owns. Read (never written). If the chunk moves, this
-/// const must move with it — the failure mode is a loud `expect` on the read,
-/// not a silent skip. Mirrors the `CHUNK_PATH` const in
-/// `stdlib_chunk_geometry_ops_smoke.rs`.
-///
-/// `pub(crate)` since task 6258: `oracle_xref_smoke.rs` resolves this path's
-/// filename STEM against the retrieval topic `constraints.md` and `stdlib.md`
-/// route readers to, so renaming the chunk is RED at those referrers too.
-pub(crate) const CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/geometry.md"
-);
-
 /// Marker that OPENS the chunk section the coverage scan is scoped to. Matched
 /// BYTE-EXACTLY against the trimmed line; the chunk carries it directly under
 /// the section heading for exactly this purpose.
@@ -612,12 +600,6 @@ const TOPOLOGY_SECTION_MARKER: &str = "<!-- TOPOLOGY-SECTION -->";
 /// Human-readable name of [`TOPOLOGY_SECTION_MARKER`]'s section. Panic text
 /// only; nothing matches on it.
 const TOPOLOGY_SECTION_TITLE: &str = "## Topology Selectors";
-
-fn read_chunk() -> String {
-    std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    })
-}
 
 /// Length of the leading run of backticks on `line`, counted from COLUMN 0.
 ///
@@ -835,7 +817,7 @@ fn documented_oracle_list_covers_the_whole_kinematic_registry() {
 
 #[test]
 fn interference_oracle_names_documented_in_geometry_chunk() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     // Scoped to the oracle section, NOT the whole file: a backticked `distance(`
     // elsewhere in the chunk (or an incidental mention that survives the
     // section's deletion) must not satisfy this. `section_body` panics if the
@@ -940,7 +922,7 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 /// absent, so deleting the section is RED rather than silently green.
 #[test]
 fn measurement_query_family_documented_in_geometry_chunk() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     let section = section_body(
         &markdown,
         MEASUREMENT_SECTION_MARKER,
@@ -1003,7 +985,7 @@ fn measurement_query_family_documented_in_geometry_chunk() {
 /// `perimeter` for `max_deviation` in the prose keeps this correct.
 #[test]
 fn the_undef_trap_example_is_a_query_the_hoist_does_not_cover() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     let region = marker_closed_region(
         &markdown,
         NOT_HOISTED_TRAP_MARKER,
@@ -1096,7 +1078,7 @@ const MINIMUM_TOPOLOGY_CATALOGUE_ROWS: usize = 31;
 /// it guards.
 #[test]
 fn topology_selector_family_documented_in_geometry_chunk() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     // Panics if the marker is gone, so deleting the section is RED rather than
     // vacuously green — the same anti-vacuity guarantee the oracle scan relies on.
     let section = section_body(
@@ -1239,7 +1221,7 @@ pub(crate) fn reify_tagged_fences(markdown: &str, tag: &str, chunk_path: &str) -
 /// so the claims cannot drift apart.
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
 
     // Anti-vacuity. Without these, dropping the ```reify tags (or
@@ -1619,7 +1601,7 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
 /// read first.
 #[test]
 fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     let section = section_body(
         &markdown,
         ORACLE_SECTION_MARKER,
@@ -1694,7 +1676,7 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
 /// latter does not compile from an integration test.
 #[test]
 fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     let section = section_body(
         &markdown,
         MEASUREMENT_SECTION_MARKER,
@@ -1883,7 +1865,7 @@ pub(crate) fn catalogue_table_names(rows: &[Vec<String>]) -> Vec<String> {
 /// cites, not here.
 #[test]
 fn documented_call_names_in_the_length_section_are_real_registry_entries() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(CHUNK_PATH);
     // `section_body` panics if the marker is gone, so gutting the catalogue is
     // RED rather than vacuously green.
     let section = section_body(
@@ -2113,7 +2095,7 @@ const MINIMUM_RI_FILES: usize = 6;
 fn cited_test_paths_in_the_chunk_resolve() {
     assert_cited_paths_resolve(
         CHUNK_PATH,
-        &read_chunk(),
+        &read_chunk(CHUNK_PATH),
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,

@@ -74,80 +74,17 @@ use reify_compiler::{
 use reify_core::Severity;
 
 use crate::chunk_cite_gate::cited_source_paths;
+use crate::chunk_io::{
+    GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk, repo_root,
+};
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
-use crate::fence_gate::repo_root;
 use crate::signature_fixtures::{STDLIB_GEOMETRY_OPS_FIXTURE, read_fixture};
-
-/// The chunk this fixture transcribes. Read (never written) to check documented
-/// names against the compiler's registries. If the chunk moves, this const must
-/// move with it — the failure mode is a loud `expect` on the read, not a silent
-/// skip.
-const CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/stdlib.md"
-);
-
-/// The primitive/profile constructor chunk. Read (never written) to justify the
-/// "documented elsewhere" exclusions of the registry → doc guard below. Same
-/// contract as [`CHUNK_PATH`]: if the chunk moves, this const must move with it,
-/// and the failure mode is a loud `expect` on the read, not a silent skip.
-const GEOMETRY_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/geometry.md"
-);
-
-/// The whole chunk corpus served by `reify_language_reference`. The known-gap
-/// exclusion below claims a name is documented in NO chunk, so that claim has to
-/// be checked against every chunk, not just the two named above.
-const CHUNKS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../reify-mcp/src/tools/chunks");
 
 /// Heading of the chunk section whose documented names are checked.
 const CHUNK_SECTION: &str = "## Key Geometry Operations";
-
-/// Read a chunk, panicking loudly (never skipping) if it has moved.
-fn read_chunk(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("{path} must be readable ({e}) — update the chunk path const if the chunk moved")
-    })
-}
-
-/// Every `*.md` under [`CHUNKS_DIR`], concatenated in a stable (sorted) order.
-///
-/// Same loud-panic-never-skip posture as [`read_chunk`]: an unreadable directory
-/// or entry aborts rather than silently shrinking the corpus, because a shrunken
-/// corpus would make the "documented in NO chunk" claim pass vacuously.
-fn read_all_chunks() -> String {
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(CHUNKS_DIR)
-        .unwrap_or_else(|e| {
-            panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunks moved")
-        })
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| panic!("reading an entry of {CHUNKS_DIR} failed ({e})"))
-                .path()
-        })
-        .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    paths.sort();
-
-    // Anti-vacuity: the corpus is 17 chunks today. An empty or near-empty read
-    // would silently turn the known-gap audit into a no-op.
-    assert!(
-        paths.len() >= 10,
-        "anti-vacuity: {CHUNKS_DIR} yielded only {} markdown chunk(s) — the corpus the \
-         known-gap audit reads has moved or been gutted, and the audit gives NO protection",
-        paths.len()
-    );
-
-    paths
-        .iter()
-        .map(|p| read_chunk(&p.to_string_lossy()))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
 /// "Key Geometry Operations" (+ "Curves") table must compile with no
@@ -328,7 +265,7 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
     assert!(
         unrecognised.is_empty(),
         "stdlib.md documents a geometry op the compiler does not have — the \
-         chunk crates/reify-mcp/src/tools/chunks/stdlib.md must be corrected \
+         chunk {CHUNK_PATH} must be corrected \
          (an unknown call name in a `structure def` body compiles silently, so \
          the zero-Error compile smoke cannot catch this). Unrecognised name(s): {}",
         unrecognised.join(", ")
@@ -552,8 +489,8 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 /// "documented elsewhere" would launder it into a false coverage claim — the
 /// exact failure mode this guard exists to catch, one level down.
 ///
-/// Membership here is a claim the guard enforces against the WHOLE corpus (via
-/// [`read_all_chunks`]), not just stdlib.md and geometry.md, so documenting a
+/// Membership here is a claim the guard enforces against the WHOLE corpus (every
+/// chunk [`all_chunks`] lists), not just stdlib.md and geometry.md, so documenting a
 /// parked name in ANY chunk reports it. The list is expected to SHRINK and must
 /// never grow: documenting an entry means deleting it, and class 3 still
 /// reports any entry that has in fact been documented, so a closed gap cannot
@@ -681,13 +618,17 @@ fn geometry_op_doc_coverage_violations(
 fn every_implemented_geometry_op_is_documented_in_a_chunk() {
     let stdlib_md = read_chunk(CHUNK_PATH);
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let all_chunks_md = read_all_chunks();
+    let all_chunks_md = all_chunks("the known-gap audit")
+        .into_iter()
+        .map(|(_, markdown)| markdown)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // Anti-vacuity, every input. An empty registry would make this guard pass
     // trivially, and an emptied scan (heading renamed, rows no longer `**`/
     // backticked) would make it report all 64 names — pin both so neither
-    // failure mode is mistaken for a real signal. (`read_all_chunks` pins its
-    // own corpus size.)
+    // failure mode is mistaken for a real signal. (`all_chunks` pins its own
+    // corpus size.)
     assert!(
         GEOMETRY_FUNCTION_NAMES.len() >= 50,
         "anti-vacuity: GEOMETRY_FUNCTION_NAMES holds only {} name(s) — the registry this \
@@ -745,8 +686,8 @@ const SYNTHETIC_GEOMETRY_MD: &str = "`mentioned_ctor(x, y, z)` builds a thing.";
 /// Mentions `elsewhere_ctor` and nothing else.
 const SYNTHETIC_OTHER_CHUNK_MD: &str = "See also `elsewhere_ctor(v)` for the implicit form.";
 
-/// Stand-in for the whole chunk corpus, mirroring `read_all_chunks`'s
-/// concatenation: everything the three synthetic chunks say, and nothing else.
+/// Stand-in for the whole chunk corpus, joined the way the real guard joins
+/// [`all_chunks`]: everything the three synthetic chunks say, and nothing else.
 fn synthetic_all_chunks() -> String {
     format!("{SYNTHETIC_STDLIB_MD}\n{SYNTHETIC_GEOMETRY_MD}\n{SYNTHETIC_OTHER_CHUNK_MD}")
 }
@@ -1523,9 +1464,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
 /// goes RED at its source.
 #[test]
 fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
-    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    });
+    let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_forms(&markdown);
     assert_form_scan_not_vacuous(&documented);
 
@@ -1541,7 +1480,7 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
          unmirrored even when its NAME is exercised, just at a different arity (task #5583). \
          Remediation: add a call at that arity to \
          crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri, or correct the \
-         signature in crates/reify-mcp/src/tools/chunks/stdlib.md if the compiler does not \
+         signature in {CHUNK_PATH} if the compiler does not \
          accept it. Unmirrored form(s): {}",
         unmirrored
             .iter()

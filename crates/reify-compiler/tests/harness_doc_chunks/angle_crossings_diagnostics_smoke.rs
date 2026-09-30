@@ -60,26 +60,16 @@ use reify_test_support::{
     compile_source_with_stdlib, compile_source_with_stdlib_allow_parse_errors, errors_only,
 };
 
+use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
+
 /// The best-practices exemplar whose `CANONICAL COPY` block this module pins,
 /// read out of the repo's `examples/` tree at compile time.
 ///
 /// `include_str!` (not `fs::read_to_string`) so a moved or renamed exemplar is
-/// a BUILD error rather than a runtime panic — the same choice
-/// `enums_chunk_option_smoke.rs:58-61` makes for the chunk it pins.
+/// a BUILD error rather than a runtime panic.
 const ANGLE_CROSSINGS_EXEMPLAR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/best_practices/angle_crossings.ri"
-));
-
-/// The served `units` language-reference chunk, read from `reify-mcp`'s source
-/// tree at compile time — the same cross-crate read-by-path
-/// `enums_chunk_option_smoke.rs` uses, since `reify-mcp` does not depend on
-/// `reify-compiler` and `language_chunks::get_chunk` is unreachable from here.
-///
-/// `include_str!` again, so a moved or renamed chunk is a build error.
-const UNITS_CHUNK: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/units.md"
 ));
 
 /// The exemplar's `CANONICAL COPY` block transcribes a diagnostic for exactly
@@ -583,7 +573,7 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
                  transcribes, for `{}`:\n  {}\nbut the compiler produced:\n  {:#?}\n\
                  The compiler wording changed: re-measure with `reify check` and update \
                  the CANONICAL COPY block in examples/best_practices/angle_crossings.ri, \
-                 then let crates/reify-mcp/src/tools/chunks/units.md follow — that is the \
+                 then let {UNITS_CHUNK_PATH} follow — that is the \
                  precedence the exemplar itself states.",
                 entry.declaration, entry.message, messages
             )
@@ -668,7 +658,7 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
              produced:\n  {:#?}\nThe parser wording changed: re-measure with \
              `reify check` and update the CANONICAL COPY block in \
              examples/best_practices/angle_crossings.ri, then let \
-             crates/reify-mcp/src/tools/chunks/units.md follow.",
+             {UNITS_CHUNK_PATH} follow.",
             entry.declaration, entry.message, messages
         )
     };
@@ -726,8 +716,8 @@ fn units_chunk_verbatim_parse_error_agrees_with_the_canonical_copy() {
     let rendered = format!("{}: {}", entry.renderer, entry.message);
 
     assert!(
-        UNITS_CHUNK.contains(&rendered),
-        "crates/reify-mcp/src/tools/chunks/units.md re-quotes the spaced-literal \
+        read_chunk(UNITS_CHUNK_PATH).contains(&rendered),
+        "{UNITS_CHUNK_PATH} re-quotes the spaced-literal \
          diagnostic verbatim, but it no longer contains `{rendered}` — the rendered form \
          the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
          transcribes. Fix the exemplar side FIRST: if the compiler wording changed, \

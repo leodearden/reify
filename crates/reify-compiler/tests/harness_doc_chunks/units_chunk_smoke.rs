@@ -67,20 +67,11 @@ use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
+use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
 use crate::geometry_chunk_smoke::{
     assert_module_compiles, called_names, phantom_name_panic, registry_family, reify_tagged_fences,
     strip_reify_comments,
 };
-
-/// The chunk this file owns. Read (never written) at RUNTIME rather than
-/// `include_str!`d, mirroring `geometry_chunk_smoke.rs`'s `CHUNK_PATH`, so an
-/// edit to the markdown is seen by `cargo test` without a rebuild of this crate.
-/// If the chunk moves, this const must move with it — the failure mode is a loud
-/// `expect` on the read, not a silent skip.
-const UNITS_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/units.md"
-);
 
 /// Info string of the fences that MUST compile clean.
 const REIFY_TAG: &str = "reify";
@@ -305,14 +296,6 @@ fn assert_rejected_as_documented(form: &str) {
     );
 }
 
-fn read_chunk() -> String {
-    std::fs::read_to_string(UNITS_CHUNK_PATH).unwrap_or_else(|e| {
-        panic!(
-            "{UNITS_CHUNK_PATH} must be readable ({e}) — update UNITS_CHUNK_PATH if the chunk moved"
-        )
-    })
-}
-
 /// The ```` ```reify ````-tagged fences of units.md, comment-stripped.
 ///
 /// Comment-free because every downstream scan here is a text scan: a call form
@@ -340,7 +323,7 @@ fn units_fence_code(markdown: &str) -> Vec<String> {
 /// is `documented_call_names_in_units_chunk_are_real_registry_entries`.
 #[test]
 fn reify_tagged_fences_in_units_chunk_compile() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let fences = reify_tagged_fences(&markdown, REIFY_TAG, UNITS_CHUNK_PATH);
 
     // Anti-vacuity. Without this, dropping the ```reify tag (or rewriting the
@@ -412,7 +395,7 @@ const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[];
 /// SCOPE — NAMES only; see "What is NOT established" in the module doc.
 #[test]
 fn documented_call_names_in_units_chunk_are_real_registry_entries() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
 
     let mut names: Vec<String> = Vec::new();
     for fence in units_fence_code(&markdown) {
@@ -473,7 +456,7 @@ fn documented_call_names_in_units_chunk_are_real_registry_entries() {
 /// test alone would stay green while the recommended fix rotted.
 #[test]
 fn documented_rejected_forms_are_actually_rejected() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     // Anti-vacuity #1: the floor. Without it, deleting the block (or retagging
@@ -525,7 +508,7 @@ fn documented_rejected_forms_are_actually_rejected() {
 /// crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs::bare_zero_box_dimensions_are_not_special_cased
 #[test]
 fn bare_zero_is_not_special_cased() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     // WHITESPACE-INSENSITIVE on both sides: `box(0,0,0)` and `box( 0, 0, 0 )` are
@@ -582,7 +565,7 @@ const MINIMUM_RI_FILES: usize = 1;
 fn cited_test_paths_in_the_units_chunk_resolve() {
     assert_cited_paths_resolve(
         UNITS_CHUNK_PATH,
-        &read_chunk(),
+        &read_chunk(UNITS_CHUNK_PATH),
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,
@@ -622,7 +605,7 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// observes, and the chunk marks it UNPINNED for exactly that reason.
 #[test]
 fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, EVAL_ONLY_TAG);
 
     assert!(

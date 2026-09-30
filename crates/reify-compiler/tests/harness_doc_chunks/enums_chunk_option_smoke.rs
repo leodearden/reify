@@ -52,13 +52,7 @@ use reify_test_support::{
     parse_and_compile_with_stdlib,
 };
 
-/// The served `enums` chunk, read from `reify-mcp`'s source tree at compile
-/// time. `include_str!` (not `fs::read_to_string`) so a moved/renamed chunk
-/// file is a build error rather than a runtime panic.
-const ENUMS_CHUNK: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/enums.md"
-));
+use crate::chunk_io::{ENUMS_CHUNK_PATH, read_chunk};
 
 /// Heading that opens the section under test.
 const SECTION_HEADING: &str = "## Option Type";
@@ -68,15 +62,16 @@ const SECTION_HEADING: &str = "## Option Type";
 ///
 /// Panics if the heading is absent, so renaming the section fails loudly here
 /// instead of silently reducing every test in this module to a vacuous pass.
-fn option_section_lines() -> Vec<&'static str> {
-    let all: Vec<&str> = ENUMS_CHUNK.lines().collect();
+fn option_section_lines() -> Vec<String> {
+    let chunk = read_chunk(ENUMS_CHUNK_PATH);
+    let all: Vec<&str> = chunk.lines().collect();
     let start = all
         .iter()
         .position(|l| l.trim_end() == SECTION_HEADING)
         .unwrap_or_else(|| {
             panic!(
                 "`{SECTION_HEADING}` section not found in \
-                 crates/reify-mcp/src/tools/chunks/enums.md — the section was renamed or \
+                 {ENUMS_CHUNK_PATH} — the section was renamed or \
                  removed. This module pins that section's examples against the real \
                  compiler; re-point it at the new heading rather than deleting it."
             )
@@ -86,7 +81,7 @@ fn option_section_lines() -> Vec<&'static str> {
         .iter()
         .position(|l| l.starts_with("## "))
         .unwrap_or(rest.len());
-    rest[..end].to_vec()
+    rest[..end].iter().map(|line| line.to_string()).collect()
 }
 
 /// The BODY of every fenced code block inside the `## Option Type` section, in
@@ -101,7 +96,7 @@ fn option_section_lines() -> Vec<&'static str> {
 /// example does not silently pass.
 fn option_section_fences() -> Vec<String> {
     let mut fences: Vec<String> = Vec::new();
-    let mut open: Option<Vec<&str>> = None;
+    let mut open: Option<Vec<String>> = None;
     for line in option_section_lines() {
         if line.trim_start().strip_prefix("```").is_some() {
             match open.take() {
@@ -498,7 +493,7 @@ fn undef_subject_propagates_through_every_documented_combinator() {
             Value::Undef,
             "`{combinator}` must propagate an `undef` subject as `undef` (Kleene \
              three-valued, option_recovery.rs INV-2). It now recovers instead — the \
-             `## Option Type` section in crates/reify-mcp/src/tools/chunks/enums.md \
+             `## Option Type` section in {ENUMS_CHUNK_PATH} \
              claims propagation holds for EVERY combinator, so that sentence must be \
              rewritten in this same diff."
         );
@@ -661,7 +656,7 @@ fn binderless_option_match_still_evaluates_to_undef() {
              compile clean — the chunk's warning calls this failure mode `silent`. The \
              compiler now diagnoses it: {compile_errors:#?}\n\
              That is an improvement, but the `## Option Type` warning in \
-             crates/reify-mcp/src/tools/chunks/enums.md must be rewritten in this same \
+             {ENUMS_CHUNK_PATH} must be rewritten in this same \
              diff to stop claiming the form is accepted without complaint."
         );
 
@@ -684,7 +679,7 @@ fn binderless_option_match_still_evaluates_to_undef() {
              yield undef *silently* — that word in the `## Option Type` warning is why \
              this form is worse than the loud parse error. The evaluator now diagnoses \
              it: {eval_errors:#?}\n\
-             Rewrite the warning in crates/reify-mcp/src/tools/chunks/enums.md in this \
+             Rewrite the warning in {ENUMS_CHUNK_PATH} in this \
              same diff."
         );
     }

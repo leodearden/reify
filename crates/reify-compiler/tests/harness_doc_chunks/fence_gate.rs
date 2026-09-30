@@ -147,10 +147,12 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
-use std::path::{Path, PathBuf};
-
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
+use crate::chunk_io::{
+    CHUNK_FILE_COUNT, CHUNKS_DIR, chunk_label, discover_chunk_stems, read_chunk_file, repo_root,
+    report,
+};
 use crate::geometry_chunk_smoke::reify_tagged_fences;
 
 // ---------------------------------------------------------------------------
@@ -618,103 +620,11 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus discovery
-//
-// reify-mcp does NOT depend on reify-compiler, so these files cannot be
-// `include_str!`-ed from here — they are read by path via the
-// `CARGO_MANIFEST_DIR` idiom that
-// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` (:15) and
-// `geometry_chunk_smoke.rs`'s `CHUNK_PATH` (:351) already use. A wrong path
-// fails loudly at read time rather than silently scanning nothing.
-// ---------------------------------------------------------------------------
-
-const CHUNKS_DIR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks"
-);
-
-const LANGUAGE_CHUNKS_RS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/language_chunks.rs"
-);
-
-/// Every `*.md` stem in the chunk dir, PATH-SORTED.
-///
-/// Sorted because `read_dir` order is filesystem-dependent: without this a
-/// failure list would shuffle between machines and a diff of two runs would be
-/// unreadable. Mirrors `pdoccover`'s sorted-corpus discipline.
-pub(crate) fn discover_chunk_stems() -> Vec<String> {
-    let entries = std::fs::read_dir(CHUNKS_DIR).unwrap_or_else(|e| {
-        panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunk dir moved")
-    });
-
-    let mut stems: Vec<String> = entries
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| panic!("{CHUNKS_DIR}: unreadable dir entry ({e})"))
-                .path()
-        })
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
-        .filter_map(|path| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-    stems.sort();
-    stems
-}
-
-/// The text of one chunk file.
-pub(crate) fn read_chunk_file(stem: &str) -> String {
-    let path = format!("{CHUNKS_DIR}/{stem}.md");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{path} must be readable ({e})"))
-}
-
-/// The repo-relative label used in violation messages, so a failure reads as a
-/// path a developer can open rather than an absolute build-machine path.
-pub(crate) fn chunk_label(stem: &str) -> String {
-    format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
-}
-
-/// Every chunk as `(stem, markdown)`, in stem order, for the corpus-wide check
-/// `gate` names — after asserting the scan found the whole corpus, so a check
-/// over a vacuous scan fails rather than passes.
-pub(crate) fn all_chunks(gate: &str) -> Vec<(String, String)> {
-    let stems = discover_chunk_stems();
-    assert!(
-        stems.len() >= CHUNK_FILE_COUNT,
-        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — {gate} would \
-         be vacuous",
-        stems.len()
-    );
-    stems
-        .into_iter()
-        .map(|stem| {
-            let markdown = read_chunk_file(&stem);
-            (stem, markdown)
-        })
-        .collect()
-}
-
-/// Repo root, derived from this crate's manifest dir
-/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
-/// binary resolves against.
-pub(crate) fn repo_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| {
-            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
-        })
-        .to_path_buf()
-}
-
-// ---------------------------------------------------------------------------
 // Check 4 — every chunk is reachable through the MCP tool
 // ---------------------------------------------------------------------------
+
+/// Where the MCP tool wires each chunk in, repo-relative.
+const LANGUAGE_CHUNKS_RS: &str = "crates/reify-mcp/src/tools/language_chunks.rs";
 
 /// The exact prefix of the `TOPICS` slice literal in `language_chunks.rs`.
 const TOPICS_ANCHOR: &str = "pub const TOPICS: &[&str] = &[";
@@ -2021,6 +1931,22 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("units", 1),
 ];
 
+/// The EXACT number of fences across the whole chunk corpus.
+///
+/// A live count, held to the same standard as `REIFY_FENCE_FLOORS` and for the
+/// same reason: slack is not a safety margin. At `>= 60` against 76 fences,
+/// sixteen could vanish. That is the hollowing the per-file table exists to
+/// close, reappearing one level up. The chunk-file count is `chunk_io`'s
+/// `CHUNK_FILE_COUNT`, held to the same rule.
+///
+/// Compared with `>=` in `assert_corpus_is_not_vacuous`, whose job is to fail
+/// FAST and specifically — a vacuous scan must not be reported as four
+/// unrelated check failures. The EXACTNESS obligation is a separate,
+/// separately-named test, `total_fence_count_is_exact_not_slack`, so a diff that
+/// legitimately adds a fence gets a message telling it to re-measure rather
+/// than a vacuity warning describing a bug that did not happen.
+const TOTAL_FENCE_COUNT: usize = 76;
+
 /// The corpus-wide floor on ```` ```reify-invalid ```` fences.
 ///
 /// `every_reify_invalid_fence_actually_errors` compiles exactly these bodies
@@ -2029,24 +1955,6 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// dimension-crossing sample). Not a per-file table like the `reify` one: the
 /// tag is rare enough that a corpus total still attributes a loss unambiguously,
 /// and a per-file entry would freeze WHICH chunk gets to teach by counterexample.
-/// The EXACT number of `.md` files in the chunks dir, and the EXACT number of
-/// fences across them.
-///
-/// Both are live counts, held to the same standard as `REIFY_FENCE_FLOORS` and
-/// for the same reason: slack is not a safety margin. At `>= 16` against 17
-/// files a whole chunk could be deleted with nothing going red and no constant
-/// to lower; at `>= 60` against 76 fences, sixteen could vanish. That is the
-/// hollowing the per-file table exists to close, reappearing one level up.
-///
-/// They are compared with `>=` HERE because this function's job is to fail FAST
-/// and specifically — a vacuous scan must not be reported as four unrelated
-/// check failures. The EXACTNESS obligation is a separate, separately-named
-/// test, `corpus_counts_are_exact_not_slack`, so a diff that legitimately adds
-/// a chunk or a fence gets a message telling it to re-measure rather than a
-/// vacuity warning describing a bug that did not happen.
-pub(crate) const CHUNK_FILE_COUNT: usize = 17;
-const TOTAL_FENCE_COUNT: usize = 76;
-
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 
 /// ANTI-VACUITY. Asserted BEFORE every corpus check.
@@ -2172,16 +2080,6 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
     );
 }
 
-/// Render an accumulated violation list as one panic message.
-pub(crate) fn report(check: &str, violations: &[String]) {
-    assert!(
-        violations.is_empty(),
-        "{check}: {} violation(s)\n\n{}\n",
-        violations.len(),
-        violations.join("\n\n")
-    );
-}
-
 /// CHECK 2 — no fence anywhere in the corpus is untagged.
 #[test]
 fn no_chunk_fence_is_untagged() {
@@ -2248,13 +2146,13 @@ fn every_reify_invalid_fence_actually_errors() {
 fn every_chunk_is_reachable_through_the_mcp_tool() {
     let stems = discover_chunk_stems();
     assert!(
-        stems.len() >= 16,
-        "the chunk-dir scan found only {} `.md` file(s) — the reachability \
-         check is vacuous",
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} `.md` file(s), expected {CHUNK_FILE_COUNT} — the \
+         reachability check is vacuous",
         stems.len()
     );
 
-    let src = std::fs::read_to_string(LANGUAGE_CHUNKS_RS).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(repo_root().join(LANGUAGE_CHUNKS_RS)).unwrap_or_else(|e| {
         panic!("{LANGUAGE_CHUNKS_RS} must be readable ({e}) — update LANGUAGE_CHUNKS_RS if it moved")
     });
 
@@ -2312,32 +2210,22 @@ fn reify_fence_floors_are_exact_not_slack() {
     }
 }
 
-/// `CHUNK_FILE_COUNT` and `TOTAL_FENCE_COUNT` must EQUAL the live corpus.
+/// `TOTAL_FENCE_COUNT` must EQUAL the live corpus.
 ///
 /// The corpus-level twin of `reify_fence_floors_are_exact_not_slack`, and it
 /// exists because that test's own argument — slack is not a safety margin —
 /// applies just as well one level up. `assert_corpus_is_not_vacuous` compares
 /// with `>=` so a vacuous scan fails fast; without this test that `>=` would be
 /// the only comparison, and the gap between floor and live would be exactly the
-/// number of chunks or fences that could disappear unremarked.
+/// number of fences that could disappear unremarked.
 ///
 /// Growing the corpus is expected and makes this go red on purpose: raise the
-/// constant in the diff that adds the file or fence. What must not happen
-/// silently is the other direction.
+/// constant in the diff that adds the fence. What must not happen silently is
+/// the other direction.
 #[test]
-fn corpus_counts_are_exact_not_slack() {
+fn total_fence_count_is_exact_not_slack() {
     let corpus = corpus();
     assert_corpus_is_not_vacuous(&corpus);
-
-    assert_eq!(
-        corpus.len(),
-        CHUNK_FILE_COUNT,
-        "{CHUNKS_DIR} holds {} `.md` file(s) while CHUNK_FILE_COUNT records \
-         {CHUNK_FILE_COUNT}. Re-measure and record the live count in the SAME \
-         diff that adds or removes a chunk — otherwise the difference is the \
-         number of chunks that can later vanish with every test still green.",
-        corpus.len()
-    );
 
     let total_fences: usize = corpus.iter().map(|doc| doc.parsed().len()).sum();
     assert_eq!(

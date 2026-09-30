@@ -25,6 +25,8 @@
 //!
 //! - `fence_gate` (#5479, same PRD, leaf β) — the repo-wide gate over every
 //!   `chunks/*.md` fence.
+//! - `chunk_io` (#6956) — where the chunk corpus lives, how a chunk is read and
+//!   listed, and how a corpus gate reports.
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
@@ -39,6 +41,8 @@
 mod angle_crossings_diagnostics_smoke;
 #[path = "harness_doc_chunks/chunk_cite_gate.rs"]
 mod chunk_cite_gate;
+#[path = "harness_doc_chunks/chunk_io.rs"]
+mod chunk_io;
 #[path = "harness_doc_chunks/chunk_prose.rs"]
 mod chunk_prose;
 #[path = "harness_doc_chunks/doc_forms.rs"]
