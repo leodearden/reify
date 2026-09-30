@@ -385,3 +385,270 @@ fn already_terminal_header_shapes_are_silent() {
 
     assert_eq!(stale_headers(&project), Vec::<Finding>::new());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lane 2: cite-status-contradiction
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CITE_STATUS_CONTRADICTION: &str = "cite-status-contradiction:";
+
+fn cite_contradictions(project: &Project) -> Vec<Finding> {
+    with_prefix(project.check(), CITE_STATUS_CONTRADICTION)
+}
+
+/// A task that belongs to no PRD, so lane 1 never groups it.
+fn task(id: &str, status: &str) -> TaskMetadata {
+    TaskMetadata {
+        status: status.to_string(),
+        ..legacy_meta(id)
+    }
+}
+
+/// [`LIVE_HEADER`], a blank line, then `body` starting at line 5.
+fn live_prd(body: &[&str]) -> String {
+    format!("{LIVE_HEADER}\n{}\n", body.join("\n"))
+}
+
+/// The `(path, cited id)` of each finding, in emission order. The cited id is
+/// the `#NNNN` right after the summary's `line N: `.
+fn cited(findings: &[Finding]) -> Vec<(String, String)> {
+    findings
+        .iter()
+        .map(|finding| {
+            let after_line = finding
+                .summary
+                .split_once(": #")
+                .map(|(_, rest)| rest)
+                .expect("summary carries ': #<id>'");
+            let id: String = after_line
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            (finding.task_id.clone(), id)
+        })
+        .collect()
+}
+
+#[test]
+fn contradicted_status_parenthetical_is_one_finding() {
+    let prd = "docs/prds/live.md";
+    let project = Project::new()
+        .tracked_file(
+            prd,
+            &live_prd(&["Adopt existing task **#4876** (`deferred`, high) — do not duplicate."]),
+        )
+        .task(task("4876", "done"));
+
+    let findings = cite_contradictions(&project);
+
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    let finding = &findings[0];
+    assert_eq!(finding.pattern, Pattern::PPrdStatus);
+    assert_eq!(finding.severity, Severity::High);
+    assert_eq!(finding.task_id, prd);
+    for needle in ["line 5", "#4876", "'deferred'", "task is done"] {
+        assert!(
+            finding.summary.contains(needle),
+            "{needle} missing: {}",
+            finding.summary
+        );
+    }
+    assert_eq!(
+        finding.evidence,
+        vec![EvidenceRef::File {
+            path: prd.to_string()
+        }]
+    );
+}
+
+/// The calibration pair: the pre-fix doc is stale on both lanes, and the
+/// re-stamped doc is silent although its frozen body keeps the same #4876
+/// line, because a terminal header marks the body as a record.
+#[test]
+fn calibration_pair_pre_fix_fires_both_lanes_and_post_fix_is_silent() {
+    let pre = Project::new()
+        .tracked_file(KERNEL_SEAM_CONTRACTS, PRE_FIX)
+        .leaves(KERNEL_SEAM_CONTRACTS, &kernel_seam_leaf_ids(), "done");
+
+    let findings = pre.check();
+
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    let contradictions = with_prefix(findings.clone(), CITE_STATUS_CONTRADICTION);
+    assert_eq!(
+        cited(&contradictions),
+        [(KERNEL_SEAM_CONTRACTS.to_string(), "4876".to_string())]
+    );
+    assert_eq!(with_prefix(findings, STALE_STATUS_HEADER).len(), 1);
+
+    let post = Project::new()
+        .tracked_file(KERNEL_SEAM_CONTRACTS, POST_FIX)
+        .leaves(KERNEL_SEAM_CONTRACTS, &kernel_seam_leaf_ids(), "done");
+
+    assert_eq!(post.check(), Vec::<Finding>::new());
+}
+
+#[test]
+fn parenthetical_without_a_status_word_is_silent() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/prds/live.md",
+            &live_prd(&["**#4876 (preflight) — DONE.** Rust-side watertightness preflight"]),
+        )
+        .task(task("4876", "cancelled"));
+
+    assert_eq!(cite_contradictions(&project), Vec::<Finding>::new());
+}
+
+#[test]
+fn dated_parentheticals_are_silent_even_when_contradicted() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/prds/live.md",
+            &live_prd(&[
+                "Leaf #5830 (in-progress 2026-08-07) owns the guard.",
+                "Leaf #6759 (in-progress at freeze time, claimed by a lane) owns the port.",
+                "Leaf #1234 (pending as of the decompose) owns the docs.",
+            ]),
+        )
+        .task(task("5830", "done"))
+        .task(task("6759", "done"))
+        .task(task("1234", "done"));
+
+    assert_eq!(cite_contradictions(&project), Vec::<Finding>::new());
+}
+
+/// Statuses are compared by class {live, done, cancelled}: live statuses churn
+/// on a timescale no doc tracks, while a terminal mismatch never heals.
+#[test]
+fn status_classes_decide_contradiction() {
+    let prd = "docs/prds/live.md";
+    let project = Project::new()
+        .tracked_file(
+            prd,
+            &live_prd(&[
+                "- #5101 (pending)",
+                "- #5102 (deferred)",
+                "- #5103 (done)",
+                "- #5104 (cancelled)",
+                "- #5105 (pending-high)",
+                "- #5106 (`in-progress`, claimed — lane 7)",
+                "- #5107 (blocked, LIVE)",
+                "- #5108 (done)",
+                "- #5109 (canceled)",
+            ]),
+        )
+        .task(task("5101", "pending"))
+        .task(task("5102", "pending"))
+        .task(task("5103", "cancelled"))
+        .task(task("5104", "done"))
+        .task(task("5105", "done"))
+        .task(task("5106", "done"))
+        .task(task("5107", "done"))
+        .task(task("5108", "pending"))
+        .task(task("5109", "cancelled"));
+
+    let fired: Vec<String> = cited(&cite_contradictions(&project))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+
+    assert_eq!(fired, ["5103", "5104", "5105", "5106", "5107", "5108"]);
+}
+
+#[test]
+fn unknown_ids_and_prd_relative_indices_are_silent() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/prds/live.md",
+            &live_prd(&[
+                "Leaf #5999 (pending) was never filed.",
+                "See task #5 (done) in the plan table.",
+                "This upholds invariant #7 (pending).",
+            ]),
+        )
+        .task(task("5", "pending"))
+        .task(task("7", "done"));
+
+    assert_eq!(cite_contradictions(&project), Vec::<Finding>::new());
+}
+
+#[test]
+fn capability_manifests_are_silent() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/prds/x.capability-manifest.md",
+            &live_prd(&["Adopt existing task **#4876** (`deferred`, high) — do not duplicate."]),
+        )
+        .task(task("4876", "done"));
+
+    assert_eq!(cite_contradictions(&project), Vec::<Finding>::new());
+}
+
+#[test]
+fn only_the_cite_adjacent_to_the_parenthetical_is_read() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/prds/live.md",
+            &live_prd(&["Chain #5825→#5844 (pending)."]),
+        )
+        .task(task("5825", "done"))
+        .task(task("5844", "done"));
+
+    let fired: Vec<String> = cited(&cite_contradictions(&project))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+
+    assert_eq!(fired, ["5844"]);
+}
+
+#[test]
+fn findings_are_per_cite_deduplicated_and_sorted_by_path_line_and_id() {
+    let project = Project::new()
+        .tracked_file("docs/prds/b.md", &live_prd(&["Leaf #5304 (pending)."]))
+        .tracked_file(
+            "docs/prds/a.md",
+            &live_prd(&[
+                "Leaves #5303 (pending) and #5301 (in-progress), and again #5303 (pending).",
+                "Leaf #5302 (pending).",
+            ]),
+        )
+        .task(task("5301", "done"))
+        .task(task("5302", "done"))
+        .task(task("5303", "done"))
+        .task(task("5304", "done"));
+
+    let findings = cite_contradictions(&project);
+
+    assert_eq!(
+        cited(&findings),
+        [
+            ("docs/prds/a.md".to_string(), "5301".to_string()),
+            ("docs/prds/a.md".to_string(), "5303".to_string()),
+            ("docs/prds/a.md".to_string(), "5302".to_string()),
+            ("docs/prds/b.md".to_string(), "5304".to_string()),
+        ]
+    );
+    assert!(
+        findings[0].summary.contains("line 5"),
+        "{}",
+        findings[0].summary
+    );
+    assert!(
+        findings[2].summary.contains("line 6"),
+        "{}",
+        findings[2].summary
+    );
+}
+
+#[test]
+fn non_prd_tracked_files_are_silent() {
+    let project = Project::new()
+        .tracked_file(
+            "docs/notes/x.md",
+            &live_prd(&["Adopt existing task **#4876** (`deferred`, high) — do not duplicate."]),
+        )
+        .task(task("4876", "done"));
+
+    assert_eq!(cite_contradictions(&project), Vec::<Finding>::new());
+}
