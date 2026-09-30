@@ -149,25 +149,19 @@ fn parse_destructured_import_single_item() {
 
 /// The SPACED form `import a.b {C, D}` is NOT Reify and must be a parse error.
 ///
-/// Task 5931. The canonical destructured form is the DOTTED
-/// `import a.b.{C, D}`, per the `import_path` production in
-/// `docs/reify-language-spec.md` §15 "Grammar Summary", which makes the `'.'`
-/// an explicit terminal before the brace list.
+/// The canonical destructured form is the DOTTED `import a.b.{C, D}`, per the
+/// `import_path` production in `docs/reify-language-spec.md` §15 "Grammar
+/// Summary", which makes the `'.'` an explicit terminal before the brace list
+/// (#5931).
 ///
-/// Read the two tests above with care: they were passing on main for ~5 months
-/// only because tree-sitter ERROR-RECOVERED the stray `.` into a nested
-/// `(ERROR)` node while leaving the `path`/`items` fields intact, and the
-/// `"import_declaration"` dispatch arm in `ts_parser.rs` calls `lower_import`
-/// directly rather than routing through the `check_and_lower!` macro, so that
-/// nested ERROR never became a diagnostic (see the note at that call site).
-/// Their greenness is therefore NOT evidence that the grammar was ever correct.
-///
-/// Conversely, before #5931 the spaced form below parsed CLEANLY and lowered to
-/// `ImportKind::Destructured(["Bolt", "Nut"])` — so without this assertion
-/// nothing at the AST level would ever notice the wrong spelling being
-/// accepted. After the grammar fix the stray `{...}` becomes a sibling ERROR at
-/// `source_file` level, which the `"ERROR"` arm of the source_file dispatch
-/// loop does surface, making `parsed.errors` non-empty.
+/// The two tests above cannot pin that separator: an ERROR nested inside
+/// `import_declaration` never becomes a diagnostic (see the note in
+/// `lower_import`), so they would stay green if the grammar merely
+/// error-recovered the `.` — the CST-level pins live in
+/// tree-sitter-reify/tests/import_items_grammar_tests.rs. The spaced form's
+/// stray `{...}`, by contrast, is a sibling ERROR at `source_file` level, which
+/// the source_file dispatch loop does surface, so this rejection is observable
+/// here.
 #[test]
 fn spaced_destructured_import_is_rejected() {
     let source = "import std.mech {Bolt, Nut}";
@@ -198,8 +192,6 @@ fn spaced_destructured_import_is_rejected() {
 #[test]
 fn empty_and_trailing_comma_destructured_imports_lower_as_written() {
     // The single `ImportDecl` in `source`, with the parse asserted clean.
-    // The tests above predate this and are left as they are — this is an
-    // amendment, not a refactor of the file.
     fn single_import(source: &str) -> ImportDecl {
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(

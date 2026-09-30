@@ -968,8 +968,7 @@ impl<'a> Lowering<'a> {
         let (path, kind) = if let Some(items) = items_node {
             // Destructured: `import a.b.{C, D}` — canonical per the
             // `import_path` production in `docs/reify-language-spec.md` §15
-            // "Grammar Summary"; #5931 corrected the tree-sitter rule, which
-            // had been transcribed without the `.`.
+            // "Grammar Summary".
             //
             // The `items`/`alias` FIELDS are what select the ImportKind here,
             // which is why the brace list stays a field on `import_declaration`

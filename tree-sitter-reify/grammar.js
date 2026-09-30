@@ -280,14 +280,7 @@ module.exports = grammar({
         // (corroborated by that spec's §7.3 "Import Forms" table, row
         // "Destructured import", and by the identical `import_path` production
         // in docs/initial-design/syntax-design-decisions.md §11 "Grammar
-        // summary").
-        //
-        // The COMMENT above was always right; the RULE was the transcription
-        // slip — born without the `.` in c3d42aa84b (2026-03-20) and masked for
-        // ~5 months because tree-sitter error-recovered the stray dot into a
-        // nested (ERROR) node while leaving `path`/`items` intact, so the
-        // dotted form still lowered correctly and its tests stayed green.
-        // Corrected by task #5931; see tests/import_items_grammar_tests.rs.
+        // summary").  Pinned by tests/import_items_grammar_tests.rs (#5931).
         //
         // The braces deliberately stay a SEPARATE `items` field on
         // import_declaration rather than being folded into import_path the way

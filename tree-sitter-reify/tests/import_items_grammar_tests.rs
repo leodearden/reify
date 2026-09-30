@@ -1,7 +1,5 @@
-//! Grammar integration tests for the canonical destructured-import form.
-//!
-//! Task 5931, step-1 (TDD RED): pins the canonical surface syntax for a
-//! destructured import as the DOTTED form `import a.b.{C, D}`.
+//! Grammar integration tests for the canonical destructured-import form, the
+//! DOTTED `import a.b.{C, D}` (#5931).
 //!
 //! Authority: the `import_path` production in `docs/reify-language-spec.md`
 //! §15 "Grammar Summary" — the section that gives the "[c]omplete EBNF grammar
@@ -17,35 +15,26 @@
 //! "Destructured import" row) and by the identical `import_path` production in
 //! `docs/initial-design/syntax-design-decisions.md` §11 "Grammar summary".
 //!
-//! Until step-4 (the `grammar.js` edit) lands, these are RED — and RED in two
-//! distinct directions, which is the whole point:
-//!   * the CANONICAL dotted form parses only via tree-sitter ERROR RECOVERY —
-//!     the stray `.` lands in a sibling `(ERROR [0,15]-[0,16])` node inside the
-//!     `import_declaration`, leaving `path`/`items` intact.  The AST-level
-//!     tests in `crates/reify-syntax/tests/harness_syntax/import_tests.rs`
-//!     have therefore been passing on main for ~5 months without the grammar
-//!     ever being correct.  Their greenness is NOT evidence of a correct rule.
-//!   * the SPACED form `import a.b {C, D}` parses CLEANLY today, i.e. today's
-//!     grammar officially admits the wrong spelling and merely tolerates the
-//!     right one.
+//! The AST-level tests in `crates/reify-syntax/tests/harness_syntax/import_tests.rs`
+//! cannot pin the separator on their own: tree-sitter can error-recover a stray
+//! `.` into an `(ERROR)` node nested inside `import_declaration` while leaving
+//! `path` and `items` intact, so the dotted form would still lower correctly.
+//! These tests therefore assert on the CST itself, counting every ERROR node.
 //!
 //! Coverage:
-//! * **(a)** Canonical `import std.mech.{Bolt, Nut}` — zero ERROR nodes, and the
-//!   CST shape survives: `path` = `import_path(std, mech)`, `items` =
-//!   `import_items(Bolt, Nut)`.
+//! * **(a)** Canonical `import std.mech.{Bolt, Nut}` — zero ERROR nodes, with
+//!   `path` = `import_path(std, mech)` and `items` = `import_items(Bolt, Nut)`.
 //! * **(b)** Single item `import std.mech.{Bolt}` — likewise clean.
-//! * **(c)** NEGATIVE: spaced `import std.mech {Bolt, Nut}` MUST produce at
-//!   least one ERROR node.  This is the assertion that actually pins the
-//!   decision rather than merely permitting it.
-//! * **(d)** REGRESSION: the other `import_path` consumers keep parsing cleanly.
-//!   `import_path` gains a GLR `conflicts` entry in step-4, so these guard
-//!   against a split-state regression.
+//! * **(c)** NEGATIVE: spaced `import std.mech {Bolt, Nut}` produces at least
+//!   one ERROR node.  This is the assertion that pins the decision rather than
+//!   merely permitting the canonical spelling.
+//! * **(d)** REGRESSION: the other `import_path` consumers parse cleanly despite
+//!   the GLR `conflicts` entry the dotted form requires on `import_path`.
 //! * **(e)** DIVERGENCE: interior whitespace before the brace list
-//!   (`import a . { B }`) is accepted HERE and rejected by the GUI's Lezer
-//!   port — the authoritative half of that port's one deliberate narrowing.
+//!   (`import a . { B }`) is accepted here and rejected by the GUI's Lezer port.
 //! * **(f)** LATITUDE: the empty (`import a.{}`) and trailing-comma
 //!   (`import a.{Foo,}`) item lists, which §15's EBNF does not describe but
-//!   `commaSep` admits. Added in the review round, never RED.
+//!   `commaSep` admits.
 //!
 //! See also: `tree-sitter-reify/test/corpus/import_items.txt` for the
 //! corpus-level CST documentation, runnable via `tree-sitter test`.
@@ -96,9 +85,9 @@ fn find_node_by_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree
 
 /// Count nodes of kind `ERROR` anywhere in the tree.
 ///
-/// `Node::has_error()` alone is not sufficient here: the pre-step-4 failure mode
-/// is a *nested* `(ERROR)` sibling inside `import_declaration` while `path` and
-/// `items` remain well-formed, so the assertion must look at every node.
+/// The failure mode this guards is a *nested* `(ERROR)` sibling inside
+/// `import_declaration` while `path` and `items` remain well-formed, so the
+/// count looks at every node rather than at the declaration's fields.
 fn count_error_nodes(node: tree_sitter::Node) -> usize {
     collect_kinds(node).iter().filter(|k| *k == "ERROR").count()
 }
@@ -146,27 +135,44 @@ fn parse_clean(source: &str) -> tree_sitter::Tree {
     tree
 }
 
+/// The identifiers inside the `items` field of the single import in `source`,
+/// with the parse asserted clean.
+fn item_identifiers(source: &str) -> Vec<String> {
+    let tree = parse_clean(source);
+    let root = tree.root_node();
+    let kinds = collect_kinds(root);
+
+    let decl = find_node_by_kind(root, "import_declaration")
+        .unwrap_or_else(|| panic!("expected an `import_declaration` node; got kinds: {kinds:?}"));
+    let items = decl
+        .child_by_field_name("items")
+        .unwrap_or_else(|| panic!("`{source}` must have an `items` field; kinds: {kinds:?}"));
+    assert_eq!(
+        items.kind(),
+        "import_items",
+        "the `items` field must be an `import_items` node; kinds: {kinds:?}"
+    );
+    identifier_children(items, source.as_bytes())
+}
+
 // ── (a) Canonical form: `import std.mech.{Bolt, Nut}` ────────────────────────
 
-/// (a) The canonical dotted destructured import parses with a CLEAN CST.
-///
-/// RED until step-4: today the stray `.` becomes `(ERROR [0,15]-[0,16])`
-/// nested inside the `import_declaration`, alongside intact `path`/`items`
-/// fields — which is exactly why the AST-level tests never noticed.
+/// (a) The canonical dotted destructured import parses with a CLEAN CST: the
+/// `.` is a terminal of the rule, not a token the parser recovers from.
 #[test]
 fn canonical_dotted_destructured_import_parses_cleanly() {
     let source = "import std.mech.{Bolt, Nut}";
     parse_clean(source);
 }
 
-/// (a) The canonical form's CST shape survives the fix unchanged:
-/// `import_declaration` keeps a `path` field holding `import_path(std, mech)`
-/// and a separate `items` field holding `import_items(Bolt, Nut)`.
+/// (a) The canonical form's CST keeps two separate fields on
+/// `import_declaration`: `path` holding `import_path(std, mech)` and `items`
+/// holding `import_items(Bolt, Nut)`.
 ///
-/// The separate `items` field is load-bearing: `lower_import`
-/// (`crates/reify-syntax/src/ts_parser.rs:520-548`) distinguishes
+/// The separate `items` field is load-bearing: `lower_import` in
+/// `crates/reify-syntax/src/ts_parser.rs` distinguishes
 /// `ImportKind::Destructured` from Aliased/Entity/Module by which optional
-/// FIELD is present, so step-4 must add only the `'.'` terminal and must NOT
+/// FIELD is present, so the grammar adds only the `'.'` terminal and does NOT
 /// fold the braces into `import_path` the way the spec EBNF nests them.
 #[test]
 fn canonical_dotted_destructured_import_has_path_and_items_fields() {
@@ -210,24 +216,12 @@ fn canonical_dotted_destructured_import_has_path_and_items_fields() {
 // ── (b) Single item: `import std.mech.{Bolt}` ────────────────────────────────
 
 /// (b) A single-item destructured import parses cleanly and yields `items == [Bolt]`.
-///
-/// RED until step-4.
 #[test]
 fn single_item_dotted_destructured_import_parses_cleanly() {
-    let source = "import std.mech.{Bolt}";
-    let tree = parse_clean(source);
-    let root = tree.root_node();
-    let kinds = collect_kinds(root);
-
-    let decl = find_node_by_kind(root, "import_declaration")
-        .unwrap_or_else(|| panic!("expected an `import_declaration` node; got kinds: {kinds:?}"));
-    let items = decl.child_by_field_name("items").unwrap_or_else(|| {
-        panic!("`import_declaration` must have an `items` field; kinds: {kinds:?}")
-    });
     assert_eq!(
-        identifier_children(items, source.as_bytes()),
+        item_identifiers("import std.mech.{Bolt}"),
         vec!["Bolt".to_string()],
-        "single-item `items` must hold exactly [Bolt]; kinds: {kinds:?}"
+        "single-item `items` must hold exactly [Bolt]"
     );
 }
 
@@ -236,9 +230,8 @@ fn single_item_dotted_destructured_import_parses_cleanly() {
 /// (c) The SPACED form `import std.mech {Bolt, Nut}` MUST be a parse error.
 ///
 /// This is the assertion that pins the decision rather than merely permitting
-/// the canonical spelling.  RED until step-4 for the opposite reason to (a) and
-/// (b): today the spaced form parses CLEANLY, so today's grammar officially
-/// admits the form the spec does not describe.
+/// the canonical spelling: without it, a grammar that admitted both spellings
+/// would pass every other test here.
 #[test]
 fn spaced_destructured_import_is_a_parse_error() {
     let source = "import std.mech {Bolt, Nut}";
@@ -258,16 +251,14 @@ fn spaced_destructured_import_is_a_parse_error() {
 
 // ── (d) REGRESSION: the other `import_path` consumers stay clean ─────────────
 
-/// (d) Every other production that reaches `import_path` still parses with zero
-/// ERROR nodes after step-4.
+/// (d) Every other production that reaches `import_path` parses with zero
+/// ERROR nodes.
 ///
-/// `import_path` gains a GLR `conflicts` entry in step-4 (mandatory — without it
+/// `import_path` carries a GLR `conflicts` entry (mandatory — without it
 /// `tree-sitter generate` aborts on "Unresolved conflict for symbol sequence:
 /// 'import' identifier • '.'").  A `conflicts` entry changes the generated parse
-/// table's state splitting, so these shared-rule consumers must be pinned
-/// against a split-state regression.
-///
-/// These are GREEN before AND after step-4.
+/// table's state splitting, so these shared-rule consumers are pinned against a
+/// split-state regression.
 #[test]
 fn regression_other_import_path_forms_parse_cleanly() {
     for source in [
@@ -298,49 +289,21 @@ fn regression_combined_import_file_parses_cleanly() {
     parse_clean(source);
 }
 
-// ── Review round: the shapes adjacent to the settled one ────────────────
+// ── The shapes adjacent to the separator ────────────────────────────────
 //
-// #5931 settled the SEPARATOR. These pin the two neighbouring properties that
-// the settling left unasserted, so that neither can flip without a test
+// These pin the two properties next to the separator — whitespace around it
+// and the bounds of the item list — so that neither can flip without a test
 // noticing.
 
-/// The identifiers inside the `items` field of the single import in `source`,
-/// with the parse asserted clean.
+/// (e) Interior whitespace before the brace list is ACCEPTED here: tree-sitter
+/// lexes the `.` and the `{` as two separate tokens with whitespace between
+/// them as an extra.
 ///
-/// The enumerated tests above predate this helper and are left as they are —
-/// this is an amendment, not a refactor of the file.
-fn item_identifiers(source: &str) -> Vec<String> {
-    let tree = parse_clean(source);
-    let root = tree.root_node();
-    let kinds = collect_kinds(root);
-
-    let decl = find_node_by_kind(root, "import_declaration")
-        .unwrap_or_else(|| panic!("expected an `import_declaration` node; got kinds: {kinds:?}"));
-    let items = decl
-        .child_by_field_name("items")
-        .unwrap_or_else(|| panic!("`{source}` must have an `items` field; kinds: {kinds:?}"));
-    assert_eq!(
-        items.kind(),
-        "import_items",
-        "the `items` field must be an `import_items` node; kinds: {kinds:?}"
-    );
-    identifier_children(items, source.as_bytes())
-}
-
-/// (e) Interior whitespace before the brace list is ACCEPTED here.
-///
-/// This is the authoritative half of the GUI Lezer port's ONE deliberate
-/// narrowing. tree-sitter lexes the `.` and the `{` as two separate anonymous
-/// tokens with whitespace between them as an extra, so `import a . { B }` is
-/// well-formed. The port cannot follow: it folds both into a single
-/// `ImportItemsOpen` token to escape a shift/reduce conflict that
-/// lezer-generator, having no `conflicts` escape hatch, cannot otherwise
-/// resolve — see the ImportDeclaration comment in gui/src/editor/reify.grammar.
-///
-/// Pinning BOTH halves is what makes that divergence a decision rather than
-/// drift: the rejecting half is asserted by `rejects interior whitespace in the
-/// opener` in gui/src/__tests__/reifyGrammarCorpus.test.ts, so whichever side
-/// moves, a test fails instead of the two grammars silently parting ways.
+/// The GUI's Lezer port rejects it — its one deliberate divergence, explained
+/// at the ImportDeclaration comment in gui/src/editor/reify.grammar — and pins
+/// that half in `rejects interior whitespace in the opener` in
+/// gui/src/__tests__/reifyGrammarCorpus.test.ts, so whichever side moves, a
+/// test fails instead of the two grammars silently parting ways.
 #[test]
 fn interior_whitespace_before_the_brace_list_is_accepted() {
     assert_eq!(
