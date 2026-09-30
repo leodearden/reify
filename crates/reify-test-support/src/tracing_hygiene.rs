@@ -1,3 +1,129 @@
+//! Construct lint: every tracing subscriber that test code installs must come
+//! from this crate's auto-priming constructors ([`crate::CapturingSubscriberBuilder`],
+//! [`crate::CountingSubscriberBuilder`], [`crate::warn_counting_subscriber`] and
+//! their wrappers). A hand-rolled subscriber bypasses
+//! [`crate::prime_tracing_callsite_cache`] and re-opens the intermittent
+//! zero-event flake that tasks 6273 and 5624 closed. That function's docs are
+//! the authoritative account of the mechanism.
+//!
+//! The scanner and collector here are pure: which directories may define a
+//! subscriber is policy, and it lives in this module's workspace ratchet test.
+
+use crate::ignore_hygiene::walk_rs_files;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// Matches every rustfmt-produced `Subscriber` trait-impl header, including a
+/// split generic list whose `> Trait for Type` tail stays on one line.
+const TRAIT_IMPL_NEEDLE: &str = "Subscriber for ";
+
+/// Matches any use of the `tracing-subscriber` crate, whose subscribers never prime.
+const TRACING_SUBSCRIBER_CRATE_NEEDLE: &str = "tracing_subscriber::";
+
+/// Which hand-rolled subscriber construct a source line carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriberConstruct {
+    /// An `impl ... Subscriber for ...` header.
+    TraitImpl,
+    /// A `tracing_subscriber::` path.
+    TracingSubscriberCrate,
+}
+
+/// One hand-rolled subscriber construct found in a single source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandRolledSubscriberSite {
+    /// 1-based line number.
+    pub line: usize,
+    pub construct: SubscriberConstruct,
+    /// The trimmed source line.
+    pub text: String,
+}
+
+/// A [`HandRolledSubscriberSite`] located in a workspace file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSubscriberSite {
+    /// Relative to the workspace root passed to
+    /// [`collect_workspace_hand_rolled_subscriber_sites`].
+    pub path: PathBuf,
+    pub site: HandRolledSubscriberSite,
+}
+
+impl fmt::Display for WorkspaceSubscriberSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}: {:?}: {}",
+            self.path.display(),
+            self.site.line,
+            self.site.construct,
+            self.site.text
+        )
+    }
+}
+
+/// Scan one Rust source text for hand-rolled subscriber constructs, returning
+/// every hit in source order.
+///
+/// Whole-line `//` comments (`///`, `//!` and regular `//`) are skipped: a
+/// commented-out subscriber has no runtime consequence. Known limits of this
+/// line-oriented scan: `/* */` block comments and string literals are not
+/// excluded, and a trailing `// ...` on a code line is still scanned.
+pub fn find_hand_rolled_subscriber_sites(source: &str) -> Vec<HandRolledSubscriberSite> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter_map(|(idx, line)| {
+            let construct = if line.contains(TRAIT_IMPL_NEEDLE) {
+                SubscriberConstruct::TraitImpl
+            } else if line.contains(TRACING_SUBSCRIBER_CRATE_NEEDLE) {
+                SubscriberConstruct::TracingSubscriberCrate
+            } else {
+                return None;
+            };
+            Some(HandRolledSubscriberSite {
+                line: idx + 1,
+                construct,
+                text: line.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Walk `workspace_root` with [`walk_rs_files`] under `include`, and collect
+/// every hand-rolled subscriber site, sorted by `(path, line)`.
+///
+/// Per-file I/O errors are silently skipped, the same policy as
+/// [`crate::temp_dirs::collect_workspace_unguarded_temp_dirs`]: a file deleted
+/// mid-walk by a concurrent build must not become a spurious site.
+pub fn collect_workspace_hand_rolled_subscriber_sites(
+    workspace_root: &Path,
+    include: impl Fn(&Path) -> bool,
+) -> Vec<WorkspaceSubscriberSite> {
+    let mut sites: Vec<WorkspaceSubscriberSite> = walk_rs_files(workspace_root, include)
+        .into_iter()
+        .filter_map(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|source| (path, source))
+        })
+        .flat_map(|(path, source)| {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(&path)
+                .to_path_buf();
+            find_hand_rolled_subscriber_sites(&source)
+                .into_iter()
+                .map(move |site| WorkspaceSubscriberSite {
+                    path: rel.clone(),
+                    site,
+                })
+        })
+        .collect();
+    sites.sort_by(|a, b| (&a.path, a.site.line).cmp(&(&b.path, b.site.line)));
+    sites
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,18 +224,33 @@ mod tests {
                 .expect("create fixture dir");
             std::fs::write(&path, contents).expect("write fixture file");
         };
-        write("a/src/lib.rs", "struct X;\nimpl tracing::Subscriber for X {}\n");
-        write("b/tests/t.rs", "struct Y;\nimpl tracing::Subscriber for Y {}\n");
+        write(
+            "a/src/lib.rs",
+            "struct X;\nimpl tracing::Subscriber for X {}\n",
+        );
+        write(
+            "b/tests/t.rs",
+            "struct Y;\nimpl tracing::Subscriber for Y {}\n",
+        );
         write("c/src/clean.rs", "fn clean() {}\n");
 
-        let filtered = collect_workspace_hand_rolled_subscriber_sites(root, |rel| !rel.starts_with("b"));
-        assert_eq!(filtered.len(), 1, "expected exactly one site, got {filtered:?}");
+        let filtered =
+            collect_workspace_hand_rolled_subscriber_sites(root, |rel| !rel.starts_with("b"));
+        assert_eq!(
+            filtered.len(),
+            1,
+            "expected exactly one site, got {filtered:?}"
+        );
         assert_eq!(filtered[0].path, PathBuf::from("a/src/lib.rs"));
         assert_eq!(filtered[0].site.line, 2);
         assert_eq!(filtered[0].site.construct, SubscriberConstruct::TraitImpl);
 
         let everything = collect_workspace_hand_rolled_subscriber_sites(root, |_| true);
-        assert_eq!(everything.len(), 2, "expected two sites, got {everything:?}");
+        assert_eq!(
+            everything.len(),
+            2,
+            "expected two sites, got {everything:?}"
+        );
         assert_eq!(
             everything
                 .iter()
