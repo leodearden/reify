@@ -3,6 +3,8 @@
 //! Tests that visibility metadata is correctly set on compiled types
 //! based on declaration kind and `pub` keyword presence.
 
+use reify_test_support::{get_value_cell, get_value_cell_of};
+
 // ── Step 7: param and let default visibility ─────────────────────
 
 #[test]
@@ -13,12 +15,7 @@ fn compile_param_visibility_public() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let compiled = reify_compiler::compile(&parsed);
 
-    let template = &compiled.templates[0];
-    let w_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "w")
-        .unwrap();
+    let w_cell = get_value_cell(&compiled, "w");
     assert_eq!(w_cell.visibility, reify_compiler::Visibility::Public);
 }
 
@@ -31,12 +28,7 @@ fn compile_let_visibility_private_by_default() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let compiled = reify_compiler::compile(&parsed);
 
-    let template = &compiled.templates[0];
-    let vol_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "vol")
-        .unwrap();
+    let vol_cell = get_value_cell(&compiled, "vol");
     assert_eq!(vol_cell.visibility, reify_compiler::Visibility::Private);
 }
 
@@ -57,12 +49,7 @@ fn compile_pub_let_visibility_public() {
     );
     let compiled = reify_compiler::compile(&parsed);
 
-    let template = &compiled.templates[0];
-    let vol_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "volume")
-        .unwrap();
+    let vol_cell = get_value_cell(&compiled, "volume");
     assert_eq!(vol_cell.visibility, reify_compiler::Visibility::Public);
 }
 
@@ -178,11 +165,7 @@ fn backward_compat_bracket_compiles_cleanly() {
     }
 
     // The volume let should be Private
-    let volume = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "volume")
-        .expect("should have 'volume' value cell");
+    let volume = get_value_cell_of(template, "volume");
     assert_eq!(volume.kind, reify_compiler::ValueCellKind::Let);
     assert_eq!(volume.visibility, reify_compiler::Visibility::Private);
 }
