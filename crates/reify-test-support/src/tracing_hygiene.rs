@@ -259,4 +259,78 @@ mod tests {
             BTreeSet::from([PathBuf::from("a/src/lib.rs"), PathBuf::from("b/tests/t.rs")]),
         );
     }
+
+    /// The crate that owns [`crate::prime_tracing_callsite_cache`], and the
+    /// only place allowed to define subscribers. Its constructors prime, and
+    /// its own tests (the `*_callsite_race.rs` guards,
+    /// `priming_lost_race_diagnostic.rs`'s `Competing`, `tracing_support.rs`'s
+    /// `ForwardingSubscriber`) hand-roll deliberately.
+    const SUBSCRIBER_OWNER: &str = "crates/reify-test-support";
+
+    #[test]
+    fn workspace_tracing_subscribers_are_built_only_by_reify_test_support() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/reify-test-support has a parent (crates/)")
+            .parent()
+            .expect("crates/ has a parent (the repo root)");
+
+        let all_rs_files = walk_rs_files(repo_root, |_| true);
+        assert!(
+            all_rs_files.len() > 500,
+            "walker found only {} .rs file(s) — expected >500; the walker may \
+             be broken, or repo_root resolved to the wrong directory",
+            all_rs_files.len()
+        );
+        let sentinel = repo_root.join("gui/src-tauri/src/tests/engine_tests.rs");
+        assert!(
+            all_rs_files.contains(&sentinel),
+            "sentinel file {sentinel:?} not found in walker output — the sweep \
+             no longer reaches the GUI crate's tracing tests"
+        );
+        let readable = crate::temp_dirs::count_readable_rs_files(&all_rs_files);
+        let unread = all_rs_files.len().saturating_sub(readable);
+        assert!(
+            unread <= 5,
+            "the walker found {} .rs file(s) but only {readable} could be \
+             read — {unread} file(s) silently failed; the sweep may be blind \
+             to real hand-rolled subscribers in those files",
+            all_rs_files.len(),
+        );
+
+        let owner_sites = collect_workspace_hand_rolled_subscriber_sites(repo_root, |rel| {
+            rel.starts_with(SUBSCRIBER_OWNER)
+        });
+        let owner_impl_file = Path::new(SUBSCRIBER_OWNER).join("src/tracing_support.rs");
+        assert!(
+            owner_sites.iter().any(|found| found.path == owner_impl_file
+                && found.site.construct == SubscriberConstruct::TraitImpl),
+            "positive control failed: the scanner found no TraitImpl site in \
+             {owner_impl_file:?}, which defines real subscribers — the scanner \
+             no longer recognises the real-world impl shape, so a clean \
+             enforced sweep below would be vacuous. Owner sites found: {owner_sites:?}"
+        );
+
+        let enforced = collect_workspace_hand_rolled_subscriber_sites(repo_root, |rel| {
+            !rel.starts_with(SUBSCRIBER_OWNER)
+        });
+        assert!(
+            enforced.is_empty(),
+            "Found {} hand-rolled tracing subscriber construct(s) outside {SUBSCRIBER_OWNER}:\n  {}\n\n\
+             Build the subscriber with reify_test_support's \
+             CapturingSubscriberBuilder / CountingSubscriberBuilder / \
+             warn_capturing_subscriber / warn_counting_subscriber (/ \
+             warn_counting_guard), which prime tracing's process-global \
+             callsite-Interest cache; see prime_tracing_callsite_cache. If \
+             none fits, extend them in \
+             crates/reify-test-support/src/tracing_support.rs rather than \
+             hand-rolling.",
+            enforced.len(),
+            enforced
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  "),
+        );
+    }
 }
