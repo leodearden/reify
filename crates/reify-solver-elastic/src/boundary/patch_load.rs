@@ -24,6 +24,12 @@ const TET_FACES: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
 /// A face shared by two tets is interior and never returned, even when all
 /// its nodes are in the patch. Output follows `tets` order and, within a tet,
 /// a fixed local face order, so it is deterministic.
+///
+/// [`crate::boundary_surface_mesh`] applies the same free-face rule (a sorted,
+/// orientation-free key tallied in element order) and parts ways with it on a
+/// face shared by three or more tets: it rejects such a non-manifold mesh with
+/// [`crate::RefineError::NonManifoldBoundary`], while this enumerator counts
+/// the face as not free and drops it without error.
 pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) -> Vec<[usize; 3]> {
     let candidates: Vec<[usize; 3]> = tets
         .iter()
@@ -52,8 +58,15 @@ pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) 
 /// their line of action is the patch's area centroid (the one-point face rule
 /// is exact for linear integrands). Neither depends on the triangulation.
 ///
+/// The patch is read from its node set as every free face whose three
+/// corners are all in `patch_nodes`. That reading is exact for a planar face
+/// patch such as the cantilever's x_max face. For a non-planar face or an
+/// edge it can also pick up triangles of an adjacent face whose corners all
+/// sit on the shared boundary curve — say, a cap triangle spanning three rim
+/// nodes of a cylinder — and the traction then acts on those triangles too.
+///
 /// A patch covering no free-face area — a single vertex (a vertex target), a
-/// collinear edge (a body whose x-extreme is an edge), or interior faces only
+/// straight edge (a body whose x-extreme is an edge), or interior faces only
 /// — has no traction reading, so `resultant` is split equally over
 /// `patch_nodes` as concentrated loads. An empty patch or a zero `resultant`
 /// adds nothing.
@@ -214,18 +227,6 @@ mod tests {
                 c[2] + s * coords[n][2],
             ]
         })
-    }
-
-    fn tri_area(coords: &[[f64; 3]], tri: &[usize; 3]) -> f64 {
-        let [a, b, c] = tri.map(|n| coords[n]);
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let n = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
-        0.5 * dot(n, n).sqrt()
     }
 
     /// The fea_body_cantilever_adaptive.ri box (1.0 × 0.1 × 0.1 m) under three
@@ -391,7 +392,12 @@ mod tests {
     #[test]
     fn free_faces_within_keeps_only_boundary_faces() {
         let (coords, tets) = graded_box_p1_mesh(&[0.0, 0.5, 1.0], &[0.0, 0.1], &[0.0, 0.1]);
-        let area = |faces: &[[usize; 3]]| faces.iter().map(|t| tri_area(&coords, t)).sum::<f64>();
+        let area = |faces: &[[usize; 3]]| {
+            faces
+                .iter()
+                .map(|t| triangle_area(t.map(|n| coords[n])))
+                .sum::<f64>()
+        };
 
         let tip = free_faces_within(&tets, |n| coords[n][0] == 1.0);
         assert_eq!(tip.len(), 2);

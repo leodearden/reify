@@ -6,8 +6,9 @@
 //!
 //! # Additive accumulation
 //!
-//! The three Neumann `apply_*` primitives (`apply_point_load`,
-//! `apply_body_force`, `apply_traction_load`) are designed to compose
+//! The three element-level Neumann `apply_*` primitives (`apply_point_load`,
+//! `apply_body_force`, `apply_traction_load`) and `apply_patch_resultant`,
+//! the mesh-level composite built on them, are designed to compose
 //! additively into a shared `&mut [f64]` global load vector. Callers should:
 //!
 //! ```ignore

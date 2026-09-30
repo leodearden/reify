@@ -3111,8 +3111,7 @@ pub(crate) fn solve_cantilever_fea(
     //
     // The fully fixed root face is a deliberate modelling choice. Its perimeter
     // is a re-entrant clamp singularity (stress unbounded at the clamp edges), so
-    // the Z-Z indicator and Dörfler marks concentrate there under refinement —
-    // not a load-model defect; task 7448 left it in place as a non-goal.
+    // the Z-Z indicator and Dörfler marks concentrate there under refinement.
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -8041,9 +8040,8 @@ mod tests {
     /// tip face, which is exactly what an x_max pressure `p` with
     /// `F = -p·W·H·x̂` assembles — same P1 triangles, tractions equal to ~1 ulp.
     /// The two solves then differ only by CG stopping noise. CG's tolerance
-    /// bounds the residual, not this gap, so the 1e-6 bound is empirical: the
-    /// gap measured ≤ 8e-9 (the solves stop one CG iteration apart) against
-    /// ~3e-2 for the pre-7448 equal split, > 100x margin on both sides.
+    /// bounds the residual, not this gap, so the 1e-6·max|u| bound is
+    /// empirical, set between that noise and an equal split's gap.
     /// Checked at the default grid and at a non-default grid of the kind the
     /// uniform adaptive lane (`CantileverAdaptiveProblem::refine`) produces.
     #[test]
@@ -13235,22 +13233,24 @@ mod tests {
         );
     }
 
-    /// Task 7448: the tip load the realized arm applies keeps its resultant
-    /// and line of action (the tip-face centroid) across real gmsh remeshes
-    /// of the fea_body_cantilever_adaptive.ri box, so consecutive adaptive
-    /// iterations solve the same boundary-value problem.
+    /// Task 7448: the tip load step (`cantilever_tip_load`) keeps its
+    /// resultant and line of action (the tip-face centroid) across real gmsh
+    /// remeshes of the fea_body_cantilever_adaptive.ri box, so consecutive
+    /// adaptive iterations solve the same boundary-value problem.
     ///
-    /// The tip set is the solve's own coordinate selection (`fea.tip_nodes`)
-    /// and the load is the solve's own load step (`cantilever_tip_load`), so
-    /// an equal split fails the line-of-action check on the graded mesh.
+    /// The tip set is the realized arm's own coordinate selection, read back
+    /// as `fea.tip_nodes`; an equal split over it fails the line-of-action
+    /// check on the graded mesh. The load vector is recomputed from that set,
+    /// not read out of the solve, so the solve's use of `cantilever_tip_load`
+    /// is pinned by
+    /// `tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face`.
     ///
     /// The marks are chosen here, not by Dörfler: a consistent traction puts
     /// no Dirac loads on the tip, so Dörfler marks gather at the root clamp
     /// and need not touch the tip face, which would leave the tip set
     /// unchanged and the invariance vacuous. Marking the -y half of the tip
     /// region grades the tip face one-sidedly, the adversarial case for an
-    /// equal split. The gmsh-free discrimination is patch_load's graded test
-    /// and `tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face`.
+    /// equal split. The gmsh-free discrimination is patch_load's graded test.
     #[test]
     fn realized_tip_load_keeps_its_resultant_and_line_of_action_across_remeshes() {
         if !reify_solver_elastic::GMSH_AVAILABLE {
@@ -13260,10 +13260,11 @@ mod tests {
         const TIP_FORCE: [f64; 3] = [0.0, 0.0, -1000.0];
         const SEED_SIZE: f64 = 0.05;
         const REFINE_PASSES: usize = 2;
-        // Measured ≤ 3e-16 m; the bound also absorbs gmsh's f32 vertex rounding
-        // (≤ ~1e-7 m at x ≈ 1.0) should a tip-face vertex sit off the plane.
+        // Absorbs gmsh's f32 vertex rounding (~1e-7 m at x ≈ 1.0) should a
+        // tip-face vertex sit off the plane.
         const CENTROID_TOL_M: f64 = 1e-6;
-        // Measured 1.9e-2 m on the last mesh (tip nodes 20 -> 76 -> 312).
+        // Far above CENTROID_TOL_M, so the graded fixture tells an equal split
+        // from the traction.
         const MIN_EQUAL_SPLIT_OFFSET_M: f64 = 1e-3;
         let in_graded_region = |c: [f64; 3]| c[0] > 0.9 && c[1] < 0.05;
 
