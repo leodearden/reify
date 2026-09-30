@@ -83,7 +83,7 @@ use crate::list_helpers::LIST_HELPER_NAMES;
 use crate::math_signatures::{
     MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
 };
-use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+use crate::orientation_signatures::{ORIENTATION_DECOMPOSER_FN_NAMES, ORIENTATION_TYPED_FN_NAMES};
 use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
 use crate::units::{
     AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
@@ -284,19 +284,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "joint_range",
     "joint_ratio",
     "joint_offset",
-    // --- orientation decomposers — owner #6004 (registry τ2) ---------------
-    // The four decomposers return heterogeneous Maps that τ2 gives nominal
-    // structures (`AxisAngle`, `Twist`).
-    //
-    // The `bbox`/`bbox_size`/`bbox_center` trio USED to sit here awaiting
-    // #6081's Length-valued ruling. That ruling landed, and #6081 registered
-    // all three in `units::DATUM_CONSTRUCTOR_NAMES`, so they are no longer
-    // deferred — `eval_deferred_names_are_disjoint_from_every_registered_family`
-    // is what named the overlap when this task made the slice authoritative.
-    "orient_log",
-    "orient_to_axis_angle",
-    "orient_to_euler",
-    "transform_log",
     // --- fea / flexures / stackup / dfm / tolerancing / loads / tensegrity --
     // --- owner #6006 (registry τ4) -----------------------------------------
     // The `std.fea` MultiCaseResult accessors (fea.rs:47-102) are the group
@@ -440,6 +427,7 @@ pub fn is_known_builtin(name: &str) -> bool {
         || FEA_ENVELOPE_NAMES.contains(&name)
         || FIELD_OP_NAMES.contains(&name)
         || ORIENTATION_TYPED_FN_NAMES.contains(&name)
+        || ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name)
         // --- The four resolver-only families, promoted to production slices
         // --- by this task so the union can see them (they were previously
         // --- visible only as `match` arms inside their resolvers).
