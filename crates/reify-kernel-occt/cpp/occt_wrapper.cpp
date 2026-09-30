@@ -1152,6 +1152,33 @@ TopTools_ListOfShape operand_pair(const TopoDS_Shape& left, const TopoDS_Shape& 
     return operands;
 }
 
+namespace {
+
+// A binary boolean's sole argument or sole tool.
+TopTools_ListOfShape single_shape_list(const TopoDS_Shape& shape) {
+    TopTools_ListOfShape list;
+    list.Append(shape);
+    return list;
+}
+
+// The one Build() site for every OCCT boolean. In OCCT 7.8.1 the operand-bearing
+// BRepAlgoAPI constructors already Build(), and Build() clears and reruns, so
+// every boolean default-constructs and comes through here
+// (guarded by tests/harness_occt/boolean_single_build_guard.rs).
+void build_boolean_pass(BRepAlgoAPI_BooleanOperation& op,
+                        const TopTools_ListOfShape& arguments,
+                        const TopTools_ListOfShape& tools,
+                        const char* failure_message) {
+    op.SetArguments(arguments);
+    op.SetTools(tools);
+    op.Build();
+    if (!op.IsDone()) {
+        throw std::runtime_error(failure_message);
+    }
+}
+
+} // anonymous namespace
+
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
 
 // Fuse every member of `shapes` into a single result in ONE BOP pass.
@@ -1195,12 +1222,7 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
         tools.Append(it.Value());
     }
     BRepAlgoAPI_Fuse fuse;
-    fuse.SetArguments(args);
-    fuse.SetTools(tools);
-    fuse.Build();
-    if (!fuse.IsDone()) {
-        throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
-    }
+    build_boolean_pass(fuse, args, tools, "fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     // One completed boolean pass, regardless of instance count (task 5213).
     t_boolean_pass_count += 1;
     // Behaviour-identical to the inline block this replaced (task 5213): the
@@ -1242,11 +1264,9 @@ rust::String shape_type_name(const OcctShape& shape) {
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_fuse", [&]() {
-        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
-        fuse.Build();
-        if (!fuse.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
-        }
+        BRepAlgoAPI_Fuse fuse;
+        build_boolean_pass(fuse, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Fuse failed");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
@@ -1256,11 +1276,9 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_cut", [&]() {
-        BRepAlgoAPI_Cut cut(left.shape, right.shape);
-        cut.Build();
-        if (!cut.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Cut failed");
-        }
+        BRepAlgoAPI_Cut cut;
+        build_boolean_pass(cut, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Cut failed");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
@@ -1270,11 +1288,9 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
 
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_common", [&]() {
-        BRepAlgoAPI_Common common(left.shape, right.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
-        }
+        BRepAlgoAPI_Common common;
+        build_boolean_pass(common, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Common failed");
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
@@ -1447,8 +1463,8 @@ rust::Vec<uint32_t> to_rust_vec(const std::vector<uint32_t>& src) {
 
 /// Shared body: run `emit_history_for_parent` for both operands / both
 /// sub-shape kinds and populate a fresh `BooleanOpHistory`. The caller
-/// constructs `op` (Fuse, Cut, or Common), calls `.Build()`, checks
-/// `IsDone()`, and then delegates to this helper. `op` is accepted as a
+/// default-constructs `op` (Fuse, Cut, or Common), runs it through
+/// `build_boolean_pass`, and then delegates to this helper. `op` is accepted as a
 /// non-const reference because `BRepAlgoAPI_BooleanOperation::Modified()`
 /// and `Generated()` are non-const in OCCT.
 std::unique_ptr<BooleanOpHistory> extract_boolean_history(
@@ -1500,33 +1516,27 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
 
 std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_fuse_with_history", [&]() {
-        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
-        fuse.Build();
-        if (!fuse.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
-        }
+        BRepAlgoAPI_Fuse fuse;
+        build_boolean_pass(fuse, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Fuse failed");
         return extract_boolean_history(fuse, left, right);
     });
 }
 
 std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_cut_with_history", [&]() {
-        BRepAlgoAPI_Cut cut(left.shape, right.shape);
-        cut.Build();
-        if (!cut.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Cut failed");
-        }
+        BRepAlgoAPI_Cut cut;
+        build_boolean_pass(cut, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Cut failed");
         return extract_boolean_history(cut, left, right);
     });
 }
 
 std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_common_with_history", [&]() {
-        BRepAlgoAPI_Common common(left.shape, right.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
-        }
+        BRepAlgoAPI_Common common;
+        build_boolean_pass(common, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Common failed");
         return extract_boolean_history(common, left, right);
     });
 }
