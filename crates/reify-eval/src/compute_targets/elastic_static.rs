@@ -7407,12 +7407,14 @@ mod tests {
     /// RED: PressureSpec and extract_pressure_loads don't exist yet.
     #[test]
     fn extract_pressure_loads_reads_pressure_and_ignores_point_load() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // Build a PressureLoad StructureInstance
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
-            ("face".to_string(), Value::String("x_max".to_string())),
+            ("face".to_string(), named_leaf_selector(SelectorKind::Face, "x_max")),
             ("direction".to_string(), Value::String("normal".to_string())),
         ]
         .into_iter()
@@ -7472,25 +7474,13 @@ mod tests {
     /// and the pressure load is silently dropped (0 specs). GREENed by step-8.
     #[test]
     fn extract_loads_reads_selector_face_named_leaf() {
-        use reify_core::identity::RealizationNodeId;
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
         use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         // A symbolic (kernel_handle=None) Face selector naming "x_max" — exactly
         // the shape the named-leaf stand-in mints for `face(b, "x_max")` (step-2).
-        let target = GeometryHandleRef {
-            realization_ref: RealizationNodeId::new("TestBody", 0),
-            upstream_values_hash: [0u8; 32],
-            kernel_handle: None,
-        };
-        let sel = SelectorValue::leaf(
-            SelectorKind::Face,
-            target,
-            LeafQuery::Named("x_max".to_string()),
-        )
-        .expect("LeafQuery::Named accepts any SelectorKind");
-        let face_val = Value::Selector(sel);
+        let face_val = named_leaf_selector(SelectorKind::Face, "x_max");
 
         let pressure_fields: PersistentMap<String, Value> = [
             ("magnitude".to_string(), Value::Real(1.0e6)),
@@ -7533,62 +7523,46 @@ mod tests {
         assert_eq!(pressures[0].face, "x_max");
     }
 
-    /// amend (task 4370): directly pin the two `Value::Option` arms that the
-    /// `PressureLoad.face : String → Option<FaceSelector>` migration added to
-    /// `extract_pressure_face_name`. The bare-`Value::Selector` test above
-    /// exercises the leaf arm but not these, and after migration the *production*
-    /// runtime shape is `Value::Option(Some(Value::Selector(..)))` (the field is
-    /// `Option`-typed), with `Value::Option(None)` the `= none` default.
+    /// Build a one-item list holding a `PressureLoad` whose `face` field is
+    /// `face_val`, the shape `solve_elastic_static`'s `loads` argument carries.
+    fn pressure_load_list(face_val: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            ("magnitude".to_string(), Value::Real(1.0e6)),
+            ("face".to_string(), face_val),
+            ("direction".to_string(), Value::String("normal".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PressureLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))])
+    }
+
+    /// amend (task 4370): pin the two `Value::Option` shapes of the
+    /// `PressureLoad.face : Option<FaceSelector>` field. After migration the
+    /// *production* runtime shape is `Value::Option(Some(Value::Selector(..)))`,
+    /// with `Value::Option(None)` the `= none` default.
     ///
-    /// - `Value::Option(Some(Value::Selector(Named)))` → recurse+unwrap → 1 spec.
+    /// - `Value::Option(Some(Value::Selector(Named)))` → unwrapped → 1 spec.
     /// - `Value::Option(None)` (the `= none` default) → skipped → 0 specs (never a
     ///   spurious empty-face load).
     #[test]
-    fn extract_pressure_face_name_handles_option_arms() {
-        use reify_core::identity::RealizationNodeId;
+    fn extract_pressure_loads_handles_option_face_arms() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
         use reify_core::ty::SelectorKind;
-        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let named_face_selector = |name: &str| {
-            let target = GeometryHandleRef {
-                realization_ref: RealizationNodeId::new("TestBody", 0),
-                upstream_values_hash: [0u8; 32],
-                kernel_handle: None,
-            };
-            Value::Selector(
-                SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::Named(name.to_string()))
-                    .expect("LeafQuery::Named accepts any SelectorKind"),
-            )
-        };
-        let make_pressure_list = |face_val: Value| {
-            let fields: PersistentMap<String, Value> = [
-                ("magnitude".to_string(), Value::Real(1.0e6)),
-                ("face".to_string(), face_val),
-                ("direction".to_string(), Value::String("normal".to_string())),
-            ]
-            .into_iter()
-            .collect();
-            Value::List(vec![Value::StructureInstance(Box::new(
-                StructureInstanceData {
-                    type_name: "PressureLoad".to_string(),
-                    type_id: StructureTypeId(u32::MAX),
-                    version: 0,
-                    fields,
-                },
-            ))])
-        };
 
         // (a) Value::Option(Some(Value::Selector(Named))) — the wrapped, migrated
         // production shape — must unwrap to exactly one spec naming the leaf.
-        let wrapped = Value::Option(Some(Box::new(named_face_selector("x_max"))));
-        assert_eq!(
-            extract_pressure_face_name(&wrapped).as_deref(),
-            Some("x_max"),
-            "Option(Some(Selector(Named))) must recurse+unwrap to the face name"
-        );
+        let wrapped = Value::Option(Some(Box::new(named_leaf_selector(
+            SelectorKind::Face,
+            "x_max",
+        ))));
         let specs =
-            extract_pressure_loads(&make_pressure_list(wrapped)).expect("a bare magnitude reads");
+            extract_pressure_loads(&pressure_load_list(wrapped)).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7598,14 +7572,9 @@ mod tests {
         assert_eq!(specs[0].face, "x_max");
         assert_eq!(specs[0].magnitude, 1.0e6);
 
-        // (b) Value::Option(None) — the `= none` default — must be skipped, both at
-        // the pure-helper level (None) and end-to-end (0 specs, no empty-face load).
-        assert_eq!(
-            extract_pressure_face_name(&Value::Option(None)),
-            None,
-            "Option(None) is the `= none` default → no face name"
-        );
-        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)))
+        // (b) Value::Option(None) — the `= none` default — must be skipped
+        // (0 specs, no empty-face load).
+        let none_specs = extract_pressure_loads(&pressure_load_list(Value::Option(None)))
             .expect("a face-less load is skipped, not rejected");
         assert!(
             none_specs.is_empty(),
@@ -7619,6 +7588,8 @@ mod tests {
     /// the load.
     #[test]
     fn extract_pressure_loads_rejects_a_force_magnitude() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
         let fields: PersistentMap<String, Value> = [
@@ -7629,7 +7600,10 @@ mod tests {
                     dimension: DimensionVector::FORCE,
                 },
             ),
-            ("face".to_string(), Value::String("x_max".to_string())),
+            (
+                "face".to_string(),
+                named_leaf_selector(SelectorKind::Face, "x_max"),
+            ),
         ]
         .into_iter()
         .collect();
@@ -7651,6 +7625,25 @@ mod tests {
             isolated.err(),
             extract_loads(&loads, 0.0).err(),
             "both pressure paths must reject the same way"
+        );
+    }
+
+    /// Bmig2 (task 5312, D8): the retired `face: "x_max"` String form is no
+    /// longer read. A `PressureLoad` whose `face` is a bare `Value::String`
+    /// applies no pressure through either extractor.
+    #[test]
+    fn pressure_load_with_bare_string_face_applies_no_pressure() {
+        let loads = pressure_load_list(Value::String("x_max".to_string()));
+        assert!(
+            extract_pressure_loads(&loads)
+                .expect("a String face is skipped, not rejected")
+                .is_empty(),
+            "a bare String face must yield no PressureSpec"
+        );
+        let (_tip_force, pressures, _body_force) = extract_loads(&loads, 0.0).unwrap();
+        assert!(
+            pressures.is_empty(),
+            "extract_loads must apply no pressure for a bare String face, got {pressures:?}"
         );
     }
 
