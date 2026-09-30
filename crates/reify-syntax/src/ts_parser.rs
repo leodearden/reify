@@ -627,7 +627,9 @@ impl<'a> Lowering<'a> {
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let cfg_predicates = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_import(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "import", self.lower_import(child))
+                    {
                         decl.annotations = annotations;
                         decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
@@ -967,11 +969,6 @@ impl<'a> Lowering<'a> {
             // The `items`/`alias` FIELDS are what select the ImportKind here,
             // which is why the brace list stays a field on `import_declaration`
             // rather than folding into `import_path` as the spec EBNF nests it.
-            //
-            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
-            // directly instead of routing through `check_and_lower!`, so an
-            // ERROR nested in the subtree never becomes a diagnostic. Latent,
-            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();

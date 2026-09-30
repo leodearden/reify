@@ -156,14 +156,11 @@ fn parse_destructured_import_single_item() {
 /// Summary", which makes the `'.'` an explicit terminal before the brace list
 /// (#5931).
 ///
-/// The two tests above cannot pin that separator: an ERROR nested inside
-/// `import_declaration` never becomes a diagnostic (see the note in
-/// `lower_import`), so they would stay green if the grammar merely
-/// error-recovered the `.` — the CST-level pins live in
+/// An ERROR nested inside `import_declaration` is refused as `invalid import: …`,
+/// so the `errors.is_empty()` assertions in the two tests above pin the dotted
+/// separator at AST level; the CST-level pins live in
 /// tree-sitter-reify/tests/import_items_grammar_tests.rs. The spaced form's
-/// stray `{...}`, by contrast, is a sibling ERROR at `source_file` level, which
-/// the source_file dispatch loop does surface, so this rejection is observable
-/// here.
+/// stray `{...}` is a sibling ERROR at `source_file` level.
 #[test]
 fn spaced_destructured_import_is_rejected() {
     let source = "import std.mech {Bolt, Nut}";
