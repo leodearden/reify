@@ -73,7 +73,9 @@ use reify_compiler::{
 };
 use reify_core::Severity;
 
-use crate::chunk_io::{GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk};
+use crate::chunk_io::{
+    GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk,
+};
 use crate::chunk_markdown::section_body;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{

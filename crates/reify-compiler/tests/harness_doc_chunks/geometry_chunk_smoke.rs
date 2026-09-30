@@ -1930,8 +1930,8 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          against the file it is actually made about. Cited: {cited:?}"
     );
 
-    let example_src = std::fs::read_to_string(repo_root().join(GDT_ZONES_EXAMPLE))
-        .unwrap_or_else(|e| {
+    let example_src =
+        std::fs::read_to_string(repo_root().join(GDT_ZONES_EXAMPLE)).unwrap_or_else(|e| {
             panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {CHUNK_PATH}")
         });
     let called = called_names(&strip_reify_comments(&example_src));
