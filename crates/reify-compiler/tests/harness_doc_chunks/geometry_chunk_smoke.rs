@@ -1002,6 +1002,14 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Every way the arities `name` is `documented` at and the arities the
+/// compiling fences call it at (`exercised`) have drifted apart, in either
+/// direction, one actionable line each.
+fn arity_drift(name: &str, documented: &[usize], exercised: &[usize]) -> Vec<String> {
+    let _ = (name, documented, exercised);
+    Vec::new()
+}
+
 /// Every arity the oracle section DOCUMENTS must be exercised by a fence that
 /// compiles.
 ///
@@ -1609,9 +1617,10 @@ fn example_call_scan_ignores_a_constructor_named_only_in_a_comment() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `call_sites`, `strip_reify_comments`, `section_body`, `called_names` and
-// `catalogue_table_rows` are the hand-rolled text scanners in this file, and every doc↔fence assertion above is downstream of one of them,
-// so they are pinned directly here rather than only through the chunk. Mirrors
+// `call_sites`, `strip_reify_comments`, `called_names` and
+// `catalogue_table_rows` are the hand-rolled text scanners in this file, and
+// every doc↔fence assertion above is downstream of one of them, so they are
+// pinned directly here rather than only through the chunk. Mirrors
 // the posture of `stdlib_chunk_geometry_ops_smoke.rs`, whose
 // `documented_geometry_op_forms` scanner carries its own `_extracts_exact_arity`
 // / `_zero_arg_span_is_exact_zero` / `_skips_unbalanced_parens_without_panicking`
@@ -1901,5 +1910,57 @@ fn catalogue_table_names_flattens_in_document_order_without_repeats() {
         ],
         "the second `bezier` is the same claim as the first, and the surviving order is the \
          order a reader scans the table in"
+    );
+}
+
+#[test]
+fn arity_drift_reports_a_documented_arity_no_fence_calls() {
+    let drift = arity_drift("interferes", &[1, 2], &[1]);
+
+    assert_eq!(drift.len(), 1, "got {drift:#?}");
+    assert!(
+        drift[0].contains("`interferes`") && drift[0].contains("at 2 argument(s)"),
+        "the line must name the documented form no fence exercises, got: {}",
+        drift[0]
+    );
+}
+
+#[test]
+fn arity_drift_reports_a_fence_arity_no_signature_documents() {
+    let drift = arity_drift("distance", &[2], &[2, 3]);
+
+    assert_eq!(drift.len(), 1, "got {drift:#?}");
+    for needle in ["`distance`", "at 3 argument(s)", "[2]"] {
+        assert!(
+            drift[0].contains(needle),
+            "the line must name the undocumented fence arity and the documented set              (`{needle}`), got: {}",
+            drift[0]
+        );
+    }
+}
+
+#[test]
+fn arity_drift_is_silent_on_equal_sets_whatever_the_duplicates() {
+    assert_eq!(arity_drift("volume", &[1], &[1]), Vec::<String>::new());
+    assert_eq!(
+        arity_drift("volume", &[1, 1], &[1, 1, 1]),
+        Vec::<String>::new(),
+        "a form documented twice or called by several fences is still one arity"
+    );
+    assert_eq!(
+        arity_drift("min_clearance", &[3, 1], &[1, 3]),
+        Vec::<String>::new(),
+        "order does not matter"
+    );
+}
+
+#[test]
+fn arity_drift_reports_both_directions_at_once() {
+    let drift = arity_drift("min_clearance", &[3], &[2]);
+
+    assert_eq!(
+        drift.len(),
+        2,
+        "a documented 3 no fence calls AND a fence 2 nothing documents, got {drift:#?}"
     );
 }
