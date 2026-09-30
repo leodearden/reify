@@ -21,6 +21,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PDIAG` | `PDiag` | no | repo path: the swept file, or `crates/reify-audit/pdiag-baseline.txt` for baseline/census faults | §2 PDIAG |
 | `PDOCCOVER` | `PDocCover` | no | repo path: `crates/reify-compiler/src/units.rs`, `crates/reify-audit/pdoccover-baseline.txt`, or a `crates/reify-mcp/src/tools/chunks/*.md` | §2 PDOCCOVER (batched) |
 | `PDCHECK` | `PDeliveredCheckPath` | no | task id: the owning non-terminal task | §2 PDCHECK |
+| `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
 
 ---
 

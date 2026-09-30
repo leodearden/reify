@@ -2,6 +2,43 @@
 //! status-annotated task cites are claims about the task graph, and nothing
 //! re-checks them once the decomposition lands. This module reads the loaded
 //! task corpus and flags the prose that has drifted from it.
+//!
+//! # Lanes
+//!
+//! - `stale-status-header:` — every decomposition leaf whose `metadata.prd`
+//!   names the PRD is terminal, yet the PRD's Status header is live or absent.
+//!   The finding names the stamp to apply: SHIPPED when any leaf landed,
+//!   WITHDRAWN when every leaf was cancelled.
+//!
+//! Every finding is High and keyed by the PRD's path.
+//!
+//! # Authority and inputs
+//!
+//! The terminal vocabulary, and the rule that the first token after the Status
+//! label decides, belong to `.claude/skills/prd/project.md` → "PRD terminal
+//! status — closed vocabulary + decompose-close stamp". This module consumes
+//! that list and does not define it. Task status and `prd` come from
+//! `ctx.task_metadata` (the fused-memory live loader, or `--tasks-file`),
+//! never from a direct task-DB read. PRD membership comes from `ls_files()`,
+//! and PRD text from the working tree. Capability manifests are excluded:
+//! they are decompose-time gate artifacts with no Status header.
+//!
+//! # Why opt-in, and not a merge gate
+//!
+//! Task state lives only with the main checkout's fused-memory, so a task
+//! worktree's verify gate cannot see it. The findings also track a standing
+//! backlog that a human adjudicates doc by doc, and the CLI's exit code is the
+//! High count. So the detector runs only under `--pattern PPRDSTATUS`.
+
+use crate::task_rows::is_terminal_status;
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+const PRDS_PREFIX: &str = "docs/prds/";
+const CAPABILITY_MANIFEST_SUFFIX: &str = ".capability-manifest.md";
+const STALE_STATUS_HEADER: &str = "stale-status-header";
+const TERMINAL_STATUS_SECTION: &str = ".claude/skills/prd/project.md \
+     \"PRD terminal status — closed vocabulary + decompose-close stamp\"";
 
 /// The CLOSED vocabulary of terminal PRD statuses. Authority:
 /// `.claude/skills/prd/project.md` → "PRD terminal status — closed vocabulary
@@ -95,6 +132,150 @@ fn classify_status_token(token: &str, line: usize) -> StatusHeader {
             line,
         },
     }
+}
+
+/// A PRD proper: a Markdown file under `docs/prds/` that is not a capability
+/// manifest.
+fn is_prd_path(path: &str) -> bool {
+    path.starts_with(PRDS_PREFIX)
+        && path.ends_with(".md")
+        && !path.ends_with(CAPABILITY_MANIFEST_SUFFIX)
+}
+
+fn normalise_prd_path(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed.strip_prefix("./").unwrap_or(trimmed)
+}
+
+/// One PRD's decomposition leaves, split by terminal state. An empty or
+/// unknown status counts as live, so it keeps the PRD silent.
+#[derive(Debug, Default)]
+struct LeafTally {
+    done: Vec<String>,
+    cancelled: Vec<String>,
+    live: usize,
+}
+
+impl LeafTally {
+    fn add(&mut self, task: &TaskMetadata) {
+        if !is_terminal_status(&task.status) {
+            self.live += 1;
+        } else if task.status == "done" {
+            self.done.push(task.task_id.clone());
+        } else {
+            self.cancelled.push(task.task_id.clone());
+        }
+    }
+
+    /// Every terminal leaf id, in numeric order.
+    fn terminal_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = self
+            .done
+            .iter()
+            .chain(&self.cancelled)
+            .map(String::as_str)
+            .collect();
+        ids.sort_by_key(|id| task_id_order(id));
+        ids
+    }
+}
+
+/// Numeric where the id parses, the string itself as the fallback.
+fn task_id_order(id: &str) -> (Option<u64>, &str) {
+    (id.parse().ok(), id)
+}
+
+fn leaf_tallies(tasks: &HashMap<String, TaskMetadata>) -> BTreeMap<String, LeafTally> {
+    let mut tallies: BTreeMap<String, LeafTally> = BTreeMap::new();
+    for task in tasks.values() {
+        let Some(prd) = task.prd.as_deref().map(normalise_prd_path) else {
+            continue;
+        };
+        if is_prd_path(prd) {
+            tallies.entry(prd.to_string()).or_default().add(task);
+        }
+    }
+    tallies
+}
+
+/// SHIPPED tolerates cancelled leaves beside a landed one; WITHDRAWN is for a
+/// PRD none of whose leaves landed.
+fn recommended_stamp(tally: &LeafTally) -> TerminalToken {
+    if tally.done.is_empty() {
+        TerminalToken::Withdrawn
+    } else {
+        TerminalToken::Shipped
+    }
+}
+
+/// Lane 1, sorted by PRD path. A PRD that is untracked or unreadable is
+/// silent: a missing file cannot carry a stale header.
+fn stale_status_findings(
+    tasks: &HashMap<String, TaskMetadata>,
+    tracked: &HashSet<String>,
+    read: impl Fn(&str) -> Option<String>,
+) -> Vec<Finding> {
+    leaf_tallies(tasks)
+        .into_iter()
+        .filter(|(path, tally)| tally.live == 0 && tracked.contains(path))
+        .filter_map(|(path, tally)| {
+            let header = read_status_header(&read(&path)?);
+            stale_status_finding(&path, &tally, &header)
+        })
+        .collect()
+}
+
+fn stale_status_finding(path: &str, tally: &LeafTally, header: &StatusHeader) -> Option<Finding> {
+    let header_reading = match header {
+        StatusHeader::Terminal(_) => return None,
+        StatusHeader::Live { token, line } => format!("reads '{token}' (line {line})"),
+        StatusHeader::Absent => "is absent".to_string(),
+    };
+    let leaf_ids = tally
+        .terminal_ids()
+        .iter()
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let summary = format!(
+        "{STALE_STATUS_HEADER}: {path} — all {total} decomposition leaves are terminal \
+         ({done} done, {cancelled} cancelled: {leaf_ids}) but its Status header \
+         {header_reading}; stamp {stamp} (or SUPERSEDED naming the successor) with the \
+         freeze header per {TERMINAL_STATUS_SECTION}",
+        total = tally.done.len() + tally.cancelled.len(),
+        done = tally.done.len(),
+        cancelled = tally.cancelled.len(),
+        stamp = recommended_stamp(tally).as_str(),
+    );
+    Some(prd_finding(path, summary))
+}
+
+fn prd_finding(path: &str, summary: String) -> Finding {
+    Finding {
+        pattern: Pattern::PPrdStatus,
+        severity: Severity::High,
+        task_id: path.to_string(),
+        summary,
+        evidence: vec![EvidenceRef::File {
+            path: path.to_string(),
+        }],
+    }
+}
+
+/// Run PPRDSTATUS over the tracked PRDs against the loaded task corpus.
+///
+/// An empty corpus checks nothing, so it prints a breadcrumb rather than
+/// passing silently for a clean result.
+pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    if ctx.task_metadata.is_empty() {
+        eprintln!(
+            "reify-audit: PPRDSTATUS skipped — the task corpus is empty; \
+             this is NOT a clean bill of health"
+        );
+        return Vec::new();
+    }
+    let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
+    stale_status_findings(&ctx.task_metadata, &tracked, |path| ctx.read_relative(path))
 }
 
 #[cfg(test)]

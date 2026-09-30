@@ -122,6 +122,7 @@ mod tests {
             Pattern::PDiag,
             Pattern::PDocCover,
             Pattern::PDeliveredCheckPath,
+            Pattern::PPrdStatus,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -138,6 +139,7 @@ mod tests {
                 Pattern::PDiag => {}
                 Pattern::PDocCover => {}
                 Pattern::PDeliveredCheckPath => {}
+                Pattern::PPrdStatus => {}
             }
         }
 

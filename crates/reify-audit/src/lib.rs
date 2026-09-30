@@ -275,6 +275,27 @@ pub enum Pattern {
     ///
     /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
     PDeliveredCheckPath,
+    /// PPRDSTATUS — PRD status-prose drift: a PRD's own prose asserting a
+    /// status that the task graph has since contradicted. TWO lanes, carried
+    /// as a stable summary prefix (PTODO's `kind`-as-prefix convention above),
+    /// both at [`Severity::High`]:
+    ///
+    /// - `stale-status-header:` — every decomposition leaf whose `prd` names
+    ///   the PRD is terminal (done / cancelled), yet the PRD's Status header
+    ///   is live or absent.
+    /// - `cite-status-contradiction:` — a canonical `#NNNN` cite in a
+    ///   non-terminal PRD whose adjacent status parenthetical contradicts the
+    ///   cited task's real status.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDIAG/PDOCCOVER/PDCHECK): its
+    /// High findings track a standing backlog, and the CLI exit code is the
+    /// High count. Reads `ctx.task_metadata` plus `ls_files()` and
+    /// working-tree reads; never contacts jcodemunch and never reads the task
+    /// DB.
+    ///
+    /// Reference: `.claude/skills/prd/project.md` → "PRD terminal status —
+    /// closed vocabulary + decompose-close stamp".
+    PPrdStatus,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
