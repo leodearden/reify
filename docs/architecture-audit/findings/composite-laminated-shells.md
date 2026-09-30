@@ -169,6 +169,45 @@
 - **Blocks:** M-005 (kernel iterates the ply list), M-008 (helper functions).
 - **Note:** Coupled to GR-001 (struct-ctor eval) and the open design question of constructor surface (list-literal vs dedicated ctor vs external file).
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-004's State (FICTION)
+> holds; its `List<Real>`-placeholder precedent is superseded.** This is a dated audit snapshot
+> (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was measured then.
+>
+> - **State holds.** `Laminate`, `Ply` and `plies` have no definition under `crates/`:
+>   `git grep -n -P '\bLaminate\b|\bPly\b|\bplies\b' -- crates` returns no hit.
+> - **The Evidence's closest precedent is gone.** It cited `fea_multi_case.ri:50` as `List<LoadCase>`
+>   "typed as `List<Real>` placeholder"; line 50 of that file is now a comment in the header block above
+>   `structure def LoadCase`, and the placeholder is retired. `LoadCase.loads : List<Load>` and
+>   `LoadCase.supports : List<Support>` (`fea_multi_case.ri:82`, `:88`; task ζ/4444, done) are lists of
+>   TRAIT objects (`Load` and `Support` are traits, declared in `fea_types.ri`) whose elements are
+>   conformance-checked at compile time (`TypeNotConformingToTrait`); a comment in `solver_elastic.ri`
+>   records their tightening from `List<Real>`. `solve_load_cases(... cases : List<LoadCase> ...)`
+>   (`fea_multi_case.ri:659`, plus the body-arg overload at `:706`) takes a list of a CONCRETE structure
+>   in fn-param position; `git log -S'fn solve_load_cases'` dates its first appearance to commit
+>   `dbae0d1779` (2026-05-30), after this snapshot.
+> - **"No stdlib `List<<StructureName>>` of concrete structs" is true only as literally scoped.** Over
+>   `materials_fea.ri` and `solver_elastic.ri` the only declared list-of-name types are the trait lists
+>   `List<Load>` and `List<Support>`. Stdlib-wide the sentence is false: `BucklingResult.modes :
+>   List<BucklingMode>` (`solver_buckling.ri:222`), `PiecewisePolynomialProfile.waypoints :
+>   List<Waypoint>` (`trajectory.ri:290`) and `Toolpath.beads : List<Bead>` / `Toolpath.layers :
+>   List<Layer>` (`fdm_slice.ri:98`, `:100`) are concrete-structure list params.
+> - **Call-site rejection of a wrong-typed element in a `List<ConcreteStruct>` param: not re-measured by
+>   this overlay.** The closest pinned behaviour is a different site — element conformance of the trait
+>   lists on `LoadCase(...)` constructor arguments — pinned by
+>   `loadcase_bare_numeric_in_loads_emits_type_not_conforming`,
+>   `loadcase_bare_numeric_in_supports_emits_type_not_conforming` and
+>   `loadcase_cross_trait_in_loads_emits_type_not_conforming`
+>   (`crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`). No test
+>   was found that passes a wrong-typed element to a concrete-structure list fn param such as
+>   `solve_load_cases(cases: ...)`. The stdlib source documents only a run-time outcome for that case (the
+>   contract comment above `solve_load_cases` lists "any element of `cases` is not a `LoadCase`
+>   StructureInstance" among its silent-Undef failure modes), and no test pinning that was found either, so
+>   this overlay asserts no enforcement. This is the open half of Top-concerns bullet 4.
+> - **The Note's coupling to GR-001 is superseded.** `gap-register.md` GR-001 State is DONE (2026-05-26:
+>   SIR-α task 3540 + SIR-β-mat task 3542). The Note's other clause, the constructor surface (list-literal
+>   vs dedicated constructor vs external file), is the stub PRD's own open question ("**Layup syntax**")
+>   and is not something GR-001 resolves.
+
 ### M-005: Through-thickness sum-over-plies integration in shell element kernel
 
 - **State:** FICTION
