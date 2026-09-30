@@ -48,12 +48,12 @@ mcp__escalation__escalate_info(
 )
 ```
 
-**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG and PDOCCOVER is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
+**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG, PDOCCOVER and PPRDSTATUS is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
 
 - **The subject, not the raw `task_id`:** the escalation server mints the escalation id from `task_id` (`make_id` names its counter files `esc-<task_id>.seq…`), and a repo path cannot mint one. Measured 2026-09-23 against a scratch queue: `make_id('crates/reify-compiler/src/units.rs')` raises `FileNotFoundError`, while `make_id('audit')` mints `esc-audit-1`.
 - **`terminal_state_is_the_bug=True`:** without it the server auto-resolves, on arrival, any filing whose task is done or cancelled — and every `P5PhantomDone` is about a done task.
 
-PDOCCOVER is the one batched pattern: one escalation per run, not one per finding (§2).
+PDOCCOVER and PPRDSTATUS are the batched patterns: one escalation per run, not one per finding (§2).
 
 **Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
 
@@ -98,6 +98,7 @@ mcp__fused-memory__submit_task(
 | **PDIAG** (codes-mandatory ratchet) — Medium `pdiag-baseline-stale` only | `Tighten pdiag baseline row (PDIAG pdiag-baseline-stale at <path>)` |
 | **PDOCCOVER** (registry ↔ chunk name drift) | _(High only: batched escalation, no Medium template)_ |
 | **PDCHECK** (`delivered_checks` dead path) — Medium `delivered-check-vacuous-absent-path` only | `Repair vacuous delivered_check <check_name> (PDCHECK on task <id>)` |
+| **PPRDSTATUS** (PRD status-prose drift) | _(High only: batched escalation via scripts/pprdstatus-escalate.py, no Medium template)_ |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
@@ -129,6 +130,15 @@ P5 findings never reach Medium in the periodic sweep context, so no Medium title
 Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `escalation_id`. Why batched: the findings are one census with one owner — #6931 seeds `crates/reify-audit/pdoccover-baseline.txt` and wires the gate — so a human makes one decision per run, not one per name. Per-finding escalation would queue one advisory per name in the backlog (measured in `references/modes.md` §4) for that one decision.
 
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
+
+**PPRDSTATUS note:** every PPRDSTATUS finding is High (both kinds are listed in `references/modes.md` §4), and they are raised as **one batched escalation per run** by running the escalation script, never by calling `escalate_info` here:
+
+```bash
+"$REPO_ROOT/scripts/pprdstatus-escalate.py" --reify-audit "$RELEASE_BIN" \
+    --project-root /home/leo/src/reify --escalation-url http://127.0.0.1:8100/mcp
+```
+
+`$RELEASE_BIN` is the binary `reify_audit_guard` just refreshed (`references/cli-invocation.md` §1); the script takes one executable path, so the `cargo run` fallback does not apply. The script runs the detector itself and is the single source of that escalation's shape: subject `"audit"`, the finding count, the doc list and the sitting to run. So the skill must NOT also call `escalate_info` per finding, and must NOT rebuild the arguments by hand. It must NOT file follow-up tasks either: adjudication is a human docs-truth sitting (Leo's 2026-08-19 ruling), because each doc needs its own judgement — a still-active PRD whose prose needs correcting, a completed plan that needs a terminal stamp, or a dated snapshot that must not be edited. Every PPRDSTATUS finding records `action_taken: "escalated"` with the escalation id the script prints. The script's exit codes are in its header: exit 1 means the escalation was not filed, and exit 125 means the detector produced no findings array, so nothing was raised. Neither is a clean result.
 
 ---
 

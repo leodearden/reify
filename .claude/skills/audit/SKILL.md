@@ -95,9 +95,9 @@ Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (Hi
 
 **Default-sweep membership:** PTODO High kinds (the current list is in `references/modes.md` §4 PTODO notes) drive a non-zero exit when violations are present. **Main is not a clean tree** (corrected 2026-08-27, esc-6088-2). Measured on main 2026-08-27: **65 findings, 11 High, exit code 11.** Composition — 10 `untracked` + 1 `orphaned` (High), 3 `malformed-cite`, 51 `task-cites-deleted-path` (ζ inverse lane; that measurement predates the renamed/deleted split — after #5654 the same ζ population splits between `task-cites-deleted-path` and `task-cites-renamed-path`, with the total and the exit code unchanged because the two kinds are mutually exclusive per cited path and both Medium). **Exit 11 is the steady state on main, not a regression signal**; do not treat a non-zero PTODO exit as evidence that something newly broke. Only the 14 path-keyed source-marker findings are ratcheted, collapsing to the 5 fingerprints in `ptodo-baseline.txt` (fingerprints drop line numbers, so the 8 identical `#[allow(dead_code)] // T12 layer-B seam …` markers in `engine_build.rs` are one baseline line). The 51 ζ findings are keyed by task ID, so `ptodo-baseline-gen`'s `is_swept_ext` filter excludes them from the baseline — they are outside the ratchet *and* exit-neutral, i.e. gated by nothing. To see what is actually new, diff live fingerprints against the baseline.
 
-## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK
+## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PPRDSTATUS
 
-Four more deterministic detectors that, like PTODO, read the tracked tree (PDCHECK also reads `tasks.db`) and never contact jcodemunch:
+Five more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the loaded task corpus (the fused-memory live loader, or `--tasks-file`), never `tasks.db`:
 
 | Pattern | Detects |
 |---|---|
@@ -105,8 +105,9 @@ Four more deterministic detectors that, like PTODO, read the tracked tree (PDCHE
 | `PDIAG` | Code-less `Diagnostic::error`/`Diagnostic::warning` sites counted against `crates/reify-audit/pdiag-baseline.txt` (INV-SF-6). The merge gate `tests/infra/test_reify_audit_pdiag.sh` also runs it |
 | `PDOCCOVER` | Name drift between the builtin registries and the MCP language chunks: undocumented and fabricated names |
 | `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
+| `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
 
-PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other three key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
+PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other four key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
 ## Severity ladder
 
@@ -122,7 +123,7 @@ The skill **never** calls `set_task_status`. State-mutation of the offending tas
 
 **PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
 
-**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK):** route each finding by its own `severity` field, like every other pattern, with one exception: PDOCCOVER's findings go out as **one batched escalation per run**, not one per finding (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
+**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PPRDSTATUS):** route each finding by its own `severity` field, like every other pattern, with two exceptions, the batched patterns: PDOCCOVER's findings and PPRDSTATUS's findings each go out as **one batched escalation per run**, not one per finding. PPRDSTATUS's is filed by running `scripts/pprdstatus-escalate.py`, never by a hand-built `escalate_info`, and it files no follow-up tasks (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 
 ## Outputs
 
