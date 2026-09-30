@@ -39,6 +39,15 @@
 # fails this guard by construction. This closes the LEDGER-DRIFT gap (no
 # injected var can go unguarded-and-unnoticed again).
 #
+# Task 7234: the live set has a THIRD, behavioural source --
+# run_all_injected_env_keys (run_all_ambient_isolation_lib.sh) spawns the real
+# run_all.sh against a one-member fixture and reports what that member
+# inherits beyond a direct spawn -- because a var exported by a lib run_all.sh
+# sources, or by run_all.sh itself (DF_VERIFY_ROLE was the measured silent
+# instance), appears in neither greppable source. It does not replace them:
+# verify_env exists only in the orchestrator's process env, and the plan-line
+# prefix sits upstream of run_all.sh.
+#
 # Coverage-shape note: closing the ledger-drift gap (full set-equality over
 # every ledger var, above) is a DIFFERENT claim from broadening
 # isolation-bug coverage. Of the ledger's entries, only
