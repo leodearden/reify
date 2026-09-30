@@ -82,26 +82,34 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "screenshot",
-            description: "Take a screenshot of the 3D viewport. Returns a PNG image.",
+            description: "Take a screenshot of the 3D viewport. Returns a PNG image, or with save_path writes it to that file and returns {saved_to, bytes, mimeType}.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
                     }
                 }
             }),
         },
         ToolDef {
             name: "screenshot_window",
-            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image.",
+            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image, or with save_path writes it to that file and returns {saved_to, bytes, mimeType}.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
                     }
                 }
             }),
@@ -299,7 +307,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. With save_path the PNG is written to that file instead and the reply is {saved_to, bytes, mimeType} plus any pane diagnostics, as one text block. Frontend-mediated (its named Rust dispatch arm only handles save_path).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -310,6 +318,10 @@ fn tool_defs() -> Vec<ToolDef> {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
                     }
                 },
                 "required": ["testId"]
@@ -1278,11 +1290,9 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
     if is_image_tool(tool_name)
         && let Some(data) = result.get("data").and_then(|d| d.as_str())
     {
-        // Strip data URL prefix if present
-        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
         let mut content = vec![json!({
             "type": "image",
-            "data": base64,
+            "data": crate::screenshot_save::png_base64(data),
             "mimeType": "image/png"
         })];
 
@@ -1341,6 +1351,11 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state, params).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
+        // Frontend-mediated like the catch-all default below; named only so
+        // a `save_path` is written Rust-side rather than returned inline.
+        "screenshot" | "screenshot_window" | "element_screenshot" => {
+            handle_image_tool(state, name, params).await
+        }
         // ONE funnel (`open_path_into_engine`), two advertised names: the
         // debug-native `open_file` and the reify-mcp identity
         // `reify_open_file` (task 5097 δ). The shared `open_file_path_param`
@@ -1400,6 +1415,21 @@ where
     })
     .map_err(|e| format!("failed to spawn engine thread: {e}"))?;
     rx.await.map_err(|_| "engine thread died".to_string())?
+}
+
+/// Forward an image tool to the frontend. With a `save_path`, the PNG it
+/// returns is written there and the reply says where, instead of inlining it.
+async fn handle_image_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let (save_path, forwarded) = crate::screenshot_save::take_save_path(params)?;
+    let result = state.debug_bridge.query_frontend(name, forwarded).await?;
+    match save_path {
+        Some(path) => crate::screenshot_save::save_image_result(result, &path),
+        None => Ok(result),
+    }
 }
 
 async fn handle_engine_state(state: &DebugServerState, params: Value) -> Result<Value, String> {
