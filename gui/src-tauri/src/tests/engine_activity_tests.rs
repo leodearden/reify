@@ -3,12 +3,15 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::MockGeometryKernel;
 
 use crate::engine::EngineSession;
-use crate::engine_activity::{EngineActivity, SettleVerdict, probe, verdict};
+use crate::engine_activity::{
+    EngineActivity, SettleRequest, SettleVerdict, WaitOutcome, probe, verdict, wait_until_settled,
+};
 use crate::eval_queue::{EvalOutcome, EvalProgress, EvalRequest};
 use crate::tests::make_test_engine;
 use crate::tests::test_helpers::{ANTI_WEDGE, ManualQueue};
@@ -254,5 +257,220 @@ fn an_activity_serializes_to_the_flat_engine_status_object() {
             "generation": 7,
             "queue_outstanding": 2,
         })
+    );
+}
+
+// ── SettleRequest: wait_for_idle's params ────────────────────────────────────
+
+const TIMEOUT_REFUSAL: &str = "timeout_ms must be a positive integer";
+const GENERATION_REFUSAL: &str = "since_generation must be a non-negative integer";
+
+fn settle_request(params: serde_json::Value) -> Result<SettleRequest, String> {
+    SettleRequest::from_params(&params)
+}
+
+#[test]
+fn absent_params_wait_thirty_seconds_for_whatever_is_in_hand() {
+    let request = settle_request(serde_json::json!({})).expect("empty params are valid");
+
+    assert_eq!(request.timeout, Duration::from_millis(30_000));
+    assert_eq!(request.since_generation, None);
+}
+
+#[test]
+fn given_params_set_the_timeout_and_the_generation_waited_past() {
+    let request = settle_request(serde_json::json!({"timeout_ms": 250, "since_generation": 7}))
+        .expect("valid params");
+
+    assert_eq!(request.timeout, Duration::from_millis(250));
+    assert_eq!(request.since_generation, Some(7));
+    assert_eq!(
+        settle_request(serde_json::json!({"since_generation": 0}))
+            .expect("generation 0 is valid")
+            .since_generation,
+        Some(0)
+    );
+}
+
+#[test]
+fn a_timeout_that_is_not_a_positive_integer_is_refused_with_the_in_band_message() {
+    for bad in [
+        serde_json::json!(0),
+        serde_json::json!(-5),
+        serde_json::json!(1.5),
+        serde_json::json!("100"),
+    ] {
+        assert_eq!(
+            settle_request(serde_json::json!({"timeout_ms": bad}))
+                .err()
+                .as_deref(),
+            Some(TIMEOUT_REFUSAL),
+            "timeout_ms {bad}"
+        );
+    }
+}
+
+#[test]
+fn a_generation_that_is_not_a_non_negative_integer_is_refused() {
+    for bad in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("3"),
+    ] {
+        assert_eq!(
+            settle_request(serde_json::json!({"since_generation": bad}))
+                .err()
+                .as_deref(),
+            Some(GENERATION_REFUSAL),
+            "since_generation {bad}"
+        );
+    }
+}
+
+// ── wait_until_settled: an async wait that never blocks on the engine lock ───
+
+fn waiting(timeout: Duration, since_generation: Option<u64>) -> SettleRequest {
+    SettleRequest {
+        timeout,
+        since_generation,
+    }
+}
+
+/// Far beyond every request timeout below: only a wait that ignored its own
+/// deadline trips it.
+const GUARD: Duration = Duration::from_secs(10);
+
+#[tokio::test]
+async fn an_idle_loaded_engine_settles_at_the_current_generation() {
+    let engine = make_test_engine();
+    let queue = ManualQueue::new();
+
+    let outcome = wait_until_settled(&engine, &queue.queue, &waiting(GUARD, None)).await;
+
+    assert!(
+        matches!(outcome, WaitOutcome::Settled { generation: 0, .. }),
+        "got {outcome:?}"
+    );
+}
+
+/// A wait that took the engine lock with `lock()` would park until the holder
+/// releases, which it does only after the wait has been asserted.
+#[tokio::test]
+async fn a_lock_held_throughout_times_out_reporting_the_held_lock() {
+    let engine = make_test_engine();
+    let queue = ManualQueue::new();
+    let holder = LockHolder::hold(&engine);
+
+    let guarded = tokio::time::timeout(
+        GUARD,
+        wait_until_settled(
+            &engine,
+            &queue.queue,
+            &waiting(Duration::from_millis(100), None),
+        ),
+    )
+    .await;
+    holder.release();
+
+    let outcome = guarded.expect("the wait must honour its own 100 ms deadline");
+    assert!(
+        matches!(
+            outcome,
+            WaitOutcome::TimedOut {
+                last: EngineActivity {
+                    engine_lock_held: true,
+                    ..
+                },
+                awaiting_generation: false,
+            }
+        ),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_lock_released_during_the_wait_settles_it() {
+    let engine = make_test_engine();
+    let queue = ManualQueue::new();
+    let holder = LockHolder::hold(&engine);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        holder.release();
+    });
+
+    let outcome = wait_until_settled(&engine, &queue.queue, &waiting(GUARD, None)).await;
+    releaser
+        .join()
+        .expect("the releasing thread must not panic");
+
+    assert!(
+        matches!(outcome, WaitOutcome::Settled { generation: 0, .. }),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn waiting_past_the_current_generation_on_an_idle_queue_times_out_awaiting_it() {
+    let engine = make_test_engine();
+    let queue = ManualQueue::new();
+    let current = queue.queue.progress().generation;
+
+    let outcome = wait_until_settled(
+        &engine,
+        &queue.queue,
+        &waiting(Duration::from_millis(100), Some(current)),
+    )
+    .await;
+
+    assert!(
+        matches!(
+            outcome,
+            WaitOutcome::TimedOut {
+                awaiting_generation: true,
+                ..
+            }
+        ),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_evaluation_submitted_after_the_wait_began_settles_it_at_its_generation() {
+    let engine = make_test_engine();
+    let ManualQueue {
+        queue, executor, ..
+    } = ManualQueue::new();
+    let submitter = {
+        let queue = Arc::clone(&queue);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let ticket = queue.submit(EvalRequest::evaluation(|| EvalOutcome::succeeded(None, ())));
+            std::thread::sleep(Duration::from_millis(50));
+            executor.run_pending();
+            drop(ticket);
+        })
+    };
+
+    let outcome = wait_until_settled(&engine, &queue, &waiting(GUARD, Some(0))).await;
+    submitter
+        .join()
+        .expect("the submitting thread must not panic");
+
+    assert!(
+        matches!(outcome, WaitOutcome::Settled { generation: 1, .. }),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_never_loaded_session_is_reported_not_started_rather_than_timed_out() {
+    let engine = never_loaded_engine();
+    let queue = ManualQueue::new();
+
+    let outcome = wait_until_settled(&engine, &queue.queue, &waiting(GUARD, None)).await;
+
+    assert!(
+        matches!(outcome, WaitOutcome::NotStarted),
+        "got {outcome:?}"
     );
 }
