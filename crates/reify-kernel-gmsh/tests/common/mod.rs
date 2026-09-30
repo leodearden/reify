@@ -22,8 +22,7 @@
 //! changes those import lines plus `volume_fill_fraction.rs`'s
 //! `common::assert_rel` call sites. No new shared FIXTURE belongs here — put it
 //! in `reify_test_support`. The one exception, [`subdivided_unit_cube_surface`],
-//! is pending that same move under ticket `tkt_0RV8B67RPR9YXPT9GQ8WPSX3Q1`
-//! (escalation id `agent-followup-7224`).
+//! is pending that same move under #8048.
 //!
 //! # The census is NOT a fixture, and stays (#6830)
 //!
