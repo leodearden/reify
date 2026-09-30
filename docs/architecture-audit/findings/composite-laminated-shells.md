@@ -414,6 +414,26 @@
 - **Blocks:** Practical composite analysis (delamination is the dominant failure mode per PRD).
 - **Note:** PRD-flagged open issue; mentioned but neither task nor code stub exists.
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-012's State (FICTION)
+> holds; the Evidence's parenthetical list of the crate's stress post-processing is incomplete.** This is
+> a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
+> was measured then.
+>
+> - **State holds.** `git grep -n -P 'inter_?laminar|Interlaminar' -- crates` returns no hit.
+>   `git grep -n -E 'pub fn [a-z_0-9]*(stress|recover)' -- crates/reify-solver-elastic/src` lists the
+>   crate's stress entry points, and none is equilibrium-based: `element_stress_p1` and
+>   `element_stress_p2` (`result.rs`), `shell_element_stress` (`shell_result.rs`) and
+>   `membrane_stress_delta` (`membrane_load.rs`) evaluate σ directly from the displacement, and
+>   `recover_nodal_stress_p1` is volume-weighted nodal averaging. The doc comment of
+>   `shell_element_stress` still gives transverse shear as "uniform across layers".
+> - **The parenthetical is incomplete.** "(only `error_estimator.rs` and direct stress evaluation
+>   `shell_result.rs`)" omits `recover_nodal_stress_p1` (`result.rs:427`), which `error_estimator.rs`
+>   consumes (its module doc: "not the full superconvergent patch-recovery (SPR) least-squares fit"), and
+>   the per-element σ recovery in `buckling_kernel.rs`, which calls `element_stress_p1` /
+>   `element_stress_p2`. The `recover_nodal_stress_p1` omission predates the snapshot rather than
+>   following it: `git log -S'fn recover_nodal_stress_p1'` dates the function to `0c86fd8c68`
+>   (2026-05-10).
+
 ### M-013: Layup helpers (symmetric, balanced, quasi-isotropic constructors)
 
 - **State:** FICTION
@@ -422,6 +442,13 @@
 - **Blocks:** Convenience layer; not load-bearing.
 - **Note:** Sugar around M-004; whether stdlib fn or constructor variants is open.
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-013's State (FICTION)
+> holds.** This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as
+> the record of what was measured then. The Evidence's "No grep hit" named no pattern. The patterns
+> re-run here are `git grep -n -P '\blayup|\bLayup|quasi_isotropic|symmetric_layup|balanced_layup' --
+> crates`, which returns no hit, and the case-insensitive `git grep -n -i -E
+> 'layup|quasi.?isotropic|symmetric.?lamin|balanced.?lamin' -- crates`, which returns none either.
+
 ### M-014: Tabular layup import helper (external JSON/TOML/spreadsheet)
 
 - **State:** FICTION
@@ -429,6 +456,21 @@
 - **Evidence:** No `ImportHelper`, `read_toml`, `import_csv`, `json_load` grep hit in `crates/reify-compiler/stdlib/` or `crates/reify-eval/`. Adjacent infrastructure: `field_import_provenance.rs` for VDB/CSV ingestion, but that targets `Field<X,Y>` not structure-of-structs literal data. PRD calls this an open design question ("lean: import helper for tabular cases").
 - **Blocks:** Not load-bearing; deferred-of-deferred.
 - **Note:** Cross-cuts a broader open question about whether Reify gains a generic stdlib-data-from-file mechanism.
+
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-014's State (FICTION)
+> holds.** This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as
+> the record of what was measured then.
+>
+> - `git grep -n -P 'ImportHelper|read_toml|import_csv|json_load' -- crates` returns no hit. The audit
+>   scoped its grep to `crates/reify-compiler/stdlib/` and `crates/reify-eval/`; this one covers all of
+>   `crates/`.
+> - The adjacent infrastructure is where the Evidence left it:
+>   `crates/reify-eval/src/field_import_provenance.rs` exists at this SHA and already existed at
+>   `8059aa59ba` (a 2026-05-12 commit). Its module doc still describes the provenance record for an
+>   imported field.
+> - `crates/reify-compiler/stdlib/io.ri` declares only traits, structures and enums, and no `fn` appears
+>   in it. The Note's open question, a generic stdlib-data-from-file mechanism, is not answered by
+>   anything this overlay found.
 
 ## Cross-PRD breadcrumbs
 
