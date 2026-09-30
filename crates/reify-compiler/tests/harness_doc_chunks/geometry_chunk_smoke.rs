@@ -81,7 +81,7 @@
 //!
 //! STILL THREE, though the binary now holds FIVE chunk modules: task 5759 added
 //! `units_chunk_smoke.rs` and task 6258 added `oracle_xref_smoke.rs`, and both
-//! point at THIS module's scanners (`reify_tagged_fences`,
+//! point at THIS module's scanners (`tagged_fence_bodies`,
 //! `assert_module_compiles`, `strip_reify_comments`, `call_sites`,
 //! `called_names`, `registry_family`, `phantom_name_panic`, `section_body`, all
 //! raised to `pub(crate)`) rather than copying them. That is why those helpers
@@ -112,6 +112,7 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::tagged_fence_bodies;
 
 /// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
 /// diagnostics. The source is echoed in the panic so a failing scraped fence is
@@ -603,7 +604,7 @@ const TOPOLOGY_SECTION_TITLE: &str = "## Topology Selectors";
 
 /// Length of the leading run of backticks on `line`, counted from COLUMN 0.
 ///
-/// Zero for an indented fence, deliberately: `reify_tagged_fences` below matches
+/// Zero for an indented fence, deliberately: `tagged_fence_bodies` below matches
 /// its delimiters at column 0 too, so an indented fence must be invisible to
 /// both scanners rather than to only one of them.
 fn leading_backtick_run(line: &str) -> usize {
@@ -1150,64 +1151,6 @@ fn topology_selector_family_documented_in_geometry_chunk() {
     }
 }
 
-/// Every ```` ```reify ````-tagged fence in the chunk, in document order, with
-/// the fence delimiters stripped.
-///
-/// Only EXPLICITLY TAGGED fences are collected. The module doc above explains
-/// why geometry.md cannot be scraped wholesale: it intermixes non-compilable
-/// schematic notation (type params, trait lists, `-> Solid` return annotations)
-/// with real call forms, and separating the two would need a fragile grammar.
-/// An opt-in tag sidesteps that — the doc author marks exactly what is meant to
-/// compile, and everything else stays free-form. ```` ```reify ```` is already
-/// the in-repo convention (every fence in `chunks/traits.md` is tagged that
-/// way).
-///
-/// Callers must anti-vacuity-check the result: a dropped tag or a renamed
-/// section would otherwise empty the scan and pass trivially.
-///
-/// `tag` IS A PARAMETER, not the hardcoded `reify` this scanner started with
-/// (task 5759). units.md carries a deliberately-INVALID rejected-forms block
-/// tagged ```` ```reify-rejected ````, which a rejection-truth negative control
-/// must scrape and a zero-Error compile gate must never sweep in. Parameterising
-/// the tag lets both gates share this one scanner instead of the harness growing
-/// its FIFTH near-identical scraper (see "Known duplication" above). Matching
-/// stays BYTE-EXACT on the whole info string, so `reify` still excludes
-/// `reify-rejected` in both directions.
-///
-/// `chunk_path` is threaded for the same reason [`assert_module_compiles`]
-/// threads its own: a sibling chunk module's unterminated fence must be blamed
-/// on ITS chunk, not on geometry.md.
-pub(crate) fn reify_tagged_fences(markdown: &str, tag: &str, chunk_path: &str) -> Vec<String> {
-    let opener = format!("```{tag}");
-    let mut fences: Vec<String> = Vec::new();
-    let mut body: Vec<&str> = Vec::new();
-    let mut open = false;
-
-    for line in markdown.lines() {
-        if !open {
-            // Exact tag match: `reify-something` is a different language and
-            // must not be swept in.
-            if line.trim_end() == opener {
-                open = true;
-                body.clear();
-            }
-            continue;
-        }
-        if line.trim_end() == "```" {
-            fences.push(body.join("\n"));
-            open = false;
-            continue;
-        }
-        body.push(line);
-    }
-
-    assert!(
-        !open,
-        "{chunk_path} has an unterminated ```{tag} fence — the scrape cannot be trusted"
-    );
-    fences
-}
-
 /// Every ```` ```reify ````-tagged fence in geometry.md must actually compile.
 ///
 /// This upgrades the interference/clearance worked examples from unchecked prose
@@ -1222,7 +1165,7 @@ pub(crate) fn reify_tagged_fences(markdown: &str, tag: &str, chunk_path: &str) -
 #[test]
 fn reify_tagged_fences_in_geometry_chunk_compile() {
     let markdown = read_chunk(CHUNK_PATH);
-    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
+    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
     // Anti-vacuity. Without these, dropping the ```reify tags (or
     // rewriting the fences as plain prose) would leave the scan empty and the
@@ -1608,7 +1551,7 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
         CHUNK_PATH,
         ORACLE_SECTION_TITLE,
     );
-    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
+    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let documented = documented_signature_arities(&section, name);
@@ -1683,7 +1626,7 @@ fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
         CHUNK_PATH,
         MEASUREMENT_SECTION_TITLE,
     );
-    let fences = reify_tagged_fences(&markdown, "reify", CHUNK_PATH);
+    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
     for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
         let documented = documented_signature_arities(&section, name);

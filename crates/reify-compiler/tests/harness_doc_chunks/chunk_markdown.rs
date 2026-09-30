@@ -210,6 +210,64 @@ pub(crate) fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
     Ok(fences)
 }
 
+/// Every ```` ```reify ````-tagged fence in the chunk, in document order, with
+/// the fence delimiters stripped.
+///
+/// Only EXPLICITLY TAGGED fences are collected. The module doc above explains
+/// why geometry.md cannot be scraped wholesale: it intermixes non-compilable
+/// schematic notation (type params, trait lists, `-> Solid` return annotations)
+/// with real call forms, and separating the two would need a fragile grammar.
+/// An opt-in tag sidesteps that — the doc author marks exactly what is meant to
+/// compile, and everything else stays free-form. ```` ```reify ```` is already
+/// the in-repo convention (every fence in `chunks/traits.md` is tagged that
+/// way).
+///
+/// Callers must anti-vacuity-check the result: a dropped tag or a renamed
+/// section would otherwise empty the scan and pass trivially.
+///
+/// `tag` IS A PARAMETER, not the hardcoded `reify` this scanner started with
+/// (task 5759). units.md carries a deliberately-INVALID rejected-forms block
+/// tagged ```` ```reify-rejected ````, which a rejection-truth negative control
+/// must scrape and a zero-Error compile gate must never sweep in. Parameterising
+/// the tag lets both gates share this one scanner instead of the harness growing
+/// its FIFTH near-identical scraper (see "Known duplication" above). Matching
+/// stays BYTE-EXACT on the whole info string, so `reify` still excludes
+/// `reify-rejected` in both directions.
+///
+/// `chunk_path` is threaded for the same reason [`assert_module_compiles`]
+/// threads its own: a sibling chunk module's unterminated fence must be blamed
+/// on ITS chunk, not on geometry.md.
+pub(crate) fn tagged_fence_bodies(markdown: &str, tag: &str, chunk_path: &str) -> Vec<String> {
+    let opener = format!("```{tag}");
+    let mut fences: Vec<String> = Vec::new();
+    let mut body: Vec<&str> = Vec::new();
+    let mut open = false;
+
+    for line in markdown.lines() {
+        if !open {
+            // Exact tag match: `reify-something` is a different language and
+            // must not be swept in.
+            if line.trim_end() == opener {
+                open = true;
+                body.clear();
+            }
+            continue;
+        }
+        if line.trim_end() == "```" {
+            fences.push(body.join("\n"));
+            open = false;
+            continue;
+        }
+        body.push(line);
+    }
+
+    assert!(
+        !open,
+        "{chunk_path} has an unterminated ```{tag} fence — the scrape cannot be trusted"
+    );
+    fences
+}
+
 // ---------------------------------------------------------------------------
 // Hermetic parser tests
 //
@@ -588,4 +646,80 @@ fn close_line_is_the_one_based_line_of_the_closing_delimiter() {
         "an empty-bodied fence closes on the line after it opens; a longer closing run \
          still closes its fence"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic tag-selection tests
+// ---------------------------------------------------------------------------
+
+/// A column-0 ```` ```reify ```` line inside a `~~~` block is that block's
+/// body, so selecting by tag must not return it as a fence of its own.
+#[test]
+fn tagged_fence_bodies_ignores_a_reify_line_inside_a_tilde_block() {
+    let md = "~~~text\n\
+              ```reify\n\
+              structure def NotAFence { let n = 1 }\n\
+              ```\n\
+              ~~~\n\
+              ```reify\n\
+              structure def Real { let n = 1 }\n\
+              ```\n";
+
+    assert_eq!(
+        tagged_fence_bodies(md, "reify", "demo.md"),
+        vec!["structure def Real { let n = 1 }".to_string()],
+        "only the genuine ```reify fence may be selected; the one inside the tilde block is \
+         a sample, and compiling it would hold prose to the standalone-module claim"
+    );
+}
+
+/// A three-backtick sample nested in a longer fence is body content, never a
+/// fence of its own.
+#[test]
+fn tagged_fence_bodies_ignores_a_sample_nested_in_a_longer_fence() {
+    let md = "````markdown\n\
+              ```reify\n\
+              let g = 1\n\
+              ```\n\
+              ````\n";
+
+    assert!(
+        tagged_fence_bodies(md, "reify", "demo.md").is_empty(),
+        "the inner ```reify lines belong to the four-backtick block's body"
+    );
+}
+
+/// Selection is by the EXACT info string: a hyphenated tag is its own tag in
+/// both directions.
+#[test]
+fn tagged_fence_bodies_matches_the_info_string_exactly() {
+    let md = "```reify-fragment\n\
+              let a = 1\n\
+              ```\n\
+              ```reify-schematic\n\
+              box(width, depth, height)\n\
+              ```\n\
+              ```reify-invalid\n\
+              let c = 1 + 1mm\n\
+              ```\n\
+              ```reify-rejected\n\
+              let d = 1 rad\n\
+              ```\n";
+
+    assert!(
+        tagged_fence_bodies(md, "reify", "demo.md").is_empty(),
+        "no hyphenated tag may be selected as bare `reify`"
+    );
+    assert_eq!(
+        tagged_fence_bodies(md, "reify-rejected", "demo.md"),
+        vec!["let d = 1 rad".to_string()],
+        "a hyphenated tag selects exactly its own fences"
+    );
+}
+
+/// An unterminated fence is the parser's named error, blamed on the chunk.
+#[test]
+#[should_panic(expected = "unterminated code fence")]
+fn tagged_fence_bodies_panics_on_an_unterminated_fence() {
+    let _ = tagged_fence_bodies("```reify\nlet g = 1\n", "reify", "demo.md");
 }

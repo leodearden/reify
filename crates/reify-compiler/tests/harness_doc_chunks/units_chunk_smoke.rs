@@ -3,7 +3,7 @@
 //! assistant via `reify_language_reference`.
 //!
 //! Sibling of `geometry_chunk_smoke.rs`, and deliberately built ON TOP of it:
-//! every scanner used here (`reify_tagged_fences`, `assert_module_compiles`,
+//! every scanner used here (`tagged_fence_bodies`, `assert_module_compiles`,
 //! `strip_reify_comments`, `called_names`, `registry_family`) is that module's,
 //! raised to `pub(crate)` and parameterised by chunk path in task 5759's
 //! prerequisite refactor. The whole cited-path loop
@@ -68,9 +68,9 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::tagged_fence_bodies;
 use crate::geometry_chunk_smoke::{
-    assert_module_compiles, called_names, phantom_name_panic, registry_family, reify_tagged_fences,
-    strip_reify_comments,
+    assert_module_compiles, called_names, phantom_name_panic, registry_family, strip_reify_comments,
 };
 
 /// Info string of the fences that MUST compile clean.
@@ -78,7 +78,7 @@ const REIFY_TAG: &str = "reify";
 
 /// Info string of the rejected-forms block. DELIBERATELY NOT `reify`.
 ///
-/// `reify_tagged_fences` matches the whole info string byte-exactly and its
+/// `tagged_fence_bodies` matches the whole info string byte-exactly and its
 /// consumer asserts ZERO `Severity::Error` per fence, so a deliberately-invalid
 /// form inside a ```` ```reify ```` fence would fail the compile gate — and the
 /// failure would read as "the documented migration does not compile", which is
@@ -210,7 +210,7 @@ fn wrap_form(form: &str) -> String {
 fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
 
-    for fence in reify_tagged_fences(markdown, tag, UNITS_CHUNK_PATH) {
+    for fence in tagged_fence_bodies(markdown, tag, UNITS_CHUNK_PATH) {
         for line in strip_reify_comments(&fence).lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -303,7 +303,7 @@ fn assert_rejected_as_documented(form: &str) {
 /// sentinel or contribute a name. Same reasoning — and the same helper — as
 /// `geometry_chunk_smoke.rs`'s fence sentinels.
 fn units_fence_code(markdown: &str) -> Vec<String> {
-    reify_tagged_fences(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
+    tagged_fence_bodies(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
         .iter()
         .map(|fence| strip_reify_comments(fence))
         .collect()
@@ -324,7 +324,7 @@ fn units_fence_code(markdown: &str) -> Vec<String> {
 #[test]
 fn reify_tagged_fences_in_units_chunk_compile() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
-    let fences = reify_tagged_fences(&markdown, REIFY_TAG, UNITS_CHUNK_PATH);
+    let fences = tagged_fence_bodies(&markdown, REIFY_TAG, UNITS_CHUNK_PATH);
 
     // Anti-vacuity. Without this, dropping the ```reify tag (or rewriting the
     // idiom as an untagged block, which is what EVERY other fence in this chunk

@@ -54,7 +54,7 @@
 //! Two sibling modules in this same compile unit already scrape these chunks,
 //! and they disagreed about what ```` ```reify ```` means:
 //!
-//! - `geometry_chunk_smoke::reify_tagged_fences` matches
+//! - `chunk_markdown::tagged_fence_bodies` matches
 //!   ```` line.trim_end() == format!("```{tag}") ```` — BYTE-EXACT on
 //!   the whole info string, so `reify-fragment`/`reify-schematic` can never
 //!   false-match it — and `reify_tagged_fences_in_geometry_chunk_compile`
@@ -153,8 +153,7 @@ use crate::chunk_io::{
     CHUNK_FILE_COUNT, CHUNKS_DIR, chunk_label, discover_chunk_stems, read_chunk_file, repo_root,
     report,
 };
-use crate::chunk_markdown::{Fence, parse_fences};
-use crate::geometry_chunk_smoke::reify_tagged_fences;
+use crate::chunk_markdown::{Fence, parse_fences, tagged_fence_bodies};
 
 // ---------------------------------------------------------------------------
 // Check 2 — the bare-fence ban
@@ -1662,14 +1661,14 @@ fn total_fence_count_is_exact_not_slack() {
 /// The sibling suite's OWN scanner, with this pin's arguments bound once.
 ///
 /// A call, not a copy. What this replaced claimed to reproduce
-/// `reify_tagged_fences` verbatim so the two could be seen to drift apart, but
+/// `tagged_fence_bodies` verbatim so the two could be seen to drift apart, but
 /// never did: the real one has been tag-parameterized since task 5759 and
 /// carries an unterminated-fence assert the copy lacked, so the
 /// drift-detection rationale did not hold. Calling it makes this pin exercise
 /// the ACTUAL coupling and turns a rename or signature change over there into
 /// a compile error here rather than silent rot.
 fn sibling_reify_fence_count(markdown: &str) -> usize {
-    reify_tagged_fences(markdown, "reify", &chunk_label("geometry")).len()
+    tagged_fence_bodies(markdown, "reify", &chunk_label("geometry")).len()
 }
 
 /// The stem whose bare-```` ```reify ```` fences the sibling suite compiles.

@@ -180,7 +180,7 @@ struct DocSignature {
 ///
 /// # Why fence-agnostic and tag-agnostic
 ///
-/// The obvious reuse would be `geometry_chunk_smoke::reify_tagged_fences`, which
+/// The obvious reuse would be `chunk_markdown::tagged_fence_bodies`, which
 /// is already parameterised by info string. But it matches that string BYTE-
 /// EXACTLY, and task #5479 will retag this very fence `reify-schematic` (its
 /// `{ ... }` bodies are literal elisions that can never compile). A tag-keyed
