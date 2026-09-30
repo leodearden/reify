@@ -1329,7 +1329,7 @@ fn corpus() -> Vec<ChunkDoc> {
 /// the aggregate check unable to mask a loss.
 const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("enums", 2),
-    ("geometry", 4),
+    ("geometry", 6),
     ("purposes", 1),
     ("traits", 3),
     ("units", 1),

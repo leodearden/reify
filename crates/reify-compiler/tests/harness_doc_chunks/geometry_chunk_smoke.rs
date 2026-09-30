@@ -701,7 +701,7 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // exception, `-> <Type>`, is stated in the module doc's "The one doc-FORMAT
     // pin this file does impose" — read it before tabulating this section.) The real
     // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
-    // by `geometry_reify_fences_call_every_documented_query_form`'s per-name
+    // by `geometry_reify_fences_call_every_worked_example_form`'s per-name
     // sentinels, which require each call form inside a COMPILING fence — a strictly stronger
     // property than any string match here.
     //
@@ -1007,8 +1007,9 @@ fn topology_selector_family_documented_in_geometry_chunk() {
     }
 }
 
-/// Every query form the chunk documents is CALLED, outside a comment, by one of
-/// geometry.md's ```` ```reify ```` fences.
+/// Every form the chunk teaches by worked example — the query family, and the
+/// constructors whose argument shapes prose alone cannot convey — is CALLED,
+/// outside a comment, by one of geometry.md's ```` ```reify ```` fences.
 ///
 /// That is what makes each form compile-verified: the fence gate
 /// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
@@ -1023,7 +1024,7 @@ fn topology_selector_family_documented_in_geometry_chunk() {
 /// acceptance does and does not buy (arity, argument dimension, unknown call
 /// names); read it before relying on this test.
 #[test]
-fn geometry_reify_fences_call_every_documented_query_form() {
+fn geometry_reify_fences_call_every_worked_example_form() {
     let markdown = read_chunk(CHUNK_PATH);
 
     // ALL FIVE oracle names, so coverage is symmetric. Before task 5389's
@@ -1051,6 +1052,12 @@ fn geometry_reify_fences_call_every_documented_query_form() {
     // documented call form that the compiler rejects would be indistinguishable,
     // to a reader, from the arithmetic it is meant to replace. Requiring each
     // inside a COMPILING fence is what makes the replacement credible.
+    //
+    // The three constructors are the ones whose argument SHAPES the chunk
+    // teaches by worked example because a signature listing cannot convey them
+    // (task #5926): `half_space`'s unbounded result intersected back to a
+    // bounded solid, `nurbs_surface`'s nested control net beside flat knot
+    // vectors, and `nurbs`'s bare-number and Length slots side by side.
     let code: Vec<String> = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH)
         .iter()
         .map(|fence| strip_reify_comments(fence))
@@ -1065,6 +1072,9 @@ fn geometry_reify_fences_call_every_documented_query_form() {
         "area(",
         "centroid(",
         "bounding_box(",
+        "half_space(",
+        "nurbs_surface(",
+        "nurbs(",
     ] {
         assert!(
             code.iter().any(|fence| fence.contains(sentinel)),
@@ -1087,7 +1097,7 @@ fn geometry_reify_fences_call_every_documented_query_form() {
 /// `// MUST be let-bound. Writing `constraint min_clearance(s, id_a, id_b) > 2mm``,
 /// whose 3-arg `min_clearance(` is exactly the documented arity — so deleting the
 /// fence's REAL `let clr = min_clearance(s, id_a, id_b)` left both
-/// `geometry_reify_fences_call_every_documented_query_form` and
+/// `geometry_reify_fences_call_every_worked_example_form` and
 /// `documented_oracle_arities_are_exercised_by_a_compiling_fence` green while
 /// their panic text claimed the form was "compile-verified" / "exercised by a
 /// compiling fence". A commented-out call is not a call.

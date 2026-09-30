@@ -549,7 +549,7 @@ gate.
 
      Chunk-side guards (all in that one file, cited whole on one line each):
        geometry_chunk_smoke.rs::measurement_query_family_documented_in_geometry_chunk
-       geometry_chunk_smoke.rs::geometry_reify_fences_call_every_documented_query_form
+       geometry_chunk_smoke.rs::geometry_reify_fences_call_every_worked_example_form
        geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
