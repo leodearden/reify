@@ -11,6 +11,16 @@
 //!
 //! This is a source scan because the discarded pass leaves no observable
 //! difference in the result, and wall time is not a test signal.
+//!
+//! The scan is lexical and has known blind spots. It misses a construction
+//! through a type alias (`using Fuse = BRepAlgoAPI_Fuse; Fuse f(a, b);`) and an
+//! in-place construction that never names the class next to its operands
+//! (`ops.emplace_back(a, b)`). A raw string literal holding a `"` (`R"(…"…)"`)
+//! desynchronises the literal blanking for the rest of its line, which can hide
+//! a construction on that line or flag literal text as code. The runtime twin
+//! covers the alias and in-place cases when the op reaches the helper:
+//! `build_boolean_pass` throws on an op that is already done. A site that
+//! builds an op without going through the helper is seen by neither guard.
 
 #![cfg(has_occt)]
 

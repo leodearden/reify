@@ -1166,12 +1166,18 @@ TopTools_ListOfShape single_shape_list(const TopoDS_Shape& shape) {
 // The one Build() site, and so the one pass-counter increment, for every OCCT
 // boolean. In OCCT 7.8.1 the operand-bearing BRepAlgoAPI constructors already
 // Build(), and Build() clears and reruns, so every boolean default-constructs
-// and comes through here (guarded by
-// tests/harness_occt/boolean_single_build_guard.rs).
+// and comes through here. Two guards keep an eagerly built op out: the
+// IsDone() precondition below at runtime, and
+// tests/harness_occt/boolean_single_build_guard.rs over the source.
 void build_boolean_pass(BRepAlgoAPI_BooleanOperation& op,
                         const TopTools_ListOfShape& arguments,
                         const TopTools_ListOfShape& tools,
                         const char* failure_message) {
+    if (op.IsDone()) {
+        throw std::logic_error(
+            "build_boolean_pass: op is already built (constructed with operands?); "
+            "default-construct it so the boolean runs once");
+    }
     op.SetArguments(arguments);
     op.SetTools(tools);
     op.Build();
