@@ -797,6 +797,43 @@ D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
 assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
     test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 
+# D5-D9 — a --touch path that does not exist is warned and skipped, never
+# created (task #7231). ONE invocation carries every shape a stale or mistyped
+# --touch can take: a missing file under an existing dir, a missing parent, and a
+# DANGLING symlink (a plain `touch` follows the link and creates its target).
+# D_BASE is reused read-only as the clone source, exactly as D0 does.
+DM_LANE="$(make_isolated_lane D-touchmiss)"
+mkdir -p "$DM_LANE/src" "$DM_LANE/.git"
+echo '[core]' > "$DM_LANE/.git/config"
+DM_EXISTING="$DM_LANE/src/real.rs"
+echo 'pub fn real() {}' > "$DM_EXISTING"
+DM_MISSING="$DM_LANE/src/typo_missing.rs"           # parent exists, file absent
+DM_MISSING_PARENT="$DM_LANE/no_such_dir/stale.rs"   # parent absent
+DM_LINK="$DM_LANE/src/dangling.rs"
+ln -s ghost_target.rs "$DM_LINK"
+DM_LINK_TARGET="$DM_LANE/src/ghost_target.rs"       # what a following touch would create
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM_LANE" --fresh-checkout \
+        --touch "$DM_EXISTING" --touch "$DM_MISSING" \
+        --touch "$DM_MISSING_PARENT" --touch "$DM_LINK"
+
+assert "D5: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
+    bash -c '[ "$1" -eq 0 ] && [ "$2" = "$3" ]' _ "$RC" "$OUT" "$DM_LANE/target"
+assert "D6: a --touch path that does not exist is not created" \
+    bash -c '[ ! -e "$1" ]' _ "$DM_MISSING"
+assert "D7: a dangling-symlink --touch path does not create the link's target" \
+    bash -c '[ ! -e "$1" ] && [ -L "$2" ]' _ "$DM_LINK_TARGET" "$DM_LINK"
+# Attributability, not wording: each skipped path is named on a [warn] line.
+for _dm_skipped in "$DM_MISSING" "$DM_MISSING_PARENT" "$DM_LINK"; do
+    assert "D8: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF -- "$2"' _ "$ERR_OUT" "$_dm_skipped"
+done
+DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
+assert "D9: the existing --touch path listed beside the misses is still touched to now" \
+    test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
 # ─────────────────────────────────────────────────────────────────────────────
