@@ -1170,6 +1170,7 @@ fn mesh_stats_json_reports_full_scene_under_selective_demand() {
             "face_count",
             "bounding_box",
             "element_kind_count",
+            "default_visible",
         ] {
             assert!(
                 entry.get(key).is_some(),
@@ -1269,6 +1270,113 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
             bbox[key].as_array().map(|a| a.len()),
             Some(3),
             "bounding_box.{key} must be a 3-element array"
+        );
+    }
+}
+
+/// A flange whose `body` and `hole` are consumed by the terminal `geometry`
+/// (#5195) beside an `aux` blank (T6) — the shapes whose engine verdict is
+/// hidden-by-default. Material literal as in engine_tests'
+/// `get_entity_tree_consumed_realizations_default_visible_false`.
+const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    let body = cylinder(60mm, 12mm)
+    let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
+    aux let blank = cylinder(8mm, 40mm)
+    param geometry : Solid = difference(body, hole)
+}"#;
+
+/// Each mesh entry's `default_visible`, keyed by its `entity_path`.
+fn default_visible_by_path(
+    projection: &serde_json::Value,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    projection["meshes"]
+        .as_array()
+        .expect("meshes must be an array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["entity_path"]
+                    .as_str()
+                    .expect("each mesh must carry an entity_path string")
+                    .to_string(),
+                entry
+                    .get("default_visible")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+/// Both full-scene debug reads report the engine's hidden-by-default verdict
+/// per mesh, joined through the entity tree's realization node for that mesh.
+#[test]
+fn mesh_stats_and_engine_state_report_the_engine_default_visible_verdict_per_mesh() {
+    use crate::commands::{engine_state_json, mesh_stats_json};
+
+    let mut session = make_session();
+    session
+        .load_from_source(AUX_AND_CONSUMED_FLANGE_SRC, "flange")
+        .expect("load");
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+    let path_of = |name: &str| -> String {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+            .entity_path
+            .clone()
+    };
+    let expected = [
+        ("body", false),
+        ("hole", false),
+        ("blank", false),
+        ("geometry", true),
+    ];
+
+    let mesh_stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let engine_state = engine_state_json(&mut session).expect("engine_state_json succeeds");
+
+    for (read, projection) in [("mesh_stats", &mesh_stats), ("engine_state", &engine_state)] {
+        let by_path = default_visible_by_path(projection);
+        for (name, visible) in expected {
+            let path = path_of(name);
+            assert_eq!(
+                by_path.get(&path),
+                Some(&serde_json::json!(visible)),
+                "{read}: mesh {path} ('{name}') must carry default_visible == {visible}; \
+                 got {by_path:?}"
+            );
+        }
+    }
+}
+
+/// Sub-component bodies join too: `MeshData.entity_path` keys the same
+/// realization-node paths the frontend's auto-view joins on, at every depth.
+#[test]
+fn every_nested_composed_mesh_carries_a_boolean_default_visible() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    let stats = mesh_stats_json(&mut session).expect("mesh_stats_json succeeds");
+    let by_path = default_visible_by_path(&stats);
+
+    assert!(
+        by_path.len() >= 4,
+        "the fixture projects 4 leaf bodies; got {by_path:?}"
+    );
+    for (path, visible) in &by_path {
+        assert!(
+            visible.is_boolean(),
+            "mesh {path} must carry a boolean default_visible (null means no entity-tree \
+             realization node matched its entity_path); got {visible}"
         );
     }
 }
