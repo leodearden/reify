@@ -10078,8 +10078,9 @@ enum TopologySelectorHelper {
     /// `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` —
     /// at-point curvature (task 3621, KGQ-μ, PRD §9). For a surface (face),
     /// returns a 2×2 `Value::Matrix` of principal curvatures [[κ_max,0],[0,κ_min]]
-    /// as `Value::Scalar{ dimension: 1/Length }` cells; for a curve (edge),
-    /// returns `Value::Scalar{ si_value: κ, dimension: 1/Length }`. Dispatches
+    /// as `Value::Scalar{ dimension: DimensionVector::CURVATURE }` (rad·m⁻¹) cells;
+    /// for a curve (edge), returns
+    /// `Value::Scalar{ si_value: κ, dimension: DimensionVector::CURVATURE }`. Dispatches
     /// `GeometryQuery::SurfaceCurvatureAt` first; on error retries as
     /// `GeometryQuery::CurveCurvatureAt`. Backed by `OcctKernel::curvature_at`
     /// (surface) and `OcctKernel::curve_curvature_at` (curve).
@@ -11098,15 +11099,6 @@ fn dispatch_normal_vector3(
     }
 }
 
-/// Curvature dimension constant: 1/Length = Length^-1 (m⁻¹ in SI).
-/// Used by `dispatch_curvature` to tag scalar and matrix cells.
-/// The curvature dimension is LENGTH^-1. index 0 = LENGTH in DimensionVector.
-const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
-    let mut d = [reify_core::dimension::Rational::ZERO; 10];
-    d[0] = reify_core::dimension::Rational::new(-1, 1);
-    reify_core::dimension::DimensionVector(d)
-};
-
 /// Dispatch a `length(curve)` query for `TopologySelectorHelper::Length`
 /// (task 3622, KGQ-ν).
 ///
@@ -11196,10 +11188,15 @@ fn dispatch_perimeter(
 ///
 /// Strategy: try `SurfaceCurvatureAt{handle, u=px, v=py}` first. If the kernel
 /// returns Ok, decode the `[[κ_max,0],[0,κ_min]]` nested-List wire value into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells. If
-/// the kernel returns Err, retry as `CurveCurvatureAt{handle,px,py,pz}` and
-/// return `Value::Scalar{si_value: κ, dimension: 1/Length}`. If both fail, emit
-/// exactly one Warning naming `helper_name` and return `Some(Value::Undef)`.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells. If the kernel returns Err, retry as
+/// `CurveCurvatureAt{handle,px,py,pz}` and return
+/// `Value::Scalar{si_value: κ, dimension: DimensionVector::CURVATURE}`. If both
+/// fail, emit exactly one Warning naming `helper_name` and return
+/// `Some(Value::Undef)`.
+///
+/// The kernel's raw κ is tagged here, and this is where the arc measure is
+/// asserted: η = 1, so the value passes through unchanged.
 ///
 /// The surface wire note: the kernel encodes the principal-curvature matrix as a
 /// diagonal `[[kappa_max, 0.0], [0.0, kappa_min]]` (InertiaTensor wire convention)
@@ -11236,7 +11233,7 @@ fn dispatch_curvature(
     match kernel.query(&curve_query) {
         Ok(reify_ir::Value::Real(kappa)) => Some(reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         }),
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -11255,7 +11252,8 @@ fn dispatch_curvature(
 }
 
 /// Decode the kernel's `[[κ_max, 0.0], [0.0, κ_min]]` nested-List reply into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells.
 ///
 /// On any parse failure emits a Warning and returns `Value::Undef` (same
 /// defensive-downgrade contract as `dispatch_normal_vector3`).
@@ -11299,7 +11297,7 @@ fn parse_curvature_matrix_reply(
             };
             matrix_row.push(reify_ir::Value::Scalar {
                 si_value,
-                dimension: CURVATURE_DIM,
+                dimension: reify_core::DimensionVector::CURVATURE,
             });
         }
         matrix_rows.push(matrix_row);
