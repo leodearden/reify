@@ -83,10 +83,13 @@ pub struct StaleUndefViolation {
 ///    feature→datum projection (`geometry_ops::is_feature_datum_projection_call`)
 ///    or an ad-hoc topology selector (`CompiledExprKind::AdHocSelector`,
 ///    e.g. `body @ face("top")`). This rule CLOSES the class the old name
-///    lists missed — `face`/`edge`/`solid_body`/`vertex` named-leaf ctors,
-///    composition `union`/`intersect`/`difference`, GD&T `max_deviation`,
-///    `split`, `feature`, the conformance queries, and any FUTURE geometry-
-///    arg consumer — with no per-name upkeep, while the eval-wired guard
+///    lists missed — GD&T `max_deviation`, `split`, `feature`, the
+///    conformance queries, and any FUTURE geometry-arg consumer — with no
+///    per-name upkeep. (The `face`/`edge`/`solid_body`/`vertex` named-leaf
+///    ctors and the `union`/`intersect`/`difference` compositions were in this
+///    class at γ but have been eval-wired since task #5120 R2c, so they are
+///    NOT exempt: a still-`Undef` one is a `StaleUndefViolation`.) The
+///    eval-wired guard
 ///    keeps the net tight (a well-formed `faces_by_normal` &c. that stays
 ///    `Undef` is a real bug, not exempt). The kernel geometry-query family
 ///    (`is_geometry_consumer_call`: `volume`/`centroid`/…, `angle`) and the
@@ -213,14 +216,16 @@ pub fn check_no_stale_undef(
         // volume(geometry) * material.density`, `structural_physical.ri:46`),
         // behind a plain (non-`@optimized`) stdlib `UserFunctionCall`
         // wrapper (`let mp = body_mass_props(geometry, rho)`,
-        // `ambient_default_surface.ri`), a named-leaf selector constructor
-        // over a plain geometry target (`let s = face(b, "tag")`,
-        // `bt8_named_leaf_interim.ri` — task γ / #4954 fallout), or an
-        // ad-hoc selector (`let
+        // `ambient_default_surface.ri`), or an ad-hoc selector (`let
         // top_frame = body @ face("top")`, `ad_hoc_face_selector.ri`) —
         // cannot be resolved on the kernel-less `eval()`/`eval_cached()`
         // surface at all: these require a realized geometry kernel and are
-        // only resolvable via `build()`/`tessellate()`. This is the exact
+        // only resolvable via `build()`/`tessellate()`. NOT in this class: a
+        // named-leaf selector constructor (`let s = face(b, "tag")`) — since
+        // task #5120 R2c it is eval-wired
+        // (`geometry_ops::is_symbolic_eval_wired_selector_ctor`) and resolves
+        // to a `Value::Selector` kernel-free, so a still-Undef one is
+        // deliberately NOT exempted here. This is the exact
         // class `engine_eval.rs`'s `detect_unresolved_geometry_consumers`
         // (task #4651 R1a / DD-4) already diagnoses at `EvalUnresolved` for
         // the direct-call case; generalized here to nested/UserFunctionCall
@@ -306,13 +311,14 @@ const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_c
 ///    symbolic-eval-wired selector ctors
 ///    ([`geometry_ops::is_symbolic_eval_wired_selector_ctor`], the single
 ///    EVAL_WIRED map). This CLOSES the class the old clause-8 name lists
-///    missed — composition `union`/`intersect`/`difference`, the `face`/
-///    `edge`/`solid_body`/`vertex` named-leaf ctors, GD&T `max_deviation`,
-///    `split`, `feature`, the conformance queries, AND any future geometry-arg
-///    consumer — with no per-name upkeep. The eval-wired guard keeps the α net
-///    tight: a well-formed leaf ctor (`faces_by_normal` &c.) still `Undef`
-///    post-eval with all deps resolved is a genuine arity/scheduling bug and
-///    stays a violation, NOT an exemption.
+///    missed — GD&T `max_deviation`, `split`, `feature`, the conformance
+///    queries, AND any future geometry-arg consumer — with no per-name upkeep.
+///    The eval-wired guard keeps the α net tight: a well-formed leaf ctor
+///    (`faces_by_normal`, and, since task #5120 R2c, the `face`/`edge`/
+///    `solid_body`/`vertex` named-leaf ctors and the `union`/`intersect`/
+///    `difference` compositions) still `Undef` post-eval with all deps
+///    resolved is a genuine arity/scheduling bug and stays a violation, NOT
+///    an exemption.
 ///
 /// 3. Registry recognition for the kernel geometry-query family
 ///    (`geometry_ops::is_geometry_consumer_call` — `volume`/`centroid`/… and
