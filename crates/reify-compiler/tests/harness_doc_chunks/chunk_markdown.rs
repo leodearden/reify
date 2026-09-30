@@ -210,62 +210,29 @@ pub(crate) fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
     Ok(fences)
 }
 
-/// Every ```` ```reify ````-tagged fence in the chunk, in document order, with
-/// the fence delimiters stripped.
+/// The body of every fence whose info string is EXACTLY `tag`, in document
+/// order, with both delimiter lines excluded.
 ///
-/// Only EXPLICITLY TAGGED fences are collected. The module doc above explains
-/// why geometry.md cannot be scraped wholesale: it intermixes non-compilable
-/// schematic notation (type params, trait lists, `-> Solid` return annotations)
-/// with real call forms, and separating the two would need a fragile grammar.
-/// An opt-in tag sidesteps that — the doc author marks exactly what is meant to
-/// compile, and everything else stays free-form. ```` ```reify ```` is already
-/// the in-repo convention (every fence in `chunks/traits.md` is tagged that
-/// way).
+/// A projection over [`parse_fences`], the one fence definition, so a sample
+/// nested in a longer fence or quoted inside a `~~~` block is never mistaken for
+/// a fence of its own. Matching on the whole info string keeps a hyphenated tag
+/// distinct in both directions: `reify` never selects `reify-fragment`, and
+/// `reify-rejected` selects only itself.
 ///
-/// Callers must anti-vacuity-check the result: a dropped tag or a renamed
-/// section would otherwise empty the scan and pass trivially.
+/// Only EXPLICITLY TAGGED fences are selected, so a chunk author marks exactly
+/// what a caller's check applies to and everything else stays free-form.
+/// Callers must anti-vacuity-check the result: a dropped tag would otherwise
+/// empty the scan and pass trivially.
 ///
-/// `tag` IS A PARAMETER, not the hardcoded `reify` this scanner started with
-/// (task 5759). units.md carries a deliberately-INVALID rejected-forms block
-/// tagged ```` ```reify-rejected ````, which a rejection-truth negative control
-/// must scrape and a zero-Error compile gate must never sweep in. Parameterising
-/// the tag lets both gates share this one scanner instead of the harness growing
-/// its FIFTH near-identical scraper (see "Known duplication" above). Matching
-/// stays BYTE-EXACT on the whole info string, so `reify` still excludes
-/// `reify-rejected` in both directions.
-///
-/// `chunk_path` is threaded for the same reason [`assert_module_compiles`]
-/// threads its own: a sibling chunk module's unterminated fence must be blamed
-/// on ITS chunk, not on geometry.md.
+/// Panics if `markdown` does not parse, naming `chunk_path`, so a malformed
+/// chunk is blamed on itself rather than scanned wrongly.
 pub(crate) fn tagged_fence_bodies(markdown: &str, tag: &str, chunk_path: &str) -> Vec<String> {
-    let opener = format!("```{tag}");
-    let mut fences: Vec<String> = Vec::new();
-    let mut body: Vec<&str> = Vec::new();
-    let mut open = false;
-
-    for line in markdown.lines() {
-        if !open {
-            // Exact tag match: `reify-something` is a different language and
-            // must not be swept in.
-            if line.trim_end() == opener {
-                open = true;
-                body.clear();
-            }
-            continue;
-        }
-        if line.trim_end() == "```" {
-            fences.push(body.join("\n"));
-            open = false;
-            continue;
-        }
-        body.push(line);
-    }
-
-    assert!(
-        !open,
-        "{chunk_path} has an unterminated ```{tag} fence — the scrape cannot be trusted"
-    );
-    fences
+    parse_fences(markdown)
+        .unwrap_or_else(|e| panic!("{chunk_path}: {e}"))
+        .into_iter()
+        .filter(|fence| fence.tag.as_deref() == Some(tag))
+        .map(|fence| fence.body)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
