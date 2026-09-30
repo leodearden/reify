@@ -958,9 +958,25 @@ verify_runners:
     # a FAILED sync BENCHES the runner instead of silently trusting its verdict.
     df_checkout_path: /home/leo/src/dark-factory
     enabled: true
-verify_drift_check_every_n_lands: 20
+# verify_host_policy: prefer_remote — 2026-09-30 (task 7269; dark_factory 5097).
+# Take the laptop first when it is free, fall back to local otherwise (the queue never
+# stalls). Measured 2026-09-03: the laptop runs verifies ~2.5x faster (p50 17.4 vs 43.4
+# min) and sits 78-88% idle while the workstation CPU is the bottleneck for BOTH projects.
+# TRUST-ANCHOR TRADE-OFF, EYES OPEN: prefer-local existed because local is the trust
+# anchor (a laptop false green landed a red commit, #5120). Under prefer_remote nearly
+# every verdict is a REMOTE verdict, so the drift check below is the standing fidelity
+# guard. Green tier: reload_config applies it live, and `prefer_local` is the one-reload
+# rollback.
+verify_host_policy: prefer_remote
+# Cadence 20 -> 10 (2026-09-30), matching dark_factory D1 (5053). A drift check leases
+# BOTH hosts and runs both legs, so 1-in-10 spends back a little of the local CPU this
+# change frees. Accepted: the guard is the whole safety case for prefer_remote. Restart-only.
+verify_drift_check_every_n_lands: 10
 #
-# verify_cross_check_remote_green: DISABLED 2026-08-21 (Leo) as an interim
+# verify_cross_check_remote_green: TRUE again 2026-09-30 (task 7269 amendment item 4) for
+# the 3-day remote-verify parity window (dark_factory 5416), which owns the OFF step: it
+# flips this back to false by reload, then confirms the drift cadence above fires.
+# PROVENANCE of the former false: DISABLED 2026-08-21 (Leo) as an interim
 # mitigation for dark_factory:4579. The task-2822 per-land cross-check re-verifies
 # every non-trivial remote green with a full LOCAL verify, inside the merge
 # worker's awaited verify_task. That local leg is invisible to merge_queue's
@@ -974,14 +990,13 @@ verify_drift_check_every_n_lands: 20
 # Specimen: mr-945466ca / task 6393, three passing ~17.4-min remote verifies
 # discarded 2026-08-20.
 # TRADE-OFF, EYES OPEN: this reverts to the PRE-2822 safety posture — a single
-# host's green decides a land, with verify_drift_check_every_n_lands (20) above as
+# host's green decides a land, with verify_drift_check_every_n_lands (then 20) as
 # the only standing fidelity guarantee. That is the configuration in which #5120
 # landed a red commit off a laptop false green. Accepted because the cross-check
-# is currently contributing zero verdicts anyway, so no real corroboration is
-# being given up, while the false 'blocked' verdicts and the wasted ~47 min per
-# remote green are real.
-# REVERT THIS (back to true) once dark_factory:4579 lands and reify redeploys.
-verify_cross_check_remote_green: false
+# was contributing zero verdicts anyway, so no real corroboration was given up, while
+# the false 'blocked' verdicts and the wasted ~47 min per remote green were real.
+# dark_factory:4579 has since landed (done), which is why this is true again.
+verify_cross_check_remote_green: true
 
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge
