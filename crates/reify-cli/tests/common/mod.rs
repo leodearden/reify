@@ -310,3 +310,27 @@ pub fn run_build_at(path: &str) -> BuildOutput {
 pub fn run_build(fixture: &str) -> BuildOutput {
     run_build_at(&fixture_path(fixture))
 }
+
+/// Every non-directory path under `dir`, at any depth, for which `keep` returns
+/// true, sorted so callers can compare or index it stably. An absent or
+/// unreadable directory contributes nothing rather than panicking: a cache root
+/// that was never created reads as empty.
+pub fn files_under(dir: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if keep(&path) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
