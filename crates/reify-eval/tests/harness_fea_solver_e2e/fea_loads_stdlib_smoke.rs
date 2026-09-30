@@ -9,6 +9,8 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_core::ValueCellId;
+use reify_core::ty::SelectorKind;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -18,16 +20,32 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
+/// Assert `v` is a `kind` selector whose single `Named` leaf is `name` — the
+/// value a named-leaf ctor such as `face(body, "top")` evaluates to.
+fn assert_named_leaf(v: Option<&Value>, kind: SelectorKind, name: &str) {
+    match v {
+        Some(Value::Selector(sv)) => {
+            assert_eq!(sv.kind, kind, "selector kind of {sv:?}");
+            assert!(
+                matches!(&sv.node, SelectorNode::Leaf { query: LeafQuery::Named(n), .. } if n == name),
+                "expected a Named({name:?}) leaf, got {sv:?}"
+            );
+        }
+        other => panic!("expected a {kind:?} Value::Selector named {name:?}, got {other:?}"),
+    }
+}
+
 // ── step-1 (RED) → step-2 (GREEN) : TractionLoad ────────────────────────────
 
-/// Bare `TractionLoad()` constructor lowers to a `Value::StructureInstance`
-/// whose `type_name` is `"TractionLoad"` and whose fields carry the two
-/// declared defaults: `face = ""`, `traction = 0.0`.
+/// A `TractionLoad` supplying only its required `face` lowers to a
+/// `Value::StructureInstance` whose `type_name` is `"TractionLoad"` and whose
+/// `traction` carries the declared default `0.0`.
 #[test]
 fn traction_load_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
 structure def TractionLoadFixture {
-    let load = TractionLoad()
+    let body = box(1m, 0.1m, 0.1m)
+    let load = TractionLoad(face: face(body, "top"))
 }
 "#;
 
@@ -49,13 +67,6 @@ structure def TractionLoadFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            // face default = ""
-            assert_eq!(
-                field(&data.fields, "face"),
-                Some(&Value::String(String::new())),
-                "TractionLoad.face default must be \"\"; fields: {:?}",
-                data.fields
-            );
             // traction default = 0.0
             assert_eq!(
                 field(&data.fields, "traction"),
@@ -71,13 +82,15 @@ structure def TractionLoadFixture {
     }
 }
 
-/// `TractionLoad(face: "top", traction: 5.0)` constructor round-trips the
-/// caller-supplied field values through the structure instance.
+/// `TractionLoad(face: face(body, "top"), traction: 5.0)` constructor
+/// round-trips the caller-supplied field values through the structure
+/// instance; `face` is a typed Face selector naming "top" (task 5312).
 #[test]
 fn traction_load_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def TractionLoadFixture2 {
-    let load = TractionLoad(face: "top", traction: 5.0)
+    let body = box(1m, 0.1m, 0.1m)
+    let load = TractionLoad(face: face(body, "top"), traction: 5.0)
 }
 "#;
 
@@ -93,12 +106,7 @@ structure def TractionLoadFixture2 {
 
     match load {
         Value::StructureInstance(data) => {
-            assert_eq!(
-                field(&data.fields, "face"),
-                Some(&Value::String("top".to_string())),
-                "TractionLoad.face override must be \"top\"; fields: {:?}",
-                data.fields
-            );
+            assert_named_leaf(field(&data.fields, "face"), SelectorKind::Face, "top");
             assert_eq!(
                 field(&data.fields, "traction"),
                 Some(&Value::Real(5.0)),
@@ -115,14 +123,15 @@ structure def TractionLoadFixture2 {
 
 // ── step-5 (RED) → step-6 (GREEN) : BodyForce ───────────────────────────────
 
-/// Bare `BodyForce()` constructor lowers to a `Value::StructureInstance` whose
-/// `type_name` is `"BodyForce"` and whose fields carry the two declared
-/// defaults: `body = ""`, `force_density = 0.0`.
+/// A `BodyForce` supplying only its required `body` lowers to a
+/// `Value::StructureInstance` whose `type_name` is `"BodyForce"` and whose
+/// `force_density` carries the declared default `0.0`.
 #[test]
 fn body_force_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
 structure def BodyForceFixture {
-    let load = BodyForce()
+    let body = box(1m, 0.1m, 0.1m)
+    let load = BodyForce(body: solid_body(body, "all"))
 }
 "#;
 
@@ -144,13 +153,6 @@ structure def BodyForceFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            // body default = ""
-            assert_eq!(
-                field(&data.fields, "body"),
-                Some(&Value::String(String::new())),
-                "BodyForce.body default must be \"\"; fields: {:?}",
-                data.fields
-            );
             // force_density default = 0.0
             assert_eq!(
                 field(&data.fields, "force_density"),
@@ -166,13 +168,15 @@ structure def BodyForceFixture {
     }
 }
 
-/// `BodyForce(body: "all", force_density: -77000.0)` constructor round-trips
-/// the caller-supplied field values through the structure instance.
+/// `BodyForce(body: solid_body(body, "all"), force_density: -77000.0)`
+/// constructor round-trips the caller-supplied field values through the
+/// structure instance; `body` is a typed Body selector naming "all" (task 5312).
 #[test]
 fn body_force_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def BodyForceFixture2 {
-    let load = BodyForce(body: "all", force_density: -77000.0)
+    let body = box(1m, 0.1m, 0.1m)
+    let load = BodyForce(body: solid_body(body, "all"), force_density: -77000.0)
 }
 "#;
 
@@ -188,12 +192,7 @@ structure def BodyForceFixture2 {
 
     match load {
         Value::StructureInstance(data) => {
-            assert_eq!(
-                field(&data.fields, "body"),
-                Some(&Value::String("all".to_string())),
-                "BodyForce.body override must be \"all\"; fields: {:?}",
-                data.fields
-            );
+            assert_named_leaf(field(&data.fields, "body"), SelectorKind::Body, "all");
             assert_eq!(
                 field(&data.fields, "force_density"),
                 Some(&Value::Real(-77000.0)),

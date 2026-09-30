@@ -607,3 +607,77 @@ structure StressPredicateProbe {
         peak.result_type
     );
 }
+
+// ─── Bmig2 (#5312): FEA selector field typing ────────────────────────────────
+//
+// The FEA load/support target fields are typed selectors (PRD
+// docs/prds/v0_6/fea-load-support-selector-migration.md D8/D10). The
+// struct-ctor conformance chokepoint supplies every reject signal: a bare
+// String is an ArgTypeMismatch, a wrong-kind selector a SelectorKindMismatch.
+
+/// Wrap one `let x = <ctor>` in a structure owning a `body` geometry cell, so a
+/// named-leaf selector ctor such as `face(body, "top")` has a target.
+fn in_body_structure(ctor: &str) -> String {
+    format!("structure S {{\n    let body = box(1m, 0.1m, 0.1m)\n    let x = {ctor}\n}}\n")
+}
+
+/// The Error-severity diagnostics of compiling `ctor` inside
+/// [`in_body_structure`] with the stdlib.
+fn selector_field_errors(ctor: &str) -> Vec<reify_core::Diagnostic> {
+    reify_test_support::compile_source_with_stdlib(&in_body_structure(ctor))
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+fn assert_no_errors(ctor: &str) {
+    let errors = selector_field_errors(ctor);
+    assert!(errors.is_empty(), "`{ctor}` must compile clean, got {errors:?}");
+}
+
+/// `ctor` yields exactly one Error, with `code`, whose message names every one
+/// of `fragments`.
+fn assert_single_error(ctor: &str, code: DiagnosticCode, fragments: &[&str]) {
+    let errors = selector_field_errors(ctor);
+    assert_eq!(errors.len(), 1, "`{ctor}` must yield exactly one Error, got {errors:?}");
+    let error = &errors[0];
+    assert_eq!(error.code, Some(code), "`{ctor}`: wrong code in {error:?}");
+    for fragment in fragments {
+        assert!(
+            error.message.contains(fragment),
+            "`{ctor}`: message must name {fragment:?}, got {:?}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn traction_load_face_is_a_face_selector() {
+    assert_no_errors(r#"TractionLoad(face: face(body, "top"), traction: 5.0)"#);
+    assert_single_error(
+        r#"TractionLoad(face: "top", traction: 5.0)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["face", "FaceSelector", "String"],
+    );
+    assert_single_error(
+        r#"TractionLoad(face: edge(body, "e"), traction: 5.0)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["FaceSelector", "EdgeSelector"],
+    );
+}
+
+#[test]
+fn body_force_body_is_a_body_selector() {
+    assert_no_errors(r#"BodyForce(body: solid_body(body, "all"), force_density: -77000.0)"#);
+    assert_single_error(
+        r#"BodyForce(body: "all", force_density: -77000.0)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["body", "BodySelector", "String"],
+    );
+    assert_single_error(
+        r#"BodyForce(body: face(body, "f"), force_density: -77000.0)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["BodySelector", "FaceSelector"],
+    );
+}
