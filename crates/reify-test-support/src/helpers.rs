@@ -872,10 +872,10 @@ pub fn build_against_mock_kernel(
 /// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
 /// If a specific entity's cell matters, disambiguate before calling, e.g.
 /// by searching `template.value_cells` directly for the desired
-/// `id.entity`. [`get_value_cell_of`], [`try_get_value_cell_of`],
-/// [`get_let_expr_in_template`], [`get_let_expr_in`] and [`get_let_expr`]
-/// share this same resolution walk and are subject to the identical
-/// ambiguity contract.
+/// `id.entity`. [`get_value_cell`], [`get_value_cell_of`],
+/// [`try_get_value_cell_of`], [`get_let_expr_in_template`],
+/// [`get_let_expr_in`] and [`get_let_expr`] share this same resolution walk
+/// and are subject to the identical ambiguity contract.
 ///
 /// Takes a `&CompiledModule` plus a template name; [`get_value_cell_of`] is
 /// the sibling for a `&TopologyTemplate` the caller already holds.
@@ -908,6 +908,7 @@ pub fn get_value_cell_in<'a>(
 /// `default_expr` rather than the declaration, so it panics on a defaultless cell
 /// where this function returns that cell as-is. [`try_get_value_cell_of`] is the
 /// tolerant variant, for callers to which absence is an expected outcome.
+/// [`get_value_cell`] is the module-level wrapper for a module's first template.
 ///
 /// Resolves through [`try_get_value_cell_of`]; see its rustdoc for the shared
 /// ambiguity contract.
@@ -943,7 +944,7 @@ pub fn get_value_cell_of<'a>(
 /// Resolve a value cell by name from a template you already hold, tolerating absence.
 ///
 /// THE single ambiguity-guarded cell walk. Every value-cell entry point in this module
-/// resolves through it: [`get_value_cell_of`], [`get_value_cell_in`],
+/// resolves through it: [`get_value_cell_of`], [`get_value_cell_in`], [`get_value_cell`],
 /// [`get_let_expr_in_template`], [`get_let_expr_in`] and [`get_let_expr`]. Resolution
 /// keys on `id.member` alone; `id.entity` is not considered.
 ///
@@ -1033,7 +1034,7 @@ pub fn get_let_expr_in_template<'a>(
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
-/// not be the desired template. `get_let_expr` delegates to this function.
+/// not be the desired template.
 ///
 /// Delegates to [`get_value_cell_in`] for template and cell resolution.
 ///
@@ -1057,29 +1058,60 @@ pub fn get_let_expr_in<'a>(
     )
 }
 
+/// THE single site of "expected at least one template in module", shared by
+/// [`get_value_cell`] and [`get_let_expr`].
+///
+/// # Panics
+/// - `"expected at least one template in module"` if `templates` is empty.
+#[track_caller]
+fn first_template(module: &reify_compiler::CompiledModule) -> &TopologyTemplate {
+    module
+        .templates
+        .first()
+        .expect("expected at least one template in module")
+}
+
+/// Retrieve the `ValueCellDecl` of a value cell by name from the module's FIRST template.
+///
+/// First-template convenience wrapper. Use [`get_value_cell_in`] to target a specific
+/// template in a multi-template module, and [`get_value_cell_of`] when you hold a
+/// `&TopologyTemplate` and no module. [`get_let_expr`] is the expr-only sibling: it
+/// yields the cell's `default_expr` rather than the declaration, so it panics on a
+/// defaultless cell where this function returns that cell as-is.
+///
+/// Resolves through [`get_value_cell_of`]; see [`get_value_cell_in`]'s rustdoc for the
+/// shared ambiguity contract.
+///
+/// # Panics
+/// - `"expected at least one template in module"` if `templates` is empty.
+/// - Panics from [`get_value_cell_of`] if the cell is absent or ambiguous.
+#[track_caller]
+pub fn get_value_cell<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    get_value_cell_of(first_template(module), cell_name)
+}
+
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
 ///
-/// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
-/// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
-/// templates and you need to target a specific one.
+/// Convenience wrapper that delegates to [`get_let_expr_in_template`] on the module's
+/// first template. Use [`get_let_expr_in`] directly when the module has multiple
+/// templates and you need to target a specific one. [`get_value_cell`] is the
+/// declaration-level sibling.
 ///
 /// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
 ///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
+/// - Panics from [`get_let_expr_in_template`] if the cell is absent, ambiguous, or its
+///   default expr is absent.
 #[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
 ) -> &'a CompiledExpr {
-    let template_name = module
-        .templates
-        .first()
-        .expect("expected at least one template in module")
-        .name
-        .as_str();
-    get_let_expr_in(module, template_name, name)
+    get_let_expr_in_template(first_template(module), name)
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -2452,14 +2484,14 @@ mod tests {
     }
 
     // ── get_value_cell_in ─────────────────────────────────────────────────
-    // All six value-cell entry points — get_value_cell_of,
-    // try_get_value_cell_of, get_value_cell_in, get_let_expr_in_template,
-    // get_let_expr_in and get_let_expr — resolve through the shared
-    // try_get_value_cell_of walk, so the ambiguity panic pinned once below (on
-    // get_value_cell_in) applies identically at all six, and the not-found
-    // panic at the five that raise it (try_get_value_cell_of returns None
-    // instead, pinned in its own section). No per-entry-point duplicate is
-    // added for either panic.
+    // All seven value-cell entry points — get_value_cell_of,
+    // try_get_value_cell_of, get_value_cell_in, get_value_cell,
+    // get_let_expr_in_template, get_let_expr_in and get_let_expr — resolve
+    // through the shared try_get_value_cell_of walk, so the ambiguity panic
+    // pinned once below (on get_value_cell_in) applies identically at all
+    // seven, and the not-found panic at the six that raise it
+    // (try_get_value_cell_of returns None instead, pinned in its own section).
+    // No per-entry-point duplicate is added for either panic.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
