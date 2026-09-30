@@ -12,6 +12,8 @@
 //!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
 //!   the restricted detectors that move the exit code (see
 //!   `docs/notes/diagnostic-severity-policy.md`).
+//!   `PPRDSTATUS` is PRD status-prose drift — opt-in only, High, and raised to
+//!   the escalation queue by `scripts/pprdstatus-escalate.py`.
 //!
 //! ## Output
 //!
@@ -64,7 +66,7 @@ use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
     TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, ptodo, puntested,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -615,6 +617,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, check: pdiag::check },
     Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, check: pdoccover::check },
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, check: pdcheck::check },
+    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, queries_jcodemunch: false, check: pprdstatus::check },
 ];
 
 /// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in

@@ -91,7 +91,7 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PPRDSTATUS] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
@@ -188,6 +188,8 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
   reify-audit: PDCHECK delivered_checks dead-path lane skipped — tasks.db absent at '<project-root>/.taskmaster/tasks/tasks.db': …; this is NOT a clean bill of health
   ```
   (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
+
+PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state. That state prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array, and zero findings behind it mean "not checked".
 
 See `references/modes.md` §4 notes for detail.
 
