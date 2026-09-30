@@ -16,6 +16,30 @@
 > 2026-05-12); read it together with the M-001 overlay. `Laminate`, `Ply`, `tsai_wu` and `hashin`
 > do remain absent; `max_strain` was not re-checked and no claim is made about it here.
 
+> **Re-audit notice (2026-09-30, task #7237, re-verified against main `28e442d0ac`):** M-003…M-014 were
+> each re-verified; every one carries its own dated `CORRECTION` blockquote, and the evidence lives
+> there. This supersedes the 2026-09-03 "NON-EXHAUSTIVE" clause under M-001 and the "`max_strain` was not
+> re-checked" caveat above (checked: one test-local variable, see M-010). M-001 and M-002 keep their
+> 2026-09-03 overlays; M-002's State line was not re-measured then and is not re-measured here.
+>
+> - **Tally.** M-003 FICTION → PARTIAL; M-004…M-014 State FICTION unchanged. Evidence partly superseded
+>   or incomplete: M-004, M-005, M-007, M-008, M-011, M-012; stands in substance: M-006, M-009, M-010,
+>   M-013, M-014.
+> - **Top-concerns bullet 1, clause by clause.** `OrthotropicMaterial` exists (M-001 overlay).
+>   `Laminate`, `Ply`, `tsai_wu`, `hashin` and `max_strain` are still absent as symbols under `crates/`
+>   (the "or PRDs" scope is not re-asserted: the composite PRD names them). "Already-broken
+>   structure-constructor evaluation (GR-001)" and "unresolved `Field<X,Y>` param-position issue (TODO
+>   #3117)" are both SUPERSEDED: GR-001 State is DONE (see M-004) and #3117 is done (see M-007).
+>   "Not-yet-shipped parent shells PRD" has two measured facts, neither adjudicated here: the parent PRD's
+>   `Status:` line (`docs/prds/v0_4/structural-analysis-shells.md`) still reads "design resolved +
+>   decomposed (2026-05-05) — deferred", and its shell route is live in `solve_elastic_static` (task 3594
+>   done), isotropic-only (see M-005).
+> - **Bullets 2 and 4** are covered by the M-003, M-005, M-006, M-007 and M-004 overlays. **Bullet 3
+>   re-measured TRUE:** `search_tasks` ("composite laminated shell ply laminate Tsai-Wu Hashin layup")
+>   finds nothing at score threshold 0.45; at 0.3 the nearest hit is task 3014 (isotropic shell
+>   stiffness) and none of the hits owns a ply, laminate or failure-criterion mechanism. The composite
+>   PRD's `Status:` line still reads "stub — deferred, candidate v0.5+".
+
 ## Top concerns
 
 - **Every named runtime entity in the PRD is fiction.** No `OrthotropicMaterial`, `Laminate`, `Ply`, `tsai_wu`, `hashin`, or `max_strain` symbol exists anywhere in the codebase (`crates/`, `stdlib/*.ri`, or PRDs). The PRD is a green-field design, with no scaffolding yet — but it lands on top of the already-broken structure-constructor evaluation (GR-001), the unresolved `Field<X,Y>` param-position issue (TODO #3117), and a not-yet-shipped parent shells PRD.
