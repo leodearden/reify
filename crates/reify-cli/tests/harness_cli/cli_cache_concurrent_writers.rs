@@ -318,3 +318,25 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
         reference_result.max_von_mises,
     );
 }
+
+/// Positive control for [`is_tempfile`] against a tempfile minted the way
+/// `write_entry` stages one (see the module header): without it, the
+/// zero-`.tmp.*` assertion above would also pass for a predicate that never
+/// matches.
+#[test]
+fn is_tempfile_matches_a_store_shaped_tempfile_and_nothing_else() {
+    let root = tempdir().expect("create scratch cache root");
+    let shard = root.path().join("bc");
+    std::fs::create_dir(&shard).expect("create shard dir");
+    std::fs::write(shard.join("bc00.bin"), b"").expect("write .bin decoy");
+    std::fs::write(shard.join("bc00.meta"), b"").expect("write .meta decoy");
+    let staged = tempfile::Builder::new()
+        .prefix(".tmp.")
+        .tempfile_in(&shard)
+        .expect("mint a store-shaped tempfile");
+
+    assert_eq!(
+        common::files_under(root.path(), is_tempfile),
+        vec![staged.path().to_path_buf()],
+    );
+}
