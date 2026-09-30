@@ -72,10 +72,10 @@
 //! existing binary is what is available today, not a substitute for it.
 
 use crate::chunk_io::{CONSTRAINTS_CHUNK_PATH, GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::section_body;
 use crate::chunk_prose::{EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, strip_html_comments};
 use crate::geometry_chunk_smoke::{
     GEOMETRY_ORACLE_NAMES, call_sites, called_names, phantom_name_panic, registry_family,
-    section_body,
 };
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
