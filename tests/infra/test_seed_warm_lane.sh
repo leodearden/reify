@@ -834,6 +834,52 @@ DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
 assert "DM5: the existing --touch path listed beside the misses is still touched to now" \
     test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
 
+# DM6-DM7 — the counterpart of DM1-DM5: a `touch` that FAILS on a path that DOES
+# exist must still abort the seed (empty STDOUT, so the caller rebuilds cold); it
+# is never swallowed as a skip. Both delta sources (--touch and git diff) stamp
+# through one helper, and a helper called from an `if` runs with errexit
+# suspended, so that abort cannot be left to `set -e`. A PATH shim fails ONLY the
+# plain single-operand `touch <path>` naming REIFY_TEST_TOUCH_FAIL_PATH (the
+# delta touch); the multi-operand `-h -d` bulk stamp and every other touch reach
+# the real /bin/touch.
+DM_SHIM_DIR="$(mktemp -d "$_REAL_STUB_ROOT/touch-shim-XXXXXX")"
+cat > "$DM_SHIM_DIR/touch" << 'DM_TOUCH_SHIM_EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "${REIFY_TEST_TOUCH_FAIL_PATH:-}" ]; then
+    echo "touch: cannot touch '$1': Permission denied" >&2
+    exit 1
+fi
+exec /bin/touch "$@"
+DM_TOUCH_SHIM_EOF
+chmod +x "$DM_SHIM_DIR/touch"
+
+DM6_LANE="$(make_isolated_lane D-touchfail)"
+mkdir -p "$DM6_LANE/src"
+DM6_PATH="$DM6_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM6_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM6_PATH" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM6_LANE" --fresh-checkout --touch "$DM6_PATH"
+assert "DM6: a failing touch on an existing --touch path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM6: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM6_PATH"
+
+DM7_LANE="$(make_isolated_lane D-gitdeltafail)"
+mkdir -p "$DM7_LANE/src"
+DM7_PATH="$DM7_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM7_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM7_PATH" \
+REIFY_TEST_GIT_DIFF_FILES="src/unstampable.rs" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM7_LANE" --fresh-checkout --base-commit shaX
+assert "DM7: a failing touch on an existing git-delta path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM7: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM7_PATH"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
 # ─────────────────────────────────────────────────────────────────────────────
