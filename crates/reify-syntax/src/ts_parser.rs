@@ -693,7 +693,9 @@ impl<'a> Lowering<'a> {
                 "unit_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_unit(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "unit declaration", self.lower_unit(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
                     }
@@ -701,7 +703,9 @@ impl<'a> Lowering<'a> {
                 "type_alias_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_type_alias(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "type alias", self.lower_type_alias(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::TypeAlias(decl));
                     }
@@ -709,7 +713,9 @@ impl<'a> Lowering<'a> {
                 "joint_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_joint(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "joint definition", self.lower_joint(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Joint(decl));
                     }
@@ -740,7 +746,12 @@ impl<'a> Lowering<'a> {
                             cfg.span,
                         );
                     }
-                    if let Some(decl) = self.lower_default_decl(child) {
+                    if let Some(decl) = check_and_lower!(
+                        self,
+                        child,
+                        "default declaration",
+                        self.lower_default_decl(child)
+                    ) {
                         self.declarations.push(Declaration::Default(decl));
                     }
                 }
