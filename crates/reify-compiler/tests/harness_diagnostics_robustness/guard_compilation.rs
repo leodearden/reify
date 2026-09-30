@@ -5,7 +5,9 @@
 
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{assert_no_diagnostics, compile_first_template, try_get_value_cell_of};
+use reify_test_support::{
+    assert_no_diagnostics, compile_first_template, try_get_value_cell_in_template,
+};
 
 /// Characterization test: `Chain` inside a `where {}` block is silently ignored
 /// by `compile_guarded_members` — no diagnostic of any severity is emitted.
@@ -105,13 +107,13 @@ structure S {
 
     // x should NOT be in top-level value_cells (it's guarded)
     assert!(
-        try_get_value_cell_of(&template, "x").is_none(),
+        try_get_value_cell_in_template(&template, "x").is_none(),
         "guarded param x should not be in top-level value_cells"
     );
 
     // active should be in top-level value_cells
     assert!(
-        try_get_value_cell_of(&template, "active").is_some(),
+        try_get_value_cell_in_template(&template, "active").is_some(),
         "unguarded param active should be in top-level value_cells"
     );
 
@@ -161,17 +163,17 @@ structure S {
 
     // active should be in top-level value_cells
     assert!(
-        try_get_value_cell_of(&template, "active").is_some(),
+        try_get_value_cell_in_template(&template, "active").is_some(),
         "unguarded param active should be in top-level value_cells"
     );
 
     // x, y should NOT be in top-level value_cells
     assert!(
-        try_get_value_cell_of(&template, "x").is_none(),
+        try_get_value_cell_in_template(&template, "x").is_none(),
         "guarded param x should not be in top-level value_cells"
     );
     assert!(
-        try_get_value_cell_of(&template, "y").is_none(),
+        try_get_value_cell_in_template(&template, "y").is_none(),
         "guarded param y should not be in top-level value_cells"
     );
 
@@ -237,9 +239,9 @@ structure S {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // a, b in top-level; x should not be
-    assert!(try_get_value_cell_of(&template, "a").is_some());
-    assert!(try_get_value_cell_of(&template, "b").is_some());
-    assert!(try_get_value_cell_of(&template, "x").is_none());
+    assert!(try_get_value_cell_in_template(&template, "a").is_some());
+    assert!(try_get_value_cell_in_template(&template, "b").is_some());
+    assert!(try_get_value_cell_in_template(&template, "x").is_none());
 
     // Should have 2 guarded groups (one per nesting level)
     assert_eq!(

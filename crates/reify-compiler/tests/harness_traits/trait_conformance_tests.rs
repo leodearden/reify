@@ -6,7 +6,8 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_test_support::{
-    compile_first_template, compile_source, get_value_cell_of, try_get_value_cell_of,
+    compile_first_template, compile_source, get_value_cell_in_template,
+    try_get_value_cell_in_template,
 };
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
@@ -188,7 +189,7 @@ structure def S : HasSize {
 
     // The template should contain a value cell for 'size' injected from the trait default.
     // A missing cell panics here, naming every cell the template does carry.
-    let size_cell = get_value_cell_of(&template, "size");
+    let size_cell = get_value_cell_in_template(&template, "size");
     assert_eq!(size_cell.kind, ValueCellKind::Param);
     assert_eq!(
         size_cell.cell_type,
@@ -585,7 +586,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
-    let x_cell = get_value_cell_of(&template, "x");
+    let x_cell = get_value_cell_in_template(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
@@ -768,7 +769,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
-    let d_cell = get_value_cell_of(&template, "d");
+    let d_cell = get_value_cell_in_template(&template, "d");
     assert_eq!(
         d_cell.cell_type,
         Type::length(),
@@ -858,10 +859,10 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    let x_cell = get_value_cell_of(&template, "x");
+    let x_cell = get_value_cell_in_template(&template, "x");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    let y_cell = get_value_cell_of(&template, "y");
+    let y_cell = get_value_cell_in_template(&template, "y");
 
     assert_eq!(
         x_cell.cell_type,
@@ -941,7 +942,7 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
-    let x_cell = get_value_cell_of(&template, "x");
+    let x_cell = get_value_cell_in_template(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
@@ -972,7 +973,7 @@ structure def S : Safe {
 
     // Both param default and constraint should be injected.
     assert!(
-        try_get_value_cell_of(&template, "x").is_some(),
+        try_get_value_cell_in_template(&template, "x").is_some(),
         "expected value cell 'x' from trait default"
     );
 

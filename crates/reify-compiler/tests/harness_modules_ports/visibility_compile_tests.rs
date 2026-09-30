@@ -3,7 +3,7 @@
 //! Tests that visibility metadata is correctly set on compiled types
 //! based on declaration kind and `pub` keyword presence.
 
-use reify_test_support::{get_value_cell, get_value_cell_of};
+use reify_test_support::{get_value_cell, get_value_cell_in_template};
 
 // ── Step 7: param and let default visibility ─────────────────────
 
@@ -165,7 +165,7 @@ fn backward_compat_bracket_compiles_cleanly() {
     }
 
     // The volume let should be Private
-    let volume = get_value_cell_of(template, "volume");
+    let volume = get_value_cell_in_template(template, "volume");
     assert_eq!(volume.kind, reify_compiler::ValueCellKind::Let);
     assert_eq!(volume.visibility, reify_compiler::Visibility::Private);
 }
