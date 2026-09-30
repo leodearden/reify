@@ -125,7 +125,7 @@
 - **Blocks:** M-004, M-005 (through-thickness sum needs per-ply D).
 - **Note:** Classical lamination theory; well-known maths but a new code path.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-003 is PARTIAL, not
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-003 is PARTIAL, not
 > FICTION: the per-material 6×6 and its frame rotation shipped; the shell/ply consumer did not.** This is
 > a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
 > was measured then. The 2026-09-03 pointer above this row flagged it as stale without adjudicating it;
@@ -169,7 +169,7 @@
 - **Blocks:** M-005 (kernel iterates the ply list), M-008 (helper functions).
 - **Note:** Coupled to GR-001 (struct-ctor eval) and the open design question of constructor surface (list-literal vs dedicated ctor vs external file).
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-004's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-004's State (FICTION)
 > holds; its `List<Real>`-placeholder precedent is superseded.** This is a dated audit snapshot
 > (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was measured then.
 >
@@ -216,7 +216,7 @@
 - **Blocks:** M-006, M-007.
 - **Note:** The PRD says "the through-thickness integration becomes a sum over plies with discontinuous derivatives at ply boundaries" — this is a structural rewrite of the shell stiffness assembly path, not an additive extension.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-005's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-005's State (FICTION)
 > holds: no sum-over-plies exists; "constant-thickness" and "analytical" are no longer universal.** This is
 > a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
 > was measured then.
@@ -261,7 +261,7 @@
 - **Blocks:** M-005.
 - **Note:** New code path; would need either a per-Gauss-point material callback or an unrolled per-ply integration scheme.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-006's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-006's State (FICTION)
 > holds; a per-point material lookup now exists for SOLIDS at element granularity only.** This is a dated
 > audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was
 > measured then.
@@ -288,7 +288,7 @@
 - **Blocks:** All composite-result consumers (GUI, multi-load-case envelopes).
 - **Note:** PRD says "top, mid, bottom of each ply" — a 3 × N_plies result tensor, which has no analogue in the current result-data shape. Coupled to the `Field<X,Y>` in param position TODO (#3117) — every existing field-typed slot in `ElasticResult/ShellStress` is `Real` placeholder.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-007's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-007's State (FICTION)
 > holds; its field list, its quoted ShellStress invariant and its Real-placeholder Note are superseded.**
 > This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record
 > of what was measured then.
@@ -325,28 +325,28 @@
 - **Blocks:** M-011 (failure-index result field).
 - **Note:** Requires both M-001 (allowables in `OrthotropicMaterial`) and M-007 (per-ply stress fields) to be wired before this function has well-defined inputs.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-008's State (FICTION)
-> holds; its "no stdlib function precedent" sentence does not, and its anchor has drifted.** This is a
-> dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
-> was measured then.
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-008's State (FICTION)
+> holds; its "no stdlib function precedent" sentence overlooked `safety_factor`, and its `analysis.ri`
+> anchor has drifted.** This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are
+> preserved as the record of what was measured then.
 >
 > - **State holds.** `git grep -n -P '\btsai_?wu\b|\bTsaiWu\b' -- crates` returns no hit. The claim is
 >   scoped to `crates/`: the audit's "anywhere in repo" is not re-asserted, because the PRD under `docs/`
 >   names it.
 > - **Anchor drift.** `analysis.ri:30,36` is now `trait AnalysisResult` at `:34`, with `param
 >   von_mises_stress : Stress` at `:35`.
-> - **"No stdlib function precedent for stress × allowables → failure index field" is not accurate as
->   worded.** The builtin `safety_factor` (`crates/reify-builtins/src/registry.rs`, the `name:
->   "safety_factor"` row, arity 2) takes a stress-tensor field and a scalar yield strength and returns a
->   dimensionless `Field<D, Real>`, pointwise `yield/von_mises` (`compute_safety_factor`,
->   `crates/reify-expr/src/analysis.rs`); `.ri` code calls it (`examples/fields_analysis.ri`:
->   `safety_factor(sigma, 250.0)`). It predates this snapshot: `git log -S'fn compute_safety_factor'`
->   dates its first appearance to commit `e0cbb4a6da` (2026-04-15), so the sentence did not hold when it
->   was written. What has no precedent is a function of more than one allowable, or of ply-frame stress
->   components: the Analysis-family rows of that registry are `von_mises`, `max_shear`,
->   `principal_stresses`, `safety_factor` and `stress_invariants`, and `safety_factor` is the only one
->   that takes an allowable — exactly one, reduced by von Mises — so the five ply allowables of a
->   Tsai-Wu criterion have no analogue.
+> - **The Evidence's "No stdlib function precedent for stress × allowables → failure index field" did
+>   not account for `safety_factor`.** That builtin (`crates/reify-builtins/src/registry.rs`, the `name:
+>   "safety_factor"` row, arity 2) takes a stress tensor or stress-tensor field plus one scalar yield
+>   strength and returns `yield/von_mises`, dimensionless: the reciprocal of a von Mises failure index. A
+>   field argument yields a `Field<D, Real>` (`compute_safety_factor`,
+>   `crates/reify-expr/src/analysis.rs`); `examples/fields_analysis.ri` calls it on a raw 3×3 tensor. It
+>   predates the snapshot: `compute_safety_factor` is already present at `8059aa59ba` (a 2026-05-12
+>   commit), and `git log -S'fn compute_safety_factor'` dates its first appearance to `e0cbb4a6da`
+>   (2026-04-15). Nothing in the registry takes more than that one allowable: its Analysis-family rows
+>   are `von_mises`, `max_shear`, `principal_stresses`, `safety_factor` and `stress_invariants`, and only
+>   `safety_factor` has an allowable argument, so the five ply allowables of a Tsai-Wu criterion have no
+>   analogue there.
 > - **The Note's M-001 dependency is unchanged.** The allowables half is still absent: no word-bounded
 >   `X_T`, `X_C`, `Y_T` or `Y_C` appears in `crates/reify-compiler/stdlib` (`S` is too short to grep
 >   usefully); see the M-001 overlay. The per-ply-field half is M-007, also still absent.
@@ -359,7 +359,7 @@
 - **Blocks:** M-011.
 - **Note:** Hashin distinguishes fibre-tension/fibre-compression/matrix-tension/matrix-compression modes — output cardinality higher than scalar Tsai-Wu.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-009's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-009's State (FICTION)
 > holds.** This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as
 > the record of what was measured then. `git grep -n -P '\bhashin\b|\bHashin\b' -- crates` returns no hit.
 > The grep is word-bounded on purpose: a bare `hashin` matches "hashing" and hits 36 files under `crates/`.
@@ -371,19 +371,19 @@
 - **Evidence:** No `max_strain` grep hit. Same shape as M-008.
 - **Blocks:** M-011.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-010's State (FICTION)
-> holds; the snapshot's literal "No `max_strain` grep hit" now has one non-symbol hit.** This is a dated
-> audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was
-> measured then.
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-010's State (FICTION)
+> holds; the snapshot's literal "No `max_strain` grep hit" now has one non-symbol hit site.** This is a
+> dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
+> was measured then.
 >
 > - `git grep -n -P '\bmax_strain\b' -- crates` returns four lines, all one site: the `let mut max_strain`
 >   local in `crates/reify-solver-elastic/src/elements/degenerate_shell.rs` (`:1969-1990`), inside the
 >   `#[cfg(test)]` module (opens at `:996`), in test
 >   `degenerate_assumed_membrane_b_is_frame_objective_under_rigid_rotation`. It is a test-local
 >   variable, not the composite failure criterion; no stdlib or runtime `max_strain` symbol exists.
-> - The snapshot's literal grep claim was true when written: `git log -S'max_strain' -- crates` shows the
->   token entering `crates/` in a single commit, `e0bbecd846` (2026-05-31, task 4069), after the snapshot
->   date.
+> - As to `crates/`, the snapshot's literal grep claim was true when written: `git log -S'max_strain' --
+>   crates` shows the token entering `crates/` in a single commit, `e0bbecd846` (2026-05-31, task 4069),
+>   after the snapshot date.
 
 ### M-011: Per-failure-criterion failure-index field in `ElasticResult`
 
@@ -393,7 +393,7 @@
 - **Blocks:** GUI composite-result rendering (not yet PRD'd).
 - **Note:** Cardinality grows with criterion count × ply count — UX/data-shape open question.
 
-> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-011's State (FICTION)
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `28e442d0ac`) — M-011's State (FICTION)
 > holds; its #3117 gating clause is superseded.** This is a dated audit snapshot (**Date:** 2026-05-12), so
 > the bullets above are preserved as the record of what was measured then.
 >
