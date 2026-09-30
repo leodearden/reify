@@ -1916,33 +1916,39 @@ mod tests {
         );
     }
 
-    /// CURVATURE is 1/Length — dimensionally identical to ABSORPTION_COEFF.
-    /// Pin the Length-slot exponent to Rational(-1, 1) and confirm all other
-    /// slots are Rational::ZERO. Added for task 3603 / GHR-α (PRD §8 Phase 1)
-    /// so the stdlib geometry-query registration `curvature → Scalar<Curvature>`
-    /// has a well-defined dimensional alias.
+    /// CURVATURE is rad·m⁻¹ (κ = dθ/ds), the sole holder of its vector.
+    /// See docs/prds/v0_6/angle-dimension-completion.md D1.
     #[test]
-    fn curvature_constant_is_length_inverse() {
-        // 1/m = reciprocal of LENGTH — matches ABSORPTION_COEFF by construction.
+    fn curvature_constant_is_angle_per_length() {
+        let curvature = DimensionVector::CURVATURE;
         assert_eq!(
-            DimensionVector::CURVATURE,
-            DimensionVector::from_exps(&[(0, -1)])
+            curvature,
+            DimensionVector::ANGLE.div(&DimensionVector::LENGTH)
         );
-        // Length slot is exactly Rational(-1, 1).
+        assert_eq!(curvature, DimensionVector::from_exps(&[(0, -1), (7, 1)]));
         assert_eq!(
-            DimensionVector::CURVATURE.0[0],
+            curvature.0[0],
             Rational::new(-1, 1),
-            "Curvature Length slot should be Rational(-1, 1)"
+            "Curvature Length slot 0 should be Rational(-1, 1)"
         );
-        // All other slots are Rational::ZERO.
-        for i in 1..10 {
+        assert_eq!(
+            curvature.0[7],
+            Rational::ONE,
+            "Curvature Angle slot 7 should be Rational::ONE"
+        );
+        for i in (1..=6).chain(8..=9) {
             assert_eq!(
-                DimensionVector::CURVATURE.0[i],
+                curvature.0[i],
                 Rational::ZERO,
                 "Curvature slot {} should be Rational::ZERO",
                 i
             );
         }
+        assert_ne!(curvature, DimensionVector::ABSORPTION_COEFF);
+        assert_eq!(curvature.canonical_name(), Some("Curvature"));
+        let (value, label) = curvature.to_display_units(200.0);
+        assert_eq!(value.to_bits(), 200.0f64.to_bits());
+        assert_eq!(label, "rad·m^-1");
     }
 
     // ─── Step-1 (task 3849): flexure dimensioned-type const existence + exponents ──
