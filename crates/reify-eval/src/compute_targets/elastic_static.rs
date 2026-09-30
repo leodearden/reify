@@ -277,7 +277,8 @@ pub(crate) struct CantileverFeaSolve {
     pub u: Arc<Vec<f64>>,
     /// Node coordinates (length n_nodes).
     pub coords: Vec<[f64; 3]>,
-    /// Indices of tip-face nodes (ix == nx) — for tip-deflection queries.
+    /// The loaded node set: the x_max face (synthetic `ix == nx`; realized by
+    /// coordinate) or a selector-resolved load set (task 4092).
     pub tip_nodes: Vec<usize>,
     /// Maximum von Mises stress across all elements (Pa).
     pub max_von_mises: f64,
@@ -3107,6 +3108,11 @@ pub(crate) fn solve_cantilever_fea(
     //
     // `root_nodes` was selected during mesh acquisition above (the x_min face on
     // both the synthetic and realized paths).
+    //
+    // The fully fixed root face is a deliberate modelling choice. Its perimeter
+    // is a re-entrant clamp singularity (stress unbounded at the clamp edges), so
+    // the Z-Z indicator and Dörfler marks concentrate there under refinement —
+    // not a load-model defect; task 7448 left it in place as a non-goal.
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -8034,9 +8040,10 @@ mod tests {
     /// Task 7448: a tip resultant `F` is the uniform traction `F / A` on the
     /// tip face, which is exactly what an x_max pressure `p` with
     /// `F = -p·W·H·x̂` assembles — same P1 triangles, tractions equal to ~1 ulp.
-    /// The two solves then differ only by CG stopping noise, bounded by the
-    /// solve's own relative tolerance (1e-6; measured ≤ 8e-9, one iteration
-    /// apart), while the pre-7448 equal split missed by ~3e-2.
+    /// The two solves then differ only by CG stopping noise. CG's tolerance
+    /// bounds the residual, not this gap, so the 1e-6 bound is empirical: the
+    /// gap measured ≤ 8e-9 (the solves stop one CG iteration apart) against
+    /// ~3e-2 for the pre-7448 equal split, > 100x margin on both sides.
     /// Checked at the default grid and at a non-default grid of the kind the
     /// uniform adaptive lane (`CantileverAdaptiveProblem::refine`) produces.
     #[test]
