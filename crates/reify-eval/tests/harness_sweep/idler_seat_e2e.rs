@@ -336,8 +336,9 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
 /// The cost side is the ordinary saving: printer.ri is ~3.7 k lines and is read,
 /// parsed and stdlib-compiled once.
 ///
-/// `pub(super)`: a sibling lockstep gate reads printer.ri's constraint results
-/// off this same surface rather than checking the file a second time.
+/// `pub(super)`: [`super::capstan_copies_lockstep`] reads printer.ri's
+/// `Capstan` constraint results off this same surface rather than checking the
+/// file a second time.
 pub(super) fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
     M.get_or_init(|| check_printer(printer_compiled()))
@@ -350,8 +351,9 @@ pub(super) fn printer_checked() -> &'static CheckResult {
 /// One `OnceLock` so the constraint expressions a gate inspects and the cell
 /// values it compares them against come from the SAME module. Compiling twice
 /// would make them agree only by assuming the compiler is deterministic.
-/// `pub(super)` extends that across the module boundary: a sibling lockstep
-/// gate reads printer.ri's compiled templates from this same compilation.
+/// `pub(super)` extends that across the module boundary:
+/// [`super::capstan_copies_lockstep`] reads printer.ri's compiled `Capstan`
+/// template from this same compilation.
 pub(super) fn printer_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_printer)
@@ -1003,7 +1005,7 @@ fn idler_seat_clears_the_tendon() {
 // this module hashes and the cells it reads provably come from ONE compilation
 // of the file, rather than from two that agree only if the compiler is
 // deterministic. The printer.ri fixtures above are shared the same way, in the
-// other direction: they are `pub(super)` for a sibling lockstep gate.
+// other direction: they are `pub(super)` for [`super::capstan_copies_lockstep`].
 use super::capstan_groove_e2e::{
     dev_capstan, dev_capstan_checked, dev_capstan_compiled, DEV_CAPSTAN,
 };

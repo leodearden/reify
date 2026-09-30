@@ -158,13 +158,15 @@
 //!
 //! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
 //! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
-//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the sibling
+//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the siblings
 //! [`super::idler_seat_e2e`] (#6135, the IdlerPulley end of the same standard)
-//! consumes them rather than loading the file a second time — so the file is
+//! and [`super::capstan_copies_lockstep`] (#7215, which holds printer.ri's copy
+//! of `Capstan` to this file's) consume them rather than loading the file a
+//! second time — so the file is
 //! read, parsed, stdlib-compiled, checked and OCCT-tessellated ONCE per test
 //! binary however many gates read it, and the single-compilation argument
-//! [`dev_capstan_compiled`] makes holds across both modules rather than only
-//! inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
+//! [`dev_capstan_compiled`] makes holds across all three modules rather than
+//! only inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
 //! (printer.ri is compiled by
 //! `crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`
 //! for orientation-inference warnings, and by `idler_seat_e2e` for its own
@@ -202,8 +204,8 @@ pub(super) const DEV_CAPSTAN: &str = concat!(
 
 /// The design entity whose cells and constraints this module gates.
 ///
-/// `pub(super)` so a sibling gate over printer.ri's copy of the structure names
-/// it from this one source.
+/// `pub(super)` so [`super::capstan_copies_lockstep`], the gate over printer.ri's
+/// copy of the structure, names it from this one source.
 pub(super) const CAPSTAN_ENTITY: &str = "Capstan";
 
 /// The fairlead shuttle that has to track the capstan's migrating wrap band.
@@ -469,7 +471,8 @@ pub(super) fn dev_capstan_checked() -> &'static CheckResult {
 
 /// The design file's compiled module, computed once per test binary — the
 /// single compilation EVERY fixture and test in the `harness_sweep` compile
-/// unit reads, this module's and [`super::idler_seat_e2e`]'s alike.
+/// unit reads, this module's, [`super::idler_seat_e2e`]'s and
+/// [`super::capstan_copies_lockstep`]'s alike.
 ///
 /// Memoized for correctness first and cost second. Three gates read the compiled
 /// module and the check surface *together*:
