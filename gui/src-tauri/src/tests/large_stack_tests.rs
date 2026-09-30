@@ -932,9 +932,10 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
 // # Why no RED here is a hang
 //
 // Same doctrine as the rest of this file. Concurrency is measured with an
-// `AtomicUsize` arrival counter plus a generous wall-clock DEADLINE: a lane that
-// failed to run N jobs at once makes the counter stall, the deadline elapses,
-// and the job returns `false` — a clean assertion failure naming what it saw.
+// arrival counter under a `Condvar` plus a generous wall-clock DEADLINE: a lane
+// that failed to run N jobs at once makes the counter stall, the deadline
+// elapses, and the job returns `false` — a clean assertion failure naming what
+// it saw.
 // The deep-recursion test goes through [`deep_recurse_if_on_lane`], which
 // refuses to recurse anywhere but a real pool consumer, for exactly the reason
 // [`deep_recurse_if_on_thread`] exists.
@@ -966,8 +967,13 @@ fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, Stri
 }
 
 /// Post `n` jobs to `lane`, each of which increments a shared arrival counter
-/// and then parks until every one of the `n` has arrived — or until a
-/// wall-clock deadline elapses.
+/// and then parks on a `Condvar` until every one of the `n` has arrived — or
+/// until a wall-clock deadline elapses.
+///
+/// The wait PARKS rather than spins. A spinning arrival loop keeps every
+/// consumer that has already arrived on a CPU for the whole wait, so under a
+/// loaded verify it can starve the very sibling it is waiting for of the
+/// scheduling it needs to arrive, and report a false "still serializes".
 ///
 /// Returns, per job, whether it observed all `n` in flight AT ONCE. On a
 /// single-consumer lane job 1 parks holding the only consumer, jobs 2..n never
@@ -987,13 +993,15 @@ fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, Stri
 /// lane that never ran — so it is ruled out before a single job is posted.
 fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize) -> Vec<bool> {
     use crate::large_stack::post;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
 
-    /// Generous relative to the work (an atomic increment), so only a genuine
-    /// serialization can exhaust it. It is a liveness BACKSTOP, not the
-    /// property under test — see the section header.
-    const ARRIVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+    /// A liveness BACKSTOP, not the property under test — see the section
+    /// header. A true serialization never recovers, so a long deadline costs
+    /// nothing on green. It stays well under [`ANTI_WEDGE`] because a
+    /// serialized lane releases its verdicts one deadline apart, and each
+    /// `recv_timeout(ANTI_WEDGE)` below must outlast that gap.
+    const ARRIVAL_DEADLINE: std::time::Duration =
+        std::time::Duration::from_secs(ANTI_WEDGE.as_secs() / 4);
 
     assert!(
         lane.sender().is_some(),
@@ -1002,25 +1010,23 @@ fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize
          regardless, and the measurement below is vacuous."
     );
 
-    let arrived = Arc::new(AtomicUsize::new(0));
+    let arrivals = Arc::new((Mutex::new(0usize), Condvar::new()));
     let (verdict_tx, verdict_rx) = std::sync::mpsc::channel();
     for _ in 0..n {
-        let arrived = Arc::clone(&arrived);
+        let arrivals = Arc::clone(&arrivals);
         let verdict_tx = verdict_tx.clone();
         post(
             lane.sender(),
             Box::new(move || {
-                arrived.fetch_add(1, Ordering::SeqCst);
-                let deadline = std::time::Instant::now() + ARRIVAL_DEADLINE;
-                let saw_all = loop {
-                    if arrived.load(Ordering::SeqCst) >= n {
-                        break true;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        break false;
-                    }
-                    std::thread::yield_now();
-                };
+                let (count, all_arrived) = &*arrivals;
+                let mut arrived = count.lock().expect("arrival counter poisoned");
+                *arrived += 1;
+                all_arrived.notify_all();
+                let (arrived, _) = all_arrived
+                    .wait_timeout_while(arrived, ARRIVAL_DEADLINE, |arrived| *arrived < n)
+                    .expect("arrival counter poisoned");
+                let saw_all = *arrived >= n;
+                drop(arrived);
                 let _ = verdict_tx.send(saw_all);
             }),
         )
@@ -1681,12 +1687,13 @@ async fn the_cancel_path_drops_the_future_inside_the_runtime_context() {
 /// (ak) A PANICKING destructor on the cancel path cannot kill the consumer, and
 /// the same sender keeps working.
 ///
-/// The discard arm's second guard. Losing a consumer is worse here than anywhere
-/// else in the module: on a size-1 lane it costs the lane its only consumer,
-/// after which every later submission takes the `spawn_on_large_stack` recovery
-/// path — the per-call 256 MiB mapping the lane exists to eliminate. Without
-/// this test, deleting the `catch_unwind` leaves the suite green, because no
-/// other submitted future in this file has a destructor that can panic.
+/// The discard arm's second guard. That arm runs only on an `OnAbandon::Discard`
+/// destination — today `LSP_POOL` — so a consumer lost here is one of that
+/// pool's: the pool silently narrows, and with it the head-of-line bound it
+/// exists to provide, while neither `Lane::size` nor `Lane::started` shows the
+/// loss. Without this test, deleting the `catch_unwind` leaves the suite green,
+/// because no other submitted future in this file has a destructor that can
+/// panic.
 ///
 /// Two assertions, because the first alone is not the claim. That the job
 /// returns cleanly says the unwind did not escape; that a LATER live submission
