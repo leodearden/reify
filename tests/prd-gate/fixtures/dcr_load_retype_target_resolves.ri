@@ -35,18 +35,19 @@ structure def DcrRetypedPressureLoad {
 }
 
 structure def DcrRetypedTractionLoad {
-    param face     : String   = ""
+    param face     : FaceSelector
     param traction : Pressure = 0Pa
 }
 
 structure def DcrRetypedBodyForce {
-    param body          : String       = ""
+    param body          : BodySelector
     param force_density : ForceDensity = 0N/m^3
 }
 
 structure def DcrLoadRetypeTargetResolves {
+    let body = box(1m, 0.1m, 0.1m)
     let a = DcrRetypedPointLoad(point: "tip", force: 5000N)
     let b = DcrRetypedPressureLoad(magnitude: 1000000Pa)
-    let c = DcrRetypedTractionLoad(face: "top", traction: 5000000Pa)
-    let d = DcrRetypedBodyForce(body: "all", force_density: -77000N/m^3)
+    let c = DcrRetypedTractionLoad(face: face(body, "top"), traction: 5000000Pa)
+    let d = DcrRetypedBodyForce(body: solid_body(body, "all"), force_density: -77000N/m^3)
 }

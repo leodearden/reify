@@ -435,26 +435,20 @@ structure def PressureLoad : Load {
 // Q-SIR-4 (preserve-don't-redesign): `face` was the `face` key, `traction` was
 // the `traction` key in the `make_kind_map("traction_load", ...)` call.
 //
-//   `face`     — geometry selector. `String` is a placeholder for `FaceSelector`
-//                (docs/prds/topology-selector-value-type.md — typed-selector
-//                value-type design); actual String → FaceSelector migration is
-//                owned by the FEA Load/Support follow-on PRD (depends on
-//                topology-selector-value-type.md §10 + task 4092). Mirrors the
-//                `face` key emitted by the pre-retirement builtin.
+//   `face`     — the loaded face, a REQUIRED typed `FaceSelector`, e.g.
+//                `face(body, "top")` (task 5312;
+//                docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//                A bare String is a compile error.
 //   `traction` — applied traction. `Real` is a placeholder for
 //                `Vector3<Pressure>` until the dimensional vector type aliases
 //                land; mirrors the `traction` key in the retired builtin.
-//
-// All fields default so a bare `TractionLoad()` constructor succeeds (covers
-// FEA-2 boundary tests in
-// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
 //      migration; FEA follow-on PRD owns the field change, task 4092 owns
 //      selector→node-set mapping).
 structure def TractionLoad : Load {
-    param face     : String = ""
+    param face     : FaceSelector
     param traction : Real   = 0.0
 }
 
@@ -464,28 +458,21 @@ structure def TractionLoad : Load {
 // `force_density` was the `force_density` key in the
 // `make_kind_map("body_force", ...)` call.
 //
-//   `body`          — geometry selector. `String` is a placeholder for
-//                     `BodySelector` (docs/prds/topology-selector-value-type.md —
-//                     typed-selector value-type design); actual String →
-//                     BodySelector migration is owned by the FEA Load/Support
-//                     follow-on PRD (depends on topology-selector-value-type.md
-//                     §10 + task 4092). Mirrors the `body` key emitted by the
-//                     pre-retirement builtin.
+//   `body`          — the loaded body, a REQUIRED typed `BodySelector`, e.g.
+//                     `solid_body(body, "all")` (task 5312;
+//                     docs/prds/v0_6/fea-load-support-selector-migration.md
+//                     D10). A bare String is a compile error.
 //   `force_density` — applied body-force density. `Real` is a placeholder for
 //                     `Vector3<ForceDensity>` until the dimensional vector type
 //                     aliases land; mirrors the `force_density` key in the
 //                     retired builtin.
-//
-// All fields default so a bare `BodyForce()` constructor succeeds (covers
-// FEA-2 boundary tests in
-// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
 //      migration; FEA follow-on PRD owns the field change, task 4092 owns
 //      selector→node-set mapping).
 structure def BodyForce : Load {
-    param body          : String = ""
+    param body          : BodySelector
     param force_density : Real   = 0.0
 }
 
