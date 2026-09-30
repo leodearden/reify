@@ -408,9 +408,8 @@ structure def PinnedSupport : Support {
 //                  mints to a `Value::Selector(Leaf { query: Named(name) })`;
 //                  `extract_loads` reads the `Named` name kernel-lessly via
 //                  `box_face_plane`. `none` (the `= none` default) leaves the
-//                  pressure faceless (no traction applied). The legacy
-//                  `face: "x_max"` String form is still accepted for transition
-//                  safety (extract_loads keeps its `Value::String` arm).
+//                  pressure faceless (no traction applied). The retired
+//                  `face: "x_max"` String form is a compile error (task 5312).
 //   `direction`  — outward-normal sentinel or explicit direction. `String` is
 //                  a placeholder; mirrors the `direction` key in the retired
 //                  builtin. The `"normal"` sentinel means "outward face normal";

@@ -226,6 +226,7 @@ use super::shell_solve::{
     resolve_extraction_failure,
 };
 
+use super::bc_resolve;
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use super::fea_inputs::{
@@ -4988,46 +4989,14 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
 ///
 /// Fields mirror `PressureLoad` in `solver_elastic.ri`:
 /// - `magnitude` — surface pressure magnitude in Pa (SI)
-/// - `face`      — face identifier: "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"
+/// - `face`      — the name of the typed `face` selector's Named leaf, one of
+///   "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"
 /// - `direction` — "normal" (only supported value in v0.4)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PressureSpec {
     pub(crate) magnitude: f64,
     pub(crate) face: String,
     pub(crate) direction: String,
-}
-
-/// Read a `PressureLoad.face` field into its face-name string, accepting every
-/// runtime shape the field can take across the String→typed-Selector migration
-/// (task 4370):
-///
-/// - `Value::String(s)` — the pre-migration literal form. Kept for transition
-///   safety so any un-migrated call site (and the `solver_elastic.ri` fixtures)
-///   keeps working.
-/// - `Value::Selector(sv)` — the migrated typed form, e.g. a `face(b, "x_max")`
-///   named-leaf selector. Walks `sv.node` to a `Leaf` and returns its
-///   `LeafQuery::Named(name)`. Non-`Named` leaf queries (predicate/extremal) and
-///   composed nodes (Union/Intersect/Difference) carry no single face name and
-///   yield `None` — the box-face pressure path (`box_face_plane`) supports only
-///   the six named faces.
-/// - `Value::Option(Some(inner))` — the `Option[FaceSelector]` field wrapper;
-///   recurse into the payload. `Value::Option(None)` (the `= none` default)
-///   yields `None`.
-///
-/// Returns `None` for every other shape, signalling the caller to skip the load.
-fn extract_pressure_face_name(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Selector(sv) => match &sv.node {
-            reify_ir::value::SelectorNode::Leaf {
-                query: reify_ir::value::LeafQuery::Named(name),
-                ..
-            } => Some(name.clone()),
-            _ => None,
-        },
-        Value::Option(Some(inner)) => extract_pressure_face_name(inner),
-        _ => None,
-    }
 }
 
 /// Parse a single `PressureLoad` `StructureInstance` into a [`PressureSpec`], or
@@ -5043,12 +5012,12 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 /// - `face` is absent, or is the `= none` default (`Value::Option(None)`): a
 ///   `PressureLoad` with no face applies no traction, and this is skipped
 ///   *quietly* — it is the field's post-migration default, not an error;
-/// - `face` carries a value that [`extract_pressure_face_name`] cannot map to one
-///   of the six named box faces — a non-`Named` selector leaf (e.g. `faces(b)`)
-///   or a composed Union/Intersect/Difference. Because the field is now typed
-///   `Option<FaceSelector>` a user can readily write such a selector, so rather
-///   than dropping the load silently a `tracing::warn!` is emitted naming the
-///   offending shape.
+/// - `face` carries a value that [`bc_resolve::named_leaf_target`] cannot map to
+///   one of the six named box faces — a non-`Named` selector leaf (e.g.
+///   `faces(b)`) or a composed Union/Intersect/Difference. Because the field is
+///   typed `Option<FaceSelector>` a user can readily write such a selector, so
+///   rather than dropping the load silently a `tracing::warn!` is emitted naming
+///   the offending shape.
 ///
 /// `direction` defaults to `"normal"` when absent or non-`String` (the only
 /// supported value in v1).
@@ -5059,8 +5028,8 @@ fn parse_pressure_spec(
         return Ok(None);
     };
     let face = match data.fields.get("face") {
-        Some(face_val) => match extract_pressure_face_name(face_val) {
-            Some(name) => name,
+        Some(face_val) => match bc_resolve::named_leaf_target(face_val) {
+            Some(name) => name.to_owned(),
             None => {
                 // The `= none` default materialises as `Value::Option(None)` and
                 // means "no face specified" → skip quietly. Any *other*
