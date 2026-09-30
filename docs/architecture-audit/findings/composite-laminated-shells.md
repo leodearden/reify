@@ -216,6 +216,43 @@
 - **Blocks:** M-006, M-007.
 - **Note:** The PRD says "the through-thickness integration becomes a sum over plies with discontinuous derivatives at ply boundaries" — this is a structural rewrite of the shell stiffness assembly path, not an additive extension.
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-005's State (FICTION)
+> holds: no sum-over-plies exists; "constant-thickness" and "analytical" are no longer universal.** This is
+> a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
+> was measured then.
+>
+> - **The quoted kernel is unchanged, with one anchor drift.** The `shell_assembly.rs:10-11` quote
+>   ("Reissner-Mindlin shell element under a constant-thickness isotropic linear-elastic constitutive law.
+>   Through-thickness integration is…", continuing "closed-form" on `:12`) is still verbatim and describes
+>   the flat MITC3 kernel. The `:118` "Baked in as a private constant" line is now at `:163`, in the doc
+>   comment of `const KAPPA` (the 5/6 shear-correction factor, declared at `:165`).
+> - **New since this snapshot: a degenerated continuum-shell kernel, still single-material.**
+>   `degenerate_stiffness_core` (private) and its public wrappers `shell_element_stiffness_degenerate`,
+>   `shell_element_stiffness_degenerate_ans` and `shell_element_stiffness_degenerate_ans_bubble`
+>   (`shell_assembly.rs`; tasks 4068, 4069, 4065; the first wrapper landed 2026-05-31, commit
+>   `936190b553`). It integrates through the thickness NUMERICALLY — 2-point Gauss in ζ — with per-node
+>   `thicknesses: &[f64; 3]`, so "analytical, single material" is no longer true of every shell kernel. But
+>   it still takes one `&IsotropicElastic` and evaluates `plane_stress_d` once (`:942`), before its
+>   quadrature loops (`:976`): ζ has no ply partition. Outside `shell_assembly.rs` and the crate's
+>   `tests/`, `git grep -n shell_element_stiffness_degenerate -- crates
+>   ':!crates/reify-solver-elastic/src/shell_assembly.rs' ':!crates/reify-solver-elastic/tests'` finds the
+>   `lib.rs` re-export and crate-doc example, `// G-allow:` comment lines in
+>   `elements/degenerate_shell.rs`, and mentions in a `reify-audit` test that pins those markers — no call
+>   expression. (Those G-allow comments describe the wrappers as reached on the shell-routing compute path;
+>   this overlay found no by-name call site for that, and the next bullet shows the engine route calling
+>   the MITC3+ kernel.)
+> - **The engine shell route is isotropic-only.** `solve_flat_plate_shell`
+>   (`crates/reify-solver-elastic/src/shell_solve.rs:102`) calls `shell_element_stiffness_mitc3_plus`
+>   (`:151`) with a `&IsotropicElastic`. The `solve_elastic_static` trampoline
+>   (`crates/reify-eval/src/compute_targets/elastic_static.rs`, guard at `:715`) refuses a non-isotropic
+>   material on the Shell route: under `ShellForce::On` it aborts with no tet fallback, and under
+>   `ShellForce::Auto` it warns and falls back to the tet/solid path (`ShellForce::Off` already routes
+>   Tet). That policy first landed 2026-06-01, commit `9f12a281d6`. An `OrthotropicMaterial` reaches the
+>   guard as `MaterialModel::Anisotropic`, so it cannot reach any shell kernel today.
+> - **The task-3014 record stays true of the flat kernel.** Task 3014 (done; last updated 2026-05-08) is
+>   the record the Evidence quotes ("Constant-thickness, isotropic D matrix. Through-thickness integration
+>   analytical …"); the flat kernels it describes still integrate in closed form.
+
 ### M-006: Per-Gauss-point layered constitutive evaluation
 
 - **State:** FICTION
@@ -223,6 +260,25 @@
 - **Evidence:** Shell kinematics module (`shell_kinematics.rs:44`) returns kinematic primitives only — no per-Gauss-point material evaluation hook; D matrix is computed once at element scope from the single material. No infrastructure for "compute D per Gauss point as a layered stack rather than a single isotropic relation."
 - **Blocks:** M-005.
 - **Note:** New code path; would need either a per-Gauss-point material callback or an unrolled per-ply integration scheme.
+
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-006's State (FICTION)
+> holds; a per-point material lookup now exists for SOLIDS at element granularity only.** This is a dated
+> audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was
+> measured then.
+>
+> - **The cited shell module is unchanged.** `pub fn shell_kinematics` is still at
+>   `crates/reify-solver-elastic/src/shell_kinematics.rs:44` (no drift) and still returns kinematic
+>   primitives only. Every shell kernel still computes D once per element call: `plane_stress_d` is
+>   evaluated once in `shell_element_stiffness`, once in `shell_element_stiffness_mitc3_plus` and once in
+>   `degenerate_stiffness_core` (there before its in-plane × ζ quadrature loops).
+> - **New since this snapshot, solids only.** `pub trait MaterialField { fn material_at(&self, point) ->
+>   AnisotropicMaterial }` (`crates/reify-solver-elastic/src/material_field.rs:116`; first landed
+>   2026-05-27, commit `917dfe8c37`). Its module doc says the assembly hook samples ONE D per element at
+>   the element centroid, and it is wired into the solid element entry points only (tet P1/P2, hex P1,
+>   wedge P1 — see the M-003 overlay). That is a material lookup at element granularity, not a layered one.
+> - **Per-Gauss-point layered evaluation — the mechanism this row names — is still absent.** No shell
+>   kernel consults `MaterialField` (zero hits, see the M-003 overlay); the shell kernels compute one D per
+>   element call and `MaterialField` is sampled once per element at the centroid.
 
 ### M-007: Per-ply stress and strain result fields in `ElasticResult`
 
