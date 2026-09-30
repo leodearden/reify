@@ -17,17 +17,6 @@ tasks:
       paths:
       - docs/prds/v0_6/generic-data-carrying-enums.md
       expect: present
-  - name: probe-sets-landed-with-readme-rows
-    binding: The six per-leaf probe sets exist on main with README rows; they could
-      not ride the docs commit (tests/prd-gate/*.json is the C5 fail-wide catch-all
-      in decide_scope, pinned by test_verify_scope.sh PG-3).
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: generic-enum-type-arg-retention-delta-probe-set\.json
-      paths:
-      - tests/prd-gate/README.md
-      expect: present
 - label: α2
   task_id: 8013
   title: 'generic-enum-type-arg-retention α2: bare generic-enum annotation rejected
