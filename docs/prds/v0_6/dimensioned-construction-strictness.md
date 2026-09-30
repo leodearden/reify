@@ -525,6 +525,12 @@ by the registry alone **under-counts**; α must reproduce the alias extension.
 > resolves to the registry either — at HEAD that line sits inside
 > `DimensionVector::to_display_units` (`:504`), not `NAMED_DIMENSIONS`.
 > The underlying claim (a registry-only sweep under-counts) still holds.
+>
+> **Amended 2026-09-30 by angle-completion α (#6179, CURVATURE → rad·m⁻¹).** The
+> `ABSORPTION_COEFF`/`CURVATURE` pair is dissolved: `CURVATURE` now has its own vector.
+> TWO alias pairs remain (`STIFFNESS`/`TRANSLATIONAL_STIFFNESS`, `"Impulse"`/`"Momentum"`),
+> so the distinct-vector figure grows by one (49 → 50 against the 2026-08-03 table). The
+> measurement above is left as taken.
 
 | Category | Count |
 |---|---|

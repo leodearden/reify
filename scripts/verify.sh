@@ -1194,6 +1194,8 @@ is_occt_crate() {
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
 #     unit_middot_mul.ri (same idiom, unit_middot_mul_tests.rs, task 5784),
+#     curvature_rad_literal.ri (read via std::fs::read_to_string by
+#     curvature_dimension_tests.rs, task 6179),
 #     jacobian_column_members.ri (read via std::fs::read_to_string by
 #     jacobian_column_member_access.rs's fixture_source(), task 6102),
 #     damped_material_mixin_conformance.ri + damped_material_preset_conformance.ri
@@ -1223,10 +1225,9 @@ is_occt_crate() {
 #     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
 #     the two files differ ONLY in their `sigma:` literal and header, so the
 #     mode-set difference between them IS the signal, task 7261)
-#   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
+#   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
 #     keyed by (file, param) in ctor_conformance_corpus_survey.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
-#     curvature_rad_literal.ri,
 #     dcr_load_ctor_dimension_silent.ri,
 #     dcr_material_dimension_silent.ri,
 #     dcr_reader_ctor_dimension_silent.ri,

@@ -432,7 +432,7 @@ status:
 | inverse trig / `phase` / `arg` | return type | `math_signatures.rs` + eval Angle tag | shipped |
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
-| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
+| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | shipped (α, #6179) |
 | `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
 | `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |

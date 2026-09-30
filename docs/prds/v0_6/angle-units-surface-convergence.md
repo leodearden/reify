@@ -819,6 +819,9 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
   row it shares a vector with, so the first-match scan in `canonical_name()` returns the
   canonical name: `"TranslationalStiffness"`, `"Curvature"`, and `"Momentum"` come back as
   `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`.
+  [amended by #6179: `Curvature` now has its own vector (rad·m⁻¹) and canonicalises to
+  itself, so only `"TranslationalStiffness"` → `"Stiffness"` and `"Momentum"` → `"Impulse"`
+  remain.]
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new
