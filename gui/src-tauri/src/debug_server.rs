@@ -41,7 +41,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_state",
-            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message. The DEFAULT reply is the full payload, and files[].content inlines every source file, which can be megabytes on a large design. Pass summary_only: true for counts plus a content-free file list, or fields for only the named top-level keys. The two are mutually exclusive, and an unknown field name is refused with the valid list.",
+            description: "Full engine state: meshes (entity paths + vertex/face counts + default_visible, the engine's hidden-by-default verdict as in mesh_stats), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message. The DEFAULT reply is the full payload, and files[].content inlines every source file, which can be megabytes on a large design. Pass summary_only: true for counts plus a content-free file list, or fields for only the named top-level keys. The two are mutually exclusive, and an unknown field name is refused with the valid list.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -59,7 +59,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "mesh_stats",
-            description: "Per-entity mesh statistics: vertex count, face count, bounding box",
+            description: "Per-mesh statistics over the FULL realized scene, one entry per realized body: {meshes: [{entity_path, vertex_count, face_count, bounding_box: {min, max} | null, element_kind_count, default_visible}]}. element_kind_count is the per-face element-kind histogram {\"<kind>\": count}, an empty object for meshes with no shell classification. default_visible is the ENGINE's hidden-by-default verdict: false for aux and consumed-intermediate realizations, null if no entity-tree realization matched. It is not what is drawn — user eye toggles, views and DisplayOutput routing are frontend state; viewport_state reports what is drawn.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -1466,11 +1466,10 @@ async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, Strin
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
     // Delegate to the headless-testable extraction (task 5348). It routes through
     // `build_gui_state_full_scene`, so `mesh_stats` reports the FULL realized scene
-    // (not the frontend's selective-demand incremental delta) and shares the exact
-    // per-mesh mapping — including `commands::element_kind_count` — with
-    // `engine_state_json`, so the two debug reads can never drift apart. The
-    // element-kind histogram helper was moved to the ungated `commands` module so
-    // this delegation and its headless unit test do not need the `gui` feature.
+    // (not the frontend's selective-demand incremental delta). It shares that
+    // builder and the per-mesh `default_visible` join with `engine_state_json`, so
+    // the two debug reads agree on which meshes exist and which are hidden by
+    // default; the element-kind histogram is mesh_stats' own.
     run_on_engine(&state.engine, |session| {
         crate::commands::mesh_stats_json(session)
     })
