@@ -126,6 +126,24 @@ pub fn build_face_anchors(
     anchors
 }
 
+/// Test-only builder for the `Value::Selector(Leaf{Named(name)})` shape the
+/// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
+/// eval time, targeting a kernel-less `TestBody` geometry cell.
+#[cfg(test)]
+pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> reify_ir::Value {
+    use reify_core::identity::RealizationNodeId;
+    use reify_ir::value::{GeometryHandleRef, LeafQuery};
+    let target = GeometryHandleRef {
+        realization_ref: RealizationNodeId::new("TestBody", 0),
+        upstream_values_hash: [0u8; 32],
+        kernel_handle: None,
+    };
+    reify_ir::Value::Selector(
+        SelectorValue::leaf(kind, target, LeafQuery::Named(name.into()))
+            .expect("LeafQuery::Named accepts any SelectorKind"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::identity::RealizationNodeId;
@@ -296,5 +314,64 @@ mod tests {
             1,
             "the per-face Centroid failure must emit exactly one diagnostic, got {diags:?}"
         );
+    }
+
+    // ── named_leaf_target (Bmig2 #5312 interim typed-target read) ────────────
+
+    use super::{named_leaf_selector, named_leaf_target};
+
+    #[test]
+    fn named_leaf_target_reads_a_named_face_leaf() {
+        let v = named_leaf_selector(SelectorKind::Face, "root");
+        assert_eq!(named_leaf_target(&v), Some("root"));
+    }
+
+    #[test]
+    fn named_leaf_target_is_kind_agnostic() {
+        for kind in [SelectorKind::Vertex, SelectorKind::Edge] {
+            let v = named_leaf_selector(kind, "tip");
+            assert_eq!(named_leaf_target(&v), Some("tip"), "kind {kind:?}");
+        }
+    }
+
+    #[test]
+    fn named_leaf_target_unwraps_option_some() {
+        let v = Value::Option(Some(Box::new(named_leaf_selector(SelectorKind::Face, "x_max"))));
+        assert_eq!(named_leaf_target(&v), Some("x_max"));
+    }
+
+    #[test]
+    fn named_leaf_target_option_none_is_no_target() {
+        assert_eq!(named_leaf_target(&Value::Option(None)), None);
+    }
+
+    #[test]
+    fn named_leaf_target_never_accepts_a_bare_string() {
+        assert_eq!(named_leaf_target(&Value::String("root".into())), None);
+    }
+
+    #[test]
+    fn named_leaf_target_rejects_non_named_and_composed_selectors() {
+        let ghr = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestBody", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: None,
+        };
+        let all = SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
+            .expect("valid Face/All leaf");
+        assert_eq!(named_leaf_target(&Value::Selector(all)), None);
+
+        let leaf = |name: &str| match named_leaf_selector(SelectorKind::Face, name) {
+            Value::Selector(sv) => sv,
+            other => panic!("builder must mint a Selector, got {other:?}"),
+        };
+        let union = SelectorValue::union(vec![leaf("x_min"), leaf("x_max")])
+            .expect("same-kind union");
+        assert_eq!(named_leaf_target(&Value::Selector(union)), None);
+    }
+
+    #[test]
+    fn named_leaf_target_undef_is_no_target() {
+        assert_eq!(named_leaf_target(&Value::Undef), None);
     }
 }
