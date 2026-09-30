@@ -2740,6 +2740,22 @@ fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
     (nx, ny, nz)
 }
 
+/// The cantilever tip resultant `tip_force` as the uniform traction over the
+/// free faces spanned by `tip_nodes`, returned as a fresh `3 * coords.len()`
+/// load vector (task 7448). Its total and line of action (the tip-face
+/// centroid) do not depend on the mesh; a zero-area tip set (a vertex or edge
+/// selector target) keeps the equal nodal split.
+fn cantilever_tip_load(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    tip_nodes: &[usize],
+    tip_force: [f64; 3],
+) -> Vec<f64> {
+    let mut f = vec![0.0; 3 * coords.len()];
+    apply_patch_resultant(&mut f, coords, tets, tip_nodes, tip_force);
+    f
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -3056,12 +3072,9 @@ pub(crate) fn solve_cantilever_fea(
 
     // ── Build load vector; spread the tip resultant over the tip face ─────────
     //
-    // The tip resultant is the uniform traction over the free faces of
-    // `tip_nodes`, so its total and line of action (the face centroid) do not
-    // depend on the mesh — the adaptive lanes re-derive `tip_nodes` on every
-    // remesh (task 7448).
-    let mut f = vec![0.0f64; 3 * n_nodes];
-    apply_patch_resultant(&mut f, &coords, &tet_connectivity, &tip_nodes, tip_force);
+    // Mesh-independent because the adaptive lanes re-derive `tip_nodes` on
+    // every remesh (task 7448).
+    let mut f = cantilever_tip_load(&coords, &tet_connectivity, &tip_nodes, tip_force);
 
     // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
@@ -13340,9 +13353,9 @@ mod tests {
         let seed_reading = &readings[0];
         let last_reading = readings.last().expect("at least the seed was read");
         for (pass, r) in readings.iter().enumerate() {
-            for a in 0..3 {
+            for (a, &force_a) in TIP_FORCE.iter().enumerate() {
                 assert!(
-                    (r.resultant[a] - TIP_FORCE[a]).abs() <= 1e-12 * f_norm_sq.sqrt(),
+                    (r.resultant[a] - force_a).abs() <= 1e-12 * f_norm_sq.sqrt(),
                     "pass {pass}: tip-load resultant {:?} != {TIP_FORCE:?}",
                     r.resultant,
                 );
