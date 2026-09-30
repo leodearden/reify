@@ -579,6 +579,71 @@ mod tests {
         assert!(tm.done_provenance.is_none());
     }
 
+    /// A `done` wire task carrying only the two inputs `done_at` is derived from.
+    fn done_task_wire(updated_at: Value, metadata: Value) -> Value {
+        json!({
+            "id": "7233",
+            "title": "t",
+            "status": "done",
+            "updatedAt": updated_at,
+            "metadata": metadata,
+        })
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_updated_at() {
+        let v = done_task_wire(
+            json!("2026-05-16T07:39:04Z"),
+            json!({"done_at": 1700000000}),
+        );
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_metadata_done_at_wins_over_garbage_updated_at() {
+        let v = done_task_wire(json!("garbage"), json!({"done_at": 1700000000}));
+        let tm = task_metadata_from_wire(&v).expect("done decode");
+        assert_eq!(tm.done_at, Some(1700000000));
+    }
+
+    #[test]
+    fn wire_adapter_null_or_false_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!(null), json!(false)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_non_integer_metadata_done_at_falls_back_to_updated_at() {
+        for stamp in [json!("2026-01-01T00:00:00Z"), json!(1700000000.5)] {
+            let v = done_task_wire(
+                json!("2026-05-16T07:39:04Z"),
+                json!({"done_at": stamp.clone()}),
+            );
+            let tm = task_metadata_from_wire(&v).expect("done decode");
+            assert_eq!(tm.done_at, Some(1778917144), "metadata.done_at = {stamp}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_pending_task_ignores_metadata_done_at() {
+        let v = json!({
+            "id": "7233",
+            "title": "t",
+            "status": "pending",
+            "updatedAt": "2026-05-16T07:39:04Z",
+            "metadata": {"done_at": 1700000000}
+        });
+        let tm = task_metadata_from_wire(&v).expect("pending decode");
+        assert!(tm.done_at.is_none());
+    }
+
     #[test]
     fn wire_adapter_missing_id_returns_none() {
         let v = json!({"title": "no id", "status": "pending"});
