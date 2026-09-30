@@ -288,6 +288,35 @@
 - **Blocks:** All composite-result consumers (GUI, multi-load-case envelopes).
 - **Note:** PRD says "top, mid, bottom of each ply" — a 3 × N_plies result tensor, which has no analogue in the current result-data shape. Coupled to the `Field<X,Y>` in param position TODO (#3117) — every existing field-typed slot in `ElasticResult/ShellStress` is `Real` placeholder.
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-007's State (FICTION)
+> holds; its field list, its quoted ShellStress invariant and its Real-placeholder Note are superseded.**
+> This is a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record
+> of what was measured then.
+>
+> - **Anchors and field list.** The Evidence's `solver_elastic.ri:295-316` is now `structure def
+>   ElasticResult` at `:504`. Its params are `displacement`, `stress`, `divergence`, `gradient`, `curl`,
+>   `rotation`, `shear_angles`, `frame`, `shell_channels : ShellStress`, `max_von_mises`, `converged`,
+>   `iterations`, `error_indicator`, `global_relative_energy_error` and `convergence_status`; none is
+>   per-ply. `:352-356` is now `structure def ShellStress` at `:686`, still exactly `top`, `mid`, `bottom`:
+>   a 3-channel through-thickness shape, not a per-ply one.
+> - **The quoted invariant is RETIRED.** "ShellStress always has all three channels populated even for
+>   solid-element results" no longer holds, and the sentence is gone from `solver_elastic.ri`. Task 4067
+>   sets `ElasticResult.shell_channels` to `Value::Undef` on tet/solid results (the tet path in
+>   `crates/reify-eval/src/compute_targets/elastic_static.rs` writes `("shell_channels", Value::Undef)`,
+>   `:1604`). The comment block above `structure def ShellStress` states the new rule: "Do NOT fabricate
+>   homogeneous top==mid==bottom for tets".
+> - **The Note's "every existing field-typed slot … is `Real` placeholder" is SUPERSEDED.** It was true on
+>   the audit date: `git show 8059aa59ba:crates/reify-compiler/stdlib/solver_elastic.ri` (a 2026-05-12
+>   commit) has `ElasticResult` at `:295-316` and `ShellStress` at `:352-356` exactly as this row cites
+>   them, with `displacement`, `stress`, `frame`, `top`, `mid` and `bottom` all declared `Real`. They were
+>   tightened after the snapshot: `displacement` and `stress` on 2026-05-14 (task 3117, `e6517887d5`),
+>   `frame` and `top`/`mid`/`bottom` on 2026-05-15 (task 3641, `df7c8d11cf`); both tasks are done. At this
+>   SHA all six carry precise `Field<...>` types, recorded in the "Resolution note (tasks 3117 + 3641)"
+>   comment above `ElasticResult` (`solver_elastic.ri:423`). The Note's coupling to the "`Field<X,Y>` in
+>   param position TODO (#3117)" is superseded with it.
+> - **"No precedent for `List<Field<...>>`" still holds.** `git grep -n 'List<Field<' --
+>   crates/reify-compiler/stdlib` returns no hit.
+
 ### M-008: `tsai_wu(...)` stdlib failure-criterion function
 
 - **State:** FICTION
@@ -318,6 +347,19 @@
 - **Evidence:** No `failure_index` grep hit. PRD says "plus failure-index field per failure criterion." `ElasticResult` (`solver_elastic.ri:295`) does not declare any failure-index cell; `Field<X,Y>` in param position TODO (#3117) still gates field-typed result cells.
 - **Blocks:** GUI composite-result rendering (not yet PRD'd).
 - **Note:** Cardinality grows with criterion count × ply count — UX/data-shape open question.
+
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-011's State (FICTION)
+> holds; its #3117 gating clause is superseded.** This is a dated audit snapshot (**Date:** 2026-05-12), so
+> the bullets above are preserved as the record of what was measured then.
+>
+> - **State holds.** `git grep -n -E 'failure_index|FailureIndex' -- crates` returns no hit, and
+>   `structure def ElasticResult` (`solver_elastic.ri:504`) declares no failure-index cell.
+> - **The #3117 gating clause is SUPERSEDED.** "`Field<X,Y>` in param position TODO (#3117) still gates
+>   field-typed result cells" no longer holds: #3117 is done. The delta is recorded once, in the M-007
+>   overlay, and is not restated here.
+> - **A shape precedent now exists on `ElasticResult`.** `error_indicator : Option<Field<Point3<Length>,
+>   Pressure>> = none` (`solver_elastic.ri:624`) is an optional scalar indicator field; the source comment
+>   documents it as a per-element stress-norm error indicator for visualisation, `none` when not computed.
 
 ### M-012: Inter-laminar shear stress recovery (equilibrium post-processing)
 
