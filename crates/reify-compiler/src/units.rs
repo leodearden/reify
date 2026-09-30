@@ -1956,7 +1956,7 @@ mod tests {
     use crate::list_helpers::LIST_HELPER_NAMES;
     use crate::unresolved_function::FIRST_ARG_TYPED_NAMES;
 
-    // Euler DECOMPOSER family (task #6082) — single source of truth in
+    // DECOMPOSER family (tasks #6082, #6306) — single source of truth in
     // `crate::orientation_signatures`, imported here for the same reason as the
     // sibling slices above. Its own disjointness test below checks against ALL
     // sibling slices, INCLUDING ORIENTATION_TYPED_FN_NAMES from the same
@@ -5586,12 +5586,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task #6082 — exhaustive Euler-decomposer-family disjointness
+    // Tasks #6082/#6306 — exhaustive decomposer-family disjointness
     // -----------------------------------------------------------------------
 
-    /// Disjointness regression-lock for the Euler DECOMPOSER family (task
-    /// #6082): every entry of `ORIENTATION_DECOMPOSER_FN_NAMES` must be absent from
-    /// every sibling classification family, so `orient_to_euler` routes
+    /// Disjointness regression-lock for the DECOMPOSER family (tasks #6082,
+    /// #6306): every entry of `ORIENTATION_DECOMPOSER_FN_NAMES` must be absent from
+    /// every sibling classification family, so each decomposer routes
     /// exclusively through the `is_orientation_decomposer_fn` arm in `expr.rs`'s
     /// `NoUserFunctions` ladder.
     ///
@@ -5600,7 +5600,7 @@ mod tests {
     /// family in the SAME module.
     ///
     /// This FORWARD direction is what actually guards every family. Reciprocal
-    /// clauses (a sibling's own test asserting it holds no Euler name) exist in
+    /// clauses (a sibling's own test asserting it holds no decomposer name) exist in
     /// 12 sibling tests but NOT in all of them — `GEOMETRY_FUNCTION_NAMES`,
     /// `GEOMETRY_QUERY_HELPER_NAMES`, `GEOMETRY_KINEMATIC_QUERY_NAMES`,
     /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, `AFFINE_MAP_CONSTRUCTOR_NAMES`,
@@ -5610,17 +5610,16 @@ mod tests {
     /// the earlier claim that "every sibling test carries the reciprocal" was
     /// not true of the tree it described.
     ///
-    /// The `orient_euler` / `orient_to_euler` pair is the exception that does
-    /// have a hard reciprocal, and a stronger one than a slice check:
-    /// `orientation_signatures`'s own
-    /// `is_orientation_typed_fn_rejects_the_four_decomposers` names
-    /// `orient_to_euler` literally.
+    /// The constructor family in the same module is the exception with hard
+    /// reciprocals in both directions: `orientation_signatures`'s own
+    /// `is_orientation_typed_fn_rejects_the_four_decomposers` names all four
+    /// decomposers literally, and `is_orientation_decomposer_fn_rejects_every_producer`
+    /// loops the producer slice.
     ///
-    /// GREEN on arrival — a regression lock that fails if a colliding name is
-    /// later added to either `ORIENTATION_DECOMPOSER_FN_NAMES` or a sibling slice.
-    /// The collision it most plausibly guards is a future task #6004 registry
-    /// claiming the remaining mistyped `orient_*` names and reaching for this
-    /// one as well.
+    /// A regression lock that fails if a colliding name is later added to
+    /// either `ORIENTATION_DECOMPOSER_FN_NAMES` or a sibling slice. The
+    /// collision it most plausibly guards is task #6004's registry claiming
+    /// these rows without removing them from this slice.
     #[test]
     fn orientation_decomposer_fn_names_are_disjoint_from_other_families() {
         for name in ORIENTATION_DECOMPOSER_FN_NAMES {

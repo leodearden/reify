@@ -1,6 +1,6 @@
 //! Compiler result-type signatures for the orientation / transform / frame
-//! builtins: the **constructor** family (task 5344) and the Euler
-//! **decomposer** family (task #6082).
+//! builtins: the **constructor** family (task 5344) and the **decomposer**
+//! family (tasks #6082, #6306).
 //!
 //! Holds the single source of truth for the orientation/transform/frame
 //! constructor builtin name family ([`ORIENTATION_TYPED_FN_NAMES`]), the
@@ -18,14 +18,16 @@
 //! Everything else in this crate that needs that rationale (the `expr.rs`
 //! ladder arm, the tests below) points there rather than restating it.
 //!
-//! The second family is one name, `orient_to_euler`
+//! The second family is the four decomposers `orient_log`, `orient_to_euler`,
+//! `orient_to_axis_angle` and `transform_log`
 //! ([`ORIENTATION_DECOMPOSER_FN_NAMES`] / [`is_orientation_decomposer_fn`] /
-//! [`orientation_decomposer_result_type`]). It is a separate resolver rather than
-//! 19 rows in the first because it answers a different question: the
-//! constructors map to a fixed NOMINAL type, while the decomposer returns a
-//! `List<Angle>`. Its own doc comment carries the full rationale, including
-//! why the similarly-spelled `orient_euler` belongs to the constructor family
-//! and not to it.
+//! [`orientation_decomposer_result_type`]). It is a separate resolver rather
+//! than 22 rows in the first because it answers a different question: the
+//! constructors return the rigid motion itself, with an exact Type⇄Value kind
+//! match, while the decomposers return its COORDINATES — a vector, a list or a
+//! map. Its own doc comment carries the full rationale, including why the
+//! similarly-spelled `orient_euler` belongs to the constructor family and not
+//! to it.
 //!
 //! Mirrors the `joint_signatures.rs` module structure (task 4311 recipe).
 
@@ -58,9 +60,11 @@ use reify_core::Type;
 /// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`,
 /// - `transform_log` → `Value::Map` (twist).
 ///
-/// The two `Value::Map` cases have no clean `Type` variant and `orient_log`'s
-/// quantity slot needs a dimension ruling, so per-name typing for the
-/// decomposers is out of scope here (a follow-up).
+/// The four decomposers are typed by the sibling
+/// [`ORIENTATION_DECOMPOSER_FN_NAMES`]. They stay OUT of this slice because
+/// this resolver's invariant is an EXACT Type⇄Value kind agreement (see
+/// "Cell-type / value-kind agreement" on [`orientation_typed_fn_result_type`]),
+/// which the two `Value::Map` decomposers cannot meet.
 ///
 /// `frame_at` is likewise EXCLUDED: `units.rs::datum_constructor_result_type`
 /// already types it `Type::Frame(3)` as part of the DATUM family, so claiming
@@ -182,15 +186,44 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 
 // ─── DECOMPOSER family (tasks #6082, #6306) ──────────────────────────────────
 
-/// The Euler-angle **decomposer** names the compiler types via
-/// [`orientation_decomposer_result_type`] — today exactly one, `orient_to_euler`.
-/// Single source of truth, imported into the `units.rs` test module to pin
-/// disjointness from every sibling family, [`ORIENTATION_TYPED_FN_NAMES`]
-/// included.
+/// The **decomposer** names the compiler types via
+/// [`orientation_decomposer_result_type`]: the builtins that return a rigid
+/// motion's COORDINATES rather than the motion itself. Single source of truth
+/// for this family's membership and its result-type rulings, imported into the
+/// `units.rs` test module to pin disjointness from every sibling family,
+/// [`ORIENTATION_TYPED_FN_NAMES`] included.
+///
+/// **4 names**, each with its eval source and ruling:
+/// - `orient_log` → `Vector3<Angle>`. Eval: the `"orient_log" =>` arm of
+///   `reify_stdlib::orientation::eval_orientation`, which emits `Value::angle`
+///   components on both its general and its near-identity branch. Ruling:
+///   Leo's #6080 — a rotation vector is axis·angle, so it carries ANGLE.
+/// - `orient_to_euler` → `List<Angle>`. Eval: the `"orient_to_euler" =>` arm
+///   of `eval_orientation`, a 3-element `Value::List` of ANGLE scalars.
+///   Ruling: #6082. The `Type::angle()` element is what lets the result flow
+///   into a `List<Angle>` parameter.
+/// - `orient_to_axis_angle` → `StructureRef("AxisAngle")`. Eval: the
+///   `"orient_to_axis_angle" =>` arm of `eval_orientation`, a
+///   `Value::Map {angle, axis}`.
+/// - `transform_log` → `StructureRef("Twist")`. Eval: the `"transform_log" =>`
+///   arm of `reify_stdlib::geometry::eval_geometry`, a
+///   `Value::Map {angular, linear}`.
+///
+/// The two `Value::Map` rulings are `docs/prds/v0_6/builtin-signature-registry.md`
+/// §3 decision 7: heterogeneous maps type as nominal stdlib structures. A
+/// `StructureRef` cell holding a `Value::Map` is safe by the esc-3845-91
+/// argument in the `joint_signatures.rs` module doc.
+///
+/// `Twist` is already declared, as an empty marker in `stdlib/kinematic.ri`.
+/// `AxisAngle` is deliberately declared NOWHERE: an undeclared name keeps
+/// `orient_to_axis_angle(q).angle` off the hard "has no member" path, which an
+/// EMPTY marker would take. Declaring it WITH its `{angle, axis}` fields is
+/// task #6004's post-state; that registry is expected to absorb these rows the
+/// same way it absorbs the constructor family's.
 ///
 /// # `orient_euler` is deliberately NOT here
 ///
-/// The obvious reading of "the Euler family" — both `orient_euler` and
+/// The obvious reading of "the Euler names" — both `orient_euler` and
 /// `orient_to_euler` — is WRONG, and the split is load-bearing rather than an
 /// oversight. The two names differ in the only way this file cares about:
 ///
@@ -208,46 +241,45 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 /// resolvers in this same file and break the reciprocal disjointness the
 /// `units.rs` tests pin in both directions.
 ///
-/// # Why the other three decomposers stay untyped
-///
-/// `orient_to_axis_angle` and `transform_log` return `Value::Map`, which has no
-/// clean `Type` variant, and `orient_log`'s quantity slot needs a dimension
-/// ruling. All three belong to task #6004's signature registry
-/// (`docs/prds/v0_6/builtin-signature-registry.md`); claiming them here would
-/// pre-empt that family for no gain.
-///
 /// Case-sensitive: Reify function names are snake_case.
-pub const ORIENTATION_DECOMPOSER_FN_NAMES: &[&str] = &["orient_to_euler"];
+pub const ORIENTATION_DECOMPOSER_FN_NAMES: &[&str] = &[
+    // Orientation decomposers (3): reify_stdlib::orientation::eval_orientation
+    "orient_log",
+    "orient_to_euler",
+    "orient_to_axis_angle",
+    // Transform decomposer (1): reify_stdlib::geometry::eval_geometry
+    "transform_log",
+];
 
-/// Is `name` a Euler decomposer typed by [`orientation_decomposer_result_type`]?
+/// Is `name` a decomposer typed by [`orientation_decomposer_result_type`]?
 /// Name-only classification — a `.contains` over the single-source-of-truth
 /// slice [`ORIENTATION_DECOMPOSER_FN_NAMES`]. Case-sensitive.
 pub(crate) fn is_orientation_decomposer_fn(name: &str) -> bool {
     ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name)
 }
 
-/// Result type for a Euler decomposer. Arg-INDEPENDENT, like its constructor
-/// counterpart above: the convention argument selects WHICH angles come back,
-/// never the shape of the answer.
+/// Result type for a decomposer, one arm per name as ruled on
+/// [`ORIENTATION_DECOMPOSER_FN_NAMES`].
 ///
-/// `orient_to_euler` evaluates (`reify_stdlib::orientation`) to a 3-element
-/// `Value::List` of `DimensionVector::ANGLE` scalars, so →
-/// `Type::List(Box::new(Type::angle()))`. The `Type::angle()` element — not a
-/// bare dimensionless scalar — is the load-bearing half: it is what lets the
-/// result flow into a `List<Angle>` parameter, the user-observable signal task
-/// #6082 exists to deliver.
+/// Name-only and INFALLIBLE, like its constructor counterpart above, because
+/// every result is argument-INDEPENDENT. `orient_to_euler`'s convention selects
+/// WHICH angles come back, never the shape of the answer. `orient_log` is
+/// arity-1, and anything but a `Value::Orientation` evaluates to `Undef`, so
+/// its one argument cannot change the answer either.
 ///
-/// Only reached for names in [`ORIENTATION_DECOMPOSER_FN_NAMES`] (the caller gates
-/// on [`is_orientation_decomposer_fn`]); the `_` arm is therefore unreachable in
-/// practice, and returns the same type as the single real arm so that a name
-/// added to the slice without its own arm cannot change behaviour silently.
-/// The `every_orientation_decomposer_fn_name_maps_to_its_declared_result_type` test
-/// makes such an addition loud instead.
+/// Only reached for names in [`ORIENTATION_DECOMPOSER_FN_NAMES`] (the caller
+/// gates on [`is_orientation_decomposer_fn`]); the `_` arm is therefore
+/// unreachable in practice and returns a harmless `Type::dimensionless_scalar()`.
+/// The `every_orientation_decomposer_fn_name_maps_to_its_declared_result_type`
+/// test makes a silent fallthrough loud.
 pub(crate) fn orientation_decomposer_result_type(name: &str) -> Type {
     match name {
+        "orient_log" => Type::vec3(Type::angle()),
         "orient_to_euler" => Type::List(Box::new(Type::angle())),
+        "orient_to_axis_angle" => Type::StructureRef("AxisAngle".to_string()),
+        "transform_log" => Type::StructureRef("Twist".to_string()),
         // Unreachable in practice — the caller gates on is_orientation_decomposer_fn.
-        _ => Type::List(Box::new(Type::angle())),
+        _ => Type::dimensionless_scalar(),
     }
 }
 
