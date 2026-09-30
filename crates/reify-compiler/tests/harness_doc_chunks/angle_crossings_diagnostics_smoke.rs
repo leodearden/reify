@@ -14,9 +14,7 @@
 //!
 //! # Mechanism: scrape, don't curate
 //!
-//! Like its sibling `enums_chunk_option_smoke.rs` — and unlike
-//! `geometry_chunk_smoke.rs`, which must curate because its chunk intermixes
-//! schematic notation with real call forms — this module SCRAPES the
+//! Like its sibling `enums_chunk_option_smoke.rs`, this module SCRAPES the
 //! transcriptions out of the exemplar's own bytes and compares them to what
 //! the real compiler emits. A curated fixture can drift away from the doc it
 //! claims to pin; scraping makes the documented bytes themselves the thing

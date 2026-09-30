@@ -2,23 +2,16 @@
 //! (`crates/reify-mcp/src/tools/chunks/units.md`), served to the in-GUI
 //! assistant via `reify_language_reference`.
 //!
-//! Sibling of `geometry_chunk_smoke.rs`, and deliberately built ON TOP of it:
-//! every scanner used here (`tagged_fence_bodies`, `assert_module_compiles`,
-//! `strip_reify_comments`, `called_names`, `registry_family`) is that module's,
-//! raised to `pub(crate)` and parameterised by chunk path in task 5759's
-//! prerequisite refactor. The whole cited-path loop
-//! (`assert_cited_paths_resolve`), extracted in the same spirit once this file
-//! and its sibling had grown two copies of it, now lives in
-//! `chunk_cite_gate.rs` with the binary's one cite scanner. Copying any of them here would
-//! have made this harness binary's FIFTH near-identical scraper, which is
-//! exactly the tracked defect (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924)
-//! that geometry_chunk_smoke.rs's "Known duplication" section exists to stop
-//! growing.
+//! Reads units.md through the binary's shared scanners rather than scanners of
+//! its own: fences through `chunk_markdown.rs`'s `tagged_fence_bodies`, cites
+//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, and call names
+//! through `geometry_chunk_smoke.rs`'s comment-aware `strip_reify_comments` /
+//! `called_names` and its registry helpers.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
-//! `rejected_form_rows`, `wrap_form`, `named_length_argument`,
-//! `squash_whitespace` — and those are pinned directly by the "Scanner unit
-//! tests" block at the bottom, following the same convention.
+//! `assert_module_compiles`, `rejected_form_rows`, `wrap_form`,
+//! `named_length_argument`, `squash_whitespace` — the last four pinned directly
+//! by the "Scanner unit tests" block at the bottom.
 //!
 //! # What this file guards
 //!
@@ -70,7 +63,7 @@ use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::tagged_fence_bodies;
 use crate::geometry_chunk_smoke::{
-    assert_module_compiles, called_names, phantom_name_panic, registry_family, strip_reify_comments,
+    called_names, phantom_name_panic, registry_family, strip_reify_comments,
 };
 
 /// Info string of the fences that MUST compile clean.
@@ -230,6 +223,20 @@ fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
     rows
 }
 
+/// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
+/// diagnostics. The source is echoed in the panic, so a failing fence or
+/// migration is fixable without re-reading the chunk.
+fn assert_module_compiles(label: &str, module_src: &str) {
+    let compiled = compile_source_with_stdlib(module_src);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "{UNITS_CHUNK_PATH} — {label}: expected this module to compile with zero Error \
+         diagnostics, got: {:#?}\n--- module source ---\n{module_src}\n--- end module source ---",
+        errors
+    );
+}
+
 /// Compile one documented form and return its Error messages.
 fn error_messages(form: &str) -> Vec<String> {
     let compiled = compile_source_with_stdlib(&wrap_form(form));
@@ -356,11 +363,7 @@ fn reify_tagged_fences_in_units_chunk_compile() {
     }
 
     for (index, fence) in fences.iter().enumerate() {
-        assert_module_compiles(
-            UNITS_CHUNK_PATH,
-            &format!("```{REIFY_TAG} fence #{}", index + 1),
-            fence,
-        );
+        assert_module_compiles(&format!("```{REIFY_TAG} fence #{}", index + 1), fence);
     }
 }
 
@@ -476,7 +479,6 @@ fn documented_rejected_forms_are_actually_rejected() {
     // every form `reject` and pass the loop below for a reason that has nothing
     // to do with the units gate.
     assert_module_compiles(
-        UNITS_CHUNK_PATH,
         "positive control for the rejected-forms scan",
         &wrap_form("box(20mm, 20mm, 10mm)"),
     );
@@ -489,7 +491,6 @@ fn documented_rejected_forms_are_actually_rejected() {
         );
         assert_rejected_as_documented(rejected);
         assert_module_compiles(
-            UNITS_CHUNK_PATH,
             &format!("accepted migration for `{rejected}`"),
             &wrap_form(accepted),
         );
@@ -647,7 +648,6 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
         );
 
         assert_module_compiles(
-            UNITS_CHUNK_PATH,
             &format!("accepted migration for `{rejected}`"),
             &wrap_form(accepted),
         );
@@ -768,7 +768,6 @@ fn squash_whitespace_equates_respacings_but_not_different_forms() {
 #[test]
 fn wrap_form_binds_g_so_a_row_naming_it_compiles_clean() {
     assert_module_compiles(
-        UNITS_CHUNK_PATH,
         "wrap_form unit test: a dimensioned form referencing `g`",
         &wrap_form("mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)"),
     );

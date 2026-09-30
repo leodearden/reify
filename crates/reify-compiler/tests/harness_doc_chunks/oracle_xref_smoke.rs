@@ -19,7 +19,7 @@
 //!
 //! Per referring chunk (`constraints.md`, `stdlib.md`): that the
 //! `<!-- ORACLE-XREF -->` region EXISTS —
-//! [`section_body`](crate::geometry_chunk_smoke::section_body) PANICS on an
+//! [`section_body`](crate::chunk_markdown::section_body) PANICS on an
 //! absent marker, so deleting the pointer is RED rather than vacuously green,
 //! and no anti-vacuity code is written here — plus the five violation classes
 //! [`xref_region_violations`] decides.
@@ -57,19 +57,13 @@
 //!
 //! # No new chunk scanner
 //!
-//! `section_body`, `call_sites`, `called_names`, `registry_family` and
-//! `phantom_name_panic` are all `geometry_chunk_smoke.rs`'s, already `pub(crate)`
-//! and already parameterised by `chunk_path` so a `constraints.md` failure names
-//! `constraints.md`. The ONE helper this file added, [`strip_html_comments`],
-//! now lives in `chunk_prose.rs` beside the prose model that shares its comment
-//! grammar, and is still pinned directly by the unit tests at the foot of this
-//! file.
-//!
-//! That follows task 5759's precedent (`units_chunk_smoke.rs`) exactly: the
-//! harness binary now holds FIVE chunk modules and STILL THREE scrapers. The
-//! shared `chunk_io` extraction those three still owe is task **#5924** (ticket
-//! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse inside the
-//! existing binary is what is available today, not a substitute for it.
+//! Sections are read through `chunk_markdown.rs`'s `section_body`, and call
+//! names through `geometry_chunk_smoke.rs`'s `call_sites`, `called_names`,
+//! `registry_family` and `phantom_name_panic`, each parameterised by
+//! `chunk_path` so a `constraints.md` failure names `constraints.md`. The ONE
+//! helper this file added, [`strip_html_comments`], now lives in `chunk_prose.rs`
+//! beside the prose model that shares its comment grammar, and is still pinned
+//! directly by the unit tests at the foot of this file.
 
 use crate::chunk_io::{CONSTRAINTS_CHUNK_PATH, GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::section_body;

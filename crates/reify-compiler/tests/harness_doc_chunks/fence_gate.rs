@@ -912,7 +912,7 @@ fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
 
 /// The violation echoes the fence body, so a failure is fixable without
 /// re-opening the chunk — the same courtesy
-/// `geometry_chunk_smoke::assert_module_compiles` already extends.
+/// `units_chunk_smoke.rs`'s `assert_module_compiles` also extends.
 #[test]
 fn the_violation_echoes_the_offending_fence_body() {
     let md = "```reify\n\

@@ -4,12 +4,10 @@
 //! MCP tool (`crates/reify-mcp/src/tools/reference.rs`, via
 //! `language_chunks::get_chunk`).
 //!
-//! Unlike its sibling `geometry_chunk_smoke.rs` — which curates fixtures
-//! because `geometry.md` intermixes non-compilable schematic notation with
-//! real call forms — this module SCRAPES the fenced `.ri` source out of the
-//! served bytes and runs it through the real compiler. The Option Type
-//! section is a single complete example, so scraping is feasible here, and it
-//! is strictly stronger: a curated fixture can drift away from the doc it
+//! This module SCRAPES the fenced `.ri` source out of the served bytes and runs
+//! it through the real compiler. The Option Type section is a single complete
+//! example, so scraping is feasible here, and it is strictly stronger than
+//! curating: a curated fixture can drift away from the doc it
 //! claims to pin (which is exactly how the `some(c) => base + c.thickness`
 //! defect survived), whereas scraping makes the served bytes themselves the
 //! thing under test. This is the mechanism

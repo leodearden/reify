@@ -1,25 +1,35 @@
-//! Compile-smoke test for the "geometry" language-reference chunk
+//! Truth checks for the "geometry" language-reference chunk
 //! (`crates/reify-mcp/src/tools/chunks/geometry.md`), served to the in-GUI
-//! assistant via `reify_language_reference`.
-//!
-//! Mirrors sibling task 5347's stdlib.md audit: this test pins every
-//! documented geometry-constructor call form to what the compiler actually
-//! accepts, so a phantom signature in the doc (or a future compiler
-//! signature change) is caught here rather than by a designer typing the
-//! documented-but-wrong call into a `.ri` file.
+//! assistant via `reify_language_reference`: what the chunk documents must be
+//! what the compiler accepts, so a phantom signature is caught here rather than
+//! by a designer typing it into a `.ri` file.
 //!
 //! Lives in `reify-compiler` (not `reify-mcp`, where `geometry.md` itself
 //! lives) because `reify-mcp` does not depend on `reify-compiler` and so
 //! cannot invoke `compile_source_with_stdlib` — the same cross-crate
 //! placement sibling task 5347 used for its stdlib-chunk smoke test.
 //!
-//! Fixtures are curated `.ri` snippets, not scraped from geometry.md itself:
-//! the doc intermixes non-compilable schematic notation (type params, trait
-//! lists, `-> Solid` return annotations) with real call forms, so a scraper
-//! would need a fragile grammar to separate the two. Each fixture instead
-//! mirrors one documented call form exactly, wrapped in the minimal
-//! compilable module shape (`examples/bracket.ri`'s
-//! `structure def X { let body = box(...) }` pattern).
+//! # Coverage is derived from the chunk
+//!
+//! No list of the chunk's forms is kept by hand. Each part of geometry.md is read
+//! by the gate that owns its notation:
+//!
+//! - ```` ```reify-schematic ```` signature listings (Prelude, Solid Primitives,
+//!   2D profiles, GD&T zones, Free-form) — `schematic_listing_gate.rs` pairs
+//!   every listed form with a call in a compile-verified signature fixture.
+//! - Signatures in unfenced prose and tables (`extrude`, `revolve`, the queries,
+//!   the topology selectors) — `unfenced_signature_gate.rs`, the same way.
+//! - ```` ```reify ```` worked examples — `fence_gate.rs` compiles every one
+//!   verbatim and holds their count exact;
+//!   `geometry_reify_fences_call_every_worked_example_form` requires the forms
+//!   that need a worked example to be called in one.
+//! - Cited tests and examples — `chunk_cite_gate.rs` resolves every cite;
+//!   `geometry_chunk_example_citations_hold_against_the_real_examples` holds the
+//!   GD&T section's claim about its cited example.
+//!
+//! This file owns the rest: the oracle, measurement and topology-selector
+//! families checked against the compiler's registries, and their documented
+//! arities cross-checked against the worked fences.
 //!
 //! # What is NOT established
 //!
@@ -30,9 +40,8 @@
 //!   arg-slot entry in the private `builtin_signatures` table, so neither arity
 //!   nor argument dimension is rejected; and an unknown call NAME is not itself
 //!   an error, because a `structure def` body types an unresolved call from its
-//!   FIRST argument's `result_type` (the same permissive fallback noted at the
-//!   `line_segment`/`arc`/`polygon` block below). Compile-acceptance of a fence
-//!   is therefore a parse/shape result, not a signature check.
+//!   FIRST argument's `result_type`, a permissive fallback. Compile-acceptance of
+//!   a fence is therefore a parse/shape result, not a signature check.
 //! - **Arity is pinned anyway — by cross-check, not by the compiler.**
 //!   `documented_oracle_arities_are_exercised_by_a_compiling_fence` requires
 //!   every documented `name(…) -> Type` signature to be matched by a fence call
@@ -70,395 +79,12 @@
 //! the fences. Widening the scan to accept a table cell would re-admit those. If
 //! the section is ever tabulated, widen `documented_signature_arities` in the same
 //! commit — and re-check that the trap prose still reads as prose.
-//!
-//! # Known duplication
-//!
-//! THREE chunk-scraping scanners now live in this one test binary — this module,
-//! `stdlib_chunk_geometry_ops_smoke.rs`, and `enums_chunk_option_smoke.rs` — and
-//! no two of them agree on what a "section" or a "fence" is. Extracting a shared
-//! `chunk_io` needs edits to `tests/harness_doc_chunks.rs` and to both siblings,
-//! none of which is in task 5389's locked file set.
-//!
-//! STILL THREE, though the binary now holds FIVE chunk modules: task 5759 added
-//! `units_chunk_smoke.rs` and task 6258 added `oracle_xref_smoke.rs`, and both
-//! point at THIS module's scanners (`tagged_fence_bodies`,
-//! `assert_module_compiles`, `strip_reify_comments`, `call_sites`,
-//! `called_names`, `registry_family`, `phantom_name_panic`, `section_body`, all
-//! raised to `pub(crate)`) rather than copying them. That is why those helpers
-//! take `chunk_path` / `tag` / `section_title` parameters instead of reading
-//! this module's consts — a sibling's failure must name the sibling's chunk, and
-//! 6258's are two chunks this module does not own at all. The cite scanner and
-//! resolver this list once also named (`cited_source_paths`,
-//! `assert_cited_paths_resolve` and their helpers) have since moved to
-//! `chunk_cite_gate.rs`, the binary's one cite machinery. 6258 also SHARES a
-//! const rather than copying it: `GEOMETRY_ORACLE_NAMES` is the one list both
-//! the oracle section and those two pointers are held to. The extraction below
-//! is still owed; this is reuse inside the existing binary, not the shared
-//! module.
-//!
-//! Task **#5924** (filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`) owns the
-//! extraction AND the axis-by-axis reconciliation contract — which heading /
-//! fence-delimiter / info-string / section-end / chunk-read behaviour the shared
-//! module should adopt, and which of this file's hand-rolled scanners the
-//! sibling's AST walk subsumes outright. That contract deliberately lives THERE,
-//! where it is the extraction author's working document, and not here: a table
-//! in this file describing two OTHER files' internals is unenforced prose that
-//! goes silently wrong the moment either sibling changes — the same rot mode the
-//! rest of this module spends 200 lines closing for the chunk's SYNC blocks.
-//!
-//! Delete this section when the extraction lands.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::{assert_cited_paths_resolve, cited_source_paths};
 use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk, repo_root};
 use crate::chunk_markdown::{marker_closed_region, section_body, tagged_fence_bodies};
-
-/// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
-/// diagnostics. The source is echoed in the panic so a failing scraped fence is
-/// fixable without re-reading the chunk.
-///
-/// This is the single zero-Error assertion site in the file; `assert_compiles`
-/// delegates here after wrapping a bare expression. A whole-module entry point
-/// is needed because the clearance examples are multi-let `structure def`s (both
-/// the query call and its operands must be separate let bindings), which the
-/// `structure def Smoke { let g = … }` wrapper cannot express.
-///
-/// `chunk_path` NAMES THE CHUNK THE SOURCE CAME FROM and is threaded rather than
-/// read off this module's `CHUNK_PATH` const, because sibling chunk modules in
-/// this same harness binary call this helper for THEIR chunk (task 5759 raised
-/// it to `pub(crate)` for `units_chunk_smoke.rs`). A hardcoded const would name
-/// geometry.md in a units.md failure — a panic that sends the reader to the
-/// wrong file.
-pub(crate) fn assert_module_compiles(chunk_path: &str, label: &str, module_src: &str) {
-    let compiled = compile_source_with_stdlib(module_src);
-    let errors = errors_only(&compiled);
-    assert!(
-        errors.is_empty(),
-        "{chunk_path} — {label}: expected this module to compile with zero Error diagnostics, \
-         got: {:#?}\n--- module source ---\n{module_src}\n--- end module source ---",
-        errors
-    );
-}
-
-/// Compile `geometry_expr` wrapped in a minimal `structure def Smoke { let g
-/// = <geometry_expr> }` module and assert there are zero Severity::Error
-/// diagnostics. On failure, the panic message names `label` and the expression
-/// under test, and dumps every Error diagnostic, so a failing signature is
-/// immediately identifiable.
-fn assert_compiles(label: &str, geometry_expr: &str) {
-    assert_module_compiles(
-        CHUNK_PATH,
-        &format!("{label} (expression `{geometry_expr}`)"),
-        &format!("structure def Smoke {{ let g = {} }}", geometry_expr),
-    );
-}
-
-// --- Solid primitives (geometry.md "Solid Primitives" block) ---
-
-#[test]
-fn box_primitive_compiles() {
-    assert_compiles("box", "box(10mm, 20mm, 5mm)");
-}
-
-#[test]
-fn box_centered_compiles() {
-    assert_compiles("box_centered", "box_centered(10mm, 20mm, 5mm)");
-}
-
-#[test]
-fn cylinder_compiles() {
-    assert_compiles("cylinder", "cylinder(5mm, 10mm)");
-}
-
-#[test]
-fn cylinder_centered_compiles() {
-    assert_compiles("cylinder_centered", "cylinder_centered(5mm, 10mm)");
-}
-
-#[test]
-fn cone_compiles() {
-    assert_compiles("cone", "cone(5mm, 3mm, 10mm)");
-}
-
-#[test]
-fn sphere_compiles() {
-    assert_compiles("sphere", "sphere(5mm)");
-}
-
-#[test]
-fn torus_compiles() {
-    assert_compiles("torus", "torus(10mm, 2mm)");
-}
-
-#[test]
-fn tube_compiles() {
-    assert_compiles("tube", "tube(10mm, 5mm, 20mm)");
-}
-
-#[test]
-fn wedge_compiles() {
-    assert_compiles("wedge", "wedge(10mm, 10mm, 10mm, 5mm)");
-}
-
-#[test]
-fn rounded_box_compiles() {
-    // corner_r=3mm > 0 and 2*3mm=6mm < min(20mm,20mm) — satisfies the
-    // rounded-corner constraint documented at geometry.md line 79.
-    assert_compiles("rounded_box", "rounded_box(20mm, 20mm, 10mm, 3mm)");
-}
-
-#[test]
-fn half_space_compiles() {
-    // geometry.md's "Solid Primitives" block documents the exactly-6-arg
-    // `half_space(px, py, pz, nx, ny, nz)` form (geometry.rs:1680,
-    // `PrimitiveKind::HalfSpace`) — the first Bounded=false producer.
-    //
-    // Mixed-dimension convention, same split `revolve_compiles` below pins:
-    // args 0-2 are a POINT on the boundary plane, a Length position, so they
-    // take `mm` literals; args 3-5 are the OUTWARD NORMAL pointing toward the
-    // retained material — a direction whose magnitude is irrelevant and which
-    // the compiler does not unit-check — so they take dimensionless literals,
-    // to avoid implying a direction vector carries a length unit. Arity alone
-    // does not constrain this split, which is why it is pinned here.
-    // Grounding site: examples/half_space.ri.
-    assert_compiles("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
-}
-
-// --- 2D profiles (geometry.md "2D profiles" block) ---
-
-#[test]
-fn rectangle_compiles() {
-    assert_compiles("rectangle", "rectangle(20mm, 10mm)");
-}
-
-#[test]
-fn circle_profile_compiles() {
-    assert_compiles("circle_profile", "circle(5mm)");
-}
-
-#[test]
-fn ellipse_compiles() {
-    assert_compiles("ellipse", "ellipse(10mm, 5mm)");
-}
-
-#[test]
-fn rounded_rect_compiles() {
-    // corner_r=2mm > 0 and 2*2mm=4mm < min(20mm,10mm) — satisfies the
-    // rounded-corner constraint documented at geometry.md line 94.
-    assert_compiles("rounded_rect", "rounded_rect(20mm, 10mm, 2mm)");
-}
-
-// --- Sweep (geometry.md anchoring table) ---
-
-#[test]
-fn extrude_compiles() {
-    assert_compiles("extrude", "extrude(circle(5mm), 10mm)");
-}
-
-// --- Point/vector constructors (geometry.md "Geometry Constructors (Prelude)" block) ---
-
-#[test]
-fn point2_compiles() {
-    assert_compiles("point2", "point2(0mm, 0mm)");
-}
-
-#[test]
-fn point3_compiles() {
-    assert_compiles("point3", "point3(0mm, 0mm, 0mm)");
-}
-
-#[test]
-fn vec2_compiles() {
-    assert_compiles("vec2", "vec2(1.0, 0.0)");
-}
-
-#[test]
-fn vec3_compiles() {
-    assert_compiles("vec3", "vec3(0.0, 0.0, 1.0)");
-}
-
-// --- Anchoring table: revolve(profile, ox, oy, oz, ax, ay, az, angle) ---
-
-#[test]
-fn revolve_compiles() {
-    // geometry.md line 121 documents the 8-arg
-    // `revolve(profile, ox, oy, oz, ax, ay, az, angle)` form (geometry.rs:1969):
-    // profile + origin (0,0,0) + axis direction (0,0,1) + angle. The origin
-    // triple (ox,oy,oz) is a Length position, so it takes `mm` literals;
-    // the axis triple (ax,ay,az) is a direction only — its magnitude is
-    // irrelevant and the compiler does not unit-check it — so it takes
-    // dimensionless literals to avoid implying a direction vector has a
-    // length unit.
-    assert_compiles(
-        "revolve",
-        "revolve(circle(5mm), 0mm, 0mm, 0mm, 0.0, 0.0, 1.0, 90deg)",
-    );
-}
-
-// --- Prelude/2D-profile constructors: line_segment, arc, polygon ---
-//
-// geometry.md's "Geometry Constructors (Prelude)" block (lines 56-61) and
-// "2D profiles" block (line 87) documented four phantom call forms with no
-// matching compiler arm: `line(start, end)`, `arc(center, radius,
-// start_angle, end_angle)` [4-arg], `circle(center, radius)` [2-arg], and
-// `polygon(points)`/`polygon(vertices)` [1-arg collection]. All four are now
-// corrected to their authoritative flat-coordinate forms below.
-//
-// (`line` was never a registered builtin at all — absent from
-// GEOMETRY_FUNCTION_NAMES and reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS —
-// so pre-fix it silently "compiled" via expr.rs's permissive
-// unresolved-function fallback (types an >= 1-arg call from its first
-// argument's result_type, no diagnostic) rather than erroring; arc/circle/
-// polygon are registered builtins and pre-fix failed their own
-// arg-count-exact / coordinate-pair checks. See this task's escalation
-// resolution for the verification detail. The phantom `circle(center,
-// radius)` prelude form is simply removed, not replaced — there is only
-// ever the one 1-arg `circle(radius)`, already pinned by
-// `circle_profile_compiles` above.)
-
-#[test]
-fn line_segment_compiles() {
-    // geometry.md line 59 documents the 6-arg
-    // `line_segment(x1, y1, z1, x2, y2, z2)` form (geometry_curve.rs:22).
-    assert_compiles(
-        "line_segment",
-        "line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)",
-    );
-}
-
-#[test]
-fn arc_compiles() {
-    // geometry.md line 60 documents the 9-arg
-    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` form
-    // (geometry_curve.rs:47): center + radius + angle range + axis direction.
-    assert_compiles(
-        "arc",
-        "arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0mm, 0mm, 1mm)",
-    );
-}
-
-#[test]
-fn polygon_compiles() {
-    // geometry.md line 61 (prelude block) and line 87 (2D-profiles block)
-    // document the variadic flat coordinate-pairs form
-    // `polygon(x1, y1, x2, y2, ...)` (>= 6 args, even count; geometry.rs:1570).
-    assert_compiles("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)");
-}
-
-// --- GD&T tolerance zones (geometry.md "GD&T Tolerance Zones" block) ---
-//
-// Four zone constructors that produce a tolerance-zone Solid rather than a
-// primitive. Their arities are checked by the compiler, but their argument
-// DIMENSIONS and ORDER are not — so each form below is a transcription of an
-// already-compiling call site (`examples/tolerancing/gdt_zones.ri`,
-// `crates/reify-eval/tests/zone_constructors_e2e.rs`,
-// `crates/reify-compiler/tests/harness_physical_modeling/zone_slab_compile_tests.rs`),
-// concretized to literals, rather than a signature read off the arm alone.
-
-#[test]
-fn zone_slab_compiles() {
-    // geometry.md's "GD&T Tolerance Zones" block documents the 2-arg
-    // `zone_slab(face, width)` form. Routed as a Modify extension
-    // (geometry.rs:2622 → geometry_modify.rs:86,
-    // `compile_modify_2arg(ModifyKind::ZoneSlab, "width")`), so arg 0 is a
-    // geometry TARGET — a face/profile, not a solid — offset ±width/2 and
-    // capped into a slab. Grounding site: zone_slab_compile_tests.rs's
-    // `zone_slab_lowers_to_modify_zone_slab`.
-    assert_compiles("zone_slab", "zone_slab(rectangle(40mm, 20mm), 2mm)");
-}
-
-#[test]
-fn zone_cylinder_compiles() {
-    // geometry.md documents the exactly-2-arg `zone_cylinder(axis, width)`
-    // form (geometry.rs:2241). Arg 0 is an axis WIRE (its own length sets the
-    // cylinder extent — there is deliberately no length argument); `width` is
-    // the Ø-zone DIAMETER, lowered to Sweep{Pipe} with radius = width * 0.5.
-    // Grounding site: examples/tolerancing/gdt_zones.ri's `cyl_zone` cell.
-    assert_compiles(
-        "zone_cylinder",
-        "zone_cylinder(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 8mm)",
-    );
-}
-
-#[test]
-fn zone_annulus_compiles() {
-    // geometry.md documents the exactly-4-arg
-    // `zone_annulus(axis, nominal_radius, width, length)` form
-    // (geometry.rs:2288) — Difference(Pipe(axis, R + w/2), Pipe(axis, R − w/2)).
-    // Arg 3 `length` is accepted and validated, but the swept extent still
-    // comes from the axis wire (ratified L2 esc-4476-88 Option A), so the
-    // 4-arg spelling must be pinned even though the argument is unused.
-    // Grounding site: examples/tolerancing/gdt_zones.ri's `ann_zone` cell.
-    assert_compiles(
-        "zone_annulus",
-        "zone_annulus(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 20mm, 4mm, 20mm)",
-    );
-}
-
-#[test]
-fn zone_profile_compiles() {
-    // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
-    // form (geometry.rs:2355) — Difference(OffsetSolid(solid, +w/2),
-    // OffsetSolid(solid, −w/2)). Arg 0 is a SOLID here (unlike
-    // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri's
-    // `prof_zone` cell.
-    assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
-}
-
-// --- Free-form & implicit surfaces (geometry.md block of that name) ---
-
-#[test]
-fn nurbs_surface_compiles() {
-    // geometry.md's "Free-form & Implicit Surfaces" block documents the
-    // exactly-6-arg `nurbs_surface(control_points, weights, u_knots, v_knots,
-    // u_degree, v_degree)` form (geometry.rs:2639, `SurfaceKind::Nurbs`).
-    //
-    // The NESTING is the part arity cannot pin, and it differs per argument:
-    // control_points is a nested (u-major × v) grid of point3(...), weights a
-    // matching nested grid of reals, but u_knots/v_knots are FLAT clamped knot
-    // vectors and the degrees are bare integers. Transcribed from the
-    // already-evaluating bilinear patch at
-    // crates/reify-eval/tests/nurbs_surface_e2e.rs's `NURBS_SURFACE_BBOX_SOURCE`.
-    assert_compiles(
-        "nurbs_surface",
-        "nurbs_surface(\
-         [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]], \
-         [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)",
-    );
-}
-
-#[test]
-fn isosurface_bare_compiles() {
-    // geometry.md documents the 1-arg `isosurface(grid)` form
-    // (geometry.rs:2670, `check_arg_count_at_least(..., 1)`). The grid operand
-    // is resolved via geom_ref(0); a BRep/Mesh operand is voxelized first.
-    // Grounding site: examples/multi_kernel/voxel_to_mesh.ri's `shell` cell.
-    assert_compiles("isosurface_bare", "isosurface(box(10mm, 10mm, 10mm))");
-}
-
-#[test]
-fn isosurface_with_named_options_compiles() {
-    // geometry.md documents the labelled 3-arg form
-    // `isosurface(grid, iso: level, adaptive: flag)`, and 3 as the maximum
-    // arity (geometry.rs:2680 errors above 3). This test pins that the
-    // labelled spelling COMPILES and that 3 args are accepted — NOT that the
-    // labels are enforced. They are not: like every geometry constructor the
-    // arm binds positionally (2nd arg -> `iso`, 3rd -> `adaptive`), so
-    // `iso:` / `adaptive:` are the recommended spelling for the slot rather
-    // than a checked name. Their absence in the bare form above defers to the
-    // eval-lowering defaults (iso_level = 0.0, adaptive = false) rather than
-    // being defaulted at compile time.
-    // Grounding site: geometry.rs's unit test
-    // `compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive`.
-    // No worked example anywhere passes `adaptive:` —
-    // examples/multi_kernel/voxel_to_mesh_iso.ri grounds the 2-arg `iso:`
-    // spelling only — so that unit test is the 3-arg form's only grounding site.
-    assert_compiles(
-        "isosurface_with_named_options",
-        "isosurface(box(10mm, 10mm, 10mm), iso: 3mm, adaptive: true)",
-    );
-}
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
 //
@@ -1104,12 +730,11 @@ fn geometry_reify_fences_call_every_worked_example_form() {
 ///
 /// NOT AN AST WALK — yet. `doc_forms::call_forms` (`pub(crate)`) already extracts
 /// `(name, arity)` from the real parser, which would close this hole for free AND
-/// handle nesting exactly; swapping this scan onto it belongs to the reconciled
-/// `chunk_io` extraction (task #5924 §B), not to this file. Copying its ~120-line
-/// exhaustive `ExprKind` match here instead would make this binary's FOURTH
-/// near-identical scanner (see "Known duplication" above), which is the opposite
-/// of what ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` exists to fix. Until then this
-/// stripper plus the unit tests at the bottom of this file are the guard.
+/// handle nesting exactly; swapping this scan onto it is task #8036, which first
+/// extends that walk to `constraint` members. Copying its ~120-line exhaustive
+/// `ExprKind` match here instead would add a second call extractor to this
+/// binary. Until then this stripper plus the unit tests at the bottom of this
+/// file are the guard.
 ///
 /// Handles both comment forms the grammar defines (`tree-sitter-reify/grammar.js`
 /// `line_comment` / `block_comment`) and does not strip inside a double-quoted
@@ -1593,10 +1218,9 @@ pub(crate) fn catalogue_table_rows(section: &str) -> Vec<Vec<String>> {
 ///
 /// It exists because the flatten was an eleven-line verbatim copy in each of
 /// those two callers — the same kind of near-duplicate
-/// [`assert_cited_paths_resolve`] was extracted to stop growing
-/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924). A dedup rule that lives in
-/// one place is also the only way the two scans can be said to compare against
-/// the same set.
+/// [`assert_cited_paths_resolve`] was extracted to stop growing. A dedup rule
+/// that lives in one place is also the only way the two scans can be said to
+/// compare against the same set.
 pub(crate) fn catalogue_table_names(rows: &[Vec<String>]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for name in rows.iter().flatten() {
