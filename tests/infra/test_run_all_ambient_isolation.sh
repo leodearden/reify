@@ -134,7 +134,7 @@ kv_key_member() {
 }
 
 # ---------------------------------------------------------------------------
-# Derivation (source 1 of 2): the run_all.sh plan line's prefix env.
+# Derivation (source 1 of 3): the run_all.sh plan line's prefix env.
 #
 # Direct-REPO_ROOT `verify.sh ... --print-plan` capture (no git fixture) --
 # mirrors tests/infra/test_verify_gate_exclude_heavy.sh:63-64. --print-plan is
@@ -147,7 +147,7 @@ kv_key_member() {
 # it here is belt-and-braces.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (1/2): run_all.sh plan-line prefix env (scripts/verify.sh --print-plan) ---"
+echo "--- Derivation (1/3): run_all.sh plan-line prefix env (scripts/verify.sh --print-plan) ---"
 
 PLAN_DUMP=""
 capture_print_plan PLAN_DUMP 3 \
@@ -196,7 +196,7 @@ while IFS= read -r _kv; do
 done <<< "$PLAN_LINE_KV"
 
 # ---------------------------------------------------------------------------
-# Derivation (source 2 of 2): dark-factory-orchestrator.yaml's verify_env block.
+# Derivation (source 2 of 3): dark-factory-orchestrator.yaml's verify_env block.
 #
 # verify_env_exports is mirrored VERBATIM (reuse-note, not extracted to a
 # shared lib) from tests/infra/test_verify_env_ambient_isolation.sh:59-85
@@ -205,7 +205,7 @@ done <<< "$PLAN_LINE_KV"
 # the awk logic ever changes.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (2/2): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"
+echo "--- Derivation (2/3): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"
 
 verify_env_exports() {
     local yaml_file="$1"
@@ -259,12 +259,45 @@ while IFS= read -r _kv; do
 done <<< "$VERIFY_ENV_KV"
 
 # ---------------------------------------------------------------------------
-# LIVE_KEYS: sort-unique union of both injection sources. LIVE_KV mirrors the
-# union at the KEY=VALUE level so the hostile-ambient loop below can look up
-# a live value for a verify_env-only ledger var, not just a plan-line one.
+# Derivation (source 3 of 3): what run_all.sh itself -- and every lib it
+# sources, transitively -- injects into a pool member it spawns (task 7234).
+# OBSERVED, not grepped: run_all_injected_env_keys (run_all_ambient_isolation_lib.sh)
+# spawns the real run_all.sh against a one-member fixture and diffs that
+# member's env keys against a direct spawn of the same member.
+#
+# The runner path is passed as a LITERAL argument, never through a bind line:
+# test_slot_timeout_marker.sh Section F reads a variable bound to run_all.sh
+# and handed to this lib's forwarding function as a derivation EDGE, which
+# would re-route this member off its pinned via:test_run_all.sh (FC6a).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Derivation (3/3): what run_all.sh itself (and every lib it sources) injects into a spawned pool member ---"
+
+PROBE_KEYS=""
+_probe_rc=0
+PROBE_KEYS="$(run_all_injected_env_keys "$SCRIPT_DIR/run_all.sh")" || _probe_rc=$?
+
+assert "run_all.sh member-env probe ran (non-vacuity) [rc=$_probe_rc]" \
+    test "$_probe_rc" -eq 0
+
+assert "run_all.sh member-env probe contains DF_VERIFY_ROLE (probe sanity: run_all.sh's own pool role normalization)" \
+    plan_match "$PROBE_KEYS" '^DF_VERIFY_ROLE$'
+
+echo "run_all.sh injects: ${PROBE_KEYS//$'\n'/ }"
+
+# $(...) strips the trailing newline: re-terminate a non-empty result so it
+# concatenates line-wise like the other *_KEYS below.
+[ -z "$PROBE_KEYS" ] || PROBE_KEYS+=$'\n'
+
+# ---------------------------------------------------------------------------
+# LIVE_KEYS: sort-unique union of all three injection sources. LIVE_KV mirrors
+# the union of the two greppable sources at the KEY=VALUE level so the
+# hostile-ambient loop below can look up a live value for a verify_env-only
+# ledger var, not just a plan-line one. The probe yields keys only, and no
+# HOSTILE_LOOP_KEYS entry is probe-only, so LIVE_KV needs nothing from it.
 # ---------------------------------------------------------------------------
 LIVE_KV="${PLAN_LINE_KV}${VERIFY_ENV_KV}"
-LIVE_KEYS="$(sort -u <<< "${PLAN_LINE_KEYS}${VERIFY_ENV_KEYS}")"
+LIVE_KEYS="$(sort -u <<< "${PLAN_LINE_KEYS}${VERIFY_ENV_KEYS}${PROBE_KEYS}")"
 
 # ---------------------------------------------------------------------------
 # Ledger: tests/infra/run-all-ambient-vars.manifest (keys only, one per
@@ -286,11 +319,11 @@ assert "run-all-ambient-vars.manifest declares at least one var" \
     test -n "$MANIFEST_KEYS"
 
 # Full set-equality guard (upgraded from the step-1 plan-line-only subset
-# guard, task 5152): every LIVE var (plan-line UNION verify_env) must be
+# guard, task 5152): every LIVE var (the union of all three sources) must be
 # declared in the ledger, AND every ledger var must still be part of the
 # LIVE set -- together these two directions are full set equality, so a var
-# newly injected by either source without a matching ledger entry, or a
-# stale ledger entry for a var no longer injected by either source, fails
+# newly injected by any source without a matching ledger entry, or a
+# stale ledger entry for a var no longer injected by any source, fails
 # this guard by construction (task 5152 design decision: equality, not mere
 # subset).
 while IFS= read -r _live_key; do
