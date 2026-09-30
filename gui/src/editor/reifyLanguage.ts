@@ -82,14 +82,8 @@ export const KEYWORD_LED_BODIES = [
  * arm (`= expression`, grammar.js:239-246) needs.
  */
 function foldBody(node: SyntaxNode): { from: number; to: number } | null {
-  // A COMBINED OPENER IS STILL A BODY BRACE. `ImportItems` opens with the named
-  // token `ImportItemsOpen` (`.{`) rather than a bare `{`, because the dot had
-  // to be folded into one token to keep lezer-generator conflict-free — see the
-  // ImportDeclaration comment in reify.grammar. Without this `??` arm the lookup
-  // misses, this function returns null for every destructured import, and
-  // `ImportItems`' membership in BRACE_FIRST_BODIES below becomes a claim the
-  // code does not honour. Note `open.to` is used for the range start, so the
-  // two-character opener needs no offset arithmetic here.
+  // `ImportItems` opens with `ImportItemsOpen` (`.{`), not a bare `{`; see the
+  // ImportDeclaration comment in reify.grammar.
   const open = node.getChild('{') ?? node.getChild('ImportItemsOpen');
   const close = node.lastChild;
   if (!open || !close || close.name !== '}' || open.to >= close.from) return null;

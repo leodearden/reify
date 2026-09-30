@@ -199,46 +199,20 @@ ModulePath {
 // Mirrors tree-sitter-reify/grammar.js's `import_declaration` rule. The
 // `String` alternative is retained for the legacy `import "foo.ri"` form.
 //
-// SETTLED by #5931 — the destructured form's separator is a DOT:
-// `import a.b.{C, D}`, per docs/reify-language-spec.md §15 "Grammar Summary"
-// (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`). The
-// tree-sitter RULE, which this port previously followed, sequenced path and
-// items with NO separator; that rule was the transcription slip and has been
-// corrected to match the spec. The doc comment on grammar.js's
-// `import_declaration` rule and the lowering at
-// crates/reify-syntax/src/ts_parser.rs were right all along.
+// The destructured form is DOTTED, `import a.b.{C, D}`, per the `import_path`
+// production in docs/reify-language-spec.md §15 "Grammar Summary" (#5931).
 //
-// DELIBERATE DIVERGENCE from the otherwise-faithful port — read this before
-// "fixing" it. The dot is folded into `ImportItems` as ONE token, the named
-// `ImportItemsOpen` (`@tokens`), rather than written as
-// `ModulePath ("." ImportItems | ...)` in ImportDeclaration. The faithful
-// transcription does NOT work here: it fails lezer-generator with a
+// DELIBERATE DIVERGENCE from grammar.js. The dot is folded into the opener
+// token `ImportItemsOpen` (`.{`) instead of being written
+// `ModulePath ("." ImportItems | ...)`, because that faithful spelling is a
 // shift/reduce conflict between `("." Identifier)+` and
-// `ModulePath -> Identifier`, exactly as tree-sitter reported, but Lezer has no
-// `conflicts` escape hatch (tree-sitter resolves it with a `[$.import_path]`
-// entry). `~ambig` markers on ModulePath and its ImportDeclaration reference
-// were also tried and also fail. Folding the dot into one token moves the
-// decision into the LEXER, so no LR conflict arises.
-//
-// THE TOKEN IS NAMED, AND THAT IS NOT COSMETIC. Written inline as an anonymous
-// `".{"` literal — as this port first had it — the opener is consumed by the
-// lexer and produces NO NODE AT ALL. Measured on the parser generated from that
-// spelling, `ImportItems`' children for `import std.mech.{Bolt, Nut}` were
-// `Identifier`, `,`, `Identifier`, `}`. Both editor affordances died with the
-// node: `foldBody` (reifyLanguage.ts) looks the opener up by name and so
-// returned null for every destructured import, and `highlight.ts`'s
-// `"{ }": t.brace` rule names a `{` node this production does not have, so the
-// opener rendered unstyled against a styled closer. Naming the token puts it
-// back in the tree, where a fold, a style rule and bracket matching can all
-// reach it. Pinned behaviourally by `reifyGrammarCorpus.test.ts` — the
-// structural "the prop is defined" guard could not see either failure.
-//
-// The cost, which is real, intended, and now the ONLY one: this grammar rejects
-// whitespace between the `.` and the `{` (`import a . { B }`), where
-// tree-sitter accepts it as two separate anonymous tokens. That narrowing is
-// harmless for a highlighting grammar — the canonical spelling has no interior
-// space, and no committed `.ri` uses a braced import at all — but it is a
-// genuine divergence, not accidental drift.
+// `ModulePath -> Identifier`, and Lezer has no `conflicts` hatch to resolve it
+// the way grammar.js's `[$.import_path]` entry does; one token moves the
+// decision into the lexer. The token is NAMED, not an inline `".{"` literal,
+// because an anonymous literal produces no tree node, and the fold
+// (reifyLanguage.ts), the brace style (highlight.ts) and bracket matching all
+// need one. The cost: whitespace between the `.` and the `{`
+// (`import a . { B }`), which tree-sitter accepts, is rejected here.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
@@ -2181,16 +2155,7 @@ ReservedWord {
   // an error node — the same trap `->`/`::` fell into above.
   @precedence { "..<", "..", "." }
 
-  // The destructured import's opener — the `.{` of `import a.b.{C, D}` (#5931).
-  // NAMED rather than written inline as `".{"` in the production, because an
-  // anonymous inline literal is consumed by the lexer without producing a tree
-  // node, and a node that does not exist cannot be folded, styled or matched as
-  // a bracket. See the ImportDeclaration comment for why the dot is folded into
-  // the token at all.
-  //
-  // No `@precedence` entry is needed against the `.` token below: verified,
-  // lezer-generator reports no "Overlapping tokens … used in same context"
-  // failure for this pair.
+  // The destructured import's opener; see the ImportDeclaration comment.
   ImportItemsOpen { ".{" }
 
   // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere

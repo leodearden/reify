@@ -354,16 +354,10 @@ describe('reify.grammar snippets — module and import', () => {
   });
 
   /**
-   * The destructured import form is SETTLED: the canonical spelling is the
-   * DOTTED `import a.b.{C, D}`, per docs/reify-language-spec.md §15 "Grammar
-   * Summary" (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`),
-   * resolved by #5931. The tree-sitter rule, which previously sequenced path
-   * and items with no separator, was the transcription slip and has been
-   * corrected to match; the two doc comments were right all along.
-   *
-   * That is a normative claim, so it is pinned by assertion rather than left in
-   * a comment — per docs/legibility/design-invariants.md, as with the `module`
-   * placement rule below.
+   * The destructured import is DOTTED, `import a.b.{C, D}`, per
+   * docs/reify-language-spec.md §15's `import_path` (#5931) — a normative
+   * claim, so pinned by assertion per docs/legibility/design-invariants.md.
+   * See the ImportDeclaration comment in reify.grammar.
    */
   it('parses the canonical destructured import `import std.mech.{Bolt, Nut}`', () => {
     expect(countErrorNodes('import std.mech.{Bolt, Nut}')).toBe(0);
@@ -378,46 +372,20 @@ describe('reify.grammar snippets — module and import', () => {
   });
 
   /**
-   * THE ONE DELIBERATE DIVERGENCE from the authoritative tree-sitter grammar,
-   * pinned by assertion because it is a normative claim about the surface
-   * syntax this port accepts — per docs/legibility/design-invariants.md, as
-   * with the `module` placement rule below.
-   *
-   * The `.` and the `{` are folded into ONE token here (`ImportItemsOpen`),
-   * because lezer-generator has no `conflicts` escape hatch for the
-   * shift/reduce conflict the faithful transcription raises — see the
-   * ImportDeclaration comment in reify.grammar for the full argument. The price
-   * is a NARROWING: interior whitespace between the two, which tree-sitter
-   * accepts as two separate anonymous tokens, is rejected here. That is
-   * harmless for a highlighting grammar (the canonical spelling has no interior
-   * space) but it is a real divergence, and prose alone would let it flip
-   * silently the moment `ImportItemsOpen` were unfolded back into `"." "{"`.
-   *
-   * The other side of the same divergence is pinned from the authoritative side
-   * by `interior_whitespace_before_the_brace_list_is_accepted` in
+   * This port's one deliberate divergence from tree-sitter, explained at the
+   * ImportDeclaration comment in reify.grammar. The accepting half is pinned by
+   * `interior_whitespace_before_the_brace_list_is_accepted` in
    * tree-sitter-reify/tests/import_items_grammar_tests.rs.
    */
   it('rejects interior whitespace in the opener `import a . { B }`', () => {
-    // Measured: 2 error nodes.
     expect(countErrorNodes('import a . { B }')).toBeGreaterThan(0);
   });
 
   /**
-   * DELIBERATE LATITUDE, pinned so it stays a decision rather than becoming the
-   * next unnoticed slip. §15's EBNF requires at least one IDENT and no trailing
-   * comma (`'{' IDENT (',' IDENT)* '}'`), but BOTH grammars are more permissive
-   * than that: `commaSep` in grammar.js and the `(Identifier ("," Identifier)*
-   * ","?)?` body here admit the empty list and a trailing comma alike.
-   *
-   * That latitude is kept, for two reasons. A trailing comma is admitted
-   * uniformly by every comma-separated list in both grammars (enum variants,
-   * meta entries, match arms, set/map literals); rejecting it only for imports
-   * would be a local inconsistency with no reader benefit. And an empty list is
-   * a transient state while typing `.{}` before filling it in — an editor
-   * grammar that error-tolerates it keeps highlighting the rest of the buffer,
-   * whereas a diagnostic for a vacuous import belongs to the semantic layer,
-   * not the parser. The authoritative side is pinned identically by
-   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude`.
+   * Deliberate latitude beyond §15's EBNF, kept for the reasons recorded at
+   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs, which pins the
+   * authoritative side identically.
    */
   it('accepts the empty and trailing-comma item lists §15 does not describe', () => {
     expect(countErrorNodes('import a.{}')).toBe(0);
@@ -4346,13 +4314,8 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
 /**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
- * source text of every span that received the class `cls`.
- *
- * A styleTags selector names a NODE. So this helper answers, indirectly, a
- * question no other assertion in this file asks: does the token actually exist
- * in the tree? An anonymous inline literal is consumed by the lexer and
- * produces no node, and a node that does not exist cannot be selected, cannot
- * be styled, and cannot be found by CodeMirror's bracket matching either.
+ * source text of every span that received the class `cls`. A styleTags
+ * selector names a NODE, so a token with no node in the tree yields no span.
  */
 function spansWithClass(src: string, cls: string): string[] {
   const tree = reifyLRLanguage.parser.parse(src);
@@ -4534,37 +4497,15 @@ describe('reifyLanguage — fold and indent coverage', () => {
   }
 
   /**
-   * Every capitalised production in reify.grammar whose own body opens with a
-   * brace. Scans line by line, tracking the most recent production header, and
-   * stops at `@tokens` — inside that block `"{"` is a token declaration, not a
-   * body.
+   * Every capitalised production in reify.grammar whose own body contains a
+   * brace opener, tracking the most recent production header line by line.
    *
-   * TWO SPELLINGS COUNT AS AN OPENER, and they are not equally good:
-   *
-   *   `"{"`   the common one, an anonymous inline literal — and the only
-   *           anonymous spelling that works, because a `{` that is a token in
-   *           its own right still surfaces as a node.
-   *   a reference to a NAMED token from `braceOpenerTokens` above — today
-   *           `ImportItemsOpen` (`".{"`), which is what `ImportItems` uses for
-   *           the canonical destructured import `import a.b.{C, D}` (#5931),
-   *           where the dot had to be folded into the opener token to keep
-   *           lezer-generator conflict-free (see the ImportDeclaration comment
-   *           in reify.grammar).
-   *
-   * A COMBINED ANONYMOUS literal — `".{"` written inline in the body, which is
-   * how `ImportItems` was first ported — is deliberately NOT a third spelling
-   * this extractor accepts. The lexer consumes it and emits NO NODE, so the
-   * production has no opener the fold or a styleTags selector can reach; an
-   * extractor arm for it would have kept this ledger green for a body whose
-   * affordances were dead, which is the exact blindness the ledger exists to
-   * remove. Reintroducing that spelling is caught loudly instead, by
-   * `admits no production that opens with an anonymous combined brace literal`
-   * below.
-   *
-   * Either named or bare, the production is a brace-delimited body and still
-   * needs its fold and indent entries, so the extraction must not miss it
-   * merely because the opener is not spelled as a plain `"{"` literal on the
-   * body line.
+   * Two spellings count as an opener: the anonymous literal `"{"`, and a
+   * reference to a NAMED opener token from `braceOpenerTokens` (today
+   * `ImportItemsOpen`). A combined anonymous literal such as an inline `".{"`
+   * deliberately does not — it produces no node to fold — and is rejected
+   * outright by `admits no production that opens with an anonymous combined
+   * brace literal` below rather than silently skipped here.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
     const openers = braceOpenerTokens(grammarSrc);
@@ -4615,17 +4556,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
   });
 
   /**
-   * The ledger recognises exactly two opener spellings, and the omission of a
-   * third — a COMBINED anonymous literal such as `".{"` written inline in a
-   * production body — is a decision, not an oversight, so it is asserted
-   * rather than left to the extractor to swallow.
-   *
-   * `ImportItems` was ported that way once (#5931) and the result was a body
-   * with no opener node at all: the fold returned null for every destructured
-   * import and the opener rendered unstyled, while every structural assertion
-   * in this file stayed green. An opener that is more than a bare brace must
-   * therefore be a NAMED token — the only spelling that survives into the tree,
-   * where a fold, a style rule and bracket matching can all reach it.
+   * The ledger's omission of a third opener spelling — a combined anonymous
+   * literal such as an inline `".{"` — is a decision, so it is asserted rather
+   * than left to the extractor to swallow. Such a literal produces no node;
+   * see the ImportDeclaration comment in reify.grammar.
    */
   it('admits no production that opens with an anonymous combined brace literal', () => {
     const grammarSrc = readFixture('gui/src/editor/reify.grammar');
@@ -4746,22 +4680,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 
     /**
      * The spellings that count as a brace OPENER at the head of an arm: the
-     * anonymous literal `"{"`, plus every NAMED single-literal brace token —
-     * today just `ImportItemsOpen { ".{" }`, which is how `ImportItems` opens
-     * since #5931 folded the destructured import's `.` into its opener.
-     *
-     * Derived from `braceOpenerTokens` — the SAME definition
-     * `braceDelimitedNodeTypes` uses to decide LIST MEMBERSHIP — so the two
-     * halves of this ledger read "what counts as an opener" from one source
-     * instead of two spellings that can drift apart. They did drift once: #5931
-     * taught the membership half about named openers and left this positional
-     * half literal-only, so `ImportItems` was extracted as a brace-delimited
-     * body, correctly filed in BRACE_FIRST_BODIES, and then failed HERE for
-     * having "no \"{\" token at all".
+     * anonymous literal `"{"`, plus every named opener token from
+     * `braceOpenerTokens` — the same definition `braceDelimitedNodeTypes` uses
+     * for list membership, so the two halves of this ledger cannot disagree on
+     * what an opener is.
      *
      * The sibling KEYWORD_LED_BODIES assertion below stays literal-only: no
-     * keyword-led body opens an arm with a named token today, so widening it
-     * would tighten a currently-green guard for no live case.
+     * keyword-led body opens an arm with a named token.
      */
     const armOpeners = ['"{"', ...braceOpenerTokens(grammarSrc)];
     /** `opener` appears ANYWHERE in `arm` — the "has a brace at all" reading. */
@@ -4878,13 +4803,9 @@ describe('reifyLanguage — fold and indent coverage', () => {
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    // `import a.b.{C, D}` — the canonical DOTTED form settled by #5931 against
-    // docs/reify-language-spec.md §15's `import_path`. The `.` is part of the
-    // opener: `ImportItems` starts at the named `ImportItemsOpen` (`".{"`)
-    // token, so `ownBraceInterior`'s literal-`{` scan lands one past the dot —
-    // the same `from` the fold assertion for this node expects. The SPACED
-    // form this fixture used to hold is now a parse error (asserted upstream
-    // in this file), which is why it cannot stay.
+    // The `.` is part of the opener token `ImportItemsOpen` (`.{`), so
+    // `ownBraceInterior`'s literal-`{` scan lands one past the dot — the same
+    // `from` the fold assertion for this node expects.
     ImportItems: 'import std.mech.{Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
     KeyedMemberBlock:
@@ -5048,28 +4969,11 @@ describe('reifyLanguage — fold and indent coverage', () => {
   });
 
   /**
-   * The two assertions below pin the editor affordances of the destructured
-   * import `import a.b.{C, D}` — the very form #5931 made canonical — against
-   * the way its opener is spelled in the grammar.
-   *
-   * WHY CI COULD NOT CATCH THIS, which is the durable lesson. The neighbouring
-   * guard `resolves fold and indent props on %s` is STRUCTURAL: it asserts only
-   * that `nodeType.prop(foldNodeProp)` IS DEFINED. A prop that resolves and
-   * then returns `null` on every input sails straight through it, and that is
-   * exactly what an `ImportItems` whose opener is an anonymous `".{"` literal
-   * does — `foldBody` looks up `node.getChild('{')`, an anonymous inline
-   * literal produces NO node at all, so the lookup misses and the fold is dead
-   * while the prop stays defined. MEASURED on the parser generated from that
-   * spelling: `ImportItems` children were `Identifier`, `,`, `Identifier`, `}`
-   * — no opener node — and the fold prop returned `null`. The assertions here
-   * are BEHAVIOURAL where that one is structural: they call the fold function
-   * and read the range, and they drive the real highlighter and read the spans.
-   *
-   * The same absent node has two further consequences that need no separate
-   * assertion once these pass, because they share the one root cause: the `}`
-   * has no reachable opener for CodeMirror's bracket matching, and
-   * `delimitedIndent`'s `align` path keys off `Identifier` instead of the
-   * brace.
+   * Behavioural pins for the destructured import's opener: they call the fold
+   * and read its range, and drive the real highlighter and read its spans. The
+   * structural `resolves fold and indent props on %s` guard only checks that
+   * the prop is DEFINED, so it cannot see a fold that returns null because the
+   * opener has no node — see the ImportDeclaration comment in reify.grammar.
    */
   it('folds the canonical destructured import to exactly its item list', () => {
     const src = 'import std.mech.{Bolt, Nut}';
@@ -5096,10 +5000,6 @@ describe('reifyLanguage — fold and indent coverage', () => {
     // Sanity: the closer has always been styled, so a helper that collected
     // nothing at all cannot make the real assertion pass vacuously.
     expect(spans).toContain('}');
-    // MEASURED with an anonymous opener: the spans were `Foo` and `}` only,
-    // against `structure def F { }` → `{` and `}`. A destructured import that
-    // renders with an unstyled opener and a styled closer is asymmetric, in a
-    // grammar whose entire job is styling.
     expect(spans).toContain('.{');
   });
 });
