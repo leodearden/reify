@@ -1822,6 +1822,80 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // PPRDSTATUS (task #6932) — PRD status-prose drift
+    // -------------------------------------------------------------------
+
+    /// Accepted alone, and as a NON-LEADING member of a comma-separated union.
+    #[test]
+    fn parse_args_accepts_pprdstatus_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PPRDSTATUS".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PPRDSTATUS must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some(pattern_flag::PPRDSTATUS));
+
+        let args = parse_args(&["--pattern".to_string(), "P1,PPRDSTATUS".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,PPRDSTATUS must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some("P1,PPRDSTATUS"));
+        assert!(
+            selects(pattern_flag::PPRDSTATUS, Some("P1,PPRDSTATUS")),
+            "P1,PPRDSTATUS must enable PPRDSTATUS"
+        );
+    }
+
+    #[test]
+    fn parse_args_unknown_pattern_lists_pprdstatus() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PPRDSTATUS"),
+            "error must list PPRDSTATUS as a valid pattern; got: {err}"
+        );
+    }
+
+    #[test]
+    fn usage_text_lists_pprdstatus() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PPRDSTATUS"),
+            "--help must list PPRDSTATUS on the --pattern line; got:\n{usage}"
+        );
+    }
+
+    /// PPRDSTATUS is OPT-IN: its High findings track a standing backlog of
+    /// PRD prose, and the exit code is the High-severity count, so joining the
+    /// default sweep would turn every bare `reify-audit` invocation non-zero.
+    #[test]
+    fn pprdstatus_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PPRDSTATUS, None),
+            "PPRDSTATUS must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PPRDSTATUS, Some("PPRDSTATUS")),
+            "PPRDSTATUS must activate when --pattern PPRDSTATUS is given"
+        );
+        assert!(
+            !selects(pattern_flag::PPRDSTATUS, Some("P2")),
+            "PPRDSTATUS must be excluded when a named non-PPRDSTATUS pattern is given"
+        );
+    }
+
+    /// PPRDSTATUS reads the loaded task corpus, `ls_files` and the working
+    /// tree — never the jcodemunch serve.
+    #[test]
+    fn needs_jcodemunch_pprdstatus_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PPRDSTATUS"))),
+            "PPRDSTATUS must not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PPRDSTATUS"))),
+            "a PPRDSTATUS-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // --print-repo-id (task #6459)
     // -------------------------------------------------------------------
 
