@@ -1,6 +1,8 @@
 //! How a chunk's markdown divides into fenced code blocks, and the sections
 //! those fences cannot end.
 
+use std::collections::HashSet;
+
 /// One fenced code block, as [`parse_fences`] reads it. An immutable parse
 /// record: every field is read directly.
 #[derive(Debug, Clone)]
@@ -235,102 +237,50 @@ pub(crate) fn tagged_fence_bodies(markdown: &str, tag: &str, chunk_path: &str) -
         .collect()
 }
 
-/// Length of the leading run of backticks on `line`, counted from COLUMN 0.
-///
-/// Zero for an indented fence, deliberately: `tagged_fence_bodies` below matches
-/// its delimiters at column 0 too, so an indented fence must be invisible to
-/// both scanners rather than to only one of them.
-fn leading_backtick_run(line: &str) -> usize {
-    line.chars().take_while(|&c| c == '`').count()
-}
-
-/// The body of the section opened by `opener`, from the opener line to the next
-/// `## ` heading (exclusive). `### ` subsections stay inside.
+/// The body of the section opened by `opener`, from the line after the opener
+/// to the next `## ` heading (exclusive). `### ` subsections stay inside.
 ///
 /// `opener` is a byte-exact whole trimmed line: either an HTML-comment marker
 /// (`<!-- ORACLE-SECTION -->`) or a heading line such as `## Option Type`.
 ///
-/// FENCE-AWARE: a `## ` line inside a ``` ``` ``` code fence is content, not a
-/// section boundary. Without this the scan would truncate the section at the
-/// first fenced comment line that happens to start with `## ` — the oracle
-/// section's own ```` ```reify ```` fences are exactly where such a line would
-/// appear, so the fragility is live, not theoretical.
+/// FENCE-AWARE through [`parse_fences`], tilde fences included: neither the
+/// opener nor a `## ` section end is ever matched on a line inside a fence
+/// (delimiters included), so a fenced comment such as `// ## note` can neither
+/// open nor truncate a section. Inside the section every line, fenced or not,
+/// is kept verbatim.
 ///
-/// FENCES ARE PAIRED BY DELIMITER RUN LENGTH, not toggled. A toggle flips on
-/// every column-0 ```-prefixed line, so a 4-backtick fence that DISPLAYS a
-/// 3-backtick one — a routine shape in docs about markdown — inverts the state
-/// for the rest of the document and makes the marker line unreachable. The
-/// visible symptom would be the anti-vacuity panic below blaming a marker that
-/// is present and untouched, which sends the reader to the wrong line entirely.
-/// CommonMark's rule is used: a fence opened by a run of N closes on a line that
-/// is a bare run of at least N and nothing else.
-///
-/// PANICS in two cases, each naming ITS OWN cause: an unterminated fence (which
-/// swallows the rest of the chunk, so it is reported before the marker is
-/// blamed), and an absent marker — the anti-vacuity guard, and the failure a
-/// reader of a gutted section should see, rather than an empty slice that makes
-/// every downstream assertion pass trivially.
-/// `chunk_path` and `section_title` are THREADED rather than read off this
-/// module's consts, for the same reason [`assert_module_compiles`] threads its
-/// path (task 5759): this helper now scopes more than one marked section — the
-/// oracle section AND the length-arguments section — and a sibling chunk module
-/// may scope its own. A hardcoded `ORACLE_SECTION_TITLE` would make a
-/// length-section failure panic about interference queries.
+/// PANICS in two cases, each naming ITS OWN cause: a chunk [`parse_fences`]
+/// rejects — an unterminated fence, or a tagged delimiter inside an open one —
+/// which is reported before the opener is blamed, because a misread fence can
+/// hide an opener that is present and intact; and an absent opener — the
+/// anti-vacuity guard, and the failure a reader of a gutted section should see,
+/// rather than an empty slice that makes every downstream assertion pass
+/// trivially. `chunk_path` and `section_title` appear only in that panic text.
 pub(crate) fn section_body(
     markdown: &str,
     opener: &str,
     chunk_path: &str,
     section_title: &str,
 ) -> String {
+    let fenced_lines: HashSet<usize> = parse_fences(markdown)
+        .unwrap_or_else(|e| panic!("{chunk_path}: {e}"))
+        .iter()
+        .flat_map(|fence| fence.open_line..=fence.close_line)
+        .collect();
+
     let mut body: Vec<&str> = Vec::new();
     let mut in_section = false;
-    // `Some(n)` while inside a fence opened by a column-0 run of `n` backticks.
-    let mut fence: Option<usize> = None;
-
-    for line in markdown.lines() {
-        let run = leading_backtick_run(line);
-
-        if let Some(open_run) = fence {
-            // Bare run of >= the opening length closes; anything else (a shorter
-            // run, or a run carrying an info string) is fence CONTENT.
-            if run >= open_run && line.trim_end().len() == run {
-                fence = None;
-            }
-            if in_section {
-                body.push(line);
-            }
-            continue;
-        }
-        if run >= 3 {
-            fence = Some(run);
-            if in_section {
-                body.push(line);
-            }
-            continue;
-        }
-        if !in_section && line.trim() == opener {
-            in_section = true;
-            continue;
-        }
-        if in_section && line.starts_with("## ") {
-            break;
-        }
+    for (index, line) in markdown.lines().enumerate() {
+        let fenced = fenced_lines.contains(&(index + 1));
         if in_section {
+            if !fenced && line.starts_with("## ") {
+                break;
+            }
             body.push(line);
+        } else if !fenced && line.trim() == opener {
+            in_section = true;
         }
     }
-
-    // Checked FIRST, and named for what it is. An unterminated fence makes every
-    // later line read as fence content, so the marker assertion below would fire
-    // with a cause that is not the real one.
-    assert!(
-        fence.is_none(),
-        "{chunk_path} has an unterminated code fence: a column-0 run of {} backtick(s) is never \
-         closed by a bare run of at least that many. Everything after it is being read as fence \
-         content, so the `{opener}` scan cannot reach the section even when that line is \
-         present and intact. Close the fence — do not touch the opener.",
-        fence.unwrap_or(0)
-    );
 
     assert!(
         in_section,
@@ -339,8 +289,9 @@ pub(crate) fn section_body(
          section itself. That section is what the in-GUI assistant retrieves when a designer \
          asks about the topic it covers; without it the assistant reads the capability as \
          MISSING and hand-rolls a substitute instead (task 5389, for the oracle section). \
-         Restore the section WITH its marker line directly under the heading. Retitling the \
-         heading is free and needs no change here — only the marker is matched."
+         Restore the section WITH its opening line. Where the opener is an HTML-comment \
+         marker directly under the heading, retitling the heading is free and needs no \
+         change here — only the marker is matched."
     );
     body.join("\n")
 }
@@ -351,8 +302,7 @@ pub(crate) fn section_body(
 /// the next `## ` heading, which is right for a coverage scan — more text can
 /// only help it — but wrong for a FORBIDDEN-direction scan, where every extra
 /// line is another place correct prose can trip the assertion. Delegating keeps
-/// the fence-awareness and the two panics in one implementation rather than
-/// growing the near-identical scraper this module's doc warns about.
+/// the fence-awareness and the panics in one implementation.
 ///
 /// PANICS when `end_marker` is absent, for the same reason `section_body` panics
 /// on an absent opening marker: silently falling back to "the rest of the
