@@ -5,6 +5,7 @@ mod debug_boundary_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
 mod diff_tests;
+mod engine_activity_tests;
 mod engine_lock_tests;
 mod engine_tests;
 mod eval_queue_tests;
