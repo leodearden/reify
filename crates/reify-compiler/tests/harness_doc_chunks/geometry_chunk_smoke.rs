@@ -1961,7 +1961,8 @@ fn arity_drift_reports_a_fence_arity_no_signature_documents() {
     for needle in ["`distance`", "at 3 argument(s)", "[2]"] {
         assert!(
             drift[0].contains(needle),
-            "the line must name the undocumented fence arity and the documented set              (`{needle}`), got: {}",
+            "the line must name the undocumented fence arity and the documented set \
+             (`{needle}`), got: {}",
             drift[0]
         );
     }
