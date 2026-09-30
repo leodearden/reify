@@ -20,6 +20,7 @@ mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
 mod path_key_tests;
+mod screenshot_save_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
