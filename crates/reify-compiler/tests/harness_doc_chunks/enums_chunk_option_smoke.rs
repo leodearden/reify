@@ -52,6 +52,7 @@ use reify_test_support::{
 
 use crate::chunk_io::{ENUMS_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::{parse_fences, section_body};
+use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Heading that opens the section under test.
 const SECTION_HEADING: &str = "## Option Type";
@@ -103,19 +104,19 @@ fn as_module(fence: &str) -> String {
 /// `match coating { some(c) => base + c.thickness \n none => base }`, which is
 /// a hard parse error — the pattern grammar has no positional production
 /// (`tree-sitter-reify/grammar.js` `match_pattern`), so `some(c)` cannot be
-/// written at all. `compile_source_with_stdlib` panics on parse errors, so the
-/// pre-fix failure surfaces as a parse-error panic naming the snippet.
+/// written at all. "Compiles clean" is `module_compile.rs`'s, so that pre-fix
+/// failure reads as a parse rejection naming the snippet.
 #[test]
 fn option_section_fences_compile_clean() {
     for (ordinal, fence) in option_section_fences().iter().enumerate() {
-        let compiled = compile_source_with_stdlib(&as_module(fence));
-        let errors = errors_only(&compiled);
-        assert!(
-            errors.is_empty(),
-            "`{SECTION_HEADING}` fence #{ordinal} must compile with zero Error diagnostics.\n\
-             --- fence source ---\n{fence}\n\
-             --- Error diagnostics ---\n{errors:#?}"
-        );
+        if let Some(messages) = compile_module(&as_module(fence)).rejection() {
+            panic!(
+                "`{SECTION_HEADING}` fence #{ordinal} must compile with zero Error diagnostics.\n\
+                 --- fence source ---\n{fence}\n\
+                 --- Error diagnostics ---\n{}",
+                ModuleCompile::rendered(&messages)
+            );
+        }
     }
 }
 

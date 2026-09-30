@@ -142,13 +142,12 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
-use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
-
 use crate::chunk_io::{
     CHUNK_FILE_COUNT, CHUNKS_DIR, chunk_label, discover_chunk_stems, read_chunk_file, repo_root,
     report,
 };
 use crate::chunk_markdown::{Fence, parse_fences};
+use crate::module_compile::{ModuleCompile, compile_module};
 
 // ---------------------------------------------------------------------------
 // Check 2 — the bare-fence ban
@@ -187,85 +186,6 @@ fn untagged_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Compiling a fence body — ONE owner, for checks 1 and 3
-// ---------------------------------------------------------------------------
-
-/// What the compiler made of a fence body, split by the LAYER that rejected it.
-///
-/// `errors_only` alone cannot make this distinction: parse errors are folded
-/// into the same `.diagnostics` list as compile-layer ones, so "did not parse"
-/// and "parsed and then failed type checking" arrive indistinguishable. Check 3
-/// needs them apart — see [`FenceCompile::ParseRejected`].
-enum FenceCompile {
-    /// Parsed, compiled, zero `Severity::Error` diagnostics.
-    Clean,
-    /// The PARSER rejected the body, so it is not reify source at all. Any
-    /// compile-layer diagnostics downstream of a broken AST describe the
-    /// wreckage rather than the body, which is why this arm carries only the
-    /// parse messages.
-    ParseRejected(Vec<String>),
-    /// Parsed cleanly, then produced at least one `Severity::Error`.
-    SemanticErrors(Vec<String>),
-}
-
-impl FenceCompile {
-    /// The rendered diagnostics, one indented bullet per line.
-    fn rendered(messages: &[String]) -> String {
-        messages
-            .iter()
-            .map(|message| format!("    - {message}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-
-/// Compile one fence body VERBATIM — no wrapper — and report which layer, if
-/// any, rejected it.
-///
-/// # Why `_allow_parse_errors`
-///
-/// `compile_source_with_stdlib` (`helpers.rs:236`) PANICS on parse errors. One
-/// malformed fence would then abort the whole gate with a backtrace naming no
-/// file and no fence — defeating the "names file + fence ordinal +
-/// diagnostics" contract at exactly the moment it matters most. The
-/// `_allow_parse_errors` variant (`helpers.rs:354`) folds parse errors into
-/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so a
-/// malformed fence is reported as a normal, fully-attributed violation. Same
-/// accumulate-rather-than-panic reasoning `examples_smoke.rs` applies in its
-/// parse phase.
-///
-/// The extra `parse_with_stdlib` call is what separates the two layers. It is
-/// the SAME parse the helper performs internally, repeated rather than
-/// threaded out, because the helper's signature returns only a
-/// `CompiledModule`; a string match on the diagnostic text would be the
-/// alternative, and an ad-hoc parser over a message is what heuristic 12 exists
-/// to forbid.
-///
-/// The body is compiled VERBATIM — no wrapper. That is what makes bare
-/// ```` ```reify ```` mean "compiles standalone" rather than "compiles under
-/// whatever scaffolding some harness happens to inject".
-fn compile_fence_body(body: &str) -> FenceCompile {
-    let parsed = reify_compiler::parse_with_stdlib(body, reify_core::ModulePath::single("fence"));
-    if !parsed.errors.is_empty() {
-        return FenceCompile::ParseRejected(
-            parsed.errors.iter().map(|e| e.message.clone()).collect(),
-        );
-    }
-    let compiled = compile_source_with_stdlib_allow_parse_errors(body);
-    let errors = errors_only(&compiled);
-    if errors.is_empty() {
-        FenceCompile::Clean
-    } else {
-        FenceCompile::SemanticErrors(
-            errors
-                .iter()
-                .map(|diagnostic| diagnostic.message.clone())
-                .collect(),
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Check 1 — a bare ```reify fence must compile standalone
 // ---------------------------------------------------------------------------
 
@@ -279,8 +199,11 @@ fn compile_fence_body(body: &str) -> FenceCompile {
 /// trial-compile the entire exempt half of the corpus, which is precisely what
 /// those tags exist to prevent.
 ///
-/// Both rejection layers are violations here — see [`compile_fence_body`],
-/// which owns the compile and the layer split.
+/// Both rejection layers are violations here — see
+/// `module_compile::compile_module`, which owns the compile and the layer
+/// split. The body is handed to it VERBATIM — no wrapper. That is what makes
+/// bare ```` ```reify ```` mean "compiles standalone" rather than "compiles
+/// under whatever scaffolding some harness happens to inject".
 ///
 /// Takes ALREADY-PARSED fences, for the reason given on
 /// `untagged_fence_violations`: `check_parse_outcome` is the one place a parse
@@ -290,12 +213,7 @@ fn reify_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
         .iter()
         .filter(|fence| fence.tag.as_deref() == Some("reify"))
         .filter_map(|fence| {
-            let messages = match compile_fence_body(&fence.body) {
-                FenceCompile::Clean => return None,
-                FenceCompile::ParseRejected(messages) | FenceCompile::SemanticErrors(messages) => {
-                    messages
-                }
-            };
+            let messages = compile_module(&fence.body).rejection()?;
             Some(format!(
                 "{path}:{} — fence #{} is tagged ```reify but does NOT compile \
                  standalone; {} Error diagnostic(s):\n{}\n  --- fence \
@@ -306,7 +224,7 @@ fn reify_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
                 fence.open_line,
                 fence.ordinal,
                 messages.len(),
-                FenceCompile::rendered(&messages),
+                ModuleCompile::rendered(&messages),
                 fence.body
             ))
         })
@@ -339,16 +257,16 @@ fn reify_invalid_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
         .iter()
         .filter(|fence| fence.tag.as_deref() == Some("reify-invalid"))
         .filter_map(|fence| {
-            let failure = match compile_fence_body(&fence.body) {
-                FenceCompile::SemanticErrors(_) => return None,
-                FenceCompile::Clean => "compiles CLEAN: zero Error diagnostics. \
+            let failure = match compile_module(&fence.body) {
+                ModuleCompile::SemanticErrors(_) => return None,
+                ModuleCompile::Clean => "compiles CLEAN: zero Error diagnostics. \
                      That tag asserts the error IS the lesson, so either the \
                      teaching sample no longer demonstrates what it claims (the \
                      compiler changed, or the body drifted), or the tag is being \
                      used to silence a fence that should be fixed and retagged \
                      `reify`."
                     .to_string(),
-                FenceCompile::ParseRejected(messages) => format!(
+                ModuleCompile::ParseRejected(messages) => format!(
                     "does not PARSE, so the compiler never reached the phase \
                      whose verdict this sample teaches; its {} diagnostic(s) \
                      are the parser's, and an unparseable body would satisfy \
@@ -359,7 +277,7 @@ fn reify_invalid_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
                      lesson, it belongs under `reify-schematic` with the \
                      rejection spelled out in prose.",
                     messages.len(),
-                    FenceCompile::rendered(&messages)
+                    ModuleCompile::rendered(&messages)
                 ),
             };
             Some(format!(

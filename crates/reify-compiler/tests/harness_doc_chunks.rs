@@ -29,6 +29,8 @@
 //!   listed, and how a corpus gate reports.
 //! - `chunk_markdown` (#6956) — how a chunk's markdown divides into fenced code
 //!   blocks and the sections those fences cannot end; the one fence parser.
+//! - `module_compile` (#6956) — what the compiler makes of one complete module,
+//!   split by the rejecting layer; the one definition of "compiles clean".
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
@@ -62,6 +64,8 @@ mod fence_gate;
 mod functions_chunk_overloading_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/module_compile.rs"]
+mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
 #[path = "harness_doc_chunks/schematic_listing_gate.rs"]

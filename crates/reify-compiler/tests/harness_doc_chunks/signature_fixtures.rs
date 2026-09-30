@@ -40,6 +40,10 @@ pub(crate) fn read_fixture(path: &str) -> String {
 /// one per line: any `Severity::Error`, a call to a name nothing resolves, and a
 /// builtin called at an argument shape it does not recognise. Any other warning
 /// never counts.
+///
+/// Deliberately STRICTER than the doc-sample sense of clean
+/// (`module_compile::compile_module`, Errors only): a fixture's calls stand for
+/// signatures, so the two warnings that mean "no such signature" count too.
 pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
     compile_source_with_stdlib(source)
         .diagnostics
