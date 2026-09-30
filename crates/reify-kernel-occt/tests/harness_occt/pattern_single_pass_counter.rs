@@ -5,7 +5,8 @@
 //! threshold would be flaky and environment-sensitive, so instead we assert the
 //! *mechanism* directly: a counter incremented once per completed OCCT boolean
 //! `Build()` lets a test observe exactly how many boolean passes an operation
-//! performed.
+//! performed.  The `boolean_*_with_history` trio, which is the production
+//! realization path, is counted too.
 //!
 //! `reify_kernel_occt::reset_boolean_pass_count()` zeroes the counter and
 //! `reify_kernel_occt::boolean_pass_count()` reads it.
@@ -105,6 +106,66 @@ fn binary_intersection_is_one_boolean_pass() {
         boolean_pass_count(),
         1,
         "a single binary Intersection must perform exactly 1 boolean pass"
+    );
+}
+
+/// `boolean_fuse_with_history` performs exactly ONE counted pass.
+#[test]
+fn binary_union_with_history_is_one_boolean_pass() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real fuse
+
+    reset_boolean_pass_count();
+    kernel
+        .boolean_fuse_with_history(a, b)
+        .expect("fuse with history must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "boolean_fuse_with_history (the production path: Engine → \
+         execute_with_history → boolean_*_with_history) must perform exactly 1 \
+         counted boolean pass"
+    );
+}
+
+/// `boolean_cut_with_history` performs exactly ONE counted pass.
+#[test]
+fn binary_difference_with_history_is_one_boolean_pass() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real cut
+
+    reset_boolean_pass_count();
+    kernel
+        .boolean_cut_with_history(a, b)
+        .expect("cut with history must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "boolean_cut_with_history (the production path: Engine → \
+         execute_with_history → boolean_*_with_history) must perform exactly 1 \
+         counted boolean pass"
+    );
+}
+
+/// `boolean_common_with_history` performs exactly ONE counted pass.
+#[test]
+fn binary_intersection_with_history_is_one_boolean_pass() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real common
+
+    reset_boolean_pass_count();
+    kernel
+        .boolean_common_with_history(a, b)
+        .expect("common with history must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "boolean_common_with_history (the production path: Engine → \
+         execute_with_history → boolean_*_with_history) must perform exactly 1 \
+         counted boolean pass"
     );
 }
 
