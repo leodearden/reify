@@ -73,10 +73,7 @@ use reify_compiler::{
 };
 use reify_core::Severity;
 
-use crate::chunk_cite_gate::cited_source_paths;
-use crate::chunk_io::{
-    GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk, repo_root,
-};
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk};
 use crate::chunk_markdown::section_body;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
@@ -827,125 +824,6 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
         reported.iter().any(|v| v.contains("box")),
         "`box` is excluded as documented in geometry.md, but geometry.md only documents \
          `rounded_box(` — the exclusion must not ride on a suffix match. Got: {reported:?}"
-    );
-}
-
-// ── geometry.md → examples/ worked-example claim ─────────────────────────────
-//
-// Everything above checks what geometry.md says about the COMPILER. This checks
-// one thing it says about the REPOSITORY: the chunk points designers at a
-// runnable `.ri` file as the worked example of a constructor family, and a
-// pointer to a file not containing what the prose promises sends a designer
-// looking for a constructor they will never find. Same
-// authoritative-doc-is-wrong failure class as the guards above, one artifact
-// over. That every cited path EXISTS is `chunk_cite_gate.rs`'s corpus-wide
-// job, so a dangling cite reds one test, not two.
-//
-// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). The
-// assertion reads a CLAIM out of the chunk and checks it against the real file
-// on disk; either side may be reworded freely so long as the claim stays true.
-
-/// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
-/// constructors, and the four names that claim has to cover.
-const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
-const GDT_ZONE_CONSTRUCTORS: &[&str] =
-    &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
-
-/// `source` with every `//`-to-end-of-line comment removed.
-///
-/// Applied before [`chunk_mentions`] so "this example EXERCISES the constructor"
-/// is checked against the example's CODE, not against a header comment that
-/// merely names it — otherwise the claim could be satisfied by describing a call
-/// instead of making one, which is the laundering-a-gap-into-a-coverage-claim
-/// failure this guard family exists to catch.
-///
-/// Deliberately naive: a `//` inside a string literal is stripped too, and block
-/// comment syntax is not handled. Both errors only REMOVE text, so they can make
-/// this stricter, never laxer — the safe direction for a guard.
-fn strip_line_comments(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// geometry.md's GD&T section cites [`GDT_ZONES_EXAMPLE`] as the worked example
-/// of all four zone constructors, so that example must really call each of them.
-///
-/// This claim is what motivated the guard — `zone_slab` had no worked example
-/// anywhere under `examples/` until task #5700 added a cell for it to the cited
-/// file, so the one constructor the prose promised an example for was the one
-/// that had none. This assertion is what keeps it that way. Whether the cite
-/// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
-#[test]
-fn geometry_chunk_example_citations_hold_against_the_real_examples() {
-    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let cited: Vec<String> = cited_source_paths(&geometry_md)
-        .into_iter()
-        .map(|(path, _)| path)
-        .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
-        .collect();
-
-    assert!(
-        cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
-        "{GEOMETRY_CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard \
-         at whatever example the GD&T section now cites, so the all-four claim stays checked \
-         against the file it is actually made about. Cited: {cited:?}"
-    );
-
-    let example_path = repo_root().join(GDT_ZONES_EXAMPLE);
-    let example_src = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
-        panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {GEOMETRY_CHUNK_PATH}")
-    });
-    let code = strip_line_comments(&example_src);
-    let absent: Vec<&str> = GDT_ZONE_CONSTRUCTORS
-        .iter()
-        .copied()
-        .filter(|name| !chunk_mentions(&code, name))
-        .collect();
-    assert!(
-        absent.is_empty(),
-        "{GEOMETRY_CHUNK_PATH} cites {GDT_ZONES_EXAMPLE} as the worked example of all four GD&T \
-         zone constructors, but the example never calls: {}. A designer following that pointer \
-         to learn one of them finds nothing — FIX: add a cell calling the missing constructor(s) \
-         to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
-         or narrow the chunk's claim to the constructors the example does exercise.",
-        absent.join(", ")
-    );
-}
-
-// Discriminating-power controls for `strip_line_comments`, in the same
-// synthetic-data posture as the coverage-guard controls earlier in this file: it
-// is the load-bearing part of the worked-example claim, and the real chunk does
-// not exercise it in a way that would notice it going inert. The citation scan's
-// own controls live beside the shared scanner in `chunk_cite_gate.rs`.
-
-#[test]
-fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {
-    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
-                     let body = box(10mm, 10mm, 10mm)\n";
-    assert!(
-        chunk_mentions(described, "zone_slab"),
-        "control: the RAW source does mention zone_slab, so the assertion below is about \
-         strip_line_comments and not about chunk_mentions"
-    );
-    assert!(
-        !chunk_mentions(&strip_line_comments(described), "zone_slab"),
-        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
-         the constructor\" claim — describing a call instead of making one is exactly the \
-         laundering this guard family exists to catch"
-    );
-}
-
-#[test]
-fn a_constructor_actually_called_in_code_survives_comment_stripping() {
-    let called = "// this header names no constructor at all\n\
-                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
-    assert!(
-        chunk_mentions(&strip_line_comments(called), "zone_slab"),
-        "a real call is CODE: stripping comments must leave it standing, including when a \
-         trailing comment follows it on the same line"
     );
 }
 

@@ -110,8 +110,8 @@
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk};
+use crate::chunk_cite_gate::{assert_cited_paths_resolve, cited_source_paths};
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk, repo_root};
 use crate::chunk_markdown::{marker_closed_region, section_body, tagged_fence_bodies};
 
 /// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
@@ -1876,6 +1876,100 @@ fn cited_test_paths_in_the_chunk_resolve() {
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,
+    );
+}
+
+// ── geometry.md → examples/ worked-example claim ─────────────────────────────
+//
+// Everything above checks what geometry.md says about the COMPILER. This checks
+// one thing it says about the REPOSITORY: the chunk points designers at a
+// runnable `.ri` file as the worked example of a constructor family, and a
+// pointer to a file not containing what the prose promises sends a designer
+// looking for a constructor they will never find. Same
+// authoritative-doc-is-wrong failure class as the guards above, one artifact
+// over. That every cited path EXISTS is `chunk_cite_gate.rs`'s corpus-wide
+// job, so a dangling cite reds one test, not two.
+//
+// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). The
+// assertion reads a CLAIM out of the chunk and checks it against the real file
+// on disk; either side may be reworded freely so long as the claim stays true.
+
+/// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
+/// constructors, and the four names that claim has to cover.
+const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
+const GDT_ZONE_CONSTRUCTORS: &[&str] =
+    &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
+
+/// geometry.md's GD&T section cites [`GDT_ZONES_EXAMPLE`] as the worked example
+/// of all four zone constructors, so that example must really call each of them.
+///
+/// This claim is what motivated the guard — `zone_slab` had no worked example
+/// anywhere under `examples/` until task #5700 added a cell for it to the cited
+/// file, so the one constructor the prose promised an example for was the one
+/// that had none. This assertion is what keeps it that way. Whether the cite
+/// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
+///
+/// "Calls" is read off the example's CODE — [`called_names`] over
+/// [`strip_reify_comments`] — so a header comment that merely names a
+/// constructor cannot satisfy the claim: describing a call instead of making
+/// one is the laundering-a-gap-into-a-coverage-claim failure this guard exists
+/// to catch.
+#[test]
+fn geometry_chunk_example_citations_hold_against_the_real_examples() {
+    let geometry_md = read_chunk(CHUNK_PATH);
+    let cited: Vec<String> = cited_source_paths(&geometry_md)
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
+        .collect();
+
+    assert!(
+        cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
+        "{CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard at \
+         whatever example the GD&T section now cites, so the all-four claim stays checked \
+         against the file it is actually made about. Cited: {cited:?}"
+    );
+
+    let example_src = std::fs::read_to_string(repo_root().join(GDT_ZONES_EXAMPLE))
+        .unwrap_or_else(|e| {
+            panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {CHUNK_PATH}")
+        });
+    let called = called_names(&strip_reify_comments(&example_src));
+    let absent: Vec<&str> = GDT_ZONE_CONSTRUCTORS
+        .iter()
+        .copied()
+        .filter(|name| !called.iter().any(|call| call == name))
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "{CHUNK_PATH} cites {GDT_ZONES_EXAMPLE} as the worked example of all four GD&T \
+         zone constructors, but the example never calls: {}. A designer following that pointer \
+         to learn one of them finds nothing — FIX: add a cell calling the missing constructor(s) \
+         to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
+         or narrow the chunk's claim to the constructors the example does exercise.",
+        absent.join(", ")
+    );
+}
+
+/// The example scan's discriminating power: a constructor named only in a
+/// header comment is not called, and a real call survives even with a trailing
+/// comment on its line.
+#[test]
+fn example_call_scan_ignores_a_constructor_named_only_in_a_comment() {
+    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
+                     let body = box(10mm, 10mm, 10mm)\n";
+    assert!(
+        !called_names(&strip_reify_comments(described)).contains(&"zone_slab".to_string()),
+        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
+         the constructor\" claim"
+    );
+
+    let called = "// this header names no constructor at all\n\
+                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
+    assert!(
+        called_names(&strip_reify_comments(called)).contains(&"zone_slab".to_string()),
+        "a real call is CODE: stripping comments must leave it standing, including when a \
+         trailing comment follows it on the same line"
     );
 }
 
