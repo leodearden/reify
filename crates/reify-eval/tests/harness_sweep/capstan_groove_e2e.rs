@@ -201,7 +201,10 @@ pub(super) const DEV_CAPSTAN: &str = concat!(
 );
 
 /// The design entity whose cells and constraints this module gates.
-const CAPSTAN_ENTITY: &str = "Capstan";
+///
+/// `pub(super)` so a sibling gate over printer.ri's copy of the structure names
+/// it from this one source.
+pub(super) const CAPSTAN_ENTITY: &str = "Capstan";
 
 /// The fairlead shuttle that has to track the capstan's migrating wrap band.
 const FAIRLEAD_ENTITY: &str = "Fairlead";
