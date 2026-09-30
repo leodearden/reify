@@ -2,6 +2,8 @@
 
 use reify_ast::{ImportDecl, ImportKind};
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 // ── Step 1: Basic dot-path module import ──────────────────────────
 
 #[test]
@@ -383,4 +385,65 @@ fn import_has_content_hash() {
     // Content hash should be non-zero (not default)
     let zero = reify_core::ContentHash::of_str("");
     assert_ne!(import.content_hash, zero, "content_hash should be computed");
+}
+
+// ── Malformed imports are refused ─────────────────────────────────
+
+/// The `ImportDecl`s lowered from `parsed`, in source order.
+fn imports_of(parsed: &reify_ast::ParsedModule) -> Vec<&ImportDecl> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            reify_ast::Declaration::Import(i) => Some(i),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An import whose CST carries a nested ERROR or MISSING node no longer matches its source
+/// once lowered (e.g. `import a.b.{C D}` would lower to `Destructured([C])`, dropping `D`), so
+/// it is refused with one `invalid import: ` diagnostic located at its first fault.
+#[test]
+fn import_with_a_nested_fault_is_refused_at_its_first_fault() {
+    let stray_item = "import a.b.{C D}";
+    let unclosed_items = "import a.b.{C, D";
+    let missing_segment = "import a.b.";
+    let missing_path = "pub import";
+    let cases = [
+        (stray_item, stray_item.find(" D").unwrap() + 1),
+        (unclosed_items, unclosed_items.len()),
+        (missing_segment, missing_segment.len()),
+        (missing_path, missing_path.len()),
+    ];
+    for (source, fault_offset) in cases {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        let error = only_error_starting_with(&parsed.errors, "invalid import: ");
+        assert_eq!(
+            error.span.start as usize, fault_offset,
+            "`{source}`: expected the diagnostic at byte {fault_offset}, got: {error:?}"
+        );
+        assert!(
+            imports_of(&parsed).is_empty(),
+            "`{source}`: a refused import must not be lowered, got declarations: {:?}",
+            parsed.declarations
+        );
+    }
+}
+
+#[test]
+fn a_refused_import_does_not_take_its_well_formed_neighbour_with_it() {
+    let source = "import a.b.{C D}\nimport c.d";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    only_error_starting_with(&parsed.errors, "invalid import: ");
+
+    let imports = imports_of(&parsed);
+    assert_eq!(
+        imports.len(),
+        1,
+        "`{source}`: expected only the well-formed import, got declarations: {:?}",
+        parsed.declarations
+    );
+    assert_eq!(imports[0].path, "c.d", "`{source}`");
+    assert_eq!(imports[0].kind, ImportKind::Module, "`{source}`");
 }
