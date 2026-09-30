@@ -43,10 +43,11 @@
 //!   FIRST argument's `result_type`, a permissive fallback. Compile-acceptance of
 //!   a fence is therefore a parse/shape result, not a signature check.
 //! - **Arity is pinned anyway — by cross-check, not by the compiler.**
-//!   `documented_oracle_arities_are_exercised_by_a_compiling_fence` requires
-//!   every documented `name(…) -> Type` signature to be matched by a fence call
-//!   at the SAME arity, so a doc-side arity edit that the fences do not mirror is
-//!   RED here even though `min_clearance(s)` compiles clean. Argument DIMENSION
+//!   `oracle_signature_arities_match_the_compiling_fences` requires the arities
+//!   the `name(…) -> Type` signatures document and the arities the fences call
+//!   each name at to be the SAME set, so an arity edit on either side that the
+//!   other does not mirror is RED here even though `min_clearance(s)` compiles
+//!   clean. Argument DIMENSION
 //!   stays unchecked in both directions. (Adopted from the sibling suite's
 //!   `every_documented_geometry_op_form_is_exercised_by_the_fixture`.)
 //! - **The fence guard's residual power over call NAMES is indirect and narrow.**
@@ -67,7 +68,7 @@
 //! invokes (that comment declines to require a leading backtick precisely so the
 //! call form may be rewrapped, bolded, or tabulated freely).
 //!
-//! `documented_oracle_arities_are_exercised_by_a_compiling_fence` requires each of
+//! `oracle_signature_arities_match_the_compiling_fences` requires each of
 //! the five oracle names to carry a literal `-> <Type>` immediately after a
 //! balanced call form somewhere in the section. **`-> <Type>` after the call form
 //! is therefore a PINNED notation for those five names, and a markdown table with
@@ -83,7 +84,7 @@
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 use crate::chunk_cite_gate::{assert_cited_paths_resolve, cited_source_paths};
-use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk, repo_root};
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk, repo_root, report};
 use crate::chunk_markdown::{marker_closed_region, section_body, tagged_fence_bodies};
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
@@ -399,7 +400,7 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 /// `interference_oracle_names_documented_in_geometry_chunk` states at length: the
 /// house rule this file inherits forbids pinning doc TYPOGRAPHY. The one
 /// exception — the `-> <Type>` notation — is imposed only on the whole-handle
-/// four, by `documented_measurement_arities_are_exercised_by_a_compiling_fence`.
+/// four, by `measurement_signature_arities_match_the_compiling_fences`.
 ///
 /// Anti-vacuity comes free from [`section_body`], which panics when its marker is
 /// absent, so deleting the section is RED rather than silently green.
@@ -724,7 +725,7 @@ fn geometry_reify_fences_call_every_worked_example_form() {
 /// whose 3-arg `min_clearance(` is exactly the documented arity — so deleting the
 /// fence's REAL `let clr = min_clearance(s, id_a, id_b)` left both
 /// `geometry_reify_fences_call_every_worked_example_form` and
-/// `documented_oracle_arities_are_exercised_by_a_compiling_fence` green while
+/// `oracle_signature_arities_match_the_compiling_fences` green while
 /// their panic text claimed the form was "compile-verified" / "exercised by a
 /// compiling fence". A commented-out call is not a call.
 ///
@@ -1006,12 +1007,41 @@ fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
 /// compiling fences call it at (`exercised`) have drifted apart, in either
 /// direction, one actionable line each.
 fn arity_drift(name: &str, documented: &[usize], exercised: &[usize]) -> Vec<String> {
-    let _ = (name, documented, exercised);
-    Vec::new()
+    const FIX: &str = "The fences are what actually compile, so fix whichever of the two is \
+                       wrong — a designer copies whichever they read first.";
+    let distinct = |arities: &[usize]| {
+        let mut arities = arities.to_vec();
+        arities.sort_unstable();
+        arities.dedup();
+        arities
+    };
+    let documented = distinct(documented);
+    let exercised = distinct(exercised);
+
+    let mut drift = Vec::new();
+    for arity in documented.iter().filter(|arity| !exercised.contains(arity)) {
+        drift.push(format!(
+            "{CHUNK_PATH} documents `{name}` at {arity} argument(s), but no ```reify fence calls \
+             it at that arity (fence call arities: {exercised:?}). Either the documented \
+             signature is a phantom the compiler was never shown, or a fence drifted off the form \
+             it demonstrates. {FIX}"
+        ));
+    }
+    for arity in exercised.iter().filter(|arity| !documented.contains(arity)) {
+        drift.push(format!(
+            "a ```reify fence in {CHUNK_PATH} calls `{name}` at {arity} argument(s), but no \
+             `{name}(…) -> <Type>` signature documents that arity (documented arities: \
+             {documented:?}). Either the fence demonstrates a form the section never states, or \
+             the section lost the signature. {FIX}"
+        ));
+    }
+    drift
 }
 
-/// Every arity the oracle section DOCUMENTS must be exercised by a fence that
-/// compiles.
+/// The oracle section's documented signature arities and the arities its
+/// compiling fences call those names at must be the SAME set: a documented arity
+/// no fence exercises and a fence arity no signature documents are both drift,
+/// reported together, one line per drifted form.
 ///
 /// This is the doc↔fence half of the arity story; the compiler half does not
 /// exist (see the module doc). Adopted from the sibling suite's
@@ -1021,7 +1051,7 @@ fn arity_drift(name: &str, documented: &[usize], exercised: &[usize]) -> Vec<Str
 /// it must not be able to drift apart, since a designer copies whichever one they
 /// read first.
 #[test]
-fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
+fn oracle_signature_arities_match_the_compiling_fences() {
     let markdown = read_chunk(CHUNK_PATH);
     let section = section_body(
         &markdown,
@@ -1031,6 +1061,7 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
     );
     let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
+    let mut drift = Vec::new();
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let documented = documented_signature_arities(&section, name);
         // Anti-vacuity. A signature form that loses its `-> <Type>` annotation
@@ -1055,23 +1086,22 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
             })
             .collect();
 
-        for arity in &documented {
-            assert!(
-                in_fences.contains(arity),
-                "{CHUNK_PATH} documents `{name}` at {arity} argument(s), but no ```reify fence \
-                 calls it at that arity (fence call arities for `{name}`: {in_fences:?}). Either \
-                 the documented signature is a phantom the compiler was never shown, or a fence \
-                 drifted off the form it demonstrates. The fences are what actually compile, so \
-                 fix whichever of the two is wrong — a designer copies whichever they read first."
-            );
-        }
+        drift.extend(arity_drift(name, &documented, &in_fences));
     }
+    report(
+        &format!(
+            "`{ORACLE_SECTION_TITLE}` signature arities that drifted from the compiling ```reify \
+             fences"
+        ),
+        &drift,
+    );
 }
 
-/// Every arity the MEASUREMENT section documents for a whole-handle query must
-/// be exercised by a fence that compiles.
+/// The MEASUREMENT section's documented whole-handle signature arities and the
+/// arities its compiling fences call those names at must be the SAME set, drift
+/// in either direction reported together.
 ///
-/// Twin of [`documented_oracle_arities_are_exercised_by_a_compiling_fence`], and
+/// Twin of [`oracle_signature_arities_match_the_compiling_fences`], and
 /// deliberately the same shape rather than a generalisation of it: the two scope
 /// different sections and different name sets, and folding them into one
 /// parameterised helper would put the section marker, the name set and the
@@ -1096,7 +1126,7 @@ fn documented_oracle_arities_are_exercised_by_a_compiling_fence() {
 /// `lib.rs`), never `reify_compiler::units::…` — `mod units` is private, so the
 /// latter does not compile from an integration test.
 #[test]
-fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
+fn measurement_signature_arities_match_the_compiling_fences() {
     let markdown = read_chunk(CHUNK_PATH);
     let section = section_body(
         &markdown,
@@ -1106,6 +1136,7 @@ fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
     );
     let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
 
+    let mut drift = Vec::new();
     for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
         let documented = documented_signature_arities(&section, name);
         // Anti-vacuity, per name. Without it, a name that lost its `-> <Type>`
@@ -1137,18 +1168,15 @@ fn documented_measurement_arities_are_exercised_by_a_compiling_fence() {
             })
             .collect();
 
-        for arity in &documented {
-            assert!(
-                in_fences.contains(arity),
-                "{CHUNK_PATH} documents `{name}` at {arity} argument(s) in its \
-                 `{MEASUREMENT_SECTION_TITLE}` section, but no ```reify fence calls it at that \
-                 arity (fence call arities for `{name}`: {in_fences:?}). Either the documented \
-                 signature is a phantom the compiler was never shown, or the worked fence \
-                 drifted off the form it demonstrates. The fences are what actually compile, so \
-                 fix whichever of the two is wrong — a designer copies whichever they read first."
-            );
-        }
+        drift.extend(arity_drift(name, &documented, &in_fences));
     }
+    report(
+        &format!(
+            "`{MEASUREMENT_SECTION_TITLE}` signature arities that drifted from the compiling \
+             ```reify fences"
+        ),
+        &drift,
+    );
 }
 
 /// Minimum CATALOGUE ROWS the LENGTH-ARGUMENTS table must carry.
@@ -1280,7 +1308,7 @@ pub(crate) fn catalogue_table_names(rows: &[Vec<String>]) -> Vec<String> {
 ///
 /// SCOPE — this checks NAMES, not arities and not argument dimensions. Arity for
 /// the oracle names is cross-checked separately by
-/// `documented_oracle_arities_are_exercised_by_a_compiling_fence`; argument
+/// `oracle_signature_arities_match_the_compiling_fences`; argument
 /// DIMENSION is pinned on the eval side by the tests the section's SYNC block
 /// cites, not here.
 #[test]

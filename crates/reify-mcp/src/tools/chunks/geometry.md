@@ -360,9 +360,10 @@ Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
 
 <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs verifies, for all
      five query names: that this section documents each as a call form, that each is a real registry
-     entry, that the ```reify fences below call each one, and that each `name(...) -> Type`
-     signature here is exercised by a fence call at the SAME arity. So editing an arity in this
-     section without editing the matching fence is RED. That those fences COMPILE is verified by
+     entry, that the ```reify fences below call each one, that each `name(...) -> Type`
+     signature here is exercised by a fence call at the SAME arity, and that every arity a fence
+     calls one at is documented by such a signature. So editing an arity in this section without
+     editing the matching fence, or the reverse, is RED. That those fences COMPILE is verified by
      crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs, over every chunk. It still
      covers names/arity/parse only — argument DIMENSION is unchecked. The RUNTIME claims in
      "Clearance-query traps" are pinned (where they are pinned at all) by the eval/CLI tests mapped
@@ -555,7 +556,7 @@ gate.
      Chunk-side guards (all in that one file, cited whole on one line each):
        geometry_chunk_smoke.rs::measurement_query_family_documented_in_geometry_chunk
        geometry_chunk_smoke.rs::geometry_reify_fences_call_every_worked_example_form
-       geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
+       geometry_chunk_smoke.rs::measurement_signature_arities_match_the_compiling_fences
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
      That last guard scopes the region BETWEEN the `NOT-HOISTED-TRAP` and
