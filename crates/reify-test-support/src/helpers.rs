@@ -2596,6 +2596,65 @@ mod tests {
         super::get_value_cell_in(&module, "Bracket", "x");
     }
 
+    // ── get_value_cell ────────────────────────────────────────────────────
+
+    /// Resolves `w` from the FIRST template: Alpha's 1.5, not Beta's 2.7, so
+    /// first-template selection is observable in the literal.
+    #[test]
+    fn test_get_value_cell_uses_first_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
+        let cell = super::get_value_cell(&module, "w");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Alpha.w (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Alpha.w should have a default expr"),
+            1.5,
+        );
+    }
+
+    /// A cell declared only in the SECOND template is unreachable: the
+    /// wrapper looks inside the first template alone.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_does_not_search_other_templates() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        super::get_value_cell(&module, "b");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected at least one template")]
+    fn test_get_value_cell_panics_on_empty_templates() {
+        use reify_core::ModulePath;
+        let module =
+            crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
+        super::get_value_cell(&module, "anything");
+    }
+
+    /// The one behaviour separating this wrapper from its expr-only sibling
+    /// `get_let_expr`: a defaultless cell comes back as-is rather than
+    /// panicking "has no default expr".
+    #[test]
+    fn test_get_value_cell_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
+        let cell = super::get_value_cell(&module, "x");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell must return the cell as-is, not synthesize a default"
+        );
+    }
+
     // ── get_value_cell_of / try_get_value_cell_of ─────────────────────────
 
     /// Resolves a cell from a template the caller holds DIRECTLY, with no

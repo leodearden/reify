@@ -143,3 +143,51 @@ fn cell_value_panic_reports_caller_not_helpers_rs() {
         site.message,
     );
 }
+
+#[test]
+fn get_value_cell_empty_module_panic_reports_caller_not_helpers_rs() {
+    let module =
+        reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("empty"))
+            .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_value_cell(&module, "x");
+    });
+
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "get_value_cell's empty-module panic must attribute to the CALLER \
+         (this file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains("expected at least one template"),
+        "panic message changed; got: {}",
+        site.message,
+    );
+}
+
+#[test]
+fn get_value_cell_missing_cell_panic_reports_caller_not_helpers_rs() {
+    let module = reify_test_support::compile_source("structure S { let x = 1.0 }");
+
+    let site = panic_site(|| {
+        reify_test_support::get_value_cell(&module, "missing");
+    });
+
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "get_value_cell's missing-cell panic must attribute to the CALLER \
+         (this file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains("no value cell named"),
+        "panic message changed; got: {}",
+        site.message,
+    );
+}
