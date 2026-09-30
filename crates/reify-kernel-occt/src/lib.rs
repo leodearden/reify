@@ -49,8 +49,10 @@ pub use ffi::ffi::TopologyCacheBuildCounts;
 
 /// Zero the calling thread's boolean-op-pass count (task 5213).
 ///
-/// Incremented once per completed OCCT boolean `Build()` (the binary
-/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// Incremented once per completed OCCT boolean `Build()`, at the single
+/// `Build()` site every boolean goes through: the binary fuse/cut/common ops,
+/// their `*_with_history` siblings (the production realization path) and the
+/// single-pass `fuse_shape_list`.  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
 /// single-pass change.
