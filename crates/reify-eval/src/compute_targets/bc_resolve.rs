@@ -24,10 +24,10 @@
 use std::collections::HashSet;
 
 use reify_core::Diagnostic;
-use reify_ir::value::SelectorValue;
+use reify_ir::value::{LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
     BoundaryAssociation, GeometryHandleId, GeometryKernel, GeometryQuery, NodeAttachment,
-    QueryError,
+    QueryError, Value,
 };
 
 /// Map a set of resolved face handles to the sorted, deduplicated node-index set
@@ -75,6 +75,26 @@ pub fn resolve_selector_faces(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     crate::topology_selectors::resolve(selector, kernel, diagnostics)
+}
+
+/// Kernel-less interim read of a typed FEA load/support target: the name of
+/// its single `Named` leaf, unwrapping an `Option(Some(..))` field.
+///
+/// It feeds the existing six-named-box-face and `"root"` clamp trampolines
+/// unchanged. Any other value — a predicate or composed selector, an absent
+/// optional, and deliberately a bare `Value::String` (D8) — is no target.
+/// Interim: Bmig2-consume (#5313, PRD
+/// `docs/prds/v0_6/fea-load-support-selector-migration.md` D9) replaces name
+/// reads with real selector → FE node-set resolution.
+pub(crate) fn named_leaf_target(v: &Value) -> Option<&str> {
+    match v {
+        Value::Selector(SelectorValue {
+            node: SelectorNode::Leaf { query: LeafQuery::Named(name), .. },
+            ..
+        }) => Some(name.as_str()),
+        Value::Option(Some(inner)) => named_leaf_target(inner),
+        _ => None,
+    }
 }
 
 /// Assemble the `(face_handle, centroid)` anchor list for the attributed
@@ -130,15 +150,15 @@ pub fn build_face_anchors(
 /// symbolic named-leaf ctors (`face(b, "root")`, `vertex(b, "tip")`, …) mint at
 /// eval time, targeting a kernel-less `TestBody` geometry cell.
 #[cfg(test)]
-pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> reify_ir::Value {
+pub(crate) fn named_leaf_selector(kind: reify_core::ty::SelectorKind, name: &str) -> Value {
     use reify_core::identity::RealizationNodeId;
-    use reify_ir::value::{GeometryHandleRef, LeafQuery};
+    use reify_ir::value::GeometryHandleRef;
     let target = GeometryHandleRef {
         realization_ref: RealizationNodeId::new("TestBody", 0),
         upstream_values_hash: [0u8; 32],
         kernel_handle: None,
     };
-    reify_ir::Value::Selector(
+    Value::Selector(
         SelectorValue::leaf(kind, target, LeafQuery::Named(name.into()))
             .expect("LeafQuery::Named accepts any SelectorKind"),
     )
