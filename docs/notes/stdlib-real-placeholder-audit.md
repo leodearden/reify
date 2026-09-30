@@ -437,31 +437,45 @@ the declared-dimension pins `analysis_result_stress_params_are_scalar_pressure` 
 
 ## Summary
 
+**Reconciled 2026-09-30 (task #7235).** Every count below was re-derived directly from the
+audit-table rows above (one row = one count), and the `Total` is now the sum of the
+classification rows. The previous block listed `tightenable-now` as 20 (the tables hold 9),
+omitted four classification values the tables use (`tightened-by-#3112`, `tightened-by-#3113`,
+`resolved ✓ task-G #3117`, `tightened` / #3641), and carried a `Total` of 106 — a running
+site tally that never equalled the sum of its own rows (100 vs 106). The two were
+never a partition, so the old figures are superseded, not merely corrected.
+
 | Classification | Count | Action |
 |----------------|-------|--------|
-| `tightenable-now` | 20 | tasks-B/C/A resolved; task-D (#3114) pending |
-| `genuine-dimensionless` | 27 | Annotated `// dimensionless` in-place (+1: `analysis.ri::AnalysisResult.safety_factor_value`, reclassified by #6165) |
+| `tightenable-now` | 9 | task-D (#3114) pending — all 9 in `structural_physical.ri` |
+| `genuine-dimensionless` | 27 | Annotated `// dimensionless` in-place (incl. `analysis.ri::AnalysisResult.safety_factor_value`, reclassified by #6165) |
 | `tightened-by-#3111` | 12 | task-A ✓ resolved 2026-06-05 — 10 pre-β + 2 post-β (#4240) sites in materials_mechanical.ri: density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy |
+| `tightened-by-#3112` | 3 | task-B ✓ resolved — `materials_thermal.ri` melting_point / max_service_temperature / glass_transition→Temperature |
+| `tightened-by-#3113` | 1 | task-C ✓ resolved — `materials_optical.ri::reference_thickness`→Length |
 | `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
-| `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — all 24 tolerancing.ri blocked-geometry-type sites tightened (17 feature→Geometry, 8 datum_refs→DatumRef; `fn require_finish` param also tightened) |
+| `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — the 24 `tolerancing.ri` table rows (16 `feature`→Geometry, 8 `datum_refs`→DatumRef). A 25th site, `fn require_finish(feature: ...)`, was tightened by the same task but has no table row and is not counted here |
+| `resolved ✓ task-G #3117` | 2 | `solver_elastic.ri::ElasticResult` `displacement` / `stress` — already `Field<…>`-typed (stale TODO confirmed by #3117) |
+| `tightened-by-#3641` | 4 | `solver_elastic.ri` post-audit sites (`ElasticResult.frame`, `ShellStress.top/mid/bottom`) `Real`→`Field<…>`; labelled plain `tightened` in the table |
+| `tightened-by-#6165` | 5 | RULING Q7 posture 2 ✓ resolved 2026-08-10 — `AnalysisResult`'s five stress params (von_mises_stress, principal_stress_1/2/3, max_shear_stress) `Real`→`Stress`; `safety_factor_value` reclassified `genuine-dimensionless` (counted above) |
+| `structural-contract` | 1 | `analysis.ri::Analysis.yield_strength` only — open, owned by task #5807 |
 | `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
 | `blocked-geometry-type` | 0 | All 24 previous blocked-geometry-type sites tightened by #3116 |
-| `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
-| `structural-contract` | 1 | `analysis.ri::Analysis.yield_strength` only — open, owned by task #5807 |
-| `tightened-by-#6165` | 5 | RULING Q7 posture 2 ✓ resolved 2026-08-10 — `AnalysisResult`'s five stress params (von_mises_stress, principal_stress_1/2/3, max_shear_stress) `Real`→`Stress`; `safety_factor_value` reclassified `genuine-dimensionless` (correct as shipped) |
-| **Total** | **106** | |
+| `blocked-field-in-param` | 0 | Resolved by task 3117 (see `resolved ✓ task-G #3117` row) |
+| **Total** | **99** | Sum of the rows above = number of audit-table rows (`materials_chemical.ri` has none) |
 
-> Note: the original audit counted 99 rows across all tables (88 unique `param X : Real`
-> source lines, plus 11 extra because some params appear in both a trait declaration and
-> conforming structures — e.g. `materials_fea.ri::poisson_ratio` appears 5× across
-> ElasticMaterial + 4 concrete structs). Task #4240 (post-β) added 2 new Real sites
-> (fatigue_strength_at, izod_impact) that were immediately tightened by #3111, bringing
-> the total to 101. Task #6877 (v0.6) then added the `Damped` mixin trait and flipped the
-> four `materials_fea.ri` presets to `DampedMaterial + Visual`, adding 5 further Real sites
-> (`Damped.loss_factor` plus its four preset members) — all `genuine-dimensionless`, none
-> owing a code change — bringing the running total to 106. The `tightenable-now` count
-> falls from 30 to 20 as tasks A (#3111), B (#3112), and C (#3113) resolve; each per-module
-> table shows the resolved rows inline.
+> Note: `Total` counts **table rows**, not distinct source lines or an add-as-you-go tally.
+> Per-module row counts: materials_mechanical 19, materials_thermal 6, materials_optical 4,
+> materials_electrical 4, materials_fea 10, structural_physical 15, tolerancing 24, io 1,
+> solver_elastic 9 (5 original + 4 post-audit), analysis 7 = 99. The original audit counted
+> 88 unique `param X : Real` source lines, plus extra rows because some params appear in both
+> a trait declaration and conforming structures (e.g. `materials_fea.ri::poisson_ratio`
+> appears 5× across ElasticMaterial + 4 concrete structs). Later tasks added rows: #4240
+> (post-β) 2 (fatigue_strength_at, izod_impact; both tightened by #3111), #6877 (v0.6)
+> 5 (`Damped.loss_factor` plus its four preset members, all `genuine-dimensionless`, none owing
+> a code change), and the post-audit #3641 sites. The `tightenable-now` count fell from 30 as
+> tasks A (#3111), B (#3112) and C (#3113) resolved; 9 remain (task-D). Only sites with a
+> table row are counted; `fn require_finish` (see the `tolerancing.ri` section) is the one
+> tightened site that has none.
 
 ---
 
