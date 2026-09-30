@@ -5082,6 +5082,10 @@ mod tests {
     // under the names their parsers read. ──
     mod advertised_params;
 
+    // ── Task 6752: on-demand real-kernel measurement of the write seam's
+    // rebuild cost (docs/debug-mcp-contract.md). ──
+    mod rebuild_cost;
+
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
