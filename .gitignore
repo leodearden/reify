@@ -54,7 +54,6 @@ tree-sitter-reify/src/.generated_outputs.stamp
 tree-sitter-reify/src/.tmp-*
 tree-sitter-reify/src/.generate.lock
 tree-sitter-reify/src/.generate.lock.d
-tree-sitter-reify/src/.generated_outputs.stamp
 
 # Sidecar build artifacts
 gui/dist/
