@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::diff::{StateDelta, advance_baseline, compute_delta, diff_gui_state};
 use crate::eval_queue::{
-    EditIdentity, EditLedger, EditOrder, EvalActivity, EvalObserver, EvalOutcome, EvalQueue,
-    EvalRequest, EvalTicket, SnapshotPublisher,
+    EditIdentity, EditLedger, EditOrder, EvalActivity, EvalObserver, EvalOutcome, EvalProgress,
+    EvalQueue, EvalRequest, EvalTicket, SnapshotPublisher,
 };
 use crate::tests::test_helpers::{
     ANTI_WEDGE, DEEP_RECURSION_DEPTH, ManualExecutor, ManualQueue, Observed, RecordingObserver,
@@ -710,6 +710,68 @@ fn a_drainer_that_unwinds_with_no_executor_left_fails_what_is_queued() {
     rig.executor.run_pending();
     assert_eq!(settled(next), Ok("next".to_string()));
     assert_eq!(rig.ran(), ["next"]);
+}
+
+// ── Progress: the generation issued and the work in hand, read without running ─
+
+fn progress(generation: u64, outstanding: usize) -> EvalProgress {
+    EvalProgress {
+        generation,
+        outstanding,
+    }
+}
+
+#[test]
+fn a_fresh_queue_has_issued_nothing_and_holds_nothing() {
+    let rig = ManualRig::new();
+
+    assert_eq!(rig.queue.progress(), progress(0, 0));
+}
+
+#[test]
+fn an_evaluation_is_outstanding_until_it_runs_and_its_generation_outlives_it() {
+    let rig = ManualRig::new();
+    let _evaluation = rig.evaluation("E");
+
+    assert_eq!(rig.queue.progress(), progress(1, 1), "accepted, not yet run");
+
+    rig.executor.run_pending();
+
+    assert_eq!(
+        rig.queue.progress(),
+        progress(1, 0),
+        "settling finishes the work but never resets the generation"
+    );
+}
+
+#[test]
+fn an_engine_call_neither_issues_a_generation_nor_counts_as_outstanding() {
+    let rig = ManualRig::new();
+    let _call = rig.engine_call("call");
+
+    assert_eq!(rig.queue.progress(), progress(0, 0));
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.queue.progress(), progress(0, 0));
+}
+
+#[test]
+fn a_superseded_edit_spends_its_generation_but_is_no_longer_outstanding() {
+    let rig = ManualRig::new();
+    let _older = rig.edit(preview("A", 1), "A1");
+    let _newer = rig.edit(preview("A", 2), "A2");
+
+    assert_eq!(
+        rig.queue.progress(),
+        progress(2, 1),
+        "the older edit resolved unrun when the newer one was accepted"
+    );
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.queue.progress(), progress(2, 0));
+    assert_eq!(rig.ran(), ["A2"]);
 }
 
 // ── Announcements: every publishing entry is fenced by its generation ────────
