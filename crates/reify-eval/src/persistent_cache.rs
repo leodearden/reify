@@ -1939,11 +1939,9 @@ pub fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
 /// functions guard `now.duration_since(mtime)` with `Err(_) => continue` to
 /// keep such entries rather than treating them as stale.
 ///
-/// Test support only, under the same gate as [`backdate_mtime`]: compiled for
-/// this crate's unit tests (`cfg(test)`) and for dev-dependents that enable
-/// the `test-instrumentation` feature; never part of a production build.
-#[cfg(any(test, feature = "test-instrumentation"))]
-pub fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
+/// Exposed `pub(crate)` so test modules across the crate can share this helper.
+#[cfg(test)]
+pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
     use std::time::{Duration, SystemTime};
     let t = SystemTime::now()
         .checked_add(Duration::from_secs(secs_in_future))
