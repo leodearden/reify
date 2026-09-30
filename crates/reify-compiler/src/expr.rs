@@ -3894,7 +3894,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
-                    } else if is_orientation_euler_fn(name) {
+                    } else if is_orientation_decomposer_fn(name) {
                         // Euler DECOMPOSER (task #6082):
                         // orient_to_euler(Orientation<3>, EulerConvention)
                         //   → List<Angle>, the 3-element Value::List of ANGLE
@@ -3906,14 +3906,14 @@ fn compile_expr_guarded_with_expected_inner(
                         // already typed Orientation(3) by the #5344 arm above,
                         // so that arm wins and this one never sees it. The two
                         // slices are pinned disjoint in units.rs
-                        // (`orientation_euler_fn_names_are_disjoint_from_other_families`),
+                        // (`orientation_decomposer_fn_names_are_disjoint_from_other_families`),
                         // which also makes this arm's ladder position
                         // unobservable.
                         //
                         // Rationale for the module split, and why neither name
                         // may be declared as a bodied `.ri pub fn` instead:
                         // see orientation_signatures.rs.
-                        orientation_euler_result_type(name)
+                        orientation_decomposer_result_type(name)
                     } else {
                         // TERMINAL FIRST-ARG FALLBACK — the open end of the
                         // ladder. Any callee no arm above claimed is typed as

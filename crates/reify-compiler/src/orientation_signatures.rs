@@ -19,8 +19,8 @@
 //! ladder arm, the tests below) points there rather than restating it.
 //!
 //! The second family is one name, `orient_to_euler`
-//! ([`ORIENTATION_EULER_FN_NAMES`] / [`is_orientation_euler_fn`] /
-//! [`orientation_euler_result_type`]). It is a separate resolver rather than
+//! ([`ORIENTATION_DECOMPOSER_FN_NAMES`] / [`is_orientation_decomposer_fn`] /
+//! [`orientation_decomposer_result_type`]). It is a separate resolver rather than
 //! 19 rows in the first because it answers a different question: the
 //! constructors map to a fixed NOMINAL type, while the decomposer returns a
 //! `List<Angle>`. Its own doc comment carries the full rationale, including
@@ -180,10 +180,10 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
     }
 }
 
-// ─── Euler DECOMPOSER family (task #6082) ────────────────────────────────────
+// ─── DECOMPOSER family (tasks #6082, #6306) ──────────────────────────────────
 
 /// The Euler-angle **decomposer** names the compiler types via
-/// [`orientation_euler_result_type`] — today exactly one, `orient_to_euler`.
+/// [`orientation_decomposer_result_type`] — today exactly one, `orient_to_euler`.
 /// Single source of truth, imported into the `units.rs` test module to pin
 /// disjointness from every sibling family, [`ORIENTATION_TYPED_FN_NAMES`]
 /// included.
@@ -217,13 +217,13 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 /// pre-empt that family for no gain.
 ///
 /// Case-sensitive: Reify function names are snake_case.
-pub const ORIENTATION_EULER_FN_NAMES: &[&str] = &["orient_to_euler"];
+pub const ORIENTATION_DECOMPOSER_FN_NAMES: &[&str] = &["orient_to_euler"];
 
-/// Is `name` a Euler decomposer typed by [`orientation_euler_result_type`]?
+/// Is `name` a Euler decomposer typed by [`orientation_decomposer_result_type`]?
 /// Name-only classification — a `.contains` over the single-source-of-truth
-/// slice [`ORIENTATION_EULER_FN_NAMES`]. Case-sensitive.
-pub(crate) fn is_orientation_euler_fn(name: &str) -> bool {
-    ORIENTATION_EULER_FN_NAMES.contains(&name)
+/// slice [`ORIENTATION_DECOMPOSER_FN_NAMES`]. Case-sensitive.
+pub(crate) fn is_orientation_decomposer_fn(name: &str) -> bool {
+    ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name)
 }
 
 /// Result type for a Euler decomposer. Arg-INDEPENDENT, like its constructor
@@ -237,16 +237,16 @@ pub(crate) fn is_orientation_euler_fn(name: &str) -> bool {
 /// result flow into a `List<Angle>` parameter, the user-observable signal task
 /// #6082 exists to deliver.
 ///
-/// Only reached for names in [`ORIENTATION_EULER_FN_NAMES`] (the caller gates
-/// on [`is_orientation_euler_fn`]); the `_` arm is therefore unreachable in
+/// Only reached for names in [`ORIENTATION_DECOMPOSER_FN_NAMES`] (the caller gates
+/// on [`is_orientation_decomposer_fn`]); the `_` arm is therefore unreachable in
 /// practice, and returns the same type as the single real arm so that a name
 /// added to the slice without its own arm cannot change behaviour silently.
-/// The `every_orientation_euler_fn_name_maps_to_its_declared_result_type` test
+/// The `every_orientation_decomposer_fn_name_maps_to_its_declared_result_type` test
 /// makes such an addition loud instead.
-pub(crate) fn orientation_euler_result_type(name: &str) -> Type {
+pub(crate) fn orientation_decomposer_result_type(name: &str) -> Type {
     match name {
         "orient_to_euler" => Type::List(Box::new(Type::angle())),
-        // Unreachable in practice — the caller gates on is_orientation_euler_fn.
+        // Unreachable in practice — the caller gates on is_orientation_decomposer_fn.
         _ => Type::List(Box::new(Type::angle())),
     }
 }
@@ -568,12 +568,12 @@ mod tests {
         }
     }
 
-    // ── Euler DECOMPOSER family (task #6082) ─────────────────────────────────
+    // ── DECOMPOSER family (tasks #6082, #6306) ───────────────────────────────
 
-    /// `is_orientation_euler_fn` recognises the decomposer.
+    /// `is_orientation_decomposer_fn` recognises the decomposer.
     #[test]
-    fn is_orientation_euler_fn_recognises_orient_to_euler() {
-        assert!(is_orientation_euler_fn("orient_to_euler"));
+    fn is_orientation_decomposer_fn_recognises_orient_to_euler() {
+        assert!(is_orientation_decomposer_fn("orient_to_euler"));
     }
 
     /// THE SPLIT, pinned from this side: `orient_euler` must NOT be in the
@@ -588,9 +588,9 @@ mod tests {
     /// resolve it with whichever arm comes first, which is not a contract
     /// anyone should have to read the ladder order to know.
     #[test]
-    fn is_orientation_euler_fn_rejects_the_orient_euler_constructor() {
+    fn is_orientation_decomposer_fn_rejects_the_orient_euler_constructor() {
         assert!(
-            !is_orientation_euler_fn("orient_euler"),
+            !is_orientation_decomposer_fn("orient_euler"),
             "'orient_euler' COMPOSES angles into a rotation — it is a \
              constructor owned by ORIENTATION_TYPED_FN_NAMES, which types it \
              Orientation(3). Only the DECOMPOSER orient_to_euler belongs here, \
@@ -603,33 +603,33 @@ mod tests {
         );
     }
 
-    /// `is_orientation_euler_fn` rejects the three decomposers task #6004's
+    /// `is_orientation_decomposer_fn` rejects the three decomposers task #6004's
     /// registry owns, other families, the empty name, and an unknown name.
     ///
     /// `orient_to_axis_angle` is the point of the `orient_to_` pair: this
     /// family matches whole names, never prefixes.
     #[test]
-    fn is_orientation_euler_fn_rejects_siblings_and_unknown_names() {
+    fn is_orientation_decomposer_fn_rejects_siblings_and_unknown_names() {
         assert!(
-            !is_orientation_euler_fn("orient_log"),
+            !is_orientation_decomposer_fn("orient_log"),
             "must reject decomposer orient_log (task #6004's registry owns it)"
         );
         assert!(
-            !is_orientation_euler_fn("orient_to_axis_angle"),
+            !is_orientation_decomposer_fn("orient_to_axis_angle"),
             "must reject orient_to_axis_angle — note the shared `orient_to_` \
              prefix: this family matches whole names, not prefixes"
         );
         assert!(
-            !is_orientation_euler_fn("transform_log"),
+            !is_orientation_decomposer_fn("transform_log"),
             "must reject decomposer transform_log"
         );
         assert!(
-            !is_orientation_euler_fn("orient_inverse"),
+            !is_orientation_decomposer_fn("orient_inverse"),
             "must reject constructor orient_inverse"
         );
-        assert!(!is_orientation_euler_fn(""), "must reject empty name");
+        assert!(!is_orientation_decomposer_fn(""), "must reject empty name");
         assert!(
-            !is_orientation_euler_fn("does_not_exist"),
+            !is_orientation_decomposer_fn("does_not_exist"),
             "must reject unrelated name"
         );
     }
@@ -637,20 +637,20 @@ mod tests {
     /// Case-sensitivity invariant: Reify function names are snake_case, so
     /// PascalCase / SCREAMING_SNAKE forms must not match.
     #[test]
-    fn is_orientation_euler_fn_is_case_sensitive() {
-        assert!(!is_orientation_euler_fn("Orient_To_Euler"));
-        assert!(!is_orientation_euler_fn("ORIENT_TO_EULER"));
+    fn is_orientation_decomposer_fn_is_case_sensitive() {
+        assert!(!is_orientation_decomposer_fn("Orient_To_Euler"));
+        assert!(!is_orientation_decomposer_fn("ORIENT_TO_EULER"));
     }
 
-    /// `ORIENTATION_EULER_FN_NAMES` is exactly the one decomposer name —
+    /// `ORIENTATION_DECOMPOSER_FN_NAMES` is exactly the one decomposer name —
     /// membership plus an exact count, so a name added without being
     /// considered fails here first.
     #[test]
-    fn orientation_euler_fn_names_are_exactly_orient_to_euler() {
+    fn orientation_decomposer_fn_names_are_exactly_orient_to_euler() {
         assert_eq!(
-            ORIENTATION_EULER_FN_NAMES,
+            ORIENTATION_DECOMPOSER_FN_NAMES,
             ["orient_to_euler"],
-            "ORIENTATION_EULER_FN_NAMES must hold exactly the one decomposer"
+            "ORIENTATION_DECOMPOSER_FN_NAMES must hold exactly the one decomposer"
         );
     }
 
@@ -662,13 +662,13 @@ mod tests {
     #[test]
     fn orient_to_euler_result_type_is_list_of_angle() {
         assert_eq!(
-            orientation_euler_result_type("orient_to_euler"),
+            orientation_decomposer_result_type("orient_to_euler"),
             Type::List(Box::new(Type::angle()))
         );
     }
 
-    /// Every name in `ORIENTATION_EULER_FN_NAMES` must have its OWN arm in
-    /// `orientation_euler_result_type`, pinned by an explicit expectation
+    /// Every name in `ORIENTATION_DECOMPOSER_FN_NAMES` must have its OWN arm in
+    /// `orientation_decomposer_result_type`, pinned by an explicit expectation
     /// table that fails to COMPILE (not merely to assert) if the family grows
     /// without the new name being given a declared result type.
     ///
@@ -676,25 +676,25 @@ mod tests {
     /// from the default" is not a usable proxy for fallthrough here — which is
     /// precisely why this table is the guard.
     #[test]
-    fn every_orientation_euler_fn_name_maps_to_its_declared_result_type() {
+    fn every_orientation_decomposer_fn_name_maps_to_its_declared_result_type() {
         let expected: [(&str, Type); 1] =
             [("orient_to_euler", Type::List(Box::new(Type::angle())))];
         assert_eq!(
             expected.len(),
-            ORIENTATION_EULER_FN_NAMES.len(),
-            "the expectation table must cover every ORIENTATION_EULER_FN_NAMES \
+            ORIENTATION_DECOMPOSER_FN_NAMES.len(),
+            "the expectation table must cover every ORIENTATION_DECOMPOSER_FN_NAMES \
              entry — a name was added to the slice without a declared result type"
         );
         for (name, want) in expected {
             assert!(
-                ORIENTATION_EULER_FN_NAMES.contains(&name),
+                ORIENTATION_DECOMPOSER_FN_NAMES.contains(&name),
                 "expectation table names {name:?}, which is not in \
-                 ORIENTATION_EULER_FN_NAMES"
+                 ORIENTATION_DECOMPOSER_FN_NAMES"
             );
             assert_eq!(
-                orientation_euler_result_type(name),
+                orientation_decomposer_result_type(name),
                 want,
-                "orientation_euler_result_type({name:?}) must be its declared type"
+                "orientation_decomposer_result_type({name:?}) must be its declared type"
             );
         }
     }
