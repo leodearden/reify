@@ -4468,6 +4468,42 @@ describe('reifyLanguage — fold and indent coverage', () => {
   const EXCLUDED_BRACE_NODES = ['Interpolation'];
 
   /**
+   * `line` with its `//` comment removed, so prose about braces never counts
+   * as grammar. Quote-aware: a `//` inside a string literal
+   * (`LineComment { "//" … }`) is content, and a backslash escapes the next
+   * character both inside a literal and in a char set (`![\\\"{}]`).
+   */
+  function stripLineComment(line: string): string {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '\\') i++;
+      else if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (line.startsWith('//', i)) return line.slice(0, i);
+    }
+    return line;
+  }
+
+  /**
+   * reify.grammar's comment-stripped lines, split at the `@tokens` header:
+   * `productions` before it, `tokens` after it. The same text means different
+   * things on each side — inside `@tokens` a braced literal DECLARES a token
+   * rather than opening a production body — so every scan below reads exactly
+   * one side.
+   */
+  function grammarSections(grammarSrc: string): { productions: string[]; tokens: string[] } {
+    const lines = grammarSrc.split('\n');
+    const header = lines.findIndex((line) => /^@tokens\b/.test(line));
+    const split = header === -1 ? lines.length : header;
+    return {
+      productions: lines.slice(0, split).map(stripLineComment),
+      tokens: lines.slice(split + 1).map(stripLineComment),
+    };
+  }
+
+  /**
    * Names declared INSIDE the `@tokens` block whose entire body is one string
    * literal containing a `{` — a brace opener that has been folded into a
    * single NAMED token, such as `ImportItemsOpen { ".{" }` (#5931).
@@ -4481,15 +4517,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
    */
   function braceOpenerTokens(grammarSrc: string): string[] {
     const names: string[] = [];
-    let inTokens = false;
-    for (const rawLine of grammarSrc.split('\n')) {
-      if (/^@tokens\b/.test(rawLine)) {
-        inTokens = true;
-        continue;
-      }
-      if (!inTokens) continue;
-      // Strip line comments here too — a commented-out declaration is not one.
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(grammarSrc).tokens) {
       const decl = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/);
       if (decl && decl[2].includes('{')) names.push(decl[1]);
     }
@@ -4511,12 +4539,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
     const openers = braceOpenerTokens(grammarSrc);
     const found = new Set<string>();
     let current: string | null = null;
-    for (const rawLine of grammarSrc.split('\n')) {
-      // NOTE the asymmetry with `braceOpenerTokens`, which is deliberate: that
-      // pass reads the `@tokens` block, this one must STOP at it.
-      if (/^@tokens\b/.test(rawLine)) break;
-      // Strip line comments so prose about braces never counts as a body.
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(grammarSrc).productions) {
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
       const opensWithBrace =
@@ -4562,14 +4585,9 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * see the ImportDeclaration comment in reify.grammar.
    */
   it('admits no production that opens with an anonymous combined brace literal', () => {
-    const grammarSrc = readFixture('gui/src/editor/reify.grammar');
     const offenders: string[] = [];
     let scanned = 0;
-    for (const rawLine of grammarSrc.split('\n')) {
-      // Same stop as `braceDelimitedNodeTypes`: inside `@tokens` a braced
-      // literal is a token declaration, which is the spelling we WANT.
-      if (/^@tokens\b/.test(rawLine)) break;
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(readFixture('gui/src/editor/reify.grammar')).productions) {
       for (const [literal] of line.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
         scanned += 1;
         const body = literal.slice(1, -1);
@@ -4617,7 +4635,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * quoted `"}"`.
    */
   function productionBody(grammarSrc: string, name: string): string {
-    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const src = grammarSrc.split('\n').map(stripLineComment).join('\n');
     const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
     if (!header) throw new Error(`production ${name} not found in reify.grammar`);
     let depth = 1;
