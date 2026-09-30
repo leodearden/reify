@@ -774,7 +774,9 @@ impl<'a> Lowering<'a> {
                     // of the `path` (import_path) field — mirrors lower_import's
                     // segment-collection loop.
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(path_node) = child.child_by_field_name("path") {
+                    if !self.refuse_if_faulty(child, "module declaration")
+                        && let Some(path_node) = child.child_by_field_name("path")
+                    {
                         let mut segments = Vec::new();
                         let mut seg_cursor = path_node.walk();
                         for seg in path_node.children(&mut seg_cursor) {
