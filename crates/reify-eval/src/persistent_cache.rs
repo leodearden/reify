@@ -1916,25 +1916,17 @@ pub fn sweep_on_startup(cache_root: &Path, current_engine_version: &str) -> Swee
 /// (opened read-only; on Linux `futimens` only requires ownership of the
 /// inode, not write access on the file descriptor).
 ///
-/// Exposed `pub(crate)` so test modules across the crate can share this
-/// helper without duplicating it.
-#[cfg(test)]
-pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
-    use std::fs::FileTimes;
+/// Test support only: compiled for this crate's unit tests (`cfg(test)`) and
+/// for dev-dependents that enable the `test-instrumentation` feature (see
+/// `crates/reify-eval/Cargo.toml` `[features]`); never part of a production
+/// build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     use std::time::{Duration, SystemTime};
     let t = SystemTime::now()
         .checked_sub(Duration::from_secs(age_secs))
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let times = FileTimes::new().set_modified(t);
-    if path.is_dir() {
-        // Directories can be opened O_RDONLY; futimens checks ownership not
-        // fd write-access on Linux.
-        let f = std::fs::File::open(path).unwrap();
-        f.set_times(times).unwrap();
-    } else {
-        let f = std::fs::File::options().write(true).open(path).unwrap();
-        f.set_times(times).unwrap();
-    }
+    set_mtime(path, t);
 }
 
 /// Forward-date the mtime of `path` to `secs_in_future` seconds in the future.
@@ -1947,24 +1939,32 @@ pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
 /// functions guard `now.duration_since(mtime)` with `Err(_) => continue` to
 /// keep such entries rather than treating them as stale.
 ///
-/// Exposed `pub(crate)` so test modules across the crate can share this helper.
-#[cfg(test)]
-pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
-    use std::fs::FileTimes;
+/// Test support only, under the same gate as [`backdate_mtime`]: compiled for
+/// this crate's unit tests (`cfg(test)`) and for dev-dependents that enable
+/// the `test-instrumentation` feature; never part of a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
     use std::time::{Duration, SystemTime};
     let t = SystemTime::now()
         .checked_add(Duration::from_secs(secs_in_future))
         .unwrap_or_else(SystemTime::now);
-    let times = FileTimes::new().set_modified(t);
-    if path.is_dir() {
+    set_mtime(path, t);
+}
+
+/// Set the mtime of the file or directory at `path` to `mtime`.
+#[cfg(any(test, feature = "test-instrumentation"))]
+fn set_mtime(path: &Path, mtime: std::time::SystemTime) {
+    let times = std::fs::FileTimes::new().set_modified(mtime);
+    let opened = if path.is_dir() {
         // Directories can be opened O_RDONLY; futimens checks ownership not
         // fd write-access on Linux.
-        let f = std::fs::File::open(path).unwrap();
-        f.set_times(times).unwrap();
+        std::fs::File::open(path)
     } else {
-        let f = std::fs::File::options().write(true).open(path).unwrap();
-        f.set_times(times).unwrap();
-    }
+        std::fs::File::options().write(true).open(path)
+    };
+    let f = opened.unwrap_or_else(|e| panic!("set_mtime: open {}: {e}", path.display()));
+    f.set_times(times)
+        .unwrap_or_else(|e| panic!("set_mtime: set_times on {}: {e}", path.display()));
 }
 
 /// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
