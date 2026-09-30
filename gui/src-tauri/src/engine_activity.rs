@@ -12,7 +12,7 @@ use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde::{Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::engine::EngineSession;
 use crate::eval_queue::{EvalProgress, EvalQueue};
@@ -31,6 +31,11 @@ pub struct EngineActivity {
 impl EngineActivity {
     pub fn busy(&self) -> bool {
         self.engine_lock_held || self.queue.outstanding > 0
+    }
+
+    /// The `health` tool's reply: the server is up, and whether the lane is busy.
+    pub fn health_reply(&self) -> Value {
+        json!({"ok": true, "engine_busy": self.busy()})
     }
 }
 
@@ -159,6 +164,36 @@ pub enum WaitOutcome {
         last: EngineActivity,
         awaiting_generation: bool,
     },
+}
+
+impl WaitOutcome {
+    /// The reply `wait_for_idle` gives without asking the frontend, carrying
+    /// the in-band `engine_not_started` / `timeout` tokens its callers branch
+    /// on. `None` once the engine settled: the frontend's render half is next.
+    pub fn early_reply(&self) -> Option<Value> {
+        match self {
+            WaitOutcome::Settled { .. } => None,
+            WaitOutcome::NotStarted => Some(json!({"error": "engine_not_started"})),
+            WaitOutcome::TimedOut {
+                last,
+                awaiting_generation,
+            } => Some(json!({
+                "error": "timeout",
+                "engine_busy": last.busy(),
+                "generation": last.queue.generation,
+                "awaiting_generation": awaiting_generation,
+            })),
+        }
+    }
+}
+
+/// Add the `generation` a wait settled at to an object reply; any other reply
+/// is returned as it is.
+pub fn stamp_generation(mut reply: Value, generation: u64) -> Value {
+    if let Some(object) = reply.as_object_mut() {
+        object.insert("generation".to_string(), json!(generation));
+    }
+    reply
 }
 
 /// Poll [`probe`] until [`verdict`] lets the waiter go or `request.timeout`

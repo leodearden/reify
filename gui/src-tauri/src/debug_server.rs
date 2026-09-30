@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::debug::DebugBridge;
 use crate::engine::EngineSession;
+use crate::engine_activity;
 use reify_mcp::SelectionInfo;
 
 // --- Tool definitions ---
@@ -36,7 +37,12 @@ fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "health",
-            description: "Liveness check — returns ok:true when the debug server is running",
+            description: "Liveness check — returns {ok: true, engine_busy} when the debug server is running. engine_busy is engine_status's busy, read without waiting on the engine lock.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "engine_status",
+            description: "NON-BLOCKING engine lane read that never waits on the engine lock: {busy, engine_lock_held, engine_started (null while the lock is held), generation (newest EvalQueue generation issued this GUI process; pass it to wait_for_idle.since_generation), queue_outstanding}. busy covers both queued GUI evaluations and a debug tool's own in-flight engine work.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -420,13 +426,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_idle",
-            description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
+            description: "Wait until the engine lane is idle (no queued or running evaluation, polled without waiting on the engine lock) and one frame has rendered. Returns {ok: true, idle_after_ms, generation}, where generation is the newest evaluation generation settled; or {error: 'timeout', engine_busy, generation, awaiting_generation}; or {error: 'engine_not_started'} before any design is loaded. Debug/MCP tools' own engine work is synchronous (done when the tool returns) and issues no generation. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "timeout_ms": {
                         "type": "integer",
                         "description": "Maximum wait in milliseconds; default 30000."
+                    },
+                    "since_generation": {
+                        "type": "integer",
+                        "description": "Optional. Wait for an evaluation NEWER than this generation (read engine_status.generation before your action) to finish; without it, waits for the current work to settle."
                     }
                 }
             }),
@@ -1242,6 +1252,9 @@ struct DebugServerState {
     /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent queued
     /// evaluation diffs against the post-debug-mutation state.
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
+    /// The GUI's evaluation queue, read-only here: its `progress()` feeds
+    /// `engine_activity`. Routing debug writes through it is #7854.
+    evals: Arc<crate::eval_queue::EvalQueue>,
 }
 
 fn is_image_tool(name: &str) -> bool {
@@ -1332,7 +1345,6 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
 // Returns Some(result) when the name matches a stateless arm, None otherwise.
 async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
     match name {
-        "health" => Some(Ok(json!({"ok": true}))),
         "morph_stats" => Some(handle_morph_stats(params.clone()).await),
         "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
@@ -1348,6 +1360,12 @@ async fn dispatch_tool(
         return result;
     }
     match name {
+        // Lock-free lane reads: neither ever waits on the engine lock.
+        "health" => Ok(engine_activity::probe(&state.engine, &state.evals).health_reply()),
+        "engine_status" => {
+            serde_json::to_value(engine_activity::probe(&state.engine, &state.evals))
+                .map_err(|e| e.to_string())
+        }
         "engine_state" => handle_engine_state(state, params).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
@@ -2930,38 +2948,40 @@ async fn handle_rest(
     }
 }
 
+/// Wait in two halves under one deadline: the engine lane settles (polled
+/// lock-free, so this never parks a runtime worker behind a long evaluation),
+/// then the frontend confirms its own evaluation status and renders a frame.
 async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    // Validate and canonicalize timeout_ms here so the Rust oneshot and the
-    // frontend handler both use the same effective timeout with no drift
-    // between two independent parsers.
-    let timeout_ms: u64 = match params.get("timeout_ms") {
-        None => 30_000,
-        Some(v) => match v.as_u64().filter(|&n| n > 0) {
-            Some(n) => n,
-            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
-        },
+    let request = match engine_activity::SettleRequest::from_params(&params) {
+        Ok(request) => request,
+        Err(message) => return Ok(json!({"error": message})),
     };
 
-    // Fast Rust-side pre-check: if the engine session has never completed a
-    // compile/check cycle, return immediately rather than delegating to the
-    // frontend where `evalStatus` starts as `'idle'` by default and would
-    // produce a false-positive ok response on a fresh (un-loaded) session.
-    {
-        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())?;
-        if !is_idle {
-            return Ok(json!({"error": "engine_not_started"}));
-        }
+    let outcome = engine_activity::wait_until_settled(&state.engine, &state.evals, &request).await;
+    if let Some(reply) = outcome.early_reply() {
+        return Ok(reply);
     }
+    let engine_activity::WaitOutcome::Settled { generation, waited } = outcome else {
+        unreachable!("early_reply answers every outcome but Settled");
+    };
 
-    // Build a canonical params object so the frontend receives a validated value.
-    let canonical_params = json!({ "timeout_ms": timeout_ms });
+    // The frontend gets what is left of the caller's budget, canonicalised so
+    // it never re-parses the caller's value.
+    let remaining_ms = u64::try_from(request.timeout.saturating_sub(waited).as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
     // Add a 5-second buffer so the Rust-side oneshot fires *after* the frontend
     // has had a chance to return its own {error: "timeout"} response.
-    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
-    state
+    let rust_timeout = Duration::from_millis(remaining_ms.saturating_add(5_000));
+    let reply = state
         .debug_bridge
-        .query_frontend_with_timeout("wait_for_idle", canonical_params, rust_timeout)
-        .await
+        .query_frontend_with_timeout(
+            "wait_for_idle",
+            json!({ "timeout_ms": remaining_ms }),
+            rust_timeout,
+        )
+        .await?;
+    Ok(engine_activity::stamp_generation(reply, generation))
 }
 
 async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -3081,6 +3101,7 @@ pub async fn spawn_debug_server(
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
+    evals: Arc<crate::eval_queue::EvalQueue>,
 ) -> Result<(), String> {
     // Initialize the measurement-window clock at server spawn so
     // session_start_unix_ms reports the true debug-server start time
@@ -3092,6 +3113,7 @@ pub async fn spawn_debug_server(
         selection,
         debug_bridge,
         last_state,
+        evals,
     };
 
     let app = Router::new()
