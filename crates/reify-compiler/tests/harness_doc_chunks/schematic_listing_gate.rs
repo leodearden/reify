@@ -24,14 +24,12 @@ use std::collections::BTreeSet;
 use crate::chunk_io::{chunk_label, read_chunk_file, report};
 use crate::chunk_markdown::parse_fences;
 use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span, listing_signature_spans};
-use crate::signature_fixtures::{SIGNATURE_FIXTURES, read_fixture};
+use crate::signature_fixtures::{
+    SCHEMATIC_LISTING_SIGNATURES_FIXTURE, SIGNATURE_FIXTURES, read_fixture,
+};
 
 /// The info string of the fences read as signature listings.
 const LISTING_TAG: &str = "reify-schematic";
-
-/// The fixture a listed signature's mirroring call belongs in, repo-relative.
-const SCHEMATIC_LISTING_SIGNATURES_FIXTURE: &str =
-    "crates/reify-compiler/tests/fixtures/schematic_listing_signatures_smoke.ri";
 
 /// The chunks, by stem, whose ```` ```reify-schematic ```` listings are all
 /// signature listings.
@@ -127,7 +125,7 @@ fn schematic_listing_violations(chunks: &[(&str, &str)], calls: &[(String, usize
 /// Anti-vacuity floor: the distinct signature forms the gate reads across the
 /// gated listings. EXACT live value — re-measure it by the protocol stated once
 /// next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_LISTING_FORMS: usize = 1;
+const MINIMUM_LISTING_FORMS: usize = 30;
 
 /// Forms each listing block must yield, so a block the reading stops reaching is
 /// named: the Primitives, 2D-profile / Prelude, GD&T-zone and Free-form listings.

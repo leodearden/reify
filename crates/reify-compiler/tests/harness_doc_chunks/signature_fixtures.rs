@@ -17,10 +17,18 @@ pub(crate) const STDLIB_GEOMETRY_OPS_FIXTURE: &str =
 pub(crate) const UNFENCED_SIGNATURES_FIXTURE: &str =
     "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
 
+/// The mirror of every other signature in the gated chunks'
+/// ```` ```reify-schematic ```` listings, repo-relative.
+pub(crate) const SCHEMATIC_LISTING_SIGNATURES_FIXTURE: &str =
+    "crates/reify-compiler/tests/fixtures/schematic_listing_signatures_smoke.ri";
+
 /// Every fixture whose calls can exercise a documented form, each repo-relative
 /// — the currency every violation names a fixture in.
-pub(crate) const SIGNATURE_FIXTURES: &[&str] =
-    &[UNFENCED_SIGNATURES_FIXTURE, STDLIB_GEOMETRY_OPS_FIXTURE];
+pub(crate) const SIGNATURE_FIXTURES: &[&str] = &[
+    UNFENCED_SIGNATURES_FIXTURE,
+    STDLIB_GEOMETRY_OPS_FIXTURE,
+    SCHEMATIC_LISTING_SIGNATURES_FIXTURE,
+];
 
 /// The source of the repo-relative fixture at `path`.
 pub(crate) fn read_fixture(path: &str) -> String {

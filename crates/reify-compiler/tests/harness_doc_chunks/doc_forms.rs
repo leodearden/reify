@@ -8,7 +8,8 @@
 //! an argument list rather than declaring one variadic), then optionally
 //! `-> Type`. Concrete idioms, expressions, declarations, qualified or
 //! capitalised names and lambdas are prose, never signatures — see
-//! [`doc_form_of_span`].
+//! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
+//! span, as [`listing_signature_spans`] cuts it, through that same rule.
 
 use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
 use reify_compiler::parse_with_stdlib;
@@ -94,10 +95,52 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
 /// Per line, text from the first `//` is a comment and is dropped. Every
 /// `ident(` whose identifier is not `.`-qualified and whose parentheses balance
 /// on that line yields `ident(…)` through its closing paren; a trailing
-/// `-> Type` carries no arity, so it is left behind.
+/// `-> Type` carries no arity, so it is left behind. A call nested in another's
+/// parentheses is part of that span, never cut on its own.
 pub(crate) fn listing_signature_spans(listing: &str) -> Vec<String> {
-    let _ = listing;
-    Vec::new()
+    listing
+        .lines()
+        .flat_map(|line| line_signature_spans(line.split("//").next().unwrap_or_default()))
+        .collect()
+}
+
+/// [`listing_signature_spans`] over one comment-free line.
+fn line_signature_spans(code: &str) -> Vec<String> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = code[cursor..].find('(') {
+        let open = cursor + found;
+        let Some(close) = closing_paren(code, open) else {
+            cursor = open + 1;
+            continue;
+        };
+        let start = code[..open]
+            .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            .len();
+        if start < open && !code[..start].ends_with('.') {
+            spans.push(code[start..=close].to_string());
+        }
+        cursor = close + 1;
+    }
+    spans
+}
+
+/// The byte index of the `)` that balances the `(` at `open`, if `code` has one.
+fn closing_paren(code: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, c) in code[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A lowercase snake_case identifier: the only shape a documented name or a
@@ -482,7 +525,7 @@ structure def NamedArgument {
 
 #[test]
 fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
-    let cases: [(&str, &[&str], &str); 7] = [
+    let cases: [(&str, &[&str], &str); 8] = [
         (
             "point2(x, y)          point3(x, y, z)",
             &["point2(x, y)", "point3(x, y, z)"],
@@ -504,6 +547,11 @@ fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
             "a type listing has no call",
         ),
         ("broken(a, b", &[], "an unbalanced paren is not cut"),
+        (
+            "translate(cylinder(r, h), dx)",
+            &["translate(cylinder(r, h), dx)"],
+            "a nested call is part of the enclosing span",
+        ),
         (
             "sphere(radius)\ntorus(major_radius, minor_radius)",
             &["sphere(radius)", "torus(major_radius, minor_radius)"],

@@ -18,7 +18,8 @@
 //! `mechanism` are SILENT. For those the pairing is a doc↔fixture consistency
 //! pin, which becomes a real arity pin as #7343 and the builtin-signature-registry
 //! work land. Argument type and order are never checked. Lambda-parameter spans
-//! and ```` ```reify-schematic ```` listings are out of scope.
+//! are out of scope; ```` ```reify-schematic ```` listings are the fenced twin
+//! `schematic_listing_gate.rs`'s.
 
 use std::collections::BTreeSet;
 

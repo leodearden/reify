@@ -58,7 +58,7 @@ point2(x, y)          point3(x, y, z)
 vec2(x, y)            vec3(x, y, z)
 line_segment(x1, y1, z1, x2, y2, z2)
 arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
-polygon(x1, y1, x2, y2, x3, y3, ...)   rectangle(width, height)
+polygon(x1, y1, x2, y2, x3, y3, …)   rectangle(width, height)
 ```
 
 ## Solid Primitives
@@ -100,7 +100,7 @@ vertex coordinates, not auto-centred (see the Anchoring & orientation table belo
 
 ```reify-schematic
 rectangle(width, height)   circle(radius)
-polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)
+polygon(x1, y1, x2, y2, x3, y3, …)   ellipse(semi_major, semi_minor)
 rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
 ```
 
