@@ -125,6 +125,42 @@
 - **Blocks:** M-004, M-005 (through-thickness sum needs per-ply D).
 - **Note:** Classical lamination theory; well-known maths but a new code path.
 
+> **CORRECTION 2026-09-30 (task #7237, re-verified against main `cb06f7e5bb`) — M-003 is PARTIAL, not
+> FICTION: the per-material 6×6 and its frame rotation shipped; the shell/ply consumer did not.** This is
+> a dated audit snapshot (**Date:** 2026-05-12), so the bullets above are preserved as the record of what
+> was measured then. The 2026-09-03 pointer above this row flagged it as stale without adjudicating it;
+> this overlay does the adjudication.
+>
+> - **Shipped: both primitives the Evidence says are absent.** `OrthotropicMaterial::d_matrix_local` and
+>   `TransverseIsotropicMaterial::d_matrix_local` (`crates/reify-solver-elastic/src/constitutive.rs`; line
+>   numbers are in the M-001 overlay) build the 6×6 in the material frame. `rotate_voigt(d_local,
+>   rotation)` (same file, `:615`) is the general local→global Bond rotation, `D_global = T·D_local·Tᵀ`;
+>   rotation about the shell normal by a fibre angle is the special case pinned by test
+>   `rotate_voigt_30deg_about_z_matches_lamina_transformation_with_correct_sign`
+>   (`crates/reify-solver-elastic/tests/constitutive_laws.rs`). All three first landed 2026-05-26, commit
+>   `7abf09ed11` (`git log -S`), two weeks after this snapshot. So both Evidence sentences — "the only
+>   D-matrix builder" and "No rotation by fibre orientation; no orthotropic 6×6 stiffness routine" — are
+>   SUPERSEDED. (The drift of the `constitutive.rs:88` anchor is recorded in the 2026-09-03 pointer above.)
+> - **Consumed by SOLID assembly only.** `AnisotropicMaterial::from_law` (`material_field.rs`) wraps a
+>   `ConstitutiveLaw` and a frame into the value that `MaterialField::material_at` returns, and its
+>   `d_matrix_global()` applies `rotate_voigt`. `MaterialField` feeds four solid element entry points:
+>   `element_stiffness_p1_with_field` and `element_stiffness_p2_with_field` (`assembly/tet.rs`),
+>   `element_stiffness_hex_p1_with_field` (`assembly/hex.rs`) and
+>   `element_stiffness_wedge_p1_with_field` (`assembly/wedge.rs`). A `git grep -E
+>   'rotate_voigt|MaterialField|ConstitutiveLaw|AnisotropicMaterial|OrthotropicMaterial'` over
+>   `shell_assembly.rs`, `shell_solve.rs`, `shell_kinematics.rs`, `shell_result.rs`, `shell_boundary.rs`,
+>   everything under `elements/` (including `degenerate_shell.rs` and `mitc3_plus.rs`) and the engine's
+>   `reify-eval` `compute_targets/shell_solve.rs` returns no hit.
+> - **Still absent, which is why this is PARTIAL and not DONE.** (i) The shell plane-stress reduction of a
+>   6×6 orthotropic D: the shell kernels' only plane-stress builder is `plane_stress_d(material:
+>   &IsotropicElastic) -> [[f64; 3]; 3]` (`shell_assembly.rs:182`), which is 3×3 and isotropic. (ii) Any
+>   per-ply construction loop. The composite PRD's own 2026-05-26 companion edit (commit `25b5c374ed`)
+>   assigns that reduction to *this* PRD and not to the anisotropic foundation: "Composites owns only the
+>   *shell plane-stress reduction* of that law plus the ply-stack through-thickness integration and
+>   failure criteria" (`docs/prds/v0_5/composite-laminated-shells.md`).
+> - **Blocks line unchanged.** "M-004, M-005" still holds for the missing half: both rows are still
+>   FICTION (see their overlays below).
+
 ### M-004: `Laminate` stdlib structure with `plies : List<Ply>` ordered stack
 
 - **State:** FICTION
