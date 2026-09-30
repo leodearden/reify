@@ -395,8 +395,9 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 /// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
 /// the line, in source order.
 ///
-/// [`has_canonical_cite`], [`extract_cites`] and [`has_malformed_cite`]'s `#N`
-/// pass are all expressed over this one iterator, so the grammar they share —
+/// [`has_canonical_cite`], [`extract_cites`] (both via
+/// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
+/// all expressed over this one iterator, so the grammar they share —
 /// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
 /// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
 /// CONSTRUCTION. It was previously three hand-rolled copies required to stay
@@ -441,32 +442,36 @@ fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
     })
 }
 
-/// §8.2 canonical citation: `true` when the line carries at least one
-/// [`cite_occurrences`] cite (`#` + 1..=5 digits, value ≥1) that is NOT a
-/// PRD-relative index.
+/// §8.2 canonical cite occurrences: every [`cite_occurrences`] cite (`#` +
+/// 1..=5 digits, value ≥1) that is NOT a PRD-relative index, yielded as
+/// `(byte_offset_of_the_hash, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
 /// document, not a task, so it cannot anchor tracking. The filter is applied
-/// per-OCCURRENCE, so a line carrying both idioms still reports the genuine
-/// cite. An all-PRD-relative (or all-zero) line falls through to the structural
-/// `untracked` / `malformed-cite` classification.
+/// per-OCCURRENCE, so a line carrying both idioms still yields the genuine
+/// cite. This is the ONE definition of a canonical task cite, shared by
+/// [`has_canonical_cite`], [`extract_cites`] and PPRDSTATUS's cite lane, which
+/// needs the offset to find the cite's adjacent status parenthetical.
+pub(crate) fn canonical_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
+    cite_occurrences(line).filter(|&(at, id)| !prd_relative_cite(line.as_bytes(), at, id))
+}
+
+/// §8.2 canonical citation: `true` when the line carries at least one
+/// [`canonical_cite_occurrences`] cite. An all-PRD-relative (or all-zero) line
+/// falls through to the structural `untracked` / `malformed-cite`
+/// classification.
 fn has_canonical_cite(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    cite_occurrences(line).any(|(at, id)| !prd_relative_cite(bytes, at, id))
+    canonical_cite_occurrences(line).next().is_some()
 }
 
 /// §8.2 cite extraction (β liveness lane): every canonical id on the line, in
 /// source order.
 ///
-/// Shares [`cite_occurrences`] with [`has_canonical_cite`] and applies the same
-/// [`prd_relative_cite`] filter, so the two are lock-step by construction: a
-/// cite that is not canonical is also not extracted.
+/// Expressed over [`canonical_cite_occurrences`], like [`has_canonical_cite`],
+/// so the two are lock-step by construction: a cite that is not canonical is
+/// also not extracted.
 fn extract_cites(line: &str) -> Vec<u32> {
-    let bytes = line.as_bytes();
-    cite_occurrences(line)
-        .filter(|&(at, id)| !prd_relative_cite(bytes, at, id))
-        .map(|(_, id)| id)
-        .collect()
+    canonical_cite_occurrences(line).map(|(_, id)| id).collect()
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned

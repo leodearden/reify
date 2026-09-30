@@ -9,6 +9,12 @@
 //!   names the PRD is terminal, yet the PRD's Status header is live or absent.
 //!   The finding names the stamp to apply: SHIPPED when any leaf landed,
 //!   WITHDRAWN when every leaf was cancelled.
+//! - `cite-status-contradiction:` — in a PRD whose header is NOT terminal, a
+//!   canonical `#NNNN` cite (PTODO's grammar, so `task #5` and `invariant #2`
+//!   are not task cites) is immediately followed by a parenthetical whose
+//!   first token is a status word, and that word's class (live, done or
+//!   cancelled) differs from the cited task's. Dated parentheticals, unknown
+//!   ids and live-vs-live differences are silent.
 //!
 //! Every finding is High and keyed by the PRD's path.
 //!
@@ -29,7 +35,24 @@
 //! worktree's verify gate cannot see it. The findings also track a standing
 //! backlog that a human adjudicates doc by doc, and the CLI's exit code is the
 //! High count. So the detector runs only under `--pattern PPRDSTATUS`.
+//!
+//! # Scope boundary
+//!
+//! The cite lane deliberately does NOT cover:
+//!
+//! - The MODAL form ("task N would retire …"), which carries no status token.
+//!   It has no bounded grammar, and forward modals near terminal cites
+//!   legitimately narrate history and counterfactuals. Building it needs a
+//!   live-corpus false-positive enumeration first.
+//! - Prose OUTSIDE `docs/prds/`: code comments, YAML and test headers. There a
+//!   bare cite-liveness check is near-all false positives, and PTODO is
+//!   deliberately anchor-scoped (`docs/prds/reify-audit-ptodo-detector.md`
+//!   §8.1).
+//! - Capability manifests: decompose-time gate artifacts whose status words
+//!   are author-time evidence.
+//! - Terminal-header PRDs: frozen AS-AUTHORED records.
 
+use crate::ptodo::canonical_cite_occurrences;
 use crate::task_rows::is_terminal_status;
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,6 +60,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 const PRDS_PREFIX: &str = "docs/prds/";
 const CAPABILITY_MANIFEST_SUFFIX: &str = ".capability-manifest.md";
 const STALE_STATUS_HEADER: &str = "stale-status-header";
+const CITE_STATUS_CONTRADICTION: &str = "cite-status-contradiction";
 const TERMINAL_STATUS_SECTION: &str = ".claude/skills/prd/project.md \
      \"PRD terminal status — closed vocabulary + decompose-close stamp\"";
 
@@ -262,7 +286,166 @@ fn prd_finding(path: &str, summary: String) -> Finding {
     }
 }
 
-/// Run PPRDSTATUS over the tracked PRDs against the loaded task corpus.
+/// A task status's terminality class. Live statuses churn between pending,
+/// in-progress and deferred on a timescale no document tracks, so only a
+/// difference in CLASS is drift; a done-vs-cancelled mismatch never heals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusClass {
+    Live,
+    Done,
+    Cancelled,
+}
+
+/// `None` for a status this lane does not recognise, which skips the cite.
+fn class_of_real_status(status: &str) -> Option<StatusClass> {
+    match status {
+        "done" => Some(StatusClass::Done),
+        "cancelled" => Some(StatusClass::Cancelled),
+        "pending" | "in-progress" | "blocked" | "deferred" | "review" => Some(StatusClass::Live),
+        _ => None,
+    }
+}
+
+/// The status words prose writes into a cite's parenthetical.
+const ASSERTED_STATUS_WORDS: &[(&str, StatusClass)] = &[
+    ("in-progress", StatusClass::Live),
+    ("pending", StatusClass::Live),
+    ("blocked", StatusClass::Live),
+    ("deferred", StatusClass::Live),
+    ("active", StatusClass::Live),
+    ("done", StatusClass::Done),
+    ("cancelled", StatusClass::Cancelled),
+    ("canceled", StatusClass::Cancelled),
+];
+
+/// The status a parenthetical asserts: its first token (a run of ASCII
+/// letters and `-`, after any markup) when that token is a status word or a
+/// `<word>-` compound such as `pending-high`.
+fn asserted_status(paren_body: &str) -> Option<(&str, StatusClass)> {
+    let body =
+        paren_body.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '`' | '*' | '_'));
+    let end = body
+        .find(|c: char| !(c.is_ascii_alphabetic() || c == '-'))
+        .unwrap_or(body.len());
+    let token = &body[..end];
+    let lower = token.to_ascii_lowercase();
+    ASSERTED_STATUS_WORDS
+        .iter()
+        .find(|(word, _)| lower == *word || lower.starts_with(&format!("{word}-")))
+        .map(|&(_, class)| (token, class))
+}
+
+/// An as-of assertion is the sanctioned snapshot form, so it is not drift: an
+/// ISO `DDDD-DD-DD` date, or the phrases `as of` / `at freeze`. A false
+/// positive here only silences a cite, which is the fail-safe direction.
+fn is_dated(paren_body: &str) -> bool {
+    let lower = paren_body.to_ascii_lowercase();
+    lower.contains("as of") || lower.contains("at freeze") || contains_iso_date(paren_body)
+}
+
+fn contains_iso_date(text: &str) -> bool {
+    const SHAPE: &[u8] = b"dddd-dd-dd";
+    text.as_bytes().windows(SHAPE.len()).any(|window| {
+        window.iter().zip(SHAPE).all(|(&byte, &shape)| match shape {
+            b'd' => byte.is_ascii_digit(),
+            literal => byte == literal,
+        })
+    })
+}
+
+/// The body of the parenthetical immediately after the cite whose `#` is at
+/// byte `cite_at`: past the digit run, any `*`/`_`/`` ` `` closers and at most
+/// one space. The body runs to the first `)`, or to the end of the line.
+fn adjacent_parenthetical(line: &str, cite_at: usize) -> Option<&str> {
+    let after_cite = line[cite_at + 1..]
+        .trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim_start_matches(['*', '_', '`']);
+    let body = after_cite
+        .strip_prefix(' ')
+        .unwrap_or(after_cite)
+        .strip_prefix('(')?;
+    Some(body.split_once(')').map_or(body, |(inside, _)| inside))
+}
+
+/// A cite whose adjacent parenthetical asserts a status the task contradicts.
+struct Contradiction<'a> {
+    asserted: &'a str,
+    real: &'a str,
+}
+
+fn cite_contradiction<'a>(
+    line: &'a str,
+    cite_at: usize,
+    id: u32,
+    tasks: &'a HashMap<String, TaskMetadata>,
+) -> Option<Contradiction<'a>> {
+    let body = adjacent_parenthetical(line, cite_at)?;
+    if is_dated(body) {
+        return None;
+    }
+    let (asserted, asserted_class) = asserted_status(body)?;
+    let real = tasks.get(&id.to_string())?.status.as_str();
+    (class_of_real_status(real)? != asserted_class).then_some(Contradiction { asserted, real })
+}
+
+/// Lane 2 over one non-terminal PRD, deduplicated and sorted on (line, id).
+fn contradictions_in(
+    path: &str,
+    text: &str,
+    tasks: &HashMap<String, TaskMetadata>,
+) -> Vec<Finding> {
+    let mut by_line_and_id: BTreeMap<(usize, u32), Finding> = BTreeMap::new();
+    for (index, line) in text.lines().enumerate() {
+        for (cite_at, id) in canonical_cite_occurrences(line) {
+            if let Some(contradiction) = cite_contradiction(line, cite_at, id, tasks) {
+                by_line_and_id
+                    .entry((index + 1, id))
+                    .or_insert_with(|| contradiction_finding(path, index + 1, id, &contradiction));
+            }
+        }
+    }
+    by_line_and_id.into_values().collect()
+}
+
+fn contradiction_finding(
+    path: &str,
+    line: usize,
+    id: u32,
+    contradiction: &Contradiction,
+) -> Finding {
+    let summary = format!(
+        "{CITE_STATUS_CONTRADICTION}: {path} line {line}: #{id} is asserted '{asserted}' but the \
+         task is {real}; cite the task id without a status word (.claude/skills/prd/project.md \
+         \"PRD terminal status\" → \"Cite task IDs, never task status\")",
+        asserted = contradiction.asserted,
+        real = contradiction.real,
+    );
+    prd_finding(path, summary)
+}
+
+/// Lane 2, sorted by (path, line, id). A terminal-header PRD is skipped: its
+/// freeze header marks the body as an AS-AUTHORED record, not a current
+/// statement of fact, and that body must not be edited.
+fn cite_contradiction_findings(
+    tasks: &HashMap<String, TaskMetadata>,
+    tracked: &HashSet<String>,
+    read: impl Fn(&str) -> Option<String>,
+) -> Vec<Finding> {
+    let mut prds: Vec<&str> = tracked
+        .iter()
+        .map(String::as_str)
+        .filter(|path| is_prd_path(path))
+        .collect();
+    prds.sort_unstable();
+    prds.into_iter()
+        .filter_map(|path| Some((path, read(path)?)))
+        .filter(|(_, text)| !matches!(read_status_header(text), StatusHeader::Terminal(_)))
+        .flat_map(|(path, text)| contradictions_in(path, &text, tasks))
+        .collect()
+}
+
+/// Run PPRDSTATUS over the tracked PRDs against the loaded task corpus: lane-1
+/// findings, then lane-2 findings.
 ///
 /// An empty corpus checks nothing, so it prints a breadcrumb rather than
 /// passing silently for a clean result.
@@ -275,7 +458,14 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         return Vec::new();
     }
     let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
-    stale_status_findings(&ctx.task_metadata, &tracked, |path| ctx.read_relative(path))
+    let read = |path: &str| ctx.read_relative(path);
+    let mut findings = stale_status_findings(&ctx.task_metadata, &tracked, read);
+    findings.extend(cite_contradiction_findings(
+        &ctx.task_metadata,
+        &tracked,
+        read,
+    ));
+    findings
 }
 
 #[cfg(test)]
