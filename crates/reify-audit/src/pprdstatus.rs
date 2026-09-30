@@ -53,9 +53,8 @@
 //! - Terminal-header PRDs: frozen AS-AUTHORED records.
 
 use crate::ptodo::canonical_cite_occurrences;
-use crate::task_rows::is_terminal_status;
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 const PRDS_PREFIX: &str = "docs/prds/";
 const CAPABILITY_MANIFEST_SUFFIX: &str = ".capability-manifest.md";
@@ -171,7 +170,61 @@ fn normalise_prd_path(raw: &str) -> &str {
     trimmed.strip_prefix("./").unwrap_or(trimmed)
 }
 
-/// One PRD's decomposition leaves, split by terminal state. An empty or
+/// A tracked PRD as both lanes see it: one read, one header parse.
+struct PrdDoc {
+    header: StatusHeader,
+    text: String,
+}
+
+/// Every tracked, readable PRD, keyed and so sorted by path.
+fn tracked_prds(ctx: &AuditContext) -> BTreeMap<String, PrdDoc> {
+    ctx.git
+        .ls_files()
+        .into_iter()
+        .filter(|path| is_prd_path(path))
+        .filter_map(|path| {
+            let text = ctx.read_relative(&path)?;
+            let header = read_status_header(&text);
+            Some((path, PrdDoc { header, text }))
+        })
+        .collect()
+}
+
+/// A status's terminality class. Live statuses churn between pending,
+/// in-progress and deferred on a timescale no document tracks, so only a
+/// difference in CLASS is drift; a done-vs-cancelled mismatch never heals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusClass {
+    Live,
+    Done,
+    Cancelled,
+}
+
+/// The module's one status classifier, for a task's status and for the word
+/// a cite's parenthetical asserts alike: the task statuses, plus the prose
+/// spellings `active` and `canceled`.
+const STATUS_WORDS: &[(&str, StatusClass)] = &[
+    ("pending", StatusClass::Live),
+    ("in-progress", StatusClass::Live),
+    ("blocked", StatusClass::Live),
+    ("deferred", StatusClass::Live),
+    ("review", StatusClass::Live),
+    ("active", StatusClass::Live),
+    ("done", StatusClass::Done),
+    ("cancelled", StatusClass::Cancelled),
+    ("canceled", StatusClass::Cancelled),
+];
+
+/// The class of an exact status word; `None` for a word [`STATUS_WORDS`]
+/// lacks.
+fn status_class(word: &str) -> Option<StatusClass> {
+    STATUS_WORDS
+        .iter()
+        .find(|(known, _)| *known == word)
+        .map(|&(_, class)| class)
+}
+
+/// One PRD's decomposition leaves, split by status class. An empty or
 /// unknown status counts as live, so it keeps the PRD silent.
 #[derive(Debug, Default)]
 struct LeafTally {
@@ -182,12 +235,10 @@ struct LeafTally {
 
 impl LeafTally {
     fn add(&mut self, task: &TaskMetadata) {
-        if !is_terminal_status(&task.status) {
-            self.live += 1;
-        } else if task.status == "done" {
-            self.done.push(task.task_id.clone());
-        } else {
-            self.cancelled.push(task.task_id.clone());
+        match status_class(&task.status) {
+            Some(StatusClass::Done) => self.done.push(task.task_id.clone()),
+            Some(StatusClass::Cancelled) => self.cancelled.push(task.task_id.clone()),
+            Some(StatusClass::Live) | None => self.live += 1,
         }
     }
 
@@ -236,16 +287,12 @@ fn recommended_stamp(tally: &LeafTally) -> TerminalToken {
 /// silent: a missing file cannot carry a stale header.
 fn stale_status_findings(
     tasks: &HashMap<String, TaskMetadata>,
-    tracked: &HashSet<String>,
-    read: impl Fn(&str) -> Option<String>,
+    prds: &BTreeMap<String, PrdDoc>,
 ) -> Vec<Finding> {
     leaf_tallies(tasks)
         .into_iter()
-        .filter(|(path, tally)| tally.live == 0 && tracked.contains(path))
-        .filter_map(|(path, tally)| {
-            let header = read_status_header(&read(&path)?);
-            stale_status_finding(&path, &tally, &header)
-        })
+        .filter(|(_, tally)| tally.live == 0)
+        .filter_map(|(path, tally)| stale_status_finding(&path, &tally, &prds.get(&path)?.header))
         .collect()
 }
 
@@ -286,38 +333,6 @@ fn prd_finding(path: &str, summary: String) -> Finding {
     }
 }
 
-/// A task status's terminality class. Live statuses churn between pending,
-/// in-progress and deferred on a timescale no document tracks, so only a
-/// difference in CLASS is drift; a done-vs-cancelled mismatch never heals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusClass {
-    Live,
-    Done,
-    Cancelled,
-}
-
-/// `None` for a status this lane does not recognise, which skips the cite.
-fn class_of_real_status(status: &str) -> Option<StatusClass> {
-    match status {
-        "done" => Some(StatusClass::Done),
-        "cancelled" => Some(StatusClass::Cancelled),
-        "pending" | "in-progress" | "blocked" | "deferred" | "review" => Some(StatusClass::Live),
-        _ => None,
-    }
-}
-
-/// The status words prose writes into a cite's parenthetical.
-const ASSERTED_STATUS_WORDS: &[(&str, StatusClass)] = &[
-    ("in-progress", StatusClass::Live),
-    ("pending", StatusClass::Live),
-    ("blocked", StatusClass::Live),
-    ("deferred", StatusClass::Live),
-    ("active", StatusClass::Live),
-    ("done", StatusClass::Done),
-    ("cancelled", StatusClass::Cancelled),
-    ("canceled", StatusClass::Cancelled),
-];
-
 /// The status a parenthetical asserts: its first token (a run of ASCII
 /// letters and `-`, after any markup) when that token is a status word or a
 /// `<word>-` compound such as `pending-high`.
@@ -329,7 +344,7 @@ fn asserted_status(paren_body: &str) -> Option<(&str, StatusClass)> {
         .unwrap_or(body.len());
     let token = &body[..end];
     let lower = token.to_ascii_lowercase();
-    ASSERTED_STATUS_WORDS
+    STATUS_WORDS
         .iter()
         .find(|(word, _)| lower == *word || lower.starts_with(&format!("{word}-")))
         .map(|&(_, class)| (token, class))
@@ -385,7 +400,7 @@ fn cite_contradiction<'a>(
     }
     let (asserted, asserted_class) = asserted_status(body)?;
     let real = tasks.get(&id.to_string())?.status.as_str();
-    (class_of_real_status(real)? != asserted_class).then_some(Contradiction { asserted, real })
+    (status_class(real)? != asserted_class).then_some(Contradiction { asserted, real })
 }
 
 /// Lane 2 over one non-terminal PRD, deduplicated and sorted on (line, id).
@@ -428,19 +443,11 @@ fn contradiction_finding(
 /// statement of fact, and that body must not be edited.
 fn cite_contradiction_findings(
     tasks: &HashMap<String, TaskMetadata>,
-    tracked: &HashSet<String>,
-    read: impl Fn(&str) -> Option<String>,
+    prds: &BTreeMap<String, PrdDoc>,
 ) -> Vec<Finding> {
-    let mut prds: Vec<&str> = tracked
-        .iter()
-        .map(String::as_str)
-        .filter(|path| is_prd_path(path))
-        .collect();
-    prds.sort_unstable();
-    prds.into_iter()
-        .filter_map(|path| Some((path, read(path)?)))
-        .filter(|(_, text)| !matches!(read_status_header(text), StatusHeader::Terminal(_)))
-        .flat_map(|(path, text)| contradictions_in(path, &text, tasks))
+    prds.iter()
+        .filter(|(_, doc)| !matches!(doc.header, StatusHeader::Terminal(_)))
+        .flat_map(|(path, doc)| contradictions_in(path, &doc.text, tasks))
         .collect()
 }
 
@@ -457,14 +464,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         );
         return Vec::new();
     }
-    let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
-    let read = |path: &str| ctx.read_relative(path);
-    let mut findings = stale_status_findings(&ctx.task_metadata, &tracked, read);
-    findings.extend(cite_contradiction_findings(
-        &ctx.task_metadata,
-        &tracked,
-        read,
-    ));
+    let prds = tracked_prds(ctx);
+    let mut findings = stale_status_findings(&ctx.task_metadata, &prds);
+    findings.extend(cite_contradiction_findings(&ctx.task_metadata, &prds));
     findings
 }
 

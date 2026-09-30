@@ -535,6 +535,8 @@ fn status_classes_decide_contradiction() {
                 "- #5107 (blocked, LIVE)",
                 "- #5108 (done)",
                 "- #5109 (canceled)",
+                "- #5110 (review)",
+                "- #5111 (review)",
             ]),
         )
         .task(task("5101", "pending"))
@@ -545,14 +547,19 @@ fn status_classes_decide_contradiction() {
         .task(task("5106", "done"))
         .task(task("5107", "done"))
         .task(task("5108", "pending"))
-        .task(task("5109", "cancelled"));
+        .task(task("5109", "cancelled"))
+        .task(task("5110", "done"))
+        .task(task("5111", "review"));
 
     let fired: Vec<String> = cited(&cite_contradictions(&project))
         .into_iter()
         .map(|(_, id)| id)
         .collect();
 
-    assert_eq!(fired, ["5103", "5104", "5105", "5106", "5107", "5108"]);
+    assert_eq!(
+        fired,
+        ["5103", "5104", "5105", "5106", "5107", "5108", "5110"]
+    );
 }
 
 #[test]
