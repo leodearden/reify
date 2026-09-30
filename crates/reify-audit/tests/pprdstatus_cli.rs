@@ -65,19 +65,22 @@ fn repo_with_prd(dir: &Path, content: &str) {
 
 /// The kernel-seam-contracts decomposition, every leaf `done`: α #5102 …
 /// ξ #5116 plus the adopted #4876.
-fn write_done_leaves_tasks_json(dir: &Path) -> PathBuf {
-    let leaves: Vec<TaskMetadata> = (5102..=5116)
+fn done_leaves() -> Vec<TaskMetadata> {
+    (5102..=5116)
         .chain([4876])
         .map(|id| TaskMetadata {
             status: "done".to_string(),
             prd: Some(KERNEL_SEAM_CONTRACTS.to_string()),
             ..legacy_meta(&id.to_string())
         })
-        .collect();
+        .collect()
+}
+
+fn write_tasks_json(dir: &Path, tasks: &[TaskMetadata]) -> PathBuf {
     let path = dir.join("tasks.json");
     std::fs::write(
         &path,
-        serde_json::to_string(&leaves).expect("serialize tasks"),
+        serde_json::to_string(tasks).expect("serialize tasks"),
     )
     .expect("write tasks.json");
     path
@@ -103,12 +106,18 @@ fn findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
 }
 
 /// Run `reify-audit --pattern PPRDSTATUS` over a repo holding `prd_text`,
-/// with every substrate pinned at a tempdir.
+/// against the [`done_leaves`] corpus.
 fn run_pprdstatus(prd_text: &str) -> Output {
+    run_pprdstatus_over(prd_text, &done_leaves())
+}
+
+/// Run `reify-audit --pattern PPRDSTATUS` over a repo holding `prd_text`,
+/// against the `tasks` corpus, with every substrate pinned at a tempdir.
+fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
     let repo = tempfile::tempdir().expect("create repo tempdir");
     let aux = tempfile::tempdir().expect("create aux tempdir");
     repo_with_prd(repo.path(), prd_text);
-    let tasks_file = write_done_leaves_tasks_json(aux.path());
+    let tasks_file = write_tasks_json(aux.path(), tasks);
     let runs_db = write_empty_runs_db(aux.path());
     std::process::Command::new(env!("CARGO_BIN_EXE_reify-audit"))
         .args([
@@ -199,5 +208,21 @@ fn pattern_pprdstatus_is_silent_on_the_live_kernel_seam_contracts_doc() {
     assert_eq!(
         findings_from_stderr(&stderr),
         Vec::<serde_json::Value>::new()
+    );
+}
+
+/// An empty corpus leaves PPRDSTATUS nothing to check, so a run of it alone
+/// refuses with 125 and prints no findings array, even over the pre-fix doc
+/// that fires both lanes once the corpus is loaded. An empty array here would
+/// pass for a clean result.
+#[test]
+fn pattern_pprdstatus_refuses_an_empty_task_corpus() {
+    let out = run_pprdstatus_over(PRE_FIX, &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(125), "stderr:\n{stderr}");
+    assert!(
+        !stderr.lines().any(|line| line.starts_with('[')),
+        "a refusal must print no findings array; stderr:\n{stderr}"
     );
 }

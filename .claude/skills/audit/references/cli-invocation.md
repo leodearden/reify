@@ -176,6 +176,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
+| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm the snapshot, or fused-memory for this `--project-root`, actually holds tasks |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -189,7 +190,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
   ```
   (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
 
-PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state. That state prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array, and zero findings behind it mean "not checked".
+PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
 
 See `references/modes.md` §4 notes for detail.
 

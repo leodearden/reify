@@ -49,9 +49,13 @@ sys.stderr.write(config["stderr"])
 sys.exit(config["exit"])
 """
 
-EMPTY_CORPUS_BREADCRUMB = (
-    "reify-audit: PPRDSTATUS skipped — the task corpus is empty; "
-    "this is NOT a clean bill of health\n"
+# Two ways the binary exits 125 with no findings array: an infrastructure
+# failure, and its refusal of a PPRDSTATUS-only run over an empty task corpus.
+RUNS_DB_FAILURE = "reify-audit: error opening runs-db 'x': unable to open\n"
+EMPTY_CORPUS_REFUSAL = (
+    "reify-audit: the task corpus is empty and every selected detector needs it; "
+    "refusing rather than reporting an unchecked run as clean "
+    "(check --project-root and --fused-memory-url, or --tasks-file)\n"
 )
 
 
@@ -66,9 +70,9 @@ def finding(path, kind="stale-status-header"):
     }
 
 
-def detector_stderr(findings, breadcrumb=""):
-    """The binary's stderr: optional breadcrumb lines, then the pretty array."""
-    return breadcrumb + json.dumps(findings, indent=2, ensure_ascii=False) + "\n"
+def detector_stderr(findings, preamble=""):
+    """The binary's stderr: optional diagnostic lines, then the pretty array."""
+    return preamble + json.dumps(findings, indent=2, ensure_ascii=False) + "\n"
 
 
 class StubEscalationServer:
@@ -236,23 +240,30 @@ class PprdstatusEscalateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(server.requests, [])
 
-    def test_empty_corpus_breadcrumb_with_empty_array_makes_no_request(self):
+    def test_diagnostics_ahead_of_the_array_are_forwarded_and_the_array_still_parses(self):
         server = self.escalation_server()
-        self.detector_returns(detector_stderr([], EMPTY_CORPUS_BREADCRUMB), 0)
+        preamble = "reify-audit: a diagnostic line ahead of the findings array\n"
+        self.detector_returns(detector_stderr([finding("docs/prds/a.md")], preamble), 1)
 
         result = self.run_script(server.url)
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(server.requests, [])
+        self.assert_one_batched_escalation(server, result, ["docs/prds/a.md"])
+        self.assertIn(preamble, result.stderr)
 
-    def test_detector_failure_without_findings_array_exits_125_and_raises_nothing(self):
-        server = self.escalation_server()
-        self.detector_returns("reify-audit: error opening runs-db 'x': unable to open\n", 125)
+    def test_unchecked_run_exits_125_forwards_the_reason_and_raises_nothing(self):
+        for label, stderr in (
+            ("infrastructure failure", RUNS_DB_FAILURE),
+            ("empty-corpus refusal", EMPTY_CORPUS_REFUSAL),
+        ):
+            with self.subTest(label):
+                server = self.escalation_server()
+                self.detector_returns(stderr, 125)
 
-        result = self.run_script(server.url)
+                result = self.run_script(server.url)
 
-        self.assertEqual(result.returncode, 125, result.stderr)
-        self.assertEqual(server.requests, [])
+                self.assertEqual(result.returncode, 125, result.stderr)
+                self.assertIn(stderr, result.stderr)
+                self.assertEqual(server.requests, [])
 
     def test_nonzero_detector_exit_with_findings_is_a_high_count_not_a_failure(self):
         server = self.escalation_server()

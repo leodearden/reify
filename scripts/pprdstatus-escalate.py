@@ -14,8 +14,8 @@ writes to stderr and does one of two things:
   - a non-empty set files exactly ONE escalate_info on URL, under the fixed
     subject "audit", carrying the finding count, the list of PRD docs, and
     the docs-truth triage sitting to run.
-Whatever the detector wrote to stderr ahead of the array (for example its
-empty-corpus "NOT a clean bill of health" breadcrumb) is forwarded to stderr.
+Whatever the detector wrote to stderr ahead of the array, or all of it when
+there is no array, is forwarded to stderr.
 
 Flags:
   --reify-audit BIN     the reify-audit binary (required). Callers resolve it
@@ -31,9 +31,12 @@ Flags:
                         filing them.
 
 Exit codes:
-  0    nothing to raise, or raised (or, under --dry-run, printed)
+  0    the detector checked the corpus: nothing to raise, or raised (or,
+       under --dry-run, printed)
   1    the escalation could not be filed
-  125  the detector produced no parseable findings array, so nothing was raised
+  125  the detector produced no parseable findings array, so nothing was
+       checked or raised: it failed, or it refused an empty task corpus, which
+       leaves PPRDSTATUS nothing to check
 
 This is the one-shot raise primitive. Its recurring cadence, set-level dedupe
 and docs-truth aggregation belong to task #6347.
