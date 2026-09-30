@@ -5,6 +5,11 @@ tasks:
   task_id: 6706
   title: 'solution-set-completeness α: Completeness/SolutionSet carrier in reify-ir (additive; SolveResult
     stays frozen)'
+  note: 'E3 coarse arm: reused in place as a singleton (`x_e3_reused: true`, status `pending`); still the live
+    producer for this capability. The four coarse tasks #6900-#6903 carry HAND-AUTHORED
+    `metadata.delivered_checks` that are NOT derived from this sidecar and have no sidecar of their own
+    (docs/prds/v0_6/e3-granularity/ holds prose specs and analysis scripts only), so this file remains the
+    record for the twelve standard leaves only.'
   capabilities:
   - name: ranked-rs-co-tenancy-with-p2-mu
     binding: 'seam with P2 leaf mu = 6680, which edits the SAME file (crates/reify-ir/src/ranked.rs) to
@@ -28,7 +33,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: enum[[:space:]]+Completeness
-      path: crates/reify-ir/src
+      paths:
+      - crates/reify-ir/src
       expect: present
   - name: additive-only-is-required
     binding: anti-inversion — F-result invariant I1 freezes SolveResult and ConstraintSolver::solve().
@@ -44,6 +50,10 @@ tasks:
   task_id: 6707
   title: 'solution-set-completeness β (adopts #5388): honesty floor — stop asserting unproven uniqueness;
     typed cause; code the five free-auto sites'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6901; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: uniqueness-path-exists
     binding: capability→producer — verify_uniqueness and finalise_uniqueness in crates/reify-constraints/src/solver.rs,
@@ -53,12 +63,20 @@ tasks:
     binding: 'G6 branch 4 (rejection OBSERVED, not assumed) — tests/prd-gate/fixtures/ssc_two_roots_strict.ri
       observed at the anchor commit as exit 1 with ''strict auto parameter resolution is not uniquely
       determined — consider using auto(free) for exploration'' and the cause mislabelled ''solve failed:
-      infeasible''. β modifies an emission that demonstrably fires.'
+      infeasible''. β modifies an emission that demonstrably fires. (delivered_check pattern NARROWED
+      2026-09-03, task 7221: it formerly grepped the whole sentence ''consider using auto(free) for
+      exploration'', which a line-oriented git grep can never match — solver.rs:3496-3498 splits the
+      literal across three Rust string-continuation lines and writes the em-dash as the escape
+      \u{2014}. Scoped to this check''s own paths the full sentence matched nothing at the anchor
+      2128c3692c or at main d6909c3497 (rc=1), so an expect:absent check read DELIVERED vacuously from
+      authoring. The narrowed form matches exactly solver.rs:3497 — rc=0 at both refs, i.e. FAILED /
+      correctly not-yet-delivered, flipping to DELIVERED only when β retires the message.)'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: consider using auto\(free\) for exploration
-      path: crates/reify-constraints/src
+      pattern: consider using auto\(free\)
+      paths:
+      - crates/reify-constraints/src
       expect: absent
   - name: codeless-sites-are-informationless
     binding: capability→producer — five byte-identical code-less Diagnostic::warning sites emitting 'resolved
@@ -87,6 +105,10 @@ tasks:
   task_id: 6708
   title: 'solution-set-completeness γ: box branch-and-bound enumerator over #6655''s HC4 propagator (one
     engine, three verdicts)'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6900; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: hc4-propagator-upstream
     binding: capability→producer — producer:task-6655 (pending, no deps, dispatchable) delivers crates/reify-constraints/src/interval.rs
@@ -96,7 +118,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: fn[[:space:]]+.*subdivide|enum[[:space:]]+BoxVerdict|fn[[:space:]]+enumerate_solutions
-      path: crates/reify-constraints/src
+      paths:
+      - crates/reify-constraints/src
       expect: present
   - name: interval-substrate-absent-today
     binding: 'anti-orphan — grep-verified ABSENT on main: no interval arithmetic, contractor, box consistency,
@@ -126,6 +149,10 @@ tasks:
   task_id: 6709
   title: 'solution-set-completeness δ: verdict policy — both roots reach the user; retire the unconditional
     free-auto warning'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6901; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: toleranced-verdicts-upstream
     binding: capability→producer — producer:task-6653 (pending, high). Without it a correctly-solved root
@@ -149,7 +176,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: W_SOLUTION_NOT_UNIQUE|SolutionNotUnique
-      path: crates/reify-core/src/diagnostics.rs
+      paths:
+      - crates/reify-core/src/diagnostics.rs
       expect: present
   - name: ordering-edge-not-on-critical-path
     binding: anti-inversion — delta's fixtures carry ONE auto by design, so they have no axis order to
@@ -160,6 +188,10 @@ tasks:
   task_id: 6710
   title: 'solution-set-completeness ε: refutation by subdivision — typed proven-infeasible naming the
     narrowing constraint, zero solver iterations'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6900; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: empty-box-arm-upstream
     binding: capability→producer — producer:task-6655 delivers the whole-box empty implies typed proven-infeasible
@@ -181,6 +213,10 @@ tasks:
   task_id: 6711
   title: 'solution-set-completeness ζ: stop discarding the alternatives — dedup by basin box, attach completeness,
     render in reify explain'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6902; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: alternatives-produced-and-discarded
     binding: capability→producer — solve_ranked_impl produces K = 2(dim+1) ranked candidates; both engine_eval.rs
@@ -190,7 +226,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: swap_remove\(0\)
-      path: crates/reify-eval/src/engine_eval.rs
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
       expect: absent
   - name: rendering-surface-exists
     binding: 'capability→producer — reify explain (cmd_explain) plus ObjectiveProvenance, landed by constraint-solver-completion
@@ -212,6 +249,10 @@ tasks:
   task_id: 6712
   title: 'solution-set-completeness η: basin stability across warm re-solves — continuation from the incumbent
     + W_BASIN_CHANGED'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6902; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: warm-paths-exist
     binding: capability→producer — edit_param (crates/reify-eval/src/engine_edit.rs) seeds current_values
@@ -226,7 +267,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: W_BASIN_CHANGED|BasinChanged
-      path: crates/reify-core/src/diagnostics.rs
+      paths:
+      - crates/reify-core/src/diagnostics.rs
       expect: present
   - name: entry-point-parity
     binding: DAG-direction, WIRED — P1 leaf kappa = task 6699 (warm and cold choose the same solve entry
@@ -237,6 +279,10 @@ tasks:
   task_id: 6713
   title: 'solution-set-completeness θ: C1 conformance — no unique flag written from anything but a completeness
     verdict'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6903; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: overclaiming-sites-exist
     binding: capability→producer — SolveSpaceSolver::solve hardcodes a true unique flag on every libslvs
@@ -246,7 +292,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: unique:[[:space:]]*true
-      path: crates/reify-constraints/src/solvespace.rs
+      paths:
+      - crates/reify-constraints/src/solvespace.rs
       expect: absent
   - name: does-not-fix-code-p2-deletes
     binding: anti-inversion, resolved by re-scoping and now WIRED — P2 leaf xi = 6682 deletes SolveSpaceSolver,
@@ -262,6 +309,10 @@ tasks:
   task_id: 6715
   title: 'solution-set-completeness ι: the completeness composition law at the registry (the cross-domain
     contract)'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6903; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: conjunction-exists-to-replace
     binding: capability→producer — SolverRegistry::solve_inner conjoins the per-component unique flag
@@ -271,7 +322,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: fn[[:space:]]+.*meet_completeness|Completeness::meet
-      path: crates/reify-constraints/src/registry.rs
+      paths:
+      - crates/reify-constraints/src/registry.rs
       expect: present
   - name: not-blocked-on-prd2-zeta
     binding: 'anti-inversion — ι implements the meet over COMPONENTS, which exist today (multiple continuous
@@ -295,6 +347,10 @@ tasks:
   task_id: 6716
   title: 'solution-set-completeness λ: envelope calibration — measure the dimension/node envelope, set
     the caps from the data'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6900; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: node-budget-not-wallclock
     binding: numeric floor / C7 — the enumeration budget is a NODE COUNT, never seconds. tests/infra/test_no_new_wallclock_upper_bounds.sh
@@ -315,6 +371,10 @@ tasks:
   task_id: 6718
   title: 'solution-set-completeness κ: docs-truth — constraints.md multiplicity section, discrete_choice.ri
     correction, INDEX + cheatsheet, discoverability'
+  note: 'E3 coarse-arm A/B: this standard leaf was retired to `deferred` on 2026-08-28 and its scope replaced
+    by #6902; its `x_e3_flip_condition` makes it a section-11 ROLLBACK TARGET, so this entry''s text and
+    delivered_check stay live rather than being deleted. Mapping:
+    docs/prds/v0_6/e3-decomposition-granularity-ab.md section 5.'
   capabilities:
   - name: chunk-gap-is-real
     binding: capability→producer — crates/reify-mcp/src/tools/chunks/constraints.md contains ZERO uniqueness
@@ -324,7 +384,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: more than one solution|not unique|multiple solutions
-      path: crates/reify-mcp/src/tools/chunks/constraints.md
+      paths:
+      - crates/reify-mcp/src/tools/chunks/constraints.md
       expect: present
   - name: exemplar-carries-a-false-claim
     binding: 'G6 branch 3 — examples/best_practices/discrete_choice.ri states that real branch-and-bound
@@ -335,7 +396,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: what CP-SAT will bring
-      path: examples/best_practices/discrete_choice.ri
+      paths:
+      - examples/best_practices/discrete_choice.ri
       expect: absent
   - name: index-edit-is-gated
     binding: capability→producer — best_practices_index_matches_corpus_directory build-gates examples/best_practices/INDEX.md
@@ -345,6 +407,8 @@ tasks:
   task_id: 6719
   title: 'solution-set-completeness μ: PRD close — terminal stamp, landed leaf IDs, AS-AUTHORED freeze,
     LIVE/AS-AUTHORED map'
+  note: 'E3 coarse arm: reused in place as a singleton (`x_e3_reused: true`, status `pending`); still the live
+    producer for this capability.'
   capabilities:
   - name: terminal-vocabulary-specified
     binding: capability→producer — the closed three-value terminal vocabulary (SHIPPED / SUPERSEDED /
@@ -354,7 +418,8 @@ tasks:
     delivered_check:
       kind: grep
       pattern: Status.*(SHIPPED|SUPERSEDED|WITHDRAWN)
-      path: docs/prds/v0_6/solution-set-completeness.md
+      paths:
+      - docs/prds/v0_6/solution-set-completeness.md
       expect: present
   - name: close-leaf-stays-dispatchable
     binding: anti-inversion — μ depends on every sibling by real add_dependency edges; a cancelled sibling

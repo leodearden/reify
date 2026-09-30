@@ -574,11 +574,6 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
 /// (not a bare bool) so that future conversions (`Mesh → Sdf`, …) extend it by
 /// adding variants and rows to [`v03_conversion_projection`], with the
 /// executor's `match` forcing every call site to handle the new shape.
-// `#[allow(dead_code)]`: constructed/consumed only from `#[cfg(test)]` until the
-// conversion executor in `execute_realization_ops` wires it into the non-test
-// build path (task 4050 step-8). Mirrors the `compute_demanded_reprs`
-// "deferred to task 4050" precedent in engine_build.rs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConversionProjection {
     /// Tessellate the source kernel's BRep handle into a mesh — the
@@ -618,9 +613,6 @@ pub(crate) enum ConversionProjection {
 ///
 /// Every other ordered pair returns `None`. Adding a conversion to β means
 /// adding a [`ConversionProjection`] variant and a row to the match below.
-// `#[allow(dead_code)]`: see [`ConversionProjection`] — wired into the non-test
-// build path by `execute_realization_ops` in task 4050 step-8.
-#[allow(dead_code)]
 pub(crate) fn v03_conversion_projection(
     from: ReprKind,
     to: ReprKind,

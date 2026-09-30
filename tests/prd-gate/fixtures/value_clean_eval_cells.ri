@@ -1,0 +1,28 @@
+// Fixture: value-kind worked example AND the #6876 vacuity-closure evidence.
+//
+// `reify eval` exits 0 here and prints three value cells on stdout:
+//   ValueCleanEvalCells.damping_ratio     = 0.018   — correct magnitude
+//   ValueCleanEvalCells.degenerate_ratio  = 0       — the motivating defect
+//   ValueCleanEvalCells.undef_ratio       = undef   — garbage on a clean exit
+//
+// Because the exit is 0, an `ir` probe with expected.observation = "absent"
+// PASSES on this file no matter what it printed — the ir arm returns ABSENT on
+// exit 0 before the match dict is consulted at all.  That vacuous pass is the
+// exit-code-only hole this fixture stands as evidence for.
+//
+// A `value` probe over the same three cells observes:
+//   damping_ratio    {min: 0.01, max: 0.03}  → PRESENT  (value seen, in range)
+//   degenerate_ratio {min: 0.01}             → ABSENT   (value seen, out of range)
+//   undef_ratio      {finite: true}          → ABSENT   ("undef" is not a number)
+//
+// Same run, same exit 0: `ir` cannot see the value and `value` can.
+//
+// The `module` name must match the file stem or reify emits W_MODULE_DECL_MISSING.
+
+module value_clean_eval_cells
+
+structure def ValueCleanEvalCells {
+    let damping_ratio = 0.018
+    let degenerate_ratio = 0.0
+    let undef_ratio = 1.0 / 0.0
+}

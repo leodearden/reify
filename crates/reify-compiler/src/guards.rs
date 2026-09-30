@@ -410,6 +410,14 @@ pub(crate) fn compile_guarded_members(
                         .with_label(DiagnosticLabel::new(r.span, "not yet supported")),
                 );
             }
+            // A `sketch { … }` nested inside a `where { }` guarded block. This is
+            // a SEPARATE member loop from entity.rs, so it rejects the block
+            // itself — see `sketch_unsupported`.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(crate::compile_builder::sketch_unsupported::diagnostic(
+                    sketch.span,
+                ));
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope

@@ -42,7 +42,7 @@ impl StubProblem {
 impl AdaptiveProblem for StubProblem {
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         let est = self
             .estimates
             .get(self.next)
@@ -56,7 +56,7 @@ impl AdaptiveProblem for StubProblem {
             })
             .clone();
         self.next += 1;
-        est
+        Ok(est)
     }
 
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
@@ -67,11 +67,12 @@ impl AdaptiveProblem for StubProblem {
 
 /// Build an `AdaptiveEstimate` with a fixed non-trivial per-element vector
 /// (so [`mark_dorfler`] marks a real subset) for the budget-gate scripts.
-fn est(global_indicator: f64, n_dofs: usize) -> AdaptiveEstimate {
+fn est(relative_error: f64, n_dofs: usize) -> AdaptiveEstimate {
     AdaptiveEstimate {
-        global_indicator,
+        relative_error,
         per_element: vec![1.0, 2.0, 3.0, 4.0],
         n_dofs,
+        qoi: None,
     }
 }
 
@@ -85,15 +86,17 @@ fn happy_path_converges_after_one_refine() {
     let mut stub = StubProblem::new(vec![
         // iter 0: above target ⇒ mark + refine.
         AdaptiveEstimate {
-            global_indicator: 0.5,
+            relative_error: 0.5,
             per_element: iter0_per_element.clone(),
             n_dofs: 100,
+            qoi: None,
         },
         // iter 1: re-solve is at/below target ⇒ Converged.
         AdaptiveEstimate {
-            global_indicator: 0.04,
+            relative_error: 0.04,
             per_element: vec![0.01, 0.01],
             n_dofs: 200,
+            qoi: None,
         },
     ]);
     let budget = RefinementBudget {
@@ -194,6 +197,57 @@ fn stalled_fires_on_insufficient_drop() {
     );
     // One refine ran (iter 0); the stall is detected at iter 1 before re-marking.
     assert_eq!(stub.refine_calls.len(), 1, "one refine before the stall");
+}
+
+/// The deterministic home of the `Stalled`-vs-`MaxIterations` discrimination
+/// that `reify-eval`'s `solve_elastic_static_body_e2e.rs` deliberately no longer
+/// makes (task 7414).
+///
+/// Over two real gmsh remeshes that discrimination is not a categorical claim
+/// at all but a ~1% numeric band on a noisy physical quantity — see the
+/// measurement recorded in that e2e's doc comment. Here the same claim is
+/// exact, which is where a claim about termination PRECEDENCE belongs. This
+/// follows the convention the crate already states in
+/// `aposteriori_validation.rs`: `Stalled` "is intentionally NOT covered here:
+/// it is already unit-pinned at the `adaptive.rs` level with synthetic values".
+///
+/// The case pinned is the one each of the three siblings leaves out — at iter 1
+/// gate #2 (stall) and gate #3 (iteration cap) are live SIMULTANEOUSLY and #2
+/// must win. `stalled_fires_on_insufficient_drop` puts the cap far away,
+/// `max_iterations_fires_after_iter_cap` scripts drops steep enough that the
+/// stall gate never arms, and `target_reached_wins_over_simultaneous_caps` pins
+/// only #1 against the rest.
+#[test]
+fn stall_pre_empts_the_iteration_cap() {
+    // 0.5 → 0.48 is a 4% drop, so at iter 1 the stall gate is live
+    // (0.48 >= 0.9 * 0.5 = 0.45) — and so is the iteration cap (iter 1 >= 1).
+    // Deliberately NOT the exact-10% boundary: those float semantics are pinned
+    // orthogonally by `is_stalled_exactly_ten_percent_drop_is_stalled`, and
+    // mixing the two would couple a precedence claim to an FP-representation one.
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 100)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 1, // <- the cap is ALSO hit at iter 1
+        max_dofs: 1_000_000_000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::Stalled
+        },
+        "stall (#2) must outrank the iteration cap (#3) when both fire on the \
+         same iteration — so a budget whose single refine happens not to clear \
+         the 10% drop reports `Stalled`, never `MaxIterations`"
+    );
+    assert_eq!(
+        stub.refine_calls.len(),
+        1,
+        "the refine budget is consumed identically under either reason: one \
+         refine at iter 0, then the iter-1 gates fire before any re-marking"
+    );
 }
 
 #[test]

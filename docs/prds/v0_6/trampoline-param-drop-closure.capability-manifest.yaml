@@ -858,9 +858,7 @@ tasks:
   - name: exemplar-corpus-gates
     binding: capability->producer (substrate) - an examples/best_practices/ addition is gated
       three ways, all confirmed 2026-08-31. It is auto-compiled by the recursive examples
-      walk in crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs -
-      NOTE that the reify overlay's docs-truth section cites the stale path crates/reify-compiler/tests/examples_smoke.rs,
-      which does not exist; the harness submodule path is the live one. It is catalogued bidirectionally
+      walk in crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs. It is catalogued bidirectionally
       against INDEX.md's '| Exemplar | Idiom | Anti-pattern it replaces |' table. And it is
       constraint-gated by crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs,
       which requires every constraint to be Satisfied or pinned in an EXPECTED_INDETERMINATE

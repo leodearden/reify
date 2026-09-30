@@ -35,8 +35,8 @@ echo ""
 echo "--- test plan runs 'npm run typecheck' on the gui block (Fix 1 deliverable) ---"
 assert "test plan gui block runs both typecheck and vitest" \
     bash -c "printf '%s\n' \"\$TEST_PLAN\" | grep -q 'cd gui &&' && printf '%s\n' \"\$TEST_PLAN\" | grep -q 'npm run typecheck'"
-assert "test plan gui block chains 'npm ci && npm run typecheck && npm test'" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN\" | grep -q 'npm ci && npm run typecheck && npm test'"
+assert "test plan gui block chains 'npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN\" | grep -q 'npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
 
 # -- The typecheck must still appear on the lint side and for action=all -------
 echo ""
@@ -49,8 +49,8 @@ assert "all plan contains 'npm run typecheck'" \
 # -- No double-run: the GUI block is built once, so action=all runs it once ----
 echo ""
 echo "--- action=all runs the gui typecheck exactly once (no double-run) ---"
-assert "all plan has exactly one gui 'npm ci && npm run typecheck && npm test' line" \
-    bash -c "[ \"\$(printf '%s\n' \"\$ALL_PLAN\" | grep -c 'npm ci && npm run typecheck && npm test')\" = '1' ]"
+assert "all plan has exactly one gui 'npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh' line" \
+    bash -c "[ \"\$(printf '%s\n' \"\$ALL_PLAN\" | grep -c 'npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh')\" = '1' ]"
 
 # -- The sidecar typecheck now runs on the test side too (was lint-only) -------
 echo ""

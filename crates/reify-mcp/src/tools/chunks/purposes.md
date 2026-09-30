@@ -4,7 +4,7 @@ Purposes are named, parameterized declaration kinds that control what constraint
 
 ## Syntax
 
-```
+```reify
 purpose manufacturing_ready(subject : Structure) {
     constraint forall p in subject.geometric_params: determined(p)
     constraint forall p in subject.material_params: determined(p)

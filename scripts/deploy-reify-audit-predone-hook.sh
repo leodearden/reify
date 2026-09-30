@@ -8,12 +8,27 @@
 # WHAT THIS FIXES
 # ---------------
 # systemd's FUSED_MEMORY_PREDONE_HOOK_REIFY invokes ~/.cargo/bin/reify-audit
-# DIRECTLY, bypassing the wrapper's REFUSE-mode staleness guard
-# (scripts/reify-audit-freshness.sh :: reify_audit_guard ... refuse ...).  The
-# installed binary is therefore free to drift arbitrarily far behind
-# crates/reify-audit/ with nothing to say so — measured 2026-08-27 at ~11 weeks
+# DIRECTLY, bypassing the wrapper's staleness guard altogether
+# (scripts/reify-audit-freshness.sh :: reify_audit_guard ... warn-open ...).
+# The installed binary is therefore free to drift arbitrarily far behind
+# crates/reify-audit/ with NOTHING to say so — measured 2026-08-27 at ~11 weeks
 # behind the crate tip.  This script rebuilds the binary and connects the guard
-# that would have refused a stale one.
+# that DETECTS a stale one.
+#
+# "Detects", not "refuses": since task #7139 the wrapper calls the guard in
+# WARN-OPEN mode and a stale-but-runnable binary does NOT block the done-flip.
+# It emits a self-describing E_AUDIT_BIN_STALE advisory (stderr, the systemd
+# journal via `logger -t reify-audit-predone`, and a sentinel file) and runs the
+# stale detector anyway — because on a SYNCHRONOUS pre-done hook a refusal
+# wedges every done-flip in the project, which is an outage rather than a
+# safeguard.  REFUSE mode has no live consumer.  Only an UNRUNNABLE binary
+# (E_AUDIT_BIN_MISSING), or an operator who armed
+# REIFY_AUDIT_FRESHNESS_STRICT=1, still exits 125.
+#
+# THIS script diverges from that policy deliberately.  It is an ATTENDED deploy
+# that has just claimed to install a fresh binary, so step 6 treats the
+# E_AUDIT_BIN_STALE advisory as FATAL regardless of rc — without that, a
+# fail-open probe would report a green deploy over a stale fleet.
 #
 # HOW IT IS INVOKED
 # -----------------
@@ -61,7 +76,14 @@
 #   5. daemon-reload + restart, then wait for `is-active` and confirm the unit's
 #      effective Environment now names the wrapper.
 #   6. Sanity-check the guard is live end-to-end by invoking the wrapper for a
-#      real task id: it must NOT exit 125 with the stale/reinstall hint.
+#      real task id: it must NOT exit 125 with the stale/reinstall hint, and —
+#      since task #7139 made the wrapper FAIL OPEN on a stale-but-runnable
+#      binary — a rc-0 run whose stderr carries the E_AUDIT_BIN_STALE advisory
+#      is EQUALLY fatal here.  Step 3 has already hard-asserted the installed
+#      binary is fresh, so either signal means the deploy did not achieve its
+#      purpose.  Fail-open is the right policy for the unattended done-flip hot
+#      path; it is the wrong answer for an attended deploy that just claimed to
+#      have installed a fresh binary.
 #
 # USAGE
 # -----
@@ -98,7 +120,7 @@
 # RELATED
 # -------
 #   scripts/reify-audit-predone-wrapper.sh   the wrapper being wired in
-#   scripts/reify-audit-freshness.sh         the REFUSE-mode guard it sources
+#   scripts/reify-audit-freshness.sh         the WARN-OPEN guard it sources
 #   task #6939 (this deploy), #6345 (the P5 vacuity fix it waits for)
 #   provenance: reify esc-6345-6, ruled by Leo 2026-08-28
 
@@ -284,7 +306,8 @@ else
      crates/reify-audit tip commit epoch $CRATE_EPOCH. cargo install exited 0 but
      the binary on disk is unchanged (wrong --root? a shadowing binary earlier on
      PATH? an install into a different HOME?).
-     Refusing to repoint systemd at a wrapper that would immediately refuse."
+     Refusing to repoint systemd at a wrapper whose guard would immediately
+     report the binary as stale."
     fi
     note "binary mtime $BIN_MTIME >= crate epoch $CRATE_EPOCH — fresh"
 fi
@@ -398,6 +421,23 @@ else
         probe_err="$(mktemp /tmp/reify-predone-probe-XXXXXX)"
         probe_rc=0
         "$WRAPPER" --task "$PROBE_TASK_ID" --pre-done >/dev/null 2>"$probe_err" || probe_rc=$?
+
+        # Task #7139: the wrapper now FAILS OPEN on a stale-but-runnable binary
+        # (rc 0 + an E_AUDIT_BIN_STALE advisory on stderr), so an rc-only test
+        # would fall through to the success branch below and report a green
+        # deploy over a stale fleet.  Check the token regardless of rc, and
+        # branch on the TOKEN rather than message prose (the convention in
+        # crates/reify-audit/src/jcodemunch_index.rs:522).
+        if grep -qF 'E_AUDIT_BIN_STALE' "$probe_err"; then
+            msg="$(head -8 "$probe_err")"
+            rm -f "$probe_err"
+            die "the wrapper judges '$AUDIT_BIN' STALE after the deploy (exit $probe_rc):
+       $msg
+     Step 3 already asserted the freshly-installed binary is fresh, so this
+     contradicts it — the deploy did not achieve its purpose.  Note the wrapper
+     FELL OPEN (or refused under REIFY_AUDIT_FRESHNESS_STRICT=1): done-flips are
+     not blocked, but every one of them is now running a stale detector."
+        fi
 
         if [ "$probe_rc" = "125" ] && grep -q 'reinstall with: cargo install' "$probe_err"; then
             msg="$(head -5 "$probe_err")"

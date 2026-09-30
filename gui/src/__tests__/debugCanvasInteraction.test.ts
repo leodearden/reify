@@ -124,23 +124,32 @@ async function dispatchAndGetResult(
   return JSON.parse(payload.result);
 }
 
+/** The 800×600 canvas every describe in this file stubs getBoundingClientRect with. */
+const CANVAS_RECT = {
+  left: 0,
+  top: 0,
+  width: 800,
+  height: 600,
+  x: 0,
+  y: 0,
+  right: 800,
+  bottom: 600,
+  toJSON: () => ({}),
+} as DOMRect;
+
 // ─── pick_entity_at ───────────────────────────────────────────────────────────
 
 describe('pick_entity_at: bridge handler (real three)', () => {
   let capturedHandler: DebugRequestHandler | undefined;
   let selectEntitySpy: ReturnType<typeof vi.fn>;
+  let pickCamera: import('three').PerspectiveCamera;
 
-  const CANVAS_RECT = {
-    left: 0,
-    top: 0,
-    width: 800,
-    height: 600,
-    x: 0,
-    y: 0,
-    right: 800,
-    bottom: 600,
-    toJSON: () => ({}),
-  } as DOMRect;
+  /** X offset of the second cube — far enough that no ray hits both. */
+  const FAR_BOX_X = 10;
+  /** Half the unit cube's edge: a face sits this far from its centre. */
+  const HALF_EDGE = 0.5;
+  /** Z the camera keeps while moving over the far cube (matches the beforeEach pose). */
+  const CAM_Z = 5;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -166,10 +175,21 @@ describe('pick_entity_at: bridge handler (real three)', () => {
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
 
-    const geometry = new BoxGeometry(1, 1, 1);
-    const mesh = new Mesh(geometry);
+    // Two unit cubes, 10 m apart on X, so the stale camera pose and the live one
+    // resolve to DIFFERENT entities — the discriminator the staleness test needs.
+    const mesh = new Mesh(new BoxGeometry(1, 1, 1));
     mesh.name = 'entity/box';
     scene.add(mesh);
+
+    const farMesh = new Mesh(new BoxGeometry(1, 1, 1));
+    farMesh.name = 'entity/farBox';
+    farMesh.position.set(FAR_BOX_X, 0, 0);
+    scene.add(farMesh);
+
+    mesh.updateMatrixWorld();
+    farMesh.updateMatrixWorld();
+
+    pickCamera = camera;
 
     // Renderer stub — domElement.getBoundingClientRect() returns 800×600 canvas
     const domElement = document.createElement('canvas');
@@ -184,7 +204,7 @@ describe('pick_entity_at: bridge handler (real three)', () => {
       scene,
       camera,
       renderer: renderer as any,
-      getMeshes: () => new Map([['entity/box', mesh]]),
+      getMeshes: () => new Map([['entity/box', mesh], ['entity/farBox', farMesh]]),
       getGhostMeshes: () => new Map(),
       fitToView: vi.fn(),
       flyToEntity: vi.fn(),
@@ -232,6 +252,44 @@ describe('pick_entity_at: bridge handler (real three)', () => {
 
     expect(result).toBeDefined();
     expect(result.hit).toBe(false);
+  });
+
+  it('raycasts through the LIVE camera pose, not the stale matrixWorld rotation (#6496)', async () => {
+    // WHY a camera move leaves matrixWorld's ROTATION behind, and why that is the
+    // shipped state rather than a contrived one:
+    //   • OrbitControls.update() ends by writing object.position then calling
+    //     object.lookAt(target) (OrbitControls.js:784-788);
+    //   • Object3D.lookAt() calls updateWorldMatrix(true, false) FIRST — folding the new
+    //     position in against the OLD quaternion — and only THEN writes this.quaternion.
+    //     It never refreshes matrixWorld again.  So after every controls.update(),
+    //     camera.matrixWorld carries the CURRENT position with the PREVIOUS rotation.
+    //   • Viewport.tsx:478-486 is a render-on-demand loop: controls.update() runs every
+    //     RAF frame, renderer.render() (the usual matrixWorld refresher) only when
+    //     needsRender — so a render is not a reliable resynchroniser either.
+    // Raycaster.setFromCamera consumes camera.matrixWorld and projectionMatrixInverse
+    // ONLY, so an unsynced pick silently casts through that half-stale pose: correct
+    // origin, wrong aim.  That is the #6496 dogfood signature.
+    //
+    // The fixture makes the two poses resolve different entities.  The camera moves to
+    // sit directly above the far cube and turns to face the origin cube:
+    //   stale rotation (identity, still aimed down -Z) → ray hits 'entity/farBox';
+    //   live  rotation (aimed at the origin)           → ray hits 'entity/box'.
+    pickCamera.position.set(FAR_BOX_X, 0, CAM_Z);
+    pickCamera.lookAt(0, 0, 0);
+
+    const result = await dispatchAndGetResult(capturedHandler!, 9, 'pick_entity_at', {
+      x: 400,
+      y: 300,
+    }) as any;
+
+    expect(result.hit).toBe(true);
+    expect(result.entityPath).toBe('entity/box');
+    // Canvas centre → NDC(0,0) → the ray is the straight segment from the camera to the
+    // origin, so the point where it crosses the origin cube's +X face (x = HALF_EDGE) is
+    // simply the camera position scaled by HALF_EDGE / FAR_BOX_X.
+    const f = HALF_EDGE / FAR_BOX_X;
+    expect(result.point.x).toBeCloseTo(FAR_BOX_X * f, 3);
+    expect(result.point.z).toBeCloseTo(CAM_Z * f, 3);
   });
 
   it('pick is query-only — selectEntity is never called', async () => {
@@ -458,5 +516,98 @@ describe('orbit_camera / pan_camera / zoom_camera: bridge handlers (real OrbitCo
     }) as any;
 
     expect(typeof result.error).toBe('string');
+  });
+});
+
+// ─── set_camera up-axis coherence ────────────────────────────────────────────
+//
+// The #6497 half of the camera desync, driven entirely through the bridge dispatcher
+// so the shipped command path is what is under test.  Real three and a real
+// OrbitControls: the subject is the library's constructor-time orbit frame, which a
+// hand-rolled stub cannot exhibit.
+describe('set_camera up-axis coherence (real three + real OrbitControls)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let camera: import('three').PerspectiveCamera;
+
+  // Off-axis, so an orbit about either candidate axis produces a definite and
+  // distinguishable motion — on-axis would be the orbit pole and a no-op for the
+  // wrong reason.
+  const START = { x: 5, y: 0, z: 3 };
+  const AZIMUTH = 0.4;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    await initDebugBridge(makeStores());
+    expect(capturedHandler).toBeDefined();
+
+    const { Scene, PerspectiveCamera } = await import('three');
+    const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+
+    const scene = new Scene();
+    // up is the three default (0,1,0) at construction, matching createScene's camera
+    // before it sets Z-up — which is the moment OrbitControls captures its frame.
+    camera = new PerspectiveCamera(60, 800 / 600, 0.1, 1000);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+
+    const domElement = document.createElement('canvas');
+    Object.defineProperty(domElement, 'clientHeight', { value: 600 });
+    Object.defineProperty(domElement, 'clientWidth', { value: 800 });
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue(CANVAS_RECT);
+
+    const controls = new OrbitControls(camera, domElement);
+    controls.enableDamping = false;
+    controls.update();
+
+    window.__REIFY_DEBUG__!.viewport = {
+      scene,
+      camera,
+      renderer: { domElement, render: vi.fn() } as any,
+      getMeshes: () => new Map(),
+      getGhostMeshes: () => new Map(),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: controls as any,
+    };
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('orbit_camera after set_camera{up} rotates about the NEW up axis', async () => {
+    await dispatchAndGetResult(capturedHandler!, 40, 'set_camera', {
+      position: [START.x, START.y, START.z],
+      target: [0, 0, 0],
+      up: [0, 0, 1],
+    });
+
+    const result = (await dispatchAndGetResult(capturedHandler!, 41, 'orbit_camera', {
+      dazimuth: AZIMUTH,
+    })) as any;
+
+    // LIVE state.  An azimuthal orbit about +Z conserves the component along +Z and
+    // the radius in the plane normal to it.  Without the frame sync (#6497) the camera
+    // orbited the stale +Y frame instead, so z moved and y stayed ~0.
+    expect(camera.position.z).toBeCloseTo(START.z, 6);
+    expect(Math.hypot(camera.position.x, camera.position.y)).toBeCloseTo(
+      Math.hypot(START.x, START.y),
+      6,
+    );
+    // Not vacuous: the rotation really happened.
+    expect(camera.position.x).not.toBeCloseTo(START.x, 3);
+
+    // …and the response agrees with live state rather than describing a different pose.
+    expect(result.camera.position).toEqual({
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+    });
   });
 });

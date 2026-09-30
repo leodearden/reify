@@ -16,7 +16,7 @@
 //!   - `center_of_mass(s, [densities])` → Point3<Length> | Undef
 //!   - `bounding_box(snapshot)`         → Map { min, max } | Undef
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_ir::Value;
@@ -26,7 +26,8 @@ use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{
-    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure, solve_loop_closure_with_diagnostics,
+    NewtonConfig, NewtonOutcome, StartStrategy, closing_side_contains_closing_joint,
+    solve_loop_closure, solve_loop_closure_with_diagnostics, strip_world_sentinel,
 };
 use crate::mechanism::is_world;
 use crate::resolve_body_mass;
@@ -258,6 +259,12 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // stability (the BTreeMap key invariant {bodies, free_values,
             // kind} stays alphabetically consistent across mechanism
             // shapes).
+            // Which bodies take the rigid-tie base frame in the FK walk.
+            // Derived once from the closure records
+            // and shared by BOTH walks below — the cold open-chain walk (where
+            // it is empty) and the synthesized-bindings re-walk.
+            let closing_body_ids = parent_conflict_closing_body_ids(loop_closures);
+
             let mut free_values: Vec<Value> = Vec::with_capacity(loop_closures.len());
             // Accumulated across every loop's FINAL outcome (post
             // over-constrained-fallback, see the solver-choice comment
@@ -271,7 +278,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 // entirely (the synthesized re-walk below produces the
                 // same shape with the solver-driven free-joint values
                 // baked in).
-                match walk_fk(bodies, joint_parents, bindings_list) {
+                match walk_fk(bodies, joint_parents, &closing_body_ids, bindings_list) {
                     Some(b) => b,
                     None => return Some(Value::Undef),
                 }
@@ -438,7 +445,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 // memoized world transforms keyed on joints that may now
                 // be bound to different values (the synthesized bindings
                 // override the midpoint fallback for free joints).
-                match walk_fk(bodies, joint_parents, &synth_bindings) {
+                match walk_fk(bodies, joint_parents, &closing_body_ids, &synth_bindings) {
                     Some(b) => b,
                     None => return Some(Value::Undef),
                 }
@@ -756,6 +763,72 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
+/// Body ids of the PARENT-CONFLICT closing bodies recorded in `loop_closures`.
+///
+/// `walk_fk` composes exactly these bodies' `pose` off `T(body.parent)` instead
+/// of `T(at)` — the rigid-tie rule `T_tree(at) == T(parent) ∘ pose` that task
+/// 7186 gave a closing edge. Membership is read from the closure
+/// RECORD rather than inferred from a `joint_parents` disagreement; the walk-site
+/// comment records the cycle-body shape that makes the inference unsound.
+///
+/// **Branch discriminator.** [`closing_side_contains_closing_joint`] — the SPOT
+/// this shares with `mechanism_loop_closure_chains`, so a record classified
+/// `Cycle` there is never given the rigid-tie frame here. A record qualifies iff
+/// `path_b` does NOT contain `closing_joint` anywhere. Three shapes are
+/// therefore excluded, and each is excluded correctly:
+///
+/// - The cycle / self-loop branch of `append_body`, which appends the closing
+///   joint to `path_b` as a tail marker.
+/// - The ANCESTOR case: a parent-conflict edge whose `at` lies on `parent`'s
+///   ancestor walk, so `path_b` passes THROUGH the closing joint mid-walk
+///   (`body(m,A,j1,world); body(m,B,j2,j1); body(m,C,j1,j2)` → `path_b =
+///   [world, j1, j2]`, `closing_joint = j1`). One joint would carry two
+///   independent values — `chain_a` resolves it while `chain_b` iterates it as
+///   a free variable — so whatever frame a solve lands on is meaningless, and
+///   the body is deliberately left on the pre-7186 `T(at)` composition rather
+///   than tied to it. (This module does NOT filter such a record out of the
+///   solve: the arm above feeds every `loop_closures` entry to
+///   `extract_loop_closure_chains` + `solve_loop_closure`. The
+///   `WellFormed`/`Cycle` split is advisory here; only
+///   `reify-constraints` consumes it as a filter.) Pinned by
+///   `snapshot_ancestor_parent_conflict_body_keeps_its_own_frame`.
+/// - `parent == at` with an identity pose (a self-parented edge whose `at`
+///   already has a different tree parent). Harmless: `T(parent) == T(at)`
+///   there, so both compositions agree.
+///
+/// Malformed records (non-Map, or missing `body_id` / `closing_joint` /
+/// `path_b`) are skipped rather than rejected — an unrecognised record simply
+/// leaves its body on the default `T(at)` composition, which is what every
+/// pre-7186 body used.
+///
+/// `path_b` is normalised through [`strip_world_sentinel`] first, the same
+/// gate `mechanism_loop_closure_chains` applies before it classifies. Sharing
+/// the PRECONDITION and not just the predicate body is what makes the two
+/// call sites agree: a record the solver rejects outright (a `path_b` shorter
+/// than two entries, or one that does not head with the world sentinel) is
+/// skipped here too, rather than putting its body on a rigid-tie frame no
+/// solve ever enforced.
+fn parent_conflict_closing_body_ids(loop_closures: &[Value]) -> BTreeSet<Value> {
+    let mut ids = BTreeSet::new();
+    for record in loop_closures {
+        let Value::Map(r) = record else { continue };
+        let (Some(body_id), Some(closing_joint), Some(Value::List(path_b))) = (
+            r.get(&Value::String("body_id".to_string())),
+            r.get(&Value::String("closing_joint".to_string())),
+            r.get(&Value::String("path_b".to_string())),
+        ) else {
+            continue;
+        };
+        let Some(chain_b) = strip_world_sentinel(path_b) else {
+            continue;
+        };
+        if !closing_side_contains_closing_joint(&chain_b, closing_joint) {
+            ids.insert(body_id.clone());
+        }
+    }
+    ids
+}
+
 /// FK walk over every body in a Mechanism's `bodies` list, returning the
 /// per-body snapshot record vector.  Encapsulates the FK loop the
 /// `eval_snapshot::"snapshot"` arm runs once for the cold first-pass
@@ -767,9 +840,14 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 /// so the synthesized-bindings re-walk gets a clean memoization slate
 /// (preventing the cold-walk's midpoint-derived world transforms from
 /// leaking into the warm-walk's solver-derived chain).
+///
+/// `closing_body_ids` comes from [`parent_conflict_closing_body_ids`] and
+/// selects which bodies take the rigid-tie base frame; pass an empty set for
+/// an open-chain mechanism.
 fn walk_fk(
     bodies: &[Value],
     joint_parents: &BTreeMap<Value, Value>,
+    closing_body_ids: &BTreeSet<Value>,
     bindings: &[Value],
 ) -> Option<Vec<Value>> {
     let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
@@ -784,12 +862,115 @@ fn walk_fk(
         let at = body_map.get(&Value::String("at".to_string()))?.clone();
         let pose = body_map.get(&Value::String("pose".to_string()))?.clone();
 
-        // Walk the parent chain ancestor-ward to compute the body's
-        // `at`-joint frame in world coordinates.
-        let t_at_world = joint_world_transform(&at, joint_parents, bindings, &mut cache)?;
+        // Which frame this body's pose offsets FROM.
+        //
+        // A PARENT-CONFLICT CLOSING body offsets from `T(body.parent)`, not
+        // `T(at)`, because `append_body` records the closing edge as a rigid
+        // 0-DOF TIE `parent --pose--> at` whose residual is
+        // `T_tree(at) == T(parent) ∘ pose`. Composing `T(parent) ∘ pose` here
+        // makes FK and the residual THE SAME composition: the body is placed on
+        // chain_b's terminal frame, which equals chain_a's terminal
+        // `T_tree(at)` exactly when the closure is satisfied. It therefore
+        // always rides a frame the solve enforced, and on non-convergence
+        // lands on the closure side rather than somewhere neither chain
+        // describes. Offsetting from `T(at)` instead applies `pose` a SECOND
+        // time — it is already inside the residual that placed `at`.
+        //
+        // Membership in `closing_body_ids` is the whole test. Inferring it from
+        // a `joint_parents` disagreement instead would be unsound: a cycle body
+        // acquires one RETROACTIVELY when a later open `body()` call registers
+        // a tree parent for its `at`, and composing it off that parent would
+        // silently move a body whose closure is a non-solver-feedable `Cycle`.
+        // Pinned by
+        // `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`.
+        //
+        // Membership IMPLIES the `joint_parents` disagreement, so the walk
+        // below does not re-check it: `append_body` reaches its
+        // parent-conflict arm only when the spanning tree already holds a
+        // different parent for `at` (the body record keeps user intent, the
+        // tree keeps the first-recorded edge — see `make_body_record`'s doc
+        // note in mechanism.rs), and nothing rewrites `joint_parents[at]`
+        // afterwards.
+        //
+        // A closing body ALWAYS carries a `parent` key — `make_body_record`
+        // writes all five fields unconditionally — so the `?` below is not a
+        // fallback but a rejection: a record missing it is a hand-built Map,
+        // and it collapses the whole mechanism to `Undef` on the SHIPPED path
+        // rather than only under `debug_assertions`. Silently falling back to
+        // `T(at)` there would apply `pose` twice relative to the residual that
+        // placed it — the silent-geometry class this rule exists to remove.
+        //
+        // EVERY other body keeps the plain `T(at)` composition: open-chain
+        // bodies carry no closure record, and every body whose record
+        // `mechanism_loop_closure_chains` calls `Cycle` — the cycle /
+        // self-loop branch AND the ancestor case — is excluded by
+        // `parent_conflict_closing_body_ids`, because both read the same
+        // `closing_side_contains_closing_joint` predicate.
+        let closing_parent = if closing_body_ids.contains(&id) {
+            Some(body_map.get(&Value::String("parent".to_string()))?.clone())
+        } else {
+            None
+        };
 
-        // body's world_transform = T_at_world ∘ pose.
-        let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
+        // Walk the parent chain ancestor-ward to compute the frame this
+        // body's `pose` offsets from — `T(body.parent)` for a parent-conflict
+        // closing body, `T(at)` for every other body.
+        let base_world = match &closing_parent {
+            // The world sentinel as a closing body's `parent` is a shape
+            // `body()` cannot produce: the builder rejects a world-parented
+            // closing edge outright with `error = "world_parented_closure"`
+            // (mechanism.rs), and the world sentinel is never a key in
+            // `joint_parents`. Reaching this arm means a hand-built mechanism
+            // Map carrying a record the builder would have refused.
+            //
+            // REJECTED, not composed off a bare identity. Such a record's
+            // `path_b` is `[world]` alone, which `strip_world_sentinel` also
+            // rejects, so the solver enforced NO closure for this body and
+            // there is no "frame the solve enforced" to land on. An identity
+            // would place the body at the world origin inside a normal-looking
+            // Snapshot — the silent geometry this module's rules exist to
+            // remove. Pinned by
+            // `snapshot_world_parented_closing_body_is_undef`.
+            Some(p) if is_world(p) => return None,
+
+            // A REAL joint that was never registered as anyone's `at`.
+            // `body()` validates only that `parent` IS a joint value
+            // (mechanism.rs), not that it is registered, so
+            // `body(m, "C", j2, j3)` with `j3` unused as an `at` builds
+            // cleanly — see `non_world_parented_closing_edge_still_records`.
+            //
+            // Root it at the identity (it has no ancestors to walk) and then
+            // compose ITS OWN transform. The second half is what makes this
+            // agree with the residual: `walk_to_world` yields just `[parent]`
+            // for an unregistered parent, so `chain_b == [parent]` and
+            // `chain_transform` (loop_closure.rs) seeds at the identity and
+            // composes `transform_at(parent, ..)`. Its terminal frame is
+            // `T(parent)`, NEVER `I`; a bare identity here would place the
+            // closing body a whole `T(parent)` away from the frame the
+            // residual enforced. Pinned by
+            // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`.
+            //
+            // Not `joint_world_transform`: its leading `joint_parents.get(..)?`
+            // would return None and collapse the WHOLE mechanism's snapshot to
+            // `Value::Undef`. Teaching that function to treat a missing entry
+            // as an implicit world root would unify the two, but it also
+            // changes the `None` arm below, where cycle / self-loop bodies rely
+            // on the `?` to reject.
+            //
+            // Deliberately uncached: this leaf is computed once per body, and
+            // inserting a world-rooted entry under `p` would teach
+            // `joint_world_transform` to resolve a joint it rejects by design.
+            Some(p) if !joint_parents.contains_key(p) => joint_local_transform(p, bindings)?,
+            // `body.parent` is a real joint with its own spanning-tree entry,
+            // so this is a normal cached walk — no new recursion hazard, and
+            // the shared `cache` stays valid because it is keyed on joints,
+            // not bodies.
+            Some(p) => joint_world_transform(p, joint_parents, bindings, &mut cache)?,
+            None => joint_world_transform(&at, joint_parents, bindings, &mut cache)?,
+        };
+
+        // body's world_transform = T_base_world ∘ pose.
+        let world_transform = eval_builtin("transform_compose", &[base_world, pose.clone()]);
         if world_transform.is_undef() {
             return None;
         }
@@ -1154,20 +1335,8 @@ fn joint_world_transform(
         return None;
     }
 
-    // Compose: T_joint_world = T_parent_world ∘ T_joint_local
-    // where T_joint_local = transform_at(joint, value_for(joint)).
-    //
-    // PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
-    // through `transform_at` and MUST NOT be reconstructed from the joint Map fields
-    // directly. `transform_at` applies the "origin" pre-compose uniformly, so any pivot
-    // offset is baked in here automatically. Verified behaviourally by
-    // `joint_world_transform_offset_equals_transform_at_route2` and
-    // `snapshot_analytic_two_link_offset_chain_world_transform`.
-    let motion_value = value_for(joint, bindings)?;
-    let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
-    if t_local.is_undef() {
-        return None;
-    }
+    // Compose: T_joint_world = T_parent_world ∘ T_joint_local.
+    let t_local = joint_local_transform(joint, bindings)?;
     let t_world = eval_builtin("transform_compose", &[parent_world, t_local]);
     if t_world.is_undef() {
         return None;
@@ -1175,6 +1344,31 @@ fn joint_world_transform(
 
     cache.insert(joint.clone(), t_world.clone());
     Some(t_world)
+}
+
+/// A single joint's LOCAL transform: `transform_at(joint, value_for(joint))`.
+///
+/// SPOT for the leaf every base-frame walk in this module ends on — the
+/// ancestor-ward recursion in [`joint_world_transform`] and the
+/// unregistered-closing-parent arm of [`walk_fk`], which has no ancestors to
+/// walk and IS this leaf.
+///
+/// PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
+/// through `transform_at` and MUST NOT be reconstructed from the joint Map's
+/// fields directly. `transform_at` applies the `origin` pre-compose uniformly,
+/// so any pivot offset is baked in automatically. Verified behaviourally by
+/// `joint_world_transform_offset_equals_transform_at_route2` and
+/// `snapshot_analytic_two_link_offset_chain_world_transform`.
+///
+/// Returns `None` when the joint has no resolvable motion value, or when
+/// `transform_at` rejects the joint/value pair.
+fn joint_local_transform(joint: &Value, bindings: &[Value]) -> Option<Value> {
+    let motion_value = value_for(joint, bindings)?;
+    let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
+    if t_local.is_undef() {
+        return None;
+    }
+    Some(t_local)
 }
 
 /// Look up the motion value for `joint` in a bindings list.
@@ -2815,31 +3009,48 @@ mod tests {
     //
     // For closed-chain mechanisms (non-empty `loop_closures`), `snapshot()`
     // must invoke the Newton solver to drive free joints into a configuration
-    // that closes every recorded loop.  Today's pre-step-4 snapshot ignores
-    // `loop_closures` entirely — for our 4-body fixture below it produces a
-    // `Snapshot Map` whose `bodies[1]` (at=jB) sits at jB's range midpoint
-    // rather than the loop-closure-solved value, leaving body 3's
-    // (closing-edge) world translation inconsistent across paths a and b.
-    // After step-4, the synthesized binding for jB drives both paths to
-    // the same translation within solver tolerance.
+    // that closes every recorded loop.  A snapshot that ignored
+    // `loop_closures` would leave `bodies[1]` (at=jB) at jB's range midpoint
+    // instead of the solved value, and the two chains' terminal frames would
+    // disagree.  The synthesized binding for jB is what drives both paths to
+    // the same frame within solver tolerance.
 
     /// Closed-chain mechanism: two prismatic-X joints (`j_a`, `j_b`)
     /// attached to the world via separate bodies, plus a closing joint
     /// (`j_x`) that body C anchors to `j_a` (forming the spanning-tree
     /// edge `j_x → j_a`) and body D anchors to `j_b` (forming the
     /// closing edge that becomes a `loop_closures` record with
-    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b,j_x]`).
+    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b,F]`, where F is the
+    /// closing call's `pose` carried as a 0-DOF rigid link).
     ///
-    /// `j_a` is bound to 0.5 m (driver value).  The closure constraint
-    /// `j_a + j_x = j_b + j_x` forces `j_b = j_a = 0.5 m`.  Today's
-    /// snapshot ignores `loop_closures` and `j_b` falls back to its
-    /// range midpoint (1.0 m for range 0..2 m) — so body 1's translation
-    /// (1.0, 0, 0) violates the closure, distinguishable from the
-    /// post-step-4 solver-driven (0.5, 0, 0).
+    /// The chains are ASYMMETRIC: `chain_a = [jA, jX]` composes the closing
+    /// joint jX once, on the tree side only, and `chain_b = [jB, F]` carries
+    /// the closing call's `pose` as a 0-DOF rigid link F. jX's rotation is
+    /// therefore opposed by nothing on the free side, so it is BOUND (to
+    /// π/4) rather than left at its π/2 range midpoint, and F carries the
+    /// same π/4 so the orientation residual has an exact zero. The model is
+    ///   `T(jA)·T(jX) == T(jB)·pose`,
+    /// i.e. `Tx(0.5)·Rz(π/4) == Tx(jB)·Tx(0.3)·Rz(π/4)  ⟺  jB = 0.2 m`.
     ///
-    /// The closing-edge body's world translation is asserted to match
-    /// the path-b expectation `(j_b_solved + j_x_value)` within 1e-6 m,
-    /// pinning the round-trip from solver output back into the FK walk.
+    /// **The non-identity `pose` is load-bearing — do not flatten it.** With
+    /// an identity pose the closing body's rigid-tie frame `T(jB) ∘ pose`
+    /// and its pre-7186 spanning-tree frame `T(jA)·T(jX)` are EQUAL whenever
+    /// the closure converges, so the body-3 assertions below hold under
+    /// either composition and measure nothing about which one `walk_fk`
+    /// picked (mutation-checked: `if false && closing_body_ids.contains(..)`
+    /// left the flat-pose form green). The 0.3 m offset separates them —
+    /// body 1 lands at 0.2 m and body 3 at 0.5 m, and the spanning-tree
+    /// composition would put body 3 at (0.712, 0.212, 0) instead.
+    ///
+    /// `j_a` is bound to 0.5 m (driver value), so the solver must drive
+    /// `j_b` to 0.2 m.  jB's own range midpoint is 1.0 m (range 0..2 m), so
+    /// a snapshot that ignored `loop_closures` would place body 1 at
+    /// (1.0, 0, 0) and the assertion distinguishes that from the
+    /// solver-driven (0.2, 0, 0).
+    ///
+    /// Together the two body assertions pin the whole round trip: body 1
+    /// reads the solver's output back out of the FK walk, and body 3 pins
+    /// which frame the closing body is composed off.
     #[test]
     fn snapshot_solves_closed_chain_via_loop_closure_solver() {
         // jA on +X with range 0..1m; midpoint = 0.5m.
@@ -2860,12 +3071,30 @@ mod tests {
                 },
             ],
         );
-        // jX is a revolute around +Z with range 0..π; pure rotation about
-        // world-Z preserves the +X translation contributions of j_a and j_b
-        // (both project onto the rotated +X), so the closure simplifies to
-        // a 1-DOF translation match with jX's rotation cancelling out of
-        // both paths.
+        // jX is a revolute around +Z with range 0..π.  It is composed on
+        // chain_a ONLY, so nothing on the free side can oppose its rotation:
+        // it is bound to π/4 below, and the closing call's `pose` carries the
+        // matching π/4 so the orientation residual has an exact zero.
         let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        // The closing edge's rigid tie: 0.3 m along +X, rotated π/4 about +Z.
+        // Its +X component lies ALONG the free variable's direction, which is
+        // what makes the tie observable in the converged value and separates
+        // body 3's frame from body 1's.
+        let theta = std::f64::consts::FRAC_PI_4;
+        let pose = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: (theta / 2.0).cos(),
+                x: 0.0,
+                y: 0.0,
+                z: (theta / 2.0).sin(),
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.3),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
 
         let world = eval_builtin("world", &[]);
         let m0 = eval_builtin("mechanism", &[]);
@@ -2900,7 +3129,9 @@ mod tests {
             ],
         );
         // Body D: at=jX, parent=jB.  Closing edge — jX is already mapped to jA.
-        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, jX].
+        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, F]:
+        // the closing joint jX is composed on path_a only, and the 5-arg
+        // `pose` rides path_b's tail as the 0-DOF rigid link F.
         let m4 = eval_builtin(
             "body",
             &[
@@ -2908,6 +3139,7 @@ mod tests {
                 Value::String("solidD".to_string()),
                 j_x.clone(),
                 j_b.clone(),
+                pose.clone(),
             ],
         );
 
@@ -2934,10 +3166,14 @@ mod tests {
             other => panic!("expected Mechanism Map, got {:?}", other),
         }
 
-        // Bind jA = 0.5m.  The closure jA + jX = jB + jX simplifies to
-        // jA = jB → solver should drive jB to 0.5m (NOT jB's midpoint 1.0m).
+        // Bind jA = 0.5 m and jX = π/4.  The closure
+        // `T(jA)·T(jX) == T(jB)·pose` then reduces to `0.5 = jB + 0.3`, so the
+        // solver must drive jB to 0.2 m (NOT jB's midpoint 1.0 m).  jX must be
+        // bound because it appears on chain_a only: its midpoint rotation
+        // (π/2) would otherwise be unopposable by the single free prismatic jB.
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
-        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(theta)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
 
         // After step-4 the closed-chain snapshot must produce a valid
         // Snapshot Map (not Undef): the loop-closure-solver wiring runs
@@ -2962,10 +3198,9 @@ mod tests {
         assert_eq!(bodies.len(), 4, "4-body closed-chain mechanism");
 
         // Body 1 (at=jB, parent=world) — its world translation x must
-        // equal the loop-closure-solved jB value (= 0.5m), not the
-        // naive midpoint (1.0m).  This is the assertion that fails
-        // today (snapshot ignores loop_closures and falls back to
-        // midpoint(jB) = 1.0m).
+        // equal the loop-closure-solved jB value (= 0.2 m), not the naive
+        // midpoint (1.0 m).  This is the assertion that distinguishes a
+        // snapshot that solves `loop_closures` from one that ignores them.
         let body_1 = match &bodies[1] {
             Value::Map(b) => b,
             other => panic!("expected body 1 record Map, got {:?}", other),
@@ -2975,20 +3210,25 @@ mod tests {
             .expect("body 1 must carry a world_transform field");
         let (_, [tx_1, ty_1, tz_1]) = decompose_transform_for_assert(wt_1);
         assert!(
-            (tx_1 - 0.5).abs() < 1e-6,
-            "body 1 (at=jB) tx must be loop-closure-solved 0.5m (NOT midpoint 1.0m), got {tx_1}"
+            (tx_1 - 0.2).abs() < 1e-6,
+            "body 1 (at=jB) tx must be loop-closure-solved 0.2m (NOT midpoint 1.0m), got {tx_1}"
         );
         assert!(ty_1.abs() < 1e-6, "body 1 ty must be 0, got {ty_1}");
         assert!(tz_1.abs() < 1e-6, "body 1 tz must be 0, got {tz_1}");
 
-        // Body 3 (closing-edge, at=jX, parent=jB): the FK walk uses
-        // joint_parents (which records jX → jA), so its world transform
-        // is computed via path_a (jA + jX).  The closure constraint
-        // demands path_a's value == path_b's value within 1e-6 m;
-        // verify by comparing body 3's stored translation against the
-        // path_b expectation jB_solved + jX_value (with jX projecting
-        // onto +X via its initial frame, the translation contribution
-        // from jX is zero — its contribution is purely rotational).
+        // Body 3 (closing-edge, at=jX, parent=jB): `walk_fk` composes it off
+        // the rigid tie's BASE frame, `T(body.parent) ∘ pose = T(jB) ∘ pose`,
+        // which is chain_b's terminal frame — the one the residual enforced.
+        //
+        // **What these assertions measure, exactly.** They select the
+        // COMPOSITION, not just the convergence. The pre-7186 walk read
+        // `joint_parents` (jX → jA) for every body and would put body 3 at
+        // `T(jA)·T(jX) ∘ pose`. With the non-identity tie those two frames are
+        // 0.212 m apart in y and 0.212 m apart in x even at the exact closure,
+        // so a regression to the spanning-tree composition reds here rather
+        // than hiding behind the closure equation. The rotation is asserted
+        // too: the tie contributes exactly ONE π/4 turn, the spanning-tree
+        // composition would contribute two.
         let body_3 = match &bodies[3] {
             Value::Map(b) => b,
             other => panic!("expected body 3 record Map, got {:?}", other),
@@ -2996,16 +3236,960 @@ mod tests {
         let wt_3 = body_3
             .get(&Value::String("world_transform".to_string()))
             .expect("body 3 must carry a world_transform field");
-        let (_, [tx_3, ty_3, tz_3]) = decompose_transform_for_assert(wt_3);
-        // Path-a expectation: jA + jX = 0.5m on +X (jX is pure rotation
-        // about Z and doesn't contribute translation).
+        let ((rw_3, rx_3, ry_3, rz_3), [tx_3, ty_3, tz_3]) = decompose_transform_for_assert(wt_3);
+        // T(jB) ∘ pose = Tx(0.2) ∘ Tx(0.3)·Rz(π/4) = Tx(0.5)·Rz(π/4).
         assert!(
             (tx_3 - 0.5).abs() < 1e-6,
-            "body 3 (closing-edge) tx must equal path-a/path-b solved 0.5m, got {tx_3}"
+            "body 3 (closing-edge) tx must be the rigid tie's 0.5m \
+             (the spanning-tree composition would give 0.712), got {tx_3}"
         );
-        assert!(ty_3.abs() < 1e-6, "body 3 ty must be 0, got {ty_3}");
+        assert!(
+            ty_3.abs() < 1e-6,
+            "body 3 ty must be 0 (the spanning-tree composition would give \
+             0.212), got {ty_3}"
+        );
         assert!(tz_3.abs() < 1e-6, "body 3 tz must be 0, got {tz_3}");
+        assert!(
+            (rw_3 - (theta / 2.0).cos()).abs() < 1e-6
+                && rx_3.abs() < 1e-6
+                && ry_3.abs() < 1e-6
+                && (rz_3 - (theta / 2.0).sin()).abs() < 1e-6,
+            "body 3 rotation must be exactly ONE π/4 turn about +Z, got \
+             ({rw_3}, {rx_3}, {ry_3}, {rz_3})"
+        );
     }
+
+    // ── Closing-body records the builder refuses ──────────────────────────
+    //
+    // `walk_fk` has two rejection arms for a closing body: a `parent` that is
+    // the world sentinel, and no `parent` key at all. Neither is reachable
+    // through `body()` — the builder rejects a world-parented closing edge
+    // with `error = "world_parented_closure"`, and `make_body_record` always
+    // writes the field — so both tests below start from a builder-produced
+    // closure and rewrite the closing body's record. `snapshot()` accepts any
+    // Mechanism Map, so a hand-assembled one is the reachable path, and both
+    // arms must collapse the WHOLE snapshot to `Undef` rather than placing
+    // the body on a frame no solve enforced.
+
+    /// The minimal builder-produced parent-conflict closure and a bindings
+    /// list that makes its solve well-posed: bodies
+    /// `[A@jA, B@jB, C@jX(parent jA), D@jX(parent jB)]`, D closing.
+    fn parent_conflict_fixture() -> (Value, Vec<Value>) {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        // A DIFFERENT Map by range, so the two prismatics do not alias.
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+        let bindings = vec![
+            eval_builtin("bind", &[j_a, Value::length(0.5)]),
+            eval_builtin("bind", &[j_x, Value::angle(0.0)]),
+        ];
+        (m4, bindings)
+    }
+
+    /// Rewrite the last body record of a Mechanism Map — the closing body in
+    /// [`parent_conflict_fixture`] — leaving every other field verbatim.
+    fn patch_closing_body(mech: &Value, edit: impl FnOnce(&mut BTreeMap<Value, Value>)) -> Value {
+        let mut m = match mech {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        let mut bodies = match m.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b.clone(),
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        let last = bodies.len() - 1;
+        let mut body = match &bodies[last] {
+            Value::Map(b) => b.clone(),
+            other => panic!("expected body record Map, got {other:?}"),
+        };
+        edit(&mut body);
+        bodies[last] = Value::Map(body);
+        m.insert(Value::String("bodies".to_string()), Value::List(bodies));
+        Value::Map(m)
+    }
+
+    /// A closing body parented to the world sentinel collapses the snapshot
+    /// to `Undef`.
+    ///
+    /// Its `path_b` would be `[world]` alone, which `strip_world_sentinel`
+    /// rejects, so the solver enforced no closure at all for this body and
+    /// there is no frame "the solve enforced" to compose it off. Returning a
+    /// bare identity instead would seat it at the world origin inside a
+    /// normal-looking Snapshot — silent geometry.
+    #[test]
+    fn snapshot_world_parented_closing_body_is_undef() {
+        let (mech, bindings) = parent_conflict_fixture();
+        let control = eval_builtin("snapshot", &[mech.clone(), Value::List(bindings.clone())]);
+        assert!(
+            !control.is_undef(),
+            "positive control: the unpatched fixture must snapshot cleanly, got Undef"
+        );
+
+        let world = eval_builtin("world", &[]);
+        let patched = patch_closing_body(&mech, |b| {
+            b.insert(Value::String("parent".to_string()), world);
+        });
+        let s = eval_builtin("snapshot", &[patched, Value::List(bindings)]);
+        assert!(
+            s.is_undef(),
+            "a world-parented closing body must collapse the whole snapshot to \
+             Undef, got {s:?}"
+        );
+    }
+
+    /// A closing body carrying no `parent` key collapses the snapshot to
+    /// `Undef` too — on the shipped path, not only under `debug_assertions`.
+    ///
+    /// Falling back to `T(at)` there would apply the tie's `pose` a second
+    /// time on top of the frame the residual already placed it at.
+    #[test]
+    fn snapshot_closing_body_without_parent_key_is_undef() {
+        let (mech, bindings) = parent_conflict_fixture();
+        let control = eval_builtin("snapshot", &[mech.clone(), Value::List(bindings.clone())]);
+        assert!(
+            !control.is_undef(),
+            "positive control: the unpatched fixture must snapshot cleanly, got Undef"
+        );
+
+        let patched = patch_closing_body(&mech, |b| {
+            b.remove(&Value::String("parent".to_string()));
+        });
+        let s = eval_builtin("snapshot", &[patched, Value::List(bindings)]);
+        assert!(
+            s.is_undef(),
+            "a closing body with no `parent` key must collapse the whole \
+             snapshot to Undef, got {s:?}"
+        );
+    }
+
+    /// **Task 7186 amendment — a CYCLE body must keep its own `at` frame even
+    /// after a later `body()` call registers a tree parent for that `at`.**
+    ///
+    /// `walk_fk` picks the rigid-tie base frame `T(body.parent)` for a
+    /// PARENT-CONFLICT closing body. Deciding that on the `joint_parents`
+    /// disagreement ALONE is unsound, because a cycle body acquires such a
+    /// disagreement retroactively:
+    ///   `body(m0, X, jC, jA)`   → joint_parents {jC: jA}
+    ///   `body(m1, Y, jA, jC)`   → CYCLE branch (jA is on jC's ancestor walk);
+    ///                             inserts no entry for jA
+    ///   `body(m2, Z, jA, world)`→ plain open edge, inserts {jA: world}
+    /// leaving `joint_parents[jA] = world != Y.parent = jC`.
+    ///
+    /// Y's closure record is a non-solver-feedable `Cycle`, so the rigid-tie
+    /// rule does not apply to it and it must stay on `T(jA)`. Composing it from
+    /// `T(jC) = T(jA) ∘ T(jC)` would silently add jC's 0.4 m — wrong geometry
+    /// in a field that feeds distance / interference queries.
+    ///
+    /// The guard is `parent_conflict_closing_body_ids`, which reads the branch
+    /// off the RECORD (`path_b` ends at the closing joint ⟺ cycle branch) rather
+    /// than off `joint_parents`.
+    #[test]
+    fn snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration() {
+        // jA on +X, range 0..1m; jC on +X, range 0..2m (a DIFFERENT Map).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_c = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidX".to_string()),
+                j_c.clone(),
+                j_a.clone(),
+            ],
+        );
+        // Cycle branch: at = jA, parent = jC, and jA is already on jC's
+        // ancestor walk. No joint_parents entry is inserted for jA.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidY".to_string()),
+                j_a.clone(),
+                j_c.clone(),
+            ],
+        );
+        // Plain open edge that retroactively gives jA a tree parent.
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidZ".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
+        );
+
+        // Fixture preconditions: one CYCLE record, and the retroactive
+        // disagreement that the old inequality-only test would misread.
+        let mm = match &m3 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        assert!(
+            !mm.contains_key(&Value::String("error".to_string())),
+            "fixture must not produce an errored mechanism"
+        );
+        let records = match mm.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(l)) => l,
+            other => panic!("expected loop_closures List, got {other:?}"),
+        };
+        assert_eq!(records.len(), 1, "exactly one loop-closure record expected");
+        assert!(
+            super::parent_conflict_closing_body_ids(records).is_empty(),
+            "the sole record is the CYCLE branch, so no body takes the rigid-tie frame"
+        );
+
+        // Bind both joints directly so the FK readback is deterministic.
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.3)]);
+        let bind_c = eval_builtin("bind", &[j_c.clone(), Value::length(0.4)]);
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![bind_a, bind_c])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {other:?}"),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        assert_eq!(bodies.len(), 3);
+
+        let tx_of = |i: usize| -> f64 {
+            let b = match &bodies[i] {
+                Value::Map(b) => b,
+                other => panic!("expected body {i} record Map, got {other:?}"),
+            };
+            let wt = b
+                .get(&Value::String("world_transform".to_string()))
+                .unwrap_or_else(|| panic!("body {i} must carry world_transform"));
+            decompose_transform_for_assert(wt).1[0]
+        };
+
+        // Body 0 (X at jC, tree parent jA): jA ∘ jC = 0.3 + 0.4.
+        assert!(
+            (tx_of(0) - 0.7).abs() < 1e-6,
+            "body 0 (at jC, tree parent jA) tx must be 0.7, got {}",
+            tx_of(0)
+        );
+        // Body 1 (Y, the CYCLE body): T(jA) = 0.3, NOT T(jC) = 0.7.
+        assert!(
+            (tx_of(1) - 0.3).abs() < 1e-6,
+            "body 1 (cycle body at jA) tx must stay on its own frame 0.3, got {} \
+             (0.7 means it was misread as a parent-conflict closing body and \
+             composed from T(jC))",
+            tx_of(1)
+        );
+        // Body 2 (Z at jA, tree parent world): T(jA) = 0.3.
+        assert!(
+            (tx_of(2) - 0.3).abs() < 1e-6,
+            "body 2 (at jA, tree parent world) tx must be 0.3, got {}",
+            tx_of(2)
+        );
+    }
+
+    /// **The ANCESTOR case must keep its own `at` frame, like every other
+    /// `Cycle`.**
+    ///
+    /// A closing edge can be BOTH a parent conflict AND have its `at` on
+    /// `parent`'s ancestor walk, so `path_b` passes THROUGH the closing joint
+    /// mid-walk instead of ending at it:
+    ///   `body(m0, A, j1, world)` → joint_parents {j1: world}
+    ///   `body(m1, B, j2, j1)`    → joint_parents {j1: world, j2: j1}
+    ///   `body(m2, C, j1, j2)`    → parent conflict (tree parent of j1 is world)
+    /// recording `path_a = [world, j1]`, `path_b = [world, j1, j2]`,
+    /// `closing_joint = j1`.
+    ///
+    /// `mechanism_loop_closure_chains` calls that pair `Cycle` and never solves
+    /// it, so there is no enforced closure frame for a rigid tie to ride on and
+    /// body C must stay on `T(j1)`. Both modules now read
+    /// [`closing_side_contains_closing_joint`]; a tail-only test
+    /// (`path_b.last() != closing_joint`) admitted this record here while the
+    /// solver rejected it, and body C was composed from `T(j2)` — measured
+    /// tx = 1.5 m against the 0.5 m the joint it is attached to actually reaches.
+    ///
+    /// Sibling of `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`,
+    /// which covers the explicit cycle branch; this one covers the parent-conflict
+    /// branch's ancestor shape, and `ancestor_parent_conflict_shape_classifies_as_cycle`
+    /// (loop_closure_solver.rs) pins the solver-side half of the same record.
+    #[test]
+    fn snapshot_ancestor_parent_conflict_body_keeps_its_own_frame() {
+        // Both prismatic on +X so world translations add and read back directly.
+        // Distinct ranges keep them structurally distinct `Value::Map`s.
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j2.clone(),
+                j1.clone(),
+            ],
+        );
+        // Closing edge: at = j1 (tree parent world), parent = j2 (whose ancestor
+        // walk passes through j1) — the ancestor shape.
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j1.clone(),
+                j2.clone(),
+            ],
+        );
+
+        let mm = match &m3 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        assert!(
+            !mm.contains_key(&Value::String("error".to_string())),
+            "fixture must not produce an errored mechanism"
+        );
+        let records = match mm.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(l)) => l,
+            other => panic!("expected loop_closures List, got {other:?}"),
+        };
+        assert_eq!(records.len(), 1, "exactly one loop-closure record expected");
+
+        // Fixture precondition: the closing joint occurs in path_b mid-walk,
+        // NOT as its tail — the exact shape the two predicates diverged on.
+        let path_b = match &records[0] {
+            Value::Map(r) => match r.get(&Value::String("path_b".to_string())) {
+                Some(Value::List(p)) => p.clone(),
+                other => panic!("expected path_b List, got {other:?}"),
+            },
+            other => panic!("expected record Map, got {other:?}"),
+        };
+        assert!(
+            path_b.contains(&j1),
+            "ancestor shape: path_b must pass through the closing joint"
+        );
+        assert_ne!(
+            path_b.last(),
+            Some(&j1),
+            "ancestor shape: the closing joint is mid-walk, not path_b's tail"
+        );
+
+        assert!(
+            super::parent_conflict_closing_body_ids(records).is_empty(),
+            "the ancestor record classifies as Cycle, so no body takes the rigid-tie frame"
+        );
+
+        // Bind both joints so the FK readback is deterministic.
+        let bind_1 = eval_builtin("bind", &[j1.clone(), Value::length(0.5)]);
+        let bind_2 = eval_builtin("bind", &[j2.clone(), Value::length(1.0)]);
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![bind_1, bind_2])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {other:?}"),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        assert_eq!(bodies.len(), 3);
+
+        let tx_of = |i: usize| -> f64 {
+            let b = match &bodies[i] {
+                Value::Map(b) => b,
+                other => panic!("expected body {i} record Map, got {other:?}"),
+            };
+            let wt = b
+                .get(&Value::String("world_transform".to_string()))
+                .unwrap_or_else(|| panic!("body {i} must carry world_transform"));
+            decompose_transform_for_assert(wt).1[0]
+        };
+
+        // Body 0 (A at j1, tree parent world): T(j1) = 0.5.
+        assert!(
+            (tx_of(0) - 0.5).abs() < 1e-6,
+            "body 0 (at j1, tree parent world) tx must be 0.5, got {}",
+            tx_of(0)
+        );
+        // Body 1 (B at j2, tree parent j1): T(j1) ∘ T(j2) = 0.5 + 1.0.
+        assert!(
+            (tx_of(1) - 1.5).abs() < 1e-6,
+            "body 1 (at j2, tree parent j1) tx must be 1.5, got {}",
+            tx_of(1)
+        );
+        // Body 2 (C, the ANCESTOR closing body): T(j1) = 0.5, NOT T(j2) = 1.5.
+        assert!(
+            (tx_of(2) - 0.5).abs() < 1e-6,
+            "body 2 (ancestor closing body at j1) tx must stay on its own frame \
+             0.5, got {} (1.5 means it was admitted as a parent-conflict closing \
+             body and composed from T(j2), disagreeing with the Cycle \
+             classification mechanism_loop_closure_chains gives the same record)",
+            tx_of(2)
+        );
+    }
+
+    // ── Grashof 4-bar: the closure must be the ANALYTIC assembly ──────────
+
+    /// **Task 7186 defect A, end-to-end.** A pure Value-level replay of the
+    /// `p5_fourbar` dogfood fixture (identical in shape to
+    /// `examples/kinematic/relate_mounted_fourbar.ri`): a planar Grashof
+    /// 4-bar with crank a=40mm, coupler b=120mm, rocker c=116.282484506mm,
+    /// ground d=140mm, driven at `θ_crank = 45°` with the coupler straight.
+    ///
+    /// The closing call `body(m5, "closing", j_coupler_tip, j_rocker_tip)`
+    /// is a parent conflict (`j_coupler_tip` is already parented to
+    /// `j_coupler`), so the recorded chains are
+    ///   chain_a = [j_crank, j_coupler, j_coupler_tip]   (pivot A → pivot C)
+    ///   chain_b = [j_rocker, j_rocker_tip]              (pivot D → pivot C)
+    /// with the closing joint composed EXACTLY ONCE.
+    ///
+    /// Analytic assembled configuration at θ_crank = 45°:
+    ///   C = (113.137, 113.137) mm (crank + straight coupler),
+    ///   θ_rocker     = atan2(113.137, 113.137 − 140) = 1.8039163646188838 rad,
+    ///   |DC| = 116.2825 mm = c (so the loop closes exactly), and the
+    ///   orientation match gives
+    ///   θ_rocker_tip = θ_crank − θ_rocker = −1.0185182012214355 rad.
+    ///
+    /// **Tolerance is derived, not fitted — do NOT retune it.** Those two
+    /// constants are the in-tree validated reference: `relate_mounted_joint_
+    /// sweep_e2e.rs` (B7 c) asserts that `loop_residual_twist` evaluated at
+    /// exactly these values sits below `NewtonConfig::default()`'s
+    /// `tol_rot_rad` / `tol_pos_m` on this same asymmetric chain pair. 1e-4 rad
+    /// sits ~2 orders above solver noise (a 1e-6 m position residual over
+    /// ~0.116 m links maps to ~1e-5 rad) and ~4 orders below the ~1.09 rad
+    /// error a residual conjugated by the closing joint produces — so it
+    /// discriminates the two by a wide margin without being fitted to either.
+    #[test]
+    fn snapshot_grashof_fourbar_converges_to_analytic_closure() {
+        fn angle_range(lo: f64, hi: f64) -> Value {
+            Value::Range {
+                lower: Some(Box::new(Value::angle(lo))),
+                upper: Some(Box::new(Value::angle(hi))),
+                lower_inclusive: true,
+                upper_inclusive: true,
+            }
+        }
+        fn pivot_x(len_m: f64) -> Value {
+            eval_builtin(
+                "point3",
+                &[Value::length(len_m), Value::length(0.0), Value::length(0.0)],
+            )
+        }
+
+        let turn = angle_range(0.0, std::f64::consts::TAU);
+        let j_crank = eval_builtin("revolute", &[axis_z_unit(), turn.clone()]);
+        let j_coupler = eval_builtin("revolute", &[axis_z_unit(), turn.clone(), pivot_x(0.040)]);
+        let j_coupler_tip =
+            eval_builtin("revolute", &[axis_z_unit(), turn.clone(), pivot_x(0.120)]);
+        // Free ranges narrowed around the closure so the midpoint warm start
+        // is in the right assembly branch (mirrors the .ri fixture).
+        let j_rocker = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range(1.5, 2.1), pivot_x(0.140)],
+        );
+        let j_rocker_tip = eval_builtin(
+            "revolute",
+            &[
+                axis_z_unit(),
+                angle_range(-1.3, -0.7),
+                pivot_x(0.116_282_484_506),
+            ],
+        );
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("crank".to_string()), j_crank.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("coupler".to_string()),
+                j_coupler.clone(),
+                j_crank.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("coupler_tip".to_string()),
+                j_coupler_tip.clone(),
+                j_coupler.clone(),
+            ],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("rocker".to_string()), j_rocker.clone()],
+        );
+        let m5 = eval_builtin(
+            "body",
+            &[
+                m4,
+                Value::String("rocker_tip".to_string()),
+                j_rocker_tip.clone(),
+                j_rocker.clone(),
+            ],
+        );
+        // Closing edge: j_coupler_tip already maps to j_coupler.
+        let m = eval_builtin(
+            "body",
+            &[
+                m5,
+                Value::String("closing".to_string()),
+                j_coupler_tip.clone(),
+                j_rocker_tip.clone(),
+            ],
+        );
+
+        let bindings = Value::List(vec![
+            eval_builtin(
+                "bind",
+                &[j_crank.clone(), Value::angle(std::f64::consts::FRAC_PI_4)],
+            ),
+            eval_builtin("bind", &[j_coupler.clone(), Value::angle(0.0)]),
+            eval_builtin("bind", &[j_coupler_tip.clone(), Value::angle(0.0)]),
+        ]);
+        let s = eval_builtin("snapshot", &[m, bindings]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map for the 4-bar, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(
+            loop0.len(),
+            2,
+            "chain_b = [j_rocker, j_rocker_tip] — two free variables"
+        );
+        let got = |i: usize| match &loop0[i] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][{i}] must be a Real, got {:?}", other),
+        };
+
+        const THETA_ROCKER: f64 = 1.803_916_364_618_883_8;
+        const THETA_ROCKER_TIP: f64 = -1.018_518_201_221_435_5;
+        let (r, rt) = (got(0), got(1));
+        assert!(
+            (r - THETA_ROCKER).abs() < 1e-4,
+            "θ_rocker must converge to the analytic assembly {THETA_ROCKER}, got {r}"
+        );
+        assert!(
+            (rt - THETA_ROCKER_TIP).abs() < 1e-4,
+            "θ_rocker_tip must converge to the analytic assembly {THETA_ROCKER_TIP}, got {rt}"
+        );
+    }
+
+    // ── rigid platform on two posts (task 7186 defect B) ─────────────────
+
+    /// **Task 7186 defect B, end-to-end.** The `p4_platform` dogfood
+    /// scenario reduced to the minimum that exhibits it: a rigid platform
+    /// carried by two vertical posts whose pivots are 200 mm apart.
+    ///
+    ///   j1 = prismatic(+Z, 0..600mm) at pivot (0, 0, 0)
+    ///   j2 = prismatic(+Z, 0..600mm) at pivot (200mm, 0, 0)
+    ///   m1 = body(m0, "platform", j1)
+    ///   m2 = body(m1, "post2",    j2)
+    ///   m3 = body(m2, "closing",  j2, j1, translate(200mm, 0, 50mm))
+    ///
+    /// The closing call's 5-arg `pose` is the rigid offset between the
+    /// loop's two attachment frames: the deck spans 200 mm from post 1 to
+    /// post 2 and sits 50 mm above post 1's tip frame. With it in the
+    /// residual:
+    ///   chain_a = [j2]                  → T_a = (0.200, 0, d2)
+    ///   chain_b = [j1, F(0.200,0,0.050)] → T_b = (0.200, 0, d1 + 0.050)
+    /// so the residual vanishes iff `d1 == d2 − 0.050`. Binding
+    /// j2 = 300 mm leaves j1 as the only free variable and pins it to
+    /// 250 mm.
+    ///
+    /// That is an EXACT algebraic solution, so 1e-6 m is the solver's own
+    /// `NewtonConfig::default()` `tol_pos_m` and not a fitted threshold.
+    ///
+    /// **The 50 mm z-component of the pose is load-bearing for this test — do
+    /// not flatten the fixture to a pure `(0.200, 0, 0)` offset.** The free
+    /// variable d1 moves only in z. A pose with no z-component is therefore
+    /// ORTHOGONAL to the free direction, and a residual that ignored `pose`
+    /// entirely would land on the same `d1 = 0.300` a correct one does —
+    /// numerically indistinguishable, proving nothing. A rigid offset with a
+    /// component ALONG the free direction is what makes the pose observable in
+    /// the converged value rather than only in the (unsurfaced) residual norm.
+    #[test]
+    fn snapshot_rigid_platform_on_two_posts_closes_with_pose_offset() {
+        fn post(x_m: f64) -> Value {
+            let pivot = eval_builtin(
+                "point3",
+                &[Value::length(x_m), Value::length(0.0), Value::length(0.0)],
+            );
+            eval_builtin(
+                "prismatic",
+                &[
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                    Value::Range {
+                        lower: Some(Box::new(Value::length(0.0))),
+                        upper: Some(Box::new(Value::length(0.6))),
+                        lower_inclusive: true,
+                        upper_inclusive: true,
+                    },
+                    pivot,
+                ],
+            )
+        }
+        // The rigid attachment-frame offset carried by the platform:
+        // 200 mm across to post 2, 50 mm up to the deck.
+        let pose = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.200),
+                Value::length(0.0),
+                Value::length(0.050),
+            ])),
+        };
+
+        let j1 = post(0.0);
+        let j2 = post(0.200);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("platform".to_string()), j1.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("post2".to_string()), j2.clone()],
+        );
+        // Closing edge: j2 is already parented to world, so parenting it to
+        // j1 here is a parent conflict → loop closure with the pose link.
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("closing".to_string()),
+                j2.clone(),
+                j1.clone(),
+                pose,
+            ],
+        );
+
+        let bind_2 = eval_builtin("bind", &[j2.clone(), Value::length(0.300)]);
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![bind_2])]);
+
+        let smap = match &s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map for the platform, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(
+            loop0.len(),
+            1,
+            "chain_b = [j1, F] — the 0-DOF pose link is NOT a free variable, \
+             so j1 is the only one"
+        );
+        let d1 = match &loop0[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (d1 - 0.250).abs() < 1e-6,
+            "j1 must close at 0.250 m (== the bound j2 minus the pose's 50 mm \
+             z-offset), got {d1}"
+        );
+
+        // The platform body (at=j1, pose=identity) must ride at z = 0.250 m
+        // with no x/y drift — the FK re-walk agreeing with the solve.
+        let (_, [tx, ty, tz]) = decompose_transform_for_assert(body_world_transform(&s, 0));
+        assert!(tx.abs() < 1e-6, "platform tx must be 0, got {tx}");
+        assert!(ty.abs() < 1e-6, "platform ty must be 0, got {ty}");
+        assert!(
+            (tz - 0.250).abs() < 1e-6,
+            "platform tz must be 0.250 m, got {tz}"
+        );
+
+        // ── the OTHER two bodies ──────────────────────────────────────────
+        //
+        // Asserting body 0 alone is exactly the gap that hid the defect:
+        // `walk_fk` read `pose` as an offset from the body's OWN `at` frame
+        // while `append_body` wrote it into the residual as an offset from
+        // the closing edge's `parent` frame, so the closing body had its
+        // pose applied a SECOND time and landed 206.2 mm (= |(0.2, 0, 0.05)|)
+        // off the frame the solve had just enforced. Measured before the fix:
+        //   body[0] "platform" → (0.000, 0.000, 0.250)
+        //   body[1] "post2"    → (0.200, 0.000, 0.300)   ← the enforced pivot
+        //   body[2] "closing"  → (0.400, 0.000, 0.350)   ← pose applied twice
+        // Snapshot world transforms feed distance/interference queries, so
+        // that is wrong geometry, not a cosmetic difference.
+        //
+        // Derivation, exact and algebraic — not a fitted threshold. The
+        // closure enforces `T(j2, d2) == T(j1, d1) ∘ pose` with d2 = 0.300
+        // bound, giving d1 = 0.250 and a shared deck frame at
+        // (0.200, 0, 0.300). Under the single meaning now in force — a
+        // closing edge is a rigid 0-DOF TIE from `parent` to `at` — the
+        // closing body rides at `T(parent) ∘ pose`, i.e. at exactly that
+        // shared frame. So bodies 1 and 2 must COINCIDE, as a rigid tie
+        // between coincident frames must. 1e-6 m is `NewtonConfig::default()`
+        // `tol_pos_m`, the solver's own convergence tolerance.
+        const DECK: [f64; 3] = [0.200, 0.0, 0.300];
+        // body 1 "post2" (at=j2, pose=identity) — the pivot the closure
+        // enforced. Passes both before and after the fix; it is the
+        // reference frame body 2 is checked against.
+        let (_, post2) = decompose_transform_for_assert(body_world_transform(&s, 1));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            assert!(
+                (post2[i] - DECK[i]).abs() < 1e-6,
+                "post2 t{axis} must be {} m, got {}",
+                DECK[i],
+                post2[i]
+            );
+        }
+        // body 2 "closing" — the assertion whose absence hid the defect.
+        // Under the tie reading it rides on chain_b's terminal frame
+        // `T(j1) ∘ pose`, which IS the deck frame once the closure holds.
+        let (_, closing) = decompose_transform_for_assert(body_world_transform(&s, 2));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            assert!(
+                (closing[i] - DECK[i]).abs() < 1e-6,
+                "closing body t{axis} must be {} m (coincident with post2 — a rigid \
+                 tie applied exactly once), got {}",
+                DECK[i],
+                closing[i]
+            );
+        }
+    }
+
+    /// The geometry pin for a closing edge whose
+    /// `parent` is a REAL joint that was never registered as anyone's `at`.
+    ///
+    /// `mechanism.rs::non_world_parented_closing_edge_still_records` pins that
+    /// this shape BUILDS and that its snapshot is not `Undef`; that is a
+    /// liveness check only, and liveness is exactly what once let a 1.1 m
+    /// mis-placement ship green. This test pins WHERE the closing body
+    /// lands, which is the property that was actually broken.
+    ///
+    /// All-prismatic +X so the loop is FEASIBLE and the closing parent has a
+    /// NON-identity solved transform — both are load-bearing. The sibling
+    /// builder test uses a revolute j3 whose midpoint rotation makes the loop
+    /// infeasible, so its free variable converges to 0 and an
+    /// identity-vs-`T(j3)` base-frame error is numerically invisible there.
+    ///
+    ///   j1 = prismatic(+X, 0..1m)    body A at j1, parent world
+    ///   j2 = prismatic(+X, 0..1.2m)  body B at j2, parent j1
+    ///   j3 = prismatic(+X, 0..3m)    body C at j2, parent j3  ← closing edge
+    ///
+    /// j3 is never an `at`, so `joint_parents` has no entry for it.
+    /// chain_a = [j1, j2] resolves off the tree at the range midpoints
+    /// 0.5 + 0.6 = 1.1 m; chain_b = [j3], so the closure pins j3 = 1.1 m.
+    ///
+    /// The closing body must ride at `T(j3) ∘ pose` = (1.1, 0, 0) — the same
+    /// rigid-tie rule `snapshot_rigid_platform_on_two_posts_closes_with_pose_offset`
+    /// pins for the REGISTERED-parent case. Returning a bare identity for this
+    /// arm instead drops j3's own `transform_at` and lands the body at
+    /// (0, 0, 0) — a 1.1 m error returned as a normal Snapshot Map with no
+    /// diagnostic.
+    ///
+    /// The `chain_transform` parity this arm claims is only honoured by
+    /// composing the parent's own transform: `chain_transform([j3])` seeds the
+    /// accumulator at the identity and THEN composes `transform_at(j3, ..)`,
+    /// so the residual's chain_b terminal is `T(j3)`, never `I`.
+    #[test]
+    fn snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame() {
+        fn prismatic_x_upto(upper_m: f64) -> Value {
+            eval_builtin(
+                "prismatic",
+                &[
+                    axis_x_unit(),
+                    Value::Range {
+                        lower: Some(Box::new(Value::length(0.0))),
+                        upper: Some(Box::new(Value::length(upper_m))),
+                        lower_inclusive: true,
+                        upper_inclusive: true,
+                    },
+                ],
+            )
+        }
+
+        let j1 = prismatic_x_upto(1.0);
+        let j2 = prismatic_x_upto(1.2);
+        // Never used as an `at` — no `joint_parents` entry.
+        let j3 = prismatic_x_upto(3.0);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("A".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("B".to_string()), j2.clone(), j1.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("C".to_string()), j2.clone(), j3.clone()],
+        );
+
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![])]);
+        assert!(
+            !s.is_undef(),
+            "a recorded, non-rejected closure must still produce a snapshot"
+        );
+
+        // The closure pins j3 to chain_a's tip: 0.5 + 0.6 = 1.1 m.
+        let smap = match &s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let free_values = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(fv)) => fv,
+            other => panic!("expected free_values List, got {:?}", other),
+        };
+        assert_eq!(free_values.len(), 1, "exactly one loop closure expected");
+        let loop0 = match &free_values[0] {
+            Value::List(v) => v,
+            other => panic!("expected per-loop free-value List, got {:?}", other),
+        };
+        assert_eq!(loop0.len(), 1, "chain_b = [j3] — j3 is the only free variable");
+        let d3 = match &loop0[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (d3 - 1.1).abs() < 1e-6,
+            "j3 must close at 1.1 m (= midpoint(j1) + midpoint(j2)), got {d3}"
+        );
+
+        // Body 1 "B" (at=j2, tree-parented) sits at the same 1.1 m tip. This
+        // arm was never touched; it is the reference frame body 2 is checked
+        // against.
+        let (_, b) = decompose_transform_for_assert(body_world_transform(&s, 1));
+        assert!(
+            (b[0] - 1.1).abs() < 1e-6,
+            "body B must ride at x = 1.1 m, got {}",
+            b[0]
+        );
+
+        // Body 2 "C" — the closing body, and the assertion whose absence hid
+        // the defect. Rigid tie ⇒ it rides on chain_b's terminal frame
+        // `T(j3) ∘ pose`, coincident with body B once the closure holds.
+        let (_, c) = decompose_transform_for_assert(body_world_transform(&s, 2));
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            let expected = if i == 0 { 1.1 } else { 0.0 };
+            assert!(
+                (c[i] - expected).abs() < 1e-6,
+                "closing body t{axis} must be {expected} m (coincident with body B — \
+                 a rigid tie onto T(j3)), got {} (a bare-identity base frame yields \
+                 t{axis} = 0 and a 1.1 m geometry error)",
+                c[i]
+            );
+        }
+    }
+
 
     // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
     //
@@ -3086,15 +4270,14 @@ mod tests {
             ],
         );
 
-        // Bind jA = 0.5m (driver) AND jX = 0 rad (pin the shared revolute
-        // so it isn't a free var on path_b).  Without binding jX,
-        // `extract_loop_closure_chains` flags BOTH jB and jX-on-path-b as
-        // free indices because chain_b carries every joint that lacks a
-        // direct binding entry — multi-loop coupling that would dedupe
-        // joints shared with path_a is out of v0.2 scope (see plan
-        // design-decisions §4).  Pinning jX gives us a single-free-var
-        // shape that step-9 / step-11 assume, and keeps this test focused
-        // on the carrier shape rather than multi-DOF solver behaviour.
+        // Bind jA = 0.5m (driver) AND jX = 0 rad.  The bind on jX is
+        // load-bearing: jX sits on chain_a ONLY, so its transform is composed
+        // once with nothing on the closing side to oppose it.  Left at its
+        // range midpoint (π/2) it would rotate chain_a's terminal frame out of
+        // reach of the single free prismatic on chain_b, making the closure
+        // infeasible.  Pinning it to 0 rad reduces the closure to the 1-DOF
+        // translation match jA == jB this test is about.  Same rationale as
+        // `snapshot_solves_closed_chain_via_loop_closure_solver`.
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
         let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
         let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
@@ -4146,12 +5329,14 @@ mod tests {
     // fixture is singular, so a variable key set doesn't break any
     // Snapshot-shape assertion.
 
-    /// Closed-chain mechanism with TWO free (unbound) prismatic joints on
-    /// the SAME +X axis sharing one closing joint (`j_x`): body C anchors
-    /// `j_x` to `j_a` (spanning-tree edge), body D re-anchors `j_x` to `j_b`
-    /// (closing edge) — `path_b = [world, j_b, j_x]`. Binding only `j_a`
-    /// leaves BOTH `j_b` and `j_x` free; since both are prismatic on +X,
-    /// their FD Jacobian columns are identical → rank-1 `JᵀJ` →
+    /// Closed-chain mechanism whose CLOSING side carries two free (unbound)
+    /// prismatic joints on the SAME +X axis. The spanning tree is `j_a → world`,
+    /// `j_b → world`, `j_c → j_b`, `j_x → j_a`; body E then re-registers `j_x`
+    /// with `parent = j_c`, recording the closure `path_a = [world, j_a, j_x]`
+    /// / `path_b = [world, j_b, j_c]`. Binding only `j_a` leaves `j_b` and
+    /// `j_c` free — `j_x` is composed on chain_a alone and resolves to its own
+    /// range midpoint — and since both free joints are prismatic on +X their
+    /// FD Jacobian columns are identical → rank-1 `JᵀJ` →
     /// `NewtonOutcome::Singular` at iteration 0 (the same rank-deficiency
     /// mechanism as the proven 6-DOF fixture in
     /// `kinematic_diagnostics_e2e.rs`, scaled down to 2 free vars and
@@ -4161,8 +5346,8 @@ mod tests {
     /// singular signal must therefore survive `snapshot()`'s fallback to
     /// the plain solver for the FK outcome.
     ///
-    /// `j_b`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
-    /// than two bare `prismatic(axis_x_unit(), ..)` joints) so they are
+    /// `j_b`/`j_c`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
+    /// than bare `prismatic(axis_x_unit(), ..)` joints) so they are
     /// structurally distinct `Value`s: `transform_at`'s `origin ∘
     /// bare_motion` composition makes the offset a constant shift, so the
     /// derivative w.r.t. each joint's own free variable is unaffected and
@@ -4174,18 +5359,26 @@ mod tests {
     /// in loop_closure.rs) — collapsing this fixture's 2-free-joint,
     /// 1-loop-closure topology to a spurious 2-loop-closure self-loop.
     ///
-    /// `j_b`'s offset must also be non-zero (and specifically ≠ `j_a`'s
-    /// bound value minus `j_b`/`j_x`'s shared range midpoint) so the
-    /// closure residual at the all-midpoints starting guess is non-zero.
-    /// With `j_b`'s offset at 0.0 the residual collapses to exactly 0 at
-    /// that starting point — Newton reports `Converged` at iteration 0
-    /// without ever inverting the (rank-deficient) Jacobian, since a
-    /// zero-residual check short-circuits before the LDLᵀ solve. Offset
-    /// 0.1 breaks that coincidence while leaving the FD columns identical.
+    /// The offsets must also be chosen so the closure residual at the
+    /// all-midpoints starting guess is non-zero. If the two sides coincide
+    /// there, the residual collapses to exactly 0 at that starting point —
+    /// Newton reports `Converged` at iteration 0 without ever inverting the
+    /// (rank-deficient) Jacobian, since a zero-residual check short-circuits
+    /// before the LDLᵀ solve. Here chain_a reaches 0.5 + (0.3 + 0.5) = 1.3 m
+    /// and chain_b reaches (0.1 + 0.5) + (0.25 + 0.5) = 1.35 m, a 0.05 m
+    /// residual, while leaving the FD columns identical.
+    ///
+    /// The closing side needs the genuine two-deep walk `j_b → world`,
+    /// `j_c → j_b` to hold two free columns at all: the closing joint is
+    /// composed on `path_a` only (pinned by
+    /// `parent_conflict_path_b_omits_closing_joint` in mechanism.rs), so a
+    /// one-deep closing side would leave `chain_b = [j_b]` and a full-rank
+    /// 6×1 Jacobian.
     #[test]
     fn snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let j_b = offset_prismatic_x(0.1);
+        let j_c = offset_prismatic_x(0.25);
         let j_x = offset_prismatic_x(0.3);
 
         let world = eval_builtin("world", &[]);
@@ -4208,25 +5401,36 @@ mod tests {
                 world.clone(),
             ],
         );
-        let m3 = eval_builtin(
+        // j_c hangs off j_b, giving the closing side a two-deep walk.
+        let m2b = eval_builtin(
             "body",
             &[
                 m2,
                 Value::String("solidC".to_string()),
+                j_c.clone(),
+                j_b.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2b,
+                Value::String("solidD".to_string()),
                 j_x.clone(),
                 j_a.clone(),
             ],
         );
-        // Closing edge: j_x re-registered with parent=j_b (!= j_a) ->
-        // loop_closures record with path_b = [world, j_b, j_x] (both
-        // free/unbound, same +X axis).
+        // Closing edge: j_x re-registered with parent=j_c (!= j_a) ->
+        // loop_closures record with path_a = [world, j_a, j_x] and
+        // path_b = [world, j_b, j_c] (both free/unbound, same +X axis, so
+        // their residual-Jacobian columns are identical → rank-deficient).
         let m4 = eval_builtin(
             "body",
             &[
                 m3,
-                Value::String("solidD".to_string()),
+                Value::String("solidE".to_string()),
                 j_x.clone(),
-                j_b.clone(),
+                j_c.clone(),
             ],
         );
 
@@ -4247,8 +5451,10 @@ mod tests {
             other => panic!("expected Mechanism Map, got {:?}", other),
         }
 
-        // Only j_a is bound; j_b and j_x are free (same +X axis => identical
-        // Jacobian columns => rank-deficient).
+        // Only j_a is bound; j_b and j_c are the two free variables on
+        // chain_b (same +X axis => identical Jacobian columns =>
+        // rank-deficient).  j_x sits on chain_a and resolves to its own
+        // range midpoint.
         let bind_a = eval_builtin("bind", &[j_a, Value::length(0.5)]);
         let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
 

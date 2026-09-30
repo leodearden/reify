@@ -52,10 +52,8 @@ use super::as_printed_material::{
     as_printed_field_value, field_int, field_real, field_scalar, field_vec3, orthotropic_material,
     read_base_elastic, struct_data, structure,
 };
+use super::MM_TO_M;
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-
-/// Native G-code millimetres → SI metres (θ owns the mm→SI conversion).
-const MM_TO_M: f64 = 1.0e-3;
 
 /// `@optimized("fdm::as_printed_material_r0")` ComputeNode trampoline.
 ///

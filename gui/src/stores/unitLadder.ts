@@ -158,7 +158,7 @@ export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
  *
  * WHAT "ADVERTISED" NOW MEANS — the gap this used to document is CLOSED
  * (task #5757). Until then the commit path — `handleSetParameter` (App.tsx) ->
- * `bridge.setParameter` -> `EngineSession::set_parameter` ->
+ * `bridge.setParameter` -> `EngineSession::commit_parameter` ->
  * `parse_value_string` (both in gui/src-tauri/src/engine.rs) — matched a
  * hard-coded five-entry suffix table whose entries were exactly
  * {@link BASE_UNIT_LABELS}, so every curated label outside that floor was
@@ -291,9 +291,10 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  *
  * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
  * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` only for a
- * dimension its `LADDER_COVERAGE` table records, and does so for every caller
- * of `set_parameter` — including `MechanismPanel`, which reaches
- * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
+ * dimension its `LADDER_COVERAGE` table records, and does so on BOTH cadences —
+ * `preview_parameter` and `commit_parameter` share the one parse — for every
+ * caller, including `MechanismPanel`, which reaches `handleSetParameter`
+ * without passing through `PropertyEditor`'s gate. This
  * predicate exists to make the refusal INLINE, keeping the typed text on screen
  * for correction instead of discarding it behind an async error toast.
  *

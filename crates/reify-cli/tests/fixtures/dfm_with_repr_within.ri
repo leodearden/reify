@@ -29,9 +29,22 @@
 // Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
 //
 // ── #precision and the RepresentationWithin margin ───────────────────────────
-// SINGLE SOURCE OF TRUTH for the numbers below.  Every other site — the Sphere
-// docstring further down, and both consumers under tests/harness_cli/ — points
-// here instead of restating them, so a retune has exactly one place to edit.
+// Owns THIS FIXTURE's measured value (6.202e-4 m @ #precision(0.3mm)), its
+// margin, the drift canary, and the one-point re-derivation recipe — the
+// Sphere docstring further down, and
+// `representation_within_assertion.rs`'s `OCCT_SOURCE_FINE` doc, point here
+// for those, so a retune has exactly one place to edit them. Of
+// `tests/harness_cli/`'s consumers, `cli_determinacy_gate.rs` points at
+// `OCCT_SOURCE_FINE`; `cli_dfm_overhang.rs` and
+// `cli_reset_per_build_interleaving.rs` point HERE.
+//
+// Owned ELSEWHERE, and deliberately not restated here: the staircase model,
+// its mechanism and the branch ratios live in
+// `docs/notes/occt-precision-deviation-staircase.md`; the exact periods, duty
+// cycle and full regime walk in
+// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 (the
+// adjudication of record for gate 6060/esc-6060-1); the 8-point
+// neighbourhood grid around 0.3mm in `OCCT_SOURCE_FINE`.
 //
 // Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
 // the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
@@ -52,22 +65,26 @@
 // re-measure, then retune #precision (below) or move the canary deliberately.
 //
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
-// bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
-// OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
-// is a SAWTOOTH in #precision.  NEAR THE BOUND the sawtooth dominates: 0.49mm
-// (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the 1.000e-3 m bound while 0.50mm
-// between them passes at a 2.63x margin — a ~2.7x swing in achieved deviation
-// across a ±2% change in #precision.  FARTHER BELOW THE BOUND the measured points
-// happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
-// 0.35mm → 7.271e-4), but that local ratio is an observation, not a guarantee —
-// and extrapolating it is exactly what makes the isolated 0.50mm tooth look safe.
-// 0.3mm was chosen because BOTH its neighbours also clear the bound, not because
-// it is a smooth optimum.
+// bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument,
+// and the achieved deviation is a STAIRCASE in it: which BRANCH a candidate
+// lands on — not the local slope, and not a neighbour's reading — decides
+// pass/fail, so never tune onto a tooth. Size the candidate against the
+// envelope. The mechanism, the branch ratios and the near-the-bound evidence
+// are in `docs/notes/occt-precision-deviation-staircase.md`; read it before
+// picking a candidate.
 //
-// To re-derive any candidate: hold #precision at the candidate on a bare
+// To re-derive any ONE candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
 // deviation (e.g. 0.01mm) to force a violation, and read the achieved value off
-// the resulting `sampled facet deviation <X> m` message.
+// the resulting `sampled facet deviation <X> m` message. That recipe
+// reproduces a single point only — it does NOT re-establish the envelope,
+// period, duty-cycle or downward-only property, nor the separate branch that
+// appears at fine d/R; those rest on the 388-point sweep recorded in
+// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §2 — the
+// adjudication of record for gate 6060/esc-6060-1 — and are characterized in
+// `docs/notes/occt-precision-deviation-staircase.md`. Consult those rather
+// than re-deriving the envelope/period claims from scratch or re-opening the
+// adjudication.
 
 import std.process
 
@@ -104,7 +121,8 @@ structure def OverhangRule : DFMRule {
 /// The measured facet-chord deviation, its margin against the 1mm bound, and the
 /// procedure for retuning #precision are in the header note "#precision and the
 /// RepresentationWithin margin" — read it before changing the pragma, because the
-/// response is a sawtooth and is not interpolatable.
+/// response is a staircase and is not interpolatable; the model behind that is
+/// in `docs/notes/occt-precision-deviation-staircase.md`.
 structure Sphere {
     let r = sphere(1000mm)
 }

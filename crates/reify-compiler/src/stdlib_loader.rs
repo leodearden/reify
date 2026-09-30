@@ -574,8 +574,8 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     let mut collisions: Vec<NameCollision> = Vec::new();
 
     // One map for every kind. The key is (kind, dedup_key) so each kind gets its
-    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
-    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // OWN namespace — `structure def Planar` (kinematic.ri) and
+    // `trait Planar {}` (geometry_traits.ri) coexist on main today, and a
     // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
     // declared name for every kind except functions (see below).
     let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
@@ -618,9 +618,9 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
         // CRITICAL: read this vector, never the syntax. `type_aliases` holds
         // MODULE-LEVEL aliases only. Associated types declared inside a
         // trait/structure body (`type MotionValue` in `trait HasMotion`,
-        // kinematic.ri:110,133,151,198) are members of their template and are
-        // correctly absent here. A syntactic scan sees four `MotionValue`s and
-        // panics the real stdlib build immediately.
+        // kinematic.ri) are members of their template and are correctly
+        // absent here. A syntactic scan sees four `MotionValue`s and panics
+        // the real stdlib build immediately.
         for a in module.type_aliases.iter().filter(|a| a.is_pub) {
             record("type alias", a.name.clone(), &a.name, &m);
         }

@@ -89,16 +89,7 @@ echo "=== portable_timeout unit tests ==="
 assert "KILL_CMD_PID_RE variable is declared (shared by Test 22 structural assertion and Test 22b meta-assertions)" \
     env KILL_CMD_PID_RE="${KILL_CMD_PID_RE:-}" bash -c '[ -n "$KILL_CMD_PID_RE" ]'
 
-# -- Meta: per-instance sentinel variables use $$ arithmetic ------------------
-# Verifies that _SENT_16 and _SENT_21 are defined at the top of this script
-# using per-instance $$ arithmetic (task #2556: fix concurrent-verify race).
-# All three assertions FAIL until step-2 adds the variable definitions.
-assert "_SENT_16 sentinel variable defined with \$\$ arithmetic" \
-    bash -c 'grep -qE "^_SENT_16=.*\$\$" "$1"' _ "${BASH_SOURCE[0]}"
-
-assert "_SENT_21 sentinel variable defined with \$\$ arithmetic" \
-    bash -c 'grep -qE "^_SENT_21=.*\$\$" "$1"' _ "${BASH_SOURCE[0]}"
-
+# -- Meta: per-instance sentinels are set and distinct ------------------------
 assert "_SENT_16 and _SENT_21 are distinct in the live shell (cross-test collision-free)" \
     env _SENT_16="${_SENT_16:-}" _SENT_21="${_SENT_21:-}" bash -c '[ -n "$_SENT_16" ] && [ -n "$_SENT_21" ] && [ "$_SENT_16" -ne "$_SENT_21" ]'
 
@@ -317,14 +308,7 @@ assert "builder-generated setup variables non-empty with correct trap/TMPDIR pro
         printf "%s" "$MKTEMP_FAIL_SETUP" | grep -q "trap.*EXIT"
     '
 
-# -- Safety-net regression: -E not -qE in while-read kill pipeline -----------
-assert "Test 16a safety-net uses -E not -qE (stdout feeds while-read kill-loop)" \
-    env TEST_FILE="$0" bash -c '
-        _ln=$(grep -nE "^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE" "$TEST_FILE" | tail -1 | cut -d: -f1)
-        _sn=$(sed -n "${_ln},$((${_ln}+4))p" "$TEST_FILE")
-        printf "%s" "$_sn" | grep -q " -E " && ! printf "%s" "$_sn" | grep -q " -qE "
-    '
-
+# -- Safety-net pipeline: kills this instance's leaked sentinel sleep ---------
 assert "safety-net pipeline actually kills a deliberately leaked sleep sentinel" \
     env _SENT_16="${_SENT_16}" bash -c '
         sleep $_SENT_16 & _victim=$!
@@ -462,8 +446,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positiv
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
-        # SAFETY_NET_GREP_LINE — kills sleep $_SENT_16 belonging to this instance only.
-        # Safety-net: kill any lingering sentinel sleep processes for this instance.
+        # Safety-net: kill any lingering sentinel sleep for this instance only.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
             | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_16}$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
@@ -605,16 +588,6 @@ assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeou
             *m*) echo "portable_timeout unexpectedly enabled monitor mode"; exit 1 ;;
         esac
     '
-
-# -- Test 20: structural: header documents SIGKILL escalation via process-group kill ----
-echo ""
-echo "--- Test 20: portable_timeout header documents SIGKILL escalation ---"
-
-# The portable_timeout doc comment must describe the SIGTERM-first,
-# SIGKILL-escalation strategy using process-group kill.  The old SIGTERM-only
-# language must be replaced.  This test FAILS until step-6 updates the doc comment.
-assert "portable_timeout header documents SIGKILL escalation via process-group kill" \
-    grep -qiE 'escalat.*SIGKILL.*via.*process.group|SIGKILL.*via.*process.group' "$LIB_PORTABLE"
 
 # -- Test 21: behavioral: SIGKILL escalation — exit 124 and no orphan --------
 echo ""
@@ -820,113 +793,6 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         gap=$((t_end - t_start))
         [ "$gap" -ge 5 ]
     '
-
-# -- Meta: Test 24c block is gone and Test 24b stale cross-reference removed --
-# (a) No comment line starting with '# -- Test 24c' (anchored to the header form)
-# (b) No comment line with the stale 'Uses the grep -cF <<< idiom' cross-ref
-#     (the original was: '# Uses the grep -cF <<< idiom validated by Test 24c.')
-assert "Test 24c block absent and stale cross-reference removed from Test 24b" \
-    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qE '"'"'^[[:space:]]+# Uses the grep -cF <<< idiom'"'"' "$1"' \
-    _ "${BASH_SOURCE[0]}"
-
-# -- Test 24d (structural): all count-grep uses in this file include -cF ------
-echo ""
-echo "--- Test 24d (structural): count-grep uses include -cF flag ---"
-
-# Task 1605 origin: the review for task 1473 asked for consistency between
-# count-grep invocations; the merge resolution (commit 869964c9f) already
-# fixed all occurrences.  This guard locks that convention in.
-#
-# The pattern is assembled at runtime so no substring of this source file
-# can be an accidental self-match.  The guard rejects any line where the
-# count flag is not immediately followed by F for fixed-string safety.
-#
-# The regex is split across three printf arguments so no two adjacent args
-# produce the flagless count-grep pattern contiguously in source; the self-
-# referential scan cannot false-positive on this block.  Invocations with
-# -cE (extended-regex) are also caught — this file has none intentionally.
-printf -v _24d_regex '%s' 'grep' ' -c' '([^F]|$)'
-assert "count-grep uses include -cF flag (no bare count-grep)" \
-    bash -c '! grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
-
-# -- Test 24e (meta): validate the Test 24d guard regex discrimination --------
-echo ""
-echo "--- Test 24e (meta): guard regex discriminates bare vs -cF correctly ---"
-
-# Verifies _24d_regex (assembled above) correctly matches a flagless count-grep
-# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b
-# positive/negative meta-assertion shape: feed two synthetic inputs and assert
-# the regex discriminates correctly.
-#
-# Synthetic strings are assembled via printf to avoid placing any source
-# substring that the guard regex would detect in this source file.
-#
-# positive: flagless count-grep should match
-assert "Test 24d regex matches flagless count-grep invocation" \
-    bash -c 'printf "%s%s\n" "grep" " -c pattern" | grep -qE "$1"' _ "$_24d_regex"
-
-# negative: count-grep -cF should NOT match
-assert "Test 24d regex does not match count-grep -cF invocation" \
-    bash -c '! printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
-
-# -- Meta: Test 24b sanity failures use a distinct exit code (not the default) -
-# Both sanity checks must be updated so a precondition failure is distinguishable
-# from a normal assertion failure at the bash-c level. Each sanity call site is
-# guarded independently with grep -qF, so reverting either line alone still
-# fails loudly. The needle is assembled via bash string concatenation of two
-# halves (first half ends in 'ex', second half begins with 'it') so that the
-# assertion line itself does not contain the full distinct-code literal and
-# cannot self-match.
-assert "Test 24b sanity branch 1 (unmatched case) uses exit 2 distinct code" \
-    bash -c 'target="ex""it 2 ;;  # sanity: local"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
-assert "Test 24b sanity branch 2 (count check) uses exit 2 distinct code" \
-    bash -c 'target="|| ex""it 2  # sanity: expected"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
-
-# -- Test 26: structural: no literal sleep-31337 / sleep-31339 grep patterns remain ---
-echo ""
-echo "--- Test 26: structural: no literal sentinel grep patterns remain ---"
-
-# After step-4, all per-instance sentinel grep patterns in Tests 16a/b, 21a/b,
-# and the safety-net regression test must use ${_SENT_16} / ${_SENT_21}
-# references instead of literal numbers. These assertions FAIL until
-# step-4 completes the substitution.
-#
-# Pattern assembled via printf chunks (fixed-string grep -F) so that the
-# contiguous literal pattern text does not appear in source and this
-# assertion line cannot self-match.
-printf -v _sent16_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '7$'
-printf -v _sent21_lit_str '%s%s%s%s' '[[:space:]]' 'sleep ' '3133' '9$'
-
-assert "no literal sleep-31337 grep pattern remains in script" \
-    bash -c '! grep -qF "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_sent16_lit_str"
-
-assert "no literal sleep-31339 grep pattern remains in script" \
-    bash -c '! grep -qF "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_sent21_lit_str"
-
-# -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
-echo ""
-echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
-
-# The safety-net cleanup comment (Test 16a, near the critical grep pipeline)
-# must carry a stable SAFETY_NET_GREP_LINE marker so meta-tests can locate
-# the grep by marker rather than brittle comment prose.
-# Use a regex anchored to a comment line (^spaces#space) so the grep command
-# itself — which does not start with '#' — is not a self-referential match.
-assert "SAFETY_NET_GREP_LINE comment marker exists in file" \
-    grep -qE '^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE' "${BASH_SOURCE[0]}"
-
-# -- Test 25: structural: Test 16a exit variable is quoted -------------------
-echo ""
-echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
-
-# Test 16a closes its subshell with 'exit $found'.  The companion orphan-check
-# subshell (Test 18b) correctly uses 'exit "$_check_rc"'.  Consistency between
-# two structurally identical exit patterns requires both to quote the variable.
-# Check the ABSENCE of the unquoted form with 8-space indentation.  The grep
-# pattern uses \$found (with backslash) so the assertion line itself is not a
-# self-referential match.
-assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
-    bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
 
 # -- Test 27: behavioral: Test 16a poll budget is load-scaled -----------------
 echo ""

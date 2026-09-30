@@ -591,6 +591,41 @@ fi
 assert "D5: no fail-open path emitted the BUSY sentinel" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_LOCK_BUSY@@"' _ "$D_ALL_OUT"
 
+# D7: the would-block status ALONE produces BUSY — pinned by exit code rather
+# than only by a real kernel-held lock (D6). Until now the suite had exactly one
+# flock stub (D_FLOCK_BROKEN, exit 1) and none that simulates contention, so the
+# `-E`/conflict-rc arm — the discrimination this whole block rests on — was
+# reachable only through D6's live holder. Deliberately placed AFTER D5: D7
+# asserts the sentinel IS emitted, so its stdout must stay out of D_ALL_OUT.
+#
+# NO holder is taken here. That is the point: the verdict can only come from the
+# stub's status, never from contention on the inode.
+D_FLOCK_CONFLICT="$D_STUB_DIR/flock_conflict"
+cat > "$D_FLOCK_CONFLICT" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 124
+STUB_EOF
+chmod +x "$D_FLOCK_CONFLICT"
+
+D_D7_LOCK="$D_MOUNT/_merge-verify.lock"
+touch "$D_D7_LOCK"
+
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK="$D_FLOCK_CONFLICT" run_guard check --mount "$D_MOUNT"
+assert "D7a: a would-block status reports BUSY (exit 3) with no holder present" \
+    test "$RC" -eq 3
+assert "D7b: ...emitting exactly one line, and it is the BUSY sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -c "^@@REIFY_WARM_LANE_LOCK_BUSY@@ " | grep -qx 1 \
+             && test "$(printf "%s\n" "$1" | wc -l)" -eq 1' _ "$OUT"
+
+# D7c: the complement, on the IDENTICAL fixture. Without it D7a could be
+# satisfied by a guard that reported BUSY on any non-zero status — which is
+# precisely the tool-fault-read-as-contention bug the `-E` code exists to
+# prevent. Same lock, same absence of a holder, only the stub's status differs.
+REIFY_WARM_LANE_LOCK_GUARD_FLOCK="$D_FLOCK_BROKEN" run_guard check --mount "$D_MOUNT"
+assert "D7c: ...while a bare exit 1 on the same fixture stays IDLE (exit 0)" \
+    test "$RC" -eq 0
+assert "D7c: ...and emits no sentinel" test -z "$OUT"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block E — lock-path resolution (the silent-no-op guard)
 #

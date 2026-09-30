@@ -1,0 +1,75 @@
+// Fixture: shift-invert modal SIGNAL — the shifted (sigma != 0) half of the
+// committed pair behind leaf δ.
+//
+// PRD: docs/prds/v0_6/shift-invert-eigensolve.md (leaf δ, task #7261 — the
+// modal trampoline honors the shift surface-agnostically in λ-space).
+//
+// PAIRED WITH: shift_invert_modal_unshifted.ri. The two MODELS are identical
+// except for the `sigma:` literal (the headers and the `module` / `structure`
+// names differ, as they must to coexist in one gate), so the ONLY thing that
+// can explain a difference in their frequency pairs is the shift. ENFORCED by
+// `assert_fixtures_differ_only_in_sigma`, the first assertion of the e2e test
+// named below — do not weaken it to prose.
+//
+// LIVE GUARD (cited by SYMBOL, not file:line — nothing recompiles a fixture, so
+// a line number here would drift silently): `include_str!`-embedded and asserted
+// by `shift_changes_the_mode_set_and_warns_once` in
+// crates/reify-eval-fea-tests/tests/shift_invert_modal_e2e.rs, and registered by
+// basename in scripts/verify.sh's `_RUST_COUPLED_RI_FIXTURES` so
+// tests/infra/test_verify_scope.sh's PG-DRIFT scenario stays green.
+//
+// WHICH DISPATCH ARM THIS EXERCISES, and why that matters. `build_beam_mesh`
+// (crates/reify-eval/src/modal_ops.rs) is a pure analytic Freudenthal hex-split:
+// nz = 6, ny = 1, nx = round(length/height · nz) = 12, giving 13·2·7 = 182 nodes
+// = 546 DOFs; the x_min face pins 14 nodes = 42 DOFs, so n_free = 504. Because
+// 504 > max(64, 2·n_modes) = 64 and `routes_to_dense_fallback(504, 2)` is false,
+// `solve_generalized_eigen` takes ARM 2 — `try_solve_eigen_shift_invert`, β's
+// real shifted Lanczos path — NOT the dense QZ arm. A smaller beam would reach
+// only the dense arm and would never touch the code this pair exists to pin.
+//
+// MEASURED (release `reify eval`, 2026-09-18): f = {56498.795781256,
+// 65303.560573976865} Hz, exit 0, plus exactly one `W_ShiftSkippedModes`
+// warning. The pair BRACKETS f_sigma = sqrt(sigma)/(2·pi) = 61640.4444 Hz at
+// 0.9166× and 1.0594×, and min(shifted)/max(unshifted) = 1.9975 — a genuinely
+// DISJOINT mode set, not a numerical wobble.
+//
+// WHY THIS sigma AND NOT A SMALLER ONE. sigma must sit strictly BETWEEN λ₃ and
+// λ₄ of the measured spectrum for the nearest-2 set to exclude λ₁ and λ₂. Two
+// smaller candidates were measured and REJECTED: at sigma = 63165500000.0 the
+// nearest-2 set is still the lowest set (λ₁ = 1.400e10 stays closer to sigma
+// than λ₃ = 1.272e11), so the mode set did not change at all — only ~1% Lanczos
+// wobble. sigma is written out in FULL DECIMAL because the `.ri` number-literal
+// grammar is `\d+(\.\d+)?` with no scientific notation.
+//
+// GRAMMAR notes: `.ri` structure bodies are NEWLINE-separated with NO statement
+// terminators (a trailing `;` is one parse error per line), and `ModalOptions`
+// argument binding is POSITIONAL — the `name:` labels are cosmetic (see the
+// IMPORTANT note in examples/modal/cantilever_beam_modes.ri), so every param
+// must be supplied in declaration order to reach `element_order`.
+
+module shift_invert_modal_shifted
+
+structure ShiftInvertModalShifted {
+    param length : Length = 20mm
+    param width  : Length = 10mm
+    param height : Length = 10mm
+
+    let material = Steel_AISI_1045()
+    let mi   = FEAMaterialInput(material: material)
+    let root = FixedSupport(target: "x_min")
+
+    let opts = ModalOptions(
+        n_modes: 2,
+        boundary_conditions: [root],
+        damping: NoDamping(),
+        sigma: 150000000000.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+
+    let result = modal_analysis(mi.material, length, width, height, opts)
+    let f1 = first_frequency(result)
+    let f2 = mode_frequency(result, 1)
+}

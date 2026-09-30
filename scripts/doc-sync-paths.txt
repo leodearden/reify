@@ -44,7 +44,7 @@
 #     bash scripts/verify-pipeline-guard.sh is-registered <path>
 #   exits 0 if <path> is registered as load-bearing by ANY route — either
 #   registry, the guard's static load-bearing set, or the open-ended
-#   tests/infra/*.sh glob — and 1 if by none. It is deliberately WIDER than the
+#   tests/infra/*.{sh,py} glob — and 1 if by none. It is deliberately WIDER than the
 #   two registries, so exit 0 does NOT imply a manifest line anywhere: it is a
 #   load-bearing-by-some-route query, not a registry-membership oracle. Matched
 #   sets: the is-registered entry in scripts/verify-pipeline-guard.sh's header,

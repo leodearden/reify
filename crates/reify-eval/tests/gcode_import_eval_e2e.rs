@@ -20,7 +20,7 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_core::{Type, ValueCellId};
+use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{
     check_source_with_stdlib, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
@@ -305,5 +305,123 @@ fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
         "expected GcodeImportSmoke.profile_count > 0 to be Satisfied; \
          got: {:?}",
         gcode_import_smoke_constraints
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIT-REGIME contract — the DSL-visible waypoint payload is SI and dimensioned
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// **Unit-regime pin (task #6478).**
+///
+/// The `Value` payload `gcode_import` hands to the DSL must be SI and
+/// dimensioned, not raw native G-code millimetres. `gcode_import_smoke.ri`'s
+/// source is `"G1 X10 Y10"` — a single Marlin linear move to (10 mm, 10 mm) —
+/// so the one lowered profile carries exactly one waypoint at
+/// (0.01 m, 0.01 m, 0 m) with zero extrusion.
+///
+/// Asserted END-TO-END through the real compiler + evaluator (not just the
+/// marshaller) against the SHIPPED example, unmodified — the same
+/// "true guard of the example, not an inlined copy" idiom as the tests above.
+///
+/// Every field is asserted with its DIMENSION, not just its magnitude: an
+/// undimensioned `Value::Real(0.01)` would pass a value-only check while
+/// leaving the regime unstated. The `si_value` comparison is EXACT
+/// (`assert_eq!`, no tolerance) because `10.0 * 1.0e-3 == 0.01` is bit-exact.
+///
+/// Two further properties are pinned here deliberately, not incidentally:
+///
+/// 1. The profile record is a `Value::Map`, NOT a `Value::StructureInstance`.
+///    The Map shape is what keeps gcode profiles away from the
+///    StructureInstance-gated trajectory trampolines; minting a structure
+///    instance here would silently route them into half-wired code.
+/// 2. No `"feedrate"` key is present — the example's `G1` carries no `F` word,
+///    so the key-absent branch of `waypoint_to_value` must survive the
+///    conversion (never a `0.0` velocity sentinel).
+#[test]
+fn gcode_import_smoke_waypoints_are_si_lengths() {
+    let compiled = smoke_compiled();
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let id = ValueCellId::new("GcodeImportSmoke", "imported");
+    let imported = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GcodeImportSmoke.imported cell missing from eval result"));
+
+    // List<Profile> → the single lowered profile.
+    let Value::List(profiles) = imported else {
+        panic!("expected Value::List for GcodeImportSmoke.imported, got {imported:?}")
+    };
+    assert_eq!(
+        profiles.len(),
+        1,
+        "the single `G1 X10 Y10` move lowers to exactly one profile, got {profiles:?}"
+    );
+
+    // The profile record must stay an untyped Value::Map (see doc above).
+    let Value::Map(profile) = &profiles[0] else {
+        panic!(
+            "expected a Value::Map profile record (NOT a Value::StructureInstance — \
+             the Map carrier is what keeps gcode profiles out of the \
+             StructureInstance-gated trajectory trampolines), got {:?}",
+            profiles[0]
+        )
+    };
+    assert_eq!(
+        profile.get(&Value::String("kind".to_string())),
+        Some(&Value::String("motion_profile".to_string())),
+        "profile record should carry kind == \"motion_profile\", got {profile:?}"
+    );
+
+    let Some(Value::List(waypoints)) = profile.get(&Value::String("waypoints".to_string())) else {
+        panic!("profile record should carry a Value::List under \"waypoints\", got {profile:?}")
+    };
+    assert_eq!(
+        waypoints.len(),
+        1,
+        "one `G1` move yields exactly one waypoint, got {waypoints:?}"
+    );
+
+    let Value::Map(wp) = &waypoints[0] else {
+        panic!("expected a Value::Map waypoint record, got {:?}", waypoints[0])
+    };
+
+    // x / y / z / e are SI metres carrying the LENGTH dimension.
+    // 10 mm → 0.01 m; the untouched Z and E axes stay at the origin.
+    for (axis, expected) in [("x", 0.01_f64), ("y", 0.01), ("z", 0.0), ("e", 0.0)] {
+        let got = wp
+            .get(&Value::String(axis.to_string()))
+            .unwrap_or_else(|| panic!("waypoint record should carry an \"{axis}\" key: {wp:?}"));
+        match got {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *si_value, expected,
+                    "waypoint.{axis} should be {expected} SI metres (the g-code's \
+                     millimetres converted at the marshalling boundary), got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "waypoint.{axis} should carry the LENGTH dimension, got {dimension:?}"
+                );
+            }
+            other => panic!(
+                "waypoint.{axis} should be a dimensioned Value::Scalar, got {other:?} — \
+                 an undimensioned Real leaves the unit regime unstated"
+            ),
+        }
+    }
+
+    // The example's G1 carries no F word, so the feedrate key must be ABSENT
+    // (never a 0.0 velocity sentinel).
+    assert!(
+        !wp.contains_key(&Value::String("feedrate".to_string())),
+        "no F word is in effect for `G1 X10 Y10`, so the waypoint record must \
+         carry NO \"feedrate\" key at all; got {wp:?}"
     );
 }

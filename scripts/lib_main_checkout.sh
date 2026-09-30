@@ -16,8 +16,11 @@
 # KNOBS (environment variables):
 #   REIFY_MAIN_CHECKOUT   if set and non-empty, used verbatim as the answer,
 #                         short-circuiting the git derivation. Same override
-#                         name (and same role) as in
-#                         scripts/setup-agent-cache-redirect.sh:549-560.
+#                         name (and same role) it had in
+#                         scripts/setup-agent-cache-redirect.sh's
+#                         install_boot_unit() before that site was migrated
+#                         here — cited by FUNCTION, not by line range, so the
+#                         reference cannot rot when that file shifts.
 #                         default: unset (derive from git)
 #
 # WHY THIS EXISTS
@@ -28,7 +31,8 @@
 #   that lane is reclaimed and re-seeded. Every subsequent start then fails
 #   with status=203/EXEC, and because nothing Requires= these units the
 #   failure is completely silent (task 5888; the identical defect class is
-#   described in scripts/setup-agent-cache-redirect.sh:498-507).
+#   described in the rationale block above
+#   scripts/setup-agent-cache-redirect.sh's install_boot_unit()).
 #
 #   The house convention is therefore that a host-global unit names the stable
 #   MAIN-checkout absolute path — see the inline notes on
@@ -36,23 +40,15 @@
 #   deploy/systemd/reify-warm-lane-gc.service:5-8 (#4720). This lib is the
 #   shared way to COMPUTE that path for a NEW pinning site.
 #
-# NOT YET THE ONLY WAY TO COMPUTE IT — a known, deliberate divergence.
-#   scripts/setup-agent-cache-redirect.sh:554 still resolves the same concept
-#   independently, as `"${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}"` — a
-#   HARDCODED host default, where this lib DERIVES the answer from git. The two
-#   agree on the reify host (the derivation answers /home/leo/src/reify there)
-#   and on any host that exports REIFY_MAIN_CHECKOUT, but they disagree
-#   SILENTLY on a contributor clone or a relocated tree: the redirect script
-#   would pin its boot unit at a nonexistent /home/leo/src/reify and fall back
-#   to $self, while this lib names the real main checkout.
-#
-#   That script was NOT migrated here because it is outside task 5888's module
-#   scope (see the task's scope discipline), not because the divergence is
-#   correct. Migrating install_boot_unit() to source this lib — keeping its
-#   existing -x guard and its $self fallback verbatim — is tracked follow-up
-#   work. Until it lands, do not describe this lib as the single source of
-#   truth for the main-checkout path; it is the single source of truth for the
-#   sites that source it.
+# THE SINGLE SOURCE OF TRUTH FOR THAT PATH.
+#   Both host-global pinning sites derive it here: setup-dev.sh's
+#   install_build_services() (task 5888) and setup-agent-cache-redirect.sh's
+#   install_boot_unit() (task 6864, which retired that script's own hardcoded
+#   `"${REIFY_MAIN_CHECKOUT:-/home/leo/src/reify}"` default — it agreed with the
+#   derivation on the reify host and disagreed SILENTLY on a contributor clone
+#   or a relocated tree). A NEW pinning site must source this lib rather than
+#   re-deriving the path; a second private resolver is how the two silently
+#   drift apart again.
 #
 #   PER-WORKTREE work must NOT use this: hooks wiring, the debug port, and
 #   .cargo config are all correctly worktree-relative. Only host-global

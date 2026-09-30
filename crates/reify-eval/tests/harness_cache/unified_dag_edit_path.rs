@@ -1,4 +1,4 @@
-//! θ2 (task 4531) edit-path unified-driver test binary.
+//! θ2 (task 4531) edit-path unified-driver test module.
 //!
 //! Pins the design-doc "warm output == cold output becomes structural" claim on
 //! the EDIT surface: `edit_param` / `edit_source` / `edit_check` must order their
@@ -7,10 +7,8 @@
 //! hand-maintained second scheduler (solver wave-2 + Phase-3 flip dedup) ahead of
 //! the ι (#4362) Stage-4 cutover (now landed).
 //!
-//! The shared differential harness (`common/differential.rs`) is `#[path]`-included
-//! so this binary reuses the θ projection + parity helpers
-//! (`assert_edit_matches_cold`, `assert_edit_source_matches_cold`,
-//! `project_eval_values`) with zero edits to existing shared files.
+//! Shared `differential` helpers come from the `harness_cache` root — see its
+//! "Shared `differential` module" section for the wiring.
 //!
 //! Steps land RED tests here incrementally (guard flip via edit, solver autos via
 //! edit, collection grow → upstream edit, edit_source/edit_check mirror, P0 latency
@@ -136,7 +134,7 @@ const DRIVER_ORDER_P2_SRC: &str = r#"structure DriverOrder {
 }"#;
 
 /// Construct a fresh kernel-backed engine pinned to `scheduler`. Mirrors the
-/// inline constructor used across the unified-dag test binaries.
+/// inline constructor used across the unified-dag test modules.
 fn fresh_engine(scheduler: BuildScheduler) -> Engine {
     let mut engine = Engine::new(
         Box::new(SimpleConstraintChecker),

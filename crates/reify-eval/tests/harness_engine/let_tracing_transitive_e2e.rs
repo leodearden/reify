@@ -24,7 +24,7 @@ use reify_eval::EvalResult;
 // same three helpers (review suggestion 5). `SOLVER_TOL` deliberately stays
 // local: it is derived from THIS fixture's cost surface, below.
 use crate::underdetermined_support::{
-    eval_through_production_registry, scalar_si, underdetermined,
+    eval_through_production_registry, scalar_si, underdetermined, workspace_root,
 };
 
 /// Absolute tolerance for the resolved autos.
@@ -42,15 +42,6 @@ use crate::underdetermined_support::{
 /// If this ever fails, that is a CONVERGENCE signal to investigate or
 /// escalate, NOT an invitation to widen the constant.
 const SOLVER_TOL: f64 = 1e-6;
-
-/// Workspace root, two levels above `crates/reify-eval`.
-fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf()
-}
 
 /// Repo-relative path of the PRD α fixture. Named so the panic below and this
 /// module's header cannot drift apart from the actual `read_to_string`.

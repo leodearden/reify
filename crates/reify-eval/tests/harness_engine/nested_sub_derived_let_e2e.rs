@@ -568,7 +568,7 @@ structure def Parent {
 fn nested_sub_arg_let_cycle_is_diagnosed_not_silent_undef() {
     const SOURCE: &str = r#"
 structure def Kid {
-    param v : Length = 1mm
+    param v : Real = 1.0
     let off = v * 2.0
 }
 
@@ -698,7 +698,7 @@ structure def Parent {
 fn nested_pure_let_cycle_with_downstream_sub_is_reported_once_per_scope() {
     const SOURCE: &str = r#"
 structure def Kid {
-    param w : Length = 1mm
+    param w : Real = 1.0
     let off = w * 2.0
 }
 
@@ -782,7 +782,7 @@ structure def Parent {
 fn nested_sub_cycle_diagnostic_names_only_real_participants() {
     const SOURCE: &str = r#"
 structure def Kid {
-    param v : Length = 1mm
+    param v : Real = 1.0
     let off = v * 2.0
 }
 

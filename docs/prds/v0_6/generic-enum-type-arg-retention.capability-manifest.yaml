@@ -1,0 +1,239 @@
+prd: docs/prds/v0_6/generic-enum-type-arg-retention.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8012
+  title: 'generic-enum-type-arg-retention α: docs root — generic-data-carrying-enums.md
+    LIVE header pointer + land the six per-leaf probe sets and their tests/prd-gate/README.md
+    rows'
+  capabilities:
+  - name: superseded-prd-live-pointer
+    binding: The frozen SHIPPED PRD gains a LIVE-header pointer to this PRD; body
+      untouched.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: generic-enum-type-arg-retention
+      paths:
+      - docs/prds/v0_6/generic-data-carrying-enums.md
+      expect: present
+  - name: probe-sets-landed-with-readme-rows
+    binding: The six per-leaf probe sets exist on main with README rows; they could
+      not ride the docs commit (tests/prd-gate/*.json is the C5 fail-wide catch-all
+      in decide_scope, pinned by test_verify_scope.sh PG-3).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: generic-enum-type-arg-retention-delta-probe-set\.json
+      paths:
+      - tests/prd-gate/README.md
+      expect: present
+- label: α2
+  task_id: 8013
+  title: 'generic-enum-type-arg-retention α2: bare generic-enum annotation rejected
+    with the existing arity diagnostic unless declared defaults fill every parameter
+    (R2(b)+R3)'
+  capabilities:
+  - name: bare-annotation-rejected
+    binding: 'R2(b) RULED (Leo 2026-09-29). getar_bare_result_annotation_match_panics.ri:
+      debug exit 101 / release exit 0 today; after α2 check exit 1, stderr "expects
+      2 type argument" (the existing arity diagnostic). Zero bare annotations in the
+      tracked corpus (measured). Probe set alpha2.'
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/prd-capability-check.py
+      args:
+      - tests/prd-gate/generic-enum-type-arg-retention-alpha2-probe-set.json
+      timeout_secs: 600
+- label: β
+  task_id: 8014
+  title: 'generic-enum-type-arg-retention β: narrow overload tier 3 — headed type-param-carrying
+    args need heads_unifiable; bare placeholder args match generic params only; bare
+    user TypeParam keeps D4'
+  capabilities:
+  - name: headed-arg-no-longer-universal-wildcard
+    binding: 'Before-image getar_wildcard_headed_arg_silent.ri: check 0, eval W.v
+      = Result::Ok (debug) / undef (release). After β: check 1 "no matching overload
+      for fl(". Probe set beta.'
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/prd-capability-check.py
+      args:
+      - tests/prd-gate/generic-enum-type-arg-retention-beta-probe-set.json
+      timeout_secs: 600
+  - name: d4-bare-arg-pins-stay-green
+    binding: overload_bare_type_param_arg_still_resolves (type_compat.rs) and bare_type_param_arg_resolves_a_non_generic_concrete_candidate
+      (find_matching_compiled_function_tests.rs) unchanged.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: tests staying green are verified by the gate, not by grep.
+- label: γ
+  task_id: 8015
+  title: 'generic-enum-type-arg-retention γ: args-aware enum-compat oracle replaces
+    base_enum_name tolerance; unify placeholder no-conflict rule; conformance + implicitly_converts_to
+    placeholder rule; corpus sweep'
+  capabilities:
+  - name: s2-arg-mismatch-assignment-rejected
+    binding: 'Before-image getar_result_arg_mismatch_assign_silent.ri: check 0, eval
+      W.n = 0.005 m under a Force binder. After γ: check 1 "argument ''b'' has type".
+      Probe set gamma (needs a post-#5306 binary).'
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/prd-capability-check.py
+      args:
+      - tests/prd-gate/generic-enum-type-arg-retention-gamma-probe-set.json
+      timeout_secs: 600
+  - name: unify-placeholder-never-conflicts
+    binding: 'or_else(Ok { value: 1mm }, Ok { value: 2mm }) stays clean after γ+δ
+      (B14); user TypeParams keep the conflict rule (unify_two_distinct_erased_params_still_conflict
+      stays green).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B14 is authored as a fixture by γ (a clean-today shape has nothing to
+        flip until δ lands); cover is γ's unit test on unify.
+- label: ε2
+  task_id: 8016
+  title: 'generic-enum-type-arg-retention ε2: MatchArmDeclGroup accepts an Applied-typed
+    discriminant (through #6020''s match_discriminant_enum if landed)'
+  capabilities:
+  - name: decl-form-match-accepts-annotated-generic-param
+    binding: 'Before-image getar_decl_match_applied_param_rejected.ri: check 1 "expected
+      an enum" (pre-existing). After ε2: check 0. Regression guard getar_decl_match_let_construct_ok.ri
+      stays 0 before and after δ. Probe set epsilon2.'
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/prd-capability-check.py
+      args:
+      - tests/prd-gate/generic-enum-type-arg-retention-epsilon2-probe-set.json
+      timeout_secs: 600
+- label: θ
+  task_id: 8017
+  title: 'generic-enum-type-arg-retention θ: value_type_kind_matches admits Type::Applied
+    for Value::Enum (param-override path); e2e in generic_enum_erasure_e2e.rs'
+  capabilities:
+  - name: enum-value-accepted-into-applied-cell-type
+    binding: 'crates/reify-eval/src/lib.rs value_type_kind_matches: Value::Enum accepts
+      only Type::Enum(_) today (read from code); after θ also Type::Applied. B12 e2e
+      added to the existing standalone binary crates/reify-eval/tests/generic_enum_erasure_e2e.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Enum \{ \.\. \} => matches!\(ty, Type::Enum\(_\)\)
+      paths:
+      - crates/reify-eval/src/lib.rs
+      expect: absent
+- label: δ
+  task_id: 8018
+  title: 'generic-enum-type-arg-retention δ: compile_variant_construct emits Type::Applied
+    with inferred/placeholder args; 4031 test; flip result_prelude_enum_tests pins;
+    spec §3.9.2 + enums.md static-type sentence same diff'
+  capabilities:
+  - name: s1-s3-4031-u1-flip
+    binding: 'Probe set delta: S-1 exit 1 E_FALLBACK_TYPE; S-3 exit 1 "expects type";
+      4031 exit 1 "bound to both"; U-1 exit 0 W.v = 0.001 m. All red today (3 FAIL
+      + 1 UNPROVABLE).'
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: scripts/prd-capability-check.py
+      args:
+      - tests/prd-gate/generic-enum-type-arg-retention-delta-probe-set.json
+      timeout_secs: 900
+  - name: runtime-erasure-boundary-green
+    binding: crates/reify-expr/tests/generic_enum_erasure_tests.rs asserts only the
+      runtime Value shape and stays green (INV-1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a test staying green is verified by the gate, not by grep.
+  - name: enums-chunk-states-applied-static-type
+    binding: 'Docs-truth, same diff: the enums chunk construction-inference sentence
+      names the applied static type; spec §3.9.2 gains the static-type sentence beside
+      the (still true) runtime-erasure sentence. Under crates/, so δ carries it, never
+      α.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: prose placement; a token grep would pin wording (overlay "assert behaviour,
+        not prose"). Cover is the harness_doc_chunks scrape test compiling the fence.
+- label: ε
+  task_id: 8019
+  title: 'generic-enum-type-arg-retention ε: match result-type rule (R5) — first arm
+    whose body type carries no placeholder'
+  capabilities:
+  - name: err-first-arm-no-longer-panics-debug
+    binding: 'getar_match_err_first_arm_panics.ri / getar_match_err_subject_ok_first_panics.ri:
+      debug 101 panic today, release 0. Survive δ alone. After ε: debug exit 0 (W.v
+      = "ok" / 0.001 m). Probe set epsilon under REIFY_BIN=target/debug/reify on a
+      rebuilt binary.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the harness prefers target/release/reify, under which the fixtures already
+        pass (vacuous); the descriptor cannot set REIFY_BIN. Cover is the leaf's Rust
+        debug-profile test asserting the let cell_type, fixtures registered in _RUST_COUPLED_RI_FIXTURES.
+- label: ζ
+  task_id: 8020
+  title: 'generic-enum-type-arg-retention ζ (optional, gated on R4): EnumAccess unit-variant
+    expected-type threading'
+  capabilities:
+  - name: unit-variant-binds-args-from-annotation
+    binding: EnumAccess arm consults no expected type today; ζ threads the param/let
+      annotation so a generic unit variant (E.V spelling) gets an Applied static type.
+      Leaf declares its fixture.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: gated on Leo ruling R4; fixture is the leaf's own deliverable.
+- label: η
+  task_id: 8021
+  title: 'generic-enum-type-arg-retention η: parse_length_r registered as Result<Length,
+    String>; pins updated'
+  capabilities:
+  - name: parse-length-r-not-headless
+    binding: 'registry.rs ParseLengthR row: result Const(Type::Enum("Result")) today
+      (comment: so value_type_kind_matches passes — hence dependency on θ). After
+      η the row carries Length/String args; B13 assignment to Result<Force,String>
+      rejected.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'result: Const\(Type::Enum\("Result"'
+      paths:
+      - crates/reify-builtins/src/registry.rs
+      expect: absent
+- label: ι
+  task_id: 8022
+  title: 'generic-enum-type-arg-retention ι: accept-side best_practices exemplar +
+    INDEX line + reify-design cheatsheet index + CLI e2e'
+  capabilities:
+  - name: exemplar-in-corpus
+    binding: examples/best_practices/generic_enum_typing.ri carries only accept-side
+      (B6/B7-shaped) constraints and is auto-compile-gated by examples_smoke.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: generic_enum_typing
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+- label: κ
+  task_id: 8023
+  title: 'generic-enum-type-arg-retention κ: PRD-close — terminal SHIPPED stamp, landed
+    leaf IDs, AS-AUTHORED freeze + LIVE map on PRD and manifest'
+  capabilities:
+  - name: terminal-stamp-present
+    binding: Status marker first token is SHIPPED (overlay closed vocabulary).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status:\*\* \*\*SHIPPED
+      paths:
+      - docs/prds/v0_6/generic-enum-type-arg-retention.md
+      expect: present

@@ -95,6 +95,15 @@ EXCLUDE_SEGMENTS = {".worktrees", "target", "tests", "benches", "examples"}
 # Test-support crates are intentionally only called from test files
 # (which we exclude from the caller search), so their publics would
 # all look like orphans. Skip them at the crate level.
+#
+# Caveat, recorded deliberately: that premise no longer holds for ALL of
+# reify-test-support. Some of its publics are reached from reify-audit's
+# PRODUCTION path, so this sweep cannot see them. The exclusion still earns its
+# keep for the crate's bulk and stays; it is an accepted blind spot, not an
+# assumed-safe one. WHICH publics, what justifies each `pub` in place of a
+# sweep, and the open question about the shape of the arrangement are argued
+# once in `sanitize`'s doc comment (crates/reify-test-support/src/git_env.rs);
+# this comment points there rather than keeping its own copy of the list.
 EXCLUDE_CRATES = {"reify-test-support"}
 # Source-level files included only via `#[cfg(test)] mod NAME;`. Reify's
 # conventions: `test_*.rs`, `*_test_support.rs`, and — for the god-file test
@@ -434,17 +443,37 @@ def mask_cfg_test(lines):
     attributes between the `#[cfg(test)]` attribute and the header -- also
     consults the code view, so a BLOCK comment alone on its own line
     (`/* ... */`, which the raw-text `//`/`#[` prefix checks do not
-    recognise) is not mistaken for the header itself. Two approximations
-    remain: the `#[cfg(test)]` attribute match itself (`CFG_TEST_RE.search`
-    below) still reads raw line text, and no full Rust lexing is performed
-    beyond what these checks need.
+    recognise) is not mistaken for the header itself. The mask-START
+    decision (`CFG_TEST_RE.search` below) reads that code view too, so an
+    attribute merely MENTIONED -- in a line or block comment, in a
+    `// G-allow:` marker's own reason text, or in a string literal -- no
+    longer opens a mask over whatever item happens to follow it. One
+    approximation remains: no full Rust lexing is performed beyond what
+    these checks need.
 
-    Corpus sweep at introduction (task #6421, base main 3a1219a2d5):
-    classification output is UNCHANGED by the literal-aware counter --
-    2628 pub fns / 580 orphans / 109 allow-listed, identical sets, before
-    and after. What DID change: 10 files whose `#[cfg(test)]` mask
-    previously ran unclosed to EOF now close correctly, so this fix is
-    preventive rather than corrective on today's corpus.
+    The early-out below (`any(CFG_TEST_RE.search(l) for l in lines)`) reads
+    RAW text on purpose; the asymmetry with the line above is deliberate,
+    not an oversight to be tidied away. It runs before `code` exists and
+    only decides whether to do any work at all, and blanking literals and
+    comments can only REMOVE matches, never add them, so a raw-text miss
+    guarantees a code-view miss. Making it code-view-aware would force
+    `strip_literals_and_comments` over every file in the corpus -- including
+    the majority that never mention the attribute -- to buy nothing.
+
+    Corpus sweep for the literal-aware mask START (base main 32f4a7b098,
+    scope `crates/reify-*/src`). Emphatically NOT neutral, unlike the
+    literal-aware brace counting that preceded it: 2827 -> 2845 pub fns
+    scanned, 637 -> 645 orphans, 124 -> 128 allow-listed. 13 pub fns become
+    newly VISIBLE as orphans and 6 as allow-listed -- each had been
+    swallowed whole by a mask that a comment or a literal opened over it.
+    Five `persistent_cache.rs` fns LEAVE orphans[], because an over-masked
+    region now contributes the real callers it always had. Two fns leave
+    allowed[] -- `reify-ir` `capability_kind` and `reify-audit`
+    `is_symbol_suppressed` -- by GAINING a real caller (0 -> 1), not by
+    being hidden. The 13 newly-visible orphan rows are not silent corpus
+    churn: they are enumerated and owned by #6429 for triage, and the
+    baseline report they drift against is owned by #7634. Neither list is
+    copied here, so neither can go stale against its owner.
 
     Returns (masked, unclosed, lexer_open_state). `lexer_open_state` is
     the `strip_literals_and_comments` terminal state (None, or one of
@@ -461,7 +490,7 @@ def mask_cfg_test(lines):
     code, lexer_open_state = strip_literals_and_comments(lines)
     i = 0
     while i < n:
-        if not CFG_TEST_RE.search(lines[i]):
+        if not CFG_TEST_RE.search(code[i]):
             i += 1
             continue
         masked[i] = True

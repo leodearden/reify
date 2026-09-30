@@ -472,6 +472,19 @@ fn solver_membrane_load_target_is_registered() {
 /// whose joined message also contains `needle`. A `Completed` (or any other)
 /// outcome — including a panic that would unwind past this call — fails the test.
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
+    assert_failed_infeasible_needles(outcome, &[needle], &[]);
+}
+
+/// The several-needle form of [`assert_failed_infeasible`], for a guard whose
+/// wording is pinned by more than one needle — including *negative* ones, which
+/// catch a degenerate labelling that every positive needle would still satisfy.
+///
+/// Every needle is checked against ONE flattened diagnostic set, so a caller
+/// invokes the trampoline once and the assertions provably describe the same
+/// message rather than several independently-produced ones. It is also the
+/// single site where a `Failed` outcome's diagnostics are flattened; the
+/// single-needle form above delegates here rather than re-spelling that.
+fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
     match outcome {
         ComputeOutcome::Failed { diagnostics, .. } => {
             let joined = diagnostics
@@ -483,10 +496,18 @@ fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
                 joined.contains("E_MembraneLoadInfeasible"),
                 "expected an E_MembraneLoadInfeasible diagnostic, got: {joined}"
             );
-            assert!(
-                joined.contains(needle),
-                "expected the diagnostic to mention {needle:?}, got: {joined}"
-            );
+            for &needle in must {
+                assert!(
+                    joined.contains(needle),
+                    "expected the diagnostic to mention {needle:?}, got: {joined}"
+                );
+            }
+            for &needle in must_not {
+                assert!(
+                    !joined.contains(needle),
+                    "expected the diagnostic NOT to mention {needle:?}, got: {joined}"
+                );
+            }
         }
         other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
     }
@@ -710,4 +731,38 @@ fn trampoline_force_in_surface_prestress_slot_is_failed() {
     assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
     assert_failed_infeasible(call_membrane_load(&value_inputs), "expected a Pressure");
     assert_failed_infeasible(call_membrane_load(&value_inputs), "surface_prestress[0]");
+}
+
+/// (f5) The VECTOR path — `loads` is a `List<Vector3<Force>>`, so each of the
+/// three *components* of each entry is unit-checked individually. A Length in
+/// the y component of entry [1] must be rejected with the located
+/// `loads[1].y` labelling: the entry index tells the author *which* node's load
+/// is wrong, the component letter *which* of its three numbers. Five entries
+/// are supplied, matching the pavilion's five nodes, and corrupting a single
+/// component leaves that count intact, so the `loads.len() != nodes.len()`
+/// guard is provably not what fires. This is the membrane mirror of
+/// `tensegrity_t3b_load.rs`'s `trampoline_length_in_load_component_is_failed`;
+/// the PAIR matters, because each file's `assert_failed_infeasible` pins its
+/// OWN mnemonic, so together they prove each trampoline keeps its own
+/// `E_*Infeasible` code once `crack_loads` takes that code as a parameter
+/// instead of hardcoding it. The negative `loads[0]` needle is what rules out a
+/// constant entry index, which every positive needle would still satisfy — and
+/// all four are checked against ONE invocation's diagnostics, so they provably
+/// describe the same message.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [4] loads := five entries (one per node) with loads[1].y a Length.
+    value_inputs[4] = Value::List(vec![
+        force_vec(0.0, 0.0, 0.0),
+        Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+    ]);
+    assert_failed_infeasible_needles(
+        call_membrane_load(&value_inputs),
+        &["wrong unit", "expected a Force", "loads[1].y"],
+        &["loads[0]"],
+    );
 }

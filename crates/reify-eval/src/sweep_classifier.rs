@@ -609,8 +609,8 @@ impl std::fmt::Display for ProfileResolveError {
 /// finiteness check, and [`reify_ir::Value::as_f64`] happily returns
 /// `Some(NaN)` for a NaN `Real`/`Scalar`. A NaN extent would otherwise produce
 /// an all-NaN ring that neither [`normalise_ccw`] (`NaN < 0.0` is false) nor
-/// the consumer's `validate_boundary` (`NaN.abs() < 1e-14` is false) rejects —
-/// so the NaN coordinates would reach Gmsh. Only `PolygonProfile` is already
+/// the consumer's `validate_boundary` (`NaN.abs() < DEGENERATE_RING_AREA_TOLERANCE` is false)
+/// rejects — so the NaN coordinates would reach Gmsh. Only `PolygonProfile` is already
 /// covered upstream, by the Contract C LENGTH gate `profile_polygon` routes its
 /// vertex pairs through (task 5661) — a STRONGER cover than the bare finiteness
 /// read it replaced, since it now rejects a bare or wrong-dimension vertex as
@@ -688,7 +688,8 @@ fn profile_sample_2d(op: &GeometryOp) -> Result<Vec<[f64; 2]>, ProfileResolveErr
 /// what the sweep step relies on downstream: the canonical Wedge6/Hex8 node
 /// orderings "produce det J > 0 when the 2D mesher emits CCW faces"
 /// (`sweep.rs:19`). The consumer does not enforce this for us —
-/// `validate_boundary` only rejects `|area| < 1e-14` — so a clockwise profile
+/// `validate_boundary` only rejects `|area| <`
+/// [`reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE`] — so a clockwise profile
 /// would otherwise reach the mesher unflagged and invert the swept elements.
 ///
 /// Normalisation happens here, at the single seam where a sampled ring becomes
@@ -1943,15 +1944,15 @@ mod tests {
         }
         // Signed, not |signed|: this pins BOTH halves of the contract at once —
         // orientation (positive ⇒ CCW, the `ProfileBoundary` postcondition) and
-        // consumer-admissibility (> 1e-14 is exactly `validate_boundary`'s
-        // degeneracy floor, so a ring that clears this assertion cannot be
+        // consumer-admissibility (the assertion compares against the very
+        // constant `validate_boundary` uses, so a ring that clears it cannot be
         // rejected downstream). An `.abs() > 0.0` form would pass on a CW ring
         // and on rings the consumer still rejects.
         let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
         assert!(
-            area > 1e-14,
-            "circle cross-section must be CCW and clear validate_boundary's 1e-14 \
-             degeneracy floor; got signed area {area}"
+            area > reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE,
+            "circle cross-section must be CCW and clear validate_boundary's degeneracy \
+             floor, DEGENERATE_RING_AREA_TOLERANCE; got signed area {area}"
         );
         assert!(
             boundary.holes.is_empty(),
@@ -1983,9 +1984,9 @@ mod tests {
         // Signed + consumer-threshold, for the reasons given on the circle test.
         let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
         assert!(
-            area > 1e-14,
-            "ellipse cross-section must be CCW and clear validate_boundary's 1e-14 \
-             degeneracy floor; got signed area {area}"
+            area > reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE,
+            "ellipse cross-section must be CCW and clear validate_boundary's degeneracy \
+             floor, DEGENERATE_RING_AREA_TOLERANCE; got signed area {area}"
         );
         assert!(
             boundary.holes.is_empty(),
@@ -2091,8 +2092,8 @@ mod tests {
     // `ProfileBoundary` documents its outer ring as "CCW for positive area"
     // (mesher.rs:96), and the downstream sweep step needs det J > 0
     // (sweep.rs:19). Neither is enforced by the consumer: `validate_boundary`
-    // only rejects |area| < 1e-14, so a CW ring is waved through. The producer
-    // is therefore the party that must establish the postcondition, and it must
+    // only rejects |area| < DEGENERATE_RING_AREA_TOLERANCE, so a CW ring is waved through.
+    // The producer is therefore the party that must establish the postcondition, and it must
     // do so for EVERY sampler arm — not just polygons — because a rectangle can
     // reach the sampler with a negative width (`profile_rectangle` in
     // geometry_ops.rs applies no positivity check). Orientation is asserted via
@@ -2186,9 +2187,10 @@ mod tests {
             .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
         let area = reify_solver_elastic::ring_signed_area_2d(&boundary.outer);
         assert!(
-            area > 1e-14,
+            area > reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE,
             "a negative semi-minor axis samples clockwise and must be normalised to \
-             CCW, clearing validate_boundary's 1e-14 floor; got signed area {area}"
+             CCW, clearing validate_boundary's floor, DEGENERATE_RING_AREA_TOLERANCE; \
+             got signed area {area}"
         );
     }
 
@@ -2284,8 +2286,8 @@ mod tests {
     fn build_swept_2d_mesh_zero_width_rectangle_is_degenerate_boundary() {
         // width = 0 ⇒ all four corners collapse onto x = ±0.0, so the shoelace
         // area is exactly 0.0 (every cross term has a ±0.0 factor). `< 0.0` is
-        // false at 0.0, so the ring is not reversed; `|0.0| < 1e-14` is true,
-        // so the consumer rejects it as degenerate.
+        // false at 0.0, so the ring is not reversed; `|0.0| < DEGENERATE_RING_AREA_TOLERANCE`
+        // is true, so the consumer rejects it as degenerate.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::RectangleProfile {
             width: Value::length(0.0),
             height: Value::length(0.05),
@@ -2424,8 +2426,8 @@ mod tests {
     // Some(NaN) for a NaN Scalar, so a NaN extent CAN reach the sampler. It
     // must not reach Gmsh: an all-NaN ring is invisible to `normalise_ccw`
     // (NaN < 0.0 is false) AND to the consumer's degeneracy guard
-    // (NaN.abs() < 1e-14 is false), so it would otherwise validate and be
-    // meshed. The sampler is therefore the party that rejects it.
+    // (NaN.abs() < DEGENERATE_RING_AREA_TOLERANCE is false), so it would otherwise
+    // validate and be meshed. The sampler is therefore the party that rejects it.
 
     #[test]
     fn swept_kind_to_profile_boundary_nan_rectangle_width_is_rejected() {

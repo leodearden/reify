@@ -21,6 +21,16 @@ module dcr_langsurface_crossdim_silent
 // This file must EVAL CLEAN (exit 0) today. After κ and θ every wrong-dimension
 // line must exit 1 with a coded diagnostic while `min(10mm, 20mm)`,
 // `min(3, 7.0)`, `asin(0.5)` and `safety_factor(sigma_Pa, 250MPa)` are unchanged.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 0 / `reify eval` EXIT 0, zero diagnostics, every value
+//   listed above UNCHANGED. UNAFFECTED: the file has no struct-ctor call site
+//   (min / max / asin / atan2 / safety_factor / outer / vec3 are builtins or
+//   fns), so the ctor-conformance chokepoint cannot fire here, and the
+//   exit-0 claim above still holds. The exit 0 -> 1 flip is therefore STILL
+//   κ's and θ's (#6942) own signal; see
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrLangsurfaceCrossdimSilent {
     let min_crossdim  = min(10mm, 5kg)

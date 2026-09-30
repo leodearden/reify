@@ -1,0 +1,57 @@
+// Test fixture for task 4909 (eval-side gmsh-realized adaptive refinement, e2e).
+//
+// A copy of `fea_body_cantilever.ri` — same arity-5 `body : Solid` overload,
+// same 1 m × 100 mm × 100 mm box, same Steel_AISI_1045, same coordinate-selected
+// BCs — differing ONLY in its `ElasticOptions`, which opts into the a-posteriori
+// refinement loop.
+//
+// Under an OCCT+Gmsh engine with `solver::elastic_static` registered
+// VolumeMesh-demanding, the solve consumes the REALIZED tet mesh. Task 4909's
+// lane selector then takes the gmsh-realized LOCALIZED lane: the boundary is
+// reconstructed from that realized mesh's free faces and handed to
+// `refine_marked_elements`, which remeshes the volume under a Dörfler-marked
+// size field. The refinement is therefore mark-driven and localized, not the
+// mesh-free uniform grid-doubling of task 4902's fallback lane.
+//
+// Budget: `target_accuracy` is deliberately UNREACHABLE (1e-6 — a coarse
+// cantilever's Z-Z global relative energy error is empirically far above it) and
+// `max_refinement_iterations` is 1. The loop therefore performs EXACTLY one
+// mark-driven refine and two solves, which bounds end-to-end wallclock while
+// still proving the refine ran. `max_dofs` is set high enough not to bind first.
+// So the budget guarantees `NotConverged`, a dof ceiling that does not bind, and
+// exactly one mark-driven refine — but it does NOT fix WHICH reason reports the
+// stop. The stall gate sits ABOVE the iteration cap in the loop's termination
+// precedence, so both are live at the second solve, and the stall wins whenever
+// that one refine fails to drop the global indicator by more than
+// `STALL_MIN_RELATIVE_DROP` (10%) — which it does not do reproducibly. The
+// terminal reason is therefore `MaxIterations` OR `Stalled`; task 7414 relocated
+// that discrimination to a deterministic unit pin
+// (`adaptive_refinement_tests.rs::stall_pre_empts_the_iteration_cap`).
+//
+// No `target` field on the Load/Support: BC selection stays coordinate-based
+// (clamp x_min, load x_max), which is the only BC model that survives a remesh —
+// selector-resolved BCs are node INDEX sets resolved against the pre-refinement
+// mesh, and a remesh preserves no index, so their presence forces the uniform
+// fallback lane by design.
+
+structure FeaBodyCantileverAdaptive {
+    let material = Steel_AISI_1045()
+
+    let body = box(1000mm, 100mm, 100mm)
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material,
+        body,
+        [tip_load],
+        [mount],
+        ElasticOptions(
+            adaptive: true,
+            target_accuracy: 1.0e-6,
+            max_refinement_iterations: 1,
+            max_dofs: 2000000,
+        )
+    )
+}

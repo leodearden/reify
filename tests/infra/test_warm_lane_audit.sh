@@ -235,15 +235,17 @@ _hold_lane_lock() {
 # _hold_lane_lock_shared <mount> <lane>
 # Block Q's SHARED counterpart to _hold_lane_lock above (§9.1 Invariant A2):
 # marks <lane> "held by a shared reader" instead of "held by an exclusive
-# consumer" -- the case scripts/warm-lane-audit.sh's own probe (_probe_live,
-# line 330-331) must read as IDLE, not LIVE.
+# consumer" -- the case the production probe (lane_lock_probe in
+# scripts/lib_lane_lock.sh, reached from _probe_live) must read as IDLE, not
+# LIVE.
 #
 # Two deliberate differences from _hold_lane_lock, both load-bearing:
 #   - `flock -s 9`, not `-x` -- this is the entire point of the helper.
 #   - the fd is opened READ-only (`9<"$lock"`, after the `touch`), not `9>` as
 #     the exclusive helper uses. This mirrors the production probe's own
-#     read-only open (`exec 7<"$lock"`, scripts/warm-lane-audit.sh:330), so
-#     the fixture models a real shared READER rather than an artificial
+#     read-only open -- lane_lock_probe takes a scoped `{ ... } 7<"$lock"`
+#     block redirect, never a write-open -- so the fixture models a real
+#     shared READER rather than an artificial
 #     write-opened shared lock, and it avoids relying on Linux's (correct but
 #     non-obvious, and not POSIX-fcntl-portable) acceptance of LOCK_SH on an
 #     O_WRONLY fd.
@@ -2011,8 +2013,9 @@ _BGPIDS=()  # clear so cleanup doesn't double-kill
 # ──────────────────────────────────────────────────────────────────────────────
 # Block K (above) pins live=LIVE|IDLE, but its only lock-holding fixture is
 # _hold_lane_lock, which takes an EXCLUSIVE flock -- and an EXCLUSIVE holder
-# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell
-# _probe_live's real `flock -n -s 7` (scripts/warm-lane-audit.sh:331) apart
+# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell the
+# production probe's real `flock -n -s 7` (lane_lock_probe in
+# scripts/lib_lane_lock.sh) apart
 # from a regressed `flock -n -x 7`: the exact regression this block exists to
 # catch. Block Q closes that gap with a SHARED-lock lane (must read IDLE --
 # the A2 pin) alongside an EXCLUSIVE-lock lane in the SAME run (must stay
@@ -3074,5 +3077,141 @@ run_helper --mount "$S_EMPTY"
 assert "S7: an empty mount (nothing to resolve) still exits 0" test "$RC" -eq 0
 assert "S7: an empty mount reports stash_entries=0" \
     bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block T — the liveness probe's FAIL-CLOSED direction (task 5738)
+# ──────────────────────────────────────────────────────────────────────────────
+# Blocks K and Q pin what the probe MEASURES. This block pins what this script
+# DECIDES when the measurement cannot be made at all — the half that had never
+# been asserted on either side of the seam, because _probe_live invoked `flock`
+# as a bare command with no env seam to stub. REIFY_WARM_LANE_AUDIT_FLOCK
+# (mirroring the sibling REIFY_WARM_LANE_AUDIT_DF) is what makes it reachable.
+#
+# The direction is CLOSED, and deliberately opposite to
+# scripts/warm-lane-lock-guard.sh's, which fails OPEN on the identical state
+# from the identical shared probe. Why each is right for its own consumer:
+# seam doc §3 — docs/design/merge-verify-lane-dispatch-seam.md.
+#
+# EVERY lock file below is touched UNHELD, so no LIVE verdict in this block can
+# come from real contention — only from the degraded measurement. T7 is the
+# non-vacuity control that keeps the whole block from being satisfied by an
+# audit that had simply started reporting LIVE for everything.
+echo ""
+echo "--- Block T: an unmeasurable lock probe counts LIVE (fail-CLOSED) ---"
+
+T_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-t-XXXXXX)"
+_TMPDIRS+=("$T_MOUNT")
+
+# Two lanes with UNHELD locks, plus one with no lock file at all (the A1 witness
+# in T9: an absent lock is a positive "no consumer ever took this lane", so it
+# stays IDLE even under a broken flock, and must never be created).
+for t_lane in _lane-a _lane-b _lane-nolock; do
+    make_lane "$T_MOUNT/$t_lane"
+    make_lane_state "$T_MOUNT" "$t_lane" "released" "57$((RANDOM % 90 + 10))"
+done
+touch "$T_MOUNT/_lane-a.lock" "$T_MOUNT/_lane-b.lock"
+
+T_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-audit-t-stub-XXXXXX)"
+_TMPDIRS+=("$T_STUB_DIR")
+
+# A flock that is present and executable but always fails with a status that is
+# NOT the would-block code: a tool fault.
+T_FLOCK_BROKEN="$T_STUB_DIR/flock_broken"
+cat > "$T_FLOCK_BROKEN" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "flock: simulated tool failure" >&2
+exit 1
+STUB_EOF
+chmod +x "$T_FLOCK_BROKEN"
+
+# ...and one that reports would-block, so T6 can show BUSY and UNMEASURABLE
+# reaching LIVE by two different routes.
+T_FLOCK_CONFLICT="$T_STUB_DIR/flock_conflict"
+cat > "$T_FLOCK_CONFLICT" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 124
+STUB_EOF
+chmod +x "$T_FLOCK_CONFLICT"
+
+# -- T1-T4: a broken flock (the invocation branch) -----------------------------
+REIFY_WARM_LANE_AUDIT_FLOCK="$T_FLOCK_BROKEN" run_helper --mount "$T_MOUNT"
+assert "T1: a broken flock still exits 0 (advisory, never gating)" test "$RC" -eq 0
+assert "T1: _lane-a reports live=LIVE (fail-CLOSED: unmeasurable counts occupied)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T2: ...and classifies LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*classification=LIVE"' _ "$OUT"
+# Matched on the LOCK PATH, not the bare lane name: these lanes also draw A5
+# state warnings, and a bare-name grep would pass vacuously against one of
+# those while the probe degraded in total silence.
+assert "T3: a stderr warning names the degraded lane's lock and the direction taken" \
+    bash -c 'printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+assert "T4: HEADROOM counts BOTH degraded lanes live (live=2)" \
+    bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+# ...and only those two. The lockless lane needs no flock to be answered, so a
+# broken one must not turn its positive "nobody ever took this lane" into a
+# degradation — the ordering pin, observable only in a pool-wide caller.
+assert "T4: ...but NOT the lockless lane, whose IDLE needs no flock" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
+assert "T4: the partition identity still holds under degradation" \
+    _partition_holds \
+    "$(_headroom_field "$OUT" resident)" \
+    "$(_headroom_field "$OUT" live)" \
+    "$(_headroom_field "$OUT" pinned)" \
+    "$(_headroom_field "$OUT" quarantined)" \
+    "$(_headroom_field "$OUT" free)"
+
+# -- T5: flock missing entirely (the resolution branch) ------------------------
+REIFY_WARM_LANE_AUDIT_FLOCK=/nonexistent/flock run_helper --mount "$T_MOUNT"
+assert "T5: a missing flock binary exits 0" test "$RC" -eq 0
+assert "T5: ...and reaches the same fail-CLOSED verdict by the resolution branch" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T5: ...counting both lanes live" \
+    bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+assert "T5: ...and leaving the lockless lane IDLE here too" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
+
+# -- T6: would-block, i.e. a genuine BUSY rather than a degradation ------------
+REIFY_WARM_LANE_AUDIT_FLOCK="$T_FLOCK_CONFLICT" run_helper --mount "$T_MOUNT"
+assert "T6: a would-block status also reports live=LIVE (BUSY and UNMEASURABLE converge here)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+assert "T6: ...and no fail-CLOSED warning fires, because nothing was unmeasurable" \
+    bash -c '! printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+
+# -- T7: NON-VACUITY CONTROL — the identical fixture, real flock ---------------
+# Without this, T1/T5/T6 would be satisfied by an audit that had simply started
+# reporting LIVE for every lane.
+run_helper --mount "$T_MOUNT"
+assert "T7: with the real flock the same unheld locks report live=IDLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=IDLE"' _ "$OUT"
+assert "T7: ...for the second lane too" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-b .*live=IDLE"' _ "$OUT"
+assert "T7: ...and HEADROOM reports live=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" live)"
+
+# -- T8: the one deliberate behaviour change -----------------------------------
+# An UNREADABLE lock file with the REAL flock. Previously the failed `exec 7<`
+# fell through to IDLE — fail-OPEN, silently, on the very axis where a broken
+# flock failed CLOSED. Every unmeasurable cause now maps to LIVE uniformly.
+# _lane-b stays readable in the same run: the built-in non-vacuity control.
+if [ "$(id -u)" -ne 0 ]; then
+    chmod 000 "$T_MOUNT/_lane-a.lock"
+    run_helper --mount "$T_MOUNT"
+    chmod 644 "$T_MOUNT/_lane-a.lock"
+    assert "T8: an unreadable lock file exits 0" test "$RC" -eq 0
+    assert "T8: ...reports live=LIVE (uniformly fail-CLOSED, where it once read IDLE)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
+    assert "T8: ...and warns, naming that lock" \
+        bash -c 'printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
+    assert "T8: ...while the readable sibling in the SAME run stays IDLE" \
+        bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-b .*live=IDLE"' _ "$OUT"
+else
+    echo "  SKIP: T8 (running as root — mode 000 does not make a file unreadable)"
+fi
+
+# -- T9: A1 is not weakened on any of those paths ------------------------------
+assert "T9: no lock file was created for the lane that had none" \
+    test ! -e "$T_MOUNT/_lane-nolock.lock"
+assert "T9: ...and it reads IDLE, an absent lock being a positive answer (T4/T5 pin the degraded runs)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 
 test_summary

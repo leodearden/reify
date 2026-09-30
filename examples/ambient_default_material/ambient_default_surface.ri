@@ -12,7 +12,7 @@
 // no density → DynamicsNoDensity) are intentionally excluded from this file —
 // they emit Error diagnostics and would break the smoke gate. Those behaviors are
 // pinned in the compiler + eval integration gate test files:
-//   - crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
+//   - crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_material_integration_gate.rs
 //   - crates/reify-eval/tests/ambient_default_material_integration_gate.rs
 //
 // §9 row coverage in this file:

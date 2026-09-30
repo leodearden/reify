@@ -34,6 +34,13 @@ export REIFY_RUN_ALL_FLAKY_LEDGER="$_SUITE_LEDGER_DIR/flaky-ledger.jsonl"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — causal holder-handshake primitives.
+# A fixed pause after backgrounding a holder can be OUTRUN under load: the
+# holder is not yet holding, so the code under test finds the resource FREE and
+# silently stops testing contention at all.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== run_all.sh unit tests ==="
 
 # -- Test 1: run_all.sh exists and is executable --------------------------------
@@ -1135,7 +1142,8 @@ EOF
     # outer timeout below).
     ( flock -x 9; sleep 45 ) 9>>"${LOCK_T16B}.slot-1" &
     _HOLDER_T16B=$!
-    sleep 0.2   # give holder time to acquire
+    assert "T16b: Lane-X holder confirmed holding slot-1 before run_all starts (causal barrier)" \
+        holder_wait_until_held "${LOCK_T16B}.slot-1"
 
     _ERR_T16B="$(mktemp)"
     t16f_rc=0
@@ -1233,7 +1241,8 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     LOCK_T17HP="$TMPDIR_T17/lane-x-hotpath.lock"
     ( flock -x 9; sleep 45 ) 9>>"${LOCK_T17HP}.slot-1" &
     _HOLDER_T17HP=$!
-    sleep 0.2   # give holder time to acquire
+    assert "T17HP: Lane-X holder confirmed holding slot-1 before run_all starts (causal barrier)" \
+        holder_wait_until_held "${LOCK_T17HP}.slot-1"
 
     t17c_rc=0
     t17c_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
@@ -1244,9 +1253,21 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
         REIFY_LANE_X_FLOCK_WAIT=0 \
         timeout 30 bash "$RUN_ALL" "$TMPDIR_T17" 2>&1)" || t17c_rc=$?
 
+    # NON-VACUITY: T17c/d assert the hot path is INERT to a held Lane-X lock, so
+    # a holder that never acquired makes BOTH of them pass while the arm has
+    # silently stopped testing anything. Sample the lock while run_all has just
+    # finished and the holder is still alive, before any teardown.
+    _T17HP_STILL_HELD=0
+    if ! ( flock -n -x 9 ) 9>>"${LOCK_T17HP}.slot-1"; then
+        _T17HP_STILL_HELD=1
+    fi
+
     kill "$_HOLDER_T17HP" 2>/dev/null || true
     wait "$_HOLDER_T17HP" 2>/dev/null || true
     rm -f "$LOCK_T17HP" "${LOCK_T17HP}.slot-1"
+
+    assert "T17HP: the Lane-X lock was STILL held across the whole hot-path run — T17c/d tested inertness, not an unlocked run" \
+        test "$_T17HP_STILL_HELD" -eq 1
 
     if [[ "$t17c_out" == *"=== Summary: 7 discovered, 0 failed ==="* ]]; then
         assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (hot-path-inert)" true
@@ -2257,17 +2278,12 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     # `flock -x` might not land within a fixed 0.2s window, letting the pool
     # worker acquire the uncontended slot with no wait and emit no marker --
     # a false T24a (the same class of race Test 25's state poll avoids).
-    # A non-blocking acquire attempt on the same slot file (mirrors
-    # lib_slot_acquire.sh's own `flock -xn 9`) that FAILS is proof the holder
-    # holds it; cap at 5s as a deadlock backstop.
-    t24_i=0
-    while [ "$t24_i" -lt 50 ]; do
-        if ! ( flock -xn 9 ) 9>>"${LOCK_T24}.slot-1" 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-        t24_i=$((t24_i + 1))
-    done
+    # A non-blocking acquire attempt on the same slot file that FAILS is proof
+    # the holder holds it. That barrier is now stated once, in
+    # tests/infra/slot_holder_handshake_lib.sh, together with its self-healing
+    # `9>>` open and the BROKEN-INFRA BACKSTOP rationale for the poll budget;
+    # this was the third divergent copy of it (task 6247).
+    holder_wait_until_held "${LOCK_T24}.slot-1" || true
 
     # Separate stdout/stderr capture files (T22 pattern) -- the assertions
     # below need to distinguish which stream the marker lands on.

@@ -7,14 +7,21 @@ Committed-probe-set format (JSON):
         "probes": [
             {
                 "capability": "<human name for the capability being probed>",
-                "probe_kind": "grammar" | "check" | "ir",
+                "probe_kind": "grammar" | "check" | "ir" | "value",
                 "fixture": "<repo-relative path to the .ri fixture file>",
                 "expected": {
                     "observation": "present" | "absent",
                     "match": {
                         "exit_code": <int>,          // optional
                         "stderr_contains": "<str>",  // optional
-                        "stdout_contains": "<str>"   // optional
+                        "stdout_contains": "<str>",  // optional
+                        "stdout_value": {            // value kind ONLY, required there
+                            "pattern": "<regex with >=1 capture group>",
+                            "group": <int|str>,      // optional, default 1
+                            "min": <number>,         // optional, inclusive
+                            "max": <number>,         // optional, inclusive
+                            "finite": <bool>         // optional
+                        }
                     }
                 }
             },
@@ -32,11 +39,22 @@ Probe kinds and dispatch:
                exit 0 clean → ABSENT (sound by determinism §6 G6(b))
                exit ≠ 0 WITH asserted signature in stderr → PRESENT
                exit ≠ 0 WITHOUT asserted signature → INDETERMINATE → UNPROVABLE
+    value    — `reify eval <fixture>` (same argv as ir; the kind names the
+               observation model, not the command)
+               exit 0 AND the stdout_value predicate holds → PRESENT
+               exit 0, a value read and found wanting → ABSENT
+               exit 0, pattern located nothing → INDETERMINATE → UNPROVABLE
+               exit ≠ 0 → INDETERMINATE → UNPROVABLE
+               ABSENT is reserved for a value that was actually read: nothing
+               read means "absent" and "broken probe" are indistinguishable.
+               Exists because ir's clean branch is exit-code-only: it answers
+               ABSENT on exit 0 without consulting match at all, so a premise
+               about the printed VALUE bound as ir/absent asserts nothing.
 
 Verdicts:
     PASS          — observed matches expected
     FAIL          — observed contradicts expected
-    UNPROVABLE    — observation is INDETERMINATE (only possible for ir kind)
+    UNPROVABLE    — observation is INDETERMINATE (only possible for ir and value)
     HARNESS_ERROR — probe tool error: missing binary, grammar load failure, etc.
                     Emitted verbatim in both text and --json output; always triggers exit 70.
 
@@ -56,13 +74,19 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
+import errno
+import hashlib
 import json
+import math
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +107,35 @@ UNPROVABLE = "UNPROVABLE"
 # Valid constants for validation
 # ---------------------------------------------------------------------------
 
-_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
+_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir", "value"})
 _VALID_OBSERVATIONS = frozenset({"present", "absent"})
+
+# ---------------------------------------------------------------------------
+# "value"-kind vocabulary — named once so no spelling is duplicated
+# ---------------------------------------------------------------------------
+
+# The one match key a value probe carries, and the only kind that may carry it.
+_VALUE_PREDICATE_KEY = "stdout_value"
+
+# Which stdout line and which capture within it to read.
+_VALUE_LOCATOR_KEYS = frozenset({"pattern", "group"})
+
+# What must then be true of that capture.  At least one is mandatory: a value
+# probe carrying none of them locates a number and asserts nothing about it.
+_VALUE_CONSTRAINT_KEYS = frozenset({"min", "max", "finite"})
+
+# match keys a value probe may NOT carry.  exit 0 is structural to the kind, so
+# a second spelling of it could contradict the arm that enforces it; stdout and
+# stderr assertions belong in `pattern`, which is the half that gets checked.
+_VALUE_FORBIDDEN_MATCH_KEYS = frozenset(
+    {"exit_code", "stderr_contains", "stdout_contains"}
+)
+
+# Kinds that ask `reify eval <fixture>` and differ only in what they read off
+# the result: `ir` looks at the exit code and stderr signature, `value` at the
+# printed value.  One arm builds both, so the shared argv cannot drift into two
+# spellings of one question.
+_EVAL_PROBE_KINDS = frozenset({"ir", "value"})
 
 # Sentinel injected into stderr by run_probe() when the probe could not be
 # launched at all — any launch failure (ENOENT missing, EACCES not executable,
@@ -162,6 +213,215 @@ def _resolve_tree_sitter_bin() -> str:
     return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
 
 
+# Operator/debug escape hatch: pin the grammar cache dir explicitly, e.g. to
+# inspect the compiled reify.so or to share one warm cache across a manual
+# session, without having to reverse the derived hash.
+_CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
+
+
+def _grammar_fingerprint(repo_root: str) -> str:
+    """Return a short CONTENT fingerprint of the generated grammar, or "".
+
+    Hashes the GENERATED ARTIFACT — tree-sitter-reify/src/grammar.json — and
+    nothing else.  grammar.json is what `tree-sitter parse` actually compiles,
+    and every generator rewrites it.
+
+    DELIBERATELY NOT src/.grammar_hash.stamp, which an earlier revision of this
+    function preferred for its cheaper 64-byte read.  That stamp is written ONLY
+    by scripts/tree-sitter-generate.sh.  tree-sitter-reify/build.rs regenerates
+    the grammar through its own run_tree_sitter_generate() — a direct
+    `tree-sitter generate` — and writes its staleness stamp to $OUT_DIR instead,
+    never refreshing src/.grammar_hash.stamp.  So the ordinary sequence
+    `edit grammar.js` -> `cargo build` -> run the PRD gate rewrites parser.c and
+    grammar.json while leaving a STALE stamp behind, which would leave the cache
+    key unchanged and hand this lane the reify.so compiled from the PREVIOUS
+    grammar.  That is precisely the stale hit this key exists to make impossible
+    — and it cannot be left to tree-sitter's own mtime backstop, since warm-lane
+    seeding stamps mtimes (see _grammar_cache_home).  Hashing the artifact
+    removes a branch rather than adding one.
+
+    Cost is a sha256 over ~170 KB (sub-millisecond), against a subprocess launch.
+
+    Returns "" when grammar.json does not exist.  Never raises: a lane that has
+    not generated the grammar (parser.c and grammar.json are gitignored, and so
+    absent in a fresh warm lane) must still get a cache path, because
+    grammar_substrate_usable() runs at test-harness import time where an
+    exception costs the whole suite instead of one skip.  Only OSError is
+    swallowed, so a genuine programming error still surfaces.
+    """
+    src = os.path.join(repo_root, "tree-sitter-reify", "src")
+
+    try:
+        with open(os.path.join(src, "grammar.json"), "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _assert_cache_dir_trustworthy(path: str) -> None:
+    """Raise unless `path` is a directory we own that nobody else can write.
+
+    WHY THIS IS NOT PARANOIA.  The DERIVED cache lives at a fully PREDICTABLE
+    path in world-writable /tmp, and `tree-sitter parse` LOADS AND EXECUTES
+    <cache>/tree-sitter/lib/reify.so out of it.  os.makedirs(exist_ok=True)
+    silently accepts a directory another uid pre-created, so without this check a
+    foreign uid could plant its own reify.so at the derived path and this gate
+    would dlopen it.  The sibling case — the path pre-created as a plain FILE —
+    is already fail-closed because makedirs raises FileExistsError; this closes
+    the strictly worse DIRECTORY case with the same disposition.
+
+    Three dispositions, in order:
+      * NOT A DIRECTORY by lstat — notably a SYMLINK, even one resolving to a
+        directory we do own.  RAISE: a symlink is exactly how the ownership check
+        below would otherwise be aimed at a dir the attacker cannot write but can
+        point at.
+      * OWNED BY ANOTHER UID — RAISE.  Not repairable: we cannot chown it, and
+        whatever is already inside it is untrusted.
+      * OURS BUT GROUP/OTHER-WRITABLE — REPAIRED in place with chmod 0o700, then
+        re-checked.  Repair rather than raise because this host's default umask
+        is 0002, so every cache dir created before this check existed is 0775; a
+        bare raise there would wedge an existing lane's gate rather than protect
+        it.
+
+    Applies to the DERIVED dir only.  A REIFY_TS_CACHE_HOME override is an
+    operator's deliberate choice of dir — possibly a shared one — and is left
+    alone; the operator owns that decision.
+
+    Raises OSError, which run_probe() already represents as exit 127 +
+    _BINARY_NOT_FOUND_SENTINEL: the same fail-closed, loud outcome as the
+    uncreatable-derived-dir case, and never a silent degradation to the ambient
+    host-global cache.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(
+            errno.ENOTDIR,
+            "grammar cache path is not a directory (a symlink?); refusing to "
+            "load a compiled grammar out of it",
+            path,
+        )
+    if st.st_uid != os.getuid():
+        raise PermissionError(
+            errno.EACCES,
+            f"grammar cache directory is owned by uid {st.st_uid}, not "
+            f"uid {os.getuid()}; refusing to load a compiled grammar out of it",
+            path,
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        os.chmod(path, 0o700)
+        if os.lstat(path).st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise PermissionError(
+                errno.EACCES,
+                "grammar cache directory stayed group/other-writable after "
+                "chmod 0o700; refusing to load a compiled grammar out of it",
+                path,
+            )
+
+
+def _grammar_cache_home(repo_root: str) -> str:
+    """Return a private $XDG_CACHE_HOME for this repo's grammar probes.
+
+    THE INVARIANT THIS BUYS.  `tree-sitter parse` compiles the grammar to
+    $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so.  That artifact is keyed
+    by LANGUAGE NAME — not by grammar path — and invalidated only on source
+    mtime.  Every linked worktree of this store therefore resolves to the SAME
+    reify.so, so a patched build made in any other lane silently answers this
+    lane's parses, with a plausible exit code and no diagnostic.  Recorded
+    precedent, not a hypothetical: a mid-decompose reading returned exit 0 while
+    a concurrent HYP-A build held the cache — see
+    docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+
+    The key has two components and each closes a distinct hole:
+      * abspath(repo_root) — per-lane isolation, so ~235 worktrees of one .git
+        cannot collide on one compiled grammar.
+      * the grammar FINGERPRINT — survives warm-lane mtime stamping.  Seeding
+        stamps mtimes, so tree-sitter's own mtime-based invalidation is not
+        trustworthy in this pool; a content-derived key makes a changed grammar
+        a NEW directory by construction rather than a stale hit.
+
+    Stable rather than per-process, so the cold reify.so compile is amortised
+    across every probe in a process and every process in a lane.  That cost is
+    load-dependent and worth amortising: measured on this host at ~1.9 s idle but
+    3.2-4.7 s at a load average of ~110, against ~0.01 s warm.
+
+    Under $TMPDIR, which reify's landlock grants wholesale.  GARBAGE COLLECTION
+    is systemd's, not this repo's, and the rule was verified rather than assumed:
+    /usr/lib/tmpfiles.d/tmp.conf carries `D /tmp 1777 root root 30d` and
+    systemd-tmpfiles-clean.timer is active here (checked 2026-09-08, when 38 such
+    dirs existed host-wide, the oldest 9 days old — i.e. inside the window, not
+    accumulating past it).  Growth is bounded at one dir per
+    (lane x grammar revision).  A self-GC pass over sibling dirs was considered
+    and rejected: sibling keys are opaque hashes, and deleting one races a
+    concurrent process in the same lane that may be compiling into it.
+
+    Deliberately NOT memoized: the cost is a sha256 over the ~170 KB grammar.json
+    plus one over a short string — sub-millisecond against a subprocess launch —
+    while an lru_cache would go stale within a process if the grammar were
+    regenerated.
+
+    The directory is created before returning, because tree-sitter does not
+    reliably create a missing cache root and a non-existent one degrades into a
+    grammar load failure.
+
+    THE TWO-TIER CONTRACT when that creation fails.  The two dispositions are
+    deliberately different:
+      * a bad OVERRIDE (REIFY_TS_CACHE_HOME unwritable, or a typo whose parent
+        is a file) DEGRADES to the derived dir.  Isolation — the property this
+        function exists to guarantee — is preserved; only the operator's
+        custom-dir intent is lost, which is the cheap half to lose.
+      * an uncreatable DERIVED dir RAISES, and run_probe() represents it as
+        exit 127 + _BINARY_NOT_FOUND_SENTINEL.  Fail-closed and loud.  This is
+        unprivileged-reachable rather than an operator mistake: /tmp is
+        world-writable, so any other uid on the host can pre-create
+        reify-ts-cache-<key> as a plain file and wedge this lane's gate.  A
+        silent degradation there would be indistinguishable from a healthy run.
+
+    NEITHER path ever falls back to the ambient shared cache.  A silent ambient
+    run is exactly the cross-lane false PASS this module exists to prevent —
+    see docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2
+    — and it is the worst outcome precisely because it is silent and plausible.
+    """
+    override = os.environ.get(_CACHE_HOME_OVERRIDE_ENV)
+    if override:
+        try:
+            os.makedirs(override, exist_ok=True)
+            return override
+        except OSError:
+            # TIER 1 — a bad override DEGRADES.  An operator typo or a
+            # REIFY_TS_CACHE_HOME that has become unwritable must not break the
+            # gate, and falling through to the derived dir PRESERVES isolation,
+            # which is the property this whole seam exists to guarantee; only
+            # the operator's custom-dir intent is lost.
+            pass
+
+    key = hashlib.sha256(
+        "\0".join((os.path.abspath(repo_root), _grammar_fingerprint(repo_root)))
+        .encode("utf-8")
+    ).hexdigest()[:16]
+    path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
+    # TIER 2 — an uncreatable or UNTRUSTWORTHY derived dir is left to RAISE, and
+    # run_probe() represents it as exit 127 + _BINARY_NOT_FOUND_SENTINEL.
+    # Deliberately not an ambient fallback: a silent run against the shared cache
+    # is exactly the cross-lane false PASS this module exists to prevent.
+    # mode=0o700 so a dir we create here is private from the start; the check
+    # then covers the case makedirs(exist_ok=True) waves through — a dir someone
+    # else pre-created at this predictable, world-writable path.
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    _assert_cache_dir_trustworthy(path)
+    return path
+
+
+def _grammar_probe_env(repo_root: str) -> Dict[str, str]:
+    """The ambient environment with XDG_CACHE_HOME redirected to a private dir.
+
+    Everything else is inherited verbatim — PATH, TREE_SITTER_BIN and the rest
+    of the caller's environment must still reach the probe.
+    """
+    env = dict(os.environ)
+    env["XDG_CACHE_HOME"] = _grammar_cache_home(repo_root)
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -170,7 +430,7 @@ def _resolve_tree_sitter_bin() -> str:
 class Probe:
     """A single capability probe record from the committed probe-set JSON."""
     capability: str
-    probe_kind: str                   # "grammar" | "check" | "ir"
+    probe_kind: str                   # "grammar" | "check" | "ir" | "value"
     fixture: str                      # repo-relative path to the .ri fixture
     expected: Dict[str, Any]          # {observation: str, match: dict}
 
@@ -179,14 +439,146 @@ class Probe:
 # Probe-set serialization
 # ---------------------------------------------------------------------------
 
+def _is_number(value: Any) -> bool:
+    """True for a real JSON number.  bool is an int in Python but not a bound."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
+    """Reject any `value` probe that would be armed but assert nothing.
+
+    This is the whole point of the kind: `ir`/absent already answers on the exit
+    code alone, so a `value` probe that locates nothing, captures nothing, or
+    constrains nothing would report a confident PASS having looked at no value —
+    the same vacuity in a new costume.  Every defect is refused here, at load,
+    where the probe set is still a document the author can fix.
+
+    Raises ValueError naming probe[index], the offending key, and why it is a
+    defect.  Returns None when the predicate is well formed, which is the
+    precondition observe_stdout_value() relies on.
+    """
+    where = f"probe[{index}]"
+
+    if _VALUE_PREDICATE_KEY not in match:
+        raise ValueError(
+            f"{where} is a value probe with no match.{_VALUE_PREDICATE_KEY}; "
+            "a value probe must say which stdout value it asserts, or it "
+            "asserts nothing beyond the exit code that 'ir' already covers"
+        )
+
+    spec = match[_VALUE_PREDICATE_KEY]
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} must be an object, "
+            f"got {type(spec).__name__}"
+        )
+
+    forbidden = sorted(_VALUE_FORBIDDEN_MATCH_KEYS & set(match))
+    if forbidden:
+        raise ValueError(
+            f"{where} is a value probe carrying match.{forbidden[0]}; a value "
+            f"probe's exit 0 is structural to the kind and its stdout assertion "
+            f"goes through {_VALUE_PREDICATE_KEY}.pattern, so "
+            f"{', '.join(forbidden)} would be a second, drifting spelling"
+        )
+
+    unknown = sorted(set(spec) - _VALUE_LOCATOR_KEYS - _VALUE_CONSTRAINT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} has unknown key "
+            f"'{unknown[0]}'; a misspelled constraint would be silently "
+            f"ignored, leaving the probe armed but vacuous.  Valid keys: "
+            f"{sorted(_VALUE_LOCATOR_KEYS | _VALUE_CONSTRAINT_KEYS)}"
+        )
+
+    pattern = spec.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} needs a non-empty string "
+            f"'pattern' naming the stdout line to read, got {pattern!r}"
+        )
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'pattern' does not compile "
+            f"as a regex: {exc}"
+        ) from exc
+    if compiled.groups < 1:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'pattern' has no capture "
+            "group; a pattern that only locates a line yields no value to test"
+        )
+
+    group = spec.get("group", 1)
+    if isinstance(group, str):
+        if group not in compiled.groupindex:
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} 'group' names "
+                f"'{group}', which the pattern does not define; it has "
+                f"{sorted(compiled.groupindex)}"
+            )
+    elif isinstance(group, int) and not isinstance(group, bool):
+        if not 1 <= group <= compiled.groups:
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} 'group' is {group}, "
+                f"outside the pattern's 1..{compiled.groups} capture groups"
+            )
+    else:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'group' must be a capture "
+            f"index (int) or a named group (str), got {type(group).__name__}"
+        )
+
+    if spec.get("finite") is False:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} sets 'finite' false, but "
+            "finiteness is structural and cannot be opted out of: inf and nan "
+            "are refused whatever the spec says, so the probe would behave "
+            "exactly as if true were written and its evidence line would say "
+            "so.  Drop the key, or set it true."
+        )
+
+    constraints = _VALUE_CONSTRAINT_KEYS & set(spec)
+    if not constraints:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} carries no numeric "
+            "constraint, so it asserts nothing about the value it captures — "
+            f"add {' , '.join(sorted(_VALUE_CONSTRAINT_KEYS))}"
+        )
+
+    for bound in ("min", "max"):
+        if bound in spec and not _is_number(spec[bound]):
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} '{bound}' must be a "
+                f"number, got {spec[bound]!r}"
+            )
+    if "finite" in spec and not isinstance(spec["finite"], bool):
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'finite' must be a boolean, "
+            f"got {spec['finite']!r}"
+        )
+    if "min" in spec and "max" in spec and spec["min"] > spec["max"]:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} has min {spec['min']} above "
+            f"max {spec['max']}; no value can satisfy an empty interval"
+        )
+
+
 def load_probe_set(text: str) -> List[Probe]:
     """Parse a committed-probe-set JSON string into a list of Probe objects.
 
     Raises ValueError if the structure is invalid:
     - missing top-level 'probes' key
     - missing required fields (capability, probe_kind, fixture, expected)
-    - unknown probe_kind (must be grammar|check|ir)
+    - unknown probe_kind (must be grammar|check|ir|value)
     - unknown observation value (must be present|absent)
+    - a vacuous or malformed value-kind predicate, or a stdout_value on a kind
+      that would silently ignore it (see _validate_value_predicate)
+
+    This is the single validation site: prd-decompose-verify.py's bind_premises
+    routes its assembled probe set through here rather than re-checking, so a
+    premise the D3 workflow binds is held to exactly this contract.
     """
     try:
         obj = json.loads(text)
@@ -235,6 +627,22 @@ def load_probe_set(text: str) -> List[Probe]:
         # Ensure 'match' key exists (default to empty dict if absent)
         if "match" not in expected:
             expected = dict(expected, match={})
+
+        match = expected["match"]
+        if not isinstance(match, dict):
+            raise ValueError(
+                f"probe[{i}] expected.match must be an object, "
+                f"got {type(match).__name__}"
+            )
+        if probe_kind == "value":
+            _validate_value_predicate(i, match)
+        elif _VALUE_PREDICATE_KEY in match:
+            raise ValueError(
+                f"probe[{i}] is a '{probe_kind}' probe carrying "
+                f"match.{_VALUE_PREDICATE_KEY}, which only the 'value' kind "
+                "consults; leaving it here would arm a predicate nothing ever "
+                "evaluates"
+            )
 
         probes.append(Probe(
             capability=raw["capability"],
@@ -368,7 +776,126 @@ def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
     return True
 
 
+# Which half of a value predicate a capture failed.  "pattern" means nothing was
+# located at all — a renamed field or a mis-aimed probe — which is a different
+# defect from a located value that is out of bounds, and the two are what a
+# 200-char stdout preview cannot tell apart on real multi-cell output.
+_VALUE_FAILED_PATTERN = "pattern"
+_VALUE_FAILED_FINITE = "finite"
+
+
+@dataclass(frozen=True)
+class ValueObservation:
+    """What a value probe read out of stdout, and why it did or did not satisfy.
+
+    One computation behind both the PRESENT/ABSENT answer and the operator-facing
+    evidence, so a verdict and its explanation can never disagree.
+    """
+    satisfied: bool
+    captured: Optional[str]           # the matched token; None if none was located
+    failed_constraint: Optional[str]  # pattern|finite|min|max; None when satisfied
+
+    def describe(self, stdout_value: Dict[str, Any]) -> str:
+        """One operator-facing line naming the capture and the constraint.
+
+        The captured value is evidence on PASS as much as on FAIL, so this reads
+        as a statement either way rather than only as a complaint.
+        """
+        if self.captured is None:
+            return (
+                "pattern located no value in stdout: "
+                f"{stdout_value['pattern']!r}"
+            )
+        if self.satisfied:
+            return (
+                f"captured {self.captured!r} — satisfies "
+                f"{_describe_value_constraints(stdout_value)}"
+            )
+        if self.failed_constraint == _VALUE_FAILED_FINITE:
+            return f"captured {self.captured!r} — violates finite: not a finite number"
+        return (
+            f"captured {self.captured!r} — violates {self.failed_constraint} "
+            f"{stdout_value[self.failed_constraint]}"
+        )
+
+
+def _describe_value_constraints(stdout_value: Dict[str, Any]) -> str:
+    """Render the constraints a capture was held to, in spec order.
+
+    Falls back to "finite" when the spec names no bound, because finiteness is
+    enforced unconditionally and so is never not part of the answer.
+    """
+    parts = ["finite"] if stdout_value.get("finite") else []
+    parts += [
+        f"{key} {stdout_value[key]}" for key in ("min", "max") if key in stdout_value
+    ]
+    return ", ".join(parts) or _VALUE_FAILED_FINITE
+
+
+def observe_stdout_value(
+    run: ProbeRun, stdout_value: Dict[str, Any]
+) -> ValueObservation:
+    """Locate, parse and bounds-check a value in run.stdout.
+
+    Takes an already-validated spec — _validate_value_predicate() guarantees at
+    load that the pattern compiles, has at least one capture group, names a group
+    that exists, and carries at least one constraint — so this function validates
+    nothing and has no error paths of its own.
+
+    Finiteness is applied unconditionally rather than only under `finite`,
+    because float("inf") >= min is True: a bounds-only check would admit inf.
+
+    Reads run.stdout only.  The exit code is the other half of the observation
+    and belongs to observe().
+    """
+    match = re.search(stdout_value["pattern"], run.stdout)
+    captured = match.group(stdout_value.get("group", 1)) if match else None
+    if captured is None:
+        return ValueObservation(False, None, _VALUE_FAILED_PATTERN)
+
+    try:
+        value = float(captured)
+    except ValueError:
+        return ValueObservation(False, captured, _VALUE_FAILED_FINITE)
+    if not math.isfinite(value):
+        return ValueObservation(False, captured, _VALUE_FAILED_FINITE)
+
+    if "min" in stdout_value and value < stdout_value["min"]:
+        return ValueObservation(False, captured, "min")
+    if "max" in stdout_value and value > stdout_value["max"]:
+        return ValueObservation(False, captured, "max")
+    return ValueObservation(True, captured, None)
+
+
+def _value_reading_observation(reading: ValueObservation) -> str:
+    """What a reading of a value probe's stdout amounts to.
+
+    A pattern that located nothing is INDETERMINATE, not ABSENT, for the same
+    reason a non-zero exit is: a renamed output field, a reworded `reify eval`
+    line or a typo'd pattern is indistinguishable from a value that WAS read
+    and found wanting, so calling it ABSENT would manufacture a confident
+    negative finding out of a mis-aimed probe.  It also keeps a value probe
+    pinned `observation: absent` from PASSing forever the moment its pattern
+    stops matching.
+    """
+    if reading.failed_constraint == _VALUE_FAILED_PATTERN:
+        return INDETERMINATE
+    return PRESENT if reading.satisfied else ABSENT
+
+
 def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
+    """The observation constant alone — the thin view of observe_with_evidence().
+
+    observe_with_evidence() states the observation model and is the single site
+    that computes it; this is the caller-facing name for the common case of
+    wanting the answer without a value probe's reading of stdout.
+    """
+    return observe_with_evidence(probe_kind, run, match)[0]
+
+
+def observe_with_evidence(
+    probe_kind: str, run: ProbeRun, match: Dict[str, Any]
+) -> Tuple[str, Optional[ValueObservation]]:
     """Determine observation (PRESENT/ABSENT/INDETERMINATE or _HARNESS_ERROR).
 
     grammar:
@@ -389,26 +916,44 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         exit ≠ 0, asserted signature (stderr_contains in match) in stderr → PRESENT
         exit ≠ 0, signature absent → INDETERMINATE
 
+    value (the clean-eval mirror of ir, asymmetric the other way):
+        exit 0, stdout_value predicate satisfied → PRESENT
+        exit 0, a value was read and found wanting → ABSENT
+        exit 0, the pattern located no value → INDETERMINATE
+        exit ≠ 0 → INDETERMINATE
+            Both INDETERMINATE branches are one rule: nothing was read, so "the
+            capability is absent" and "the fixture, the pattern or the harness is
+            broken" are indistinguishable, and answering ABSENT would manufacture
+            a confident negative finding out of a broken probe.  That is the
+            mirror image of the exit-code-only vacuity this kind exists to close,
+            so it is refused too.  Only a capture that was actually parsed and
+            failed its constraint earns ABSENT.
+
     Args:
-        probe_kind: "grammar", "check", or "ir".
+        probe_kind: "grammar", "check", "ir", or "value".
         run: Captured subprocess output (exit_code, stdout, stderr).
         match: Match predicate dict from the probe's expected.match field.
 
     Returns:
-        PRESENT, ABSENT, INDETERMINATE, or _HARNESS_ERROR.
+        (observation, reading) where observation is PRESENT, ABSENT,
+        INDETERMINATE or _HARNESS_ERROR, and reading is the ValueObservation
+        behind it — non-None exactly when a value probe exited 0 and its stdout
+        was read.  Computing both here is what keeps a value probe's verdict and
+        the evidence printed beside it one reading of one run rather than two
+        searches that happen to agree.
     """
     # Universal harness-error checks: the probe never ran to completion (any probe
     # kind).  run_probe() injects _BINARY_NOT_FOUND_SENTINEL on a launch failure
     # and _PROBE_TIMEOUT_SENTINEL when a caller-supplied timeout elapsed, so all
     # kinds surface "could not run" as _HARNESS_ERROR, not as ABSENT/FAIL.
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
     if _PROBE_TIMEOUT_SENTINEL in run.stderr:
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
 
     if probe_kind == "grammar":
         if run.exit_code == 0:
-            return PRESENT
+            return PRESENT, None
         # Shares _GRAMMAR_LOAD_FAILURE_MARKER with grammar_cache_denied() on
         # purpose: two independent spellings of the same tree-sitter signature
         # would drift, and the drift is silent-and-dangerous in exactly one
@@ -416,30 +961,36 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         # branch would reclassify a load failure as ABSENT, i.e. promote a
         # harness error to a real PASS/FAIL verdict.
         if _GRAMMAR_LOAD_FAILURE_MARKER in run.stderr:
-            return _HARNESS_ERROR
+            return _HARNESS_ERROR, None
         if run.exit_code == 1:
             # Parse error (the grammar produced ERROR nodes).  tree-sitter with
             # --quiet may suppress the "(ERROR ...)" tree output entirely, so we
             # classify any exit 1 without a load-failure stderr as ABSENT rather
             # than requiring "(ERROR" to appear in the combined output.
-            return ABSENT
+            return ABSENT, None
         # exit ≠ {0, 1} — unexpected; treat as harness error
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
 
     if probe_kind == "check":
-        return PRESENT if match_predicate(run, match) else ABSENT
+        return (PRESENT if match_predicate(run, match) else ABSENT), None
 
     if probe_kind == "ir":
         if run.exit_code == 0:
-            return ABSENT
+            return ABSENT, None
         # exit ≠ 0: check for the asserted signature in stderr
         sig = match.get("stderr_contains")
         if sig and sig in run.stderr:
-            return PRESENT
-        return INDETERMINATE
+            return PRESENT, None
+        return INDETERMINATE, None
+
+    if probe_kind == "value":
+        if run.exit_code != 0:
+            return INDETERMINATE, None
+        reading = observe_stdout_value(run, match[_VALUE_PREDICATE_KEY])
+        return _value_reading_observation(reading), reading
 
     # Unknown kind — this shouldn't happen after validation, but be safe
-    return _HARNESS_ERROR
+    return _HARNESS_ERROR, None
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +1009,10 @@ class Result:
         stderr      — captured stderr text
         observation — PRESENT / ABSENT / INDETERMINATE / HARNESS_ERROR
         verdict     — PASS / FAIL / UNPROVABLE / HARNESS_ERROR (tool errors → exit 70)
+        value_observation — value probes only: which token was captured and which
+                    constraint it failed.  None on every other kind, and on a
+                    value probe that never produced a value (non-zero exit), so
+                    the existing kinds' record shape is unchanged.
     """
     probe: Probe
     command: List[str]
@@ -466,6 +1021,7 @@ class Result:
     stderr: str
     observation: str
     verdict: str
+    value_observation: Optional[ValueObservation] = None
 
     def as_probe_run(self) -> ProbeRun:
         """The captured evidence, viewed again as the ProbeRun that produced it.
@@ -489,13 +1045,13 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     """Construct the exact command argv for a probe.
 
     Binary resolution (used by run_probe; also injectable via env overrides):
-        grammar  → TREE_SITTER_BIN (default "tree-sitter")
-        check/ir → REIFY_BIN (default "reify")
+        grammar          → TREE_SITTER_BIN (default "tree-sitter")
+        check/ir/value   → REIFY_BIN (default "reify")
 
     Command shapes:
-        grammar  → [tree-sitter, parse, --quiet, <abs-fixture>]
-        check    → [reify, check, <abs-fixture>]
-        ir       → [reify, eval, <abs-fixture>]
+        grammar    → [tree-sitter, parse, --quiet, <abs-fixture>]
+        check      → [reify, check, <abs-fixture>]
+        ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
     Fixture-path resolution: build_command() resolves probe.fixture to an
     absolute path via os.path.join(repo_root, probe.fixture) so that the path
@@ -533,7 +1089,7 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     if probe.probe_kind == "check":
         return [reify_bin, "check", fixture]
 
-    if probe.probe_kind == "ir":
+    if probe.probe_kind in _EVAL_PROBE_KINDS:
         return [reify_bin, "eval", fixture]
 
     # Should not reach here after load_probe_set validation, but be defensive.
@@ -554,6 +1110,21 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     generated first).  build_command() uses the same repo_root so the
     recorded fixture path and the executed path are identical.
 
+    Grammar probes ALSO run under a private XDG_CACHE_HOME (see
+    _grammar_cache_home).  `tree-sitter parse` compiles the grammar to
+    $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so — keyed by LANGUAGE NAME,
+    not by grammar path, and invalidated only on source mtime — so without the
+    override every linked worktree of this store shares ONE reify.so and a
+    patched build made in any other lane silently answers this lane's parses.
+    That is a recorded false PASS, not a hypothetical: see
+    docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2.
+
+    check and ir probes deliberately inherit the ambient environment untouched
+    (env stays None, which is exactly subprocess's inherit-the-parent default).
+    They drive the tree-sitter Rust library linked into the reify binary, never
+    the CLI cache, so overriding their environment would be blast radius on the
+    gate's two highest-volume probe kinds for no correctness gain.
+
     Any OSError from the launch — missing binary (ENOENT), not executable
     (EACCES), bad path component in the command or the cwd (ENOENT/ENOTDIR) — is
     represented as a ProbeRun carrying _BINARY_NOT_FOUND_SENTINEL and
@@ -561,6 +1132,13 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     _HARNESS_ERROR.  One representation covers the family because they all mean
     "the probe could not be launched"; the errno text is appended after the
     sentinel so a caller that must distinguish them can.
+
+    Building the grammar env sits INSIDE that try on purpose, not as an
+    accident of layout: _grammar_probe_env() CREATES the private cache dir, and
+    an uncreatable one (a world-writable /tmp lets any uid pre-create the path
+    as a file) is a setup failure that must be represented the same way — not
+    propagated, and emphatically not degraded into an ambient-cache run.  Do
+    not "tidy" it back out above the try.
 
     `timeout` defaults to None — unbounded, which is what a gate probe wants:
     `reify eval` on a heavy fixture may legitimately run long, and a bound there
@@ -586,16 +1164,24 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     # `tree-sitter parse` can resolve the reify grammar (the grammar dir
     # contains the package.json that points tree-sitter at the grammar).
     cwd: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
     if probe.probe_kind == "grammar":
         cwd = os.path.join(repo_root, "tree-sitter-reify")
 
     try:
+        if probe.probe_kind == "grammar":
+            # INSIDE the try on purpose, not tidiness: building this env CREATES
+            # the private cache dir, so an OSError from that setup must reach the
+            # handler below and be represented, exactly like a launch failure.
+            # ONE expression feeds both launch arms below, so they cannot drift.
+            env = _grammar_probe_env(repo_root)
         if timeout is None:
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 cwd=cwd,
+                env=env,
                 timeout=None,
             )
             return ProbeRun(
@@ -603,7 +1189,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
                 stdout=proc.stdout,
                 stderr=proc.stderr,
             )
-        return _run_bounded(cmd, cwd=cwd, timeout=timeout)
+        return _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
     except OSError as exc:
         # Represent rather than propagate: callers run this at import time in the
         # test harness, where a raise costs the whole suite instead of one skip.
@@ -621,7 +1207,12 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
 _KILL_DRAIN_TIMEOUT_S = 2.0
 
 
-def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun:
+def _run_bounded(
+    cmd: List[str],
+    cwd: Optional[str],
+    timeout: float,
+    env: Optional[Dict[str, str]] = None,
+) -> ProbeRun:
     """Run `cmd` under a wall-clock bound, killing its whole process tree on timeout.
 
     Split out so the unbounded gate path keeps plain subprocess.run().  A bounded
@@ -636,6 +1227,13 @@ def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun
     stays in the caller's process group, where an operator's Ctrl-C still
     reaches it.
 
+    `env` is the caller's already-built environment for the child, or None to
+    inherit the parent's — None is exactly Popen's own default, so a caller that
+    passes nothing is provably unchanged.  Grammar probes rely on it to reach
+    their private XDG_CACHE_HOME; this arm is the one grammar_substrate_usable()
+    takes, so dropping it here would leave the gate's FIRST real
+    `tree-sitter parse` on the host-global cache.
+
     Raises:
         OSError: if the command cannot be launched — run_probe()'s handler turns
             that into the _BINARY_NOT_FOUND_SENTINEL representation, so the two
@@ -647,6 +1245,7 @@ def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
+        env=env,
         start_new_session=True,
     ) as proc:
         try:
@@ -790,18 +1389,21 @@ def grammar_substrate_usable() -> tuple:
 
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
         # Deliberately hedged.  run_probe() represents EVERY launch OSError with
-        # this one sentinel, and a missing cwd (<repo_root>/tree-sitter-reify was
-        # never generated) raises the same FileNotFoundError as a missing CLI —
-        # so naming the CLI here would confidently print the wrong subsystem.
-        # The errno text run_probe() appends names the offending path, which is
-        # what actually distinguishes the two.
+        # this one sentinel, and THREE distinct subsystems arrive through it: a
+        # missing cwd (<repo_root>/tree-sitter-reify was never generated) raises
+        # the same FileNotFoundError as a missing CLI, and an uncreatable private
+        # grammar cache dir raises its own OSError from the same try.  Naming any
+        # one of them here would confidently print the wrong subsystem.  The
+        # errno text run_probe() appends names the offending path, which is what
+        # actually distinguishes the three.
         detail = run.stderr.split(_BINARY_NOT_FOUND_SENTINEL, 1)[1].strip(": \n")
         return (
             False,
             "the tree-sitter grammar probe could not be launched "
             f"({detail or 'no further detail'}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
-            "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
+            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, "
+            "the grammar directory <repo_root>/tree-sitter-reify/ does not "
+            "exist, or the private grammar cache directory could not be created",
         )
 
     if grammar_cache_denied(run):
@@ -838,9 +1440,13 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     # Run the probe and capture output.
     run = runner(probe)
 
-    # Determine observation.
+    # Determine observation, and — for a value probe that produced output — the
+    # reading of stdout behind it.  One call, so the verdict and the evidence
+    # rendered beside it cannot be two different searches of the same run.
+    # value_obs is None for every other kind and for a value probe that exited
+    # non-zero: there was no reading to report.
     match = probe.expected.get("match", {})
-    obs = observe(probe.probe_kind, run, match)
+    obs, value_obs = observe_with_evidence(probe.probe_kind, run, match)
 
     # Determine verdict.
     if obs == _HARNESS_ERROR:
@@ -857,6 +1463,7 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
         stderr=run.stderr,
         observation=obs,
         verdict=verd,
+        value_observation=value_obs,
     )
 
 
@@ -928,6 +1535,30 @@ def verdict(observation: str, expected_observation: str) -> str:
 # whole, while still capping a `reify eval` backtrace that would bury the gate
 # log.  Other verdicts keep the tight 200-char preview; --json is unaffected.
 _HARNESS_ERROR_STDERR_CAP = 4000
+
+
+def _json_record(r: Result) -> Dict[str, Any]:
+    """Project a Result into the --json record shape.
+
+    value_observation is OMITTED rather than set to null on the other kinds, so
+    existing consumers see exactly the record they always saw.
+    """
+    record = {
+        "capability": r.probe.capability,
+        "probe_kind": r.probe.probe_kind,
+        "verdict": r.verdict,
+        "command": r.command,
+        "exit_code": r.exit_code,
+        "stdout": r.stdout,
+        "stderr": r.stderr,
+    }
+    if r.value_observation is not None:
+        record["value_observation"] = {
+            "satisfied": r.value_observation.satisfied,
+            "captured": r.value_observation.captured,
+            "failed_constraint": r.value_observation.failed_constraint,
+        }
+    return record
 
 
 def main(argv: List[str]) -> int:
@@ -1053,18 +1684,7 @@ def main(argv: List[str]) -> int:
 
     # --- Emit output ---
     if args.emit_json:
-        json_records = [
-            {
-                "capability": r.probe.capability,
-                "probe_kind": r.probe.probe_kind,
-                "verdict": r.verdict,
-                "command": r.command,
-                "exit_code": r.exit_code,
-                "stdout": r.stdout,
-                "stderr": r.stderr,
-            }
-            for r in results
-        ]
+        json_records = [_json_record(r) for r in results]
         sys.stdout.write(json.dumps({"results": json_records}, indent=2))
         sys.stdout.write("\n")
     else:
@@ -1086,6 +1706,14 @@ def main(argv: List[str]) -> int:
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
             sys.stdout.write(f"  stderr:    {stderr_text}\n")
+            # Scoped to value rows for the same reason the hint below is scoped
+            # to HARNESS_ERROR: it answers a question only this kind raises —
+            # which token was read, and which constraint it failed.
+            if r.value_observation is not None:
+                spec = r.probe.expected["match"][_VALUE_PREDICATE_KEY]
+                sys.stdout.write(
+                    f"  value:     {r.value_observation.describe(spec)}\n"
+                )
             # Scoped to HARNESS_ERROR for the same reason as the cap above: the
             # hint explains why a probe could not RUN.  A check/ir probe whose
             # own stderr happened to quote both a load failure and a denial

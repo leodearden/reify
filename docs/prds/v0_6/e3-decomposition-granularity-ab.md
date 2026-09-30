@@ -249,6 +249,13 @@ opus/max/$25/180t; merge verify 2 hosts, laptop quarantined), main HEAD 72b9c5b0
 orchestrator config change or model-lineage default switch lands mid-experiment, record the
 date and split descriptives at it; do not discard data.
 
+Era events recorded under this rule:
+- **2026-09-01**: fleet-wide `timeouts.architect` 2400 → 7200 (reify task 7182, merge
+  9be8de5f, esc-5469-10, Leo-approved; hot-reloaded same day). Raises the architect
+  transcript-silence bound in both arms; total runtime stays capped by
+  `invocation_timeout=7200`. Zero E3-arm architect timeout kills existed at change time
+  (runs.db checked). Split descriptives at this date.
+
 ## 8. Predictions (pre-registered, direction + rough magnitude)
 
 1. **Cost per delivered kLOC: coarse 25–50% LOWER** than standard (mechanism: ~28 fewer
@@ -314,6 +321,35 @@ date and split descriptives at it; do not discard data.
    commit_planning(#6898–#6913 → pending) + set_task_status(reused singletons → pending) +
    full readback verification. **Dispatch opens here.**
 8. Any deviation after step 7 gets a dated addendum below; the body above is frozen.
+
+### Addendum 2026-09-01 — scope refinement on GOM-E3C1 #6898 (A5-R)
+
+**What changed.** A refinement note (`A5-R`) was appended to #6898's `details`, fixing the
+*carrier type* for the structured measured-value channel that A5 already required and that Leo
+had already ruled to on 2026-08-28. It imports `solver-legibility-telemetry` §8.1 item 2's
+structural constraint (sibling field on `ConstraintCheckEntry`, never a payload on
+`Satisfaction`) into #6898's own text, and requires a dimension-bearing carrier because the
+kernel-measured values are heterogeneous (deviation/min-wall are Lengths; overhang/draft are
+Angles, so an undifferentiated `Option<f64>` is the INV-AD-4 erasure). Two scope cuts were named
+(`achieved_repr_tol` subsumption; deriving the diagnostic string from the record).
+
+**Mirrored to** retired standard leaf #6741 (a §11 rollback target, so its text must not go
+stale), the coarse spec doc, and the PRD's capability-manifest twins. A matching bidirectional
+coordination note was recorded on #6722 (P4 ε, not an E3 task).
+
+**Endpoint impact — declare, do not hide.** This is a scope *refinement*, not new scope:
+C-STATUS already promised measured values `ConstraintCheckEntry` cannot carry, so the work was
+latent in the task as filed and would have surfaced at dispatch as a block or an escalation.
+Stating it pre-dispatch moves that cost from the endpoint-bearing implement phase into
+authoring, which is *excluded* from endpoints (§9) — so the likely direction is a small
+FAVOURABLE bias to #6898's measured blocks/turns, not an unfavourable one. No control-arm PRD
+received an equivalent pre-dispatch refinement. **Analysis should annotate #6898 rather than
+censor it**; if the blinded judge panel (§7.5) sees this task, its brief should note the
+refinement exists.
+
+**Protocol gap this exposes.** §11 covers abort/rollback but the protocol has no *amendment*
+procedure for a live coarse task. This addendum is the ad-hoc instance; if amendments recur,
+E3 should adopt an explicit rule (amend-both-arms, or freeze-and-defer).
 
 ## 11. Abort / rollback procedure
 

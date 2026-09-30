@@ -24,9 +24,9 @@
 //! second `harness_<subsystem2>.rs`". The auto-binding cluster is the natural seam: all
 //! seven files exercise one subsystem, none of them is referenced by `use crate::…` from
 //! any module that stays behind, and none of them consumes the `common/differential.rs`
-//! include (its sole consumer, `flat_sort_kahn_core_delegation`, stays in
-//! `harness_engine`, so the 2185-line external stays attributed there and is not
-//! duplicated into a second unit).
+//! include, so the split duplicated none of that include's external lines into this
+//! second unit. (The include's one `harness_engine` consumer,
+//! `flat_sort_kahn_core_delegation`, has since moved to `harness_cache`, #7654.)
 //!
 //! Layout-only — no `#[test]` fn is added or removed. Each former file is included as a
 //! stem-named module so its `<file>::<test>` module path (and thus every
@@ -43,6 +43,11 @@
 //! Whole-unit size — this root plus every `harness_auto_resolution/*.rs` module below; this
 //! unit includes nothing from outside its own module directory — is measured and capped
 //! by `tests/infra/test_harness_kloc_cap.sh` rule (a).
+//!
+//! The two `cost_robustness_tradeoff_*` modules (task #6465) were authored here directly
+//! rather than moved: they assert the γ tradeoff form's auto-resolution OUTCOME — the
+//! resolved boundary value, and the strict-auto `ConstraintNonUnique` verdict that two of
+//! the modules above already substring-match.
 //!
 //! Module order: alphabetical by stem. No module here carries a rationale comment whose
 //! ordering matters, and no module here is used by another, so there is no accretion
@@ -61,3 +66,7 @@ mod auto_type_param_determinism_tests;
 mod auto_type_param_topology_trigger_tests;
 #[path = "harness_auto_resolution/auto_type_param_value_population_e2e.rs"]
 mod auto_type_param_value_population_e2e;
+#[path = "harness_auto_resolution/cost_robustness_tradeoff_boundary_e2e.rs"]
+mod cost_robustness_tradeoff_boundary_e2e;
+#[path = "harness_auto_resolution/cost_robustness_tradeoff_underdetermined_diagnostic.rs"]
+mod cost_robustness_tradeoff_underdetermined_diagnostic;

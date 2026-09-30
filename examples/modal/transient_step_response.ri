@@ -122,8 +122,10 @@ structure CantileverStepResponse {
     // Lazy single-location reconstruction: @optimized dispatcher →
     // modal::displacement_at trampoline. Queries the tip in +Z, returning the
     // physical displacement time series u(t_j) = Σ_i (Φ_i[tip]·ẑ)·ξ_i(t_j) as a
-    // List<Real> (PRD §5.2). Invoked as a FREE function (method syntax is not
-    // UFCS in Reify). This is the headline tip ring-down series.
+    // List<Length> in metres (PRD §5.2; dimensioned since #6094 — the √mass
+    // factors in Φ and ξ cancel in the product). Invoked as a FREE function
+    // (method syntax is not UFCS in Reify). This is the headline tip ring-down
+    // series.
     //
     // The query direction is `tip_push.direction` (NOT a bare `vec3(0,0,1)`):
     // `displacement_at` is @optimized, whose overload resolver uses EXACT type

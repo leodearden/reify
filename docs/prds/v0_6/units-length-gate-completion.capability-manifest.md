@@ -3,10 +3,16 @@
 PRD: `docs/prds/v0_6/units-length-gate-completion.md` (landed `54afdee50b`).
 Decomposed 2026-07-28. Machine-readable twin: `units-length-gate-completion.capability-manifest.yaml`.
 
-**All substrate re-verified this session against `main` at `638d97d8ab`** (call-site re-measurement
+**All substrate re-verified at decompose against `main` at `638d97d8ab`** (call-site re-measurement
 for 5662 at `209dc5bf24`; the only commits between the two are docs/PRD artifacts, `scripts/verify.sh`
 and `tests/prd-gate/fixtures/*.ri` — no units-relevant source changed). Probe binary
 `target/release/reify` built 2026-07-28 20:47, newer than every units-relevant source.
+
+**Re-anchored 2026-09-18 (task #7550), against `main` @ `ea896581d1`:** units-relevant source HAS
+moved since `638d97d8ab` — `crates/reify-eval/src/arg_acceptance.rs` is now
+`crates/reify-ir/src/arg_acceptance.rs` (task #5791's decompose). The bindings naming it below are
+re-measured against TODAY's tree; read those anchors as-of the re-anchor date, not as-of
+`638d97d8ab`. Every other binding is untouched and still reads as-of decompose.
 
 ## D3 verification run (Enumerator → Prover ‖ Adversary → Synthesize)
 
@@ -91,8 +97,8 @@ would block. **No binding in this manifest resolves to a blocking value.**
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `grep:crates/reify-eval/src/arg_acceptance.rs:117 / :28 / :40 / :52` — wired on main; `length_spec` at `:103`, `density_spec` at `:86` | PASS |
-| rejection wording template | `grep:crates/reify-eval/src/arg_acceptance.rs:69` `ArgRejection::message(builtin, arg_name)` | PASS |
+| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `grep:crates/reify-ir/src/arg_acceptance.rs:635 / :240 / :252 / :264` — wired on main; `length_spec` at `:337`, `density_spec` at `:298` | PASS |
+| rejection wording template | `grep:crates/reify-ir/src/arg_acceptance.rs:281` `ArgRejection::message(builtin, arg_name)` | PASS |
 | the rejection is **observed to fire** (G6 branch 4) | `rejection-check:mirror(b,10,0,0,1,0,0)` → `reify eval` exit 1 with the exact template message (captured above) | PASS |
 | the 38 un-gated slots exist | `grep:crates/reify-ir/src/geometry.rs:575-1082` — 46 `Value`-typed GeometryOp fields = 41 length-semantic (38 un-gated + `spacing`/`spacing1`/`spacing2` gated) + 3 dimensionless normal components + 2 angle | PASS |
 | the pre-state is silent (motivation, not a required capability) | probe: `box(20,20,10)` exits 0 on both `check` and `eval` | PASS |
@@ -214,7 +220,7 @@ would block. **No binding in this manifest resolves to a blocking value.**
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| the corpus + its compile gate | `grep:examples/best_practices/INDEX.md`, `crates/reify-compiler/tests/examples_smoke.rs` — the auto-compile + bidirectional-index invariant | PASS |
+| the corpus + its compile gate | `grep:examples/best_practices/INDEX.md`, `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` — the auto-compile + bidirectional-index invariant | PASS |
 | the cheatsheet index | `grep:.claude/skills/reify-design/SKILL.md` | PASS |
 | **the stale claim to correct is real** | `grep:examples/best_practices/symmetry_mirror.ri:30-35` — "TRAP: that error does NOT appear under `reify check` … A green check is not evidence that a geometry call's argument dimensions are right." True today (probed), FALSE for statically-visible positions after η | PASS |
 | DAG-direction | ν (5759) upstream → transitively γ, η, β. The exemplar is written against landed behaviour | PASS |

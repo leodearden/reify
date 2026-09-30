@@ -1,0 +1,13 @@
+// #7880 end-to-end fixture: a DOTTED connect endpoint naming a member the
+// resolved sub's child does not declare at all. `Nema17` has no member called
+// `nonexistent`, so `reify check` must reject the connect with
+// "undefined port 'motor.nonexistent' in connect statement" and exit non-zero,
+// exactly as it rejects the own-port typo `connect nonexistent -> coupler.bore`.
+trait Shaftish : Port { param diameter : Length }
+structure def Nema17 { port shaft : out Shaftish { param diameter : Length = 5mm } }
+structure def Coupler { port bore : in Shaftish { param diameter : Length = 5mm } }
+structure def MotorMount {
+    sub motor = Nema17()
+    sub coupler = Coupler()
+    connect motor.nonexistent -> coupler.bore
+}

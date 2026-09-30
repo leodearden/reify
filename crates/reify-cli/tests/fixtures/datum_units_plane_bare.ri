@@ -1,0 +1,30 @@
+// datum_units_plane_bare.ri — CLI eval fixture: a BARE plane offset is rejected.
+//
+// units-length ε (task 5746, R11). `plane_xy(0.0)` passes a dimensionless
+// `Real` where a LENGTH is required, so `make_plane` returns `Value::Undef` and
+// the post-Undef `geometry_diagnose` hook must emit on stderr:
+//   error: plane_xy: offset argument expects Length, got Real; pass a
+//   dimensioned length such as `5mm`
+// `reify eval` exits NONZERO — the diagnostic is a Severity::Error (C1(iv)),
+// which the CLI's pure Severity::Error fold turns into a failing exit code. A
+// `Value::Undef` on its own exits 0 (measured: before the classifier arm landed
+// this fixture printed `DatumUnitsPlaneBare.p = undef` and exited 0), so the
+// Error is the whole user-observable signal.
+//
+// Zero is deliberately the offset here: it is the one bare magnitude that is
+// dimensionally harmless in VALUE (D1), which is exactly why it slipped past the
+// pre-doctrine constructor — and it is still a units error, because the
+// resulting origin would be a dimensionless Point no LENGTH consumer can use.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module datum_units_plane_bare`"), which
+// would re-supply an anchor substring for free and weaken the assertion in
+// cli_eval_datum_units.rs.
+
+module datum_units_plane_bare
+
+structure def DatumUnitsPlaneBare {
+    let p = plane_xy(0.0)
+}

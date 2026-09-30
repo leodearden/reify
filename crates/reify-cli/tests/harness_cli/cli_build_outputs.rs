@@ -3,9 +3,10 @@
 //! drive the export format(s) and path(s), each resolved relative to the design
 //! file's directory.
 //!
-//! Models on `cli_build_3mf.rs` (`CARGO_BIN_EXE_reify` + `tempfile` +
-//! `common::fixture_path`). The `box(...)` primitive realizes via the link-time
-//! kernel, exactly as `cli_build_3mf.rs` assumes (no extra OCCT gate).
+//! Models on `cli_build_3mf.rs`, but spawns via `common::run_with_args_in`
+//! (+ `tempfile` + `common::fixture_path`). The `box(...)` primitive realizes
+//! via the link-time kernel, exactly as `cli_build_3mf.rs` assumes (no extra
+//! OCCT gate).
 //!
 //! Signals (PRD §7.5):
 //! - **B5** — driver format+path: no `-o`, the `STLOutput` occurrence drives the
@@ -15,16 +16,8 @@
 //!   against the `.ri` file's directory, NOT the process cwd.
 //! - **B10** — back-compat: `-o` present keeps the imperative single-output
 //!   path byte-for-byte (the declarative driver does NOT fire).
-//!
-//! RED until step-16 wires the no-`-o` declarative mode into `cmd_build`: today
-//! `reify build f.ri` without `-o` exits non-zero with a usage error, so
-//! B5/B6/B7 fail. B10 (the `-o` imperative path) is a pure regression guard and
-//! is green before and after.
 
 use crate::common;
-
-use std::path::Path;
-use std::process::Command;
 
 /// Assert `bytes` is a well-formed binary STL: an 80-byte header, a 4-byte
 /// little-endian triangle count `N > 0`, then exactly `50·N` triangle bytes —
@@ -48,25 +41,6 @@ fn assert_valid_binary_stl(bytes: &[u8]) {
     );
 }
 
-/// Run `reify <args...>` with the child process's working directory set to
-/// `cwd`, returning `(success, stdout, stderr)`. Pinning the child cwd lets the
-/// B7 test prove design-relative resolution does not fall back to the cwd.
-fn run_in(cwd: &Path, args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
-}
-
 /// B5: `reify build <temp>/foo.ri` with NO `-o` must let the single `STLOutput`
 /// occurrence drive both the format (STL) and the path (`"o.stl"`, resolved into
 /// the design-file directory). Exit 0, stdout says "Wrote", and `<temp>/o.stl`
@@ -78,15 +52,16 @@ fn build_no_output_flag_drives_format_and_path() {
     std::fs::copy(common::fixture_path("output_driver_single.ri"), &ri)
         .expect("failed to copy single-output fixture");
 
-    let (ok, stdout, stderr) = run_in(
+    let (status, stdout, stderr) = common::run_with_args_in(
         dir.path(),
         &["build", ri.to_str().expect("temp path is not valid UTF-8")],
     );
 
     assert!(
-        ok,
-        "reify build (no -o) must exit 0 when the design declares an Output occurrence\n\
-         stdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build (no -o) must exit 0 when the design declares an Output \
+         occurrence; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
     assert!(
         stdout.contains("Wrote"),
@@ -115,14 +90,16 @@ fn build_no_output_flag_resolves_path_relative_to_design_file() {
         .expect("failed to copy single-output fixture");
 
     // cwd = root (NOT sub): a cwd-relative resolver would write root/o.stl.
-    let (ok, stdout, stderr) = run_in(
+    let (status, stdout, stderr) = common::run_with_args_in(
         root.path(),
         &["build", ri.to_str().expect("temp path is not valid UTF-8")],
     );
 
     assert!(
-        ok,
-        "reify build (no -o) must exit 0\nstdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build (no -o) must exit 0; got exit {:?}\n\
+         stdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
 
     let design_relative = sub.join("o.stl");
@@ -149,15 +126,16 @@ fn build_no_output_flag_emits_all_occurrences() {
     std::fs::copy(common::fixture_path("output_driver_multi.ri"), &ri)
         .expect("failed to copy multi-output fixture");
 
-    let (ok, stdout, stderr) = run_in(
+    let (status, stdout, stderr) = common::run_with_args_in(
         dir.path(),
         &["build", ri.to_str().expect("temp path is not valid UTF-8")],
     );
 
     assert!(
-        ok,
-        "reify build (no -o) must exit 0 for a multi-output design\n\
-         stdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build (no -o) must exit 0 for a multi-output design; got exit \
+         {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
 
     let stl = dir.path().join("o.stl");
@@ -174,8 +152,7 @@ fn build_no_output_flag_emits_all_occurrences() {
 /// B10 (back-compat regression guard): `-o` present keeps the imperative
 /// single-output path. `reify build <temp>/foo.ri -o <temp>/x.stl` writes the
 /// `-o` target and does NOT run the declarative driver — so the occurrence's own
-/// path ("o.stl") is never emitted. This test is green both before and after
-/// step-16.
+/// path ("o.stl") is never emitted.
 #[test]
 fn build_with_output_flag_keeps_imperative_path() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -184,7 +161,7 @@ fn build_with_output_flag_keeps_imperative_path() {
         .expect("failed to copy single-output fixture");
     let x = dir.path().join("x.stl");
 
-    let (ok, stdout, stderr) = run_in(
+    let (status, stdout, stderr) = common::run_with_args_in(
         dir.path(),
         &[
             "build",
@@ -195,9 +172,10 @@ fn build_with_output_flag_keeps_imperative_path() {
     );
 
     assert!(
-        ok,
-        "reify build -o must exit 0 (imperative back-compat)\n\
-         stdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build -o must exit 0 (imperative back-compat); got exit {:?}\n\
+         stdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
     assert!(
         stdout.contains("Wrote"),

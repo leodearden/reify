@@ -24,7 +24,7 @@
 //! RED until the `is_orientation_typed_fn` arm is wired into the ladder.
 
 use reify_compiler::CompiledModule;
-use reify_core::{Severity, Type};
+use reify_core::Type;
 use reify_test_support::{compile_source, compile_source_with_stdlib, get_let_expr_in};
 
 /// `result_type` of value cell `cell_name` in template `template_name` of an
@@ -61,11 +61,22 @@ fn infer_warnings(module: &CompiledModule) -> Vec<&str> {
 /// `orient_axis_angle` the axis argument still types as
 /// `Vector{3, dimensionless}`, which is exactly the wrong first-arg type the old
 /// fallback adopted.
+///
+/// `EulerConvention` is declared LOCALLY for the same stdlib-free reason. Task
+/// #6082 gave `orient_euler`'s convention slot an `ExpectedArg::Enum`, so the
+/// raw `"xyz"` string this fixture used to pass is now an `ArgTypeMismatch`
+/// error; the stdlib declaration that would otherwise supply the type lives in
+/// `stdlib/geometry_traits.ri`, which `compile_source` does not load. Only the
+/// one variant these assertions exercise is declared — the slot checks the enum
+/// TYPE NAME, so restating all twelve here would be a second copy of the
+/// stdlib's list that nothing keeps in step.
 const ORIENT_HOST: &str = r#"
+    enum EulerConvention { XYZ }
+
     structure OrientHost {
         let identity    = orient_identity()
         let quaternion  = orient_quaternion(1.0, 0.0, 0.0, 0.0)
-        let euler       = orient_euler("xyz", 0.0, 0.0, 0.0)
+        let euler       = orient_euler(EulerConvention.XYZ, 0.0, 0.0, 0.0)
         let basis       = orient_basis(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
         let look_at     = orient_look_at(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0))
         let axis_angle  = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90.0)
@@ -395,195 +406,4 @@ fn axis_aligned_axis_constructors_type_as_axis() {
              first-arg fallback chain, got {ty:?}"
         );
     }
-}
-
-// ── The four DECOMPOSERS (task 6306) ─────────────────────────────────────────
-//
-// The sibling half of the family above: the same two eval dispatchers, reached
-// by the same name-based dispatch, but returning the COORDINATES of a rigid
-// motion (`Value::Vector` / `List` / `Map`) rather than the motion itself. They
-// are claimed by `ORIENTATION_DECOMPOSER_FN_NAMES` / the
-// `is_orientation_decomposer_fn` ladder arm; membership and every result-type
-// ruling live ONCE there, so the docs here name only what each test pins.
-//
-// Their defect is SHARPER than the producers'. All four take at least one
-// argument, so the first-arg fallback never reaches its zero-arg "cannot infer
-// return type" warning — the mistyping is entirely SILENT. And task 5344 made it
-// worse rather than better for three of them: now that `orient_identity()` types
-// as a real `Orientation(3)`, `orient_log(q)` inherits `Orientation(3)` where it
-// once inherited the fallback's `Real`.
-
-/// Dimensionless literals keep this source independent of the stdlib unit
-/// registry, so it can use `compile_source` — the same reason `ORIENT_HOST`
-/// above does. All four result types are argument-independent, so this weakens
-/// nothing.
-///
-/// TASK 6082 NOTE: it flips `orient_to_euler` to subject-first
-/// `orient_to_euler(q, convention)`. When that lands, ONLY the fixture line
-/// below changes — every assertion in this section survives verbatim, because
-/// the result type never depended on the argument order (that independence is
-/// exactly what these tests pin).
-const DECOMPOSER_HOST: &str = r#"
-    structure DecomposerHost {
-        let q     = orient_identity()
-        let log   = orient_log(q)
-        let euler = orient_to_euler("xyz", q)
-        let aa    = orient_to_axis_angle(q)
-        let twist = transform_log(transform3_identity())
-    }
-"#;
-
-/// All four decomposer call sites resolve to their documented result types.
-#[test]
-fn decomposer_call_sites_type_as_their_result_types() {
-    let module = compile_source(DECOMPOSER_HOST);
-    assert_eq!(
-        cell_type(&module, "DecomposerHost", "log"),
-        Type::vec3(Type::dimensionless_scalar()),
-        "orient_log(q) is the rotation vector — three untagged Value::Real \
-         components, hence vec3<DIMENSIONLESS>"
-    );
-    assert_eq!(
-        cell_type(&module, "DecomposerHost", "euler"),
-        Type::List(Box::new(Type::angle())),
-        "orient_to_euler(..) returns three Angles as a Value::List"
-    );
-    assert_eq!(
-        cell_type(&module, "DecomposerHost", "aa"),
-        Type::StructureRef("AxisAngle".to_string()),
-        "orient_to_axis_angle(q) returns Value::Map{{angle, axis}}"
-    );
-    assert_eq!(
-        cell_type(&module, "DecomposerHost", "twist"),
-        Type::StructureRef("Twist".to_string()),
-        "transform_log(t) returns the Value::Map{{angular, linear}} twist"
-    );
-}
-
-/// `orient_log(q)` must not adopt its argument's `Orientation(3)`.
-///
-/// This is the negative that task 5344 SHARPENED: before it, `orient_identity()`
-/// itself typed `Real`, so `orient_log(q)` inherited `Real`; after it, `q` is a
-/// genuine `Orientation(3)` and the fallback hands that straight through. Either
-/// way the call site never carried the vector it actually evaluates to.
-///
-/// The second negative mirrors the unit-level dimension pin: the components are
-/// untagged `Value::Real`, and `TWIST_ANGULAR_DIM` (`geometry.rs:216`) already
-/// rules this same ω quantity DIMENSIONLESS on a live eval gate.
-#[test]
-fn orient_log_call_site_is_not_its_first_arg_orientation() {
-    let module = compile_source(DECOMPOSER_HOST);
-    let ty = cell_type(&module, "DecomposerHost", "log");
-    assert_ne!(
-        ty,
-        Type::Orientation(3),
-        "orient_log DECOMPOSES an Orientation — it must not adopt its \
-         argument's Orientation(3) type via the first-arg fallback"
-    );
-    assert_ne!(
-        ty,
-        Type::vec3(Type::angle()),
-        "orient_log's components are untagged Value::Real; typing them Angle \
-         would contradict the live TWIST_ANGULAR_DIM = DIMENSIONLESS gate"
-    );
-}
-
-/// The two `Value::Map` call sites must not adopt their first-argument types.
-///
-/// Both are 1-arg, so today's mistyping is SILENT — no diagnostic marks it.
-#[test]
-fn map_decomposer_call_sites_are_not_their_first_arg_types() {
-    let module = compile_source(DECOMPOSER_HOST);
-    assert_ne!(
-        cell_type(&module, "DecomposerHost", "aa"),
-        Type::Orientation(3),
-        "orient_to_axis_angle(q) must not adopt q's Orientation(3)"
-    );
-    assert_ne!(
-        cell_type(&module, "DecomposerHost", "twist"),
-        Type::Transform(3),
-        "transform_log(t) must not adopt t's Transform(3)"
-    );
-}
-
-/// The new arm is a pure improvement, not a new diagnostic source.
-///
-/// None of the four could trip the zero-arg warning even before this change
-/// (they all take arguments), so `infer_warnings` was already empty here. This
-/// pins that claiming them did not perturb diagnostics in either direction.
-#[test]
-fn decomposer_call_sites_emit_no_infer_warning() {
-    let module = compile_source(DECOMPOSER_HOST);
-    let warnings = infer_warnings(&module);
-    assert!(
-        warnings.is_empty(),
-        "decomposer call sites must emit ZERO 'cannot infer return type' \
-         warnings, got: {warnings:#?}"
-    );
-}
-
-/// NO-REGRESSION LOCK: typing `orient_to_axis_angle` as
-/// `StructureRef("AxisAngle")` must not make a member access on its result a
-/// HARD `UnknownMember` error.
-///
-/// Unlike its neighbours this is not a RED→GREEN test — it is green before AND
-/// after the ladder arm is wired, and its whole job is to STAY green.
-///
-/// MEASURED BASELINE (recorded because it contradicts the assumption this lock
-/// was designed from). `orient_to_axis_angle(q).angle` is NOT diagnostic-free
-/// today: with the receiver typed `Orientation(3)` the access falls through
-/// `expr.rs`'s per-kind member handlers to the residual tail
-/// `member_access_aggregation_or_unsupported`, which emits the GENERIC
-/// `Severity::Error` "member access not yet supported: .angle" (expr.rs:6617).
-/// That diagnostic is a receiver-type-independent limitation of member-access
-/// support — it predates this task, this task neither introduces nor removes it,
-/// and this test deliberately does NOT forbid it.
-///
-/// What this test DOES forbid is the one failure mode design decision 4 exists
-/// to prevent, identified by its distinct message. `member_path::resolve_hop` is
-/// asymmetric:
-/// - a `StructureRef(name)` ABSENT from `template_registry` → SOFT
-///   `Indeterminate(TemplateNotInRegistry)`, whose `to_diagnostic` returns
-///   `None`;
-/// - a REGISTERED structure MISSING the field → HARD `UnknownMember`, rendered
-///   as `structure '<name>' has no member '<member>'`
-///   (member_path.rs:622-628).
-///
-/// `AxisAngle` is deliberately left UNDECLARED (see
-/// `orientation_decomposer_result_type`'s doc), so the hop stays on the soft
-/// branch. This test fails loudly if anyone later "helpfully" adds an empty
-/// `structure def AxisAngle { }` marker — the natural-looking move, since
-/// `Twist`/`BodyId`/`JointBinding` are exactly that — which would flip
-/// `tests/prd-gate/fixtures/orient_axis_angle_member_parses.ri:12` into that
-/// hard error. Declaring it WITH its `{angle, axis}` fields is the PRD's
-/// τ2-orientation post-state and is the only correct way to make it appear.
-///
-/// Uses `compile_source_with_stdlib` so a template registry is genuinely
-/// present: with no registry the hop would be soft for the unrelated
-/// `NoTemplateRegistry` reason and the test would pass vacuously.
-#[test]
-fn orient_to_axis_angle_member_access_still_compiles() {
-    let source = r#"
-        structure AxisAngleMemberHost {
-            let q = orient_identity()
-            let ang = orient_to_axis_angle(q).angle
-        }
-    "#;
-    let module = compile_source_with_stdlib(source);
-    let unknown_member: Vec<&str> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("has no member"))
-        .map(|d| d.message.as_str())
-        .collect();
-    assert!(
-        unknown_member.is_empty(),
-        "`orient_to_axis_angle(q).angle` must stay a SOFT \
-         Indeterminate(TemplateNotInRegistry) hop, never a hard UnknownMember. \
-         A \"structure 'AxisAngle' has no member 'angle'\" here means someone \
-         declared an EMPTY `structure def AxisAngle {{ }}` — declare it WITH its \
-         {{angle, axis}} fields or not at all, or \
-         tests/prd-gate/fixtures/orient_axis_angle_member_parses.ri:12 regresses. \
-         Got: {unknown_member:#?}"
-    );
 }

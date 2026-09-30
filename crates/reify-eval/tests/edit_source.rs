@@ -6,7 +6,8 @@
 //! `CompiledModule` whose `content_hash` differs from the current one and
 //! re-evaluates only the dependency cones touched by the structural diff.
 
-mod common;
+#[path = "common/guarded_groups.rs"]
+mod guarded_groups;
 
 use std::collections::HashSet;
 
@@ -21,7 +22,7 @@ use reify_compiler::CompiledModule;
 use reify_core::{ConstraintNodeId, RealizationNodeId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value, ValueMap};
 
-use common::ten_bool_guarded_groups;
+use guarded_groups::ten_bool_guarded_groups;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {

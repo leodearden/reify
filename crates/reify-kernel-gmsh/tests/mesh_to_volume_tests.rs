@@ -7,45 +7,17 @@
 
 #![cfg(has_gmsh)]
 
-use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, QueryError};
+// The shared size-option read-back is declared by path rather than through
+// `common/mod.rs`, which #6387 reduced to a re-export shim over
+// `reify_test_support::fixtures` and which is scheduled for deletion; see
+// `common/clamp_probe.rs` for why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
 
-/// Inline copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`.
-///
-/// Duplicated rather than dev-dep'ing on `reify-kernel-manifold` to avoid an
-/// awkward layering — gmsh would otherwise dev-depend on manifold solely for
-/// this 30-line fixture. When B-rep test fixtures consolidate into a shared
-/// crate, this helper can move there.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
+use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
+use reify_test_support::fixtures::unit_cube_mesh;
+use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
 /// through `mesh_to_volume` with the default options + P1 element order.
@@ -531,23 +503,114 @@ fn out_of_bounds_index_errors() {
     );
 }
 
+/// The success-path half of "stop the capture on EVERY exit path".
+///
+/// MEASURED: one unit-cube `mesh_to_volume` emits 82 captured lines, so a
+/// success path that left the capture armed would leave all 82 buffered for
+/// the next caller in this process to report as its own — and this read
+/// would find them. `logger_stop` drains, so empty is the witness that the
+/// guard fired. The error path is covered by
+/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`
+/// and, end to end, by
+/// `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+/// — which lives there because it needs a deliberate mesher failure, kept out
+/// of this binary.
+#[test]
+fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
+    // serialised against any concurrent mesher in this binary rather than
+    // racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "mesh_to_volume must leave gmsh's capture stopped and drained; {} lines left: {leftover:?}",
+        leftover.len(),
+    );
+}
 // Coverage gap: the `surface_tags.is_empty()` branch in
-// `kernel_real::mesh_to_volume` (post-classify_surfaces +
-// post-create_geometry) is intentionally not exercised by an integration
-// test. Empirical investigation showed that the obvious candidate input —
-// a single open triangle — does NOT hit that branch: gmsh's
-// classify_surfaces+create_geometry produces a surface entity even for an
-// open mesh, and the failure surfaces later in `gmshModelMeshGenerate(3)`
-// when HXT cannot 3D-mesh an unclosed region. Worse, an HXT mesh_generate
-// failure leaves thread-local HXT state that survives `gmshClear()` and
-// corrupts the *next* meshing call's output (it returns 0 tets instead
-// of erroring). So an integration test that reliably hits the
-// empty-entities branch isn't reachable from real input geometry, and a
-// test that triggers HXT failure pollutes other tests in the same binary.
-// The branch remains as defensive guarding against future gmsh-version
-// changes; verification relies on code review rather than runtime
-// coverage. The other three reviewer-requested validation tests
+// `kernel_real::mesh_to_volume` is not reachable from real input geometry.
+// gmsh's classify_surfaces+create_geometry produces a surface entity even for
+// an open mesh, so the obvious candidate — a single open triangle — sails
+// past that branch and fails later, at `gmshModelMeshGenerate(3)`, when HXT
+// cannot 3D-mesh an unclosed region. The branch stays as defensive guarding
+// against future gmsh-version changes, verified by code review rather than
+// runtime coverage. The three sibling validation tests above
 // (`vertices_length_not_multiple_of_three_errors`,
-// `indices_length_not_multiple_of_three_errors`,
-// `out_of_bounds_index_errors`) cover the preflight validation that does
-// have testable error paths.
+// `indices_length_not_multiple_of_three_errors`, `out_of_bounds_index_errors`)
+// cover the preflight validation that does have testable error paths.
+//
+// Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
+// header carries the mechanism and why they are kept out of this binary.
+
+/// `mesh_to_volume` leaves every mesh-size process-global at gmsh's default.
+///
+/// One of the four per-entry-point outbound guards task #6968 added, all four
+/// sharing the read-back loop
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
+/// naming options — so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
+///
+/// # Outbound only, and where the rest of the guard lives
+///
+/// This function is the one writer whose outbound guard needs a POISONED table
+/// to be worth anything for the size-SOURCE trio: `mesh_to_volume` never writes
+/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+/// `MeshSizeExtendFromBoundary`, so from a defaults table it leaves them at
+/// defaults whether or not the scope is armed. Those three rows are therefore
+/// vacuous here, said plainly rather than left to imply a sensitivity they
+/// lack. What bites here is the clamp pair the function does write.
+///
+/// Poisoning cannot happen in this binary. It takes a second `GMSH_LOCK`
+/// acquisition before the call, and this binary holds 13 unserialised
+/// `mesh_to_volume` calls that can land in the gap and erase the poison —
+/// leaving the leg green for the wrong reason, which
+/// `clamp_probe::CLAMP_TEST_ORDER`'s own doc calls the worse direction for a
+/// regression guard. Taking that mutex here would serialise thirteen unrelated
+/// tests as a side effect. So the poisoned form — both the trio read-back and
+/// the inbound tet count — lives in `tests/mesh_size_option_hermeticity.rs`,
+/// which owns its process and serialises its bodies, as
+/// `mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+///
+/// What remains here is order-independent and needs no mutex, for the reason
+/// [`mesh_to_volume_leaves_the_gmsh_logger_stopped`] gives: "the table is at
+/// defaults" is what every sibling in this binary also leaves behind, so an
+/// interleaving sibling cannot flip the result.
+///
+/// # Measured RED
+///
+/// With `MeshSizeScope::entered` commented out of `kernel_real::mesh_to_volume`
+/// — unit cube, `deterministic: true`, P1, exactly the call below:
+///
+/// ```text
+/// table read              armed    disarmed
+/// Mesh.MeshSizeMin            0           1   <- RED
+/// Mesh.MeshSizeMax         1e22           1   <- RED
+/// ```
+///
+/// The `1` is this cube's extent: with no scope to restore them, the
+/// `Min == Max == resolved_size` pair the function writes itself outlives the
+/// call. `deterministic: true` and `ElementOrderTag::P1` match the
+/// measurement, and the `mesh_size: None` path is deliberate — it is the one
+/// that makes `resolved_size` gmsh's own derivation rather than a literal a
+/// reader would have to trace back.
+#[test]
+fn mesh_to_volume_leaves_every_size_option_at_gmsh_defaults() {
+    let cube = unit_cube_mesh();
+    let options = MeshingOptions { deterministic: true, ..Default::default() };
+    GmshKernel::new()
+        .mesh_to_volume(&cube, &options, ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        "mesh_to_volume(mesh_size: None)",
+        "`MeshSizeScope` in kernel_real.rs",
+    );
+}

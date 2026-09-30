@@ -46,8 +46,9 @@
 //! 24 `#[test]` fns to stay under the verify pipeline's heartbeat-idle
 //! backstop, this gate runs as a single test. `examples/best_practices/` is
 //! ~7 files, and the full in-process sweep measures ~0.3s — far short of the
-//! backstop, so sharding would be dead weight (`examples_smoke.rs` is
-//! likewise un-sharded on purpose, for the same reason).
+//! backstop, so sharding would be dead weight
+//! (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+//! is likewise un-sharded on purpose, for the same reason).
 
 use reify_core::ConstraintNodeId;
 use reify_ir::Satisfaction;
@@ -126,19 +127,31 @@ fn seeded_satisfied_constraint_is_reported() {
 
 // ── constraint_statuses: the shared check surface (step 2) ──────────────────
 
-/// Runs `source` through the exact pure value-eval check surface `reify
-/// check` uses — `check_source_with_stdlib` is `parse_and_compile_with_stdlib`
-/// followed by `make_simple_engine().check(&compiled)`, i.e.
-/// `SimpleConstraintChecker` with NO geometry kernel — and extracts each
-/// constraint's id and satisfaction, preserving `constraint_results`' order.
+/// Runs `source` through the KERNEL-LESS value-eval check surface —
+/// `check_source_with_stdlib` is `parse_and_compile_with_stdlib` followed by
+/// `make_simple_engine().check(&compiled)`, i.e. `SimpleConstraintChecker`
+/// with NO geometry kernel — and extracts each constraint's id and
+/// satisfaction, preserving `constraint_results`' order.
+///
+/// NOT the surface `reify check` runs (corrected 2026-09-10; esc-5760-4). It
+/// was, when this gate was written. Task 5748 (PRD
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf β D1, landed
+/// 2026-08-28) routes any geometry-bearing module in `cmd_check` onto
+/// `Engine::with_registered_kernel` + `realize_for_check`, then adopts the
+/// realization's verdicts via `merge_post_build_verdicts` — so on an OCCT
+/// build the CLI RESOLVES geometry-consumer constraints this surface must
+/// still report `Indeterminate`. Both are correct; they are different
+/// surfaces. Read every `Indeterminate` in this file as "on a kernel-less
+/// engine", never as a prediction of CLI output.
 ///
 /// # Panics
 /// Panics on a parse or compile error (via `check_source_with_stdlib`). Every
 /// caller in this file that walks real corpus files prints the file path to
 /// stderr first, so such a panic stays attributable to a file — see
 /// `run_corpus_gate`. Re-asserting the zero-Error compile contract itself is
-/// deliberately out of scope: `examples_smoke.rs` is the designated compile
-/// gate for this corpus.
+/// deliberately out of scope:
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// is the designated compile gate for this corpus.
 fn constraint_statuses(source: &str) -> Vec<(reify_core::ConstraintNodeId, Satisfaction)> {
     let result = reify_test_support::check_source_with_stdlib(source);
     result
@@ -305,8 +318,8 @@ fn audit_reports_stale_expected_indeterminate() {
 
 /// Absolute path to `examples/best_practices/`, resolved at compile time from
 /// this crate's manifest directory (two levels up) — matches
-/// `examples_smoke.rs:13`'s `EXAMPLES_DIR` and both sibling gates'
-/// `corpus_files`.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `EXAMPLES_DIR` and both sibling gates' `corpus_files`.
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
@@ -314,10 +327,11 @@ const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/be
 ///
 /// Deliberately a FLAT (non-recursive) read — this fn's flatness is
 /// load-bearing, not incidental: the corpus is a single flat drawer of idiom
-/// exemplars by design (`examples_smoke.rs::corpus_ri_files()`, line 636's
-/// comment), and a nested subdirectory appearing here is a structural change
-/// that should be reviewed rather than silently absorbed by switching this to
-/// a recursive walk.
+/// exemplars by design
+/// (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`'s
+/// doc comment), and a nested subdirectory appearing here is a structural
+/// change that should be reviewed rather than silently absorbed by switching
+/// this to a recursive walk.
 fn corpus_files() -> Vec<std::path::PathBuf> {
     let dir = std::path::Path::new(CORPUS_DIR);
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
@@ -348,13 +362,13 @@ fn corpus_relative(path: &std::path::Path) -> String {
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
-/// `harness_compilation_surface/examples_smoke.rs`'s
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
 /// `total >= MIN_DISCOVERED_RI_FILES`), every returned path a `.ri` file
 /// sitting directly inside a `best_practices` directory (FLAT — a nested
 /// subdirectory must NOT be swept, matching
-/// `harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`, whose
-/// comment records that a nested subdirectory here is a structural change
-/// that should be reviewed rather than silently absorbed), sorted
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::corpus_ri_files()`,
+/// whose comment records that a nested subdirectory here is a structural
+/// change that should be reviewed rather than silently absorbed), sorted
 /// (deterministic failure output), and containing the known exemplars
 /// `bolt_circle.ri` and `clearance_oracle.ri` by basename (proving path
 /// resolution actually reached the real directory rather than returning an
@@ -412,7 +426,8 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 
 /// The pinned set of `(basename, constraint index)` pairs that are expected
 /// to report `Satisfaction::Indeterminate` — never `Satisfied` — under the
-/// pure value-eval check surface this gate (and `reify check`) runs on. Each
+/// KERNEL-LESS value-eval check surface this gate runs on (NOT `reify check`;
+/// see `constraint_statuses`' doc for why the two diverged). Each
 /// entry carries a mandatory reason citing the in-file documentation that
 /// explains why the Indeterminate is intentional, so a reviewer can confirm
 /// the exemption against the exemplar's own prose rather than trusting this
@@ -432,27 +447,32 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 /// `GateFailure::StaleExpectedIndeterminate`), so a resolved exemption can
 /// never linger as dead weight that masks recovered coverage.
 ///
-/// Seeded with exactly the three entries measured on this branch, verified
-/// two independent ways (`./target/release/reify check` per file, and an
-/// in-process `check_source_with_stdlib` probe — both agree).
+/// Seeded with exactly the three entries measured on this branch. They were
+/// originally verified two independent ways — `./target/release/reify check`
+/// per file, and an in-process `check_source_with_stdlib` probe, which agreed
+/// at the time. They no longer do, and the CLI is NOT a valid cross-check for
+/// this const any more: since task 5748 (2026-08-28) `reify check` realizes
+/// geometry, so it reports the two `clearance_oracle.ri` entries below as OK.
+/// Re-measure this const against `check_source_with_stdlib` only.
 const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
     (
         "clearance_oracle.ri",
         0,
         "`constraint not fouls` — `intersects` is a geometry-consumer builtin: it needs \
-         a realized kernel and resolves only on the build()/tessellate() path, not the \
-         pure value-eval surface this gate (and `reify check`) runs on. Documented by \
-         the EVAL/BUILD ONLY bullet in clearance_oracle.ri, which states verbatim \
-         \"THAT IS EXPECTED, NOT A FAILURE\", and echoed by the `clearance_oracle.ri` \
-         row of examples/best_practices/INDEX.md.",
+         a realized kernel, and this gate's engine has none. It DOES resolve wherever a \
+         kernel is attached, which since task 5748 includes `reify check` on an OCCT \
+         build — so do not cross-check this entry against the CLI. Documented by the \
+         NEEDS A REALIZED KERNEL bullet in clearance_oracle.ri, which states verbatim \
+         \"THAT IS EXPECTED, NOT A FAILURE\" of exactly this kernel-less case, and \
+         echoed by the `clearance_oracle.ri` row of examples/best_practices/INDEX.md.",
     ),
     (
         "clearance_oracle.ri",
         1,
         "`constraint gap > min_gap` — same class as constraint[0] above, via the \
-         geometry-consumer builtin `distance`. Documented by the EVAL/BUILD ONLY \
-         bullet in clearance_oracle.ri and echoed by the `clearance_oracle.ri` row of \
-         examples/best_practices/INDEX.md.",
+         geometry-consumer builtin `distance`, and with the same kernel-less caveat. \
+         Documented by the NEEDS A REALIZED KERNEL bullet in clearance_oracle.ri and \
+         echoed by the `clearance_oracle.ri` row of examples/best_practices/INDEX.md.",
     ),
     (
         "discrete_choice.ri",
@@ -468,12 +488,13 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
 
 /// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
 /// file that actually exists in `corpus_files()` (mirrors
-/// `examples_smoke.rs::skip_set_entries_exist_under_examples_dir`, line 248 —
-/// an entry left behind after its exemplar is renamed or deleted must fail
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::skip_set_entries_exist_under_examples_dir`
+/// — an entry left behind after its exemplar is renamed or deleted must fail
 /// loudly instead of silently never matching), no duplicate `(file, index)`
 /// pairs, and every entry's reason string is non-empty — the
-/// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
-/// encodes (`examples_smoke.rs:20-22`).
+/// auditable-justification contract that
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`'s
+/// `SKIP_SET` `(&str, &str)` tuple shape encodes.
 #[test]
 fn expected_indeterminate_entries_are_well_formed() {
     let files = corpus_files();
@@ -514,8 +535,10 @@ fn audit_bypassed() -> bool {
 }
 
 /// Renders one `GateFailure` as a single human-readable line, using `id`'s
-/// `Display` impl so the offender is directly reproducible by copy-pasting
-/// into `reify check`.
+/// `Display` impl — the same `{entity}#constraint[{index}]` spelling `reify
+/// check` prints, so the offender is greppable in either surface's output.
+/// Reproducing it, though, needs THIS gate's kernel-less engine: the CLI
+/// attaches a kernel and can legitimately disagree (see `constraint_statuses`).
 fn describe_failure(failure: &GateFailure) -> String {
     match failure {
         GateFailure::Violated { file, id } => format!("VIOLATED: {file}: {id}"),
@@ -534,12 +557,12 @@ fn describe_failure(failure: &GateFailure) -> String {
 /// every `GateFailure` found across `examples/best_practices/`.
 ///
 /// Deliberately does NOT re-assert the zero-Error compile contract —
-/// `examples_smoke.rs` owns that gate and duplicating it here would be
-/// lockstep duplication. `constraint_statuses` (via
-/// `check_source_with_stdlib`) panics on a parse/compile error, so this fn
-/// `eprintln!`s each file's repo-relative path immediately BEFORE checking
-/// it, keeping such a panic attributable to a file without re-asserting the
-/// compile contract itself.
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
+/// owns that gate and duplicating it here would be lockstep duplication.
+/// `constraint_statuses` (via `check_source_with_stdlib`) panics on a
+/// parse/compile error, so this fn `eprintln!`s each file's repo-relative
+/// path immediately BEFORE checking it, keeping such a panic attributable to
+/// a file without re-asserting the compile contract itself.
 ///
 /// When `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS=1` is set, the offender
 /// report is still printed but this returns an empty vec, downgrading
@@ -609,9 +632,11 @@ fn run_corpus_gate() -> Vec<GateFailure> {
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
 /// `GateFailure`s on the live corpus.
 ///
-/// This is expected GREEN on the measured baseline (7 files, 31 constraints:
-/// 28 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
-/// listed in `EXPECTED_INDETERMINATE` above).
+/// This is expected GREEN on the measured baseline (8 files, 39 constraints:
+/// 36 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
+/// listed in `EXPECTED_INDETERMINATE` above). Re-measured 2026-09-07 when
+/// `dimensioned_arguments.ri` (+8 constraints, all Satisfied) joined the
+/// corpus for task 5760.
 #[test]
 fn best_practices_corpus_satisfies_every_constraint() {
     let failures = run_corpus_gate();
@@ -638,7 +663,9 @@ fn best_practices_corpus_satisfies_every_constraint() {
     if !violated.is_empty() {
         report.push_str(&format!(
             "  VIOLATED ({} constraint(s)) — a real regression. Reproduce with \
-             `reify check examples/best_practices/<file>`:\n{}\n",
+             `cargo test -p reify-eval --test harness_corpus_gates \
+             best_practices_constraint_gate` (this gate's kernel-less engine; \
+             `reify check` attaches a kernel and may disagree):\n{}\n",
             violated.len(),
             violated.join("\n")
         ));
@@ -646,10 +673,10 @@ fn best_practices_corpus_satisfies_every_constraint() {
     if !unexpected_indeterminate.is_empty() {
         report.push_str(&format!(
             "  UNEXPECTED INDETERMINATE ({} constraint(s)) — a constraint's inputs went \
-             undefined (lost coverage). Reproduce with \
-             `reify check examples/best_practices/<file>`. If this Indeterminate is \
-             genuinely intentional, add a reasoned entry to EXPECTED_INDETERMINATE; \
-             otherwise it is a regression to fix:\n{}\n",
+             undefined (lost coverage). Reproduce on THIS gate's kernel-less engine, not \
+             with `reify check` (which realizes geometry and may resolve it anyway). If \
+             this Indeterminate is genuinely intentional, add a reasoned entry to \
+             EXPECTED_INDETERMINATE; otherwise it is a regression to fix:\n{}\n",
             unexpected_indeterminate.len(),
             unexpected_indeterminate.join("\n")
         ));

@@ -37,26 +37,50 @@ enum OrphanAudit {
     Envelope(serde_json::Value),
     /// `scope`'s crate segment is a literal member of `EXCLUDE_CRATES` — a
     /// legitimate, non-failing outcome that the script itself encodes as
-    /// empty stdout.
-    ExcludedScope,
+    /// empty stdout. Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    ExcludedScope(SkipNote),
     /// The environment cannot satisfy the script's prerequisites (missing
     /// `python3`/`git`, the script itself absent, or `repo_root` not inside a
-    /// git work tree). Carries a short human-readable reason for logging.
-    ///
-    /// `#[allow(dead_code)]`: the payload is read only from
-    /// `run_orphan_audit_on_excluded_crate_is_named_not_erased` in
-    /// `#[cfg(test)]`. Now that this enum is module-private (task 5698
-    /// amendment pass, review finding #5), it no longer gets the `pub`-item
-    /// dead-code exemption, and the plain (non-test) library build has no
-    /// other reader of this field.
-    #[allow(dead_code)]
-    EnvUnavailable(&'static str),
+    /// git work tree). Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    EnvUnavailable(SkipNote),
 }
 
-/// Crate names excluded from the orphan-producer audit — a Rust copy of
-/// `scripts/audit-orphan-producers.sh:92`'s `EXCLUDE_CRATES = {...}` set
-/// literal (the source of truth; this copy exists because the script cannot
-/// be consulted at Rust compile/run time without a python round-trip).
+/// The phrase every graceful-skip note [`run_orphan_audit`] prints to stderr
+/// contains, whichever skip cause fired. Exported so a caller attributing a
+/// process's stderr to such a skip matches the string this module actually
+/// produces, not a copy of it.
+pub const ORPHAN_AUDIT_SKIP_MARKER: &str = "skipping orphan audit";
+
+/// Why [`run_orphan_audit`] declined to return an envelope for `scope`,
+/// rendered as the one stderr line it prints — so every skip, whichever
+/// cause fired, carries [`ORPHAN_AUDIT_SKIP_MARKER`] in the same place.
+#[derive(Debug)]
+struct SkipNote {
+    scope: String,
+    cause: String,
+}
+
+impl SkipNote {
+    fn new(scope: &str, cause: impl Into<String>) -> Self {
+        Self {
+            scope: scope.to_string(),
+            cause: cause.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SkipNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { scope, cause } = self;
+        write!(f, "{cause}; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}")
+    }
+}
+
+/// Crate names excluded from the orphan-producer audit — a Rust copy of the
+/// `EXCLUDE_CRATES = {...}` set literal declared in
+/// `scripts/audit-orphan-producers.sh` (the source of truth; this copy exists
+/// because the script cannot be consulted at Rust compile/run time without a
+/// python round-trip).
 ///
 /// Pinned against the script by
 /// `exclude_crates_const_matches_audit_script_declaration`: a divergence
@@ -88,10 +112,10 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 
 /// Resolve the git work tree that a child process spawned with
 /// `.current_dir(repo_root)` would itself compute via `git rev-parse
-/// --show-toplevel` — i.e. what `audit-orphan-producers.sh:66`'s own
-/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` will resolve to for this
-/// child. Routed through the SAME [`sanitize`] the script spawn uses, so this
-/// probe faithfully reproduces the child's exact view.
+/// --show-toplevel` — i.e. what `audit-orphan-producers.sh`'s own
+/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` line will resolve to for
+/// this child. Routed through the SAME [`sanitize`] the script spawn uses,
+/// so this probe faithfully reproduces the child's exact view.
 ///
 /// This does NOT re-test that [`sanitize`] works — it tests the premise
 /// [`sanitize`] is supposed to establish: that the child resolves the SAME
@@ -201,11 +225,10 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     // self-contained when called directly with a script path that caller
     // never probed — see missing_script_is_env_unavailable.)
     if !script.exists() {
-        eprintln!(
-            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
-            script
-        );
-        return OrphanAudit::EnvUnavailable("audit-orphan-producers.sh not found on disk");
+        return OrphanAudit::EnvUnavailable(SkipNote::new(
+            scope,
+            format!("scripts/audit-orphan-producers.sh not found at {script:?}"),
+        ));
     }
 
     // Repo-root premise probe (task 5698 step 6): assert that a child spawned
@@ -218,11 +241,10 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     // EXCLUDE_CRATES scope, which the empty-stdout branch alone cannot.
     match child_repo_root(repo_root) {
         Err(ChildRepoRootFailure::NoRepository) => {
-            eprintln!(
-                "repo_root {repo_root:?} is not inside a git work tree; skipping orphan \
-                 audit for scope {scope:?}"
-            );
-            return OrphanAudit::EnvUnavailable("repo root is not a git work tree");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(
+                scope,
+                format!("repo_root {repo_root:?} is not inside a git work tree"),
+            ));
         }
         Err(ChildRepoRootFailure::Other(detail)) => {
             panic!(
@@ -270,12 +292,14 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 
     if stdout.trim().is_empty() {
         if scope_is_excluded_crate(scope) {
-            eprintln!(
-                "audit-orphan-producers.sh produced empty output for scope {scope:?} \
-                 — scope is in EXCLUDE_CRATES (exit status: {:?})",
-                output.status
-            );
-            return OrphanAudit::ExcludedScope;
+            return OrphanAudit::ExcludedScope(SkipNote::new(
+                scope,
+                format!(
+                    "audit-orphan-producers.sh produced empty output because the scope is \
+                     in EXCLUDE_CRATES (exit status: {:?})",
+                    output.status
+                ),
+            ));
         }
         // Empty stdout for a scope that is NOT in EXCLUDE_CRATES is never a
         // legitimate outcome: it means the orphan-producer pin for this
@@ -316,14 +340,18 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 /// external code can reach this functionality.
 ///
 /// Collapses both the excluded-scope and environment-unavailable outcomes to
-/// `None`. Returns `Some(json)` on a well-formed envelope. Panics exactly
-/// when `run_orphan_audit_detailed` would panic: empty output for a scope
-/// that is NOT excluded, or a resolved repo root that disagrees with what
-/// the audit child itself would compute.
+/// `None`, after printing the outcome's note, which always carries
+/// [`ORPHAN_AUDIT_SKIP_MARKER`], to stderr. Returns `Some(json)` on a
+/// well-formed envelope. Panics exactly when `run_orphan_audit_detailed`
+/// would panic: empty output for a scope that is NOT excluded, or a resolved
+/// repo root that disagrees with what the audit child itself would compute.
 pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     match run_orphan_audit_detailed(scope) {
         OrphanAudit::Envelope(v) => Some(v),
-        OrphanAudit::ExcludedScope | OrphanAudit::EnvUnavailable(_) => None,
+        OrphanAudit::ExcludedScope(note) | OrphanAudit::EnvUnavailable(note) => {
+            eprintln!("{note}");
+            None
+        }
     }
 }
 
@@ -357,6 +385,41 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
     (script, repo_root)
 }
 
+/// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
+/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
+/// — no new resolution logic, no new argv — so it cannot fork from what
+/// production actually spawns.
+///
+/// Public because `reify-audit`'s `tests/g_allow.rs` hazard probe needs to
+/// spawn this EXACT command TWICE, under two different environments, to
+/// compare them — something [`run_orphan_audit`] (one spawn, sanitized,
+/// parsed to a JSON envelope) cannot express. Contrast [`OrphanAudit`]'s doc
+/// above, which declines to promote a finer-grained type ahead of a real
+/// external consumer: this item has one, so it is promoted.
+///
+/// # Composition contract
+///
+/// The returned command is ALREADY sanitized. A caller that then adds
+/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
+/// hazard synthetically — not working around a missing sanitize. See
+/// [`crate::git_env`] for what sanitization is for and why.
+///
+/// # Not a substitute for [`run_orphan_audit`]
+///
+/// Every REAL invocation of the audit goes through [`run_orphan_audit`],
+/// which wraps this same command with the graceful-skip protocol
+/// (`python3`/`git` presence, script-on-disk, `repo_root`-is-a-git-work-tree,
+/// `EXCLUDE_CRATES` membership), the repo-root premise probe, and the
+/// empty-stdout hard failure. Spawning this command directly buys none of
+/// those — it is for a caller that needs the command ITSELF, unexecuted, to
+/// compare against another.
+pub fn audit_command(scope: &str) -> Command {
+    let (script, repo_root) = resolve_script_and_root();
+    build_audit_command(&script, scope, &repo_root)
+}
+
 /// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
 /// outcome instead of collapsing two of them to `None`.
 ///
@@ -371,8 +434,8 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
 ///   tree at all (e.g. a source tarball with no `.git`) — genuinely
 ///   environmental, unlike the DIFFERENT-work-tree case below.
 ///
-/// In each of those cases an explanatory message is printed to `stderr` so CI
-/// logs remain informative, and the returned reason string names which one.
+/// In each of those cases, the returned [`SkipNote`] names which one, and
+/// [`run_orphan_audit`] prints it to stderr so CI logs remain informative.
 ///
 /// Returns [`OrphanAudit::ExcludedScope`] when `scope`'s crate segment is a
 /// literal member of `EXCLUDE_CRATES`. Also non-failing, but distinct from
@@ -421,20 +484,19 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     match Command::new("python3").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("python3 not on PATH; skipping orphan audit for scope {scope:?}");
-            return OrphanAudit::EnvUnavailable("python3 not on PATH");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "python3 not on PATH"));
         }
         Err(e) => panic!("unexpected error probing python3: {e}"),
     }
 
-    // Graceful skip: check git is available (audit-orphan-producers.sh:59-64
-    // probes for both python3 AND git; missing git causes exit 3 which would
-    // surface as a confusing JSON-parse panic without this probe).
+    // Graceful skip: check git is available (audit-orphan-producers.sh's own
+    // `for tool in python3 git; do ... done` loop probes for both python3
+    // AND git; missing git causes exit 3 which would surface as a confusing
+    // JSON-parse panic without this probe).
     match Command::new("git").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("git not on PATH; skipping orphan audit for scope {scope:?}");
-            return OrphanAudit::EnvUnavailable("git not on PATH");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "git not on PATH"));
         }
         Err(e) => panic!("unexpected error probing git: {e}"),
     }
@@ -724,24 +786,122 @@ mod tests {
             &repo_root,
             "crates/reify-audit/src",
         );
-        assert!(
-            matches!(result, OrphanAudit::EnvUnavailable(_)),
-            "expected EnvUnavailable for a nonexistent script path, got: {result:?}"
-        );
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains("/nonexistent/audit-orphan-producers.sh"),
+                    "expected the skip note to name the offending script path, got: {line:?}"
+                );
+            }
+            other => {
+                panic!("expected EnvUnavailable for a nonexistent script path, got: {other:?}")
+            }
+        }
+    }
+
+    /// [`run_orphan_audit_at`]'s repo-root premise probe classifies a plain,
+    /// never-`git init`ed directory as [`ChildRepoRootFailure::NoRepository`]
+    /// (see `child_repo_root_plain_non_git_dir_is_no_repository`, which
+    /// drives [`child_repo_root`] directly) — this test drives the same
+    /// premise through the public seam instead, pinning that the resulting
+    /// [`OrphanAudit::EnvUnavailable`] skip note names both
+    /// [`ORPHAN_AUDIT_SKIP_MARKER`] and the offending `repo_root`.
+    #[test]
+    fn repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip() {
+        let (script, _) = resolve_script_and_root();
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let dir = crate::temp_dirs::prefixed_tempdir("orphan-audit-no-git-root-");
+        let result = run_orphan_audit_at(&script, dir.path(), "crates/reify-audit/src");
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                let repo_root_debug = format!("{:?}", dir.path());
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains(&repo_root_debug),
+                    "expected the skip note to name the offending repo_root {repo_root_debug}, \
+                     got: {line:?}"
+                );
+            }
+            other => panic!(
+                "expected EnvUnavailable for a repo_root outside any git work tree, \
+                 got: {other:?}"
+            ),
+        }
     }
 
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
     /// set-literal declaration. No `regex` dependency exists anywhere in this
     /// workspace (checked before writing this test), so a small manual scan
-    /// is used instead of pulling one in just for this. Returns `None` if no
-    /// `EXCLUDE_CRATES = {` marker is found; otherwise returns whatever names
-    /// it parsed (possibly empty), so the caller can distinguish "declaration
-    /// not found" from "declaration found but parsed empty" and fail loudly
-    /// on the latter rather than matching vacuously.
-    fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
+    /// is used instead of pulling one in just for this.
+    ///
+    /// A line counts as the declaration only when its first non-whitespace
+    /// text starts with the marker `EXCLUDE_CRATES = {`. A full-line comment
+    /// (`# EXCLUDE_CRATES = {...}`) starts with `#` instead, so it can never
+    /// match; a trailing inline echo of the marker sits after the start of
+    /// its line, so it can't inflate the count either. Exactly one matching
+    /// line is required: zero returns `None` (the caller reports this — it
+    /// already holds the script path for that message), and more than one is
+    /// a hard `panic!` naming `source_label` and the observed count — either
+    /// case would otherwise risk
+    /// `exclude_crates_const_matches_audit_script_declaration` passing while
+    /// silently pinning the wrong text against the Rust `EXCLUDE_CRATES`
+    /// const, permanently masking real drift.
+    ///
+    /// Returns `None` if no declaration line is found; otherwise whatever
+    /// names it parsed from that line (possibly empty), so the caller can
+    /// distinguish "declaration not found" from "declaration found but
+    /// parsed empty" and fail loudly on the latter rather than matching
+    /// vacuously.
+    fn parse_exclude_crates_declaration(source: &str, source_label: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
-        let after_marker = source.find(marker)? + marker.len();
-        let rest = &source[after_marker..];
+        let declaration_lines: Vec<&str> = source
+            .lines()
+            .filter(|line| line.trim_start().starts_with(marker))
+            .collect();
+
+        if declaration_lines.is_empty() {
+            return None;
+        }
+        if declaration_lines.len() > 1 {
+            let occurrences = declaration_lines.len();
+            panic!(
+                "found {occurrences} occurrences of `{marker}` in \
+                 {source_label} — this parser cannot tell which declaration \
+                 is authoritative, and silently binding the first would risk \
+                 permanently pinning the wrong text against the Rust \
+                 EXCLUDE_CRATES const while the parity assertion keeps \
+                 passing. Remove the duplicate declaration, or teach this \
+                 parser which one is authoritative."
+            );
+        }
+
+        let line = declaration_lines[0].trim_start();
+        let rest = &line[marker.len()..];
         let end = rest.find('}')?;
         let body = &rest[..end];
 
@@ -763,6 +923,99 @@ mod tests {
         Some(names)
     }
 
+    /// A full-line `#` comment that illustrates the declaration in
+    /// assignment form (plausible directly above the real one — task 6027
+    /// already added 9 comment lines right above it) never shadows the real
+    /// declaration below it: the parser binds the real one, so
+    /// `exclude_crates_const_matches_audit_script_declaration` keeps
+    /// checking the actual declaration rather than silently pinning a
+    /// comment against the Rust const.
+    ///
+    /// Exercises BOTH a column-0 comment and an INDENTED one, to pin the rule
+    /// as "first non-whitespace character is `#`", not "line starts with
+    /// `#`".
+    #[test]
+    fn parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow() {
+        let source = "#!/usr/bin/env bash\n# Illustration of what this parser looks for:\n#     EXCLUDE_CRATES = {\"decoy-from-a-column-zero-comment\"}\n    # EXCLUDE_CRATES = {\"decoy-from-an-indented-comment\"}\nEXCLUDE_CRATES = {\"reify-test-support\", \"another-real-crate\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result,
+            Some(vec![
+                "reify-test-support".to_string(),
+                "another-real-crate".to_string(),
+            ]),
+            "expected the parser to skip both the column-0 and indented \
+             commented-out shadows and bind the real declaration below \
+             them — got: {result:?}"
+        );
+    }
+
+    /// Companion to
+    /// [`parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow`]
+    /// — the other observable face of the same rule. When the ONLY
+    /// occurrence of the marker in the source is inside a full-line comment
+    /// and no real declaration exists anywhere, the parser reports "not
+    /// found" (`None`) so the caller's path-naming not-found panic fires,
+    /// rather than returning the comment's contents as if they were a real
+    /// declaration.
+    #[test]
+    fn parse_exclude_crates_declaration_is_not_found_when_only_a_comment_declares_it() {
+        let source = "# EXCLUDE_CRATES = {\"only-in-a-comment\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result, None,
+            "expected None because the only occurrence of the marker is inside \
+             a full-line comment and no real declaration exists — got: {result:?}"
+        );
+    }
+
+    /// Two REAL (non-comment) declarations panic rather than silently
+    /// first-wins binding the first one — the direction the line-anchored
+    /// match above does not otherwise resolve on its own (a genuine
+    /// duplicate or conditionally-redefined declaration).
+    ///
+    /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
+    /// idiom already established by `wrong_tree_with_real_scope_panics`
+    /// above — rather than `#[should_panic]`, whose attribute-level
+    /// substring match cannot distinguish WHICH panic fired.
+    #[test]
+    fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
+        let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_exclude_crates_declaration(source, "a test fixture")
+        }));
+
+        let payload = match result {
+            Ok(value) => panic!(
+                "expected parse_exclude_crates_declaration to panic on two \
+                 non-comment EXCLUDE_CRATES declarations with different \
+                 contents — silently binding the first would permanently pin \
+                 the wrong text against the Rust EXCLUDE_CRATES const while \
+                 the parity assertion kept passing — got: {value:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("found 2 occurrences"),
+            "panicked, but the message doesn't report the observed count of \
+             2 declarations in context; got: {message}"
+        );
+        assert!(
+            message.contains("EXCLUDE_CRATES = {"),
+            "panicked, but the message doesn't name the marker text that was \
+             duplicated; got: {message}"
+        );
+        assert!(
+            message.contains("a test fixture"),
+            "panicked, but the message doesn't name the source being \
+             scanned; got: {message}"
+        );
+    }
+
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
     /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
     /// declaration (the source of truth for SET MEMBERSHIP) — the
@@ -772,7 +1025,8 @@ mod tests {
     /// Pins ONLY the set's *contents* — NOT [`scope_is_excluded_crate`]'s
     /// matching *rule*. The script's own `discover_sources` excludes a
     /// matched directory or file when ANY of its path segments is a member
-    /// of `EXCLUDE_CRATES` (`audit-orphan-producers.sh:126,132`);
+    /// of `EXCLUDE_CRATES` (two membership tests: one over the matched
+    /// directory's `parts`, one over each `.rs` file's `rs_parts`);
     /// `scope_is_excluded_crate` only inspects the single segment
     /// immediately after `crates`. The two sides can therefore disagree for
     /// a scope shaped differently from every one of this workspace's 9
@@ -788,14 +1042,15 @@ mod tests {
         let source = std::fs::read_to_string(&script_path)
             .unwrap_or_else(|e| panic!("read {script_path:?}: {e}"));
 
-        let declared = parse_exclude_crates_declaration(&source).unwrap_or_else(|| {
-            panic!(
-                "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
-                 {script_path:?} — has it moved or been reformatted? Update \
-                 parse_exclude_crates_declaration's marker alongside whatever \
-                 changed the script."
-            )
-        });
+        let declared = parse_exclude_crates_declaration(&source, &format!("{script_path:?}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
+                     {script_path:?} — has it moved or been reformatted? Update \
+                     parse_exclude_crates_declaration's marker alongside whatever \
+                     changed the script."
+                )
+            });
         assert!(
             !declared.is_empty(),
             "parsed an EXCLUDE_CRATES declaration from {script_path:?} but found \
@@ -882,14 +1137,25 @@ mod tests {
     #[test]
     fn run_orphan_audit_on_excluded_crate_is_named_not_erased() {
         match run_orphan_audit_detailed("crates/reify-test-support/src") {
-            OrphanAudit::ExcludedScope => {}
+            OrphanAudit::ExcludedScope(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the excluded-scope note to carry ORPHAN_AUDIT_SKIP_MARKER, \
+                     got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-test-support/src"),
+                    "expected the excluded-scope note to name its scope, got: {line:?}"
+                );
+            }
             // Graceful-skip convention: missing python3/git/script/repo-root
             // is environmentally legitimate and indistinguishable here from
             // the excluded-scope case once collapsed through
             // `run_orphan_audit`; skip rather than fail.
-            OrphanAudit::EnvUnavailable(reason) => {
+            OrphanAudit::EnvUnavailable(note) => {
                 eprintln!(
-                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {reason}"
+                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {note}"
                 );
                 return;
             }
@@ -989,5 +1255,71 @@ mod tests {
                  {removed:?}"
             );
         }
+    }
+
+    /// The two premises `reify-audit`'s `g_allow.rs` hazard probe used to
+    /// assert about its OWN `CARGO_MANIFEST_DIR` walk — "the script this walk
+    /// names is really on disk" and "this root really holds both crates, so
+    /// the two walks cannot have resolved different trees" — relocated to the
+    /// single resolution site [`audit_command`] now composes, rather than a
+    /// second copy of them at the call site.
+    ///
+    /// One substantive upgrade over the assertions this replaces: those could
+    /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
+    /// compare, which does not distinguish this repo from a byte-identical
+    /// vendored copy laid out the same way. Here there is only ONE walk, so
+    /// that reconstruction — and its blind spot — is gone.
+    ///
+    /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
+    /// nothing about THIS crate's own resolution needs it: it is what makes
+    /// `audit_command`'s only external consumer (`reify-audit`'s
+    /// `g_allow.rs`) reachable from the root this seam hands back. That is a
+    /// deliberate DOWNWARD reference to a consumer crate by PATH, checked on
+    /// disk — not a dependency edge, which would be a cycle (`reify-audit`
+    /// depends on this crate, never the reverse).
+    ///
+    /// PASSES on arrival: this pins an existing property of
+    /// [`resolve_script_and_root`] at its new home rather than driving new
+    /// behaviour — the relocation is the point, not a fresh RED.
+    ///
+    /// The script's absence is a graceful skip, not a hard assertion: this
+    /// module treats "the script does not exist on disk" as environmentally
+    /// legitimate everywhere else (a packaged crate or a source tarball with
+    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s missing-script
+    /// `EnvUnavailable` branch and `missing_script_is_env_unavailable` above.
+    /// Hard-asserting here would turn that same environmental condition into
+    /// a red unit test instead. The hard assertions this test exists for —
+    /// that a root resolving an EXISTING script also holds both crates'
+    /// manifests — only make sense once the script is confirmed present.
+    #[test]
+    fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
+        let cmd = audit_command("crates/reify-audit/src");
+
+        let script = Path::new(cmd.get_program());
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 audit_command_names_an_existing_script_under_a_root_holding_both_crates \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let root = cmd
+            .get_current_dir()
+            .expect("audit_command sets current_dir");
+        assert!(
+            root.join("crates/reify-test-support/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-test-support/Cargo.toml — this crate's own \
+             manifest is not reachable from the root the seam hands back"
+        );
+        assert!(
+            root.join("crates/reify-audit/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-audit/Cargo.toml — audit_command's only external \
+             consumer's crate is not reachable from the root this seam hands \
+             back (a downward reference by path, not a dependency edge)"
+        );
     }
 }

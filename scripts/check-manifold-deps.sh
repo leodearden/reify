@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
-# Preflight guard for the workspace's native deps: THREE arms, all run BEFORE
+# Preflight guard for the workspace's native deps: FIVE arms, all run BEFORE
 # any expensive compile, each converting a silent or cryptic downstream
 # failure into a fast, actionable message.
+#
+# THE SILENT-VACUITY RULE — why arms 3-5 exist. Stated ONCE here, and
+# REFERENCED rather than restated by the two kernel build.rs files,
+# reify_build_utils::NativeDep's doc and tests/infra/test_occt_deps_preflight.sh:
+#
+#   A missing native dep is not merely cryptic, it is SILENT.
+#   `reify_build_utils::find(NativeDep::X)` returns None when EITHER the header
+#   dir or the lib dir is unresolved; that kernel's build.rs answers with a
+#   `cargo:warning` and a bare `return`, setting no `has_<dep>` cfg; and every
+#   `#[cfg(has_<dep>)]` item — the crate's whole test surface included — then
+#   stops being compiled AT ALL. The suite reports ZERO tests rather than zero
+#   failures, so a passing suite and a DELETED suite are indistinguishable from
+#   outside and the gate goes green over a kernel nothing exercised.
+#
+#   The build.rs files stay deliberately fail-OPEN — their stub modules are a
+#   sanctioned, tested configuration — which is exactly why the GATE has to
+#   live out here instead.
 #
 #   1. manifold prebuilt. The `[target.x86_64-unknown-linux-gnu.manifold]`
 #      override in .cargo/config.toml makes Cargo link prebuilt static libs
@@ -13,18 +30,24 @@
 #
 #   2. tbb pin dir (task #5192, mechanism A''). See that arm's own banner.
 #
-#   3. OCCT presence + SONAME (task #6343). A missing OCCT is not merely cryptic, it is
-#      SILENT: `reify_build_utils::find(NativeDep::Occt)` returns None,
-#      `crates/reify-kernel-occt/build.rs` emits a `cargo:warning` and returns
-#      without setting `has_occt`, and the crate degrades to stub types — which
-#      also deletes its `#[cfg(all(test, has_occt))]` module and its ~25
-#      `#![cfg(has_occt)]` integration binaries. The suite then reports ZERO
-#      tests rather than zero failures, so the gate stays green over a kernel
-#      nothing exercised. This arm makes that state red here. It also pins the
-#      resolved SONAME, because reify pins OCCT nowhere else in-tree: a distro
-#      upgrade that moves the version relinks the kernel with nothing louder
-#      than a `cargo:warning`, and the has_occt suite that would have caught
-#      the regression is exactly what disappears when OCCT goes missing.
+#   3. OCCT presence + SONAME (task #6343). The rule above, plus a version
+#      pin: reify pins OCCT nowhere else in-tree, so a distro upgrade that
+#      moves the version relinks the kernel with nothing louder than a
+#      `cargo:warning` — and the has_occt suite that would have caught the
+#      regression is exactly what disappears when OCCT goes missing.
+#
+#   4. Gmsh presence (task #6493). The rule again, one dep over. PRESENCE is
+#      fatal; the resolved SONAME is RECORDED but deliberately NOT pinned to an
+#      accepted set — see that arm's own banner for why OCCT's pin does not
+#      carry over.
+#
+#   5. OpenVDB presence (task #6493). The third instance of arm 4's shape.
+#      Presence fatal, SONAME recorded and not pinned, same reasons.
+#
+# Arms run in DECLARATION ORDER and the first failure exits, so an arm can
+# only assume the arms above it passed. tests/infra/test_occt_deps_preflight.sh
+# drives each downstream arm with healthy fixtures for every arm ahead of it
+# for exactly that reason.
 #
 # verify.sh runs this as the first plan entry when Rust work is in scope.
 #
@@ -35,10 +58,11 @@ set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
-# stdout, not stderr: this is the RECORDING half of the OCCT arm — it puts the
-# resolved version in the verify log so a reviewer reading a green
-# reify-kernel-occt result can see WHICH OCCT produced it. add_tool() only
-# executes plan entries, so nothing parses this script's stdout.
+# stdout, not stderr: this is the RECORDING half of EVERY presence arm (OCCT,
+# Gmsh, OpenVDB) — it puts the resolved version and dirs in the verify log so a
+# reviewer reading a green reify-kernel-<dep> result can see WHICH install
+# produced it. add_tool() only executes plan entries, so nothing parses this
+# script's stdout.
 ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -155,7 +179,8 @@ esac
 # conda env ships OCCT 7.9 as a transitive of gmsh=4.15.2 while reify links
 # system OCCT 7.8. Rust stays the source of truth; this block is a declared
 # mirror, pinned equal INCLUDING ORDER by
-# tests/infra/test_occt_deps_preflight.sh.
+# tests/infra/test_occt_deps_preflight.sh — so an edit on either side fails
+# that guard rather than silently leaving the gate and the build disagreeing.
 OCCT_LIB_CANDIDATES=(
     /usr/lib/x86_64-linux-gnu
     /usr/lib
@@ -198,9 +223,8 @@ OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # relinks the kernel against a new OCCT. That is the exact event build.rs's
 # read_soname_version fallback anticipates — and if the move instead lands
 # reify in stub mode, the has_occt suite that would have caught the resulting
-# geometry regressions is itself deleted by the same cfg. A passing suite and
-# a DELETED suite are indistinguishable from outside, which is why this has to
-# be caught before the compile rather than inferred from test results.
+# geometry regressions is deleted by the same cfg (the silent-vacuity rule in
+# this file's header), so it cannot be inferred from test results either.
 #
 # ON A LEGITIMATE BUMP: widening this array is the sanctioned response — but
 # only AFTER re-validating the OCCT-sensitive pins against the new version
@@ -247,7 +271,10 @@ occt_hint() {
     err " green over a kernel nothing exercised."
 }
 
-# occt_find_dir <override> <sentinel> <candidate>...
+# dep_find_dir <override> <sentinel> <candidate>...
+#
+# SHARED by all three native-dep arms below, so the resolution rule exists
+# ONCE rather than three drifting times.
 #
 # Mirrors reify_build_utils::find_dir_with_override
 # (crates/reify-build-utils/src/lib.rs) rule for rule, with ONE deliberate,
@@ -261,7 +288,7 @@ occt_hint() {
 # ships the unversioned dev symlink.
 #
 # EMPTY-OVERRIDE RULE (shared, NOT a divergence): an exported-but-EMPTY
-# OCCT_LIB_DIR / OCCT_INCLUDE_DIR counts as UNSET on both sides and falls
+# <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR counts as UNSET on both sides and falls
 # through to the candidate list. `[ -n "$override" ]` below is the bash half;
 # `override_dir.filter(|d| !d.is_empty())` in find_dir_with_override is the
 # Rust half, pinned by its `find_dir_ignores_exported_but_empty_override` unit
@@ -272,7 +299,7 @@ occt_hint() {
 #
 # Prints the resolved dir on stdout and returns 0; returns 1 with no output
 # when nothing resolves.
-occt_find_dir() {
+dep_find_dir() {
     local override="$1" sentinel="$2"
     shift 2
     if [ -n "$override" ]; then
@@ -295,6 +322,13 @@ occt_find_dir() {
     # both halves — OCCT_SNAP_ROOT's default against the Rust read_dir literal,
     # and the sentinel -> subdir mapping below against the Rust match arms,
     # order included.
+    #
+    # SCOPED TO OCCT BY CONSTRUCTION, and it must stay that way: the `case`
+    # below is keyed on the SENTINEL, and has arms only for OCCT's two. Gmsh
+    # and OpenVDB sentinels fall through to an empty $snap_subdir and never
+    # scan, which is exactly what find_dir_with_override's `_ => None` arm
+    # does. Do not add arms for them here — the build has none, and this
+    # helper being shared is not a licence to widen it.
     local snap_subdir=""
     case "$sentinel" in
         Standard_Failure.hxx) snap_subdir="usr/include/opencascade" ;;
@@ -313,10 +347,47 @@ occt_find_dir() {
     return 1
 }
 
-# occt_searched_desc <override> <env-var-name> <candidate>...
+# dep_soname_ver <lib_dir> <sentinel>
+#
+# The version segment of the dev symlink's FIRST-LEVEL target, mirroring
+# reify_build_utils::read_soname_version() (crates/reify-build-utils/src/lib.rs)
+# rule for rule, shared by all three arms so that rule exists ONCE:
+#   - `readlink`, NEVER `readlink -f`. Multi-hop resolution gives the wrong
+#     answer on both live shapes: OCCT's Debian chain would yield 7.8.1 where
+#     the build sees 7.8, and openvdb's would yield 13.0.0 where it sees 13.0.
+#   - everything after the `<sentinel>.` prefix taken VERBATIM, so conda's
+#     one-hop `libgmsh.so -> libgmsh.so.4.15.2` yields `4.15.2` and OCCT's
+#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+#
+# Prints the version on stdout, or NOTHING when it is undeterminable (the
+# sentinel is not a symlink, or its target does not carry the prefix). Always
+# exits 0 — whether an empty result is fatal is the CALLER's decision, and the
+# three arms differ: OCCT hard-fails (build.rs splices the version into link
+# directives behind a hard-coded fallback, so an unread SONAME links something
+# nobody verified), while Gmsh and OpenVDB record `unknown` and continue
+# (they link the unversioned `dylib=gmsh` / `dylib=openvdb` symlink and splice
+# no version anywhere, so there is no unverified-link hazard to gate on).
+dep_soname_ver() {
+    local lib_dir="$1" sentinel="$2"
+    # `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
+    # that would abort the caller with no message at all — reporting the
+    # undeterminable case is the whole point.
+    local target base ver
+    target="$(readlink "$lib_dir/$sentinel" 2>/dev/null || true)"
+    base="${target##*/}"
+    [ -n "$base" ] || return 0
+    ver="${base#"$sentinel."}"
+    # Unchanged => the prefix was absent, so there is no version to read. An
+    # empty remainder (a bare `<sentinel>.` target) is equally unusable.
+    [ "$ver" = "$base" ] && return 0
+    printf '%s' "$ver"
+}
+
+# dep_searched_desc <override> <env-var-name> <candidate>...
 # Human-readable rendering of WHERE the guard actually looked, so a red gate
 # names the searched paths rather than leaving the reader to infer them.
-occt_searched_desc() {
+# Shared by all three arms, same as dep_find_dir above.
+dep_searched_desc() {
     local override="$1" envvar="$2"
     shift 2
     if [ -n "$override" ]; then
@@ -326,13 +397,172 @@ occt_searched_desc() {
     fi
 }
 
+# dep_presence_arm <PREFIX> <Label> <hint_fn>
+#
+# The ENTIRE body of a presence-only arm — override read, both resolutions,
+# report-both-halves, hint+exit, SONAME recording — so that logic exists once
+# rather than once per dep.
+#
+# DATA-DRIVEN, via indirect expansion: every per-dep value is read out of the
+# `<PREFIX>_*` names that dep's `# BEGIN <dep>-candidates` marker block already
+# declares, so an arm is one call and a new dep adds no logic. <PREFIX> is
+# UPPERCASE (GMSH, OPENVDB), the same token the marker block and the override
+# env vars use; the lowercase form in the error text is DERIVED from it, so the
+# two cannot disagree.
+#
+# OCCT IS DELIBERATELY EXCLUDED, and its arm stays written out inline below:
+# OCCT's SONAME pin is FATAL and sits BETWEEN resolution and the `ok` line
+# (accepted-set comparison, two distinct multi-line diagnostics, a different
+# install hint per failure mode), so folding it in would need a parameter per
+# difference.
+#
+# Exits 1 (terminating the whole script, which is the contract — arms run in
+# declaration order and the first failure exits) when either half is
+# unresolved. Returns 0 having printed the arm's `[ok]` recording line
+# otherwise.
+dep_presence_arm() {
+    local prefix="$1" label="$2" hint_fn="$3"
+    local lower="${prefix,,}"
+
+    local inc_env="${prefix}_INCLUDE_DIR" lib_env="${prefix}_LIB_DIR"
+    local inc_sent_ref="${prefix}_INCLUDE_SENTINEL" lib_sent_ref="${prefix}_LIB_SENTINEL"
+    local inc_cands_name="${prefix}_INCLUDE_CANDIDATES" lib_cands_name="${prefix}_LIB_CANDIDATES"
+    local inc_cands_ref="${inc_cands_name}[@]" lib_cands_ref="${lib_cands_name}[@]"
+
+    # `:-` on the override reads, same EMPTY-OVERRIDE RULE dep_find_dir
+    # documents: an exported-but-empty var counts as UNSET and falls through to
+    # the candidate list, matching find_dir_with_override's
+    # `.filter(|d| !d.is_empty())`.
+    #
+    # `:-` on the SENTINEL reads too, for a different reason: this script runs
+    # under `set -u`, so a bare `${!lib_sent_ref}` for a dep whose marker block
+    # declares its names slightly differently — or a typo in the
+    # `dep_presence_arm <PREFIX>` argument — aborts the WHOLE preflight with a
+    # bare `check-manifold-deps.sh: line NNN: FOO_LIB_SENTINEL: unbound
+    # variable`. That is precisely the cryptic-failure mode this file exists to
+    # convert into an actionable message, so it must not be this file's own
+    # failure mode. The explicit check below turns it into one.
+    local inc_ov="${!inc_env:-}" lib_ov="${!lib_env:-}"
+    local inc_sent="${!inc_sent_ref:-}" lib_sent="${!lib_sent_ref:-}"
+
+    # The candidate lists are probed with `declare -p` rather than a `${!ref:-}`
+    # read: indirect expansion of an UNDECLARED `FOO[@]` under `:-` yields ONE
+    # EMPTY element rather than none, which would silently hand dep_find_dir a
+    # bogus "" candidate instead of failing. `declare -p` is also correct for a
+    # declared-but-empty array, which a `${!name+x}` probe would misreport.
+    local undeclared=""
+    [ -n "$inc_sent" ] || undeclared="$undeclared $inc_sent_ref"
+    [ -n "$lib_sent" ] || undeclared="$undeclared $lib_sent_ref"
+    declare -p "$inc_cands_name" >/dev/null 2>&1 || undeclared="$undeclared $inc_cands_name"
+    declare -p "$lib_cands_name" >/dev/null 2>&1 || undeclared="$undeclared $lib_cands_name"
+
+    if [ -n "$undeclared" ]; then
+        err "manifold-deps guard: internal error — dep_presence_arm $prefix cannot run;"
+        err "                     these names are not declared:$undeclared"
+        err "                     The '# BEGIN $lower-candidates' block must declare"
+        err "                     ${prefix}_{LIB,INCLUDE}_SENTINEL and"
+        err "                     ${prefix}_{LIB,INCLUDE}_CANDIDATES, and the prefix passed"
+        err "                     to dep_presence_arm must be the same token those names"
+        err "                     use. This is a bug in scripts/check-manifold-deps.sh"
+        err "                     itself, NOT a missing install — do not try to fix it by"
+        err "                     installing anything or setting ${prefix}_LIB_DIR."
+        exit 1
+    fi
+
+    local -a inc_cands=("${!inc_cands_ref}") lib_cands=("${!lib_cands_ref}")
+
+    # `|| true` inside the substitution: a non-resolving arm must reach the
+    # named error below, not abort under `set -e` with no message at all.
+    local inc_resolved lib_resolved
+    inc_resolved="$(dep_find_dir "$inc_ov" "$inc_sent" "${inc_cands[@]}" || true)"
+    lib_resolved="$(dep_find_dir "$lib_ov" "$lib_sent" "${lib_cands[@]}" || true)"
+
+    # Report BOTH halves before exiting, same rule as the OCCT arm: find() is
+    # None when EITHER is unresolved, so a reader whose host is missing both
+    # should not have to fix one, re-run, and discover the other.
+    local failed=0
+
+    if [ -z "$inc_resolved" ]; then
+        err "manifold-deps guard: $lower headers not found — no $inc_sent in:"
+        err "                     $(dep_searched_desc "$inc_ov" "$inc_env" "${inc_cands[@]}")"
+        failed=1
+    fi
+
+    if [ -z "$lib_resolved" ]; then
+        err "manifold-deps guard: $lower libraries not found — no $lib_sent in:"
+        err "                     $(dep_searched_desc "$lib_ov" "$lib_env" "${lib_cands[@]}")"
+        failed=1
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        "$hint_fn"
+        exit 1
+    fi
+
+    # RECORDING half of the arm — stdout, so a reviewer reading a green
+    # reify-kernel-<dep> result in the verify log can see WHICH install produced
+    # it. Read through the shared dep_soname_ver(), so the first-level-only rule
+    # (`readlink`, never `readlink -f`) is stated once for all three arms.
+    #
+    # `unknown` is NOT fatal here, unlike the OCCT arm: these crates' build.rs
+    # files link the unversioned `dylib=<dep>` dev symlink and splice no version
+    # into any link directive, so an unreadable SONAME cannot make the build link
+    # something nobody verified — it only costs this log line its specificity.
+    # Hard-failing on it would red every RUN_RUST=1 verify over a packaging
+    # detail with no correctness consequence.
+    local ver
+    ver="$(dep_soname_ver "$lib_resolved" "$lib_sent")"
+    ok "$label ${ver:-unknown} at $lib_resolved (headers: $inc_resolved)"
+}
+
+# dep_hint <PREFIX> <conda-ver> <apt-ver> <subject> <surfaces-line>... — the
+# complete diagnostic block a presence-only arm prints just before it exits:
+# how to install the dep, then the silent-vacuity rule from this file's header,
+# rendered for the operator staring at the red gate. The `<dep>_hint` wrappers
+# below carry DATA ONLY.
+#
+# <PREFIX> is UPPERCASE, the same token the marker block and the override env
+# vars use; the lowercase dep name, the crate name and the cfg name are all
+# DERIVED from it rather than passed, so they can never disagree with the arm
+# that printed them.
+#
+# NOT SHARED WITH OCCT, deliberately: occt_hint/occt_install_hint stay inline.
+# OCCT is reached from three failure paths (both halves unresolved,
+# undeterminable SONAME, SONAME drift) with genuinely different prose per path,
+# and it is apt-provisioned rather than conda-forge — it shares no sentence
+# with these two.
+#
+# The surfaces clause is taken as TRAILING VARARGS, one per output line, so each
+# dep keeps its own hand-wrapping instead of rendering as a single over-long
+# line that a terminal re-wraps arbitrarily.
+dep_hint() {
+    local prefix="$1" conda_ver="$2" apt_ver="$3" subject="$4"
+    shift 4
+    local lower="${prefix,,}"
+    local line
+
+    err "Provision the conda-forge reify-deps env — scripts/setup-dev.sh's"
+    err "'conda-forge env: gmsh + openvdb' block does exactly this, installing"
+    err "$lower $conda_ver into /opt/reify-deps (apt's $lower is stale at $apt_ver):"
+    err "    ./scripts/setup-dev.sh"
+    err "Or point ${prefix}_INCLUDE_DIR / ${prefix}_LIB_DIR at an existing install."
+    err "WHY THIS IS FATAL rather than a warning: without $lower,"
+    err " reify-kernel-$lower's build.rs never emits has_$lower, so every"
+    err " #[cfg(has_$lower)]-gated item in the workspace is not compiled AT ALL —"
+    for line in "$@"; do
+        err " $line"
+    done
+    err " The suite then reports zero tests REPORTED, not zero tests FAILED, and the"
+    err " gate goes green over $subject nothing exercised."
+}
+
 OCCT_INCLUDE_OVERRIDE="${OCCT_INCLUDE_DIR:-}"
 OCCT_LIB_OVERRIDE="${OCCT_LIB_DIR:-}"
 
 # `|| true` inside the substitution: a non-resolving arm must reach the named
 # error below, not abort under `set -e` with no message at all.
-OCCT_INCLUDE_RESOLVED="$(occt_find_dir "$OCCT_INCLUDE_OVERRIDE" "$OCCT_INCLUDE_SENTINEL" "${OCCT_INCLUDE_CANDIDATES[@]}" || true)"
-OCCT_LIB_RESOLVED="$(occt_find_dir "$OCCT_LIB_OVERRIDE" "$OCCT_LIB_SENTINEL" "${OCCT_LIB_CANDIDATES[@]}" || true)"
+OCCT_INCLUDE_RESOLVED="$(dep_find_dir "$OCCT_INCLUDE_OVERRIDE" "$OCCT_INCLUDE_SENTINEL" "${OCCT_INCLUDE_CANDIDATES[@]}" || true)"
+OCCT_LIB_RESOLVED="$(dep_find_dir "$OCCT_LIB_OVERRIDE" "$OCCT_LIB_SENTINEL" "${OCCT_LIB_CANDIDATES[@]}" || true)"
 
 # Report BOTH halves before exiting. find() is None when EITHER is unresolved,
 # so a reader whose host is missing both should not have to fix one, re-run,
@@ -341,13 +571,13 @@ occt_failed=0
 
 if [ -z "$OCCT_INCLUDE_RESOLVED" ]; then
     err "manifold-deps guard: OCCT headers not found — no $OCCT_INCLUDE_SENTINEL in:"
-    err "                     $(occt_searched_desc "$OCCT_INCLUDE_OVERRIDE" OCCT_INCLUDE_DIR "${OCCT_INCLUDE_CANDIDATES[@]}")"
+    err "                     $(dep_searched_desc "$OCCT_INCLUDE_OVERRIDE" OCCT_INCLUDE_DIR "${OCCT_INCLUDE_CANDIDATES[@]}")"
     occt_failed=1
 fi
 
 if [ -z "$OCCT_LIB_RESOLVED" ]; then
     err "manifold-deps guard: OCCT libraries not found — no $OCCT_LIB_SENTINEL in:"
-    err "                     $(occt_searched_desc "$OCCT_LIB_OVERRIDE" OCCT_LIB_DIR "${OCCT_LIB_CANDIDATES[@]}")"
+    err "                     $(dep_searched_desc "$OCCT_LIB_OVERRIDE" OCCT_LIB_DIR "${OCCT_LIB_CANDIDATES[@]}")"
     occt_failed=1
 fi
 
@@ -357,29 +587,13 @@ if [ "$occt_failed" -ne 0 ]; then
 fi
 
 # Both halves resolved, so has_occt WILL be set. Now pin which OCCT it is.
-#
-# Mirrors reify_build_utils::read_soname_version()
-# (crates/reify-build-utils/src/lib.rs) rule for rule:
-#   - the FIRST-level link target only — `readlink`, never `readlink -f`,
-#     because multi-hop resolution yields 7.8.1 on a host where the build sees
-#     7.8;
-#   - everything after the `libTKernel.so.` prefix taken VERBATIM, so the
-#     conda one-level `-> libTKernel.so.7.9.3` shape yields `7.9.3` and a
-#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+# The first-level read itself lives in dep_soname_ver() above, shared with the
+# Gmsh and OpenVDB arms; OCCT_SONAME_TARGET is kept only for the error text,
+# which names the raw link target the operator will see on disk.
 OCCT_SONAME_PATH="$OCCT_LIB_RESOLVED/$OCCT_LIB_SENTINEL"
-# `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
-# that would abort here with no message at all — the undeterminable branch
-# below is the whole point.
 OCCT_SONAME_TARGET="$(readlink "$OCCT_SONAME_PATH" 2>/dev/null || true)"
-OCCT_SONAME_BASE="${OCCT_SONAME_TARGET##*/}"
 OCCT_SONAME_PREFIX="$OCCT_LIB_SENTINEL."
-OCCT_SONAME_VER=""
-if [ -n "$OCCT_SONAME_BASE" ]; then
-    OCCT_SONAME_VER="${OCCT_SONAME_BASE#"$OCCT_SONAME_PREFIX"}"
-    # Unchanged => the prefix was absent, so there is no version to read. An
-    # empty remainder (a bare `libTKernel.so.` target) is equally unusable.
-    [ "$OCCT_SONAME_VER" = "$OCCT_SONAME_BASE" ] && OCCT_SONAME_VER=""
-fi
+OCCT_SONAME_VER="$(dep_soname_ver "$OCCT_LIB_RESOLVED" "$OCCT_LIB_SENTINEL")"
 
 if [ -z "$OCCT_SONAME_VER" ]; then
     err "manifold-deps guard: could not determine the OCCT SONAME from $OCCT_SONAME_PATH"
@@ -419,5 +633,94 @@ if [ "$occt_soname_accepted" -ne 1 ]; then
 fi
 
 ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED)"
+
+# ---------- Gmsh presence preflight (task #6493) ----------
+#
+# See arm 4 in the file header for the rule this arm enforces.
+#
+# Note this gates the VERIFY PIPELINE, not `cargo build` — gmsh-free stub
+# builds stay sanctioned, and crates/reify-kernel-gmsh carries real
+# `cfg(not(has_gmsh))` stub modules for them, exactly as reify-kernel-occt
+# does.
+
+# BEGIN gmsh-candidates — EXACT MIRROR of reify_build_utils::NativeDep::Gmsh
+# (crates/reify-build-utils/src/lib.rs). Order is load-bearing and is the
+# OPPOSITE of OCCT's: /opt/reify-deps comes FIRST here, because the conda-forge
+# env is where reify's gmsh 4.15.2 actually lives and Ubuntu's apt gmsh (4.12.1)
+# must not win. Rust stays the source of truth; this block is a declared mirror,
+# pinned equal INCLUDING ORDER by tests/infra/test_occt_deps_preflight.sh — so
+# an edit on either side fails that guard rather than silently leaving the gate
+# and the build disagreeing.
+GMSH_LIB_CANDIDATES=(
+    /opt/reify-deps/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib
+    /usr/local/lib
+)
+GMSH_INCLUDE_CANDIDATES=(
+    /opt/reify-deps/include
+    /usr/include
+    /usr/local/include
+)
+GMSH_LIB_SENTINEL=libgmsh.so
+GMSH_INCLUDE_SENTINEL=gmshc.h
+# END gmsh-candidates
+
+# Data only — the body is dep_hint() above, shared with openvdb_hint below.
+gmsh_hint() {
+    dep_hint GMSH 4.15.2 4.12.1 "a mesher" \
+        "reify-kernel-gmsh's whole test surface, the occt_gmsh conformance suites," \
+        "and the reify-eval FEA/mesh e2e binaries."
+}
+
+# The whole arm body — override read, both resolutions, report-both-halves,
+# hint+exit, SONAME recording — lives in dep_presence_arm() above, shared with
+# the OpenVDB arm below and driven entirely from the GMSH_* names the marker
+# block declares.
+dep_presence_arm GMSH Gmsh gmsh_hint
+
+# ---------- OpenVDB presence preflight (task #6493) ----------
+#
+# See arm 5 in the file header for the rule this arm enforces.
+#
+# Note this gates the VERIFY PIPELINE, not `cargo build` — openvdb-free stub
+# builds stay sanctioned, and crates/reify-kernel-openvdb carries real
+# `cfg(not(has_openvdb))` stub modules for them.
+
+# BEGIN openvdb-candidates — EXACT MIRROR of
+# reify_build_utils::NativeDep::OpenVdb (crates/reify-build-utils/src/lib.rs).
+# Order is load-bearing and is NOT the same as Gmsh's: OpenVdb puts
+# /usr/local/lib ahead of /usr/lib/x86_64-linux-gnu where Gmsh does the
+# reverse, so this list is copied PER-DEP and must never be "deduplicated"
+# against the gmsh block above. /opt/reify-deps leads both, because that is
+# where the conda-forge openvdb 13.0.0 lives. Rust stays the source of truth;
+# this block is a declared mirror, pinned equal INCLUDING ORDER by
+# tests/infra/test_occt_deps_preflight.sh — so an edit on either side fails
+# that guard rather than silently leaving the gate and the build disagreeing.
+OPENVDB_LIB_CANDIDATES=(
+    /opt/reify-deps/lib
+    /usr/local/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib
+)
+OPENVDB_INCLUDE_CANDIDATES=(
+    /opt/reify-deps/include
+    /usr/local/include
+    /usr/include
+)
+OPENVDB_LIB_SENTINEL=libopenvdb.so
+OPENVDB_INCLUDE_SENTINEL=openvdb/openvdb.h
+# END openvdb-candidates
+
+# Data only — same shared dep_hint() body as gmsh_hint above, so a change to the
+# install instructions or the fatality rationale lands in both by construction.
+openvdb_hint() {
+    dep_hint OPENVDB 13.0.0 10.0.1 "a voxel kernel" \
+        "the crate's whole sparse-SDF/voxel-grid test surface included."
+}
+
+# Same one-call arm as Gmsh's above, one dep over — the body is shared, so a
+# future change to the error format or an added diagnostic lands in both.
+dep_presence_arm OPENVDB OpenVDB openvdb_hint
 
 exit 0

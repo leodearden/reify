@@ -8,7 +8,7 @@
 - `SCREAMING_SNAKE` — compile-time constants (convention)
 
 **Comments:**
-```
+```reify-schematic
 // Line comment
 /* Block comment — nests correctly */
 /// Doc comment — attached to next declaration
@@ -17,7 +17,7 @@
 **Numeric literals:** `42`, `3.14`, `1.5e-3`, `0xFF`, `0b1010`, `1_000_000`
 
 **Quantity literals** — number immediately followed by unit, no space:
-```
+```reify-schematic
 5mm     3.2kN     45deg     293.15K
 5kN*m   2.1kg/m^3   9.81m/s^2
 ```
@@ -25,7 +25,7 @@
 **Range literals:** `2mm..5mm` (closed), `0deg..<360deg` (half-open), `>2mm`, `<=100MPa`
 
 **String literals** — double-quoted; support interpolation holes and brace escapes:
-```
+```reify-schematic
 "hello"               // plain string
 "thickness is {t}"    // { expr } hole: evaluates expr, splices rendered text
 "doubled is {2 * t}"  // holes accept full expressions, not just identifiers
@@ -39,7 +39,7 @@
 ## Declaration Shape
 
 All entity declarations follow:
-```
+```ebnf
 <entity_kind> def <Name><TypeParams>? <TraitList>? <WhereClause>? {
     <members>
 }

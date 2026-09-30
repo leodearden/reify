@@ -101,7 +101,7 @@ what an implementer would otherwise build.
 | **A2** | α | `cmd_check --purpose` **never enters the kernel arm** — it calls `check_constraints_with_values` + `run_gdt_check_passes` directly. C-SEAM must say whether that branch routes through the seam. |
 | **A3** | α/β | **`tessellate_snapshot` already honours `capture_repr_tol`.** The GUI's existing rebuild surface can populate `achieved_repr_tol` without `tessellate_realizations`; C-SEAM as written makes the GUI tessellate **twice**. Folds into PRD Open Question 4. |
 | **A4** | β/γ | **`reset_per_build_state` clears `achieved_repr_tol` on `TessellateSnapshot`**, and `build_gui_state` calls it on every rebuild. D7's retained-stale verdicts **cannot** live in the engine map; the session owns its own result store. C-STATE's "restore on every exit path" must not be read as "clear the map". |
-| **A5** | β | **`ConstraintCheckEntry` carries no measured value**, and Conforms/DFM measurements exist **only as diagnostic strings**. C-STATUS's `measured(verdict, values, epoch)` needs a new structured channel, or an explicit v1 scope-cut to verdict-only for those two kinds. Parsing diagnostic prose is not acceptable as the parity-gate surface. |
+| **A5** | β | **`ConstraintCheckEntry` carries no measured value**, and Conforms/DFM measurements exist **only as diagnostic strings**. C-STATUS's `measured(verdict, values, epoch)` needs a new structured channel, or an explicit v1 scope-cut to verdict-only for those two kinds. Parsing diagnostic prose is not acceptable as the parity-gate surface. **RESOLVED — see the resolution log below.** |
 | **A6** | β | **Demand roots have no getter.** `set_demand_selective` replaces wholesale; nothing reads the root set back. C-STATE's "restore the demand roots" is **not achievable with today's public surface** — α adds an accessor or β caches the last `sync_demand` argument. |
 | **A7** | β | `measure_constraints` / `measurement_status` are MCP **tools**, not JSON-RPC methods (that table has exactly four arms). Same-diff: `tool_defs()`, an engine-side `dispatch_tool` arm, `run_on_engine`, an in-file `tool_defs_registers_*` test, a **`PURE_ENGINE_SIDE` entry in `gui/src/__tests__/debugParity.test.ts`** (self-checking — omission reds vitest), and `docs/debug-mcp-contract.md` §0. `measurement_status` must use the `demand_dispatch_json` **pure-read** shape, never `engine_state_json` (which re-tessellates). |
 | **A8** | β/γ | `ConstraintData` has **two construction paths** — `build_gui_state` and `set_active_fea_case`. A field populated only at the first means an FEA case switch silently blanks measured verdicts. |
@@ -113,6 +113,61 @@ what an implementer would otherwise build.
 | **A14** | ζ/ε | **BT-1's thickness row is homed on ε**, not ζ. §9 gives ζ a corpus including thickness while §10 wires ζ to β and γ only — ζ would assert a capability its sibling ε produces (`producer-downstream`). The split line is exactly the `ensure_openvdb_kernel` gating boundary, and it keeps ζ off #6666's chain. |
 | **A15** | ε | **`has_openvdb` is a build-script cfg, not a cargo feature.** BT-7's "no openvdb" leg gates on `#[cfg(not(has_openvdb))]`. |
 | **A16** | θ | The **#6667 → #6169 edge was missing and is wired by this decompose session**, not deferred to θ. |
+
+### A5 resolution log (added 2026-09-01; the row above is the as-authored finding)
+
+A5 was authored as an open choice. It has since been closed twice, and both rulings post-date
+this manifest's landing — recorded here rather than by rewriting the row, so the decompose-time
+finding stays legible.
+
+**RULED 2026-08-28 (Leo) — the structured channel.** Deliver `measured(verdict, values, epoch)`
+as structured data for all three kernel-measured kinds, including GD&T Conforms and DFM. The v1
+verdict-only scope-cut is explicitly rejected: a strings-only carrier forces every consumer —
+the constraint panel, the cross-driver parity gates, the conformance suite's Ring-2 observation,
+#6667's attribution wording — into message-substring parsing, the oracle class the
+DiagnosticCode-is-the-contract decision retired; and the C-STALE epoch machinery only composes
+uniformly if all three kinds ride one structured payload.
+
+**REFINED 2026-09-01 (A5-R) — the carrier must be dimensioned, and its home was already ruled
+elsewhere.** Two things the 08-28 ruling left open:
+
+1. **Home.** `solver-legibility-telemetry` §8.1 item 2 already resolved the
+   `ConstraintCheckEntry` collision — a **sibling field**, never a payload on `Satisfaction`
+   (whose `content_hash` feeds the incremental cache key) — but that constraint lived only in
+   P4's PRD and had not been carried into the task text an implementer reads. Its ε #6722 adds
+   `margin` to the same struct; no dependency edge exists in either direction by design, and the
+   rule is *whichever lands second extends the first's shape*.
+2. **Type.** "Extend the first's shape" cannot mean "copy `Option<f64>`". The values are
+   dimensionally heterogeneous — ReprWithin deviation and DFM min-wall/min-feature are **Lengths**,
+   DFM overhang and draft are **Angles** — so an undifferentiated `f64` is the silent rad=1 SI
+   erasure INV-AD-4 calls a defect *even when the number is correct*, re-committing at the value
+   model what this PRD's own G7 addition forbids at the wire boundary. Carrier candidates:
+   `Value::Scalar { si_value, dimension }` (exists today) or a typed per-kind enum on the
+   `StructuredComputeDetail` precedent. Never a bare f64.
+
+The finding cuts at #6722 symmetrically — `margin: Option<f64>` carries the same latent erasure
+for any angle-valued constraint — so P4's one-way coordination note was made **bidirectional**,
+and #6722's own internal inconsistency was flagged there (its WORK item 3 specifies
+`Option<f64>` while its details already recommend a "dimension-carrying" slot).
+
+**Scope cuts, named as follow-ups rather than silently dropped:** `achieved_repr_tol`
+subsumption is out (occurrence-keyed vs `ConstraintNodeId`-keyed); making the diagnostic string
+*derived* from the structured record is out (contests P4's C5).
+
+**Where this landed.** Under E3 (see below) the amendment was written to the live coarse task
+**#6898**, mirrored to retired standard leaf **#6741** (a §11 rollback target), noted on
+**#6722**, and logged as a dated addendum in the experiment's §10.
+
+### E3 re-decomposition — this batch's leaves are retired
+
+On 2026-08-28 this PRD randomized to the **coarse arm** of the E3 decomposition-granularity A/B
+(`docs/prds/v0_6/e3-decomposition-granularity-ab.md`), which found reify tasks generally smaller
+than optimal. Its 9 leaves became 4: **#6898** (α+β+γ), **#6899** (δ+ε+θ+η), with the
+integration gate **#6745** and PRD-close **#6748** preserved as singletons by protocol. Leaves
+#6740–#6744, #6746 and #6747 are `x_e3_arm: standard-retired`, deferred, and are rollback
+targets — not dead text. **Amendments must be mirrored into both the coarse task and its retired
+constituents.** The label→task table at the top of this manifest remains the decompose-time
+record; the coarse mapping is in the experiment doc §5.
 
 ### A11 in full — the live defect that makes δ's signal vacuous
 

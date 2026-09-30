@@ -553,6 +553,7 @@ fn all_spans_valid() {
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.span,
             MemberDecl::Relate(r) => r.span,
+            MemberDecl::Sketch(sk) => sk.span,
             // Produced by lower_function (task 3937).
             MemberDecl::Fn(f) => f.span,
         };

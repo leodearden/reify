@@ -483,8 +483,9 @@ pub fn relation_contract_for_call(
 //                    `DatumProjectionUnavailable`/`Ambiguous` codes).
 //   (c) CURATION   — only unconditionally-well-defined signatures exist; a
 //                    `distance` call on a `Plane` is redirected to `offset`.
-// PRD decision-6 gradualism: a `Type::Error` (poison) or `Type::TypeParam`
-// (unresolved) slot is skipped silently.
+// PRD decision-6 gradualism: a `Type::Error` (poison), `Type::TypeParam`
+// (unresolved), or `Type::ScalarParam` (known-scalar, unresolved dimension)
+// slot is skipped silently.
 
 /// The datum kind a relation's operands must project to (the §3.3 lift target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,8 +602,16 @@ pub(crate) fn check_relation_arg_types(
         && let Some(metric) = compiled_args.get(idx)
     {
         match &metric.result_type {
-            // Gradualism: poison / unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => {}
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension (per `Type::ScalarParam`'s
+            // own doc) — the same "known kind, unresolved detail" bucket as
+            // `TypeParam`. Generic fn bodies compile exactly once from the AST
+            // def; a call site only substitutes `Q` into the RETURN type and
+            // never re-checks the body, so this arm DROPS the dimension
+            // comparison for good rather than deferring it to a later
+            // re-check that never happens — accepted gradualism per PRD
+            // decision-6.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
             // Dimensioned scalar: mismatch only when the dimension differs.
             Type::Scalar { dimension } if *dimension == expected_dim => {}
             other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
@@ -667,7 +676,13 @@ pub(crate) fn check_relation_arg_types(
 /// with this arm its unsupported branch is unreachable from `.ri`.
 ///
 /// Gradualism (PRD decision-6): a `Type::Error` (poison) or `Type::TypeParam`
-/// (unresolved) operand passes silently, matching the other policing layers.
+/// (unresolved) OPERAND (slots 0/1) passes silently, matching the other
+/// policing layers. The trailing RADIUS slots additionally skip
+/// `Type::ScalarParam` (known-scalar, unresolved dimension) — a strictly wider
+/// set than the operand-pair guard, because a radius is a unit check (family
+/// already known to be scalar) while an operand is a datum-kind check (a
+/// scalar is never a legitimate datum); see the comment at the operand-pair
+/// guard below.
 fn check_tangent_operands(
     compiled_args: &[CompiledExpr],
     call_span: SourceSpan,
@@ -690,6 +705,14 @@ fn check_tangent_operands(
 
     // Gradualism: an already-poisoned or unresolved operand is skipped silently
     // (anti-cascade — the resolver has already diagnosed it).
+    //
+    // Deliberately narrower than the radius-slot skip-set below: this set does
+    // NOT include `Type::ScalarParam`. These slots feed `tangent_combo`, which
+    // classifies Axis/Plane/Point datum pairs — a scalar is never a legitimate
+    // operand here, so adding `ScalarParam` would suppress a REAL
+    // `TangentOperandsUnsupported`. Do not "fix" this asymmetry to match the
+    // radius loop; the two slots police different questions (datum kind vs.
+    // physical dimension).
     if matches!(ta, Type::Error | Type::TypeParam(_))
         || matches!(tb, Type::Error | Type::TypeParam(_))
     {
@@ -733,8 +756,14 @@ fn check_tangent_operands(
     // `tangent(a, b, 5mm, 30deg)` through.
     for radius in compiled_args.iter().skip(2) {
         match &radius.result_type {
-            // Gradualism: poison / unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => {}
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension — same bucket as the
+            // metric-slot arm in `check_relation_arg_types` above, and DROPPED
+            // for the same reason: fn bodies compile once, so there is no
+            // later re-check to defer to (see that arm's comment for why).
+            // Not to be confused with the narrower operand-pair guard earlier
+            // in this function.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
             Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {}
             other => emit_unit_mismatch("tangent", "Length", other, call_span, diagnostics),
         }
@@ -1575,6 +1604,11 @@ mod tests {
     /// `angle(Axis, Axis, Length)` — the metric must be an `Angle`; a `Length`
     /// metric is a B10 unit error (`ArgTypeMismatch` naming "Angle"). The `Axis`
     /// operands lift to `Direction`, so the metric mismatch is the ONLY diagnostic.
+    ///
+    /// Also doubles as the metric-slot anti-over-broadening guard for the
+    /// `ScalarParam` gradualism skip-set below (see the GRADUALISM section):
+    /// this concrete wrong-dimension case must keep failing, or that widened
+    /// arm has collapsed into "skip all scalars".
     #[test]
     fn check_unit_angle_with_length_metric_is_mismatch() {
         let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::length())];
@@ -1782,6 +1816,195 @@ mod tests {
         let tp = || arg(Type::TypeParam("T".to_string()));
         check_relation_arg_types("distance", &[tp(), tp(), tp()], span(), &mut d3);
         assert!(d3.is_empty(), "TypeParam args must be skipped, got: {d3:?}");
+    }
+
+    /// `Type::ScalarParam` — a `Scalar<Q>` metric inside a generic fn signature
+    /// (`fn f<Q: Dimension>(..., theta: Scalar<Q>) ...`) has a KNOWN family (it is
+    /// a scalar) but an UNRESOLVED dimension. Fn bodies compile once and are
+    /// never re-checked once `Q` is bound, so the unit layer's dimension
+    /// comparison is dropped rather than deferred — the same "known kind,
+    /// unresolved detail" bucket `TypeParam` gradualism already covers.
+    /// Exercises the metric slot for all three metric-DRIVE relation names.
+    #[test]
+    fn check_gradualism_scalar_param_metric_slot_passes_silently() {
+        // angle: Axis/Axis operands + Scalar<Q> metric.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[
+                arg(Type::Axis),
+                arg(Type::Axis),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "angle metric ScalarParam(Q) must be skipped, got: {d1:?}"
+        );
+
+        // distance: Point3<Length>/Point3<Length> operands + Scalar<Q> metric.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "distance",
+            &[pt(), pt(), arg(Type::ScalarParam("Q".to_string()))],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "distance metric ScalarParam(Q) must be skipped, got: {d2:?}"
+        );
+
+        // offset: Plane/Plane operands + Scalar<Q> metric.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "offset",
+            &[
+                arg(Type::Plane),
+                arg(Type::Plane),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "offset metric ScalarParam(Q) must be skipped, got: {d3:?}"
+        );
+    }
+
+    /// `Type::ScalarParam` in `tangent`'s radius slots — driven through the
+    /// public `check_relation_arg_types("tangent", ...)` entry point so the test
+    /// exercises the real call path into `check_tangent_operands`. Covers every
+    /// radius arity `tangent_combo` allows, including a MIXED concrete/ScalarParam
+    /// pair (the case the radius loop's `.skip(2)` iteration exists to catch — a
+    /// checker that looked only at slot 2 would miss a ScalarParam at slot 3).
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_passes_silently() {
+        let sp = || arg(Type::ScalarParam("Q".to_string()));
+
+        // cylinder/plane: one radius.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Plane), sp()],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "tangent(Axis, Plane, ScalarParam) must be skipped, got: {d1:?}"
+        );
+
+        // cylinder/cylinder: two radii, both ScalarParam.
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), sp(), sp()],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "tangent(Axis, Axis, ScalarParam, ScalarParam) must be skipped, got: {d2:?}"
+        );
+
+        // cylinder/cylinder: MIXED radii — one concrete Length, one ScalarParam.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), arg(Type::length()), sp()],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "tangent(Axis, Axis, Length, ScalarParam) must be skipped, got: {d3:?}"
+        );
+
+        // sphere/plane: one radius.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d4 = Vec::new();
+        check_relation_arg_types("tangent", &[pt(), arg(Type::Plane), sp()], span(), &mut d4);
+        assert!(
+            d4.is_empty(),
+            "tangent(Point, Plane, ScalarParam) must be skipped, got: {d4:?}"
+        );
+    }
+
+    /// Anti-over-broadening negative guard: a CONCRETE wrong-dimension radius must
+    /// STILL emit `ArgTypeMismatch` even after `ScalarParam` joins the tangent
+    /// radius-slot skip-set.
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_still_rejects_concrete_wrong_dimension() {
+        let args = [arg(Type::Axis), arg(Type::Plane), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("tangent", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
+    /// Anti-over-broadening negative guard, operand layer: pins the deliberate
+    /// asymmetry documented at `check_tangent_operands`'s operand-pair
+    /// gradualism guard — that guard's skip-set is narrower than the radius
+    /// loop's and does NOT include `ScalarParam`, because a scalar is never a
+    /// legitimate `tangent` datum. A `ScalarParam` fed into operand slot 0
+    /// must still draw `TangentOperandsUnsupported`. Without this test, a
+    /// future "harmonise the two skip-sets" edit that adds `ScalarParam` to
+    /// that guard would suppress a real diagnostic and the suite would stay
+    /// green.
+    #[test]
+    fn check_gradualism_scalar_param_tangent_operand_still_rejects() {
+        let args = [
+            arg(Type::ScalarParam("Q".to_string())),
+            arg(Type::Plane),
+            arg(Type::length()),
+        ];
+        let mut diags = Vec::new();
+        check_relation_arg_types("tangent", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::TangentOperandsUnsupported)
+        );
+    }
+
+    /// Anti-over-broadening negative guard, operand layer (KIND/PROJECTION):
+    /// the sibling of the guard above for `check_relation_arg_types`'s own
+    /// operand-datum loop (§3.2 layer (b)), which is likewise deliberately
+    /// narrower than the metric-slot skip-set and does not include
+    /// `ScalarParam`. A `ScalarParam` operand can never lift to a
+    /// `Direction`/`Axis`/`Plane`/`Point` datum, so it must still draw
+    /// `DatumProjectionUnavailable`.
+    #[test]
+    fn check_gradualism_scalar_param_angle_operand_still_rejects() {
+        let args = [
+            arg(Type::ScalarParam("Q".to_string())),
+            arg(Type::Axis),
+            arg(Type::angle()),
+        ];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DatumProjectionUnavailable)
+        );
     }
 
     // Arity-gating + unknown-name no-ops — the checker must not fire spuriously.

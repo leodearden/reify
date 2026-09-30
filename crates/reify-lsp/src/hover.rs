@@ -188,6 +188,23 @@ pub fn compute_hover_in_context(
                 }
                 return Some(make_hover_markdown(md));
             }
+            reify_ast::Declaration::Unit(u) if u.name == word => {
+                let mut md = format!("```reify\n{}\n```", format_unit_signature(u));
+                // Surface the compiler's SI conversion additively, but only when it
+                // adds information. The signature line is identical for
+                // `unit hoopm : Length` and `unit hoopm : Length = 0.001`, so a
+                // non-unity factor or any offset is information the signature does
+                // not carry; a factor of exactly 1 with no offset is not, and the
+                // line would be noise. Same rule as the TypeAlias arm's
+                // resolves-to line above. `find_unit` returning None is expected
+                // for a prelude-duplicate name -- the signature still renders.
+                if let Some(unit) = ctx.find_unit(&u.name)
+                    && let Some(line) = format_si_conversion(unit)
+                {
+                    md.push_str(&format!("\n\n{line}"));
+                }
+                return Some(make_hover_markdown(md));
+            }
             _ => {}
         }
     }
@@ -239,6 +256,50 @@ pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> Strin
         format_type_params(&t.type_params),
         t.type_expr
     )
+}
+
+/// Render a unit declaration's signature line, e.g. `unit hoop : Length`.
+///
+/// `UnitDecl.dimension_type` is a non-optional [`reify_ast::TypeExpr`], and
+/// `impl Display for TypeExpr` matches all six `TypeExprKind` variants
+/// exhaustively, so this render cannot fail.
+///
+/// The conversion factor and offset are deliberately NOT rendered here:
+/// `UnitDecl.conversion`/`.offset` are `Option<Expr>` and reify-ast has no
+/// `impl Display for Expr`, so the only renderable source for those values is
+/// the COMPILED side (`CompiledUnit.factor`/`.offset`). The hover arm appends
+/// them additively from there, the way the type-alias arm appends its
+/// resolves-to line.
+///
+/// Visibility (`pub`) is deliberately not rendered, matching the sibling
+/// fn/trait/enum/type-alias hover arms.
+///
+/// Private, unlike [`format_type_alias_signature`]: no completion surface
+/// consumes a unit's signature today, and the narrower scope is the right one
+/// until one does. Task #6500.
+fn format_unit_signature(u: &reify_ast::UnitDecl) -> String {
+    format!("unit {} : {}", u.name, u.dimension_type)
+}
+
+/// Render a compiled unit's SI conversion as `SI: x{factor}` (with a real
+/// multiplication sign) -- plus `, offset {offset}` for an affine unit -- or
+/// `None` when the conversion adds nothing to the signature line.
+///
+/// The `None` case is `factor == 1.0 && offset.is_none()`: a unit that is
+/// exactly its dimension's SI base. Note the two halves are gated TOGETHER, not
+/// independently: `unit hoopC : Temperature = 1 offset 273.15` compiles to
+/// `factor: 1.0, offset: Some(273.15)`, so gating on `factor != 1.0` alone would
+/// drop the offset -- the half a reader most needs, since it is why the unit is
+/// not a pure scaling. Task #6500.
+fn format_si_conversion(unit: &reify_compiler::CompiledUnit) -> Option<String> {
+    if unit.factor == 1.0 && unit.offset.is_none() {
+        return None;
+    }
+    let mut line = format!("SI: \u{d7}{}", unit.factor);
+    if let Some(offset) = unit.offset {
+        line.push_str(&format!(", offset {offset}"));
+    }
+    Some(line)
 }
 
 /// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
@@ -1492,6 +1553,161 @@ structure Bolt {
         assert!(
             md.contains("resolves to `Scalar[m]`"),
             "the shadowing alias must still reach compiled.type_aliases, got: {md}"
+        );
+    }
+
+    // --- task #6500: hover on unit declarations ---
+
+    /// The fixture name is deliberately non-SI. `si_units.rs` emits a `pub unit`
+    /// for every SI base, prefixed and derived unit into the prelude, and a
+    /// module-local unit duplicating one of those names is REJECTED with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and never
+    /// reaches `compiled.units` — which would make every assertion below vacuous.
+    /// `hoop` was probe-verified to compile with zero diagnostics and to appear in
+    /// `AnalysisContext.compiled.units`.
+    #[test]
+    fn hover_on_unit_declaration_name_shows_signature() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 6 is inside the 'hoop' name token.
+        let position = Position::new(0, 6);
+        let md = hover_markdown(source, position).expect("hover on a unit name must return Some");
+        assert!(
+            md.contains("```reify\nunit hoop : Length\n```"),
+            "hover should render the unit signature fence, got: {md}"
+        );
+    }
+
+    /// The new unit arm must not swallow positions on the unit's DIMENSION type,
+    /// mirroring `hover_on_type_alias_rhs_name_is_unaffected`.
+    ///
+    /// Stated as "must not render the unit signature" rather than "must be None":
+    /// a dimension type is restricted by the compiler to the builtin dimension
+    /// names (probe: `unit hoop : HoopDim` reds with "unknown dimension type"), and
+    /// no hover surface covers those today — but a future one is a legitimate
+    /// addition, and this test must pin the swallow property, not the absence.
+    #[test]
+    fn hover_on_unit_dimension_type_is_unaffected() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 13 is inside the 'Length' token.
+        let position = Position::new(0, 13);
+        if let Some(md) = hover_markdown(source, position) {
+            assert!(
+                !md.contains("unit hoop"),
+                "the dimension-type position must not resolve to the unit signature, got: {md}"
+            );
+        }
+    }
+
+    /// (a) A plain unit adds no information beyond its signature, so no
+    /// conversion line may appear — the same "only when it adds information"
+    /// rule the type-alias arm applies to its resolves-to line.
+    ///
+    /// Probe-verified compiled values: `unit hoop : Length` yields
+    /// `CompiledUnit { factor: 1.0, offset: None }`.
+    #[test]
+    fn hover_on_unit_without_conversion_omits_conversion_line() {
+        let source = "unit hoop : Length\n";
+        let position = Position::new(0, 6); // on 'hoop'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoop : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "a factor-1 offset-free unit must emit no conversion line, got: {md}"
+        );
+    }
+
+    /// (b) A conversion factor is information the signature does not carry — the
+    /// signature line is identical for `unit hoopm : Length` and
+    /// `unit hoopm : Length = 0.001`, so the factor must be surfaced.
+    ///
+    /// Probe-verified: `CompiledUnit { factor: 0.001, offset: None }`.
+    #[test]
+    fn hover_on_unit_with_conversion_shows_factor() {
+        let source = "unit hoopm : Length = 0.001\n";
+        let position = Position::new(0, 6); // on 'hoopm'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopm : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("0.001"),
+            "the SI conversion factor must be surfaced, got: {md}"
+        );
+    }
+
+    /// (c) An affine unit carries BOTH a factor and an offset, and the offset is
+    /// the half a reader most needs (it is why the unit is not a pure scaling).
+    ///
+    /// Probe-verified: `unit hoopC : Temperature = 1 offset 273.15` yields
+    /// `CompiledUnit { factor: 1.0, offset: Some(273.15) }` — note the factor is
+    /// 1.0 here, so an implementation gating the whole line on `factor != 1.0`
+    /// would drop the offset silently. That is exactly what this case pins.
+    #[test]
+    fn hover_on_affine_unit_shows_factor_and_offset() {
+        let source = "unit hoopC : Temperature = 1 offset 273.15\n";
+        let position = Position::new(0, 6); // on 'hoopC'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopC : Temperature"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("273.15"),
+            "the affine offset must be surfaced, got: {md}"
+        );
+        // Pinned against the rendered factor token, not a bare `1`: `273.15`
+        // already contains a `1`, so a bare-digit assertion would pass even with
+        // the factor half dropped entirely.
+        assert!(
+            md.contains("\u{d7}1"),
+            "the conversion factor must be surfaced alongside the offset, got: {md}"
+        );
+    }
+
+    /// (d) THE DOCUMENTED DEGRADE PATH, which the four cases above deliberately
+    /// avoid by using non-SI names.
+    ///
+    /// `AnalysisContext::find_unit`'s contract names one non-exceptional `None`:
+    /// a module-local unit duplicating a PRELUDE unit is rejected with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and
+    /// never reaches `compiled.units`, so the declaration exists in the AST
+    /// while the compiled entry does not. The hover arm must then render the
+    /// signature ALONE rather than treat the miss as a bug — and until this
+    /// test, nothing exercised that path, so an arm that grew an `expect()` on
+    /// the compiled entry, or that made the signature conditional on it, would
+    /// have shipped green.
+    ///
+    /// `find_unit` is asserted directly, not just inferred from the absent
+    /// conversion line: a factor-1 offset-free unit ALSO emits no `SI:` line
+    /// (case (a)), so the markdown alone cannot tell the degrade path from the
+    /// adds-no-information path. Task #6500.
+    #[test]
+    fn hover_on_prelude_duplicate_unit_degrades_to_signature() {
+        // `mm` is a PRELUDE unit symbol: `si_units.rs` emits `pub unit <prefix><base>`
+        // for every SI prefix/base pair, so the prelude names are symbols
+        // (`m`, `mm`, `kg`, `Pa`), never spelled-out words like `meter`.
+        let source = "unit mm : Length\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.find_unit("mm").is_none(),
+            "fixture must actually hit the prelude-duplicate path, or this test \
+             exercises the ordinary lookup instead"
+        );
+
+        let position = Position::new(0, 5); // on 'mm'
+        let md = hover_markdown(source, position)
+            .expect("hover must still return Some when the compiled entry is absent");
+        assert!(
+            md.contains("```reify\nunit mm : Length\n```"),
+            "the signature must render from the AST alone, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "no compiled entry means no conversion line to append, got: {md}"
         );
     }
 
