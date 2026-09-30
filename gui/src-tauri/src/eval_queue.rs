@@ -157,6 +157,18 @@ impl EditLedger {
     }
 }
 
+/// How far the queue has got, read without running anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct EvalProgress {
+    /// The newest generation the queue has issued: per GUI process, starting at
+    /// 0 and never reset. Settling does not lower it.
+    pub generation: u64,
+    /// Accepted edits and evaluations not yet finished, queued or running.
+    /// Engine calls are not counted, and neither is engine work that bypasses
+    /// the queue, such as the debug server's `run_on_engine` (#7854).
+    pub outstanding: usize,
+}
+
 /// Whether the queue has edits or evaluations in hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvalActivity {
@@ -615,6 +627,17 @@ impl EvalQueue {
     pub fn submit<T>(self: &Arc<Self>, request: EvalRequest<T>) -> EvalTicket<T> {
         self.accept(request.work);
         request.ticket
+    }
+
+    /// The generation issued so far and the work in hand. Takes only the
+    /// queue's own short-lived lock, never the engine's, so it answers while an
+    /// evaluation runs.
+    pub fn progress(&self) -> EvalProgress {
+        let state = self.lock_state();
+        EvalProgress {
+            generation: state.last_generation,
+            outstanding: state.outstanding,
+        }
     }
 
     fn accept(self: &Arc<Self>, work: Work) {

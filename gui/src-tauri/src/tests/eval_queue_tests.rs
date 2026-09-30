@@ -733,7 +733,11 @@ fn an_evaluation_is_outstanding_until_it_runs_and_its_generation_outlives_it() {
     let rig = ManualRig::new();
     let _evaluation = rig.evaluation("E");
 
-    assert_eq!(rig.queue.progress(), progress(1, 1), "accepted, not yet run");
+    assert_eq!(
+        rig.queue.progress(),
+        progress(1, 1),
+        "accepted, not yet run"
+    );
 
     rig.executor.run_pending();
 
