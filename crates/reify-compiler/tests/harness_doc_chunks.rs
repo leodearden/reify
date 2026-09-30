@@ -38,6 +38,9 @@
 //!   stand for documented signatures, and what "compiles clean" means for them.
 //! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced
 //!   prose is exercised by a compile-verified fixture.
+//! - `schematic_listing_gate` (#6956) — every signature in a gated chunk's
+//!   ```` ```reify-schematic ```` listings is exercised by a compile-verified
+//!   fixture.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
@@ -61,6 +64,8 @@ mod functions_chunk_overloading_smoke;
 mod geometry_chunk_smoke;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/schematic_listing_gate.rs"]
+mod schematic_listing_gate;
 #[path = "harness_doc_chunks/signature_fixtures.rs"]
 mod signature_fixtures;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]

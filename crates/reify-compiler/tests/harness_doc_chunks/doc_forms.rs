@@ -88,6 +88,18 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
     })
 }
 
+/// The candidate signature spans on each line of a ```` ```reify-schematic ````
+/// `listing`, in order, each for [`doc_form_of_span`] to read.
+///
+/// Per line, text from the first `//` is a comment and is dropped. Every
+/// `ident(` whose identifier is not `.`-qualified and whose parentheses balance
+/// on that line yields `ident(…)` through its closing paren; a trailing
+/// `-> Type` carries no arity, so it is left behind.
+pub(crate) fn listing_signature_spans(listing: &str) -> Vec<String> {
+    let _ = listing;
+    Vec::new()
+}
+
 /// A lowercase snake_case identifier: the only shape a documented name or a
 /// metavariable takes.
 fn is_metavariable(word: &str) -> bool {
@@ -466,4 +478,81 @@ structure def NamedArgument {
         vec![("isosurface".to_string(), 2), ("sphere".to_string(), 1)],
         "a named argument is one argument, in the same currency the documented form is read in"
     );
+}
+
+#[test]
+fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
+    let cases: [(&str, &[&str], &str); 7] = [
+        (
+            "point2(x, y)          point3(x, y, z)",
+            &["point2(x, y)", "point3(x, y, z)"],
+            "two signatures on one line are both cut",
+        ),
+        (
+            "box(width, depth, height)   -> Solid   // alias of box_centered(w, d, h)",
+            &["box(width, depth, height)"],
+            "the return type is left behind, and a call in the comment is never read",
+        ),
+        (
+            "Orientation.from_quaternion(w, x, y, z)",
+            &[],
+            "a `.`-qualified name is not a listed signature",
+        ),
+        (
+            "Point<N: Nat, Q: Dimension>     // Position",
+            &[],
+            "a type listing has no call",
+        ),
+        ("broken(a, b", &[], "an unbalanced paren is not cut"),
+        (
+            "sphere(radius)\ntorus(major_radius, minor_radius)",
+            &["sphere(radius)", "torus(major_radius, minor_radius)"],
+            "every line of the listing is read",
+        ),
+        (
+            "wrapped(a,\nb)",
+            &[],
+            "a span never crosses a line: the listing is read line by line",
+        ),
+    ];
+
+    for (listing, expected, why) in cases {
+        assert_eq!(
+            listing_signature_spans(listing),
+            expected.to_vec(),
+            "`{listing}`: {why}"
+        );
+    }
+}
+
+#[test]
+fn a_listed_span_is_read_by_the_same_rule_as_a_prose_span() {
+    let cases: [(&str, &[Option<DocForm>], &str); 3] = [
+        (
+            "isosurface(grid, iso: level)                         -> Solid",
+            &[Some(form("isosurface", Arity::Exact(2)))],
+            "a named argument counts one",
+        ),
+        (
+            "polygon(x1, y1, x2, y2, x3, y3, …)   rectangle(width, height)",
+            &[
+                Some(form("polygon", Arity::AtLeast(6))),
+                Some(form("rectangle", Arity::Exact(2))),
+            ],
+            "a U+2026 tail is variadic over the arguments before it",
+        ),
+        (
+            "polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)",
+            &[None, Some(form("ellipse", Arity::Exact(2)))],
+            "an ASCII `...` elides rather than declares, so the span is unreadable",
+        ),
+    ];
+
+    for (listing, expected, why) in cases {
+        let read: Vec<Option<DocForm>> = listing_signature_spans(listing)
+            .iter()
+            .map(|span| doc_form_of_span(span))
+            .collect();
+        assert_eq!(read, expected.to_vec(), "`{listing}`: {why}");
+    }
 }
