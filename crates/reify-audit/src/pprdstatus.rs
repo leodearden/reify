@@ -3,6 +3,100 @@
 //! re-checks them once the decomposition lands. This module reads the loaded
 //! task corpus and flags the prose that has drifted from it.
 
+/// The CLOSED vocabulary of terminal PRD statuses. Authority:
+/// `.claude/skills/prd/project.md` → "PRD terminal status — closed vocabulary
+/// + decompose-close stamp". Every other word is a live status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalToken {
+    Shipped,
+    Superseded,
+    Withdrawn,
+}
+
+impl TerminalToken {
+    const ALL: [TerminalToken; 3] = [Self::Shipped, Self::Superseded, Self::Withdrawn];
+
+    /// ASCII case-insensitive EXACT match, so near-synonyms such as `landed`,
+    /// `retired` or `shipped-ish` stay live.
+    fn parse(token: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|terminal| terminal.as_str().eq_ignore_ascii_case(token))
+    }
+
+    /// The preferred ALL-CAPS spelling.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shipped => "SHIPPED",
+            Self::Superseded => "SUPERSEDED",
+            Self::Withdrawn => "WITHDRAWN",
+        }
+    }
+}
+
+/// What a PRD's Status header says, as decided by its first label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StatusHeader {
+    Terminal(TerminalToken),
+    /// `line` is the 1-based line of the label.
+    Live {
+        token: String,
+        line: usize,
+    },
+    Absent,
+}
+
+/// How many leading lines may carry the Status label: the overlay's "within
+/// the first ~10 lines", with margin for the deepest live label measured.
+const STATUS_HEADER_WINDOW: usize = 12;
+
+const STATUS_LABEL: &str = "Status";
+
+/// The status token after the first Status label on `line`, or `None` when
+/// the line carries no label. An empty token is still a label.
+fn status_label_token(line: &str) -> Option<&str> {
+    line.match_indices(STATUS_LABEL)
+        .find_map(|(at, _)| token_after_label(line, at))
+}
+
+/// The token after the `Status` occurrence at byte `at`, if that occurrence
+/// is a label: a left boundary, optional `*`/`_` closers, then `:`. That shape
+/// rejects `Status legend:` and a `| Status |` table header by construction.
+fn token_after_label(line: &str, at: usize) -> Option<&str> {
+    if at > 0 && line.as_bytes()[at - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    let value = line[at + STATUS_LABEL.len()..]
+        .trim_start_matches(['*', '_'])
+        .strip_prefix(':')?
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`'));
+    let end = value
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or(value.len());
+    Some(&value[..end])
+}
+
+/// The first Status label within [`STATUS_HEADER_WINDOW`] decides.
+fn read_status_header(text: &str) -> StatusHeader {
+    text.lines()
+        .take(STATUS_HEADER_WINDOW)
+        .enumerate()
+        .find_map(|(index, line)| status_label_token(line).map(|token| (token, index + 1)))
+        .map_or(StatusHeader::Absent, |(token, line)| {
+            classify_status_token(token, line)
+        })
+}
+
+fn classify_status_token(token: &str, line: usize) -> StatusHeader {
+    match TerminalToken::parse(token) {
+        Some(terminal) => StatusHeader::Terminal(terminal),
+        None => StatusHeader::Live {
+            token: token.to_string(),
+            line,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,12 +202,18 @@ Status: completion-residual contract for
 "#;
 
     fn live(token: &str, line: usize) -> StatusHeader {
-        StatusHeader::Live { token: token.to_string(), line }
+        StatusHeader::Live {
+            token: token.to_string(),
+            line,
+        }
     }
 
     #[test]
     fn plain_live_label_reports_its_token_and_line() {
-        assert_eq!(read_status_header(KERNEL_SEAM_CONTRACTS_PRE_FIX), live("contract", 3));
+        assert_eq!(
+            read_status_header(KERNEL_SEAM_CONTRACTS_PRE_FIX),
+            live("contract", 3)
+        );
     }
 
     #[test]
@@ -152,7 +252,10 @@ Status: completion-residual contract for
     /// A substring match on "superseded" would misclassify this header.
     #[test]
     fn only_the_first_token_decides_terminality() {
-        assert_eq!(read_status_header(KINEMATIC_CONSTRAINTS), live("deferred", 5));
+        assert_eq!(
+            read_status_header(KINEMATIC_CONSTRAINTS),
+            live("deferred", 5)
+        );
     }
 
     #[test]
@@ -171,17 +274,26 @@ Status: completion-residual contract for
 
     #[test]
     fn mid_line_label_is_found() {
-        assert_eq!(read_status_header(MERGE_GATE_GUARD_DIAGNOSABILITY), live("approved", 3));
+        assert_eq!(
+            read_status_header(MERGE_GATE_GUARD_DIAGNOSABILITY),
+            live("approved", 3)
+        );
     }
 
     #[test]
     fn blockquote_label_is_found() {
-        assert_eq!(read_status_header(P1_STRUCTURED_FEATUREID_FEATURE_VALUE), live("active", 3));
+        assert_eq!(
+            read_status_header(P1_STRUCTURED_FEATUREID_FEATURE_VALUE),
+            live("active", 3)
+        );
     }
 
     #[test]
     fn status_legend_is_not_a_label() {
-        assert_eq!(read_status_header(FEA_RESULT_MODEL_CAPABILITY_MANIFEST), StatusHeader::Absent);
+        assert_eq!(
+            read_status_header(FEA_RESULT_MODEL_CAPABILITY_MANIFEST),
+            StatusHeader::Absent
+        );
     }
 
     #[test]
@@ -202,8 +314,14 @@ Status: completion-residual contract for
 
     #[test]
     fn header_window_ends_after_the_deepest_measured_label() {
-        assert_eq!(read_status_header(TOLERANCE_STACKUP_ANALYSIS), live("contract", 12));
-        let past_window = format!("{}Status: SHIPPED\n", "filler\n".repeat(STATUS_HEADER_WINDOW));
+        assert_eq!(
+            read_status_header(TOLERANCE_STACKUP_ANALYSIS),
+            live("contract", 12)
+        );
+        let past_window = format!(
+            "{}Status: SHIPPED\n",
+            "filler\n".repeat(STATUS_HEADER_WINDOW)
+        );
         assert_eq!(read_status_header(&past_window), StatusHeader::Absent);
     }
 
