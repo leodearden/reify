@@ -966,7 +966,18 @@ impl<'a> Lowering<'a> {
         let alias_node = node.child_by_field_name("alias");
 
         let (path, kind) = if let Some(items) = items_node {
-            // Destructured: `import a.b.{C, D}`
+            // Destructured: `import a.b.{C, D}` — canonical per the
+            // `import_path` production in `docs/reify-language-spec.md` §15
+            // "Grammar Summary".
+            //
+            // The `items`/`alias` FIELDS are what select the ImportKind here,
+            // which is why the brace list stays a field on `import_declaration`
+            // rather than folding into `import_path` as the spec EBNF nests it.
+            //
+            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
+            // directly instead of routing through `check_and_lower!`, so an
+            // ERROR nested in the subtree never becomes a diagnostic. Latent,
+            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();

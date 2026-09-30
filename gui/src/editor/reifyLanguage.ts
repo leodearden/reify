@@ -82,7 +82,9 @@ export const KEYWORD_LED_BODIES = [
  * arm (`= expression`, grammar.js:239-246) needs.
  */
 function foldBody(node: SyntaxNode): { from: number; to: number } | null {
-  const open = node.getChild('{');
+  // `ImportItems` opens with `ImportItemsOpen` (`.{`), not a bare `{`; see the
+  // ImportDeclaration comment in reify.grammar.
+  const open = node.getChild('{') ?? node.getChild('ImportItemsOpen');
   const close = node.lastChild;
   if (!open || !close || close.name !== '}' || open.to >= close.from) return null;
   return { from: open.to, to: close.from };
