@@ -838,10 +838,13 @@ assert "DM5: the existing --touch path listed beside the misses is still touched
 # exist must still abort the seed (empty STDOUT, so the caller rebuilds cold); it
 # is never swallowed as a skip. Both delta sources (--touch and git diff) stamp
 # through one helper, and a helper called from an `if` runs with errexit
-# suspended, so that abort cannot be left to `set -e`. A PATH shim fails ONLY the
-# plain single-operand `touch <path>` naming REIFY_TEST_TOUCH_FAIL_PATH (the
-# delta touch); the multi-operand `-h -d` bulk stamp and every other touch reach
-# the real /bin/touch.
+# suspended, so that abort cannot be left to `set -e`. DM6 is the discriminating
+# case: a --touch path has no second net. On the git-diff route the inv.9
+# post-condition (_assert_no_stale_delta_stamp) would also refuse the unstamped
+# path, so DM7 pins the OUTCOME there, not which of the two caught it.
+# A PATH shim fails ONLY the plain single-operand `touch <path>` naming
+# REIFY_TEST_TOUCH_FAIL_PATH (the delta touch); the multi-operand `-h -d` bulk
+# stamp and every other touch reach the real /bin/touch.
 DM_SHIM_DIR="$(mktemp -d "$_REAL_STUB_ROOT/touch-shim-XXXXXX")"
 cat > "$DM_SHIM_DIR/touch" << 'DM_TOUCH_SHIM_EOF'
 #!/usr/bin/env bash
