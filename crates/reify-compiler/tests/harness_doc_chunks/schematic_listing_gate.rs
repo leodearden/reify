@@ -7,9 +7,10 @@
 //! candidate spans, and `doc_forms::doc_form_of_span` reads each by the same rule
 //! the prose gate uses. A signature listing is notation, not prose, so every span
 //! in it is meant as a signature: one the rule cannot read is a violation, never
-//! skipped. Only fences tagged EXACTLY `reify-schematic` are read — a `reify`
-//! fence is the fence gate's to compile, and a `reify-fragment` is syntax, not a
-//! listing.
+//! skipped — a signature wrapped across lines included, since its first line is
+//! cut as an unclosed span. Only fences tagged EXACTLY `reify-schematic` are
+//! read — a `reify` fence is the fence gate's to compile, and a `reify-fragment`
+//! is syntax, not a listing.
 //!
 //! # What is NOT established
 //!
@@ -77,10 +78,11 @@ fn listing_violation(stem: &str, listed: &ListedSpan, calls: &[(String, usize)])
         None => Some(format!(
             "{location} — `{}` is an unreadable listing signature: every span in a \
              `{LISTING_TAG}` listing is read as a signature, and this one is not \
-             signature-shaped. FIX: write it in the notation doc_forms reads — lowercase \
-             snake_case metavariables, `label: metavar` for a named argument, U+2026 `…` (never \
-             ASCII `...`) for a variadic tail — or move it out of the listing if it is not a \
-             signature.",
+             signature-shaped. FIX: write it in the notation doc_forms reads — whole on one line \
+             (a listing is read line by line, so a wrapped signature is cut at the line end), \
+             lowercase snake_case metavariables, `label: metavar` for a named argument, U+2026 \
+             `…` (never ASCII `...`) for a variadic tail — or move it out of the listing if it \
+             is not a signature.",
             listed.span
         )),
         Some(form) if !form.is_exercised_by(calls) => Some(format!(
@@ -94,6 +96,31 @@ fn listing_violation(stem: &str, listed: &ListedSpan, calls: &[(String, usize)])
     }
 }
 
+/// The report for the chunk named `stem`, whose fences failed to parse with
+/// `error`.
+fn unparseable_chunk(stem: &str, error: &str) -> String {
+    format!(
+        "{}: {error} — so no signature in its listings is checked. FIX: repair the markup.",
+        chunk_label(stem)
+    )
+}
+
+/// Every signature form `chunks` (`(stem, markdown)`) list, each with its
+/// chunk's stem. Panics on a chunk whose fences cannot be parsed, naming its
+/// markup, so an anti-vacuity floor over this census never misreads a markup
+/// error as a regressed reading.
+fn listed_forms<'a>(chunks: &[(&'a str, &str)]) -> Vec<(&'a str, DocForm)> {
+    chunks
+        .iter()
+        .flat_map(|(stem, markdown)| {
+            listed_spans(markdown)
+                .unwrap_or_else(|error| panic!("{}", unparseable_chunk(stem, &error)))
+                .into_iter()
+                .filter_map(move |listed| listed.form.map(|form| (*stem, form)))
+        })
+        .collect()
+}
+
 /// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
 /// and deduped: a listed span that is not signature-shaped, a listed signature no
 /// call in `calls` exercises at its arity, and a chunk whose fences cannot be
@@ -102,11 +129,7 @@ fn schematic_listing_violations(chunks: &[(&str, &str)], calls: &[(String, usize
     let mut violations: Vec<String> = chunks
         .iter()
         .flat_map(|(stem, markdown)| match listed_spans(markdown) {
-            Err(error) => vec![format!(
-                "{}: {error} — so no signature in its listings is checked. FIX: repair the \
-                 markup.",
-                chunk_label(stem)
-            )],
+            Err(error) => vec![unparseable_chunk(stem, &error)],
             Ok(spans) => spans
                 .iter()
                 .filter_map(|listed| listing_violation(stem, listed, calls))
@@ -155,15 +178,7 @@ fn every_listing_signature_in_a_gated_chunk_is_exercised_by_a_compiling_fixture(
         .flat_map(|path| call_forms(&read_fixture(path), path))
         .collect();
 
-    let listed: Vec<(&str, DocForm)> = chunks
-        .iter()
-        .flat_map(|(stem, markdown)| {
-            listed_spans(markdown)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(move |listed| listed.form.map(|form| (*stem, form)))
-        })
-        .collect();
+    let listed = listed_forms(&chunks);
     let distinct: BTreeSet<&DocForm> = listed.iter().map(|(_, form)| form).collect();
     assert!(
         distinct.len() >= MINIMUM_LISTING_FORMS,
@@ -267,6 +282,27 @@ fn an_ascii_elision_in_a_listing_is_reported_unreadable() {
 }
 
 #[test]
+fn a_signature_wrapped_across_listing_lines_is_reported_not_dropped() {
+    let markdown = "```reify-schematic\n\
+                    nurbs_surface(control_points, weights, u_knots,\n\
+                    \x20             v_knots, u_degree, v_degree)   -> Surface\n\
+                    ```\n";
+
+    let violations =
+        schematic_listing_violations(&[("demo", markdown)], &calls(&[("nurbs_surface", 6)]));
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("chunks/demo.md:2")
+            && violations[0].contains("nurbs_surface(control_points, weights, u_knots,`")
+            && violations[0].contains("one line"),
+        "a listing signature whose `(` does not close on its line is an unreadable span naming \
+         the one-line fix, even though a fixture calls the form, got: {}",
+        violations[0]
+    );
+}
+
+#[test]
 fn only_fences_tagged_exactly_reify_schematic_are_read_as_listings() {
     let markdown = "```reify-fragment\n\
                     sphere(radius)\n\
@@ -313,6 +349,12 @@ fn a_qualified_name_in_a_listing_is_never_read() {
         "got: {}",
         violations[0]
     );
+}
+
+#[test]
+#[should_panic(expected = "repair the markup")]
+fn the_census_blames_a_chunk_whose_fences_cannot_be_parsed_on_its_markup() {
+    listed_forms(&[("demo", "```reify-schematic\nsphere(radius)\n")]);
 }
 
 #[test]

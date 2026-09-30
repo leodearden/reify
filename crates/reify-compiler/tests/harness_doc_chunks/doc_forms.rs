@@ -93,10 +93,12 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
 /// `listing`, in order, each for [`doc_form_of_span`] to read.
 ///
 /// Per line, text from the first `//` is a comment and is dropped. Every
-/// `ident(` whose identifier is not `.`-qualified and whose parentheses balance
-/// on that line yields `ident(…)` through its closing paren; a trailing
-/// `-> Type` carries no arity, so it is left behind. A call nested in another's
-/// parentheses is part of that span, never cut on its own.
+/// `ident(` whose identifier is not `.`-qualified yields `ident(…)` through its
+/// balancing paren; a trailing `-> Type` carries no arity, so it is left
+/// behind. A call nested in another's parentheses is part of that span, never
+/// cut on its own. A listing is read line by line, so a `(` that does not
+/// balance on its line yields the rest of that line — a span no signature
+/// reading accepts, so a wrapped signature is surfaced rather than dropped.
 pub(crate) fn listing_signature_spans(listing: &str) -> Vec<String> {
     listing
         .lines()
@@ -110,17 +112,14 @@ fn line_signature_spans(code: &str) -> Vec<String> {
     let mut cursor = 0;
     while let Some(found) = code[cursor..].find('(') {
         let open = cursor + found;
-        let Some(close) = closing_paren(code, open) else {
-            cursor = open + 1;
-            continue;
-        };
+        let end = closing_paren(code, open).map_or(code.len(), |close| close + 1);
         let start = code[..open]
             .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_')
             .len();
         if start < open && !code[..start].ends_with('.') {
-            spans.push(code[start..=close].to_string());
+            spans.push(code[start..end].trim_end().to_string());
         }
-        cursor = close + 1;
+        cursor = end;
     }
     spans
 }
@@ -524,8 +523,8 @@ structure def NamedArgument {
 }
 
 #[test]
-fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
-    let cases: [(&str, &[&str], &str); 8] = [
+fn listing_signature_spans_cuts_every_unqualified_call_on_a_line() {
+    let cases: [(&str, &[&str], &str); 9] = [
         (
             "point2(x, y)          point3(x, y, z)",
             &["point2(x, y)", "point3(x, y, z)"],
@@ -546,7 +545,16 @@ fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
             &[],
             "a type listing has no call",
         ),
-        ("broken(a, b", &[], "an unbalanced paren is not cut"),
+        (
+            "broken(a, b   ",
+            &["broken(a, b"],
+            "an unbalanced paren is cut through the end of the line, trailing space trimmed",
+        ),
+        (
+            "Orientation.from_quaternion(w, x,",
+            &[],
+            "a `.`-qualified name is not a listed signature, balanced or not",
+        ),
         (
             "translate(cylinder(r, h), dx)",
             &["translate(cylinder(r, h), dx)"],
@@ -559,8 +567,8 @@ fn listing_signature_spans_cuts_every_unqualified_balanced_call_on_a_line() {
         ),
         (
             "wrapped(a,\nb)",
-            &[],
-            "a span never crosses a line: the listing is read line by line",
+            &["wrapped(a,"],
+            "a span never crosses a line: a wrapped signature's first line is its span",
         ),
     ];
 
