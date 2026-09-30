@@ -77,6 +77,7 @@ use crate::chunk_cite_gate::cited_source_paths;
 use crate::chunk_io::{
     GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk, repo_root,
 };
+use crate::chunk_markdown::section_body;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
@@ -278,30 +279,24 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
 /// chunk's [`CHUNK_SECTION`] section.
 ///
 /// Scan shape (deliberately narrow, so this stays a NAME+ARITY check and
-/// never becomes a wording pin) — identical section/line/span selection to
-/// the name-only scan this supersedes: inside that section — from its
-/// heading to the next `## ` heading — every line that starts with `**` is a
-/// bolded signature row; within such a row only its code spans are inspected,
-/// and each is read by `doc_forms`' [`doc_form_of_span`] — the strict
-/// signature-shape rule, under which a bare `…` or an `ident…` argument marks
-/// the form variadic and counts nothing.
+/// never becomes a wording pin): inside the section [`section_body`] reads
+/// under that heading, every line that starts with `**` is a bolded signature
+/// row; within such a row only its code spans are inspected, and each is read
+/// by `doc_forms`' [`doc_form_of_span`] — the strict signature-shape rule,
+/// under which a bare `…` or an `ident…` argument marks the form variadic and
+/// counts nothing.
 ///
 /// Deduped and sorted (by name, then arity), so a caller's `assert_eq!` names
-/// the exact form. Callers must anti-vacuity-check the result: a heading
-/// rename or a row that stops using `**`/backticks would otherwise silently
-/// empty the scan.
+/// the exact form. A heading rename PANICS naming the chunk. A row that stops
+/// using `**`/backticks would still silently empty the scan, so callers must
+/// anti-vacuity-check the result.
 fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
     let mut forms = Vec::new();
-    let mut in_section = false;
 
-    for line in markdown.lines() {
-        if let Some(heading) = line.strip_prefix("## ") {
-            in_section = heading.trim() == CHUNK_SECTION.trim_start_matches("## ");
-            continue;
-        }
-        if !in_section || !line.starts_with("**") {
-            continue;
-        }
+    for line in section_body(markdown, CHUNK_SECTION, CHUNK_PATH, CHUNK_SECTION)
+        .lines()
+        .filter(|line| line.starts_with("**"))
+    {
         forms.extend(
             code_spans(line)
                 .iter()
@@ -319,9 +314,8 @@ fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
 /// scan exists (overloads of the same name collapse to one entry here — see
 /// `documented_geometry_op_forms` for the arity-preserving form).
 ///
-/// Deduped and sorted. Callers must anti-vacuity-check the result: a heading
-/// rename or a row that stops using `**`/backticks would otherwise silently
-/// empty the scan.
+/// Deduped and sorted. Callers must anti-vacuity-check the result: a row that
+/// stops using `**`/backticks would otherwise silently empty the scan.
 fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
     let mut names: Vec<String> = documented_geometry_op_forms(markdown)
         .into_iter()
@@ -333,16 +327,15 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
 }
 
 /// Anti-vacuity guard every [`documented_geometry_op_names`] caller owes its
-/// assertions: a heading rename, or rows that stop using `**`/backticks, would
-/// empty the scan and make the checks built on it pass (or fire) for reasons
+/// assertions: rows that stop using `**`/backticks would empty the scan and make the checks built on it pass (or fire) for reasons
 /// that have nothing to do with the property under test. The section carries
 /// ~43 distinct names today.
 fn assert_scan_not_vacuous(documented: &[String]) {
     assert!(
         documented.len() >= 20,
         "the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH} — the scan is \
-         vacuous (heading renamed, or the signature rows no longer start with `**` and \
-         use backticks) and gives NO protection",
+         vacuous (the signature rows no longer start with `**` and use backticks) and \
+         gives NO protection",
         documented.len()
     );
 }
@@ -358,8 +351,8 @@ fn documented_geometry_op_names_all_exist_in_the_compiler() {
     let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_names(&markdown);
 
-    // Anti-vacuity: a heading rename or a reformatted table would empty the
-    // scan and make every assertion below pass trivially. The sentinels
+    // Anti-vacuity: a reformatted table would empty the scan and make every
+    // assertion below pass trivially. The sentinels
     // additionally prove the scan reaches the Sweep / Pattern / Curves rows,
     // not just the first one.
     assert_scan_not_vacuous(&documented);
@@ -625,8 +618,8 @@ fn every_implemented_geometry_op_is_documented_in_a_chunk() {
         .join("\n");
 
     // Anti-vacuity, every input. An empty registry would make this guard pass
-    // trivially, and an emptied scan (heading renamed, rows no longer `**`/
-    // backticked) would make it report all 64 names — pin both so neither
+    // trivially, and an emptied scan (rows no longer `**`/backticked) would
+    // make it report all 64 names — pin both so neither
     // failure mode is mistaken for a real signal. (`all_chunks` pins its own
     // corpus size.)
     assert!(
@@ -1387,8 +1380,7 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 /// assertions — the overload-aware sibling of [`assert_scan_not_vacuous`].
 ///
 /// Two failure modes, not one. The COUNT floor catches the same vacuity that
-/// helper does (a heading rename, or rows that stop using `**`/backticks would
-/// empty the scan). The SENTINELS additionally catch a mode the name-level
+/// helper does (rows that stop using `**`/backticks would empty the scan). The SENTINELS additionally catch a mode the name-level
 /// helper cannot have: a scan that still finds every name but silently
 /// collapses each name's overloads back to one entry, degrading this gate into
 /// the name-only gate it is supposed to complement. Both members of each
@@ -1403,8 +1395,8 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     assert!(
         documented.len() >= 40,
         "the '{CHUNK_SECTION}' form scan found only {} form(s) in {CHUNK_PATH} — the scan is \
-         vacuous (heading renamed, or the signature rows no longer start with `**` and use \
-         backticks) and gives NO protection",
+         vacuous (the signature rows no longer start with `**` and use backticks) and gives \
+         NO protection",
         documented.len()
     );
     for sentinel in [

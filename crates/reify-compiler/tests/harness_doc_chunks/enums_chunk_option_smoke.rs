@@ -53,69 +53,39 @@ use reify_test_support::{
 };
 
 use crate::chunk_io::{ENUMS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{parse_fences, section_body};
 
 /// Heading that opens the section under test.
 const SECTION_HEADING: &str = "## Option Type";
 
-/// The lines of the `## Option Type` section body: everything after the
-/// heading up to the next `## ` heading (or EOF).
-///
-/// Panics if the heading is absent, so renaming the section fails loudly here
-/// instead of silently reducing every test in this module to a vacuous pass.
-fn option_section_lines() -> Vec<String> {
-    let chunk = read_chunk(ENUMS_CHUNK_PATH);
-    let all: Vec<&str> = chunk.lines().collect();
-    let start = all
-        .iter()
-        .position(|l| l.trim_end() == SECTION_HEADING)
-        .unwrap_or_else(|| {
-            panic!(
-                "`{SECTION_HEADING}` section not found in \
-                 {ENUMS_CHUNK_PATH} — the section was renamed or \
-                 removed. This module pins that section's examples against the real \
-                 compiler; re-point it at the new heading rather than deleting it."
-            )
-        });
-    let rest = &all[start + 1..];
-    let end = rest
-        .iter()
-        .position(|l| l.starts_with("## "))
-        .unwrap_or(rest.len());
-    rest[..end].iter().map(|line| line.to_string()).collect()
-}
-
 /// The BODY of every fenced code block inside the `## Option Type` section, in
-/// document order. A fence delimiter is a line whose trimmed form starts with
-/// three backticks and is excluded from the body; an opening delimiter may
-/// carry any info string, which is deliberately discarded rather than asserted
-/// on here — fence-tag discipline is #5477 leaf β's repo-wide `fence_gate.rs`
-/// gate, not this module's job. This module's subject is what the fences
-/// EVALUATE to, not how they are spelled.
+/// document order.
+///
+/// Fence and section semantics are `chunk_markdown`'s — [`section_body`] and
+/// [`parse_fences`] — so a delimiter is a column-0 run, exactly as the fence
+/// gate reads it, and a heading absent from the chunk panics naming it rather
+/// than reducing every test in this module to a vacuous pass. Every fence is
+/// taken whatever its info string: tag discipline is the fence gate's job, and
+/// this module's subject is what the fences EVALUATE to, not how they are
+/// spelled.
 ///
 /// Panics if the section contains no fence at all, so a section that loses its
 /// example does not silently pass.
 fn option_section_fences() -> Vec<String> {
-    let mut fences: Vec<String> = Vec::new();
-    let mut open: Option<Vec<String>> = None;
-    for line in option_section_lines() {
-        if line.trim_start().strip_prefix("```").is_some() {
-            match open.take() {
-                // Closing delimiter: emit the accumulated body.
-                Some(body) => fences.push(body.join("\n")),
-                // Opening delimiter: start accumulating, info string discarded.
-                None => open = Some(Vec::new()),
-            }
-        } else if let Some(body) = open.as_mut() {
-            body.push(line);
-        }
-    }
-    assert!(
-        open.is_none(),
-        "unterminated code fence in the `{SECTION_HEADING}` section of enums.md"
+    let section = section_body(
+        &read_chunk(ENUMS_CHUNK_PATH),
+        SECTION_HEADING,
+        ENUMS_CHUNK_PATH,
+        SECTION_HEADING,
     );
+    let fences: Vec<String> = parse_fences(&section)
+        .unwrap_or_else(|e| panic!("{ENUMS_CHUNK_PATH} `{SECTION_HEADING}`: {e}"))
+        .into_iter()
+        .map(|fence| fence.body)
+        .collect();
     assert!(
         !fences.is_empty(),
-        "the `{SECTION_HEADING}` section of enums.md contains no fenced code block — \
+        "the `{SECTION_HEADING}` section of {ENUMS_CHUNK_PATH} contains no fenced code block — \
          this module exists to pin that example against the compiler, so an empty \
          section is a failure, not a pass"
     );
