@@ -266,9 +266,7 @@ fn export_with_missing_entry_writes_error_and_exits_failure() {
 
 /// Walk `dir` recursively and return paths to any `.bin` or `.meta` files.
 /// Used by import tests to verify the destination cache is (or isn't) populated.
-/// Deliberately local rather than harness_cli's `files_under` in
-/// tests/common/mod.rs: this harness consumes no `tests/common/` helper, which
-/// is the seam task #7365 drew (see the harness_cli_surface.rs header).
+/// Local by design: see the harness_cli_surface.rs header (#7365).
 fn collect_cache_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
