@@ -185,6 +185,8 @@ test_reify_audit_freshness.sh pool
 # DOES inherit: its nested script's mutations have no such neutralising seam.
 test_reify_audit_pdiag_budget_skip.sh pool
 test_reify_audit_pdiag_vacuity.sh pool
+# pool, not intra-run-serial: it drives a stub reify-audit and a stub MCP server, never reify_audit_guard or cargo.
+test_reify_audit_pprdstatus_wiring.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
