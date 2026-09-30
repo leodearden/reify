@@ -57,6 +57,14 @@
 #     nested run_all.sh prints `FAILED <names>` and may print slot/clock
 #     sentinels — same hazard as ambient_isolation_check_one's FAIL branch).
 #
+#     Accepted blind spots (the single place they are listed): keys the probe
+#     baseline itself carries (PATH, HOME, TMPDIR and the fixture knobs it
+#     sets); value rewrites of a baseline key; exports conditional on an
+#     inbound var the minimal baseline lacks; and run_all.sh's --scope
+#     host-infra and legacy all-serial paths, which are not probed. OLDPWD
+#     surfaces only if run_all.sh `cd`s in its own shell — and is then a real
+#     injection, since bash exports OLDPWD to children after a cd.
+#
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/run_all_ambient_isolation_lib.sh"
 
