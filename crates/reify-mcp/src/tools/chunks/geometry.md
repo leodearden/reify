@@ -81,11 +81,13 @@ half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED —
 boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
 pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
 not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
-required; intersect it with a finite solid to get a bounded result usable for export and
-mass-property queries:
+required; intersect it with a finite solid, as `bounded` does here, to get a bounded result usable
+for export and mass-property queries:
 
-```reify-fragment
-intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+```reify
+structure def BoundedHalfSpace {
+    let bounded = intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+}
 ```
 
 Worked example: `examples/half_space.ri`.
@@ -302,17 +304,20 @@ isosurface(grid, iso: level, adaptive: flag)         -> Solid
 `nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
 **nested** (u-major × v) list of `point3(...)`, and `weights` is a matching nested list of reals;
 but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
-integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
+integers. `patch` below is a bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`), one
+argument per line:
 
-```reify-fragment
-nurbs_surface(
-    [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
-    [[1.0,1.0],[1.0,1.0]],
-    [0,0,1,1],
-    [0,0,1,1],
-    1,
-    1
-)
+```reify
+structure def BilinearPatch {
+    let patch = nurbs_surface(
+        [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+        [[1.0,1.0],[1.0,1.0]],
+        [0,0,1,1],
+        [0,0,1,1],
+        1,
+        1
+    )
+}
 ```
 
 A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid profile for
