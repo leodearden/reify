@@ -14,7 +14,8 @@
 //! `docs/prds/kernel-seam-contracts.md` around its SHIPPED re-stamp, commit
 //! `edd9703fae`. The third case commits the LIVE copy of that doc, read from
 //! this tree, which is the task's literal signal: silent on the doc as it
-//! stands on main.
+//! stands on main. That case is coupled to the tree on purpose; its doc
+//! comment says what the coupling costs.
 //!
 //! `findings_from_stderr` and `write_empty_runs_db` are deliberate local
 //! copies of `tests/pdcheck_cli.rs`'s, for the reason that file gives.
@@ -178,6 +179,16 @@ fn pattern_pprdstatus_is_silent_on_the_post_fix_doc() {
 
 /// The task's literal signal: silent on `docs/prds/kernel-seam-contracts.md`
 /// as it stands in this tree.
+///
+/// Deliberately coupled to that live doc. A docs-only commit landed directly
+/// on `main` runs only `hooks/pre-commit`, whose check plan is empty for a
+/// docs-only stage, so an edit to the doc's header can turn this test red
+/// without running it, and the red then surfaces in the next unrelated
+/// merge. That cost is accepted: the doc is a frozen SHIPPED record, and an
+/// edit that makes PPRDSTATUS fire on it is exactly what this test exists
+/// to report.
+/// The detector's own behaviour is pinned independently of the tree by
+/// `pattern_pprdstatus_is_silent_on_the_post_fix_doc`.
 #[test]
 fn pattern_pprdstatus_is_silent_on_the_live_kernel_seam_contracts_doc() {
     let live = std::fs::read_to_string(LIVE_DOC).expect("read the live kernel-seam-contracts doc");
