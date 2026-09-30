@@ -146,6 +146,8 @@
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
+#                     Delta paths that do not exist are skipped, never created: silently
+#                     for a git-diff deletion, with a [warn] for an explicit --touch path.
 #                     No base resolved from any of the three tiers → nothing is
 #                     delta-touched, so every tracked source keeps the 2020-01-01
 #                     stamp; warns, and `_assert_delta_touch_base_substantiated`
