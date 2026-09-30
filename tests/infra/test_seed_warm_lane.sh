@@ -797,7 +797,7 @@ D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
 assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
     test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 
-# D5-D9 — a --touch path that does not exist is warned and skipped, never
+# DM1-DM5 — a --touch path that does not exist is warned and skipped, never
 # created (task #7231). ONE invocation carries every shape a stale or mistyped
 # --touch can take: a missing file under an existing dir, a missing parent, and a
 # DANGLING symlink (a plain `touch` follows the link and creates its target).
@@ -819,19 +819,19 @@ RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
         --touch "$DM_EXISTING" --touch "$DM_MISSING" \
         --touch "$DM_MISSING_PARENT" --touch "$DM_LINK"
 
-assert "D5: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
+assert "DM1: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
     bash -c '[ "$1" -eq 0 ] && [ "$2" = "$3" ]' _ "$RC" "$OUT" "$DM_LANE/target"
-assert "D6: a --touch path that does not exist is not created" \
+assert "DM2: a --touch path that does not exist is not created" \
     bash -c '[ ! -e "$1" ]' _ "$DM_MISSING"
-assert "D7: a dangling-symlink --touch path does not create the link's target" \
+assert "DM3: a dangling-symlink --touch path does not create the link's target" \
     bash -c '[ ! -e "$1" ] && [ -L "$2" ]' _ "$DM_LINK_TARGET" "$DM_LINK"
 # Attributability, not wording: each skipped path is named on a [warn] line.
 for _dm_skipped in "$DM_MISSING" "$DM_MISSING_PARENT" "$DM_LINK"; do
-    assert "D8: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
+    assert "DM4: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
         bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF -- "$2"' _ "$ERR_OUT" "$_dm_skipped"
 done
 DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
-assert "D9: the existing --touch path listed beside the misses is still touched to now" \
+assert "DM5: the existing --touch path listed beside the misses is still touched to now" \
     test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
