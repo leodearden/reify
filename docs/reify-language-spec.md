@@ -1182,7 +1182,7 @@ structure def Fixture {
 | `VectorN<Q>` | a vector of arity `N`, or a rank-1 tensor | legal. A dimensionless vector is accepted at any `Q` (`vec3(1, 2, 3)` at `Vector3<Length>`); a dimensioned vector must match `Q` (`vec3(1kg, 2kg, 3kg)` at `Vector3<Length>` is illegal) |
 | `VectorN<Q>` | another arity, or a non-vector | illegal |
 | `PointN<Q>` | a point | same arity and quantity rule as `VectorN<Q>`: a `point2(...)` at `Point3<Length>` is illegal |
-| `Matrix`/`Tensor` | a matrix, a tensor, a vector, a scalar, or a numeric nested list literal (`[[1, 0], [0, 1]]`) | legal; element counts are not checked |
+| `Matrix<M, N, Q>` / `Tensor<R, N, Q>` | a matrix, a tensor, a vector, a scalar, or a numeric nested list literal (`[[1, 0], [0, 1]]`) | legal; element counts are not checked |
 | `Field<D, C>` | a field value or a lambda | legal; anything else is illegal |
 | enum `E` | a value of `E` (generic arguments are not compared) | legal |
 | enum `E` | a value of another enum, or a non-enum | illegal |
@@ -1230,17 +1230,17 @@ structure def Assembly {
 | `CtorUnknownField` | `E_CTOR_UNKNOWN_FIELD` | a named argument that matches no `param` | `E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'K'; 'K' has no parameter with that name` |
 | `CtorArity` | `E_CTOR_ARITY` | more positional arguments than `param`s (one per call) | `E_CTOR_ARITY: K() expects at most N arguments, got M` |
 
-`reify check` prints `error: <message>`. The LSP `code` field carries the first column. Only the two `E_CTOR_*` mnemonics appear inside the message text. Each offending argument yields one diagnostic, and so does each offending element of a collection argument. A named argument supplied twice is a separate error that carries no code.
+`reify check` prints `error: <message>`. The LSP `code` field carries the first column. Only the two `E_CTOR_*` mnemonics appear inside the message text. Each offending argument yields one diagnostic, and so does each offending element of a collection argument. A named argument supplied twice in an expression-position constructor is a separate error that carries no code. In the block form `sub x : T { ... }`, assigning a field twice is a warning, and the first assignment wins.
 
 **Known limitations.** Each of these is a gap, not a rule:
 
 - **Known limitation (#7956).** A single selector given to a `List<Geometry>` field is rejected at construction sites, though the same argument to a `fn` parameter is accepted.
 - **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Frame`, `Transform3`, `Direction`, `Axis`, `Plane`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
 - **Known limitation (#8101).** A `Geometry`-typed field accepts any argument, though a `Geometry` parameter default is checked.
-- A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
+- **Known limitation (#8121).** A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
 - **Known limitation (#8100).** Constructors inside associated-function bodies (structure-body and trait default `fn`s) are not checked.
 - **Known limitation (#7874).** Omitting a field that has no default is not diagnosed; the field is simply absent.
-- **Known limitation (#6191).** An unknown named field in the `sub x = T(...)` form is not diagnosed. The block form `sub x : T { ... }` reports it.
+- **Known limitation (#6946).** In the `sub x = T(...)` form, neither an unknown named field nor a named argument supplied twice is diagnosed. The block form `sub x : T { ... }` reports the unknown field and warns on the repeated assignment.
 
 Design record and rationale: [struct-ctor-field-type-conformance.md](prds/struct-ctor-field-type-conformance.md).
 

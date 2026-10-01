@@ -71,8 +71,7 @@ use std::cell::RefCell;
 ///   The exemption, its scope and its revisit condition live at
 ///   `check_expr_struct_ctor_args` in `compile_builder/entities_phase.rs` (PRD D6).
 /// * **Construction-site gaps this knob does not yet reach** are listed under
-///   spec §4.9 "Known limitations", each with its owner (#7956, #7958, #8100,
-///   #8101, #7874, #6191).
+///   spec §4.9 "Known limitations", each with its owner.
 pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
