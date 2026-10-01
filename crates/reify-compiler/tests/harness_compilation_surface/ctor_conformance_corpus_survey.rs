@@ -52,19 +52,20 @@
 //!
 //! # Retiring this module
 //!
-//! This is a CENSUS, not a permanent gate, and it has a defined end of life.
-//! Its product is one document in two halves — the tracked-`.ri` sites consumed
-//! by task #5305 (γ, corpus fix-forward), and the inline-fixture sites consumed
-//! by task #5306. Once BOTH have landed, the machinery here — corpus
-//! enumeration for both halves, the parity gate, span→line, D9 classification,
-//! the markdown renderer, the stamp guard — has no remaining product, yet stays
-//! compiled and run on every merge gate. That is a real standing cost in a
-//! compile unit whose own header cites `docs/prds/merge-gate-compile-cost.md`:
-//! it takes this unit to 17,730 lines against the 20,000 `CAP_LINES` in
-//! `tests/infra/test_harness_kloc_cap.sh` (raw `wc -l` summed over the root and
-//! its `#[path]` members, which is how rule (a) there measures — re-measured on
-//! this branch, not carried over), i.e. under the advisory `WARN_PCT=90` tier at
-//! 18,000 but with well under a third of the headroom left.
+//! This is a CENSUS, not a permanent gate. Its product is one document in two
+//! halves, and both named consumers have landed: task #5305 (γ, corpus
+//! fix-forward) consumed the tracked-`.ri` sites, and task #5306 (δ, the
+//! severity flip) fixed the inline sites its flip exposed and kept the rest as
+//! deliberate Error pins. What remains is a standing two-half census that a
+//! future change to `CTOR_FIELD_CONFORMANCE_SEVERITY`, or to the walker's scope,
+//! consults. Its machinery — corpus enumeration for both halves, the parity
+//! gate, span→line, D9 classification, the markdown renderer, the stamp guard —
+//! stays compiled and run on every merge gate, a real standing cost in a compile
+//! unit whose own header cites `docs/prds/merge-gate-compile-cost.md`. Measure
+//! that cost with `harness_layout_unit_lines` (`tests/infra/harness-layout-lib.sh`)
+//! rather than trusting a figure written here: the unit sits above the advisory
+//! warn line of `tests/infra/test_harness_kloc_cap.sh`, acknowledged by a
+//! `_KLOC_WARN_KNOWN` row whose retiring split is #7709.
 //!
 //! Retirement is a FOUR-FILE change now, and all four must go together:
 //!
@@ -3748,14 +3749,14 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// legitimate fixture edit that deletes a few snippets must not red the merge
 /// gate. These numbers detect a BREAK, not drift.
 ///
-/// # Why this pin is independent of task #5306
+/// # Why this pin names no site
 ///
 /// It asserts only that snippets are still EXTRACTED, reach the compile phase,
 /// and report resolving host lines. It names no param, no def and no site count.
-/// Task #5306 is chartered to FIX the conformance sites inside these very hosts,
-/// so any assertion about which sites are found would red this gate the moment
-/// that lands — which is why a future reader must not "helpfully" tighten this
-/// into a residual pin. The mechanism is pinned synthetically by
+/// δ (#5306) fixed conformance sites inside these very hosts in f247bade44, and
+/// any assertion about which sites are found would have redded this gate then,
+/// as it would on the next fixture or severity change — which is why a future
+/// reader must not "helpfully" tighten this into a residual pin. The mechanism is pinned synthetically by
 /// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
 /// live census belongs in the artifact, which is regenerated on demand, not on
 /// the gate.
@@ -3769,8 +3770,9 @@ const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[
     ("crates/reify-lsp/src/analysis.rs", 8),
 ];
 
-/// The Rust test host carrying the inline sites task #7543's VERIFY criterion
-/// names.
+/// The Rust test host that carried the inline sites task #7543's VERIFY
+/// criterion names, until δ fixed them in f247bade44
+/// ([`PRE_DELTA_PURPOSE_FIXTURES_HOST`] keeps a verbatim pre-δ copy).
 ///
 /// A named constant rather than a literal in two places: the pin above lists it
 /// and [`inline_fixture_pinned_hosts_name_all_four_enumeration_shapes`] requires
@@ -3867,9 +3869,12 @@ fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
 /// compile and stays gate-resident without reversing the landed
 /// `docs/prds/merge-gate-compile-cost.md` decision.
 ///
-/// Deliberately does NOT pin the param names at the two sites VERIFY names.
-/// Task #5306 (δ) is chartered to FIX those sites; a residual pin would red this
-/// gate the moment δ lands. The MECHANISM is pinned synthetically by
+/// Deliberately does NOT pin the param names at the sites VERIFY names. δ
+/// (#5306) fixed those sites in f247bade44, which is exactly how a residual pin
+/// would have redded this gate;
+/// [`survey_inline_corpus_still_sees_the_sites_task_7543_verify_names`] pins
+/// them against a verbatim pre-δ copy instead. The MECHANISM is pinned
+/// synthetically by
 /// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
 /// live census is the artifact, not a gate.
 #[test]
@@ -4298,18 +4303,19 @@ enum Disposition {
     /// A row from the INLINE half of the corpus: a Reify snippet embedded in a
     /// Rust test fixture.
     ///
-    /// A CENSUS state, not a triage state. Task #5306 owns the conformance sites
-    /// inside the inline fixtures; task #7543, which enumerated them, is
-    /// chartered not to fix them. They are listed so the class cannot recur
-    /// unnoticed on the next severity change — that is the whole value of
-    /// counting them — and so `#5306` inherits a list rather than a search.
+    /// A CENSUS state, not a triage state. δ (#5306) fixed the inline sites its
+    /// severity flip exposed (f247bade44) and kept the rest as deliberate Error
+    /// pins, so a surviving inline site is one its host test asserts, tolerates,
+    /// or never compiles. It is neither pending work nor waived, and no task owns
+    /// it: its host test owns the verdict. The rows are listed so the class stays
+    /// countable and cannot recur unnoticed on the next severity change.
     ///
-    /// Resolved FIRST, ahead of the severity and field early returns and ahead
-    /// of both waiver tables, so the entire inline half answers to ONE rule.
-    /// Any later placement lets an inline row be read as `Unattributed` (which
-    /// panics [`assert_no_unwaived_ctor_conformance_sites`] over sites #7543
-    /// must not touch) or as `Deferred` (which would let an inline row satisfy a
-    /// `.ri` waiver entry and keep a landed task's waiver looking live forever).
+    /// Resolved FIRST, ahead of the scope and param early returns and ahead of
+    /// all three tables, so the entire inline half answers to ONE rule. Any later
+    /// placement lets an inline row be read as `Unattributed` (which panics
+    /// [`assert_no_unwaived_ctor_conformance_sites`] over sites no `.ri` table
+    /// can name) or as `Deferred` (which would let an inline row satisfy a `.ri`
+    /// waiver entry and keep a landed task's waiver looking live forever).
     InlineCensus,
 }
 
@@ -4338,8 +4344,8 @@ impl Disposition {
             }
             Disposition::Unattributed => "unattributed — actionable".to_owned(),
             Disposition::InlineCensus => {
-                "census — inline Rust fixture, sites owned by #5306: enumerated here, \
-                 fixed there"
+                "census — inline Rust fixture: enumerated, not ruled; its host test owns \
+                 the verdict"
                     .to_owned()
             }
         }
@@ -4671,9 +4677,9 @@ fn synth_inline_site(file: &str, field: Option<&str>, severity: &str) -> SurveyS
 ///
 /// This is the single most dangerous interaction in task #7543.
 /// [`assert_no_unwaived_ctor_conformance_sites`] panics on any site resolving
-/// to [`Disposition::Unattributed`], and the inline half surfaces dozens of
-/// Warning-severity sites that task #5306 owns and that #7543 is chartered NOT
-/// to fix. Routing them through the resolver — rather than adding a second
+/// to [`Disposition::Unattributed`], and the inline half surfaces sites whose
+/// verdict their host tests own — δ (#5306) kept them as deliberate Error pins —
+/// and that no `.ri` table can name. Routing them through the resolver — rather than adding a second
 /// severity-or-origin filter at the assertion — is what keeps the artifact's
 /// `disposition` column and that assertion unable to disagree, exactly as the
 /// assertion's own doc requires.
@@ -4722,7 +4728,7 @@ fn the_census_disposition_is_keyed_on_the_snippet_coordinate_alone() {
 /// [`assert_no_unwaived_ctor_conformance_sites`] reads its waived set as
 /// exactly the [`Disposition::Deferred`] rows. An inline row carrying a real
 /// waiver entry's `(file, param)` must therefore NOT resolve to `Deferred` —
-/// which is what fixes the census arm's position ahead of the two table lookups
+/// which is what fixes the census arm's position ahead of the table lookups
 /// as well as ahead of the early returns. Placed after them, an inline row would
 /// keep a landed task's entry looking live forever.
 #[test]
@@ -4818,11 +4824,6 @@ fn the_census_disposition_renders_a_distinct_cell() {
     assert!(
         !census.trim().is_empty(),
         "the census disposition must render a real cell, not a blank"
-    );
-    assert!(
-        census.contains("#5306"),
-        "the census cell must name the task that owns these sites, so a reader of \
-         one row knows where the work lives; got {census:?}"
     );
     for other in [
         Disposition::Unattributed,
@@ -5498,8 +5499,8 @@ const INLINE_TEMPLATE_REASON: &str = "format-template";
 /// frozen number: the reader counts them at the stamped commit, against a
 /// corpus this generator does not enumerate. Both dimensions have to be
 /// disclosed, because a missed LITERAL shape and an unopened HOST are equally
-/// invisible to a reader of the rows above, and #5306 inherits this list rather
-/// than a search.
+/// invisible to a reader of the rows above, and the next change to the walker's
+/// scope or to the conformance severity needs this list rather than a search.
 fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
     use std::fmt::Write as _;
 
@@ -5546,8 +5547,8 @@ fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
 ///
 /// A section of its own, not extra rows in `## Sites`, because the two halves
 /// answer different questions: a `.ri` row is a file a reader opens and may have
-/// to fix, while an inline row is a census entry owned by #5306
-/// ([`Disposition::InlineCensus`]). Merging them would make the artifact's
+/// to fix, while an inline row is a census entry whose verdict its host test
+/// owns ([`Disposition::InlineCensus`]). Merging them would make the artifact's
 /// site count unsizeable and its owner groups mean two different things at once.
 fn push_inline_section(md: &mut String, inline: &SurveyRun) {
     use std::fmt::Write as _;
@@ -5558,9 +5559,9 @@ fn push_inline_section(md: &mut String, inline: &SurveyRun) {
          the SAME pipeline as the tracked `.ri` corpus above. A row's `site` cell is the\n\
          HOST `.rs` position to open; the `snippet line` cell locates the declaration\n\
          inside the literal.\n\n\
-         Every row here carries the `census` disposition: these sites are owned by\n\
-         **#5306**, and are enumerated rather than fixed so the class is countable and\n\
-         cannot recur unnoticed on the next severity change.\n\n",
+         Every row here carries the `census` disposition: its host test owns the\n\
+         verdict, and the rows are enumerated rather than ruled on so the class stays\n\
+         countable and cannot recur unnoticed on the next severity change.\n\n",
     );
 
     if inline.sites.is_empty() {
@@ -5750,12 +5751,13 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
         - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
         actionable state, and after γ the tracked `.ri` corpus holds none.\n\
         - **`census`** is every row from the **inline** half — a Reify snippet embedded\n\
-        in a Rust test fixture. Those sites are owned by **#5306**, which is chartered to\n\
-        fix them; the task that enumerated them was chartered not to. They are listed so\n\
-        the class is countable and cannot recur unnoticed on the next severity change,\n\
-        and so #5306 inherits a list instead of a search. **Do not read a census row as\n\
-        unclaimed work, and do not read it as waived either** — no waiver table names it,\n\
-        because the tables key on `.ri` files.\n\
+        in a Rust test fixture — and its host test owns the verdict. δ (#5306) fixed the\n\
+        inline sites its severity flip exposed and kept the rest as deliberate Error\n\
+        pins, so a surviving row is one its host test asserts, tolerates, or never\n\
+        compiles. Rows are listed so the class stays countable and cannot recur\n\
+        unnoticed on the next severity change. **Do not read a census row as unclaimed\n\
+        work, and do not read it as waived either** — no waiver table names it, because\n\
+        the tables key on `.ri` files.\n\
         \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
@@ -7091,8 +7093,9 @@ fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() 
     // The residual is stated as CLASSES, each named by the Rust construct — or,
     // for a host the walker never opens, the PATH — a reader would grep for, and
     // each named INSIDE the limitation rather than anywhere in the document.
-    // Unreached LITERAL SHAPES alone are not the whole residual: #5306 inherits
-    // this list rather than a search, so a host root outside the walker's scope
+    // Unreached LITERAL SHAPES alone are not the whole residual: the next scope
+    // or severity change needs this list rather than a search, so a host root
+    // outside the walker's scope
     // has to be as greppable as an unreached construct, else a site the walker
     // never opened is indistinguishable from one it found clean.
     let limitation = inline_limitation(&md);
