@@ -79,20 +79,20 @@
 //! entries, and would put the two halves of one contract on different gates.
 //!
 //! It needs no `.config/nextest.toml` override, and that is MEASURED rather
-//! than assumed — re-measured by β after adding five tests, rather than
-//! presumed to survive on α's margin. Under the repo nextest config the slowest
-//! single test is **2.449 s debug** (`dense_and_lanczos_agree_at_nonzero_sigma`,
-//! four 80-DOF solves), whole binary **2.461 s over 15 tests**, against the
-//! `[profile.default]` per-test ceiling of
-//! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
-//! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
-//! so that default ceiling is what applies, leaving a **~490x margin** on the
-//! debug figure — taken under ordinary lane contention, and ample against the
-//! worst contention multiplier this repo has recorded. No override is added.
+//! than assumed — re-measured after each batch of new arms, rather than
+//! presumed to survive on an earlier margin. Under the repo nextest config, after
+//! #7602's six non-identity-B arms, the slowest single test is **6.415 s debug**
+//! (`dense_and_lanczos_agree_on_a_non_identity_b`, four 80-DOF solves), whole
+//! binary **6.434 s over 21 tests**, against the `[profile.default]` per-test
+//! ceiling of `slow-timeout = { period = "120s", terminate-after = 10 }` =
+//! 1200 s. No `[[profile.default.overrides]]` block matches
+//! `binary(eigensolve_shift_contract)`, so that default ceiling is what applies,
+//! leaving a **~187x margin** on the debug figure — taken under heavy host
+//! contention (load average ≈ 93 on 32 cores), and ample against the worst
+//! contention multiplier this repo has recorded. No override is added.
 //!
-//! (α's figure for comparison, same conditions: 1.495 s slowest / 1.513 s over
-//! 10 tests. β's five new arms roughly double the wall clock and leave the
-//! order of magnitude of the margin unchanged.)
+//! (Earlier figures, ordinary lane contention: α 1.495 s slowest / 1.513 s over
+//! 10 tests; β 2.449 s / 2.461 s over 15 tests.)
 
 use faer::Side;
 use faer::Mat;
