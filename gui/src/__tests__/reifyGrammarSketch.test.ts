@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { highlightTree, classHighlighter } from '@lezer/highlight';
-import { parser } from '../editor/reifyParser.js';
-import { reifyLRLanguage } from '../editor/reifyLanguage';
+import {
+  countErrorNodes,
+  countNodesNamed,
+  keywordSpans,
+  nodeNamesSpanning,
+  sourceOfNodeNamed,
+} from './lezerProbeHelpers';
 
 /**
  * The constrained-2d-sketch editor surface on the GUI Lezer grammar
@@ -10,83 +14,6 @@ import { reifyLRLanguage } from '../editor/reifyLanguage';
  * `auto_seed` argument. Shapes are pinned by span plus count, never by an
  * error count alone.
  */
-
-// The helpers below are re-declared from `reifyGrammarCorpus.test.ts`, which
-// documents why each exists (a vitest test file exports nothing). Read it for
-// why a count and a span are both needed (#5957).
-
-/** Parse `src` and count the error nodes the Lezer parser inserted. */
-function countErrorNodes(src: string): number {
-  const cursor = parser.parse(src).cursor();
-  let errors = 0;
-  do {
-    if (cursor.type.isError) errors++;
-  } while (cursor.next());
-  return errors;
-}
-
-/** Parse `src` and count the nodes named `name`. */
-function countNodesNamed(src: string, name: string): number {
-  const cursor = parser.parse(src).cursor();
-  let count = 0;
-  do {
-    if (cursor.type.name === name) count++;
-  } while (cursor.next());
-  return count;
-}
-
-/**
- * Node type names of every node whose span is EXACTLY the first occurrence of
- * `text` in `src`, outermost first. Throws when `text` is absent.
- */
-function nodeNamesSpanning(src: string, text: string): string[] {
-  const from = src.indexOf(text);
-  if (from < 0) throw new Error(`no ${JSON.stringify(text)} in: ${src}`);
-  const to = from + text.length;
-  const cursor = parser.parse(src).cursor();
-  const names: string[] = [];
-  do {
-    if (cursor.from === from && cursor.to === to) names.push(cursor.type.name);
-  } while (cursor.next());
-  return names;
-}
-
-/**
- * Source text spanned by the first node named `name`. Throws when no such node
- * exists.
- */
-function sourceOfNodeNamed(src: string, name: string): string {
-  const cursor = parser.parse(src).cursor();
-  do {
-    if (cursor.type.name === name) return src.slice(cursor.from, cursor.to);
-  } while (cursor.next());
-  throw new Error(`no ${name} node in parse of: ${src}`);
-}
-
-/** Source text of every span the editor's highlighter gave the class `cls`. */
-function spansWithClass(src: string, cls: string): string[] {
-  const tree = reifyLRLanguage.parser.parse(src);
-  const spans: string[] = [];
-  highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes(cls)) spans.push(src.slice(from, to));
-  });
-  return spans;
-}
-
-/** Source text of every span the highlighter styled as a keyword. */
-function keywordSpans(src: string): string[] {
-  return spansWithClass(src, 'tok-keyword');
-}
-
-describe('reifyGrammarSketch — helper guards', () => {
-  it('countErrorNodes still reports error nodes on input that cannot parse', () => {
-    expect(countErrorNodes('@@@ !!! ???')).toBeGreaterThan(0);
-  });
-
-  it('countErrorNodes reports zero on input that parses', () => {
-    expect(countErrorNodes('structure def Foo { }')).toBe(0);
-  });
-});
 
 // ── `let` prefixes ──────────────────────────────────────────────────────────
 
