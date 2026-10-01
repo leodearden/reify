@@ -469,8 +469,12 @@ AutoParam {
 // with a solver-determined value. `AutoKeyword` is deliberately NOT a member of
 // `primaryExpression` — upstream keeps it out of `_expression` too — so it has
 // to be admitted at each binding site that accepts it.
+//
+// The `pub`/`priv` and `aux` prefixes transliterate grammar.js
+// `let_declaration`; the compiler parses all three, and rejects `priv`
+// semantically (E_PRIV_REDUNDANT), not in the grammar.
 LetDeclaration {
-  kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
+  (kw<"pub"> | kw<"priv">)? kw<"aux">? kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
 }
 
 // ── Constraint ──────────────────────────────────────────
