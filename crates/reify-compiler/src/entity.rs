@@ -5452,50 +5452,13 @@ fn compile_match_arm_decl_group(
     // `compiled_templates` in every `find_template_with_prelude` call.
     prelude: &PreludeRegistries<'_, '_>,
 ) {
-    // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
-    // are supported in this task; complex expressions are deferred to task 2373.
-    let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
-            Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
-            Some((_, other_ty)) => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' has type {}, expected an enum",
-                        name, other_ty
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "discriminant must be an enum-typed param or let",
-                    )),
-                );
-                return;
-            }
-            None => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' not found in scope",
-                        name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "unresolved identifier",
-                    )),
-                );
-                return;
-            }
-        },
-        _ => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "match-arm discriminant must be a simple identifier in this version",
-                )
-                .with_label(DiagnosticLabel::new(
-                    m.discriminant.span,
-                    "only identifier discriminants are supported (task 2373 extends this)",
-                )),
-            );
-            return;
-        }
+    let Some(MatchArmDiscriminant {
+        cell_id: discriminant_cell_id,
+        enum_name: enum_type_name,
+        ty: discriminant_ty,
+    }) = resolve_match_arm_discriminant(&m.discriminant, scope, enum_defs, diagnostics)
+    else {
+        return;
     };
 
     // Extract the shared logical name from the first arm's member.
@@ -5571,8 +5534,7 @@ fn compile_match_arm_decl_group(
         return;
     }
 
-    let discriminant_ref =
-        CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
+    let discriminant_ref = CompiledExpr::value_ref(discriminant_cell_id, discriminant_ty);
 
     // Validate every arm's pattern against the discriminant enum's variants
     // before compiling guards. A typo like `Hexx` would otherwise compile to a
@@ -5888,6 +5850,82 @@ fn compile_match_arm_decl_group(
         scope
             .match_arm_group_arm_member_types
             .insert(logical_name.clone(), per_arm_member_maps);
+    }
+}
+
+/// The enum a decl-form `match` dispatches on: the discriminant cell, the base
+/// enum's name, and the cell's own declared type (a bare `Type::Enum`, or a
+/// `Type::Applied` that keeps a generic enum's type args).
+struct MatchArmDiscriminant {
+    cell_id: ValueCellId,
+    enum_name: String,
+    ty: Type,
+}
+
+/// Resolve a decl-form `match` discriminant to the enum it dispatches on, or
+/// push a diagnostic and return `None`.  Only simple `Ident` discriminants are
+/// supported in this task; complex expressions are deferred to task 2373.
+///
+/// Enum identity comes from [`base_enum_name`], the crate's single bare-vs-applied
+/// enum oracle (type_compat.rs): an annotated generic-enum param (`Type::Applied`)
+/// is accepted, a generic STRUCTURE's `Type::Applied` — spelled the same way — is
+/// not.  Task #6020 plans one discriminant-to-`EnumDef` resolver,
+/// `match_discriminant_enum` in expr.rs, shared with the expression-form match;
+/// this helper should route through it once it lands.
+fn resolve_match_arm_discriminant(
+    discriminant: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<MatchArmDiscriminant> {
+    match &discriminant.kind {
+        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
+            Some((cell_id, ty)) => match base_enum_name(ty, enum_defs) {
+                Some(enum_name) => Some(MatchArmDiscriminant {
+                    cell_id: cell_id.clone(),
+                    enum_name: enum_name.to_string(),
+                    ty: ty.clone(),
+                }),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' has type {}, expected an enum",
+                            name, ty
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            discriminant.span,
+                            "discriminant must be an enum-typed param or let",
+                        )),
+                    );
+                    None
+                }
+            },
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' not found in scope",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        discriminant.span,
+                        "unresolved identifier",
+                    )),
+                );
+                None
+            }
+        },
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "match-arm discriminant must be a simple identifier in this version",
+                )
+                .with_label(DiagnosticLabel::new(
+                    discriminant.span,
+                    "only identifier discriminants are supported (task 2373 extends this)",
+                )),
+            );
+            None
+        }
     }
 }
 
