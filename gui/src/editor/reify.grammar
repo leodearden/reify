@@ -447,6 +447,8 @@ DefaultValue {
 // arises inside a ConstraintDefinition body. See the `itemStart` note in the
 // @precedence block. Both parenthesised arms need one — a marker on just the
 // first leaves the second's conflict unresolved.
+//
+// The positional `auto(<expr>)` seed is a separate node; see AutoSeed.
 AutoKeyword {
   kw<"auto"> !itemStart "(" kw<"free"> ")" |
   kw<"auto"> !itemStart "(" AutoParamList ")" |
@@ -1702,7 +1704,16 @@ ArgumentList {
 // `VariantConstruction` is admitted here, and NOT in `primaryExpression` — see
 // the long note on that production for why the two positions differ.
 argument {
-  NamedArgument | VariantConstruction | expression
+  NamedArgument | AutoSeed | VariantConstruction | expression
+}
+
+// grammar.js `auto_seed`: a separate node admitted only in `argument_list`.
+// Not a fourth AutoKeyword arm, which would also admit bare positional `auto`
+// that upstream still rejects (task 3808). No marker is needed: `auto` is a
+// context-free `kw`, so `expression` never starts with it. The compiler, not
+// the grammar, rejects the seed outside sketch scope.
+AutoSeed {
+  kw<"auto"> "(" expression ")"
 }
 
 MemberAccess {
