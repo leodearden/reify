@@ -2174,6 +2174,10 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   vector legitimately has bare components (decision D3). The arity-3
 ///   `offset` — the γ RELATION — is never served, which its classifier enforces
 ///   rather than this list.
+/// - **`affine_from_transform`** / **`transform_inverse`** (exactly 1 arg) — a
+///   `Transform` operand whose TRANSLATION is not `Vector3<Length>` (RULING
+///   #6089), named `t.translation`, read through
+///   [`classify_transform_operand_args`], the same classifier as the eval arms.
 ///
 /// Invariant: the twist dimension arms consult [`TWIST_LINEAR_DIM`] and
 /// [`TWIST_ANGULAR_DIM`] — the SAME consts the eval gates use — and read BOTH twist
@@ -2211,9 +2215,10 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 /// - EVERY dimension arm is `Severity::Error` — `transform_log` and BOTH halves of
 ///   `transform_exp` (RULING #6126 for `linear`, RULING #6080 for `angular`), `bbox`
 ///   (task 6081), `affine_translate` / `affine_map` (task 5747, units-length ζ,
-///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11), and ε's
-///   two construction-datum families (task 5746, same PRD, R11 / D4). ONE reason
-///   serves all six rather than one argued per family: a wrong dimension
+///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11), ε's
+///   two construction-datum families (task 5746, same PRD, R11 / D4), and the
+///   Transform consumers (RULING #6089). ONE reason
+///   serves all of them rather than one argued per family: a wrong dimension
 ///   is a design-correctness fault and an outright CONSTRUCTION failure — no twist,
 ///   no BoundingBox, no AffineMap is produced at all — not a drop-and-continue.
 ///   Per Leo's severity amendment (2026-08-19, via esc-6080-6), `reify eval` must
@@ -2224,8 +2229,9 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   two arms joined it there rather than opening a third way.
 ///
 /// `DiagnosticCode` is NOT uniform across the arms, but every DIMENSION arm
-/// agrees. All EIGHT — `transform_log`, BOTH halves of `transform_exp`, `bbox`,
-/// ζ's `affine_translate` / `affine_map` and ε's `plane_*` / `axis_*` — carry the
+/// agrees. All of them — `transform_log`, BOTH halves of `transform_exp`, `bbox`,
+/// ζ's `affine_translate` / `affine_map`, ε's `plane_*` / `axis_*` and the
+/// RULING #6089 Transform consumers — carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
 /// `Severity::Error` runtime dimension rejection of a positional argument). The
@@ -2457,6 +2463,10 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
         // not restate it.
         "offset" => datum_fault_diagnostic(name, classify_offset_plane_args(args).err()),
         "frame_at" => datum_fault_diagnostic(name, classify_frame_at_args(args).err()),
+        // RULING #6089's Transform consumers, on the same shared-classifier footing.
+        "affine_from_transform" | "transform_inverse" => {
+            datum_fault_diagnostic(name, classify_transform_operand_args(args).err())
+        }
         _ => None,
     }
 }
