@@ -50,6 +50,8 @@
 mod apply_transform_integration;
 #[path = "harness_occt/boolean_op_history_integration.rs"]
 mod boolean_op_history_integration;
+#[path = "harness_occt/boolean_single_build_guard.rs"]
+mod boolean_single_build_guard;
 #[path = "harness_occt/conformance_integration.rs"]
 mod conformance_integration;
 #[path = "harness_occt/contains.rs"]

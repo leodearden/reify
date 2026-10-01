@@ -1368,8 +1368,9 @@ pub mod ffi {
         fn reset_boolean_pass_count();
 
         /// Read the calling thread's count of completed OCCT boolean passes —
-        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list,
-        /// counting only the passes this thread performed itself.
+        /// one per binary fuse/cut/common (plain or `*_with_history`) and one
+        /// per fuse_shape_list, counting only the passes this thread performed
+        /// itself.
         fn boolean_pass_count() -> u64;
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
