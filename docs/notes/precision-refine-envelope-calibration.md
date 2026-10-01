@@ -123,6 +123,83 @@ Two branches, ~0.75–0.76 and ~2.04–2.08, alternating with a period of **~0.0
 near 0.30 mm — exactly as §2 reports. A coarse sweep lands on one branch and misses the
 other; the 0.318 mm row sits between two ~2.07 rows.
 
+**Third-branch onset walk, measured 2026-10-01** (task #7266). PRD §2's third branch at
+~1.49 × for `d/R` < 2.5e-4 lies below everything the table above walks (`d` ≥ 0.3 mm, so
+`d/R` ≥ 3e-4). The 388-point sweep that first recorded it (esc-6060-1) left no surviving raw
+data, so this block is that branch's only citable record. It uses the same committed fixture
+and the same method: §4's `probe()` recipe on scratch copies, at P=3 with `timeout 400`. The
+binary, HEAD, kernel and session all differ from §0's. Probe points were chosen with the
+two-ladder branch index `k = m − nV` (PRD §4.1 alt C):
+
+- `k` = 0 predicts a tooth, −1 a tread, −2 the third branch.
+- `k` is a **derived** probe-selection aid. It depends on OCCT internal constants and is
+  never a datum.
+- Each point is either a window midpoint or a bracket just outside a window, so every probe
+  tests a prediction.
+- A uniform grid would alias windows that are 0.02–0.75 µm wide.
+
+**Provenance for this block.** It has its own stamp, deliberately separate from §0's
+identity table:
+
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-09-30 23:35. This is newer than the last `crates/` commit reachable from HEAD (`644ed02f7f`, 21:38 the same evening), so no rebuild was needed |
+| HEAD | `89170727ca` (branch `task/7266`) |
+| kernel | OCCT 7.8: 26 `libTK*.so.7.8` ldd lines, 26 distinct sonames, and `has_occt` live. This was confirmed functionally: every probe below realized and passed the §0 Caveat-2 datum gate. 27 `libTK*.so.7.9` lines are also linked via gmsh, as in the #7128 block (§1.5) |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-31 |
+| load | 108.67 – 222.93 1-min loadavg across the four batches. Per §0 Caveat 1 this affects wall clocks only: 11–49 s per probe |
+
+**Reproduction gate.** Before any new datum was trusted, three published readings and two
+planning-time probes were re-measured:
+
+| d | a (m) | a/d | published |
+|---|---|---|---|
+| 0.30 mm | 6.202e-4 | 2.0673 | 6.202e-4, table above |
+| 0.318 mm | 2.423e-4 | 0.7619 | 2.423e-4, table above |
+| 0.10 mm | 2.078e-4 | 2.0780 | 2.078e-4, `OCCT_SOURCE_FINE` in `crates/reify-eval/tests/representation_within_assertion.rs` |
+| 0.20048 mm | 2.966e-4 | 1.4794 | 2.966e-4, #7266 planning probe (unpublished) |
+| 0.24677 mm | 3.710e-4 | 1.5034 | 3.710e-4, #7266 planning probe (unpublished) |
+
+All five match exactly.
+
+**The walk**, `R` = 1000 mm. Every row emitted the §0 Caveat-2 datum line. Ratios use
+`decimal.Decimal` with `ROUND_HALF_UP` at 4 dp (§4). "Model `k`" is the derived prediction,
+made before the probe; "measured branch" is read off `a/d` alone.
+
+| d | d/R | a (m) | a/d | model `k` | measured branch |
+|---|---|---|---|---|---|
+| 0.10 mm | 1.0000e-4 | 2.078e-4 | 2.0780 | −1 | tread |
+| 0.10047 mm | 1.0047e-4 | 1.511e-4 | 1.5039 | −2 | third |
+| 0.15 mm | 1.5000e-4 | 3.108e-4 | 2.0720 | −1 | tread |
+| 0.15095 mm | 1.5095e-4 | 2.246e-4 | 1.4879 | −2 | third |
+| 0.20 mm | 2.0000e-4 | 4.149e-4 | 2.0745 | −1 | tread |
+| 0.20048 mm | 2.0048e-4 | 2.966e-4 | 1.4794 | −2 | third |
+| 0.22393 mm | 2.2393e-4 | 3.351e-4 | 1.4964 | −2 | third |
+| 0.24193 mm | 2.4193e-4 | 3.609e-4 | 1.4918 | −2 | third |
+| 0.245 mm | 2.4500e-4 | 5.097e-4 | 2.0804 | −1 | tread |
+| 0.24672 mm | 2.4672e-4 | 5.097e-4 | 2.0659 | −1 | tread |
+| 0.24677 mm | 2.4677e-4 | 3.710e-4 | 1.5034 | −2 | third |
+| 0.24682 mm | 2.4682e-4 | 5.149e-4 | **2.0861** | −1 | tread |
+| 0.25176 mm | 2.5176e-4 | 3.680e-4 | 1.4617 | −2 | third |
+| 0.256895 mm | 2.56895e-4 | 1.958e-4 | 0.7622 | 0 | tooth |
+| 0.26219 mm | 2.6219e-4 | 1.998e-4 | 0.7620 | 0 | tooth |
+| 0.28510 mm | 2.8510e-4 | 2.172e-4 | 0.7618 | 0 | tooth |
+| 0.29770 mm | 2.9770e-4 | 2.267e-4 | 0.7615 | 0 | tooth |
+| 0.30 mm | 3.0000e-4 | 6.202e-4 | 2.0673 | −1 | tread |
+| 0.318 mm | 3.1800e-4 | 2.423e-4 | 0.7619 | 0 | tooth |
+
+**Reading.** The model predicts the measured branch at **19/19** points, with no mismatch.
+The lowest tooth observed is 0.256895 mm (`d/R` = 2.569e-4), inside the model's last tooth
+window [0.256877, 0.256909) mm, 0.03 µm wide. The highest third-branch reading is 0.25176 mm
+(`d/R` = 2.518e-4), inside its highest `k` = −2 window [0.251745, 0.251766) mm, 0.02 µm wide.
+The seven third-branch readings measure 1.4617–1.5039; the onset-edge window is the low end
+and the other six lie in 1.4794–1.5039. **Treads persist below the onset.** All six tread
+probes below `d/R` = 2.52e-4 read 2.0659–2.0861, two of them 0.05 µm either side of the
+0.24677 mm window, so 2.5e-4 is where the third branch *starts*, not a boundary below which
+readings leave the tread. Two of those treads (0.245 mm at 2.0804, 0.24682 mm at 2.0861)
+exceed §1.1's sphere sup K of 2.079. §1.1 is the supremum over this section's own walk
+(`d` ≥ 0.3 mm) and §3's cap decision was made against it, so §1.1 is left as is.
+
 ### 1.3 Cone, torus, fillet blend — walking the regime, not sampling it
 
 Spot values are actively misleading on these classes, so each was walked.
