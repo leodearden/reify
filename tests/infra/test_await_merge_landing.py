@@ -6,7 +6,10 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only; the member is the thin
 wrapper tests/infra/test_await_merge_landing.sh.
 """
 
+import contextlib
 import importlib.util
+import io
+import shlex
 import sys
 import unittest
 from pathlib import Path
@@ -201,6 +204,79 @@ class AwaitLandingLoopTests(unittest.TestCase):
         self.assertIs(outcome.verdict, Verdict.PENDING)
         self.assertEqual(outcome.merge_status, {"state": "unknown"})
         self.assertEqual(outcome.polls, 4)
+
+
+class OptionsAndRearmTests(unittest.TestCase):
+    EVERY_FLAG = [
+        "--commit", "abc", "--fetch", "origin", "--ref", "origin/main",
+        "--escalation-url", "http://x/mcp", "--repo", "/tmp/r",
+        "--request-id", "mr-1", "--interval", "15", "--host-timeout-ms", "7200000",
+    ]
+
+    def _assert_usage_error(self, argv):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                aml.parse_options(argv)
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_defaults(self):
+        options = aml.parse_options(["--commit", "abc", "--task-id", "7960"])
+        self.assertEqual(options.commit, "abc")
+        self.assertEqual(options.host_timeout_ms, aml.MONITOR_TIMEOUT_CAP_MS)
+        self.assertEqual(aml.MONITOR_TIMEOUT_CAP_MS, 600000)
+        self.assertEqual(options.interval_seconds, 30)
+        self.assertEqual(options.ref, "main")
+        self.assertIsNone(options.fetch_remote)
+        self.assertIsNone(options.escalation_url)
+        self.assertEqual(options.repo, REPO_ROOT)
+        self.assertEqual(options.selector,
+                         aml.MergeSelector(aml.SelectorKind.TASK_ID, "7960"))
+        self.assertEqual(options.selector.kind.value, "task_id")
+
+    def test_monitor_cap_budget_leaves_the_probe_round_reserve(self):
+        budget = aml.invocation_budget_seconds(600000)
+        self.assertGreater(budget, 0)
+        self.assertLess(budget, 600)
+        self.assertEqual(budget + aml.PROBE_ROUND_RESERVE_SECONDS, 600)
+        self.assertEqual(aml.invocation_budget_seconds(7200000),
+                         7200 - aml.PROBE_ROUND_RESERVE_SECONDS)
+
+    def test_host_deadline_inside_the_reserve_clamps_to_one_round(self):
+        self.assertEqual(aml.invocation_budget_seconds(1000), 0)
+
+    def test_usage_errors_exit_2(self):
+        cases = {
+            "no selector": ["--commit", "abc"],
+            "two selectors": ["--commit", "abc", "--task-id", "1",
+                              "--request-id", "mr-1"],
+            "no commit": ["--task-id", "1"],
+            "zero interval": ["--commit", "abc", "--task-id", "1", "--interval", "0"],
+            "negative interval": ["--commit", "abc", "--task-id", "1",
+                                  "--interval", "-5"],
+            "negative host timeout": ["--commit", "abc", "--task-id", "1",
+                                      "--host-timeout-ms", "-1"],
+        }
+        for label, argv in cases.items():
+            with self.subTest(label):
+                self._assert_usage_error(argv)
+
+    def test_rearm_argv_round_trips_every_flag(self):
+        options = aml.parse_options(self.EVERY_FLAG)
+        self.assertEqual(aml.parse_options(aml.rearm_argv(options)), options)
+
+    def test_rearm_argv_round_trips_defaults_explicitly(self):
+        options = aml.parse_options(["--commit", "abc", "--branch", "task/7960"])
+        argv = aml.rearm_argv(options)
+        self.assertEqual(aml.parse_options(argv), options)
+        self.assertIn("--repo", argv)
+        self.assertIn(str(REPO_ROOT), argv)
+
+    def test_rearm_command_runs_this_script_under_python3(self):
+        options = aml.parse_options(self.EVERY_FLAG)
+        words = shlex.split(aml.rearm_command(options))
+        self.assertEqual(words[0], "python3")
+        self.assertEqual(words[1], str(TOOL_PATH.resolve()))
+        self.assertEqual(aml.parse_options(words[2:]), options)
 
 
 if __name__ == "__main__":
