@@ -7,11 +7,15 @@ wrapper tests/infra/test_await_merge_landing.sh.
 """
 
 import contextlib
+import functools
 import importlib.util
 import io
 import json
+import os
 import shlex
+import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 import uuid
@@ -20,6 +24,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_PATH = REPO_ROOT / "scripts" / "await-merge-landing.py"
+GIT_ENV_SCRUB_LIB = REPO_ROOT / "scripts" / "lib_git_env_scrub.sh"
 
 
 def _load_tool():
@@ -430,6 +435,195 @@ class MergeStatusClientTests(unittest.TestCase):
             url = stub.url
         with self.assertRaises(aml.ProbeUnavailable):
             _client(url).status()
+
+
+# Command-line config and identity travel to children in these; an inherited
+# value outranks the fixture's own repo, as pre-merge-commit's relative
+# GIT_INDEX_FILE outranks `git -C` (task #7106).
+_GIT_CONFIG_INJECTION_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+_GIT_CONFIG_INJECTION_KEYS = frozenset({"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"})
+_GIT_IDENTITY_PREFIXES = ("GIT_AUTHOR_", "GIT_COMMITTER_")
+
+
+@functools.cache
+def repo_redirect_vars():
+    """The one list of repo-redirect git variables, read from its bash home."""
+    completed = subprocess.run(
+        ["bash", "-c", 'source "$1"; printf %s "$REIFY_GIT_ENV_SCRUB_VARS"',
+         "_", str(GIT_ENV_SCRUB_LIB)],
+        capture_output=True, text=True, check=True,
+    )
+    names = frozenset(completed.stdout.split())
+    if not names:
+        raise RuntimeError(f"{GIT_ENV_SCRUB_LIB} yielded no REIFY_GIT_ENV_SCRUB_VARS")
+    return names
+
+
+def _is_ambient_git_state(key):
+    return (
+        key in repo_redirect_vars()
+        or key in _GIT_CONFIG_INJECTION_KEYS
+        or key.startswith(_GIT_CONFIG_INJECTION_PREFIXES)
+        or key.startswith(_GIT_IDENTITY_PREFIXES)
+    )
+
+
+@functools.cache
+def scrubbed_env():
+    env = {k: v for k, v in os.environ.items() if not _is_ambient_git_state(k)}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+def git(repo, *args):
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.test",
+         *args],
+        capture_output=True, text=True, env=scrubbed_env(),
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed:{_diag(completed)}")
+    return completed.stdout.strip()
+
+
+def _diag(completed):
+    return (f"\n--- exit {completed.returncode} ---\n--- stdout ---\n"
+            f"{completed.stdout}\n--- stderr ---\n{completed.stderr}")
+
+
+def _commit_file(repo, name, message):
+    (repo / name).write_text(f"{name}\n")
+    git(repo, "add", "--", name)
+    git(repo, "commit", "-q", "-m", message)
+
+
+class EndToEndTests(unittest.TestCase):
+    """The real script as a subprocess, against a throwaway repo and the stub.
+    Every run passes --host-timeout-ms 1000: budget 0, one round, no sleep."""
+
+    SELECTOR = ("--task-id", "7960")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="await-merge-landing-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.stub = self.enterContext(StubEscalationServer())
+        self.repo, self.sha_b = self._make_repo(self.tmp / "repo")
+
+    def _make_repo(self, repo):
+        """main has commit A; `feature` has commit B, not merged."""
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        _commit_file(repo, "a.txt", "A")
+        git(repo, "switch", "-q", "-c", "feature")
+        _commit_file(repo, "b.txt", "B")
+        sha_b = git(repo, "rev-parse", "HEAD")
+        git(repo, "switch", "-q", "main")
+        (repo / ".mcp.json").write_text(json.dumps(
+            {"mcpServers": {"escalation": {"type": "http", "url": self.stub.url}}}))
+        return repo, sha_b
+
+    def _spawn(self, argv):
+        return subprocess.run(
+            argv, capture_output=True, text=True, env=scrubbed_env(), cwd=self.tmp,
+            timeout=120,
+        )
+
+    def run_tool(self, *args):
+        return self._spawn(["python3", str(TOOL_PATH), "--repo", str(self.repo),
+                            "--host-timeout-ms", "1000", *args])
+
+    def event(self, completed, exit_code):
+        self.assertEqual(completed.returncode, exit_code, _diag(completed))
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, _diag(completed))
+        return json.loads(lines[0])
+
+    def assert_usage_error(self, completed):
+        self.assertEqual(completed.returncode, 2, _diag(completed))
+        self.assertEqual(completed.stdout, "", _diag(completed))
+        self.assertNotEqual(completed.stderr.strip(), "", _diag(completed))
+
+    def test_unmerged_commit_is_pending_with_a_rearm_command(self):
+        event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 75)
+        self.assertEqual(event["verdict"], "PENDING")
+        self.assertEqual(event["commit"], self.sha_b)
+        self.assertEqual(event["ref"], "main")
+        self.assertEqual(event["merge_status"]["state"], "queued")
+        self.assertIn("rearm_command", event)
+        self.assertEqual(self.stub.tool_calls(), [
+            {"name": "merge_status", "arguments": {"task_id": "7960"}},
+        ])
+
+    def test_rearm_command_reruns_the_identical_wait(self):
+        first = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 75)
+        again = self.event(self._spawn(shlex.split(first["rearm_command"])), 75)
+        self.assertEqual(again["verdict"], "PENDING")
+        self.assertEqual(again["commit"], self.sha_b)
+        self.assertEqual(again["rearm_command"], first["rearm_command"])
+
+    def test_merged_commit_is_landed_by_git_ancestry(self):
+        git(self.repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 0)
+        self.assertEqual(event["verdict"], "LANDED")
+        self.assertEqual(event["source"], "git_ancestry")
+        self.assertNotIn("rearm_command", event)
+
+    def test_branch_commit_is_resolved_once_so_rearm_survives_branch_deletion(self):
+        first = self.event(self.run_tool("--commit", "feature", *self.SELECTOR), 75)
+        self.assertEqual(first["commit"], self.sha_b)
+        git(self.repo, "tag", "keep", "feature")
+        git(self.repo, "branch", "-q", "-D", "feature")
+        again = self.event(self._spawn(shlex.split(first["rearm_command"])), 75)
+        self.assertEqual(again["commit"], self.sha_b)
+
+    def test_terminal_merge_status_sets_the_exit_code(self):
+        for state, verdict, exit_code in (("blocked", "BLOCKED", 3),
+                                          ("abandoned", "FAILED", 1)):
+            with self.subTest(state=state):
+                self.stub.reply = {"state": state}
+                event = self.event(
+                    self.run_tool("--commit", self.sha_b, *self.SELECTOR), exit_code)
+                self.assertEqual(event["verdict"], verdict)
+                self.assertEqual(event["source"], "merge_status")
+
+    def test_escalation_server_down_degrades_to_git_only(self):
+        with StubEscalationServer() as stopped:
+            closed_url = stopped.url
+        event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR,
+                                         "--escalation-url", closed_url), 75)
+        self.assertEqual(event["verdict"], "PENDING")
+        self.assertIsNotNone(event["probe_error"])
+
+    def test_fetch_sees_a_landing_the_local_remote_ref_has_not(self):
+        origin, work = self.tmp / "origin.git", self.tmp / "work"
+        git(self.tmp, "clone", "-q", "--bare", str(self.repo), str(origin))
+        git(self.repo, "remote", "add", "origin", str(origin))
+        git(self.repo, "fetch", "-q", "origin")
+        git(self.tmp, "clone", "-q", str(origin), str(work))
+        git(work, "merge", "-q", "--no-ff", "-m", "merge feature", "origin/feature")
+        git(work, "push", "-q", "origin", "main")
+        args = ("--commit", self.sha_b, *self.SELECTOR, "--ref", "origin/main")
+        stale = self.event(self.run_tool(*args), 75)
+        self.assertEqual(stale["verdict"], "PENDING")
+        fetched = self.event(self.run_tool(*args, "--fetch", "origin"), 0)
+        self.assertEqual(fetched["verdict"], "LANDED")
+        self.assertEqual(fetched["source"], "git_ancestry")
+
+    def test_unresolvable_commit_is_a_usage_error(self):
+        self.assert_usage_error(self.run_tool("--commit", "deadbeef" * 5, *self.SELECTOR))
+
+    def test_unresolvable_ref_is_a_usage_error(self):
+        self.assert_usage_error(self.run_tool("--commit", self.sha_b, *self.SELECTOR,
+                                              "--ref", "nosuchref"))
+
+    def test_no_escalation_url_is_a_usage_error(self):
+        (self.repo / ".mcp.json").unlink()
+        self.assert_usage_error(self.run_tool("--commit", self.sha_b, *self.SELECTOR))
+
+    def test_missing_selector_is_a_usage_error(self):
+        self.assert_usage_error(self.run_tool("--commit", self.sha_b))
 
 
 if __name__ == "__main__":
