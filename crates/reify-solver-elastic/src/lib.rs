@@ -563,6 +563,9 @@ pub mod shell_result;
 pub mod shell_solve;
 pub mod solver;
 pub(crate) mod sparse_util;
+// Task 7602: a sparse Cholesky factor whose G⁻¹ / G⁻ᵀ halves apply separately,
+// for the Cholesky-symmetrized shift-invert Lanczos in `eigensolve`.
+pub mod split_cholesky;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
@@ -691,6 +694,7 @@ pub use eigensolve::{
     SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
     solve_eigen_shift_invert, try_solve_eigen_shift_invert,
 };
+pub use split_cholesky::SplitCholesky;
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
 pub use buckling_kernel::{
