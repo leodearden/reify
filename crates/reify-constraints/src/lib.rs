@@ -68,7 +68,10 @@ pub use solver::build_centrality_objective;
 pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    IndeterminateReason, Satisfaction, TransientReason, Value,
+};
 
 /// Does any leaf operand of `expr` resolve to `Undef` in `values`?
 ///
@@ -99,11 +102,11 @@ fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bo
 /// Classify `Value::Undef` by leaf-ValueRef definedness.
 ///
 /// Returns:
-/// - `(true, names)` — at least one leaf is `Undef`; `names` lists the undefined
-///   cell names (deduped, sorted alphabetically) via `ValueCellId::Display`.
-/// - `(false, kinds)` — all leaves are defined (or the expression has no ValueRefs);
-///   `kinds` lists the distinct `value_kind_label` strings of the defined leaf values
-///   (deduped, sorted alphabetically).
+/// - `UndefInputs { cells }` — at least one leaf is `Undef`; `cells` lists the
+///   undefined cells, deduped and ordered by their `ValueCellId::Display` name.
+/// - `OperatorUndefinedForKinds { kinds }` — all leaves are defined (or the
+///   expression has no ValueRefs); `kinds` lists the distinct `value_kind_label`
+///   strings of the defined leaf values (deduped, sorted alphabetically).
 ///
 /// ## CrossSubGeometryRef
 /// `CompiledExpr::collect_value_refs()` collects both `ValueRef` and
@@ -118,38 +121,27 @@ fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bo
 fn classify_undef(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
-) -> (bool, Vec<String>) {
-    use std::collections::HashSet;
-
+) -> TransientReason {
     let leaf_ids = expr.collect_value_refs();
 
     if !any_undef(&leaf_ids, values) {
-        let mut defined_kinds: Vec<String> = Vec::new();
-        let mut kinds_seen: HashSet<String> = HashSet::new();
-        for id in &leaf_ids {
-            let v = values.get_or_undef(id);
-            let kind = value_kind_label(&v);
-            if kinds_seen.insert(kind.clone()) {
-                defined_kinds.push(kind);
-            }
-        }
-        defined_kinds.sort();
-        return (false, defined_kinds);
+        let mut kinds: Vec<String> = leaf_ids
+            .iter()
+            .map(|id| value_kind_label(&values.get_or_undef(id)))
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        return TransientReason::OperatorUndefinedForKinds { kinds };
     }
 
-    let mut undef_names: Vec<String> = Vec::new();
-    let mut undef_seen: HashSet<String> = HashSet::new();
-    for id in &leaf_ids {
-        let v = values.get_or_undef(id);
-        if v.is_undef() {
-            let name = id.to_string();
-            if undef_seen.insert(name.clone()) {
-                undef_names.push(name);
-            }
-        }
-    }
-    undef_names.sort();
-    (true, undef_names)
+    let mut cells: Vec<reify_core::ValueCellId> = leaf_ids
+        .into_iter()
+        .filter(|id| values.get(id).is_none_or(Value::is_undef))
+        .collect();
+    cells.sort();
+    cells.dedup();
+    cells.sort_by_cached_key(ToString::to_string);
+    TransientReason::UndefInputs { cells }
 }
 
 /// A short human-readable label for the kind of a defined `Value`.
@@ -190,9 +182,9 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     ctx
                 };
                 let value = reify_expr::eval_expr(expr, &ctx);
-                let (satisfaction, diagnostics) = match value {
+                let (satisfaction, diagnostics, indeterminate_reason) = match value {
                     Value::Bool(true) => {
-                        (Satisfaction::Satisfied, ConstraintDiagnostics::default())
+                        (Satisfaction::Satisfied, ConstraintDiagnostics::default(), None)
                     }
                     Value::Bool(false) => (
                         Satisfaction::Violated,
@@ -202,39 +194,21 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     .with_code(DiagnosticCode::ConstraintViolated),
                             ],
                         },
+                        None,
                     ),
                     Value::Undef => {
-                        let (has_undef, items) = classify_undef(expr, input.values);
-                        let msg = if has_undef {
-                            format!(
-                                "constraint {} indeterminate: undefined inputs: {}",
-                                id,
-                                items.join(", ")
-                            )
-                        } else {
-                            // All leaves are defined (or the expr has no ValueRefs) but
-                            // the operator produced Undef; report the distinct operand kinds.
-                            if items.is_empty() {
-                                format!(
-                                    "constraint {} indeterminate: operator undefined for these operand kinds",
-                                    id
-                                )
-                            } else {
-                                format!(
-                                    "constraint {} indeterminate: operator undefined for these operand kinds: {}",
-                                    id,
-                                    items.join(", ")
-                                )
-                            }
-                        };
+                        let reason =
+                            IndeterminateReason::Transient(classify_undef(expr, input.values));
+                        let message = format!("constraint {} indeterminate: {}", id, reason);
                         (
                             Satisfaction::Indeterminate,
                             ConstraintDiagnostics {
                                 messages: vec![
-                                    Diagnostic::warning(msg)
+                                    Diagnostic::warning(message)
                                         .with_code(DiagnosticCode::ConstraintIndeterminate),
                                 ],
                             },
+                            Some(reason),
                         )
                     }
                     _ => (
@@ -248,6 +222,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                 .with_code(DiagnosticCode::ConstraintViolated),
                             ],
                         },
+                        None,
                     ),
                 };
 
@@ -255,6 +230,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     id: id.clone(),
                     satisfaction,
                     diagnostics,
+                    indeterminate_reason,
                 }
             })
             .collect()

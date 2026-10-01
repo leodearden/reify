@@ -623,6 +623,7 @@ impl Engine {
                         id,
                         satisfaction,
                         diagnostics: ConstraintDiagnostics { messages },
+                        indeterminate_reason: None,
                     });
                     any_rw = true;
                 }

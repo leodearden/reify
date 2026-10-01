@@ -170,6 +170,7 @@ impl ConstraintChecker for MockConstraintChecker {
                         id: id.clone(),
                         satisfaction,
                         diagnostics: ConstraintDiagnostics::default(),
+                        indeterminate_reason: None,
                     }
                 })
                 .collect();
@@ -191,6 +192,7 @@ impl ConstraintChecker for MockConstraintChecker {
                     id: id.clone(),
                     satisfaction,
                     diagnostics: ConstraintDiagnostics::default(),
+                    indeterminate_reason: None,
                 }
             })
             .collect()
@@ -277,6 +279,7 @@ impl OptimizedImpl for MockOptimizedImpl {
                     id: id.clone(),
                     satisfaction,
                     diagnostics: ConstraintDiagnostics::default(),
+                    indeterminate_reason: None,
                 }
             })
             .collect();
