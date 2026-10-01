@@ -28,6 +28,7 @@ pub mod color;
 pub mod constraint;
 pub mod expr;
 pub mod geometry;
+pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
