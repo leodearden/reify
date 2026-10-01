@@ -4501,6 +4501,7 @@ mod tests {
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
         extract_loss_factor, extract_reference_direction, face_company, face_realization,
         frobenius_norm,
+        modal_convergence_warning,
         mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
@@ -5387,6 +5388,64 @@ mod tests {
             "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
             result.diagnostics,
         );
+    }
+
+    /// #7602: `converged` can now be false with every requested mode returned
+    /// — a pair failed the eigensolver's post-solve residual check — and the
+    /// warning must say THAT, not "returned 2 of 2 … partial".
+    ///
+    /// (a) A shortfall alone keeps today's text verbatim.
+    #[test]
+    fn modal_convergence_warning_keeps_the_shortfall_text_verbatim() {
+        let d = modal_convergence_warning(1, 2, 0).expect("a shortfall warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert_eq!(
+            d.message,
+            "W_ModalConvergence: eigensolver returned 1 of 2 requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes).",
+        );
+    }
+
+    /// (b) Every mode returned, some unverified: name the residual-check
+    /// failure, and never call the result partial.
+    #[test]
+    fn modal_convergence_warning_names_unverified_modes_without_calling_them_partial() {
+        let d = modal_convergence_warning(2, 2, 1).expect("an unverified mode warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+        assert!(d.message.contains("not verified eigenpairs"), "{}", d.message);
+        assert!(!d.message.contains("partial"), "{}", d.message);
+        assert!(!d.message.contains("returned 2 of 2"), "{}", d.message);
+    }
+
+    /// (c) Both at once: one diagnostic carrying both facts.
+    #[test]
+    fn modal_convergence_warning_carries_both_facts_in_one_diagnostic() {
+        let d = modal_convergence_warning(2, 3, 1).expect("both conditions warn");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(d.message.contains("returned 2 of 3 requested modes"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+    }
+
+    /// (d) Neither: no warning.
+    #[test]
+    fn modal_convergence_warning_is_silent_on_a_verified_full_result() {
+        assert!(modal_convergence_warning(2, 2, 0).is_none());
     }
 
     /// Amendment (suggestion 1 / robustness): an under-constrained model must NOT
