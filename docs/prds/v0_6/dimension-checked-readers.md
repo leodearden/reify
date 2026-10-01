@@ -173,13 +173,13 @@ Six legs. Legs A–D are the soundness work; E is the guard; F is the documented
 
 ### Leg A — one shared acceptance family, reachable from both crates
 
-`arg_acceptance` today lives at `reify-eval/src/arg_acceptance.rs` and is `pub(crate)`
-(`reify-eval/src/lib.rs:93`). *(pre-relocation; #5791 moved the module to
-`crates/reify-ir/src/arg_acceptance.rs`)* **`reify-stdlib` does not and cannot depend on
-`reify-eval`** (the edge runs the other way — `reify-eval/Cargo.toml` normal-deps
-`reify-stdlib`), so the flexure / joint / trajectory / loop-closure / fea readers cannot reach
-it. Symmetrically, `reify-stdlib`'s `helpers.rs:229` `validate_dimensioned_scalar` is
-`pub(crate)` and unreachable from `reify-eval`.
+At PRD authoring *(pre-relocation; #5791 moved the module to
+`crates/reify-ir/src/arg_acceptance.rs`)*, `arg_acceptance` lived at
+`reify-eval/src/arg_acceptance.rs` and was `pub(crate)` (`reify-eval/src/lib.rs:93`).
+**`reify-stdlib` does not and cannot depend on `reify-eval`** (the edge runs the other way —
+`reify-eval/Cargo.toml` normal-deps `reify-stdlib`), so the flexure / joint / trajectory /
+loop-closure / fea readers could not reach it there. Symmetrically, `reify-stdlib`'s
+`helpers.rs:229` `validate_dimensioned_scalar` is `pub(crate)` and unreachable from `reify-eval`.
 
 Resolution: **relocate the module verbatim to `reify-ir`** (`reify_ir::arg_acceptance` — the
 lowest crate that owns `Value`, and it already depends on `reify-core` for `DimensionVector`),
