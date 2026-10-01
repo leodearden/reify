@@ -105,6 +105,13 @@ _LIBTEST_RESULT = re.compile(
 )
 _LIBTEST_BINARY_HEADER = re.compile(r"^\s+(?:Running \S.* \(.+\)|Doc-tests \S+)$")
 _CARGO_TARGET_FAILED = re.compile(r"^error: test failed, to rerun pass ")
+_NEXTEST_START = re.compile(r"^\s*Starting (\d+) tests? across (\d+) binar(?:y|ies)\b")
+_NEXTEST_SUMMARY = re.compile(
+    r"^\s*Summary \[\s*[\d.]+s\]\s+(?:(\d+)/)?(\d+) tests? run: (.*)$"
+)
+_NEXTEST_PARENTHETICAL = re.compile(r"\s*\([^)]*\)")
+_NEXTEST_OUTCOME = re.compile(r"^(\d+) (.+)$")
+_SKIM_SUMMARY = re.compile(r"^PASS: (\d+) \| FAIL: (\d+) \| SKIP: (\d+)$")
 
 
 def _match_libtest(line_no: int, line: str) -> Summary | None:
@@ -120,28 +127,112 @@ def _match_libtest(line_no: int, line: str) -> Summary | None:
     )
 
 
+def _nextest_outcomes(tail: str) -> dict[str, int] | None:
+    """`2 passed (1 slow), 1 timed out` -> {'passed': 2, 'timed out': 1}.
+
+    Parentheticals annotate passed tests and are not outcomes. A part that
+    does not parse rejects the whole line, so the run reads as unfinished.
+    """
+    outcomes: dict[str, int] = {}
+    for part in _NEXTEST_PARENTHETICAL.sub("", tail).split(", "):
+        match = _NEXTEST_OUTCOME.match(part)
+        if match is None:
+            return None
+        label = match.group(2)
+        outcomes[label] = outcomes.get(label, 0) + int(match.group(1))
+    return outcomes
+
+
+def _match_nextest_summary(line_no: int, line: str,
+                           binaries: int | None) -> Summary | None:
+    match = _NEXTEST_SUMMARY.match(line)
+    if match is None:
+        return None
+    outcomes = _nextest_outcomes(match.group(3))
+    if outcomes is None:
+        return None
+    run_count, total = match.group(1), int(match.group(2))
+    passed = outcomes.pop("passed", 0)
+    skipped = outcomes.pop("skipped", 0)
+    failed = sum(outcomes.values())
+    return Summary(
+        dialect=Dialect.NEXTEST, line=line_no, passed=passed, failed=failed,
+        skipped=skipped, filtered_out=0, binaries=binaries,
+        reported_failure=failed > 0,
+        complete=(run_count is None or int(run_count) == total),
+    )
+
+
+def _match_skim(line_no: int, line: str) -> Summary | None:
+    match = _SKIM_SUMMARY.match(line)
+    if match is None:
+        return None
+    passed, failed, skipped = map(int, match.groups())
+    return Summary(
+        dialect=Dialect.SKIM, line=line_no, passed=passed, failed=failed,
+        skipped=skipped, filtered_out=0, binaries=None,
+        reported_failure=failed > 0,
+    )
+
+
+class _TallyPass:
+    """Mutable state of one pass over a capture; its product is a frozen Tally.
+
+    A libtest binary header awaits its result line. A nextest `Starting`
+    header opens a region that its `Summary` line closes; libtest lines inside
+    the region are replayed output or per-test noise, so they are ignored.
+    """
+
+    def __init__(self) -> None:
+        self.summaries: list[Summary] = []
+        self.cargo_target_failures = 0
+        self.unfinished_binaries = 0
+        self.awaiting_libtest_result = False
+        self.in_nextest_region = False
+        self.nextest_binaries: int | None = None
+
+    def feed(self, line_no: int, line: str) -> None:
+        if start := _NEXTEST_START.match(line):
+            self._settle_unfinished()
+            self.in_nextest_region = True
+            self.nextest_binaries = int(start.group(2))
+        elif summary := _match_nextest_summary(line_no, line, self.nextest_binaries):
+            self.summaries.append(summary)
+            self.in_nextest_region = False
+            self.nextest_binaries = None
+        elif summary := _match_skim(line_no, line):
+            self.summaries.append(summary)
+        elif self.in_nextest_region:
+            return
+        elif summary := _match_libtest(line_no, line):
+            self.summaries.append(summary)
+            self.awaiting_libtest_result = False
+        elif _LIBTEST_BINARY_HEADER.match(line):
+            self._settle_unfinished()
+            self.awaiting_libtest_result = True
+        elif _CARGO_TARGET_FAILED.match(line):
+            self.cargo_target_failures += 1
+            self.awaiting_libtest_result = False
+
+    def finish(self) -> Tally:
+        self._settle_unfinished()
+        return Tally(tuple(self.summaries), self.cargo_target_failures,
+                     self.unfinished_binaries)
+
+    def _settle_unfinished(self) -> None:
+        """Count a binary or nextest run that a new one (or EOF) cut short."""
+        if self.awaiting_libtest_result or self.in_nextest_region:
+            self.unfinished_binaries += 1
+        self.awaiting_libtest_result = False
+        self.in_nextest_region = False
+
+
 def tally_lines(lines: Iterable[str]) -> Tally:
     """Tally a capture in one pass; line N of `lines` is reported as line N."""
-    summaries: list[Summary] = []
-    cargo_target_failures = 0
-    unfinished_binaries = 0
-    awaiting_result = False
+    tally_pass = _TallyPass()
     for line_no, raw in enumerate(lines, start=1):
-        line = _ANSI_CSI.sub("", raw).rstrip()
-        summary = _match_libtest(line_no, line)
-        if summary is not None:
-            summaries.append(summary)
-            awaiting_result = False
-        elif _LIBTEST_BINARY_HEADER.match(line):
-            if awaiting_result:
-                unfinished_binaries += 1
-            awaiting_result = True
-        elif _CARGO_TARGET_FAILED.match(line):
-            cargo_target_failures += 1
-            awaiting_result = False
-    if awaiting_result:
-        unfinished_binaries += 1
-    return Tally(tuple(summaries), cargo_target_failures, unfinished_binaries)
+        tally_pass.feed(line_no, _ANSI_CSI.sub("", raw).rstrip())
+    return tally_pass.finish()
 
 
 def tally_text(text: str) -> Tally:
