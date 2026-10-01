@@ -317,9 +317,11 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
-# stderr signatures that mean "the probe ran but its target file was not there".
-# Both spellings occur: Rust's io::Error renders ENOENT as "(os error 2)", while
-# Python/CLI wrappers render the strerror text.  Matched case-insensitively.
+# ENOENT signatures, matched case-insensitively.  Both spellings occur: Rust's
+# io::Error renders ENOENT as "(os error 2)", while Python/CLI wrappers render
+# the strerror text.  A signature counts only on a stderr line that also names
+# the probe's own fixture (pcc.fixture_argument), because an ENOENT about any
+# other path is not evidence that the probe's target was absent.
 #
 # The two are deliberately NOT the same kind of pattern.  The strerror text is a
 # complete phrase, so a plain substring test carries no prefix hazard.  The
@@ -333,8 +335,14 @@ _FIXTURE_ABSENT_PHRASE = "no such file or directory"
 _FIXTURE_ABSENT_ERRNO_RE = re.compile(r"os error 2(?![0-9])")
 
 
+def _reports_enoent(line: str) -> bool:
+    lowered = line.lower()
+    return (_FIXTURE_ABSENT_PHRASE in lowered
+            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
+
+
 def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
-    """True iff the record's captured stderr says the probe target did not exist.
+    """True iff the record's captured stderr says the probe's fixture did not exist.
 
     Detection is STDERR-SIGNATURE based, not filesystem based, deliberately.
     Re-stat-ing the fixture here would be a time-of-check/time-of-run split: the
@@ -369,30 +377,29 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     load-bearing: a bare trailing `os error 2` at end-of-string is a real
     spelling and must still match.
 
-    KNOWN LIMITATION (semantic half, not fixed here): the strerror PHRASE is
-    still an unanchored substring test against arbitrary captured stderr, so a
-    genuine FAIL whose EXPECTED diagnostic legitimately quotes that text — e.g.
-    a `rejection` premise asserting that reify emits a good error message for an
-    unresolvable import — is mis-routed to FIXTURE_ABSENT and stops blocking.
-    The damage is bounded: a mis-route only ever downgrades BLOCKS to
-    INCOMPLETE, never INCOMPLETE to PASS, because a fixture-absent record does
-    not count as verifying.  The principled fix is for α to tag the record
-    structurally at probe time instead of synthesize inferring intent from
-    prose; filed as follow-up ticket tkt_0RTA2N4QBVAPDQ6AYE45GS0CP7.
+    The signature is ANCHORED TO THE TARGET: it must sit on a stderr line that
+    also names the probe's own fixture, read from the record's argv by
+    pcc.fixture_argument (reify renders `Error reading <fixture>: ...`).  That
+    excludes ENOENT text a genuine FAIL merely quotes, an ENOENT about some
+    other path (an imported module, a data file, the α script itself), and a
+    signature on a line that does not name the fixture.  An argv naming no
+    fixture never qualifies.
 
     Args:
         rec: An α --json result record.
 
     Returns:
-        True when the stderr carries a fixture-absent signature and is not α's
-        binary-not-found sentinel.
+        True when a stderr line names the probe's fixture and carries an ENOENT
+        signature, and the stderr is not α's binary-not-found sentinel.
     """
     stderr = str(rec.get("stderr", ""))
     if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
         return False
-    lowered = stderr.lower()
-    return (_FIXTURE_ABSENT_PHRASE in lowered
-            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
+    fixture = pcc.fixture_argument(normalize_command(rec.get("command")))
+    if not fixture:
+        return False
+    return any(fixture in line and _reports_enoent(line)
+               for line in stderr.splitlines())
 
 
 def classify_record(rec: Dict[str, Any]) -> str:
@@ -433,8 +440,8 @@ def classify_record(rec: Dict[str, Any]) -> str:
         INCOMPLETE.
       - FIXTURE_ABSENT: a harness-level ENOENT (e.g. `python3: can't open file
         'scripts/prd-capability-check.py': [Errno 2] No such file or
-        directory`, or a mis-resolved repo root) matches the ENOENT phrase and
-        would be reported as "the fixture is the leaf's own deliverable" — the
+        directory`, or a mis-resolved repo root) can carry the fixture-absent
+        signature and would be reported as "the fixture is the leaf's own deliverable" — the
         opposite diagnosis, and it stops blocking.  The carve-out's rationale
         (a not-yet-written `.ri` deliverable) is about a PROBE verdict; it has
         no purchase on a harness error.
