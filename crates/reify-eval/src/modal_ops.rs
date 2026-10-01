@@ -1279,7 +1279,8 @@ fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
 
 /// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
 /// `type_name` is `"Part"`.  All four production echo sites emit this value
-/// for the `part` field until the Part registry is wired (#7097).
+/// for the `part` field until `.part` converges on the analysed body's
+/// `GeometryHandleRef` join key (#7097).
 /// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
 /// other degenerate builders in this file.
 /// Returns the topology `Value` to embed in a ModalResult.

@@ -41,9 +41,11 @@
 //      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
 //      marker declared in this module (introduced by #4578, per
 //      `stdlib-surface-type-substrate.md` §12 open-question-3 — see
-//      `structure def Part` below for the full path and rationale). Growing
-//      `Part` into a full geometry+material+topology structure is owned by
-//      #7097 (GeometryHandleRef join-key convergence); the single-module
+//      `structure def Part` below for the full path and rationale). `Part`
+//      identity is a join key, not a payload: #7097 converges `.part` on the
+//      analysed body's `GeometryHandleRef` (the `CarriedTopology.part`
+//      identity channel) and grows no geometry+material+topology fields on
+//      `Part` (`result-field-vacuity-closure.md` §2.1); the single-module
 //      opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
 //      (`Frequency` = s⁻¹, a registered named dimension). Tightened from the
@@ -346,7 +348,9 @@ structure def Mode {
 // declared zero-field here so all three `part : Part` params (ModalResult,
 // ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
 // within this module, without depending on the F foundation / task 4574. The
-// actual geometry+material+topology fields will be grown under #7097.
+// "then grow" path is superseded: #7097 replaces this opaque placeholder with
+// the `GeometryHandleRef` join key, and no geometry+material+topology payload
+// is grown on `Part` (docs/prds/v0_6/result-field-vacuity-closure.md §2.1).
 // Single-module (modal_analysis.ri only); introduced by #4578.
 structure def Part { }
 
@@ -370,8 +374,8 @@ structure def Part { }
 // Field semantics (PRD §4.1):
 //   part                 — the analysed part. Typed `Part` (declared in this
 //                          module, #4578). Opaque marker in this phase;
-//                          growth to full geometry+material+topology is
-//                          owned by #7097.
+//                          identity convergence on the `GeometryHandleRef`
+//                          join key is owned by #7097.
 //                          Consumer task ζ reads `.modes`, not `.part`.
 //   modes                — the computed modal eigenpairs, one `Mode` per
 //                          extracted mode, ordered ascending by frequency.
@@ -874,7 +878,8 @@ structure def SampledForce : ForcingFunction {
 // Param semantics (PRD §5.1):
 //   part    — the Part on which the forcing history acts. Typed `Part`
 //             (declared in this module, #4578); opaque marker in this
-//             phase, growth owned by #7097. Not read by the trampolines.
+//             phase, identity convergence on the `GeometryHandleRef` join
+//             key owned by #7097. Not read by the trampolines.
 //   sources — list of forcing sources that sum linearly at each (t, location)
 //             pair per PRD §12.5 resolved-question ("sources sum linearly; no
 //             cross-source coupling in modal superposition"). Encoded as
@@ -941,7 +946,9 @@ structure def ForcingTimeHistory {
 //
 // Field semantics (PRD §5.2):
 //   part         — the analysed part. Typed `Part` (declared in this module,
-//                  #4578). Echoed from the modal result by the trampoline.
+//                  #4578). Emitted by the trampoline as a fresh opaque
+//                  placeholder, not re-echoed from `modal_result.part`;
+//                  re-echo of the identity is owned by #7097.
 //   modal_result — the `ModalResult` the response was integrated against, echoed
 //                  verbatim so `displacement_at` can read each mode's `shape`
 //                  (Φ_i) for the projection coefficient Φ_i[node]·direction
