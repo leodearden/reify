@@ -11,7 +11,11 @@ the host's skim), trimmed of Compiling/Finished noise.
 """
 
 import importlib.util
+import json
+import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -419,6 +423,87 @@ class TestSkim(unittest.TestCase):
         tally = ctt.tally_text(SKIM_GREEN + LIBTEST_GREEN)
         self.assertIsNone(tally.binaries)
         self.assertEqual(tally.passed, 5)
+
+
+class TestCli(unittest.TestCase):
+    """Drives the tool as a subprocess, the way an agent uses it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def write_capture(self, text, name="test.log"):
+        path = self.tmpdir / name
+        path.write_text(text)
+        return path
+
+    def run_cli(self, *args, stdin_text=None):
+        return subprocess.run(
+            [sys.executable, str(TOOL_PATH), *args],
+            input=stdin_text, capture_output=True, text=True,
+        )
+
+    def test_exit_code_is_the_verdict(self):
+        cases = [(LIBTEST_GREEN, 0), (LIBTEST_FAILED, 1), ("", 3),
+                 (LIBTEST_NO_MATCH, 4), (SKIM_FAILED, 1)]
+        for text, code in cases:
+            with self.subTest(text=text[:40], code=code):
+                result = self.run_cli(str(self.write_capture(text)))
+                self.assertEqual(result.returncode, code, result.stderr)
+
+    def test_text_output_names_verdict_totals_and_summaries(self):
+        result = self.run_cli(str(self.write_capture(LIBTEST_GREEN)))
+        out = result.stdout
+        self.assertIn("GREEN", out)
+        self.assertRegex(out, r"passed\s+4\b")
+        self.assertRegex(out, r"binaries\s+3\b")
+        self.assertEqual(sum("libtest" in row for row in out.splitlines()), 3)
+
+    def test_json_output(self):
+        result = self.run_cli("--json", str(self.write_capture(LIBTEST_FAILED)))
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["verdict"], "FAILED")
+        self.assertEqual(report["exit_code"], 1)
+        for key in ("passed", "failed", "skipped", "filtered_out"):
+            with self.subTest(key=key):
+                self.assertIsInstance(report[key], int)
+        self.assertEqual(report["binaries"], 2)
+        self.assertEqual(len(report["summaries"]), 2)
+        for summary in report["summaries"]:
+            self.assertEqual(summary["dialect"], "libtest")
+            self.assertIsInstance(summary["line"], int)
+
+    def test_json_binaries_null_when_unknown(self):
+        result = self.run_cli("--json", str(self.write_capture(SKIM_GREEN)))
+        self.assertEqual(result.returncode, 0)
+        self.assertIsNone(json.loads(result.stdout)["binaries"])
+
+    def test_stdin_capture(self):
+        from_file = json.loads(self.run_cli(
+            "--json", str(self.write_capture(LIBTEST_GREEN))).stdout)
+        for args in (("--json", "-"), ("--json",)):
+            with self.subTest(args=args):
+                result = self.run_cli(*args, stdin_text=LIBTEST_GREEN)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["passed"],
+                                 from_file["passed"])
+
+    def test_empty_capture_is_reported_incomplete(self):
+        result = self.run_cli(str(self.write_capture("")))
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("INCOMPLETE", result.stdout + result.stderr)
+
+    def test_missing_file_is_exit_2(self):
+        missing = self.tmpdir / "no-such.log"
+        result = self.run_cli(str(missing))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(str(missing), result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_help_exits_0(self):
+        self.assertEqual(self.run_cli("--help").returncode, 0)
 
 
 if __name__ == "__main__":
