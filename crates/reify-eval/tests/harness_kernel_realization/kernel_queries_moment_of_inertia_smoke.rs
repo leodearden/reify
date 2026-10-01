@@ -26,15 +26,13 @@
 //! Tolerance: 1e-9 kg·m² (OCCT integrates a planar-faced box exactly via
 //! Gauss quadrature — ~1e-12 relative error on ~1e-5-magnitude values).
 //!
-//! Gated on `reify_kernel_occt::OCCT_AVAILABLE` — skips cleanly on runners
-//! without OCCT. Modelled on `boolean_ops_e2e.rs` for the real-kernel harness
-//! (`SingleKernelHolder + OcctKernelHandle::spawn`) and on
-//! `kernel_queries_angle_smoke.rs` for the CARGO_MANIFEST_DIR path pattern.
+//! Real-OCCT builds go through `fixture_scaffolding`'s shared OCCT gate, so
+//! the OCCT assertions skip cleanly on runners without OCCT.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
 use super::fixture_scaffolding::{build_source_with_occt, compile_and_build_with_occt};
 
@@ -42,6 +40,57 @@ const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/kernel_queries/moment_of_inertia_box.ri"
 );
+
+/// Asserts `actual` is a rank-2 3×3 `MOMENT_OF_INERTIA` tensor whose every
+/// entry lies within 1e-9 kg·m² of the analytic centroidal tensor of the
+/// 50 mm × 30 mm × 10 mm box at 7850 kg/m³ (m = 0.11775 kg): `I_xx`, `I_yy`,
+/// `I_zz` on the diagonal, 0 off it.
+///
+/// Every pin in this module checks that one box, so this is the module's single
+/// copy of the reference data. `label` names the struct whose `i` cell is read.
+#[track_caller]
+fn assert_moi_box_analytic_tensor(actual: Option<&Value>, label: &str) {
+    let (w, h, d) = (0.05_f64, 0.03_f64, 0.01_f64);
+    let mass = 7850.0 * w * h * d;
+    let expected = [
+        [(1.0 / 12.0) * mass * (h * h + d * d), 0.0, 0.0],
+        [0.0, (1.0 / 12.0) * mass * (w * w + d * d), 0.0],
+        [0.0, 0.0, (1.0 / 12.0) * mass * (w * w + h * h)],
+    ];
+    let tol = 1e-9_f64; // kg·m²
+
+    let rows = match actual {
+        Some(Value::Tensor(rows)) if rows.len() == 3 => rows,
+        other => panic!(
+            "{label}.i should be a rank-2 Value::Tensor (3 rows × 3 cols) of \
+             MOMENT_OF_INERTIA-dimensioned scalars, got: {other:?}"
+        ),
+    };
+    for (r, (row, expected_row)) in rows.iter().zip(&expected).enumerate() {
+        let cols = match row {
+            Value::Tensor(cols) if cols.len() == 3 => cols,
+            other => panic!("{label}.i row {r} should be a 3-entry Value::Tensor, got: {other:?}"),
+        };
+        for (c, (entry, want)) in cols.iter().zip(expected_row).enumerate() {
+            let got = match entry {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
+                other => panic!(
+                    "{label}.i[{r},{c}] should be Value::Scalar {{ dimension: \
+                     MOMENT_OF_INERTIA, .. }}, got: {other:?}"
+                ),
+            };
+            let delta = (got - want).abs();
+            assert!(
+                delta < tol,
+                "{label}.i[{r},{c}]: expected {want:.3e}, got {got:.3e} \
+                 (delta {delta:.3e}, tol {tol:.0e})"
+            );
+        }
+    }
+}
 
 /// Pins the user-observable signal for KGQ-λ: `moment_of_inertia` on a
 /// 50 mm × 30 mm × 10 mm steel box must evaluate to a rank-2 3×3
@@ -62,99 +111,7 @@ fn moment_of_inertia_box_evals_to_analytic_tensor() {
     };
 
     let cell = ValueCellId::new("MomentOfInertiaBox", "i");
-    let actual = result.values.get(&cell);
-
-    // Analytic centroidal moments for a 50 mm × 30 mm × 10 mm box at 7850 kg/m³.
-    //   m = ρ·V = 7850 · 0.05 · 0.03 · 0.01 = 0.11775 kg
-    //   I_xx = (1/12)·m·(H² + D²)   H=0.03, D=0.01
-    //   I_yy = (1/12)·m·(W² + D²)   W=0.05, D=0.01
-    //   I_zz = (1/12)·m·(W² + H²)   W=0.05, H=0.03
-    let w = 0.05_f64;
-    let h = 0.03_f64;
-    let d = 0.01_f64;
-    let mass = 7850.0 * w * h * d;
-    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
-    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
-    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
-    let tol = 1e-9_f64; // kg·m²
-
-    // Extract the 3×3 tensor and validate every entry.
-    let rows = match actual {
-        Some(Value::Tensor(rows))
-            if rows.len() == 3
-                && rows
-                    .iter()
-                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
-        {
-            rows
-        }
-        other => panic!(
-            "MomentOfInertiaBox.i should be a rank-2 Value::Tensor (3 rows × 3 cols) \
-             of MOMENT_OF_INERTIA-dimensioned scalars (PRD §9 KGQ-λ), got: {other:?}"
-        ),
-    };
-
-    // Helper: extract si_value from a MOMENT_OF_INERTIA Scalar, panic otherwise.
-    fn extract(v: &Value, label: &str) -> f64 {
-        match v {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
-            other => panic!(
-                "MomentOfInertiaBox.i[{label}] should be \
-                 Value::Scalar {{ dimension: MOMENT_OF_INERTIA, .. }}, got: {other:?}"
-            ),
-        }
-    }
-
-    fn get_row(row: &Value) -> &Vec<Value> {
-        match row {
-            Value::Tensor(cols) => cols,
-            _ => unreachable!("already validated rank-2 shape above"),
-        }
-    }
-
-    let r0 = get_row(&rows[0]);
-    let r1 = get_row(&rows[1]);
-    let r2 = get_row(&rows[2]);
-
-    // Diagonals must match analytic values within tol.
-    let v00 = extract(&r0[0], "0,0");
-    let v11 = extract(&r1[1], "1,1");
-    let v22 = extract(&r2[2], "2,2");
-
-    assert!(
-        (v00 - i_xx).abs() < tol,
-        "I_xx=[0,0]: expected {i_xx:.3e}, got {v00:.3e} (delta {delta:.3e}, tol {tol:.0e})",
-        delta = (v00 - i_xx).abs()
-    );
-    assert!(
-        (v11 - i_yy).abs() < tol,
-        "I_yy=[1,1]: expected {i_yy:.3e}, got {v11:.3e} (delta {delta:.3e}, tol {tol:.0e})",
-        delta = (v11 - i_yy).abs()
-    );
-    assert!(
-        (v22 - i_zz).abs() < tol,
-        "I_zz=[2,2]: expected {i_zz:.3e}, got {v22:.3e} (delta {delta:.3e}, tol {tol:.0e})",
-        delta = (v22 - i_zz).abs()
-    );
-
-    // Off-diagonals must be zero (axis-aligned centroidal box).
-    let off_diag_entries = [
-        (extract(&r0[1], "0,1"), "0,1"),
-        (extract(&r0[2], "0,2"), "0,2"),
-        (extract(&r1[0], "1,0"), "1,0"),
-        (extract(&r1[2], "1,2"), "1,2"),
-        (extract(&r2[0], "2,0"), "2,0"),
-        (extract(&r2[1], "2,1"), "2,1"),
-    ];
-    for (v, label) in &off_diag_entries {
-        assert!(
-            v.abs() < tol,
-            "off-diagonal [{label}]: expected 0, got {v:.3e} (tol {tol:.0e})"
-        );
-    }
+    assert_moi_box_analytic_tensor(result.values.get(&cell), "MomentOfInertiaBox");
 }
 
 /// Pins task 4486 (type-hygiene γ, Contract A): `moment_of_inertia` must accept
@@ -191,179 +148,7 @@ structure def MoiViaMaterial {
     };
 
     let cell = ValueCellId::new("MoiViaMaterial", "i");
-    let actual = result.values.get(&cell);
-
-    // Same analytic values as moment_of_inertia_box_evals_to_analytic_tensor.
-    let w = 0.05_f64;
-    let h = 0.03_f64;
-    let d = 0.01_f64;
-    let mass = 7850.0 * w * h * d;
-    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
-    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
-    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
-    let tol = 1e-9_f64;
-
-    let rows = match actual {
-        Some(Value::Tensor(rows))
-            if rows.len() == 3
-                && rows
-                    .iter()
-                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
-        {
-            rows
-        }
-        other => panic!(
-            "MoiViaMaterial.i should be a rank-2 Value::Tensor (3×3) of \
-             MOMENT_OF_INERTIA-dimensioned scalars (task 4486 Contract A), got: {other:?}"
-        ),
-    };
-
-    fn extract_moi(v: &Value, label: &str) -> f64 {
-        match v {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
-            other => panic!(
-                "MoiViaMaterial.i[{label}] should be \
-                 Value::Scalar {{ dimension: MOMENT_OF_INERTIA, .. }}, got: {other:?}"
-            ),
-        }
-    }
-
-    fn get_row_moi(row: &Value) -> &Vec<Value> {
-        match row {
-            Value::Tensor(cols) => cols,
-            _ => unreachable!("already validated rank-2 shape"),
-        }
-    }
-
-    let r0 = get_row_moi(&rows[0]);
-    let r1 = get_row_moi(&rows[1]);
-    let r2 = get_row_moi(&rows[2]);
-
-    let v00 = extract_moi(&r0[0], "0,0");
-    let v11 = extract_moi(&r1[1], "1,1");
-    let v22 = extract_moi(&r2[2], "2,2");
-
-    assert!(
-        (v00 - i_xx).abs() < tol,
-        "MoiViaMaterial I_xx=[0,0]: expected {i_xx:.3e}, got {v00:.3e} (delta {:.3e}, tol {tol:.0e})",
-        (v00 - i_xx).abs()
-    );
-    assert!(
-        (v11 - i_yy).abs() < tol,
-        "MoiViaMaterial I_yy=[1,1]: expected {i_yy:.3e}, got {v11:.3e} (delta {:.3e}, tol {tol:.0e})",
-        (v11 - i_yy).abs()
-    );
-    assert!(
-        (v22 - i_zz).abs() < tol,
-        "MoiViaMaterial I_zz=[2,2]: expected {i_zz:.3e}, got {v22:.3e} (delta {:.3e}, tol {tol:.0e})",
-        (v22 - i_zz).abs()
-    );
-
-    let off_diag_entries = [
-        (extract_moi(&r0[1], "0,1"), "0,1"),
-        (extract_moi(&r0[2], "0,2"), "0,2"),
-        (extract_moi(&r1[0], "1,0"), "1,0"),
-        (extract_moi(&r1[2], "1,2"), "1,2"),
-        (extract_moi(&r2[0], "2,0"), "2,0"),
-        (extract_moi(&r2[1], "2,1"), "2,1"),
-    ];
-    for (v, label) in &off_diag_entries {
-        assert!(
-            v.abs() < tol,
-            "MoiViaMaterial off-diagonal [{label}]: expected 0, got {v:.3e} (tol {tol:.0e})"
-        );
-    }
-}
-
-/// Shared analytic-tensor assertion for the 50 mm × 30 mm × 10 mm steel box at
-/// 7850 kg/m³ (m = 0.11775 kg). Validates `actual` is a rank-2 3×3
-/// `MOMENT_OF_INERTIA` tensor whose diagonal matches the analytic centroidal
-/// moments within 1e-9 kg·m² and whose off-diagonals are below 1e-9 kg·m².
-/// Used by the task ε inline-density test to assert the same validated values
-/// the let-bound fixtures above assert, without inventing new reference data.
-fn assert_moi_box_analytic_tensor(actual: Option<&Value>, label: &str) {
-    let w = 0.05_f64;
-    let h = 0.03_f64;
-    let d = 0.01_f64;
-    let mass = 7850.0 * w * h * d;
-    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
-    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
-    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
-    let tol = 1e-9_f64;
-
-    let rows = match actual {
-        Some(Value::Tensor(rows))
-            if rows.len() == 3
-                && rows
-                    .iter()
-                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
-        {
-            rows
-        }
-        other => panic!(
-            "{label}.i should be a rank-2 Value::Tensor (3 rows × 3 cols) of \
-             MOMENT_OF_INERTIA-dimensioned scalars, got: {other:?}"
-        ),
-    };
-
-    fn extract(v: &Value, label: &str) -> f64 {
-        match v {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
-            other => panic!(
-                "entry [{label}] should be Value::Scalar {{ dimension: \
-                 MOMENT_OF_INERTIA, .. }}, got: {other:?}"
-            ),
-        }
-    }
-
-    fn get_row(row: &Value) -> &Vec<Value> {
-        match row {
-            Value::Tensor(cols) => cols,
-            _ => unreachable!("already validated rank-2 shape above"),
-        }
-    }
-
-    let r0 = get_row(&rows[0]);
-    let r1 = get_row(&rows[1]);
-    let r2 = get_row(&rows[2]);
-
-    let v00 = extract(&r0[0], "0,0");
-    let v11 = extract(&r1[1], "1,1");
-    let v22 = extract(&r2[2], "2,2");
-
-    assert!(
-        (v00 - i_xx).abs() < tol,
-        "{label} I_xx=[0,0]: expected {i_xx:.3e}, got {v00:.3e} (tol {tol:.0e})"
-    );
-    assert!(
-        (v11 - i_yy).abs() < tol,
-        "{label} I_yy=[1,1]: expected {i_yy:.3e}, got {v11:.3e} (tol {tol:.0e})"
-    );
-    assert!(
-        (v22 - i_zz).abs() < tol,
-        "{label} I_zz=[2,2]: expected {i_zz:.3e}, got {v22:.3e} (tol {tol:.0e})"
-    );
-
-    let off_diag_entries = [
-        (extract(&r0[1], "0,1"), "0,1"),
-        (extract(&r0[2], "0,2"), "0,2"),
-        (extract(&r1[0], "1,0"), "1,0"),
-        (extract(&r1[2], "1,2"), "1,2"),
-        (extract(&r2[0], "2,0"), "2,0"),
-        (extract(&r2[1], "2,1"), "2,1"),
-    ];
-    for (v, lbl) in &off_diag_entries {
-        assert!(
-            v.abs() < tol,
-            "{label} off-diagonal [{lbl}]: expected 0, got {v:.3e} (tol {tol:.0e})"
-        );
-    }
+    assert_moi_box_analytic_tensor(result.values.get(&cell), "MoiViaMaterial");
 }
 
 /// Task ε (type-hygiene, evaluate-then-accept): the INLINE density form
@@ -392,12 +177,8 @@ structure def MomentOfInertiaInline {
 }
 "#;
 
+    // (1) `parse_and_compile_with_stdlib` panics on any error-severity diagnostic.
     let compiled = parse_and_compile_with_stdlib(SOURCE);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "MomentOfInertiaInline should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
 
     // (2) No density-arg Warning on ANY runner — build with a MockGeometryKernel
     //     so the post-process density resolution runs without OCCT.
@@ -419,17 +200,11 @@ structure def MomentOfInertiaInline {
         );
     }
 
-    // (3) Analytic tensor under real OCCT.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    // (3) Analytic tensor under real OCCT. The shared gate takes source, not a
+    //     `CompiledModule`, so it recompiles SOURCE.
+    let Some(result) = build_source_with_occt(SOURCE, "MomentOfInertiaInline") else {
         return;
-    }
-
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
+    };
 
     let cell = ValueCellId::new("MomentOfInertiaInline", "i");
     assert_moi_box_analytic_tensor(result.values.get(&cell), "MomentOfInertiaInline");
