@@ -59,9 +59,11 @@ DEFAULT_REPO = SCRIPT_PATH.parents[1]
 
 
 class Verdict(IntEnum):
+    """The exit codes. No verdict uses 1 (an uncaught exception's exit) or 2
+    (argparse's), so a crash or a usage error never reads as a verdict."""
     LANDED = 0
-    FAILED = 1
     BLOCKED = 3
+    FAILED = 4
     PENDING = 75
 
 
@@ -71,6 +73,7 @@ _VERDICT_MEANINGS = {
     Verdict.BLOCKED: "merge_status conflict/blocked — needs action before it can land",
     Verdict.PENDING: "host budget spent with no terminal state; re-run rearm_command",
 }
+_INTERNAL_ERROR_EXIT = 1
 _USAGE_EXIT = 2
 
 # Vocabulary home: dark-factory shared/src/shared/merge_state.py::TERMINAL_STATES.
@@ -218,8 +221,13 @@ def _tool_payload(result: Mapping[str, Any]) -> Mapping[str, Any]:
     structured = result.get("structuredContent")
     if isinstance(structured, dict):
         return structured
-    content = result.get("content") or [{}]
-    payload = json.loads(content[0].get("text", ""))
+    content = result.get("content")
+    first = content[0] if isinstance(content, list) and content else None
+    text = first.get("text") if isinstance(first, dict) else None
+    if not isinstance(text, str):
+        raise ValueError(f"tool result has neither structuredContent nor "
+                         f"content[0].text: {result!r:.200}")
+    payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError(f"tool result is not an object: {payload!r}")
     return payload
@@ -340,6 +348,8 @@ class GitAncestryProbe:
 
 def _exit_code_table() -> str:
     entries = [(int(v), v.name, _VERDICT_MEANINGS[v]) for v in Verdict]
+    entries.append((_INTERNAL_ERROR_EXIT, "", "internal error: an uncaught exception, "
+                                              "no verdict line"))
     entries.append((_USAGE_EXIT, "", "bad arguments, unresolvable --commit/--ref, "
                                      "or no escalation URL"))
     rows = [f"  {code:>2}  {name:<8}  {meaning}" for code, name, meaning in sorted(entries)]

@@ -80,10 +80,14 @@ class ClassifyMergeStatusTests(unittest.TestCase):
 
     def test_verdict_values_are_the_exit_code_contract(self):
         self.assertEqual(Verdict.LANDED, 0)
-        self.assertEqual(Verdict.FAILED, 1)
         self.assertEqual(Verdict.BLOCKED, 3)
+        self.assertEqual(Verdict.FAILED, 4)
         self.assertEqual(Verdict.PENDING, 75)
-        self.assertNotIn(2, [int(v) for v in Verdict])
+
+    def test_no_verdict_shares_a_crash_or_usage_exit_code(self):
+        codes = [int(v) for v in Verdict]
+        self.assertNotIn(1, codes, "1 is Python's uncaught-exception exit")
+        self.assertNotIn(2, codes, "2 is argparse's usage exit")
 
 
 class FakeClock:
@@ -299,6 +303,7 @@ class StubEscalationServer:
         self.reply = reply if reply is not None else {"state": "queued"}
         self.reply_format = "sse"  # or "json-text-only"
         self.is_error = False
+        self.raw_tool_result = None  # sent verbatim when set
         self.calls = []
         self._sessions = set()
         self._lock = threading.Lock()
@@ -327,6 +332,8 @@ class StubEscalationServer:
         return [params for method, params in self.calls if method == "tools/call"]
 
     def _tool_result(self):
+        if self.raw_tool_result is not None:
+            return self.raw_tool_result
         result = {"content": [{"type": "text", "text": json.dumps(self.reply)}],
                   "isError": self.is_error}
         if self.reply_format == "sse":
@@ -419,6 +426,21 @@ class MergeStatusClientTests(unittest.TestCase):
             stub.is_error = True
             with self.assertRaises(aml.ProbeUnavailable):
                 _client(stub.url).status()
+
+    def test_malformed_tool_result_is_unavailable(self):
+        malformed = {
+            "content is a string": {"content": "not-a-list"},
+            "content item is not an object": {"content": [1]},
+            "content text is null": {"content": [{"type": "text", "text": None}]},
+            "content text is not JSON": {"content": [{"type": "text", "text": "{"}]},
+            "content text is a JSON list": {"content": [{"type": "text", "text": "[]"}]},
+            "no content at all": {},
+        }
+        for label, raw in malformed.items():
+            with self.subTest(label), StubEscalationServer() as stub:
+                stub.raw_tool_result = raw
+                with self.assertRaises(aml.ProbeUnavailable):
+                    _client(stub.url).status()
 
     def test_lost_session_reinitializes_on_the_next_poll(self):
         reply = {"state": "verifying"}
@@ -580,13 +602,19 @@ class EndToEndTests(unittest.TestCase):
 
     def test_terminal_merge_status_sets_the_exit_code(self):
         for state, verdict, exit_code in (("blocked", "BLOCKED", 3),
-                                          ("abandoned", "FAILED", 1)):
+                                          ("abandoned", "FAILED", 4)):
             with self.subTest(state=state):
                 self.stub.reply = {"state": state}
                 event = self.event(
                     self.run_tool("--commit", self.sha_b, *self.SELECTOR), exit_code)
                 self.assertEqual(event["verdict"], verdict)
                 self.assertEqual(event["source"], "merge_status")
+
+    def test_malformed_merge_status_reply_is_pending_not_a_crash(self):
+        self.stub.raw_tool_result = {"content": [{"type": "text", "text": None}]}
+        event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 75)
+        self.assertEqual(event["verdict"], "PENDING")
+        self.assertIsNotNone(event["probe_error"])
 
     def test_escalation_server_down_degrades_to_git_only(self):
         with StubEscalationServer() as stopped:
