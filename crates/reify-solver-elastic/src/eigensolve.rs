@@ -281,11 +281,17 @@ pub struct EigenSolverResult {
     /// faer's lock test reads a Krylov ESTIMATE and never re-applies the
     /// operator, so a pair is re-checked here on the operator `S` the Lanczos
     /// actually ran: it is verified iff
-    /// `‖S·y − μ·y‖ ≤ max(10·tol, 1e-6·|μ|·‖y‖)`.  By Bauer–Fike, a verified
-    /// pair's `λ − σ` is within the larger of the caller's tolerance and 1e-6
-    /// relative of a true eigenvalue's.  For the Cholesky-symmetrized operator
-    /// the residual equals `|μ|·‖G⁻¹(Kφ − λBφ)‖` — the generalized residual in
-    /// the `W⁻¹` norm the Lanczos ran in.
+    /// `‖S·y − μ·y‖ ≤ max(10·tol·μ_max, 1e-6·|μ|)·‖y‖`, where `μ_max` is the
+    /// largest returned `|μ|`, a lower bound on `‖S‖₂`.
+    ///
+    /// Both arms are RELATIVE, so the check means the same thing in any units.
+    /// That matters because `μ = 1/(λ − σ)` carries the pencil's units: an
+    /// SI-unit modal pencil has `|μ| ~ 1e-8`, and an absolute bound near `tol`
+    /// would pass every pair there however wrong.  By Bauer–Fike, a verified μ
+    /// is within `10·tol·‖S‖₂` of an eigenvalue of `S`, or within 1e-6 of one
+    /// relative to itself.  For the Cholesky-symmetrized operator the residual
+    /// equals `|μ|·‖G⁻¹(Kφ − λBφ)‖`: the generalized residual, in the `W⁻¹`
+    /// norm the Lanczos ran in.
     ///
     /// Failed pairs are still returned (C2 selection is unchanged); they make
     /// [`converged`](Self::converged) `false`.  Always `0` on the dense path,
@@ -1251,8 +1257,8 @@ fn recover_pencil_eigenvectors(factor: &SplitCholesky, mut vectors: MatMut<'_, f
     }
 }
 
-/// The `κ` in `‖S·y − μ·y‖ ≤ max(κ·tol, δ·|μ|·‖y‖)`: a pair meeting the
-/// caller's own tolerance is never rejected (PRD
+/// The `κ` in `‖S·y − μ·y‖ ≤ max(κ·tol·μ_max, δ·|μ|)·‖y‖`: a pair meeting the
+/// caller's tolerance RELATIVE TO THE OPERATOR is never rejected (PRD
 /// `docs/prds/v0_6/shift-invert-eigensolve.md` §11 Q1).
 const RITZ_RESIDUAL_TOL_SLACK: f64 = 10.0;
 
@@ -1262,16 +1268,32 @@ const RITZ_RELATIVE_RESIDUAL_FLOOR: f64 = 1e-6;
 
 /// Whether a Ritz pair `(μ, y)` with recomputed residual `‖S·y − μ·y‖` is a
 /// verified eigenpair of `S`.  A non-finite residual never is.
-fn ritz_pair_is_verified(residual_norm: f64, mu: f64, y_norm: f64, tol: f64) -> bool {
+///
+/// `operator_scale` is `μ_max`, the largest returned `|μ|`.  BOTH arms are
+/// relative — one to the operator, one to the pair — so the verdict does not
+/// depend on the pencil's units.  An absolute `κ·tol` would pass every pair once
+/// `|μ|` drops below `tol`, and an SI-unit modal pencil has `|μ| ~ 1e-8`.
+fn ritz_pair_is_verified(
+    residual_norm: f64,
+    mu: f64,
+    y_norm: f64,
+    tol: f64,
+    operator_scale: f64,
+) -> bool {
     residual_norm
-        <= f64::max(
-            RITZ_RESIDUAL_TOL_SLACK * tol,
-            RITZ_RELATIVE_RESIDUAL_FLOOR * mu.abs() * y_norm,
-        )
+        <= y_norm
+            * f64::max(
+                RITZ_RESIDUAL_TOL_SLACK * tol * operator_scale,
+                RITZ_RELATIVE_RESIDUAL_FLOOR * mu.abs(),
+            )
 }
 
 /// How many of the pairs `(mu[j], ritz_vectors[:, j])` fail
 /// [`ritz_pair_is_verified`] on `op`, with one batched apply.
+///
+/// The operator scale is the largest `|mu[j]|`.  `S` is symmetric, so `‖S‖₂` is
+/// its largest `|eigenvalue|` and no Ritz value exceeds it: this is a LOWER
+/// bound on `‖S‖₂`, which can only make the check stricter.
 fn count_unverified_ritz_pairs(
     op: &dyn LinOp<f64>,
     ritz_vectors: MatRef<'_, f64>,
@@ -1282,6 +1304,7 @@ fn count_unverified_ritz_pairs(
     if n_pairs == 0 {
         return 0;
     }
+    let operator_scale = mu.iter().fold(0.0_f64, |scale, m| scale.max(m.abs()));
     let mut applied = Mat::<f64>::zeros(ritz_vectors.nrows(), n_pairs);
     let mut buf = MemBuffer::new(op.apply_scratch(n_pairs, Par::Seq));
     op.apply(applied.as_mut(), ritz_vectors, Par::Seq, MemStack::new(&mut buf));
@@ -1289,7 +1312,7 @@ fn count_unverified_ritz_pairs(
         .filter(|&j| {
             let y = ritz_vectors.col(j);
             let residual = (applied.col(j) - y * faer::Scale(mu[j])).norm_l2();
-            !ritz_pair_is_verified(residual, mu[j], y.norm_l2(), tol)
+            !ritz_pair_is_verified(residual, mu[j], y.norm_l2(), tol, operator_scale)
         })
         .count()
 }
@@ -2142,14 +2165,15 @@ mod singular_shift_predicate_tests {
 mod ritz_verification_predicate_tests {
     use super::ritz_pair_is_verified;
 
-    /// A pair meeting the caller's own tolerance is never rejected, however
-    /// large its RELATIVE residual: μ = 1e-6 makes ρ = 5e-4 here.
+    /// A pair meeting the caller's tolerance relative to the operator is never
+    /// rejected, however large its residual relative to ITSELF: μ = 1e-6 under
+    /// an operator of scale 1 makes ρ = 5e-4 here.
     #[test]
-    fn a_residual_within_ten_tol_is_verified_even_when_relatively_large() {
-        assert!(ritz_pair_is_verified(5e-10, 1e-6, 1.0, 1e-10));
+    fn a_residual_within_ten_tol_of_the_operator_is_verified_even_when_relatively_large() {
+        assert!(ritz_pair_is_verified(5e-10, 1e-6, 1.0, 1e-10, 1.0));
         assert!(
-            ritz_pair_is_verified(10.0 * 1e-10, 1e-6, 1.0, 1e-10),
-            "the tol arm is inclusive at exactly 10·tol",
+            ritz_pair_is_verified(10.0 * 1e-10 * 1e3 * 2.0, 1e-6, 2.0, 1e-10, 1e3),
+            "the tol arm is inclusive at exactly 10·tol·μ_max·‖y‖",
         );
     }
 
@@ -2157,31 +2181,46 @@ mod ritz_verification_predicate_tests {
     /// caller's tol is below the operator's rounding floor.
     #[test]
     fn a_relatively_small_residual_is_verified_even_above_ten_tol() {
-        assert!(ritz_pair_is_verified(1e-8, 1e3, 1.0, 1e-14));
+        assert!(ritz_pair_is_verified(1e-8, 1e3, 1.0, 1e-14, 1e3));
         assert!(
-            ritz_pair_is_verified(1e-6 * 1e3 * 2.0, 1e3, 2.0, 1e-14),
+            ritz_pair_is_verified(1e-6 * 1e3 * 2.0, 1e3, 2.0, 1e-14, 1e3),
             "the relative arm is inclusive at exactly 1e-6·|μ|·‖y‖",
         );
     }
 
     #[test]
     fn a_residual_exceeding_both_arms_is_not_verified() {
-        assert!(!ritz_pair_is_verified(1.0, 1.0, 1.0, 1e-10));
-        assert!(!ritz_pair_is_verified(2e-6, 1.0, 1.0, 1e-10));
+        assert!(!ritz_pair_is_verified(1.0, 1.0, 1.0, 1e-10, 1.0));
+        assert!(!ritz_pair_is_verified(2e-6, 1.0, 1.0, 1e-10, 1.0));
+    }
+
+    /// The verdict is unit-free: shrinking the whole operator by 1e10 shrinks
+    /// the residual and every μ by 1e10, and the answer must not change. An
+    /// absolute `10·tol` arm would flip the rejected pair to verified here.
+    #[test]
+    fn the_verdict_does_not_depend_on_the_operator_scale() {
+        let (residual, mu, tol) = (1e-2, 1e3, 1e-8);
+        assert!(!ritz_pair_is_verified(residual, mu, 1.0, tol, mu));
+        assert!(
+            !ritz_pair_is_verified(residual * 1e-10, mu * 1e-10, 1.0, tol, mu * 1e-10),
+            "a ρ = 1e-5 pair must not become verified because |μ| fell below tol",
+        );
+        assert!(ritz_pair_is_verified(1e-12, mu, 1.0, tol, mu));
+        assert!(ritz_pair_is_verified(1e-22, mu * 1e-10, 1.0, tol, mu * 1e-10));
     }
 
     /// The relative arm scales with |μ|, so a negative μ (λ below σ) is judged
     /// exactly as its positive mirror.
     #[test]
     fn a_negative_mu_is_judged_by_its_magnitude() {
-        assert!(ritz_pair_is_verified(1e-8, -1e3, 1.0, 1e-14));
-        assert!(!ritz_pair_is_verified(1e-2, -1e3, 1.0, 1e-14));
+        assert!(ritz_pair_is_verified(1e-8, -1e3, 1.0, 1e-14, 1e3));
+        assert!(!ritz_pair_is_verified(1e-2, -1e3, 1.0, 1e-14, 1e3));
     }
 
     #[test]
     fn a_non_finite_residual_is_not_verified() {
-        assert!(!ritz_pair_is_verified(f64::NAN, 1.0, 1.0, 1e-10));
-        assert!(!ritz_pair_is_verified(f64::INFINITY, 1.0, 1.0, 1e-10));
+        assert!(!ritz_pair_is_verified(f64::NAN, 1.0, 1.0, 1e-10, 1.0));
+        assert!(!ritz_pair_is_verified(f64::INFINITY, 1.0, 1.0, 1e-10, 1.0));
     }
 }
 

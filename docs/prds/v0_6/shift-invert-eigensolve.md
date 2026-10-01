@@ -553,8 +553,12 @@ and the LIVE/AS-AUTHORED map, and applies the matching header to the capability 
 
    **RESOLVED 2026-10-01 (#7602).** The operator is Cholesky-symmetrised for B ≠ cI (§6 amendment
    resolution), so faer's Lanczos still runs. A returned pair is verified iff
-   `‖S·y − μ·y‖ ≤ max(10·tol, 1e-6·|μ|·‖y‖)` on the operator S the Lanczos ran. Failures are counted in
+   `‖S·y − μ·y‖ ≤ max(10·tol·μ_max, 1e-6·|μ|)·‖y‖` on the operator S the Lanczos ran. Here `μ_max` is
+   the largest returned `|μ|`, a lower bound on `‖S‖₂`. Failures are counted in
    `EigenSolverResult::residual_check_failures` and make `converged` false; the pairs are still returned.
+   Both arms are relative on purpose. `μ = 1/(λ − σ)` carries the pencil's units, and an SI-unit modal
+   pencil has `|μ| ~ 1e-8`. An absolute `10·tol` arm, as first landed, passed every pair there however
+   wrong (review of #7602; pinned by `euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs`).
 2. **Residual threshold for §5.3 part 2.** The numerically-singular guard needs a concrete threshold.
    Derive it from the pencil's scale at implementation time; do not import a constant from another
    solver.

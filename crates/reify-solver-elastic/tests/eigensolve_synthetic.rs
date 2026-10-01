@@ -1111,6 +1111,51 @@ fn euclidean_core_misused_on_a_non_identity_b_reports_unverified_pairs() {
     assert_eq!(control.residual_check_failures, 0, "B = I: every pair verifies");
 }
 
+/// `m` with every stored entry multiplied by `factor`.
+fn scaled(m: &SparseRowMat<usize, f64>, factor: f64) -> SparseRowMat<usize, f64> {
+    let m_ref = m.as_ref();
+    let mut trips = Vec::with_capacity(m.compute_nnz());
+    for i in 0..m.nrows() {
+        let columns = m_ref.symbolic().col_idx_of_row_raw(i);
+        for (&j, &value) in columns.iter().zip(m_ref.val_of_row(i)) {
+            trips.push(Triplet::new(i, j, factor * value));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(m.nrows(), m.ncols(), &trips).unwrap()
+}
+
+/// `K × 1e10` puts λ near 1e7, so `|μ| = 1/|λ|` is near 1e-7: the scale of an
+/// SI-unit modal pencil, where `|μ|` sits at or below the default tol.
+const SI_UNIT_STIFFNESS_SCALE: f64 = 1e10;
+
+/// The defect class at SI-unit scale, with the DEFAULT tol of 1e-8. Every
+/// residual here is below `10·tol`, so a check with an absolute arm would pass
+/// these pairs however wrong they are. The check must be relative to the
+/// operator to catch them.
+#[test]
+fn euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs() {
+    let opts = EigenSolverOptions {
+        n_modes: 2,
+        ..EigenSolverOptions::default()
+    };
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let misused = euclidean_core_solve(&scaled(&k, SI_UNIT_STIFFNESS_SCALE), &b, opts.clone());
+    assert_eq!(misused.eigenvalues.len(), 2, "the pairs must still be returned");
+    assert_eq!(
+        misused.residual_check_failures, 2,
+        "both returned pairs fail the post-solve residual check at SI-unit scale too",
+    );
+    assert!(!misused.converged, "unverified pairs must not report converged");
+
+    let (k_c, b_c) = fixture_c();
+    let control = euclidean_core_solve(&scaled(&k_c, SI_UNIT_STIFFNESS_SCALE), &b_c, opts);
+    assert!(control.converged, "B = I at SI-unit scale: the Euclidean core converges");
+    assert_eq!(
+        control.residual_check_failures, 0,
+        "B = I at SI-unit scale: every pair verifies",
+    );
+}
+
 /// Every Lanczos path this file drives verifies its pairs: both σ ladders
 /// through the sparse entry point, and every direct metric-core solve.
 #[test]
