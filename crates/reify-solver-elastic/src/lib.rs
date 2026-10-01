@@ -690,9 +690,10 @@ pub use qoi::{
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{
-    EigenSolverOptions, EigenSolverResult, MetricOp, ShiftInvertFailure, SparseFactorRef,
-    SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
-    solve_eigen_shift_invert, try_solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, LanczosMetric, MetricOp, ShiftInvertFailure,
+    SparseFactorRef, SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert,
+    lanczos_shift_invert_in_metric, solve_eigen_dense, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
 pub use split_cholesky::SplitCholesky;
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.

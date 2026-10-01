@@ -23,8 +23,10 @@
 //!   resource failure (out of memory / index overflow) still panics and so can
 //!   never arrive disguised as either.
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
-//!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
-//!   is responsible for small-problem dispatch).
+//!   [`StiffnessOp`] / [`MetricOp`] operator pairs, valid ONLY for `B = cI`;
+//!   no dense fallback (caller is responsible for small-problem dispatch).
+//! - [`lanczos_shift_invert_in_metric`] — the Cholesky-symmetrized Lanczos core
+//!   for any other symmetric `B` ([`LanczosMetric`]); likewise no fallback.
 //!
 //! Both concrete functions are neutral on the sign convention of (K, M): the
 //! buckling-specific sign flip `M = −K_g` is the responsibility of the caller
@@ -34,10 +36,13 @@
 //! # Dual-consumer pattern
 //!
 //! The buckling pipeline (`buckling_kernel.rs`) calls
-//! `solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts)` — unchanged.
-//! The modal-analysis pipeline (task 3819) may call `lanczos_shift_invert`
-//! directly with custom `StiffnessOp`/`MetricOp` implementations (e.g.
-//! matrix-free K, lumped diagonal M) without going through the sparse wrapper.
+//! `solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts)`, and the modal
+//! pipeline (`reify-eval`) calls [`try_solve_eigen_shift_invert`]; the sparse
+//! entry points choose the Lanczos operator themselves.  A caller driving a core
+//! directly must choose it instead: [`lanczos_shift_invert`] ONLY when `B = cI`
+//! (e.g. a matrix-free K with a uniform scalar mass), and
+//! [`lanczos_shift_invert_in_metric`] for every other symmetric `B` — a lumped
+//! diagonal M included, since a non-uniform diagonal is not `cI`.
 //!
 //! # Shift contract (C1–C6)
 //!
@@ -206,7 +211,9 @@ use faer::sparse::linalg::LltError as SparseLltError;
 use faer::sparse::linalg::LuError as SparseLuError;
 use faer::sparse::{SparseColMat, SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::{Llt, Lu};
-use faer::reborrow::ReborrowMut;
+use faer::reborrow::{Reborrow, ReborrowMut};
+
+use crate::split_cholesky::SplitCholesky;
 
 /// Options controlling the eigensolver kernel.
 ///
@@ -984,6 +991,14 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 /// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the λ nearest σ by
 /// maximizing |μ| = 1/|λ − σ| in the Krylov subspace of `(K − σM)⁻¹ · M`.
 ///
+/// # Valid ONLY for `M = cI`
+///
+/// faer's Lanczos assumes the operator it is handed is Euclidean-symmetric, and
+/// `(K − σM)⁻¹M` is that only when `M` is a scalar multiple of the identity.
+/// For any other symmetric `M` it returns Ritz pairs that are not eigenpairs
+/// and labels them converged.  Such a pencil must use
+/// [`lanczos_shift_invert_in_metric`].
+///
 /// # `opts.sigma` is a DESCRIPTION of `k_op`, not an instruction to it
 ///
 /// This function never forms `K − σB`; it is handed an already-built
@@ -994,8 +1009,8 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 /// **The core cannot verify the claim.** A `k_op` factoring `K − 0.3·B` passed
 /// with `opts.sigma = 0.7` produces a plausible, wrong spectrum, and nothing
 /// here can detect it — the operator is opaque by design, which is what lets
-/// matrix-free and lumped-diagonal callers use this path at all.  Keeping the
-/// two consistent is the caller's obligation.
+/// matrix-free callers use this path at all.  Keeping the two consistent is the
+/// caller's obligation.
 ///
 /// C6 (a singular or numerically-degenerate `K − σB` is a typed failure
 /// carrying σ) therefore belongs to whoever BUILT the factorization, not here:
@@ -1030,7 +1045,194 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     m_op: &M,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
-    // Contract guards for the generic entry point.
+    check_lanczos_options(&opts);
+    assert_eq!(
+        k_op.n(),
+        m_op.n(),
+        "lanczos_shift_invert: dimension mismatch — k_op.n() = {} but m_op.n() = {}",
+        k_op.n(),
+        m_op.n(),
+    );
+
+    let n = k_op.n();
+    let op = CompositeShiftInvertOp { k_op, m_op, n };
+    let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
+    // Euclidean operator: the Ritz vectors ARE the pencil's eigenvectors.
+    finish_lanczos_result(ritz, &opts, |_| {})
+}
+
+/// The SPD metric `W = G·Gᵀ` a Cholesky-symmetrized Lanczos runs in.
+///
+/// For a pencil `(K, B)` with symmetric `B ≠ cI`, `A = (K − σB)⁻¹B` is not
+/// Euclidean-symmetric, but `W·A` is for any `W = K − τB`:
+///
+/// ```text
+/// W·(K − σB)⁻¹B = B + (σ − τ)·B(K − σB)⁻¹B
+/// ```
+///
+/// So `S = G⁻¹(W·A)G⁻ᵀ` is Euclidean-symmetric with the same eigenvalues
+/// `μ = 1/(λ − σ)`, and `φ = G⁻ᵀy` recovers the pencil's eigenvectors.  Each arm
+/// is one choice of τ.  Normative source: `docs/prds/v0_6/shift-invert-eigensolve.md`
+/// §6 (2026-09-29 amendment).
+#[derive(Clone, Copy)]
+pub enum LanczosMetric<'a> {
+    /// τ = σ: G factors `K − σB` itself (σ=0 ⇒ `K`), which must be SPD;
+    /// `S = G⁻¹BG⁻ᵀ`.  `K` alone need NOT be SPD.
+    ShiftedPencil(&'a SplitCholesky),
+    /// τ = 0: G factors `K`, which must be SPD; `K − σB` is indefinite and is
+    /// applied through `shifted_inverse`; `S = G⁻¹[B + σ·B(K − σB)⁻¹B]G⁻ᵀ`.
+    Stiffness {
+        k_factor: &'a SplitCholesky,
+        shifted_inverse: &'a dyn StiffnessOp,
+    },
+}
+
+impl LanczosMetric<'_> {
+    fn factor(&self) -> &SplitCholesky {
+        match *self {
+            LanczosMetric::ShiftedPencil(factor) => factor,
+            LanczosMetric::Stiffness { k_factor, .. } => k_factor,
+        }
+    }
+}
+
+/// Internal symmetrized operator `S = G⁻¹[B + (σ − τ)·B(K − σB)⁻¹B]G⁻ᵀ`; see
+/// [`LanczosMetric`].
+struct SymmetrizedShiftInvertOp<'a, M: MetricOp> {
+    metric: LanczosMetric<'a>,
+    b_op: &'a M,
+    sigma: f64,
+    n: usize,
+}
+
+impl<M: MetricOp> core::fmt::Debug for SymmetrizedShiftInvertOp<'_, M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SymmetrizedShiftInvertOp(n={})", self.n)
+    }
+}
+
+impl<M: MetricOp> LinOp<f64> for SymmetrizedShiftInvertOp<'_, M> {
+    #[inline]
+    fn nrows(&self) -> usize {
+        self.n
+    }
+
+    #[inline]
+    fn ncols(&self) -> usize {
+        self.n
+    }
+
+    #[inline]
+    fn apply_scratch(&self, rhs_ncols: usize, par: Par) -> StackReq {
+        // Temporaries are heap-allocated per apply; only B's matvec draws on
+        // the stack.
+        self.b_op.apply_scratch(rhs_ncols, par)
+    }
+
+    fn apply(
+        &self,
+        mut out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    ) {
+        let factor = self.metric.factor();
+        let mut x = rhs.to_owned();
+        factor.solve_factor_transpose_in_place(x.as_mut());
+        self.b_op.apply(out.rb_mut(), x.as_ref(), par, stack);
+        if let LanczosMetric::Stiffness { shifted_inverse, .. } = self.metric {
+            let mut w = out.to_owned();
+            shifted_inverse.solve_in_place(w.as_mut());
+            self.b_op.apply(x.as_mut(), w.as_ref(), par, stack);
+            for j in 0..out.ncols() {
+                for i in 0..out.nrows() {
+                    out[(i, j)] += self.sigma * x[(i, j)];
+                }
+            }
+        }
+        factor.solve_factor_in_place(out.rb_mut());
+    }
+
+    fn conj_apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    ) {
+        // Real symmetric: conj_apply ≡ apply.
+        self.apply(out, rhs, par, stack);
+    }
+}
+
+/// Cholesky-symmetrized shift-invert Lanczos for `K φ = λ B φ` with any
+/// symmetric `B` — the core [`lanczos_shift_invert`] cannot serve unless
+/// `B = cI`.
+///
+/// Runs faer's Lanczos on the Euclidean-symmetric `S` of [`LanczosMetric`], then
+/// recovers `φ = G⁻ᵀy` and scales each column to unit Euclidean norm.  Like the
+/// Euclidean core, `opts.sigma` DESCRIBES the factorizations in `metric` (and
+/// the core cannot verify it), there is no dense fallback, and C5 is reported
+/// conservatively — the caller that built the factorizations owns C6 and the
+/// established provenance.
+///
+/// # Panics
+///
+/// The option guards of [`lanczos_shift_invert`], and a dimension mismatch
+/// between `b_op` and the metric factor (or, in the `Stiffness` arm,
+/// `shifted_inverse`).
+pub fn lanczos_shift_invert_in_metric<M: MetricOp>(
+    metric: LanczosMetric<'_>,
+    b_op: &M,
+    opts: EigenSolverOptions,
+) -> EigenSolverResult {
+    check_lanczos_options(&opts);
+    let n = b_op.n();
+    let factor = metric.factor();
+    assert_eq!(
+        factor.n(),
+        n,
+        "lanczos_shift_invert_in_metric: dimension mismatch — metric factor n() = {} \
+         but b_op.n() = {}",
+        factor.n(),
+        n,
+    );
+    if let LanczosMetric::Stiffness { shifted_inverse, .. } = metric {
+        assert_eq!(
+            shifted_inverse.n(),
+            n,
+            "lanczos_shift_invert_in_metric: dimension mismatch — shifted_inverse.n() = {} \
+             but b_op.n() = {}",
+            shifted_inverse.n(),
+            n,
+        );
+    }
+
+    let op = SymmetrizedShiftInvertOp {
+        metric,
+        b_op,
+        sigma: opts.sigma,
+        n,
+    };
+    let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
+    finish_lanczos_result(ritz, &opts, |vectors| {
+        recover_pencil_eigenvectors(factor, vectors)
+    })
+}
+
+/// `φ = G⁻ᵀy`, each column then scaled to unit Euclidean norm.
+fn recover_pencil_eigenvectors(factor: &SplitCholesky, mut vectors: MatMut<'_, f64>) {
+    factor.solve_factor_transpose_in_place(vectors.rb_mut());
+    for j in 0..vectors.ncols() {
+        let norm = vectors.rb().col(j).norm_l2();
+        for i in 0..vectors.nrows() {
+            vectors[(i, j)] /= norm;
+        }
+    }
+}
+
+/// Option guards shared by both Lanczos cores.
+fn check_lanczos_options(opts: &EigenSolverOptions) {
     assert!(
         opts.n_modes >= 1,
         "EigenSolverOptions.n_modes = {} is invalid; must be >= 1",
@@ -1050,24 +1252,23 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         "EigenSolverOptions.sigma = {} must be finite",
         opts.sigma,
     );
-    assert_eq!(
-        k_op.n(),
-        m_op.n(),
-        "lanczos_shift_invert: dimension mismatch — k_op.n() = {} but m_op.n() = {}",
-        k_op.n(),
-        m_op.n(),
-    );
+}
 
-    let n = k_op.n();
+/// The Ritz pairs faer's thick-restart Lanczos converged on an operator, before
+/// any back-shift, selection or eigenvector recovery.
+struct RitzPairs {
+    vectors: Mat<f64>,
+    mu: Vec<f64>,
+    n_converged: usize,
+}
 
-    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
-    // is documented to report.  It is `opts.sigma` because `k_op` is a
-    // factorization of `K − σB` for THAT σ — see this function's rustdoc on why
-    // the core cannot verify that and why C6 belongs to whoever built it.
-    let shift_used = opts.sigma;
-
-    let op = CompositeShiftInvertOp { k_op, m_op, n };
-
+/// Run `partial_self_adjoint_eigen` on `op` with the deterministic start vector
+/// and Krylov window shared by both Lanczos cores.
+fn run_partial_self_adjoint_eigen(
+    op: &dyn LinOp<f64>,
+    n: usize,
+    opts: &EigenSolverOptions,
+) -> RitzPairs {
     // Deterministic unit start vector: v₀ = (1/√n) · 1ₙ
     // (PRD §14 tactical default; fixes Lanczos seed for bit-stable test output).
     let v0 = Col::<f64>::from_fn(n, |_| 1.0 / (n as f64).sqrt());
@@ -1090,19 +1291,14 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     let mut eigvecs = Mat::<f64>::zeros(n, opts.n_modes);
     let mut eigvals_mu = vec![0.0_f64; opts.n_modes];
 
-    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(
-        &op as &dyn LinOp<f64>,
-        opts.n_modes,
-        Par::Seq,
-        params,
-    );
+    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(op, opts.n_modes, Par::Seq, params);
     let mut buf = MemBuffer::new(scratch_req);
     let stack = MemStack::new(&mut buf);
 
     let info = partial_self_adjoint_eigen(
         eigvecs.as_mut(),
         &mut eigvals_mu,
-        &op as &dyn LinOp<f64>,
+        op,
         v0.as_ref(),
         opts.tol,
         Par::Seq,
@@ -1110,7 +1306,29 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         params,
     );
 
-    let n_conv = info.n_converged_eigen;
+    RitzPairs {
+        vectors: eigvecs,
+        mu: eigvals_mu,
+        n_converged: info.n_converged_eigen,
+    }
+}
+
+/// Turn converged Ritz pairs into an [`EigenSolverResult`]: back-shift (C4),
+/// select (C2), order (C3), then `recover_eigenvectors` maps the selected Ritz
+/// vectors to the pencil's eigenvectors in place (identity for the Euclidean
+/// operator).
+fn finish_lanczos_result(
+    ritz: RitzPairs,
+    opts: &EigenSolverOptions,
+    recover_eigenvectors: impl FnOnce(MatMut<'_, f64>),
+) -> EigenSolverResult {
+    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
+    // is documented to report.  It is `opts.sigma` because the operator embeds
+    // a factorization of `K − σB` for THAT σ — see `lanczos_shift_invert`'s
+    // rustdoc on why the core cannot verify that and why C6 belongs to whoever
+    // built it.
+    let shift_used = opts.sigma;
+    let n_conv = ritz.n_converged;
 
     // C4 — back-shift μ → λ = σ + 1/μ for the converged modes only.  (At σ=0
     // this is the pre-PRD `λ = 1/μ`, bit-exactly: `0.0 + x == x` for every
@@ -1123,7 +1341,7 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     // `try_solve_eigen_shift_invert`, which has the matrices needed to size it.
     let mut pairs: Vec<(f64, usize)> = (0..n_conv)
         .filter_map(|i| {
-            let mu = eigvals_mu[i];
+            let mu = ritz.mu[i];
             if mu.abs() < f64::MIN_POSITIVE {
                 return None;
             }
@@ -1148,13 +1366,14 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     let converged = n_take == opts.n_modes;
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
-    let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
+    let mut eigenvectors = Mat::<f64>::zeros(ritz.vectors.nrows(), n_take);
     for (out_col, &(_, src_col)) in pairs[..n_take].iter().enumerate() {
         // Column-major faer storage: copy whole column slice in one memcpy.
         eigenvectors
             .col_as_slice_mut(out_col)
-            .copy_from_slice(eigvecs.col_as_slice(src_col));
+            .copy_from_slice(ritz.vectors.col_as_slice(src_col));
     }
+    recover_eigenvectors(eigenvectors.as_mut());
 
     EigenSolverResult {
         eigenvalues,
@@ -1163,14 +1382,14 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         converged,
         shift: shift_used,
         // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
-        // cannot count what it skipped may not assume `false`.  This core is
-        // handed an OPAQUE factorization, so it has no evidence to establish
-        // `false` at σ≠0 and C5 forbids it assuming one.
+        // cannot count what it skipped may not assume `false`.  Both cores are
+        // handed OPAQUE factorizations, so they have no evidence to establish
+        // `false` at σ≠0 and C5 forbids them assuming one.
         //
         // `try_solve_eigen_shift_invert` BUILT the factorization and therefore
         // does have the evidence; it overrides this with
         // `shift_provenance_from_factorization` via `with_provenance`.  A caller
-        // driving this core directly keeps the conservative answer, which is the
+        // driving a core directly keeps the conservative answer, which is the
         // correct one for what it knows.
         shift_skipped_modes: conservative_shift_provenance(shift_used),
     }
