@@ -4458,6 +4458,37 @@ class TestGrammarCacheDeniedErrnoAnchoring(unittest.TestCase):
         self.assertTrue(pcc.grammar_cache_denied(self._run(1, _CACHE_DENIED_STDERR)))
 
 
+class TestGrammarCacheDenialIsInTheLoadFailureCause(unittest.TestCase):
+    """Only a denial reported by the load failure itself authorizes a skip."""
+
+    @staticmethod
+    def _run(exit_code, stderr, stdout=""):
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def test_denial_reported_before_an_unrelated_load_failure_is_not_denied(self):
+        """The load failure is a missing grammar, which must stay loud.
+
+        Compare test (e) in TestGrammarCacheDenied: an EACCES on some other
+        file that merely precedes it must not authorize a skip.
+        """
+        stderr = (
+            "warning: could not write /home/u/.config/tree-sitter/config.json: "
+            "Permission denied (os error 13)\n"
+            'Error: Failed to load language for path "x.ri"\n'
+            "\n"
+            "Caused by:\n"
+            "    No language found\n"
+        )
+        run = self._run(1, stderr)
+        self.assertFalse(pcc.grammar_cache_denied(run))
+        self.assertEqual(pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR)
+
+    def test_denial_inside_the_cause_chain_is_denied(self):
+        tail = "Permission denied (os error 13) (/tmp/cache/tree-sitter/lib)"
+        run = self._run(1, _load_failure_stderr(tail))
+        self.assertTrue(pcc.grammar_cache_denied(run))
+
+
 # ---------------------------------------------------------------------------
 # 5894 step-3 (RED): grammar_substrate_usable() — behavioural substrate probe
 # ---------------------------------------------------------------------------
