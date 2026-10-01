@@ -29,9 +29,9 @@ use reify_ir::{GeometryHandleId, TopologyAttributeTable, ValueMap};
 ///   caller must preserve the old table before triggering the new-side
 ///   realization (same caveat as Stage B).
 /// - `faces`, `edges`, `vertices`: handle slices extracted from this side's
-///   B-rep via `kernel.extract_faces(...)` / `kernel.extract_edges(...)`.
-///   `vertices` is accepted for API forward-compatibility; not processed in
-///   v0.2.
+///   B-rep via `kernel.extract_faces(...)` / `kernel.extract_edges(...)` /
+///   `kernel.extract_vertices(...)`; Stage B matches all three into
+///   `CorrespondenceMap::{face_to_face, edge_to_edge, vertex_to_vertex}`.
 #[derive(Debug, Clone, Copy)]
 pub struct MorphSnapshot<'a> {
     pub graph: &'a EvaluationGraph,
