@@ -82,6 +82,7 @@ test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
+test_await_merge_landing.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_cargo_test_tally.sh pool
 test_check_event_inventory.sh pool
