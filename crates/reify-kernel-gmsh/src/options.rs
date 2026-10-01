@@ -33,3 +33,49 @@ pub struct MeshingOptions {
     /// on every flag flip and defeat the cross-machine reproducibility purpose.
     pub deterministic: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MeshingOptions;
+
+    #[test]
+    fn deterministic_resolves_to_one_thread_whatever_threads_says() {
+        let options = MeshingOptions {
+            threads: Some(8),
+            deterministic: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            options.resolved_num_threads(),
+            1,
+            "deterministic output requires a single gmsh worker, overriding `threads`",
+        );
+    }
+
+    #[test]
+    fn an_explicit_thread_count_is_honoured_when_not_deterministic() {
+        for requested in [3, 0] {
+            let options = MeshingOptions {
+                threads: Some(requested),
+                deterministic: false,
+                ..Default::default()
+            };
+            assert_eq!(
+                options.resolved_num_threads(),
+                requested,
+                "an explicit thread count reaches gmsh unchanged (0 included, which gmsh \
+                 itself interprets) when output need not be deterministic",
+            );
+        }
+    }
+
+    #[test]
+    fn no_thread_count_resolves_to_at_least_one_thread() {
+        let resolved = MeshingOptions::default().resolved_num_threads();
+        assert!(
+            resolved >= 1,
+            "with no explicit count the kernel picks one from the host, and never fewer \
+             than one worker; got {resolved}",
+        );
+    }
+}
