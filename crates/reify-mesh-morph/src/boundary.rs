@@ -59,17 +59,15 @@ impl ProjectorPayload {
 
 /// Failure modes from [`compute_dirichlet_bcs`].
 ///
-/// `MissingCorrespondence` is the load-bearing diagnostic — it surfaces:
-/// - The v0.2 vertex-attached-node case (since
-///   [`CorrespondenceMap::vertex_to_vertex`] is always empty in v0.2).
-/// - Any future Stage-B-passes-but-CorrespondenceMap-incomplete edge case.
+/// `MissingCorrespondence` is the load-bearing diagnostic — it fires when an
+/// attachment's old handle has no entry in the matching per-kind map of
+/// `correspondence`, e.g.:
+/// - a [`BoundaryAssociation`] naming a handle outside the slices Stage B
+///   matched, or
+/// - a map that `reify_eval::stage_b_eligible` did not produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionFailure {
     /// The correspondence map has no entry for `old_handle` of the given kind.
-    ///
-    /// In v0.2, `SubShapeKind::Vertex` always triggers this variant because
-    /// [`CorrespondenceMap::vertex_to_vertex`] is structurally always-empty
-    /// (see `reify_eval::morph_stage_b` doc-comment on `vertex_to_vertex`).
     MissingCorrespondence {
         kind: SubShapeKind,
         old_handle: GeometryHandleId,
@@ -189,8 +187,7 @@ impl<'k> Projector for KernelProjector<'k> {
 ///
 /// Returns the first [`ProjectionFailure`] encountered:
 /// - `MissingCorrespondence` — no entry in `correspondence` for the attachment's
-///   old handle. This is deterministic in v0.2 for `OnVertex` nodes because
-///   [`CorrespondenceMap::vertex_to_vertex`] is structurally always-empty.
+///   old handle.
 /// - `InvalidNodeIndex` — node index is out of range for `old_mesh.vertices`.
 /// - `Projector` — the kernel's closest-point computation failed.
 ///
@@ -677,7 +674,9 @@ mod tests {
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
 
-        // Manually populated even though Stage B never produces it in v0.2.
+        // Hand-built to isolate compute_dirichlet_bcs from Stage B; the
+        // Stage-B-driven path is pinned by
+        // compute_dirichlet_bcs_snaps_vertex_attached_node_through_stage_b_vertex_correspondence.
         let mut correspondence = CorrespondenceMap::default();
         correspondence.vertex_to_vertex.insert(h(50), h(60));
 
@@ -875,8 +874,6 @@ mod tests {
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
 
-        // Manually populated even though Stage B never produces it in v0.2 —
-        // same approach as the existing happy-path vertex test.
         let mut correspondence = CorrespondenceMap::default();
         correspondence.vertex_to_vertex.insert(h(50), h(60));
 
