@@ -968,6 +968,10 @@ fn assert_metric_lanczos_matches_dense(solve: &MetricCoreSolve) {
         result.n_converged,
     );
     assert!(result.converged, "{label}: must converge");
+    assert_eq!(
+        result.residual_check_failures, 0,
+        "{label}: every returned pair must verify",
+    );
     assert_eq!(result.shift, opts.sigma, "{label}: the shift used must be σ");
 
     let dense = solve_eigen_dense(k, b, opts.clone());
@@ -1012,23 +1016,6 @@ const GRADED_SIGMA_LADDER: [f64; 6] = [0.0, 5e-4, 0.05, 0.5, 1.5, 2.5];
 /// Indefinite B (the buckling stand-in): shifts of both signs (n_modes = 3).
 const INDEFINITE_SIGMA_LADDER: [f64; 6] = [0.0, 1e-3, 0.02, -0.02, 0.2, -0.3];
 
-/// `solve_eigen_shift_invert` at each σ of `sigmas`, with the options used.
-fn ladder_solves(
-    k: &SparseRowMat<usize, f64>,
-    b: &SparseRowMat<usize, f64>,
-    n_modes: usize,
-    sigmas: &[f64],
-) -> Vec<(EigenSolverOptions, EigenSolverResult)> {
-    sigmas
-        .iter()
-        .map(|&sigma| {
-            let opts = metric_opts(n_modes, sigma);
-            let result = solve_eigen_shift_invert(k, b, opts.clone());
-            (opts, result)
-        })
-        .collect()
-}
-
 /// Hold every solve of a σ ladder to the dense reference at the same σ.
 fn assert_shift_invert_matches_dense_across(
     k: &SparseRowMat<usize, f64>,
@@ -1037,14 +1024,19 @@ fn assert_shift_invert_matches_dense_across(
     sigmas: &[f64],
     label: &str,
 ) {
-    for (opts, lanczos) in ladder_solves(k, b, n_modes, sigmas) {
-        let sigma = opts.sigma;
+    for &sigma in sigmas {
+        let opts = metric_opts(n_modes, sigma);
+        let lanczos = solve_eigen_shift_invert(k, b, opts.clone());
         let ctx = format!("{label} σ={sigma}");
         assert!(
             lanczos.n_converged > 0,
             "{ctx}: must exercise Lanczos (n_converged > 0)",
         );
         assert!(lanczos.converged, "{ctx}: must converge");
+        assert_eq!(
+            lanczos.residual_check_failures, 0,
+            "{ctx}: every returned pair must verify",
+        );
         let dense = solve_eigen_dense(k, b, opts);
         assert_same_eigenvalue_multiset(
             &lanczos.eigenvalues,
@@ -1154,42 +1146,6 @@ fn euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs() {
         control.residual_check_failures, 0,
         "B = I at SI-unit scale: every pair verifies",
     );
-}
-
-/// Every Lanczos path this file drives verifies its pairs: both σ ladders
-/// through the sparse entry point, and every direct metric-core solve.
-#[test]
-fn every_lanczos_path_verifies_its_pairs() {
-    let graded = graded_diagonal_b_pencil(80);
-    let indefinite = indefinite_b_pencil(136);
-    let ladders = ladder_solves(&graded.0, &graded.1, 2, &GRADED_SIGMA_LADDER)
-        .into_iter()
-        .map(|solve| ("graded", solve))
-        .chain(
-            ladder_solves(&indefinite.0, &indefinite.1, 3, &INDEFINITE_SIGMA_LADDER)
-                .into_iter()
-                .map(|solve| ("indefinite", solve)),
-        );
-    for (label, (opts, result)) in ladders {
-        assert!(result.n_converged > 0, "{label} σ={}: must run Lanczos", opts.sigma);
-        assert_eq!(
-            result.residual_check_failures, 0,
-            "{label} σ={}: every returned pair must verify",
-            opts.sigma,
-        );
-    }
-    for solve in [
-        graded_metric_at_sigma_zero(),
-        graded_metric_below_lambda_one(),
-        graded_metric_above_a_mode(),
-        indefinite_metric_above_a_mode(),
-    ] {
-        assert_eq!(
-            solve.result.residual_check_failures, 0,
-            "{}: every returned pair must verify",
-            solve.label,
-        );
-    }
 }
 
 /// QZ computes the spectrum directly, so the dense path has no Ritz pairs to
