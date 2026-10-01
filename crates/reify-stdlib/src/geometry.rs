@@ -5580,6 +5580,73 @@ mod tests {
         );
     }
 
+    /// The four NON-LENGTH translation shapes a Transform consumer must reject
+    /// (RULING #6089: a Transform's translation is a displacement and carries
+    /// LENGTH). Each triple shares ONE dimension, so `decompose_transform`
+    /// succeeds and only the LENGTH verdict can reject — the same exhaustive
+    /// `got` shapes `length_rejection_wording_is_the_shared_arg_rejection_template`
+    /// enumerates.
+    fn non_length_translation_triples() -> [(&'static str, [Value; 3]); 4] {
+        let scalar = |v: f64, dimension| Value::Scalar {
+            si_value: v,
+            dimension,
+        };
+        [
+            (
+                "bare Real",
+                [Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)],
+            ),
+            ("bare Int", [Value::Int(1), Value::Int(2), Value::Int(3)]),
+            (
+                "dimensionless Scalar",
+                [
+                    scalar(1.0, DimensionVector::DIMENSIONLESS),
+                    scalar(2.0, DimensionVector::DIMENSIONLESS),
+                    scalar(3.0, DimensionVector::DIMENSIONLESS),
+                ],
+            ),
+            (
+                "MASS Scalar",
+                [
+                    scalar(1.0, DimensionVector::MASS),
+                    scalar(2.0, DimensionVector::MASS),
+                    scalar(3.0, DimensionVector::MASS),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn transform_inverse_non_length_translation_returns_undef() {
+        for (shape, triple) in non_length_translation_triples() {
+            let t = make_transform_with_translation(triple);
+            assert!(
+                eval_builtin("transform_inverse", &[t]).is_undef(),
+                "{shape}: RULING #6089 — a Transform translation carries LENGTH, so \
+                 transform_inverse must reject a non-LENGTH translation as Undef rather \
+                 than propagate its dimension"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_inverse_emits_length_translation_components() {
+        let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
+        let Value::Transform { translation, .. } = eval_builtin("transform_inverse", &[t]) else {
+            panic!("a LENGTH Transform must invert to a Transform");
+        };
+        let Value::Vector(items) = *translation else {
+            panic!("the inverse translation must be a Vector");
+        };
+        assert_eq!(items.len(), 3);
+        for (i, item) in items.iter().enumerate() {
+            assert!(
+                matches!(item, Value::Scalar { .. }) && item.dimension() == DimensionVector::LENGTH,
+                "translation[{i}] must be a LENGTH Scalar, got {item:?}"
+            );
+        }
+    }
+
     // ── transform_log tests (step-19) ────────────────────────────────────────
 
     /// Helper: extract a Vector3's three f64 components from a Map's value at `key`.
@@ -7528,6 +7595,19 @@ mod tests {
             eval_builtin("affine_from_transform", &[t.clone(), t]).is_undef(),
             "2 args"
         );
+    }
+
+    #[test]
+    fn affine_from_transform_non_length_translation_returns_undef() {
+        for (shape, triple) in non_length_translation_triples() {
+            let t = make_transform_with_translation(triple);
+            assert!(
+                eval_builtin("affine_from_transform", &[t]).is_undef(),
+                "{shape}: RULING #6089 — an AffineMap's translation is stored in SI metres, \
+                 so widening a Transform whose translation is not LENGTH must be Undef \
+                 rather than silently reinterpret each unit as one metre"
+            );
+        }
     }
 
     // ── diagnose classifier tests (step-15) ───────────────────────────────────
