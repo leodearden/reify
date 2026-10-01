@@ -1562,8 +1562,8 @@ fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
 /// A fence with a genuine PARSE error is a NAMED violation, not an
 /// unattributed panic.
 ///
-/// `compile_source_with_stdlib` (helpers.rs:236) panics on parse errors, which
-/// would abort the whole gate with a backtrace naming no file and no fence —
+/// `compile_source_with_stdlib` panics on parse errors, which would abort the
+/// whole gate with a backtrace naming no file and no fence —
 /// defeating the "names file + fence ordinal + diagnostics" contract at exactly
 /// the moment it matters most. The `_allow_parse_errors` variant folds parse
 /// errors into `.diagnostics` at Error severity instead, so a malformed fence
