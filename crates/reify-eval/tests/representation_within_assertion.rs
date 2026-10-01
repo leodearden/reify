@@ -1504,14 +1504,10 @@ structure SphereCheck {
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// CAVEAT on the 0.10mm row: `d/R` there is 1e-4, below the ~2.5e-4 floor
-/// where a separate third branch ALSO appears, per
-/// `precision-nominal-representation-guarantee.md` §2 — but this row's own
-/// 2.078x reading shows it sits on the envelope, not that branch, in this
-/// regime. Do not read it as extending the envelope/tooth characterization
-/// that low: a third branch is known to exist down there too; see
-/// `docs/notes/occt-precision-deviation-staircase.md` for that branch, its
-/// ratio and its do-not-extrapolate rule.
+/// The 0.10mm row (`d/R` = 1e-4) sits below the ~2.52e-4 onset of the ~1.49x
+/// third branch and reads as a tread: treads persist below that onset,
+/// interleaved with third-branch windows; see
+/// `docs/notes/occt-precision-deviation-staircase.md` §1.
 ///
 /// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep —
 /// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
