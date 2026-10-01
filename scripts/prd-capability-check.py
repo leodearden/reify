@@ -740,10 +740,12 @@ def grammar_cache_denied(run: ProbeRun) -> bool:
     are required, because neither half alone is safe to skip on: a genuine
     grammar regression is a *parse* error (exit 1, no load failure), and a load
     failure with no permission indicator is a missing or corrupt grammar.  Both
-    keep reaching _HARNESS_ERROR / exit 70.  The denial must belong to the load
-    failure's own report — at or after the marker, since tree-sitter renders the
-    cause chain after the top-level error — so an EACCES on some other file that
-    precedes it does not count; and its errno is matched whole.
+    keep reaching _HARNESS_ERROR / exit 70.  The denial is searched for only at
+    or after the load-failure marker, since tree-sitter renders the cause chain
+    after the top-level error, so an EACCES on some other file that precedes the
+    marker does not count.  Nothing narrower is enforced: a denial anywhere after
+    the marker counts, not only one inside its `Caused by:` block.  The errno is
+    matched whole.
 
     Keys on stderr rather than ``os.access(dir, os.W_OK)``, which consults DAC
     only and reports the directory writable under a landlock hook (measured: the

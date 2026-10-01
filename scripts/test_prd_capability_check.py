@@ -4354,6 +4354,22 @@ def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     return path
 
 
+def _probe_run(exit_code, stderr, stdout=""):
+    """A hermetic ProbeRun for the grammar_cache_denied() tests."""
+    return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+
+def _load_failure_stderr(tail):
+    """tree-sitter 0.26.8's load-failure layout with `tail` as the root cause."""
+    return (
+        'Error: Failed to load language for path "x.ri"\n'
+        "\n"
+        "Caused by:\n"
+        "    Failed to load language in current directory:\n"
+        f"    {tail}\n"
+    )
+
+
 class TestGrammarCacheDenied(unittest.TestCase):
     """Pins pcc.grammar_cache_denied(run) -> bool.  Hermetic: no subprocess.
 
@@ -4366,16 +4382,12 @@ class TestGrammarCacheDenied(unittest.TestCase):
     probe verdict.
     """
 
-    @staticmethod
-    def _run(exit_code, stderr, stdout=""):
-        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
-
     # ── positives ─────────────────────────────────────────────────────────────
 
     def test_measured_sandbox_signature_is_denied(self):
         """(a) The verbatim measured sandbox stderr → True."""
         self.assertTrue(
-            pcc.grammar_cache_denied(self._run(1, _CACHE_DENIED_STDERR)),
+            pcc.grammar_cache_denied(_probe_run(1, _CACHE_DENIED_STDERR)),
             "the measured sandbox cache-denial signature must be recognised",
         )
 
@@ -4389,7 +4401,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
             "Error: Failed to load language for path \"x.ri\"\n"
             "Caused by: os error 13\n"
         )
-        self.assertTrue(pcc.grammar_cache_denied(self._run(1, stderr)))
+        self.assertTrue(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
     # ── negatives (the narrowness guards) ─────────────────────────────────────
 
@@ -4400,11 +4412,11 @@ class TestGrammarCacheDenied(unittest.TestCase):
         legitimately FAILs — the risk this predicate is narrowed against.
         """
         stderr = "x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])\n"
-        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
     def test_successful_run_is_not_denied(self):
         """(d) exit 0 with empty stderr → False."""
-        self.assertFalse(pcc.grammar_cache_denied(self._run(0, "")))
+        self.assertFalse(pcc.grammar_cache_denied(_probe_run(0, "")))
 
     def test_load_failure_without_permission_indicator_is_not_denied(self):
         """(e) A load failure with NO permission indicator → False.
@@ -4416,7 +4428,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
             "Error: Failed to load language for path \"x.ri\"\n"
             "Caused by: No language found for path\n"
         )
-        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
     def test_permission_denial_without_load_failure_is_not_denied(self):
         """A permission error unrelated to grammar loading → False.
@@ -4425,7 +4437,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
         harness error the operator needs to see, not a grammar-substrate skip.
         """
         stderr = "Error: Permission denied (os error 13) (x.ri)\n"
-        self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
+        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
     # ── the two classifiers must agree about a load failure ───────────────────
 
@@ -4442,7 +4454,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
             "Permission denied (os error 13) (~/.cache/tree-sitter/lock/x.lock)\n",
         ):
             with self.subTest(stderr=stderr[:40]):
-                run = self._run(1, stderr)
+                run = _probe_run(1, stderr)
                 self.assertTrue(
                     pcc.grammar_cache_denied(run),
                     "precondition: this is a recognised cache denial",
@@ -4454,21 +4466,12 @@ class TestGrammarCacheDenied(unittest.TestCase):
                 )
 
 
-def _load_failure_stderr(tail):
-    """tree-sitter 0.26.8's load-failure layout with `tail` as the root cause."""
-    return (
-        'Error: Failed to load language for path "x.ri"\n'
-        "\n"
-        "Caused by:\n"
-        "    Failed to load language in current directory:\n"
-        f"    {tail}\n"
-    )
+class TestGrammarCacheDenialAnchoring(unittest.TestCase):
+    """The denial is matched whole, and only at or after the load-failure marker.
 
-
-class TestGrammarCacheDeniedErrnoAnchoring(unittest.TestCase):
-    """The EACCES errno is matched whole, never as a numeric prefix.
-
-    The #7257 numeric-prefix defect, in α's sibling predicate.
+    The errno half is the #7257 numeric-prefix defect in α's sibling predicate;
+    the position half keeps a missing grammar loud when an unrelated EACCES
+    happens to precede its load failure.
     """
 
     HOSTILE_ERRNOS = (
@@ -4478,14 +4481,10 @@ class TestGrammarCacheDeniedErrnoAnchoring(unittest.TestCase):
         ("EHWPOISON", "Memory page has hardware error (os error 133)"),
     )
 
-    @staticmethod
-    def _run(exit_code, stderr, stdout=""):
-        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
-
     def test_thirteen_x_errnos_are_not_denials(self):
         for label, tail in self.HOSTILE_ERRNOS:
             with self.subTest(errno=label):
-                run = self._run(1, _load_failure_stderr(tail))
+                run = _probe_run(1, _load_failure_stderr(tail))
                 self.assertFalse(pcc.grammar_cache_denied(run))
                 self.assertEqual(
                     pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR
@@ -4493,23 +4492,12 @@ class TestGrammarCacheDeniedErrnoAnchoring(unittest.TestCase):
 
     def test_measured_tail_is_denied(self):
         tail = "Permission denied (os error 13) (/tmp/cache/tree-sitter/lib)"
-        run = self._run(1, _load_failure_stderr(tail))
+        run = _probe_run(1, _load_failure_stderr(tail))
         self.assertTrue(pcc.grammar_cache_denied(run))
 
     def test_bare_end_of_string_errno_is_denied(self):
-        run = self._run(1, _load_failure_stderr("os error 13").rstrip("\n"))
+        run = _probe_run(1, _load_failure_stderr("os error 13").rstrip("\n"))
         self.assertTrue(pcc.grammar_cache_denied(run))
-
-    def test_measured_sandbox_constant_is_denied(self):
-        self.assertTrue(pcc.grammar_cache_denied(self._run(1, _CACHE_DENIED_STDERR)))
-
-
-class TestGrammarCacheDenialIsInTheLoadFailureCause(unittest.TestCase):
-    """Only a denial reported by the load failure itself authorizes a skip."""
-
-    @staticmethod
-    def _run(exit_code, stderr, stdout=""):
-        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     def test_denial_reported_before_an_unrelated_load_failure_is_not_denied(self):
         """The load failure is a missing grammar, which must stay loud.
@@ -4525,14 +4513,9 @@ class TestGrammarCacheDenialIsInTheLoadFailureCause(unittest.TestCase):
             "Caused by:\n"
             "    No language found\n"
         )
-        run = self._run(1, stderr)
+        run = _probe_run(1, stderr)
         self.assertFalse(pcc.grammar_cache_denied(run))
         self.assertEqual(pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR)
-
-    def test_denial_inside_the_cause_chain_is_denied(self):
-        tail = "Permission denied (os error 13) (/tmp/cache/tree-sitter/lib)"
-        run = self._run(1, _load_failure_stderr(tail))
-        self.assertTrue(pcc.grammar_cache_denied(run))
 
 
 # ---------------------------------------------------------------------------
