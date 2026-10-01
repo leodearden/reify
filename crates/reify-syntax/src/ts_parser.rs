@@ -5368,7 +5368,9 @@ impl<'a> Lowering<'a> {
     /// still is, now with a message instead of an anonymous ERROR node. The
     /// rejection lowers nothing, so no fabricated multi-segment name reaches the
     /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
-    /// member is dropped rather than half-built.
+    /// member is dropped rather than half-built. All three rejections in this
+    /// function name the GR-040 no-method-call rule, whatever the receiver shape
+    /// (pinned by `tests/harness_syntax_lowering/method_call_rejection_lowering_tests.rs`).
     ///
     /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
     /// two-segment `ident.ident(args)`, not only the import-qualified ones.
@@ -5399,6 +5401,8 @@ impl<'a> Lowering<'a> {
     /// parse time, and their disambiguation is deferred to ν exactly as
     /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
     fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        const NO_METHOD_CALL_SYNTAX: &str = "Reify has no method-call syntax";
+
         let callee = node.child_by_field_name("callee")?;
         let object = callee.child_by_field_name("object")?;
         let member = callee.child_by_field_name("member")?;
@@ -5415,9 +5419,11 @@ impl<'a> Lowering<'a> {
                     "unsupported qualified call `{callee_text}(...)`: the callee of a \
                      qualified call must be a simple `binding.Name(...)` through an \
                      `import ... as binding` alias, but `{object_text}` is not a binding \
-                     name{scope_note}",
+                     name{scope_note}. {NO_METHOD_CALL_SYNTAX}, so `{member_text}` cannot \
+                     be called on it",
                     callee_text = self.node_text(callee),
                     object_text = self.node_text(object),
+                    member_text = self.node_text(member),
                 ),
                 self.span(callee),
             );
@@ -5436,7 +5442,7 @@ impl<'a> Lowering<'a> {
                     "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
                      namespace: an import in this file binds `{qualifier}`, but as \
                      {binding_note}, and the qualifier of a qualified call must be a \
-                     module namespace. Reify has no method-call syntax, so this cannot \
+                     module namespace. {NO_METHOD_CALL_SYNTAX}, so this cannot \
                      be a call on the entity `{qualifier}`{capitalisation_hint}",
                     binding_note = Self::entity_binding_note(kind),
                     capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
@@ -5446,8 +5452,8 @@ impl<'a> Lowering<'a> {
                     "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
                      of a qualified call must be a module namespace bound by an import, but \
                      no import in this file binds `{qualifier}` — declare one as \
-                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
-                     no method-call syntax, so this cannot be a call on a value named \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. \
+                     {NO_METHOD_CALL_SYNTAX}, so this cannot be a call on a value named \
                      `{qualifier}`"
                 ),
             };
