@@ -346,7 +346,7 @@ fn strip_attribute(rest: &str) -> Option<&str> {
 /// Whether `text` is a `format!` template rather than compilable Reify source.
 ///
 /// Two tells, both taken from the live shape at
-/// `crates/reify-compiler/tests/ambient_default_injection_tests.rs:136-144`:
+/// `crates/reify-compiler/tests/harness_diagnostics_robustness/ambient_default_injection_tests.rs:136-144`:
 /// doubled `{{`/`}}` braces (how a template escapes a literal brace, which
 /// Reify never writes), and a bare `{ident}` substitution. An EMPTY `{}` body
 /// is ordinary Reify, so a placeholder must name something.
