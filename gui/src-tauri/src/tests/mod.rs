@@ -4,6 +4,7 @@ mod constraint_recheck_tests;
 mod debug_boundary_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
+mod dev_url_tests;
 mod diff_tests;
 mod engine_lock_tests;
 mod engine_tests;
