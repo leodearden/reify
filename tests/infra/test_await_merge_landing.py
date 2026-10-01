@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -319,15 +320,29 @@ class OptionsAndRearmTests(unittest.TestCase):
         self.assertEqual(options.selector.kind.value, "task_id")
 
     def test_monitor_cap_budget_leaves_the_probe_round_reserve(self):
-        budget = aml.invocation_budget_seconds(600000)
-        self.assertGreater(budget, 0)
-        self.assertLess(budget, 600)
-        self.assertEqual(budget + aml.PROBE_ROUND_RESERVE_SECONDS, 600)
-        self.assertEqual(aml.invocation_budget_seconds(7200000),
-                         7200 - aml.PROBE_ROUND_RESERVE_SECONDS)
+        for fetching in (False, True):
+            with self.subTest(fetching=fetching):
+                reserve = aml.probe_round_reserve_seconds(fetching=fetching)
+                budget = aml.invocation_budget_seconds(600000, fetching=fetching)
+                self.assertGreater(budget, 0)
+                self.assertEqual(budget + reserve, 600)
+                self.assertEqual(
+                    aml.invocation_budget_seconds(7200000, fetching=fetching),
+                    7200 - reserve)
+
+    def test_reserve_covers_every_probe_call_at_its_own_timeout(self):
+        bare = aml.probe_round_reserve_seconds(fetching=False)
+        self.assertGreaterEqual(
+            bare, aml.GIT_TIMEOUT_SECONDS + aml.MERGE_STATUS_TIMEOUT_SECONDS)
+        self.assertEqual(aml.probe_round_reserve_seconds(fetching=True),
+                         bare + aml.FETCH_TIMEOUT_SECONDS)
+        self.assertGreater(aml.FETCH_TIMEOUT_SECONDS, aml.GIT_TIMEOUT_SECONDS)
 
     def test_host_deadline_inside_the_reserve_clamps_to_one_round(self):
-        self.assertEqual(aml.invocation_budget_seconds(1000), 0)
+        for fetching in (False, True):
+            with self.subTest(fetching=fetching):
+                self.assertEqual(
+                    aml.invocation_budget_seconds(1000, fetching=fetching), 0)
 
     def test_usage_errors_exit_2(self):
         cases = {
@@ -369,16 +384,25 @@ class StubEscalationServer:
     initialize answers SSE plus an `mcp-session-id` header,
     notifications/initialized answers 202, and tools/call merge_status answers
     SSE whose result carries both content text and structuredContent. An
-    unknown session id answers 404, as after a server restart."""
+    unknown session id answers 404, as after a server restart.
+
+    `tool_call_stream` emulates a server that holds the tools/call SSE stream
+    open with keepalive comments: "held_open" after the reply, "stalled"
+    with no reply at all. Either way the stub stops when it exits, when the
+    client hangs up, or after HOLD_OPEN_SECONDS."""
+
+    HOLD_OPEN_SECONDS = 20
 
     def __init__(self, reply=None):
         self.reply = reply if reply is not None else {"state": "queued"}
         self.reply_format = "sse"  # or "json-text-only"
+        self.tool_call_stream = "complete"  # or "held_open" / "stalled"
         self.is_error = False
         self.raw_tool_result = None  # sent verbatim when set
         self.calls = []
         self._sessions = set()
         self._lock = threading.Lock()
+        self._closing = threading.Event()
 
     def __enter__(self):
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
@@ -388,6 +412,7 @@ class StubEscalationServer:
         return self
 
     def __exit__(self, *exc_info):
+        self._closing.set()
         self._httpd.shutdown()
         self._httpd.server_close()
         self._thread.join()
@@ -439,6 +464,14 @@ class StubEscalationServer:
             return "application/json", rpc.encode()
         return "text/event-stream", f"event: message\ndata: {rpc}\n\n".encode()
 
+    def _hold_open(self, wfile):
+        deadline = time.monotonic() + self.HOLD_OPEN_SECONDS
+        while not self._closing.wait(0.05) and time.monotonic() < deadline:
+            try:
+                wfile.write(b": keepalive\n\n")
+            except OSError:
+                return
+
     def _handler_class(self):
         stub = self
 
@@ -450,13 +483,21 @@ class StubEscalationServer:
                     payload, self.headers.get("Mcp-Session-Id"))
                 content_type, body = ("text/plain", b"") if result is None \
                     else stub._encode(payload, result)
+                streaming = (payload.get("method") == "tools/call"
+                             and stub.tool_call_stream != "complete")
                 self.send_response(status)
                 for name, value in headers.items():
                     self.send_header(name, value)
                 self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
+                if not streaming:
+                    self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                if not streaming:
+                    self.wfile.write(body)
+                    return
+                if stub.tool_call_stream == "held_open":
+                    self.wfile.write(body)
+                stub._hold_open(self.wfile)
 
             def log_message(self, *args):
                 pass
@@ -464,9 +505,9 @@ class StubEscalationServer:
         return Handler
 
 
-def _client(url, kind=None, value="7960"):
+def _client(url, kind=None, value="7960", timeout_seconds=10):
     selector = aml.MergeSelector(kind or aml.SelectorKind.TASK_ID, value)
-    return aml.MergeStatusClient(url, selector, timeout_seconds=10)
+    return aml.MergeStatusClient(url, selector, timeout_seconds=timeout_seconds)
 
 
 class MergeStatusClientTests(unittest.TestCase):
@@ -513,6 +554,19 @@ class MergeStatusClientTests(unittest.TestCase):
                 stub.raw_tool_result = raw
                 with self.assertRaises(aml.ProbeUnavailable):
                     _client(stub.url).status()
+
+    def test_sse_stream_held_open_after_the_reply_still_answers(self):
+        reply = {"state": "verifying"}
+        with StubEscalationServer(reply) as stub:
+            stub.tool_call_stream = "held_open"
+            self.assertEqual(_client(stub.url).status(), reply)
+
+    def test_stalled_stream_is_cut_off_at_the_call_deadline(self):
+        with StubEscalationServer() as stub:
+            stub.tool_call_stream = "stalled"
+            with self.assertRaises(aml.ProbeUnavailable) as caught:
+                _client(stub.url, timeout_seconds=0.5).status()
+        self.assertIsInstance(caught.exception.__cause__, TimeoutError)
 
     def test_lost_session_reinitializes_on_the_next_poll(self):
         reply = {"state": "verifying"}

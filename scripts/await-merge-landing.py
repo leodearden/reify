@@ -41,6 +41,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, replace
@@ -52,11 +53,10 @@ from typing import Any, Callable, Mapping
 # The Monitor tool schema: "Deadlines above 600000ms are capped" (measured
 # 2026-09-27 and 2026-10-01).
 MONITOR_TIMEOUT_CAP_MS = 600_000
-PROBE_TIMEOUT_SECONDS = 10
-_WORST_CASE_PROBE_CALLS = 5  # fetch, merge-base, then a cold MCP session's 3 POSTs
+GIT_TIMEOUT_SECONDS = 10
+FETCH_TIMEOUT_SECONDS = 60
+MERGE_STATUS_TIMEOUT_SECONDS = 10  # the whole call: a cold session's 3 POSTs too
 _STARTUP_SLACK_SECONDS = 10
-PROBE_ROUND_RESERVE_SECONDS = (_WORST_CASE_PROBE_CALLS * PROBE_TIMEOUT_SECONDS
-                               + _STARTUP_SLACK_SECONDS)
 DEFAULT_INTERVAL_SECONDS = 30.0
 SCRIPT_PATH = Path(__file__).resolve()
 DEFAULT_REPO = SCRIPT_PATH.parents[1]
@@ -231,19 +231,53 @@ _MCP_HEADERS = MappingProxyType({
 _TRANSPORT_ERRORS = (OSError, ValueError, http.client.HTTPException)
 
 
-def _jsonrpc_result(headers: http.client.HTTPMessage, body: bytes) -> dict[str, Any]:
-    """The `result` object of a JSON or SSE (last `data:` line) reply."""
-    text = body.decode("utf-8")
-    if "text/event-stream" in headers.get("Content-Type", ""):
-        data = [line[len("data:"):] for line in text.splitlines()
-                if line.startswith("data:")]
-        if not data:
-            raise ValueError("SSE reply carried no data line")
-        text = data[-1]
-    reply = json.loads(text)
-    result = reply.get("result") if isinstance(reply, dict) else None
+def _within(seconds: float, call: Callable[[], Any]) -> Any:
+    """call() on a daemon thread, abandoned with TimeoutError after `seconds`.
+    urlopen's timeout bounds each socket operation, not the exchange, so a
+    reply that trickles in would outlive it. Unlike an executor's thread, a
+    daemon thread cannot hold the process open at exit."""
+    finished: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            finished["value"] = call()
+        except BaseException as exc:
+            finished["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"no complete reply within {seconds:.1f}s")
+    if "error" in finished:
+        raise finished["error"]
+    return finished["value"]
+
+
+def _read_reply(response: http.client.HTTPResponse) -> Any:
+    """The JSON-RPC response in a JSON body, or in the first SSE `data:` line
+    that carries one. The stream is not read past it: a server may hold it
+    open."""
+    if "text/event-stream" not in response.headers.get("Content-Type", ""):
+        return json.loads(response.read())
+    for line in response:
+        if line.startswith(b"data:"):
+            message = json.loads(line[len(b"data:"):])
+            if isinstance(message, dict) and ("result" in message or "error" in message):
+                return message
+    raise ValueError("SSE reply ended with no JSON-RPC response")
+
+
+def _exchange(request: urllib.request.Request, timeout: float, *,
+              expects_reply: bool) -> tuple[http.client.HTTPMessage, Any]:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.headers, (_read_reply(response) if expects_reply else None)
+
+
+def _jsonrpc_result(message: Any) -> Mapping[str, Any]:
+    result = message.get("result") if isinstance(message, dict) else None
     if not isinstance(result, dict):
-        raise ValueError(f"no JSON-RPC result: {text[:200]}")
+        raise ValueError(f"no JSON-RPC result: {message!r:.200}")
     return result
 
 
@@ -267,12 +301,13 @@ def _tool_payload(result: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 class MergeStatusClient:
-    """Calls merge_status for one selector. The session id is the only state;
-    any failure drops it, so the next poll re-initializes (a restarted server
-    forgets its sessions)."""
+    """Calls merge_status for one selector, each call finished or failed
+    within `timeout_seconds`. The session id is the only state; any failure
+    drops it, so the next poll re-initializes (a restarted server forgets its
+    sessions)."""
 
     def __init__(self, url: str, selector: MergeSelector,
-                 timeout_seconds: float = PROBE_TIMEOUT_SECONDS):
+                 timeout_seconds: float = MERGE_STATUS_TIMEOUT_SECONDS):
         self._url = url
         self._selector = selector
         self._timeout_seconds = timeout_seconds
@@ -280,42 +315,49 @@ class MergeStatusClient:
         self._ids = itertools.count(1)
 
     def status(self) -> Mapping[str, Any]:
+        deadline = time.monotonic() + self._timeout_seconds
         try:
-            self._ensure_session()
-            headers, body = self._post(self._request("tools/call", {
+            self._ensure_session(deadline)
+            _, reply = self._post(self._request("tools/call", {
                 "name": "merge_status", "arguments": self._selector.arguments(),
-            }))
-            return _tool_payload(_jsonrpc_result(headers, body))
+            }), deadline)
+            return _tool_payload(_jsonrpc_result(reply))
         except _TRANSPORT_ERRORS as exc:
             self._session_id = None
             raise ProbeUnavailable(f"merge_status: {exc}") from exc
 
-    def _ensure_session(self) -> None:
+    def _ensure_session(self, deadline: float) -> None:
         if self._session_id is not None:
             return
-        headers, body = self._post(self._request("initialize", {
+        headers, reply = self._post(self._request("initialize", {
             "protocolVersion": "2025-03-26", "capabilities": {},
             "clientInfo": {"name": "await-merge-landing", "version": "1"},
-        }))
-        _jsonrpc_result(headers, body)
+        }), deadline)
+        _jsonrpc_result(reply)
         session_id = headers.get("mcp-session-id")
         if not session_id:
             raise ValueError("initialize returned no mcp-session-id")
         self._session_id = session_id
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"}, deadline)
 
     def _request(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": next(self._ids), "method": method,
                 "params": params}
 
-    def _post(self, payload: Mapping[str, Any]) -> tuple[http.client.HTTPMessage, bytes]:
+    def _post(self, payload: Mapping[str, Any],
+              deadline: float) -> tuple[http.client.HTTPMessage, Any]:
+        """(headers, the JSON-RPC reply or None for a notification), all
+        received before `deadline`."""
         headers = dict(_MCP_HEADERS)
         if self._session_id is not None:
             headers["Mcp-Session-Id"] = self._session_id
         request = urllib.request.Request(self._url, data=json.dumps(payload).encode(),
                                          headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-            return response.headers, response.read()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("merge_status call deadline passed")
+        return _within(remaining, functools.partial(
+            _exchange, request, remaining, expects_reply="id" in payload))
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +368,13 @@ def _log(message: str) -> None:
     print(f"await-merge-landing: {message}", file=sys.stderr, flush=True)
 
 
-def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_git(repo: Path, *args: str,
+             timeout: float = GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", "-C", str(repo), *args], capture_output=True, text=True,
             stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            timeout=PROBE_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise ProbeUnavailable(f"git {args[0]}: {exc}") from exc
@@ -349,7 +392,7 @@ def _fetch(repo: Path, remote: str) -> None:
     """Best effort: a failed fetch is reported and the check uses the refs
     already fetched."""
     try:
-        result = _run_git(repo, "fetch", "--quiet", remote)
+        result = _run_git(repo, "fetch", "--quiet", remote, timeout=FETCH_TIMEOUT_SECONDS)
     except ProbeUnavailable as exc:
         _log(str(exc))
         return
@@ -461,9 +504,16 @@ def parse_options(argv: list[str] | None = None) -> Options:
     return Options(**vars(build_parser().parse_args(argv)))
 
 
-def invocation_budget_seconds(host_timeout_ms: int) -> float:
+def probe_round_reserve_seconds(*, fetching: bool) -> float:
+    """The longest one poll round can take: every probe call at its own
+    timeout, plus slack to start up and print."""
+    return (GIT_TIMEOUT_SECONDS + MERGE_STATUS_TIMEOUT_SECONDS + _STARTUP_SLACK_SECONDS
+            + (FETCH_TIMEOUT_SECONDS if fetching else 0))
+
+
+def invocation_budget_seconds(host_timeout_ms: int, *, fetching: bool) -> float:
     """Poll budget that lets the last round finish before the host kills us."""
-    return max(0.0, host_timeout_ms / 1000 - PROBE_ROUND_RESERVE_SECONDS)
+    return max(0.0, host_timeout_ms / 1000 - probe_round_reserve_seconds(fetching=fetching))
 
 
 def rearm_argv(options: Options) -> list[str]:
@@ -559,8 +609,9 @@ def main(argv: list[str] | None = None) -> int:
                                  options.fetch_remote)),
         _logged(MergeStatusClient(url, options.selector).status),
         merge_status_attributed=options.selector.kind.names_one_request,
-        budget_seconds=max(0.0, invocation_budget_seconds(options.host_timeout_ms)
-                           - start_up_seconds),
+        budget_seconds=max(0.0, invocation_budget_seconds(
+            options.host_timeout_ms, fetching=options.fetch_remote is not None)
+            - start_up_seconds),
         interval_seconds=options.interval_seconds,
     )
     print(format_event(outcome, options), flush=True)
