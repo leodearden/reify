@@ -172,12 +172,12 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
 ///
 /// SCOPE BOUNDARY, so a future reader does not over-read the line above: `"transform3"`
 /// applies NO dimension gate at all to its translation (only a 3-`Vector` shape check),
-/// and `transform_compose` / `transform_inverse` propagate whatever dimension they are
-/// handed. So `transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still CONSTRUCTS,
-/// and the rejection only surfaces downstream at `transform_log`. That asymmetric seam
-/// is deliberate and owned elsewhere: #6089 rules `Transform` translation LENGTH and
-/// stamps the constructor arms, and #5747 R12/R8 narrows the affine and pose-decode
-/// readers. Closing it here would double-migrate their work.
+/// and `transform_compose` propagates whatever dimension it is handed. So
+/// `transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still CONSTRUCTS, and the
+/// rejection only surfaces downstream — at `transform_log`, or at `transform_inverse` /
+/// `affine_from_transform`, which reject a non-LENGTH translation (RULING #6089). The
+/// constructor and compose narrowing is #7625's, and #5747 R12/R8 narrows the affine
+/// and pose-decode readers. Closing it here would double-migrate their work.
 ///
 /// This const is the SINGLE source of truth for the admitted DIMENSION, consulted by
 /// the `transform_log` eval arm, the `transform_exp` eval arm, and both of

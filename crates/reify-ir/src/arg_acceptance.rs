@@ -134,19 +134,15 @@
 //! # What this module's gate CANNOT see
 //!
 //! `reify-stdlib`'s own `decompose_transform`
-//! (`crates/reify-stdlib/src/geometry.rs`) and its consumers
-//! `affine_from_transform` and `transform_inverse`. Measured: the first DISCARDS
-//! the translation dimension into `_dim` outright, the second propagates whatever
-//! dimension arrived through `make_dimensioned_component`. Both are one call away
-//! from the R12 gate, but they are pure VALUE-layer builtins that mint an
-//! `AffineMap`/`Transform` and never produce a `CompiledGeometryOp` — and neither
-//! name is in `GEOMETRY_FUNCTION_NAMES` — so **the closure guard cannot reach
-//! them**, and records them as an explicit out-of-universe residual rather than
-//! sweeping them up. Their owner is **task #6089** (the Frame/Transform/AffineMap
-//! LENGTH ruling), not the guard. The THIRD consumer, `transform_log`, was closed
-//! by RULING #6126, which dropped its `LENGTH || DIMENSIONLESS` admission to
-//! `t_dim != TWIST_LINEAR_DIM` and gave it a `Severity::Error` arm in
-//! `geometry::diagnose`; `transform_exp`'s LINEAR half went with it.
+//! (`crates/reify-stdlib/src/geometry.rs`) consumers `affine_from_transform` and
+//! `transform_inverse`: pure VALUE-layer builtins that never produce a
+//! `CompiledGeometryOp` and are not in `GEOMETRY_FUNCTION_NAMES`, so the closure
+//! guard cannot reach them. They are GATED and DIAGNOSED in `reify-stdlib`
+//! instead, by its Transform-operand classifier through the same
+//! [`length_spec`] wording (RULING #6089). `transform_log` was closed the same
+//! way by RULING #6126. The remaining un-gated transform sites — the
+//! `transform3` / `frame3` constructors and `transform_compose` — are owned by
+//! #7625.
 //!
 //! # ANGLES are gated, but not here
 //!
