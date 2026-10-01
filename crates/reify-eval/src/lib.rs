@@ -1331,6 +1331,11 @@ pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
+    /// decided it (R1: every first-party producer records one). Always `None`
+    /// for a definite verdict. Reports render it verbatim and never substitute
+    /// a guess.
+    pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
 }
 
 /// Result of a full build (eval + geometry).

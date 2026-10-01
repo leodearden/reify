@@ -1110,12 +1110,20 @@ impl Engine {
         result: ConstraintResult,
         label: Option<&str>,
     ) -> (ConstraintCheckEntry, Vec<Diagnostic>) {
+        debug_assert!(
+            result.indeterminate_reason.is_none()
+                || result.satisfaction == Satisfaction::Indeterminate,
+            "constraint {} records an indeterminate reason on a {:?} verdict",
+            result.id,
+            result.satisfaction,
+        );
         let mut msgs = result.diagnostics.messages;
         Self::labeled_diagnostics(&mut msgs, &result.id, label);
         let entry = ConstraintCheckEntry {
             id: result.id,
             label: label.map(|s| s.to_string()),
             satisfaction: result.satisfaction,
+            indeterminate_reason: result.indeterminate_reason,
         };
         (entry, msgs)
     }
@@ -2297,6 +2305,7 @@ impl Engine {
                     id: w.id.clone(),
                     label: Some("Conforms".to_string()),
                     satisfaction,
+                    indeterminate_reason: None,
                 });
             }
             if let Some(d) = diag {
@@ -3419,6 +3428,7 @@ structure def Probe {
             id: node_id.clone(),
             label,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3467,6 +3477,7 @@ structure def Probe {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Indeterminate,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3499,6 +3510,7 @@ structure def Probe {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3540,6 +3552,7 @@ structure def Probe {
             id: node_id,
             label: Some("Conforms".to_string()),
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &ValueMap::new(), &mut results, &mut diags);

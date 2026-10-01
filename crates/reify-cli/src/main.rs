@@ -3924,6 +3924,7 @@ mod tests {
             id: ConstraintNodeId::new(entity, index),
             label: label.map(|s| s.to_string()),
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -5850,6 +5851,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
             id: ConstraintNodeId::new(entity, index),
             label: None,
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -5863,6 +5865,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
             id: ConstraintNodeId::new(entity, index),
             label: Some(label.to_string()),
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -6167,6 +6170,7 @@ mod merge_post_build_verdicts_tests {
             id: ConstraintNodeId::new(entity, index),
             label: label.map(str::to_string),
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -6549,6 +6553,7 @@ mod d2_pass_ordering_tests {
             id: ConstraintNodeId::new("BoltFlange", index),
             label: None,
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
