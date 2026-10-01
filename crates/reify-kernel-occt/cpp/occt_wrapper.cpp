@@ -777,6 +777,15 @@ bool boolean_run_parallel() {
     return t_boolean_run_parallel;
 }
 
+// Completed BOP Builds that OCCT itself ran in parallel mode, read back from
+// each algorithm rather than from t_boolean_run_parallel, so a policy point that
+// stopped handing the mode to OCCT shows up here. Test observability only.
+static thread_local uint64_t t_parallel_bop_build_count = 0;
+
+uint64_t parallel_bop_build_count() {
+    return t_parallel_bop_build_count;
+}
+
 // --- Compound assembly ---
 
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
@@ -1186,6 +1195,9 @@ void build_bop_algorithm(BRepAlgoAPI_BuilderAlgo& op, const char* failure_messag
     op.Build();
     if (!op.IsDone()) {
         throw std::runtime_error(failure_message);
+    }
+    if (op.RunParallel()) {
+        t_parallel_bop_build_count += 1;
     }
 }
 

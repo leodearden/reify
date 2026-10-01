@@ -202,6 +202,10 @@ void set_boolean_run_parallel(bool parallel);
 /// Read the calling thread's BOP parallelism mode.
 bool boolean_run_parallel();
 
+/// Read the calling thread's count of completed BOP Builds whose algorithm
+/// reported RunParallel() afterwards: what OCCT ran, not what was requested.
+uint64_t parallel_bop_build_count();
+
 /// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
 /// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
 /// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a

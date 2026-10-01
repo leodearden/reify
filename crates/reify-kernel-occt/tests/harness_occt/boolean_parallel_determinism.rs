@@ -5,6 +5,8 @@
 //! Serial and repeatedly Parallel, each on a fresh kernel, and requires the
 //! topology, sub-shape order, per-sub-shape geometry and history to match
 //! exactly: every float is compared by its bits, never within a tolerance.
+//! Every run also checks, from OCCT's side, that its builds really ran in the
+//! requested mode, so the comparison can never quietly be serial against serial.
 
 #![cfg(all(has_occt, feature = "test-fixtures"))]
 
@@ -14,7 +16,8 @@ use reify_ir::{
     BRepKind, BooleanOpHistoryRecords, GeometryHandleId, GeometryOp, GeometryQuery, Value,
 };
 use reify_kernel_occt::{
-    BooleanParallelism, OcctKernel, boolean_parallelism, with_boolean_parallelism,
+    BooleanParallelism, OcctKernel, boolean_parallelism, parallel_bop_build_count,
+    with_boolean_parallelism,
 };
 
 const PLATE_SIDE: f64 = 0.2;
@@ -157,9 +160,24 @@ fn hole_grid_plate(kernel: &mut OcctKernel, n: usize) -> (GeometryHandleId, Geom
     (plate(kernel), hole_grid(kernel, n, DISJOINT_PITCH))
 }
 
-/// Run `build` on a fresh kernel with booleans in `mode`.
+/// `f`'s result, and whether OCCT ran any BOP algorithm `f` built in parallel.
+fn observe_parallel_builds<T>(f: impl FnOnce() -> T) -> (T, bool) {
+    let parallel_builds_before = parallel_bop_build_count();
+    let result = f();
+    (result, parallel_bop_build_count() > parallel_builds_before)
+}
+
+/// Run `build` on a fresh kernel with booleans in `mode`, which OCCT must honour.
 fn run_in<T>(mode: BooleanParallelism, build: impl Fn(&mut OcctKernel) -> T) -> T {
-    with_boolean_parallelism(mode, || build(&mut OcctKernel::new()))
+    let (result, built_in_parallel) = observe_parallel_builds(|| {
+        with_boolean_parallelism(mode, || build(&mut OcctKernel::new()))
+    });
+    assert_eq!(
+        built_in_parallel,
+        mode == BooleanParallelism::Parallel,
+        "OCCT must build a {mode:?} run's BOP algorithms in {mode:?} mode"
+    );
+    result
 }
 
 /// The first line at which the pretty-printed values differ.
@@ -387,12 +405,23 @@ fn with_boolean_parallelism_restores_the_previous_mode() {
 fn production_policy_runs_booleans_in_parallel() {
     // A fresh thread carries the untouched default, exactly as
     // OcctKernelHandle's dedicated worker does.
-    let production = std::thread::spawn(boolean_parallelism)
-        .join()
-        .expect("reader thread must not panic");
-    assert_eq!(
-        production,
-        BooleanParallelism::Parallel,
+    let built_in_parallel = std::thread::spawn(|| {
+        let (_, built_in_parallel) = observe_parallel_builds(|| {
+            let mut kernel = OcctKernel::new();
+            let (plate, holes) = hole_grid_plate(&mut kernel, 2);
+            kernel
+                .execute(&GeometryOp::Difference {
+                    left: plate,
+                    right: holes,
+                })
+                .expect("plate minus hole grid must succeed")
+        });
+        built_in_parallel
+    })
+    .join()
+    .expect("boolean thread must not panic");
+    assert!(
+        built_in_parallel,
         "production must build OCCT booleans in parallel"
     );
 }

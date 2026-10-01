@@ -1380,6 +1380,11 @@ pub mod ffi {
         /// Read the calling thread's BOP parallelism mode.
         fn boolean_run_parallel() -> bool;
 
+        /// Read the calling thread's count of completed BOP Builds that OCCT
+        /// itself ran in parallel mode (the algorithm's `RunParallel()` after
+        /// `Build()`).
+        fn parallel_bop_build_count() -> u64;
+
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
         /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
