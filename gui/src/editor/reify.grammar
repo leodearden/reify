@@ -306,6 +306,7 @@ Member {
   ChainStatement |
   ForallStatement |
   RelateBlock |
+  SketchBlock |
   MatchArmDeclBlock |
   MetaBlock |
   Pragma |
@@ -658,6 +659,15 @@ RelateBlock {
 
 RelationMember {
   expression
+}
+
+// ── Sketch block ────────────────────────────────────────
+// grammar.js `sketch_block`. `ekw` for the reason RelateBlock records. The body
+// reuses LetDeclaration and RelationMember, as upstream reuses
+// `let_declaration` and `relation_member`. Upstream's reserved `on <expr>`
+// slot is intentionally absent (PRD constrained-2d-sketch §5 D2).
+SketchBlock {
+  ekw<"sketch"> Identifier "{" (LetDeclaration | RelationMember)* "}"
 }
 
 // ── Joint definition ────────────────────────────────────

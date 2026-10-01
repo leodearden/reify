@@ -4855,6 +4855,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
     FieldSource: FIELD_DEFINITION_SRC,
     PurposeDeclaration: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
     RelateBlock: 'structure def F { relate { fasten(a.frame, b.frame) } }',
+    // Body lines from tests/prd-gate/fixtures/sketch_block_target.ri:9,13.
+    SketchBlock: 'structure def F { sketch profile { let a = point(0mm, 0mm)  fix(a) } }',
     ConstraintDefinition: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
     SubRelateBlock: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
     MatchArmDeclBlock:
