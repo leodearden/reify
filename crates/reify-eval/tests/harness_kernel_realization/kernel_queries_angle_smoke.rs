@@ -18,8 +18,8 @@
 //!
 //! Modelled on `block_inertia_evals_moment_of_inertia_to_tensor` in
 //! `topology_selector_smoke_tests.rs` (CARGO_MANIFEST_DIR path const +
-//! `parse_and_compile_with_stdlib` + `Engine::new` + `engine.build` +
-//! `result.values.get` assert pattern).
+//! `fixture_scaffolding::read_and_compile_fixture` + `Engine::new` +
+//! `engine.build` + `result.values.get` assert pattern).
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
