@@ -5296,8 +5296,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
    * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
-   * row. The guards are ELEVEN independent hand-written copies, so a row here
-   * that covered only one of them would leave the other ten free to regress with
+   * row. The guards are TWELVE independent hand-written copies, so a row here
+   * that covered only one of them would leave the other eleven free to regress with
    * the suite green — which is what #6178 measured for the five guards it
    * rewrote, and its review measured again for the ninth and for the two
    * whole-selector copies.
@@ -5495,6 +5495,19 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         expected: { error: 'selector is required' },
       }),
     ),
+    // `driveFormControl`'s single whole-selector copy (./formControl), the
+    // twelfth, shared by scrub_range_input and edit_text_input. `value` and
+    // `commit` are valid, so the selector guard is the only thing standing
+    // between the array and a drive of the decoy.
+    {
+      label: 'scrub_range_input',
+      decoyTestId: SELECTOR_DECOY_TESTID,
+      dispatch: () => [
+        'scrub_range_input',
+        { selector: [`[data-testid="${SELECTOR_DECOY_TESTID}"]`], value: '1', commit: 'change' },
+      ],
+      expected: { error: 'selector is required' },
+    },
   ];
 
   /**
@@ -5512,6 +5525,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
     // `resolveElement`; `query_selector_all` is NOT here — it keeps its own copy.
     get_layout_metrics: 'query_selector',
     get_computed_style: 'query_selector',
+    // Both form-control tools are served by the single `driveFormControl`.
+    edit_text_input: 'scrub_range_input',
   };
 
   describe('boundary guards above the escape', () => {
