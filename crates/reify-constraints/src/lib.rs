@@ -267,7 +267,7 @@ mod tests {
 
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+    use reify_ir::{BinOp, CompiledExpr, IndeterminateReason, TransientReason, Value, ValueMap};
 
     fn mm(v: f64) -> Value {
         Value::Scalar {
@@ -690,5 +690,114 @@ mod tests {
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),
         );
+    }
+
+    fn check_single(id: ConstraintNodeId, expr: &CompiledExpr, values: &ValueMap) -> ConstraintResult {
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(id, expr)]),
+            values,
+            functions: &[],
+            determinacy: None,
+        };
+        let mut results = SimpleConstraintChecker.check(&input);
+        assert_eq!(results.len(), 1);
+        results.remove(0)
+    }
+
+    fn transient(reason: TransientReason) -> Option<IndeterminateReason> {
+        Some(IndeterminateReason::Transient(reason))
+    }
+
+    #[test]
+    fn undefined_inputs_reason_is_deduped_and_ordered_by_name() {
+        // (width + width) > thickness: width leads the leaf order twice, so
+        // the recorded cells only come out name-ordered if the checker sorts.
+        let width = || CompiledExpr::value_ref(vcid("Bracket", "width"), Type::length());
+        let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
+        let doubled = CompiledExpr::binop(BinOp::Add, width(), width(), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, doubled, thickness, Type::Bool);
+
+        let result = check_single(cnid("Bracket", 0), &expr, &ValueMap::new());
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::UndefInputs {
+                cells: vec![vcid("Bracket", "thickness"), vcid("Bracket", "width")],
+            })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Bracket#constraint[0] indeterminate: undefined inputs: \
+             Bracket.thickness, Bracket.width"
+        );
+    }
+
+    #[test]
+    fn operator_undefined_reason_records_the_operand_kinds() {
+        let len_cell = vcid("Obj", "len_val");
+        let fit_cell = vcid("Obj", "fit_val");
+        let len_ref = CompiledExpr::value_ref(len_cell.clone(), Type::length());
+        let fit_ref = CompiledExpr::value_ref(fit_cell.clone(), Type::Enum("Fit".to_string()));
+        let expr = CompiledExpr::binop(BinOp::Gt, len_ref, fit_ref, Type::Bool);
+        let mut values = ValueMap::new();
+        values.insert(len_cell, mm(1.0));
+        values.insert(fit_cell, Value::enum_unit("Fit", "Loose"));
+
+        let result = check_single(cnid("Obj", 0), &expr, &values);
+
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds {
+                kinds: vec!["Enum<Fit>".to_string(), "Scalar<m>".to_string()],
+            })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Obj#constraint[0] indeterminate: operator undefined for these \
+             operand kinds: Enum<Fit>, Scalar<m>"
+        );
+    }
+
+    #[test]
+    fn operator_undefined_reason_without_cell_operands_records_no_kinds() {
+        let tensor = CompiledExpr::literal(
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Type::dimensionless_scalar(),
+        );
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, tensor, one_mm, Type::Bool);
+
+        let result = check_single(cnid("Obj", 0), &expr, &ValueMap::new());
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds { kinds: vec![] })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Obj#constraint[0] indeterminate: operator undefined for these \
+             operand kinds"
+        );
+    }
+
+    #[test]
+    fn definite_verdicts_record_no_indeterminate_reason() {
+        let mut thick = ValueMap::new();
+        thick.insert(vcid("Bracket", "thickness"), mm(5.0));
+        let mut thin = ValueMap::new();
+        thin.insert(vcid("Bracket", "thickness"), mm(1.0));
+        let non_bool = CompiledExpr::literal(Value::Int(42), Type::Int);
+
+        for (expr, values, expected) in [
+            (thickness_gt_2mm(), thick, Satisfaction::Satisfied),
+            (thickness_gt_2mm(), thin, Satisfaction::Violated),
+            (non_bool, ValueMap::new(), Satisfaction::Violated),
+        ] {
+            let result = check_single(cnid("Bracket", 0), &expr, &values);
+            assert_eq!(result.satisfaction, expected);
+            assert_eq!(result.indeterminate_reason, None);
+        }
     }
 }
