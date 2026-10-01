@@ -9,9 +9,13 @@ wrapper tests/infra/test_await_merge_landing.sh.
 import contextlib
 import importlib.util
 import io
+import json
 import shlex
 import sys
+import threading
 import unittest
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -277,6 +281,154 @@ class OptionsAndRearmTests(unittest.TestCase):
         self.assertEqual(words[0], "python3")
         self.assertEqual(words[1], str(TOOL_PATH.resolve()))
         self.assertEqual(aml.parse_options(words[2:]), options)
+
+
+class StubEscalationServer:
+    """The escalation MCP endpoint's wire shapes, as measured live 2026-10-01:
+    initialize answers SSE plus an `mcp-session-id` header,
+    notifications/initialized answers 202, and tools/call merge_status answers
+    SSE whose result carries both content text and structuredContent. An
+    unknown session id answers 404, as after a server restart."""
+
+    def __init__(self, reply=None):
+        self.reply = reply if reply is not None else {"state": "queued"}
+        self.reply_format = "sse"  # or "json-text-only"
+        self.is_error = False
+        self.calls = []
+        self._sessions = set()
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._httpd.shutdown()
+        self._httpd.server_close()
+        self._thread.join()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self._httpd.server_address[1]}/mcp"
+
+    def forget_sessions(self):
+        with self._lock:
+            self._sessions.clear()
+
+    def tool_calls(self):
+        return [params for method, params in self.calls if method == "tools/call"]
+
+    def _tool_result(self):
+        result = {"content": [{"type": "text", "text": json.dumps(self.reply)}],
+                  "isError": self.is_error}
+        if self.reply_format == "sse":
+            result["structuredContent"] = self.reply
+        return result
+
+    def _respond(self, payload, session_id):
+        """(status, extra headers, JSON-RPC result or None)."""
+        method = payload.get("method")
+        with self._lock:
+            self.calls.append((method, payload.get("params")))
+            if method == "initialize":
+                session_id = uuid.uuid4().hex
+                self._sessions.add(session_id)
+                return 200, {"mcp-session-id": session_id}, {
+                    "protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "stub-escalation", "version": "0"},
+                }
+            if session_id not in self._sessions:
+                return 404, {}, None
+            if method == "notifications/initialized":
+                return 202, {}, None
+            if method == "tools/call" and payload["params"]["name"] == "merge_status":
+                return 200, {}, self._tool_result()
+        return 400, {}, None
+
+    def _encode(self, payload, result):
+        """(content type, body) for a JSON-RPC result."""
+        rpc = json.dumps({"jsonrpc": "2.0", "id": payload.get("id"), "result": result})
+        if self.reply_format == "json-text-only" and payload.get("method") == "tools/call":
+            return "application/json", rpc.encode()
+        return "text/event-stream", f"event: message\ndata: {rpc}\n\n".encode()
+
+    def _handler_class(self):
+        stub = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                status, headers, result = stub._respond(
+                    payload, self.headers.get("Mcp-Session-Id"))
+                content_type, body = ("text/plain", b"") if result is None \
+                    else stub._encode(payload, result)
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        return Handler
+
+
+def _client(url, kind=None, value="7960"):
+    selector = aml.MergeSelector(kind or aml.SelectorKind.TASK_ID, value)
+    return aml.MergeStatusClient(url, selector, timeout_seconds=10)
+
+
+class MergeStatusClientTests(unittest.TestCase):
+    def test_sse_reply_returns_structured_content(self):
+        reply = {"state": "verifying", "request_id": "mr-1"}
+        with StubEscalationServer(reply) as stub:
+            self.assertEqual(_client(stub.url).status(), reply)
+            self.assertEqual(stub.tool_calls(), [
+                {"name": "merge_status", "arguments": {"task_id": "7960"}},
+            ])
+
+    def test_selector_is_forwarded_under_its_own_argument_name(self):
+        for kind, value in ((aml.SelectorKind.REQUEST_ID, "mr-1"),
+                            (aml.SelectorKind.BRANCH, "task/7960")):
+            with self.subTest(kind=kind), StubEscalationServer() as stub:
+                _client(stub.url, kind, value).status()
+                self.assertEqual(stub.tool_calls(), [
+                    {"name": "merge_status", "arguments": {kind.value: value}},
+                ])
+
+    def test_json_text_only_reply_falls_back_to_content_text(self):
+        reply = {"state": "gate"}
+        with StubEscalationServer(reply) as stub:
+            stub.reply_format = "json-text-only"
+            self.assertEqual(_client(stub.url).status(), reply)
+
+    def test_tool_error_is_unavailable(self):
+        with StubEscalationServer() as stub:
+            stub.is_error = True
+            with self.assertRaises(aml.ProbeUnavailable):
+                _client(stub.url).status()
+
+    def test_lost_session_reinitializes_on_the_next_poll(self):
+        reply = {"state": "verifying"}
+        with StubEscalationServer(reply) as stub:
+            client = _client(stub.url)
+            self.assertEqual(client.status(), reply)
+            stub.forget_sessions()
+            with self.assertRaises(aml.ProbeUnavailable):
+                client.status()
+            self.assertEqual(client.status(), reply)
+
+    def test_nothing_listening_is_unavailable(self):
+        with StubEscalationServer() as stub:
+            url = stub.url
+        with self.assertRaises(aml.ProbeUnavailable):
+            _client(url).status()
 
 
 if __name__ == "__main__":
