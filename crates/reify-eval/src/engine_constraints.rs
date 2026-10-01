@@ -2311,12 +2311,12 @@ impl Engine {
             if let Some(entry) = constraint_results.iter_mut().find(|e| e.id == w.id) {
                 entry.set_verdict(satisfaction, reason);
             } else {
-                constraint_results.push(ConstraintCheckEntry {
-                    id: w.id.clone(),
-                    label: Some("Conforms".to_string()),
+                constraint_results.push(ConstraintCheckEntry::new(
+                    w.id.clone(),
+                    Some("Conforms".to_string()),
                     satisfaction,
-                    indeterminate_reason: reason,
-                });
+                    reason,
+                ));
             }
             if let Some(d) = diag {
                 diagnostics.push(d);

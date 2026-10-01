@@ -1326,19 +1326,41 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
+///
+/// # Verdict invariant
+///
+/// A definite verdict never carries a reason: a MUST NOT of
+/// [`reify_ir::ConstraintChecker::check`], asserted wherever a checker result
+/// becomes an entry. The converse, that every Indeterminate carries one, is
+/// only a SHOULD for a checker, so it is asserted on the engine's own verdicts
+/// alone: [`Self::new`] and [`Self::set_verdict`] assert both directions.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
     /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
-    /// decided it (R1: every first-party producer records one). Always `None`
-    /// for a definite verdict. Reports render it verbatim and never substitute
-    /// a guess.
+    /// decided it. Reports render it verbatim and never substitute a guess.
     pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
 }
 
 impl ConstraintCheckEntry {
+    /// An entry for a verdict the engine itself decided.
+    pub fn new(
+        id: reify_core::ConstraintNodeId,
+        label: Option<String>,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) -> Self {
+        debug_assert_reason_matches_verdict(&id, satisfaction, indeterminate_reason.as_ref());
+        Self {
+            id,
+            label,
+            satisfaction,
+            indeterminate_reason,
+        }
+    }
+
     /// The only sanctioned way to overwrite a verdict after construction: the
     /// reason moves with the satisfaction, so a re-check can never leave a
     /// stale reason on a definite verdict or a reasonless Indeterminate.
@@ -1347,15 +1369,22 @@ impl ConstraintCheckEntry {
         satisfaction: Satisfaction,
         indeterminate_reason: Option<reify_ir::IndeterminateReason>,
     ) {
-        debug_assert_eq!(
-            indeterminate_reason.is_some(),
-            satisfaction == Satisfaction::Indeterminate,
-            "constraint {}: a reason accompanies exactly an Indeterminate verdict",
-            self.id,
-        );
+        debug_assert_reason_matches_verdict(&self.id, satisfaction, indeterminate_reason.as_ref());
         self.satisfaction = satisfaction;
         self.indeterminate_reason = indeterminate_reason;
     }
+}
+
+fn debug_assert_reason_matches_verdict(
+    id: &reify_core::ConstraintNodeId,
+    satisfaction: Satisfaction,
+    indeterminate_reason: Option<&reify_ir::IndeterminateReason>,
+) {
+    debug_assert_eq!(
+        indeterminate_reason.is_some(),
+        satisfaction == Satisfaction::Indeterminate,
+        "constraint {id}: a reason accompanies exactly an Indeterminate verdict",
+    );
 }
 
 /// Result of a full build (eval + geometry).
