@@ -239,3 +239,88 @@ fn unresolved_return_annotation_reports_only_the_root_cause() {
         module.diagnostics
     );
 }
+
+// ── Conformer twin (trait assoc fns compiled per conformer) ─────────────────
+
+/// An injected default body is compiled for each conformer; one that never
+/// reads the receiver is reconciled like a free fn.
+#[test]
+fn conformer_default_fn_with_unannotated_receiver_free_body_warns() {
+    let module = compile_source(
+        r#"
+trait Tagged {
+    param d : Length
+    fn flag(self) { true }
+}
+structure def Rod : Tagged { param d : Length = 5mm }
+"#,
+    );
+
+    assert_eq!(
+        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).len(),
+        1,
+        "expected exactly one FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+    assert_no_errors(&module);
+}
+
+#[test]
+fn conformer_override_contradicting_its_annotation_warns() {
+    let module = compile_source(
+        r#"
+trait Sized {
+    param d : Length
+    fn unit(self) -> Length
+}
+structure def Rod : Sized {
+    param d : Length = 5mm
+    fn unit(self) -> Length { 1.0 }
+}
+"#,
+    );
+
+    assert_eq!(
+        with_code(&module, DiagnosticCode::FnReturnTypeMismatch).len(),
+        1,
+        "expected exactly one FnReturnTypeMismatch, got: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        with_code(&module, DiagnosticCode::TraitFnSignatureMismatch).is_empty(),
+        "the override's signature agrees with the requirement, got: {:?}",
+        module.diagnostics
+    );
+}
+
+/// Correct bodies that read the receiver's members stay silent. Both bodies
+/// agree with their signatures once receiver members are typed from the
+/// conformer (#8118), so this holds before and after that fix.
+#[test]
+fn conformer_body_reading_self_members_is_not_reconciled() {
+    let module = compile_source(
+        r#"
+trait Cylindrical {
+    param diameter : Length
+    param length : Length
+    fn lateral_area(self) -> Scalar<Area> { pi * diameter * length }
+    fn aspect(self) { length / diameter }
+}
+structure def Pin : Cylindrical {
+    param diameter : Length = 8mm
+    param length : Length = 40mm
+}
+"#,
+    );
+
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+        "expected no FnReturnTypeMismatch, got: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
+        "expected no FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+}
