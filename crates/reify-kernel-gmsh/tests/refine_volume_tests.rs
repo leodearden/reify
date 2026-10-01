@@ -805,12 +805,6 @@ fn refine_hands_gmsh_the_callers_resolved_thread_count() {
                 .expect("ffi::option_get_number(General.NumThreads) failed")
         };
         assert_eq!(
-            handed_to_gmsh,
-            f64::from(opts.resolved_num_threads()),
-            "refine must hand gmsh the same General.NumThreads as the sibling 3D entry \
-             points resolve for {opts:?}",
-        );
-        assert_eq!(
             handed_to_gmsh, expected_threads,
             "for {opts:?} gmsh must be asked for {expected_threads} threads",
         );

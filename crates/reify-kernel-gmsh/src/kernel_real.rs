@@ -478,8 +478,7 @@ impl GmshKernel {
         // gmsh's default-algorithm churn across point releases.
         ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
-        // Thread count: deterministic mode forces 1; otherwise honour
-        // caller override; otherwise probe available parallelism.
+        // Thread count
         ffi::option_set_number(
             "General.NumThreads",
             f64::from(options.resolved_num_threads()),
