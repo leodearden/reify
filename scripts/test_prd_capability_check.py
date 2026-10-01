@@ -4408,6 +4408,56 @@ class TestGrammarCacheDenied(unittest.TestCase):
                 )
 
 
+def _load_failure_stderr(tail):
+    """tree-sitter 0.26.8's load-failure layout with `tail` as the root cause."""
+    return (
+        'Error: Failed to load language for path "x.ri"\n'
+        "\n"
+        "Caused by:\n"
+        "    Failed to load language in current directory:\n"
+        f"    {tail}\n"
+    )
+
+
+class TestGrammarCacheDeniedErrnoAnchoring(unittest.TestCase):
+    """The EACCES errno is matched whole, never as a numeric prefix.
+
+    The #7257 numeric-prefix defect, in α's sibling predicate.
+    """
+
+    HOSTILE_ERRNOS = (
+        ("EOWNERDEAD", "Owner died (os error 130)"),
+        ("ENOTRECOVERABLE", "State not recoverable (os error 131)"),
+        ("ERFKILL", "Operation not possible due to RF-kill (os error 132)"),
+        ("EHWPOISON", "Memory page has hardware error (os error 133)"),
+    )
+
+    @staticmethod
+    def _run(exit_code, stderr, stdout=""):
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def test_thirteen_x_errnos_are_not_denials(self):
+        for label, tail in self.HOSTILE_ERRNOS:
+            with self.subTest(errno=label):
+                run = self._run(1, _load_failure_stderr(tail))
+                self.assertFalse(pcc.grammar_cache_denied(run))
+                self.assertEqual(
+                    pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR
+                )
+
+    def test_measured_tail_is_denied(self):
+        tail = "Permission denied (os error 13) (/tmp/cache/tree-sitter/lib)"
+        run = self._run(1, _load_failure_stderr(tail))
+        self.assertTrue(pcc.grammar_cache_denied(run))
+
+    def test_bare_end_of_string_errno_is_denied(self):
+        run = self._run(1, _load_failure_stderr("os error 13").rstrip("\n"))
+        self.assertTrue(pcc.grammar_cache_denied(run))
+
+    def test_measured_sandbox_constant_is_denied(self):
+        self.assertTrue(pcc.grammar_cache_denied(self._run(1, _CACHE_DENIED_STDERR)))
+
+
 # ---------------------------------------------------------------------------
 # 5894 step-3 (RED): grammar_substrate_usable() — behavioural substrate probe
 # ---------------------------------------------------------------------------
