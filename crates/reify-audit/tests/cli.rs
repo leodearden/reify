@@ -3313,15 +3313,15 @@ mod cli {
 // calls [`spawn_mock_mcp_shaped`] directly with an explicit [`Framing`] and
 // [`ResultShape`] (e.g. `spawn_mock_mcp_shaped(Framing::Sse,
 // ResultShape::ContentText, ...)`), threaded through
-// [`write_response_framed`]. JSON drives `FusedMemoryClient::post`'s
-// bare-body `else` branch; [`Framing::Sse`] drives its
-// `ctype.contains("text/event-stream")` branch, and the mock wraps the
+// [`write_response_framed`]. JSON drives `mcp_wire::decode_body`'s
+// bare-body branch; [`Framing::Sse`] drives its
+// `contains("text/event-stream")` branch, and the mock wraps the
 // body as a realistic `event: message\ndata: <json>\n\n` frame rather
-// than a bare `data:` line so the client's line-scan is genuinely
+// than a bare `data:` line so the decode's line-scan is genuinely
 // exercised rather than getting lucky on a single-line body.
 // [`Framing::SseNoData`] and [`Framing::SseMalformedData`] are the SSE
 // branch's two failure modes — a data-less keep-alive-shaped frame, and a
-// `data:` line whose payload isn't valid JSON — for locking `post()`'s
+// `data:` line whose payload isn't valid JSON — for locking the decode's
 // "no SSE data line in response" and "SSE data parse" refusals
 // respectively. The `notifications/initialized` leg always answers 202
 // with an empty body under ALL framings: that matches real MCP, and
@@ -3409,9 +3409,9 @@ fn read_request(stream: &mut TcpStream) -> Option<(Vec<(String, String)>, serde_
 const MOCK_SESSION_ID: &str = "mock-mcp-session";
 
 /// Which wire framing the mock's accept loop answers with. Mirrors the two
-/// branches `FusedMemoryClient::post` distinguishes on `content-type`:
-/// [`Framing::Json`] drives the `else` bare-JSON-body branch,
-/// [`Framing::Sse`] drives the `ctype.contains("text/event-stream")`
+/// branches `mcp_wire::decode_body` distinguishes on `content-type`:
+/// [`Framing::Json`] drives the bare-JSON-body branch,
+/// [`Framing::Sse`] drives the `contains("text/event-stream")`
 /// branch.
 #[derive(Clone, Copy, PartialEq)]
 enum Framing {
@@ -3419,22 +3419,19 @@ enum Framing {
     Sse,
     /// A degenerate SSE frame carrying no `data:` line at all — just
     /// `event: message\n\n`, as a keep-alive/comment-only chunk might
-    /// look. Exercises `post()`'s "no SSE data line in response"
+    /// look. Exercises the decode's "no SSE data line in response"
     /// refusal — one of the SSE branch's two failure modes; see
     /// [`Framing::SseMalformedData`] for the other. The `body` argument
     /// passed to [`write_response_framed`] is ignored under this
     /// variant: there is by definition no data to carry.
     SseNoData,
     /// An SSE frame WITH a `data:` line, but whose payload is not valid
-    /// JSON — `event: message\ndata: {not json\n\n`. Exercises `post()`'s
-    /// "SSE data parse" refusal, the SSE branch's other failure mode
-    /// alongside [`Framing::SseNoData`]. Verified uncovered anywhere else
-    /// in the crate: `fused_memory_client.rs`'s own `mod tests` never
-    /// constructs a `FusedMemoryClient` or exercises `post()` at all. As
-    /// with `SseNoData`, the `body` argument passed to
-    /// [`write_response_framed`] is ignored under this variant: the
-    /// payload is fixed garbage regardless of what the caller asked to
-    /// send.
+    /// JSON — `event: message\ndata: {not json\n\n`. Exercises the
+    /// decode's "SSE data parse" refusal, the SSE branch's other failure
+    /// mode alongside [`Framing::SseNoData`]. As with `SseNoData`, the
+    /// `body` argument passed to [`write_response_framed`] is ignored
+    /// under this variant: the payload is fixed garbage regardless of
+    /// what the caller asked to send.
     SseMalformedData,
 }
 
@@ -3486,7 +3483,7 @@ fn write_response_with_session(
 /// Under [`Framing::Sse`] the body is wrapped as a realistic MCP
 /// streamable-HTTP frame — `event: message\ndata: <json>\n\n` — rather
 /// than a bare `data:` line. The `event:` line and trailing blank line
-/// matter: they prove the client's `post()` SSE branch's `body.lines()`
+/// matter: they prove `mcp_wire::decode_body`'s SSE `body.lines()`
 /// scan actually skips a non-`data:` line rather than getting lucky on a
 /// single-line body. `Content-Length` is computed over the WRAPPED bytes,
 /// matching what a real server would send. [`Framing::SseNoData`] and
@@ -3865,9 +3862,9 @@ mod http_loader {
     /// Proves what the JSON sibling does not: the full three-POST MCP
     /// handshake and the `get_task` `structuredContent` decode complete
     /// when the server answers `Content-Type: text/event-stream` instead
-    /// of `application/json` — i.e. `post()`'s
-    /// `ctype.contains("text/event-stream")` branch is exercised
-    /// end-to-end through the real binary for the first time.
+    /// of `application/json` — i.e. `mcp_wire::decode_body`'s
+    /// `contains("text/event-stream")` branch is exercised through
+    /// `FusedMemoryClient::post` end-to-end via the real binary.
     ///
     /// Also locks the session-id-on-every-POST contract on this same run
     /// (folded in here rather than kept as its own test — a second full
@@ -4220,8 +4217,9 @@ mod http_loader {
     /// Negative SSE lock: a data-less SSE frame (e.g. a keep-alive or
     /// comment-only chunk, no `data:` line at all) on the `initialize`
     /// leg must be refused rather than silently treated as an empty or
-    /// successful response. Exercises `post()`'s "no SSE data line in
-    /// response" refusal — one of the SSE branch's two failure modes; see
+    /// successful response. Exercises the "no SSE data line in response"
+    /// refusal `post()` gets from `mcp_wire::decode_body` — one of the SSE
+    /// branch's two failure modes; see
     /// [`pre_done_via_http_loader_sse_malformed_data_exits_125`] below for
     /// the other (a `data:` line whose payload isn't valid JSON).
     #[test]
@@ -4285,14 +4283,10 @@ mod http_loader {
 
     /// Negative SSE lock: an SSE `data:` line whose payload is not valid
     /// JSON must be refused rather than silently treated as an empty or
-    /// successful response. Exercises `post()`'s "SSE data parse" refusal
-    /// — the SSE branch's other failure mode, sibling to
+    /// successful response. Exercises the "SSE data parse" refusal
+    /// `post()` gets from `mcp_wire::decode_body` — the SSE branch's other
+    /// failure mode, sibling to
     /// [`pre_done_via_http_loader_sse_no_data_line_exits_125`] above.
-    /// Verified uncovered anywhere else in the crate before this test:
-    /// `fused_memory_client.rs`'s own `mod tests` only covers
-    /// `parse_iso8601_to_epoch`, `days_from_civil` and
-    /// `task_metadata_from_wire` — it never constructs a
-    /// `FusedMemoryClient` or exercises `post()` at all.
     #[test]
     fn pre_done_via_http_loader_sse_malformed_data_exits_125() {
         let tmp = tempfile::tempdir().expect("tempdir");
