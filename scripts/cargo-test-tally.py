@@ -16,17 +16,20 @@ Dialects recognised: libtest (`cargo test`), nextest (`cargo nextest run`) and
 skim. Libtest lines inside a nextest run are replayed or per-test noise and are
 not counted.
 
-The verdict is the exit code: GREEN 0, FAILED 1, INCOMPLETE 3 (no summary, an
-unfinished binary, or a partial nextest run), NOTHING_RAN 4 (summaries, but no
-test passed or failed). Exit 2 is an unreadable capture or bad arguments.
+The exit code is the verdict, tabled at the end of --help (generated from the
+Verdict enum).
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
-from dataclasses import dataclass
+import sys
+from dataclasses import asdict, dataclass
 from enum import Enum, IntEnum
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
 
 class Dialect(str, Enum):
@@ -40,6 +43,17 @@ class Verdict(IntEnum):
     FAILED = 1
     INCOMPLETE = 3
     NOTHING_RAN = 4
+
+
+_VERDICT_MEANINGS = {
+    Verdict.GREEN: "every recognised run finished, tests ran, none failed",
+    Verdict.FAILED: "a test failed, timed out or crashed",
+    Verdict.INCOMPLETE: ("no summary line, a binary that never reported, or a "
+                         "partial nextest run"),
+    Verdict.NOTHING_RAN: ("summaries, but no test passed or failed (a filter "
+                          "matched nothing)"),
+}
+_UNREADABLE_EXIT = 2
 
 
 @dataclass(frozen=True)
@@ -96,6 +110,21 @@ class Tally:
         if self.passed + self.failed == 0:
             return Verdict.NOTHING_RAN
         return Verdict.GREEN
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verdict": self.verdict.name,
+            "exit_code": int(self.verdict),
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "filtered_out": self.filtered_out,
+            "binaries": self.binaries,
+            "cargo_target_failures": self.cargo_target_failures,
+            "unfinished_binaries": self.unfinished_binaries,
+            "summaries": [{**asdict(s), "dialect": s.dialect.value}
+                          for s in self.summaries],
+        }
 
 
 _ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -239,3 +268,100 @@ def tally_text(text: str) -> Tally:
     """Tally a whole capture. Lines split on '\\n' only, so `line` agrees
     with `grep -n` and `sed -n` even when a test printed a bare '\\r'."""
     return tally_lines(text.split("\n"))
+
+
+# ---------------------------------------------------------------------------
+# Presentation
+# ---------------------------------------------------------------------------
+
+def _format_summary(index: int, summary: Summary) -> str:
+    binaries = "?" if summary.binaries is None else summary.binaries
+    suffix = "" if summary.complete else "  (incomplete)"
+    return (f"  {index:>2}  {summary.dialect.value:<7}  line {summary.line:<7}"
+            f"  passed {summary.passed}  failed {summary.failed}"
+            f"  skipped {summary.skipped}  filtered {summary.filtered_out}"
+            f"  binaries {binaries}{suffix}")
+
+
+def _incomplete_reason(tally: Tally) -> str:
+    if not tally.summaries:
+        return ("no summary line recognised: the run was killed, timed out, "
+                "failed to compile, or hit the skim 300s cap")
+    if tally.unfinished_binaries:
+        return (f"{tally.unfinished_binaries} binary or nextest run(s) never "
+                "reported a result")
+    return "a partial nextest run (N/M tests run)"
+
+
+def _verdict_reason(tally: Tally) -> str:
+    verdict = tally.verdict
+    if verdict is Verdict.FAILED:
+        return (f"{tally.failed} failed test(s), "
+                f"{tally.cargo_target_failures} cargo target failure(s)")
+    if verdict is Verdict.INCOMPLETE:
+        return _incomplete_reason(tally)
+    if verdict is Verdict.NOTHING_RAN:
+        return "the filter matched zero tests"
+    return f"{tally.passed} passed, none failed"
+
+
+def format_text(tally: Tally) -> str:
+    binaries = "unknown" if tally.binaries is None else tally.binaries
+    rows = [_format_summary(i, s) for i, s in enumerate(tally.summaries, start=1)]
+    rows.append(f"total  summaries {len(tally.summaries)}  binaries {binaries}"
+                f"  passed {tally.passed}  failed {tally.failed}"
+                f"  skipped {tally.skipped}  filtered out {tally.filtered_out}")
+    rows.append(f"verdict  {tally.verdict.name} (exit {int(tally.verdict)}): "
+                f"{_verdict_reason(tally)}")
+    return "\n".join(rows) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _exit_code_table() -> str:
+    rows = [f"  {int(v)}  {v.name:<11}  {_VERDICT_MEANINGS[v]}" for v in Verdict]
+    rows.append(f"  {_UNREADABLE_EXIT}  {'':<11}  unreadable capture or bad arguments")
+    return "exit codes (the verdict):\n" + "\n".join(rows)
+
+
+def _read_capture(source: str) -> str:
+    """Bytes decoded leniently: a panic message can carry non-UTF-8 bytes, and
+    no newline translation, so a bare '\r' never shifts reported lines."""
+    raw = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
+    return raw.decode("utf-8", errors="replace")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, epilog=_exit_code_table(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "log", nargs="?", default="-",
+        help="Captured test log. '-' or omitted reads stdin.",
+    )
+    parser.add_argument(
+        "--json", action="store_true", dest="emit_json",
+        help="Emit the tally as JSON instead of human-readable text.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        text = _read_capture(args.log)
+    except OSError as exc:
+        print(f"ERROR: cannot read capture: {args.log}: {exc.strerror or exc}",
+              file=sys.stderr)
+        return _UNREADABLE_EXIT
+
+    tally = tally_text(text)
+    if args.emit_json:
+        print(json.dumps(tally.to_dict(), indent=2))
+    else:
+        print(format_text(tally), end="")
+    return int(tally.verdict)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
