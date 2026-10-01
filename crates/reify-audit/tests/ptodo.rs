@@ -794,6 +794,130 @@ mod tests {
         );
     }
 
+    /// The two tracking claims of the committed `scenario05_phantom_tracking.rs`
+    /// fixture: one names no task, the other is discharged by a canonical cite.
+    const UNCITED_PHANTOM_CLAIM: &str = "// tracked as a follow-up task";
+    const DISCHARGED_PHANTOM_CLAIM: &str = "// tracked separately as #5555";
+
+    /// Sweep the committed scenario05 fixture through `check()` from a temp
+    /// root (where its path is NOT allowlisted, so it is genuinely swept),
+    /// optionally seeding the default-path task DB with `seed` rows.
+    fn check_committed_phantom_fixture(seed: Option<&[(&str, i64, &str)]>) -> Vec<Finding> {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ptodo/scenario05_phantom_tracking.rs");
+        let content = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", fixture.display()));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "scenario05_phantom_tracking.rs", &content);
+        if let Some(rows) = seed {
+            crate::common::schema::seed_tasks_db_at(&root.join(".taskmaster/tasks/tasks.db"), rows);
+        }
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["scenario05_phantom_tracking.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        reify_audit::ptodo::check(&ctx)
+    }
+
+    /// Assert `findings` holds exactly one `phantom-tracking` finding, on the
+    /// UNCITED claim, at Medium.
+    fn assert_single_uncited_phantom_finding(findings: &[Finding]) {
+        let phantoms: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.summary.starts_with("phantom-tracking:"))
+            .collect();
+        assert_eq!(
+            phantoms.len(),
+            1,
+            "exactly one phantom-tracking finding; got {findings:?}"
+        );
+        let phantom = phantoms[0];
+        assert!(
+            phantom.summary.contains(UNCITED_PHANTOM_CLAIM),
+            "the phantom-tracking finding must be the uncited claim: {}",
+            phantom.summary
+        );
+        assert_eq!(phantom.pattern, Pattern::PTodo);
+        assert_eq!(phantom.severity, Severity::Medium);
+    }
+
+    /// PRD §19(d): a phantom-tracking phrase discharged by a canonical cite is
+    /// liveness-checked like any other tracked marker. Seeded terminal, the
+    /// discharged claim is a High `orphaned` finding beside the uncited claim's
+    /// structural `phantom-tracking` one.
+    #[test]
+    fn committed_phantom_fixture_discharged_cite_is_orphaned_when_terminal() {
+        let findings = check_committed_phantom_fixture(Some(&[("master", 5555, "done")]));
+
+        assert_single_uncited_phantom_finding(&findings);
+        let orphaned = findings
+            .iter()
+            .find(|f| f.summary.starts_with("orphaned:"))
+            .unwrap_or_else(|| {
+                panic!("expected an orphaned finding for the discharged claim; got {findings:?}")
+            });
+        assert_eq!(orphaned.pattern, Pattern::PTodo);
+        assert_eq!(orphaned.severity, Severity::High);
+        for needle in ["#5555", "status=done", DISCHARGED_PHANTOM_CLAIM] {
+            assert!(
+                orphaned.summary.contains(needle),
+                "orphaned summary must carry {needle:?}: {}",
+                orphaned.summary
+            );
+        }
+        assert_eq!(
+            findings.len(),
+            2,
+            "phantom-tracking + orphaned only; got {findings:?}"
+        );
+    }
+
+    /// A discharged claim whose cite is still live reports nothing: the only
+    /// finding is the uncited claim's structural one.
+    #[test]
+    fn committed_phantom_fixture_discharged_cite_is_silent_when_live() {
+        let findings = check_committed_phantom_fixture(Some(&[("master", 5555, "pending")]));
+
+        assert_single_uncited_phantom_finding(&findings);
+        assert_eq!(findings.len(), 1, "phantom-tracking only; got {findings:?}");
+    }
+
+    /// With no task DB the liveness lane degrades, so a discharged claim
+    /// reports nothing — the property that keeps the DB-absent §6.6 baseline
+    /// unchanged by the discharged population.
+    #[test]
+    fn committed_phantom_fixture_discharged_cite_is_silent_when_db_absent() {
+        let findings = check_committed_phantom_fixture(None);
+
+        assert_single_uncited_phantom_finding(&findings);
+        for f in &findings {
+            assert!(
+                !f.summary.starts_with("orphaned:")
+                    && !f.summary.starts_with("unknown-id:")
+                    && !f.summary.starts_with("parked-on-anchor:"),
+                "no liveness finding may be emitted when the DB is absent; got {:?}",
+                f.summary
+            );
+        }
+        assert_eq!(findings.len(), 1, "phantom-tracking only; got {findings:?}");
+    }
+
     /// ζ inverse lane: end-to-end `check()` integration. Seeds an on-disk DB
     /// with a non-terminal (pending) task whose metadata.files lists:
     ///   - a DELETED path (mock: absent from tracked, git has history)

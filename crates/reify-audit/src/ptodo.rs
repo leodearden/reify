@@ -3635,6 +3635,102 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.3 arm (6) — phantom phrase discharged by a canonical cite (§19(d))
+    // -------------------------------------------------------------------
+
+    /// A phantom-tracking phrase backed by a canonical cite is discharged: its
+    /// cites go to β exactly as a cited comment marker's do. The line carries
+    /// no deferral prose, so δ-B cannot be what claims it.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_is_cited() {
+        let line = "// tracked separately as #5835";
+        assert!(
+            !has_deferral_prose(line),
+            "δ-B must not be able to claim this line"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![5835]), line.to_string())]
+        );
+    }
+
+    /// The discharged arm covers every swept extension. Both shapes are taken
+    /// from the live population (an `.ri` example and a `.ts` test).
+    #[test]
+    fn scan_file_discharged_phantom_tracking_non_rust() {
+        for (line, id) in [
+            ("// one — tracked as a follow-up (#5835)", 5835),
+            ("  // so the fix is tracked separately, by #6564.", 6564),
+        ] {
+            assert_eq!(
+                scan_file(line, false),
+                vec![(1, LineClass::Cited(vec![id]), line.trim().to_string())],
+                "discharged phantom line not classified Cited([{id}]): {line}"
+            );
+        }
+    }
+
+    /// Repeated ids collapse to one and distinct ids keep source order, as on
+    /// every other `Cited` arm.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_dedups_cites() {
+        let line = "/// tracked separately as #6156 (see #6156) and #7756";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![6156, 7756]), line.to_string())]
+        );
+    }
+
+    /// A PRD-relative `#N` names a position in a PRD, not a task, so it cannot
+    /// discharge the claim: the line stays structural phantom tracking.
+    #[test]
+    fn scan_file_phantom_with_only_prd_relative_cite_stays_structural() {
+        let line = "// tracked separately under §7#5";
+        assert!(
+            !has_canonical_cite(line),
+            "§7#5 must be PRD-relative for this test to mean anything"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(
+                1,
+                LineClass::Structural(Kind::PhantomTracking),
+                line.to_string()
+            )]
+        );
+    }
+
+    /// A `// G-allow:` line stays with its own lane, whatever the extension,
+    /// even when it carries a phantom phrase and a canonical cite.
+    #[test]
+    fn scan_file_discharged_phantom_g_allow_line_is_delegated() {
+        let line = "// G-allow: wiring tracked separately as #5235 — no non-test caller until then";
+        assert!(g_allow_marker_body(line).is_some());
+        for is_rust in [true, false] {
+            assert_eq!(scan_file(line, is_rust), vec![], "is_rust={is_rust}");
+        }
+    }
+
+    /// The structural projection is unchanged by the discharged arm: only the
+    /// uncited claim reaches α, so the §6.6 baseline cannot move.
+    #[test]
+    fn classify_file_discharged_phantom_tracking_adds_no_structural_entry() {
+        let content = [
+            "// tracked as a follow-up task",
+            "// tracked separately as #5835",
+        ]
+        .join("\n");
+        assert_eq!(
+            classify_file(&content, true),
+            vec![(
+                1,
+                Kind::PhantomTracking,
+                "// tracked as a follow-up task".to_string()
+            )]
+        );
+    }
+
+    // -------------------------------------------------------------------
     // §6.6 fingerprint() — baseline fingerprint derivation
     // -------------------------------------------------------------------
 
