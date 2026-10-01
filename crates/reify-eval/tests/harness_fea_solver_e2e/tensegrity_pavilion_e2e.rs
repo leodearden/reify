@@ -88,12 +88,12 @@ fn triple(a: i64, b: i64, c: i64) -> Value {
 /// the full eval pipeline.
 fn prism_with_membrane_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        point3(1.0, 0.0, 1.0),          // 0: top A
-        point3(-0.5, 0.866, 1.0),       // 1: top B
-        point3(-0.5, -0.866, 1.0),      // 2: top C
-        point3(0.866, 0.5, -1.0),       // 3: bot A'
-        point3(-0.866, 0.5, -1.0),      // 4: bot B'
-        point3(0.0, -1.0, -1.0),        // 5: bot C'
+        point3(1.0, 0.0, 1.0),     // 0: top A
+        point3(-0.5, 0.866, 1.0),  // 1: top B
+        point3(-0.5, -0.866, 1.0), // 2: top C
+        point3(0.866, 0.5, -1.0),  // 3: bot A'
+        point3(-0.866, 0.5, -1.0), // 4: bot B'
+        point3(0.0, -1.0, -1.0),   // 5: bot C'
     ]);
     let struts = Value::List(vec![pair(0, 4), pair(1, 5), pair(2, 3)]);
     let cables = Value::List(vec![
