@@ -6148,9 +6148,9 @@ mod drop_falsified_indeterminate_diagnostics_tests {
 #[cfg(test)]
 mod merge_post_build_verdicts_tests {
     use super::merge_post_build_verdicts;
-    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity};
+    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity, ValueCellId};
     use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
-    use reify_ir::Satisfaction;
+    use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
 
     fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
         (d.severity, d.code, d.message.clone())
@@ -6204,6 +6204,43 @@ mod merge_post_build_verdicts_tests {
             diagnostics: Vec::new(),
             resolved_params: Default::default(),
         }
+    }
+
+    fn undefined_input_reason() -> IndeterminateReason {
+        IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![ValueCellId::new("BoltFlange", "moi_principal")],
+        })
+    }
+
+    /// An adopted definite verdict takes no stale reason with it.
+    #[test]
+    fn upgrade_clears_the_recorded_indeterminate_reason() {
+        let mut indeterminate = entry("BoltFlange", 1, None, Satisfaction::Indeterminate);
+        indeterminate.indeterminate_reason = Some(undefined_input_reason());
+        let mut result = check_result(vec![indeterminate], Vec::new());
+        let build = build_result(vec![entry("BoltFlange", 1, None, Satisfaction::Satisfied)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+        assert_eq!(result.constraint_results[0].indeterminate_reason, None);
+    }
+
+    /// An Indeterminate build verdict overwrites nothing, reason included.
+    #[test]
+    fn indeterminate_build_verdict_keeps_the_recorded_reason() {
+        let mut indeterminate = entry("BoltFlange", 1, None, Satisfaction::Indeterminate);
+        indeterminate.indeterminate_reason = Some(undefined_input_reason());
+        let mut result = check_result(vec![indeterminate], Vec::new());
+        let build = build_result(vec![entry("BoltFlange", 1, None, Satisfaction::Indeterminate)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.constraint_results[0].indeterminate_reason,
+            Some(undefined_input_reason())
+        );
     }
 
     /// Baseline: the upgraded constraint's own now-false warning IS dropped.

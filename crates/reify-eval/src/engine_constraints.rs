@@ -3291,8 +3291,8 @@ mod gdt_conformance_tests {
     use reify_core::DimensionVector;
     use reify_core::identity::{RealizationNodeId, ValueCellId};
     use reify_ir::{
-        CompiledExprKind, GeometryHandleId, PersistentMap, Satisfaction, StructureInstanceData,
-        StructureTypeId, Value, ValueMap,
+        CompiledExprKind, GeometryHandleId, IndeterminateReason, PersistentMap, Satisfaction,
+        StructureInstanceData, StructureTypeId, TransientReason, Value, ValueMap,
     };
     use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
@@ -3473,11 +3473,16 @@ structure def Probe {
         );
         let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
+        // The scalar path's Indeterminate, with the reason it recorded, is the
+        // entry the geometric verdict upgrades.
+        let scalar_reason = IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![ref_cell(conforms, "actual")],
+        });
         let mut results = vec![ConstraintCheckEntry {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Indeterminate,
-            indeterminate_reason: None,
+            indeterminate_reason: Some(scalar_reason),
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3486,6 +3491,10 @@ structure def Probe {
             results[0].satisfaction,
             Satisfaction::Satisfied,
             "measured 0mm within the 0.1mm zone → Satisfied"
+        );
+        assert_eq!(
+            results[0].indeterminate_reason, None,
+            "an upgraded verdict must not keep the scalar path's stale reason"
         );
         assert!(
             !diags.iter().any(|d| d.message.contains("VIOLATED")),
@@ -3521,15 +3530,53 @@ structure def Probe {
             "no kernel → Indeterminate (never a false Violated)"
         );
         assert_ne!(results[0].satisfaction, Satisfaction::Violated);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
         let msg = diags
             .iter()
             .map(|d| d.message.as_str())
             .find(|m| m.contains("INDETERMINATE"))
             .unwrap_or_else(|| panic!("expected an INDETERMINATE diagnostic, got: {diags:#?}"));
-        assert!(
-            msg.to_lowercase().contains("kernel"),
-            "Indeterminate diagnostic must name the missing kernel: {msg}"
+        assert_eq!(
+            msg,
+            format!("Conforms INDETERMINATE: {detail}"),
+            "the warning is rendered from the recorded reason"
         );
+    }
+
+    /// The defensive push-if-absent arm records the same reason as the
+    /// override arm: an appended Indeterminate entry is never reasonless.
+    #[test]
+    fn explicit_actual_no_kernel_appended_entry_records_its_reason() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        let mut results = Vec::new();
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "the absent entry is appended");
+        assert_eq!(results[0].label.as_deref(), Some("Conforms"));
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
+    }
+
+    fn measurement_unavailable_detail(entry: &ConstraintCheckEntry) -> &str {
+        match &entry.indeterminate_reason {
+            Some(IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+                detail,
+            })) => detail,
+            other => panic!("expected a MeasurementUnavailable reason, got {other:?}"),
+        }
     }
 
     /// (d) A Conforms with NO explicit actual: the pass must leave its scalar
