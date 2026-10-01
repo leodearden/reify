@@ -26,6 +26,7 @@
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepAlgoAPI_BuilderAlgo.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -761,6 +762,21 @@ uint64_t boolean_pass_count() {
     return t_boolean_pass_count;
 }
 
+// --- Boolean parallelism mode (task 7439) ---
+
+// Whether build_bop_algorithm runs OCCT's parallel mode, per calling thread like
+// the pass counter above. Rationale and contract: src/boolean_parallelism.rs.
+constexpr bool kBooleanRunParallelByDefault = false;
+static thread_local bool t_boolean_run_parallel = kBooleanRunParallelByDefault;
+
+void set_boolean_run_parallel(bool parallel) {
+    t_boolean_run_parallel = parallel;
+}
+
+bool boolean_run_parallel() {
+    return t_boolean_run_parallel;
+}
+
 // --- Compound assembly ---
 
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
@@ -1163,6 +1179,16 @@ TopTools_ListOfShape single_shape_list(const TopoDS_Shape& shape) {
     return list;
 }
 
+// The policy point: every BOP algorithm in this file (booleans, fuse_shape_list,
+// Splitter) is Build()-ed here, in the calling thread's parallelism mode.
+void build_bop_algorithm(BRepAlgoAPI_BuilderAlgo& op, const char* failure_message) {
+    op.SetRunParallel(t_boolean_run_parallel);
+    op.Build();
+    if (!op.IsDone()) {
+        throw std::runtime_error(failure_message);
+    }
+}
+
 // The one Build() site, and so the one pass-counter increment, for every OCCT
 // boolean. In OCCT 7.8.1 the operand-bearing BRepAlgoAPI constructors already
 // Build(), and Build() clears and reruns, so every boolean default-constructs
@@ -1180,10 +1206,7 @@ void build_boolean_pass(BRepAlgoAPI_BooleanOperation& op,
     }
     op.SetArguments(arguments);
     op.SetTools(tools);
-    op.Build();
-    if (!op.IsDone()) {
-        throw std::runtime_error(failure_message);
-    }
+    build_bop_algorithm(op, failure_message);
     t_boolean_pass_count += 1;
 }
 
@@ -7014,10 +7037,7 @@ std::unique_ptr<OcctShapeVec> split_shape(
         BRepAlgoAPI_Splitter splitter;
         splitter.SetArguments(args);
         splitter.SetTools(tools);
-        splitter.Build();
-        if (!splitter.IsDone()) {
-            throw std::runtime_error("split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
-        }
+        build_bop_algorithm(splitter, "split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
         // Extract all solids from the result.
         auto out = std::make_unique<OcctShapeVec>();
         for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {

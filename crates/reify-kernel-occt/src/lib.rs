@@ -97,6 +97,11 @@ pub fn reset_boolean_pass_count() {}
 pub fn boolean_pass_count() -> u64 {
     0
 }
+
+mod boolean_parallelism;
+pub use boolean_parallelism::{BooleanParallelism, boolean_parallelism};
+#[cfg(feature = "test-fixtures")]
+pub use boolean_parallelism::with_boolean_parallelism;
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]

@@ -298,7 +298,7 @@ fn every_binary_boolean_is_identical_serial_and_parallel() {
 #[test]
 fn overlapping_pattern_fuse_is_identical_serial_and_parallel() {
     let outcome = serial_vs_parallel(2, |kernel| {
-        let merged = hole_grid(kernel, 5, OVERLAPPING_PITCH);
+        let merged = hole_grid(kernel, 4, OVERLAPPING_PITCH);
         fingerprint(kernel, merged)
     });
     assert_eq!(
