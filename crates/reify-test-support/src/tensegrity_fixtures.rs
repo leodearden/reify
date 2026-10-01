@@ -1,10 +1,18 @@
-//! The single definition of the triplex tensegrity fixture **in `Value` form**.
+//! The single definitions of the two form-finding goldens: the triplex
+//! tensegrity and the tent membrane.
 //!
 //! The "triplex" is the canonical symmetric triangular T-prism used across the
 //! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
-//! cables. Before this module it existed as hand-maintained copies inside
+//! cables, provided **in `Value` form**. Before this module it existed as
+//! hand-maintained copies inside
 //! `crates/reify-eval/tests/harness_fea_solver_e2e/`, so a topology or node-order
 //! change had to be mirrored across all of them or they silently drifted apart.
+//!
+//! The "tent" is the minimal fixed-boundary membrane: four anchored corners in
+//! one plane, fanned around one free node seeded off that plane (see
+//! [`TENT_NODE_COORDS`]). Besides its `Value` form, [`tent_membrane_tensegrity`],
+//! it is exposed as raw consts, because reify-solver-elastic's `form_find` unit
+//! tests consume it below the `Value` layer.
 //!
 //! ANTI-DRIFT PROPERTY: changing the topology or node order *here* changes every
 //! consuming suite at once. That is the whole point — resist re-inlining a
@@ -16,7 +24,7 @@
 //! reify-solver-elastic’s `tests/`, and #7721 for the `#[cfg(test)]`-internal
 //! ones.
 //!
-//! Two axes on which the superseded copies genuinely differed are preserved
+//! Two axes on which the superseded triplex copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
 //!
 //!   * bottom-triangle height — [`canonical_triplex_tensegrity`] puts it at
@@ -77,10 +85,15 @@ fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     coords
 }
 
-/// [`triplex_node_coords`] as `Value::Point`s of LENGTH-dimensioned SI-metre
+/// Raw coordinates as `Value::Point`s of LENGTH-dimensioned SI-metre
 /// `Value::Scalar`s, via [`crate::values::point3`].
+fn lift_points(coords: impl IntoIterator<Item = [f64; 3]>) -> Vec<Value> {
+    coords.into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
+}
+
+/// [`triplex_node_coords`], lifted by [`lift_points`].
 fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
-    triplex_node_coords(bottom_z).into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
+    lift_points(triplex_node_coords(bottom_z))
 }
 
 /// Lower index rows (`[[j, k], …]` for struts and cables, `[[i, j, k], …]` for
@@ -168,6 +181,40 @@ pub const TRIPLEX_SEEDS: [f64; 3] = [-1.0, 1.0, 1.0];
 /// solve takes.
 pub fn triplex_seeds() -> Value {
     Value::List(TRIPLEX_SEEDS.into_iter().map(Value::Real).collect())
+}
+
+/// The tent membrane, as raw coordinates: a diamond boundary of four anchored
+/// corners ([`TENT_ANCHORS`]) in the `z = 0` plane plus one free interior node
+/// seeded OFF that plane, fanned by [`TENT_TRIS`].
+///
+/// The minimal surface spanning a planar boundary is flat, so a correct
+/// cotangent assembly pulls the free node back into the boundary plane
+/// (`z → 0`) and leaves a ~0 equilibrium residual, while a wrong assembly drives
+/// it off-plane or blows up the residual. The off-plane seed is what makes that
+/// a non-circular signal. The in-plane `(x, y)` equilibrium is NOT unique — the
+/// flat surface has constant area for any interior position, so the
+/// cotangent-Laplacian vanishes across the whole interior — hence consumers
+/// assert planarity + residual, never an `(x, y)`.
+pub const TENT_NODE_COORDS: [[f64; 3]; 5] = [
+    [0.1, 0.1, 0.3],  // 0: free interior — deliberately off-solution
+    [1.0, 0.0, 0.0],  // 1: anchor
+    [0.0, 1.0, 0.0],  // 2: anchor
+    [-1.0, 0.0, 0.0], // 3: anchor
+    [0.0, -1.0, 0.0], // 4: anchor
+];
+
+/// The tent's triangle fan: one triangle per anchored corner, each hinged on
+/// the free node 0. Consumers size their per-triangle σ arrays from
+/// `TENT_TRIS.len()`.
+pub const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+
+/// The tent's anchored node set: the four corners, leaving node 0 free.
+pub const TENT_ANCHORS: [i64; 4] = [1, 2, 3, 4];
+
+/// The tent as a `Tensegrity` structure: a pure membrane, so struts and cables
+/// are present but empty, and `surfaces` carries [`TENT_TRIS`].
+pub fn tent_membrane_tensegrity() -> Value {
+    tensegrity(lift_points(TENT_NODE_COORDS), &[], &[], Some(&TENT_TRIS))
 }
 
 #[cfg(test)]
