@@ -60,7 +60,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 
 | class | regime coordinate | sup K | at | status |
 |---|---|---|---|---|
-| sphere | `d/R` | **2.079** | `d/R` = 3.12e-4 | supremum |
+| sphere | `d/R` ≥ 3e-4 ‡ | **2.079** | `d/R` = 3.12e-4 | supremum |
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
 | fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
@@ -87,6 +87,12 @@ continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were
 (P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
 So `lower bound` no longer means the structure is un-understood, and never meant a wall
 was hit — it means 1.0010 is a floor that further walking can only raise.
+
+‡ Scoped to §1.2's staircase table (`d` ≥ 0.3 mm on `R` = 1000 mm). §1.2's onset walk
+(task #7266) goes below `d/R` = 3e-4 and reads higher: a tread at 2.0861
+(`d/R` = 2.4682e-4) and the `k` = −3 state at up to 2.1108 (`d/R` = 4.837e-5). Over
+everything this note walks, the sphere's worst measured reading is therefore **2.111**, and
+§3 sizes against it.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -123,10 +129,11 @@ Two branches, ~0.75–0.76 and ~2.04–2.08, alternating with a period of **~0.0
 near 0.30 mm — exactly as §2 reports. A coarse sweep lands on one branch and misses the
 other; the 0.318 mm row sits between two ~2.07 rows.
 
-**Third-branch onset walk, measured 2026-10-01** (task #7266). PRD §2's third branch at
-~1.49 × for `d/R` < 2.5e-4 lies below everything the table above walks (`d` ≥ 0.3 mm, so
-`d/R` ≥ 3e-4). The 388-point sweep that first recorded it (esc-6060-1) left no surviving raw
-data, so this block is that branch's only citable record. It uses the same committed fixture
+**Third-branch onset walk, measured 2026-10-01** (task #7266). PRD §2 previously described
+a third branch at ~1.49 × for `d/R` < 2.5e-4; this block measures it. That branch lies below
+everything the table above walks (`d` ≥ 0.3 mm, so `d/R` ≥ 3e-4). The 388-point sweep that
+first recorded it (esc-6060-1) left no surviving raw data, so this block is that branch's
+only citable record. It uses the same committed fixture
 and the same method: §4's `probe()` recipe on scratch copies, at P=3 with `timeout 400`. The
 binary, HEAD, kernel and session all differ from §0's. Probe points were chosen with the
 two-ladder branch index `k = m − nV` (PRD §4.1 alt C):
@@ -197,8 +204,8 @@ and the other six lie in 1.4794–1.5039. **Treads persist below the onset.** Al
 probes below `d/R` = 2.52e-4 read 2.0659–2.0861, two of them 0.05 µm either side of the
 0.24677 mm window, so 2.5e-4 is where the third branch *starts*, not a boundary below which
 readings leave the tread. Two of those treads (0.245 mm at 2.0804, 0.24682 mm at 2.0861)
-exceed §1.1's sphere sup K of 2.079. §1.1 is the supremum over this section's own walk
-(`d` ≥ 0.3 mm) and §3's cap decision was made against it, so §1.1 is left as is.
+exceed the 2.079 that §1.1 reports for `d/R` ≥ 3e-4. §1.1's ‡ footnote carries them, and §3
+sizes against the raised worst case.
 
 **Scale invariance, `R` = 500 mm.** Same harness, with a second `sed` expression rewriting
 `sphere(1000mm)` to `sphere(500mm)`, asserted applied before each probe. Every `d` repeats
@@ -991,7 +998,7 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 
 | class | sup K | required n |
 |---|---|---|
-| sphere | 2.079 | **2** |
+| sphere | 2.111 | **2** |
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
@@ -999,8 +1006,10 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 | loft | no datum | — |
 
-**No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
+**No measured class exceeds K ≈ 16.** The worst is the sphere at 2.111, needing `n = 2`.
+§1.1's 2.079 covers `d/R` ≥ 3e-4 only. The walk below it (§1.2, task #7266) raises the
+sphere's worst measured reading to 2.111; `log2(2.111)` ≈ 1.08, so `required n` is still
+two. nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
 `required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
 that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above 1, so the
 crossing is established rather than merely not excluded. Per the † note below that value is
@@ -1008,7 +1017,8 @@ still a lower bound, so the true supremum can only be higher. Even so this chang
 at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
 class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within [0.9623, 1.0010],
 with no second branch like the sphere's ~2.07 tread. Cap 4
-covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
+covers K up to 16 at `B = d0` — **≈7.6× headroom** (16/2.111) over the worst thing
+measured.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
 unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justified by
@@ -1046,9 +1056,11 @@ counting the initial pass so they are comparable:
 
 ### 3.3 Decision — keep the cap at 4
 
-*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. That
-ratio is unchanged by task #7128: nurbs_surface rose from 0.9975 to 1.0010, but the worst
-measured class is still the sphere at 2.079, so 16/2.079 = 7.7× stands as derived.
+*Buys over 3*: K headroom 16 vs 8, i.e. 7.6× vs 3.8× over the worst measured class, the
+sphere at 2.111 (**derived**). Task #7266's walk below `d/R` = 3e-4 (§1.2) raised that worst
+case from 2.079, which moves the first ratio down from 7.7× and leaves the second at 3.8×.
+`required n` stays 2 and this decision still holds. Task #7128 moved neither ratio:
+nurbs_surface rose from 0.9975 to 1.0010, still well below the sphere.
 
 The *argument* around it does move, and is re-derived rather than left standing. Four
 classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surface) and
