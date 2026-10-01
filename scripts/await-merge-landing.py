@@ -33,11 +33,13 @@ import functools
 import http.client
 import itertools
 import json
+import os
 import shlex
+import subprocess
 import sys
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -276,6 +278,63 @@ class MergeStatusClient:
 
 
 # ---------------------------------------------------------------------------
+# git ancestry
+# ---------------------------------------------------------------------------
+
+def _log(message: str) -> None:
+    print(f"await-merge-landing: {message}", file=sys.stderr, flush=True)
+
+
+def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ProbeUnavailable(f"git {args[0]}: {exc}") from exc
+
+
+def _resolve_commit(repo: Path, rev: str) -> str | None:
+    try:
+        result = _run_git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+    except ProbeUnavailable:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _fetch(repo: Path, remote: str) -> None:
+    """Best effort: a failed fetch is reported and the check uses the refs
+    already fetched."""
+    try:
+        result = _run_git(repo, "fetch", "--quiet", remote)
+    except ProbeUnavailable as exc:
+        _log(str(exc))
+        return
+    if result.returncode != 0:
+        _log(f"git fetch {remote}: exit {result.returncode}: {result.stderr.strip()}")
+
+
+@dataclass(frozen=True)
+class GitAncestryProbe:
+    repo: Path
+    commit_sha: str
+    ref: str
+    fetch_remote: str | None
+
+    def __call__(self) -> bool:
+        if self.fetch_remote is not None:
+            _fetch(self.repo, self.fetch_remote)
+        result = _run_git(self.repo, "merge-base", "--is-ancestor", self.commit_sha,
+                          self.ref)
+        if result.returncode not in (0, 1):
+            raise ProbeUnavailable(f"git merge-base: exit {result.returncode}: "
+                                   f"{result.stderr.strip()}")
+        return result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -380,9 +439,83 @@ def rearm_command(options: Options) -> str:
     return shlex.join(["python3", str(SCRIPT_PATH), *rearm_argv(options)])
 
 
+def resolve_escalation_url(options: Options) -> str | None:
+    if options.escalation_url is not None:
+        return options.escalation_url
+    try:
+        config = json.loads((options.repo / ".mcp.json").read_text())
+        url = config["mcpServers"]["escalation"]["url"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return url if isinstance(url, str) and url else None
+
+
+def format_event(outcome: Outcome, options: Options) -> str:
+    """The one stdout line: the verdict as JSON."""
+    event = {
+        "verdict": outcome.verdict.name,
+        "commit": options.commit,
+        "ref": options.ref,
+        "source": outcome.source,
+        "merge_status": None if outcome.merge_status is None else dict(outcome.merge_status),
+        "probe_error": outcome.probe_error,
+        "polls": outcome.polls,
+        "elapsed_seconds": round(outcome.elapsed_seconds, 1),
+    }
+    if outcome.verdict is Verdict.PENDING:
+        event["rearm_command"] = rearm_command(options)
+    return json.dumps(event)
+
+
+class _UsageError(Exception):
+    pass
+
+
+def _prepare(options: Options) -> tuple[Options, str]:
+    """Options with --commit resolved to a SHA, plus the escalation URL."""
+    sha = _resolve_commit(options.repo, options.commit)
+    if sha is None:
+        raise _UsageError(f"cannot resolve --commit {options.commit!r} to a commit "
+                          f"in {options.repo}")
+    url = resolve_escalation_url(options)
+    if url is None:
+        raise _UsageError("no escalation URL: pass --escalation-url or provide "
+                          "<repo>/.mcp.json mcpServers.escalation.url")
+    if options.fetch_remote is not None:
+        _fetch(options.repo, options.fetch_remote)
+    if _resolve_commit(options.repo, options.ref) is None:
+        raise _UsageError(f"cannot resolve --ref {options.ref!r} in {options.repo}")
+    return replace(options, commit=sha), url
+
+
+def _logged(probe: Callable[[], Any]) -> Callable[[], Any]:
+    def call() -> Any:
+        try:
+            return probe()
+        except ProbeUnavailable as exc:
+            _log(str(exc))
+            raise
+    return call
+
+
 def main(argv: list[str] | None = None) -> int:
-    parse_options(argv)
-    return _USAGE_EXIT
+    started = time.monotonic()
+    try:
+        options, url = _prepare(parse_options(argv))
+    except _UsageError as exc:
+        _log(str(exc))
+        return _USAGE_EXIT
+    start_up_seconds = time.monotonic() - started
+    outcome = await_landing(
+        _logged(GitAncestryProbe(options.repo, options.commit, options.ref,
+                                 options.fetch_remote)),
+        _logged(MergeStatusClient(url, options.selector).status),
+        budget_seconds=max(0.0, invocation_budget_seconds(options.host_timeout_ms)
+                           - start_up_seconds),
+        interval_seconds=options.interval_seconds,
+    )
+    print(format_event(outcome, options), flush=True)
+    return int(outcome.verdict)
 
 
 if __name__ == "__main__":
