@@ -1,48 +1,21 @@
-//! Executable drift guard between `geometry::tests::unit_cube_mesh`, this
-//! crate's test cube fixture, and the workspace-canonical box fixture
+//! Drift guard: `geometry::tests::unit_cube_mesh`, this crate's test cube, must
+//! keep the same index block as the workspace-canonical
 //! `reify_test_support::fixtures::prismatic_box_mesh`.
 //!
-//! # Why the local copy is kept (judgment call, task #7137)
+//! The local copy cannot delegate to the canonical one. Because it is
+//! `#[cfg(test)]`, its `Mesh` is the `--test` build of `reify-ir`, which is a
+//! different type from the `Mesh` that `reify-test-support` links. Any way
+//! around that needs a `reify-test-support` dev-dep, and that inverts the
+//! layering: `reify-test-support` normal-deps `reify-compiler`, which
+//! normal-deps `reify-ir`. No other crate can call a `#[cfg(test)]` item, so
+//! this guard compares source text. It compares indices only. Winding is what
+//! can drift silently. The vertices are spelled parametrically in the
+//! canonical, and `crates/reify-test-support/tests/box_fixtures.rs` already
+//! pins their values.
 //!
-//! Task #6387 hoisted the box/cube fixtures into `reify_test_support::fixtures`
-//! so the workspace has ONE definition of "a box", and #7137 collapsed the
-//! remaining copies onto it — except this crate's. Two reasons, in order of
-//! how binding they are:
-//!
-//! 1. Delegating WOULD NOT COMPILE. The copy lives in `#[cfg(test)] mod tests`
-//!    inside the crate under test, so its `Mesh` comes from the `--test` build
-//!    of `reify-ir`, while `reify-test-support` links the PLAIN `reify-ir` rlib.
-//!    The two are distinct crate instances, so the canonical fixture returns a
-//!    DIFFERENT `Mesh` type ("perhaps two different versions of crate
-//!    `reify_ir`") — an unresolved-type error, not a style preference.
-//! 2. The escape would invert the layering. Escaping (1) the way #6387 did for
-//!    the manifold adapter's copy — a feature-gated `pub mod test_fixtures`
-//!    compared by a cross-crate `tests/` binary — needs a `reify-test-support`
-//!    dev-dep. But `reify-test-support` normal-deps `reify-compiler`, which
-//!    normal-deps `reify-ir`, so `cargo test -p reify-ir` would build the
-//!    compiler in order to test the IR. That binds harder here than it did for
-//!    the adapter, because `reify-ir` is foundational.
-//!
-//! So the goal #6387 was filed for — kill DRIFT, not bytes — is met here by
-//! this guard rather than by deletion. Giving the two literals one shared
-//! definition instead was deferred to task #7528's placement decision.
-//!
-//! # Why SOURCE-level rather than value-level
-//!
-//! Reason 1 also blocks the obvious guard: no test in any crate can CALL the
-//! local fixture, because `#[cfg(test)]` items are not part of any artifact
-//! another crate can link. Comparing the two definitions' source text is the
-//! only executable option that does not buy the dependency edge reason 2
-//! rejects.
-//!
-//! # Why indices only
-//!
-//! Winding/topology is precisely what drifted: #7137 found the local copy
-//! emitting its `+Y` face as `3, 6, 2,  3, 7, 6` against the canonical's
-//! `3, 7, 6,  3, 6, 2`, and normalised it. Vertices are not textually
-//! comparable anyway — the canonical spells them parametrically
-//! (`lx, 0.0, 0.0`) — and their values are already pinned upstream by
-//! `crates/reify-test-support/tests/box_fixtures.rs`.
+//! Giving both literals a single definition (for example, a shared
+//! `include!`d data file) would retire this scanner. That placement decision
+//! belongs to #7528.
 
 /// Resolves the manifest directory to use when locating this crate's sources at
 /// test time.
