@@ -5,7 +5,7 @@
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/lib_gui_launch.sh"
 #   or:   source "$REPO_ROOT/scripts/lib_gui_launch.sh"
 #
-# Sourced by BOTH scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
+# Sourced by scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
 # (dev). The two launchers differ in build profile and in whether they run a
 # vite dev server, but they must agree EXACTLY on the environment they hand
 # the binary — and on the preflight that decides a launch is hopeless before
@@ -23,9 +23,8 @@
 # `set -euo pipefail`, and none of them call `exit` — they return non-zero and
 # leave the exit decision to the launcher.
 #
-# NOT sourced by gui/test/visual/lib_e2e_smoke.sh, which still carries its own
-# copy of the WebKit default (its §2b). Folding that third copy in requires
-# editing a file #7254 does not hold a lock for; it is left for a follow-up.
+# Also sourced by gui/test/visual/lib_e2e_smoke.sh (#7273), which calls
+# gui_launch_env_pin in its §2b, after its own /opt/reify-deps/lib prepend.
 
 # Source guard — prevent double-sourcing (mirrors scripts/lib_portable.sh).
 if [ "${_REIFY_LIB_GUI_LAUNCH_SH_SOURCED:-}" = "1" ]; then
@@ -84,7 +83,7 @@ gui_launch_env_pin() {
     # NVIDIA driver exposes DRI fds but the Mesa EGL GBM backend cannot create
     # a screen, WebKitGTK aborts with
     # "Could not create GBM EGL display: EGL_NOT_INITIALIZED". =1 forces the
-    # GLX/xlib fallback path. Mirrors gui/test/visual/lib_e2e_smoke.sh §2b.
+    # GLX/xlib fallback path.
     # The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
     # restore the DMABUF path on a host where it works.
     export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
