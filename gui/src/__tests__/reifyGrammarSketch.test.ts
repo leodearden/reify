@@ -134,3 +134,108 @@ describe('reify.grammar — `pub` / `priv` / `aux` prefixes on a let declaration
     expect(countNodesNamed(src, 'ParamDeclaration')).toBe(1);
   });
 });
+
+// ── Sketch block ────────────────────────────────────────────────────────────
+
+/** `body` lines placed inside `sketch s { … }` inside a structure. */
+function inSketch(...body: string[]): string {
+  return `structure def S {\n  sketch s {\n${body.map((l) => `    ${l}\n`).join('')}  }\n}`;
+}
+
+describe('reify.grammar — sketch blocks', () => {
+  it('reads entity lets and relation members as siblings with no separator', () => {
+    const src =
+      'structure def S {\n  sketch profile {\n    let a = point(0mm, 0mm)\n    fix(a)\n  }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'SketchBlock')).toBe(1);
+    expect(countNodesNamed(src, 'LetDeclaration')).toBe(1);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(1);
+  });
+
+  it('admits an `aux let` entity in the body', () => {
+    const decl = 'aux let cl = line(origin, point(0mm, 10mm))';
+    const src = `structure def S { sketch profile { ${decl} } }`;
+    expect(countErrorNodes(src)).toBe(0);
+    expect(sourceOfNodeNamed(src, 'LetDeclaration')).toBe(decl);
+  });
+
+  it('admits a type-annotated entity', () => {
+    expect(countErrorNodes('structure def S { sketch s { let a : Point2 = point(0mm, 0mm) } }')).toBe(0);
+  });
+
+  it('admits an empty body', () => {
+    const src = 'structure def S { sketch s { } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'SketchBlock')).toBe(1);
+  });
+
+  it.each([
+    ['a guarded block', 'structure def S { where c { sketch s { fix(a) } } }'],
+    ['a specialization body', 'structure def S { sub b : B { sketch s { fix(a) } } }'],
+  ])('nests in %s', (_where, src) => {
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'SketchBlock')).toBe(1);
+  });
+
+  it('rejects a param in the body, which admits only lets and relations', () => {
+    expect(countErrorNodes('structure def S { sketch s { param p : Length = 1mm } }')).toBeGreaterThan(0);
+  });
+});
+
+// Parity with grammar.js's `sketch_body_item_boundary_matches_a_plain_member_body`:
+// both readings of each pair parse clean, so the node counts and spans decide.
+describe('reify.grammar — sketch body item boundaries', () => {
+  it('keeps a let and a following call as two members', () => {
+    const src = inSketch('let d = 5mm', 'fix(a)');
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'LetDeclaration')).toBe(1);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(1);
+  });
+
+  it('keeps two relation calls as two members', () => {
+    const src = inSketch('fix(a)', 'horizontal(ab)');
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(2);
+  });
+
+  it('joins a namespaced ref and a parenthesised next line into one call', () => {
+    const src = inSketch('let x = a.b', '(c)');
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'LetDeclaration')).toBe(1);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(0);
+    const joined = src.slice(src.indexOf('a.b'), src.indexOf('(c)') + '(c)'.length);
+    expect(nodeNamesSpanning(src, joined)).toContain('NamespacedCall');
+  });
+
+  it('continues a let across a line that opens with a binary operator', () => {
+    const src = inSketch('let d = 5mm', '- 3mm');
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'RelationMember')).toBe(0);
+    const both = src.slice(src.indexOf('let d'), src.indexOf('- 3mm') + '- 3mm'.length);
+    expect(sourceOfNodeNamed(src, 'LetDeclaration')).toBe(both);
+  });
+});
+
+// `sketch` is a contextual `ekw<>`: a keyword only where a SketchBlock opens.
+describe('reify.grammar — `sketch` is a contextual keyword', () => {
+  it('styles `sketch` as a keyword where it opens a block', () => {
+    expect(keywordSpans('structure def S { sketch s { fix(a) } }')).toContain('sketch');
+  });
+
+  it('leaves `sketch` an ordinary identifier as a let name', () => {
+    const src = 'structure def S { let sketch = 1mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(keywordSpans(src)).not.toContain('sketch');
+  });
+
+  it('leaves `sketch` an ordinary identifier as an operand', () => {
+    expect(countErrorNodes('structure def S { let y = sketch + 1 }')).toBe(0);
+  });
+
+  it('reads `sketch = 5mm` in a specialization body as a param assignment', () => {
+    const src = 'structure def S { sub b : B { sketch = 5mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'ParamAssignment')).toBe(1);
+    expect(countNodesNamed(src, 'SketchBlock')).toBe(0);
+  });
+});
