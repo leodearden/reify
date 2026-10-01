@@ -1,24 +1,14 @@
-// transform_inverse_dimensionless.ri — CLI eval fixture: a dimensionless
-// Transform translation is rejected by transform_inverse.
-//
-// RULING #6089: a Transform's translation is a displacement and carries LENGTH.
-// vec3(1.0, 2.0, 3.0) is dimensionless, so transform_inverse returns Value::Undef
-// and the post-Undef geometry diagnose hook must emit on stderr:
+// transform_inverse_dimensionless.ri — CLI eval fixture: inverting a Transform
+// whose translation is dimensionless is rejected (RULING #6089: a Transform's
+// translation carries LENGTH). `reify eval` exits 1 with, on stderr:
 //   error: transform_inverse: t.translation argument expects Length, got Real;
 //          pass a dimensioned length such as `5mm`
-// `reify eval` exits 1. Before the ruling the same source exited 0 and the
-// inverse silently propagated the dimensionless translation.
 //
-// The bare Transform is constructible here ONLY because `transform3` is not yet
-// gated. Task #7625 gates it and must rework this fixture; the test's
-// `transform_inverse:` needle makes that rework loud (a `transform3:` diagnostic
-// would fail it) rather than silently re-routed.
+// The bare Transform constructs only because `transform3` is not yet gated; task
+// #7625 gates it and must rework this fixture.
 //
-// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
-// runtime Error diagnostic.
-//
-// Declares its module explicitly, for affine_from_transform_dimensionless.ri's
-// reason.
+// Declares its module explicitly: without it, W_MODULE_DECL_MISSING quotes the
+// file stem on stderr, which would supply the builtin-name needle by itself.
 
 module transform_inverse_dimensionless
 

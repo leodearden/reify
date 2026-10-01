@@ -1,11 +1,10 @@
-// affine_from_transform_length.ri — the INSEPARABLE control for
-// affine_from_transform_dimensionless.ri.
+// affine_from_transform_length.ri — the control for
+// affine_from_transform_dimensionless.ri: a LENGTH translation still exits 0 and
+// prints the AffineMap with its translation in SI metres, so the sibling's exit 1
+// is the gate rather than a broken builtin.
 //
-// Without it, the sibling's "exits 1" assertion could pass for the wrong reason
-// (the builtin broken outright rather than gated). A LENGTH translation must
-// still exit 0 and print the AffineMap with an SI-metre translation.
-//
-// Declares its module explicitly, for the sibling's reason.
+// Declares its module explicitly, as its sibling does, so stderr carries no
+// W_MODULE_DECL_MISSING warning.
 
 module affine_from_transform_length
 

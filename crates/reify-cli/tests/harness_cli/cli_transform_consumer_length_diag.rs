@@ -5,8 +5,7 @@
 //! consumers that read it as SI metres — `affine_from_transform` and
 //! `transform_inverse` — reject any other dimension, and the rejection must be
 //! EXPLAINED: a stderr `Error` naming the builtin and `t.translation`, and a
-//! non-zero `reify eval` exit. Before the ruling both fixtures below exited 0, the
-//! first building a map that read each bare unit as one metre.
+//! non-zero `reify eval` exit.
 
 use crate::common;
 
