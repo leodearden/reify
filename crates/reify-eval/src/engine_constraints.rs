@@ -609,10 +609,14 @@ impl Engine {
                     // in the text so `labeled_diagnostics` can substitute a
                     // user-facing label, exactly as the language-level checker's
                     // message does.
-                    if matches!(satisfaction, Satisfaction::Indeterminate)
+                    //
+                    // The RECORDED reason, unlike the diagnostic, is set on every
+                    // Indeterminate (R1), the C1 case included.
+                    let indeterminate_reason = (satisfaction == Satisfaction::Indeterminate)
+                        .then(|| self.representation_within_indeterminate_reason());
+                    if let Some(reason) = &indeterminate_reason
                         && self.achieved_repr_tol.is_empty()
                     {
-                        let reason = self.unmeasured_reason();
                         messages.push(
                             Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
                                 .with_code(DiagnosticCode::ConstraintIndeterminate),
@@ -623,7 +627,7 @@ impl Engine {
                         id,
                         satisfaction,
                         diagnostics: ConstraintDiagnostics { messages },
-                        indeterminate_reason: None,
+                        indeterminate_reason,
                     });
                     any_rw = true;
                 }
@@ -827,8 +831,9 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
-    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
+    /// The reason a `RepresentationWithin` Indeterminate records — and its
+    /// diagnostic states — on a run whose `achieved_repr_tol` is empty
+    /// (task-6169 ζ, C-SURFACE 1).
     ///
     /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
@@ -915,6 +920,22 @@ impl Engine {
              representation tolerance; check that the subject declares a \
              realization"
         }
+    }
+
+    /// The reason recorded on a `RepresentationWithin` Indeterminate decided by
+    /// the engine. An empty `achieved_repr_tol` has the causes of
+    /// [`Engine::unmeasured_reason`]; a non-empty one means this surface DID
+    /// measure, just not this subject, so the reason names no kernel and no
+    /// other surface.
+    fn representation_within_indeterminate_reason(&self) -> IndeterminateReason {
+        let detail = if self.achieved_repr_tol.is_empty() {
+            self.unmeasured_reason()
+        } else {
+            "this run recorded no achieved representation deviation for the subject"
+        };
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+            detail: detail.to_string(),
+        })
     }
 
     /// Whether this engine holds a geometry kernel that can produce the
