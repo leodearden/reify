@@ -997,6 +997,11 @@ enum ModalSolveFault {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
+/// `Err(KNotSpd)` is not confined to σ = 0: with a non-identity mass and σ above a
+/// mode, `K_free − σM_free` is indefinite and the solver runs in the `K` inner
+/// product, so it measures `K_free` there too — a singular `K_free` with σ above
+/// its rigid-body modes arrives here the same way.
+///
 /// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
@@ -1045,8 +1050,9 @@ fn solve_generalized_eigen(
                     fault: ModalSolveFault::None,
                 };
             }
-            // K is not SPD: fall through to the under-constrained branch below,
-            // exactly as the former `None` did.
+            // K is not SPD — measured at σ = 0, or at σ ≠ 0 when M ≠ cI and σ
+            // lies above a mode: fall through to the under-constrained branch
+            // below, exactly as the former `None` did.
             Err(ShiftInvertFailure::KNotSpd) => {}
             // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
             // `param sigma : Real = 0.0` unconstrained and nothing on the path

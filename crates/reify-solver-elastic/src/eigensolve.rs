@@ -14,8 +14,10 @@
 //!   honors `opts.sigma` as a selection key over the full computed spectrum
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos: at σ=0 a sparse
 //!   Cholesky of `K`, at σ≠0 a `K − σB` assembly factored Cholesky-then-LU,
-//!   driving `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back
-//!   to dense when the Krylov window would exceed the problem dimension.
+//!   driving `faer::matrix_free::eigen::partial_self_adjoint_eigen` on the
+//!   Euclidean operator iff `B = cI` and the Cholesky-symmetrized one otherwise;
+//!   falls back to dense when the Krylov window would exceed the problem
+//!   dimension.
 //! - [`try_solve_eigen_shift_invert`] — the same solve, reporting the two DOMAIN
 //!   failures as a typed [`ShiftInvertFailure`] instead of panicking: `K` not
 //!   SPD (task 6663, for callers that can legitimately be handed an
@@ -93,8 +95,8 @@
 //!
 //! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
 //! |---|---|---|
-//! | C1 | implemented | implemented, and STRUCTURAL — σ=0 factors `K` itself |
-//! | C2 | implemented | implemented (same helper) |
+//! | C1 | implemented | for `B = cI`: implemented, and STRUCTURAL — σ=0 factors `K` itself; waived for `B ≠ cI` (PRD §6 amendment) |
+//! | C2 | implemented | implemented (same helper), for every symmetric `B` — the operator is chosen per `B` |
 //! | C3 | implemented (shared helper) | implemented (same helper) |
 //! | C4 | n/a — no shift is ever applied to invert | implemented (`λ = σ + 1/μ`) |
 //! | C5 | implemented, EXACT | implemented, conservative BOOLEAN (Sylvester) |
@@ -122,7 +124,8 @@
 //! faer's `partial_self_adjoint_eigen` orthogonalizes in the EUCLIDEAN inner
 //! product, while `(K − σB)⁻¹B` is self-adjoint in the `(K − σB)` form — which
 //! stops being an inner product at all once that matrix is indefinite, i.e.
-//! exactly when σ rises above some mode.  Whether that costs accuracy is an
+//! exactly when σ rises above some mode.  For `B = cI` the operator is
+//! Euclidean-self-adjoint anyway; whether σ costs accuracy there is an
 //! empirical question, so it was measured rather than argued.
 //!
 //! Measured 2026-09-16 on fixture C (`K` = tridiag(−1,2,−1) 80×80, `B` = I,
@@ -141,17 +144,13 @@
 //! `converged: false` response is called for, and certainly no Krylov rewrite —
 //! a B-orthogonal or `(K − σB)`-orthogonal Lanczos is out of scope per PRD §8.
 //!
-//! **What this measurement does NOT cover**, stated so the table is not read as
-//! more than it is: `B` = I makes `(K − σB)⁻¹B = (K − σI)⁻¹`, which IS
-//! Euclidean-self-adjoint however indefinite it becomes.  Fixture C therefore
-//! cannot exercise the hazard in its general form.  A companion probe with
-//! `B` = diag(1 + i/80) (SPD, non-identity) was also measured and behaves quite
-//! differently — the residual is 3.58e-1 there — but that is a PRE-EXISTING
-//! property of this path, not a σ effect: it is WORST at σ=0, it improves
-//! monotonically to 9.3e-3 as σ grows, and the same 3.58e-1 is measured at the
-//! pre-PRD base commit.  Recorded as esc-7259-1 and filed as a follow-up task;
-//! it is out of scope here because the affected path is σ=0, which this module
-//! is required to leave byte-for-byte unchanged.
+//! **Operator selection.** The table covers `B = cI` only, and only there may
+//! faer be handed `(K − σB)⁻¹B` directly: for any other symmetric `B` that
+//! operator is not Euclidean-symmetric and the Lanczos returns pairs that are
+//! not eigenpairs.  So the sparse entry points run the Euclidean operator iff
+//! `B = cI`, and otherwise the Cholesky-symmetrized operator of
+//! [`LanczosMetric`] (PRD §6, 2026-09-29 amendment) — a change of the operator
+//! faer is handed, not a Krylov rewrite.
 //!
 //! # Design decisions
 //!
@@ -618,9 +617,9 @@ fn any_eigenvalue_skipped_between_zero_and_shift(
 /// a different elimination tree, therefore a different summation order and
 /// different rounding.  The answer would be *close*, which is exactly the
 /// hazard: it would drift every pinned σ=0 golden by an amount no tolerance
-/// catches.  `try_solve_eigen_shift_invert` therefore routes σ=0 to
-/// `k.sp_cholesky(Side::Lower)` on the row-major K verbatim and never calls this
-/// function, and `sigma_zero_factors_k_itself_not_k_minus_zero_b` in
+/// catches.  `try_solve_eigen_shift_invert` therefore routes σ=0 to a Cholesky
+/// of the row-major K verbatim, on both operator arms, and never calls this
+/// function; `sigma_zero_factors_k_itself_not_k_minus_zero_b` in
 /// `tests/eigensolve_shift_contract.rs` is the executable form of that rule.
 ///
 /// # Panics
@@ -675,9 +674,12 @@ pub enum ShiftInvertFailure {
     /// pivot.  The model is under-constrained (a DOF no element and no
     /// Dirichlet BC restrains), or the assembled `K` is otherwise singular.
     ///
-    /// NOT reported at σ≠0: see [`try_solve_eigen_shift_invert`] for why that
-    /// detection limit is deliberate and what a caller using this as an
-    /// under-constrained-model detector must do about it.
+    /// Reported at σ=0, and at σ≠0 when `B ≠ cI` and `K − σB` is indefinite:
+    /// that arm runs in the `K` inner product (PRD §6 amendment), which needs
+    /// `K` SPD.  NOT detected on the `B = cI` σ≠0 path or the dense fallback:
+    /// see [`try_solve_eigen_shift_invert`] for why that detection limit is
+    /// deliberate and what a caller using this as an under-constrained-model
+    /// detector must do about it.
     KNotSpd,
     /// `K − σB` is singular, or numerically indistinguishable from singular, at
     /// this shift: σ sits on (or within the pencil's own resolution floor of)
@@ -1471,7 +1473,7 @@ pub fn solve_eigen_shift_invert(
 /// `Err` means EXACTLY ONE CLASS OF THING — a fact about the (K, B, σ) handed
 /// in, enumerated by [`ShiftInvertFailure`] and distinguishable arm by arm.
 /// `Err(KNotSpd)` in particular means EXACTLY that `K` is not SPD
-/// (`sp_cholesky` returned `LltError::Numeric`, i.e. a non-positive pivot).
+/// (a Cholesky of `K` returned `LltError::Numeric`, i.e. a non-positive pivot).
 /// Every other precondition is still a hard contract and still panics: the
 /// option/shape preconditions via [`check_eigen_options_and_shapes`] (bad
 /// `n_modes`, shape mismatch, …), and a `LltError::Generic` factorization
@@ -1487,13 +1489,19 @@ pub fn solve_eigen_shift_invert(
 /// domain failures DISTINGUISHABLE; [`ShiftInvertFailure::ShiftAtEigenvalue`]
 /// states why that distinction is load-bearing.
 ///
-/// # `Err(KNotSpd)` is reported at σ=0 only — a DETECTION limit, not a claim
+/// The Lanczos operator is chosen by `B`: the Euclidean `(K − σB)⁻¹B` iff
+/// `B = cI` (C1 stands, bit for bit), else the Cholesky-symmetrized operator of
+/// [`LanczosMetric`] (PRD §6, 2026-09-29 amendment).
 ///
-/// `K`'s own SPD-ness is measured only where `K` itself is factored, which is
-/// the σ=0 branch. At σ≠0 the factored matrix is `K − σB`, and on a problem
-/// small enough to route to [`solve_eigen_dense`] nothing is factored at all —
-/// so the very same singular `K` yields `Err(KNotSpd)` at σ=0 and `Ok(dense
-/// result)` at σ≠0.
+/// # Where `Err(KNotSpd)` is detected — a DETECTION limit, not a claim
+///
+/// `K`'s own SPD-ness is measured only where `K` itself is factored: at σ=0 on
+/// every pencil, and at σ≠0 when `B ≠ cI` and `K − σB` is indefinite (the
+/// symmetrized operator then runs in the `K` inner product, PRD §6 amendment).
+/// Elsewhere at σ≠0 the factored matrix is `K − σB` — on a `B = cI` pencil, or
+/// a `B ≠ cI` one whose `K − σB` is SPD — and on a problem small enough to
+/// route to [`solve_eigen_dense`] nothing is factored at all.  So the very same
+/// singular `K` can yield `Err(KNotSpd)` at σ=0 and `Ok(dense result)` at σ≠0.
 ///
 /// The asymmetry is deliberate rather than hoisted away. `Ok` at σ≠0 is not
 /// wrong: the dense QZ path tolerates a singular `K` and returns the real
@@ -1552,6 +1560,43 @@ pub fn try_solve_eigen_shift_invert(
     opts: EigenSolverOptions,
 ) -> Result<EigenSolverResult, ShiftInvertFailure> {
     check_eigen_options_and_shapes(k, b, &opts);
+    if is_scalar_multiple_of_identity(b) {
+        solve_with_euclidean_operator(k, b, opts)
+    } else {
+        solve_with_symmetrized_operator(k, b, opts)
+    }
+}
+
+/// Whether `b = c·I` for some scalar c, judged by VALUE: every stored
+/// off-diagonal entry is exactly zero and every diagonal entry (a missing one
+/// reads as zero) equals the same c.  `B = 0` counts, and keeps today's path.
+///
+/// This is the operator-selection rule: `(K − σB)⁻¹B` is Euclidean-symmetric
+/// iff B is a scalar multiple of the identity, so only then may the Euclidean
+/// Lanczos core run.
+fn is_scalar_multiple_of_identity(b: &SparseRowMat<usize, f64>) -> bool {
+    let b_ref = b.as_ref();
+    let symbolic = b_ref.symbolic();
+    let mut diagonal = vec![0.0_f64; b.nrows()];
+    for (i, d) in diagonal.iter_mut().enumerate() {
+        for (&j, &value) in symbolic.col_idx_of_row_raw(i).iter().zip(b_ref.val_of_row(i)) {
+            if i == j {
+                *d += value;
+            } else if value != 0.0 {
+                return false;
+            }
+        }
+    }
+    diagonal.windows(2).all(|pair| pair[0] == pair[1])
+}
+
+/// The B = cI arm of [`try_solve_eigen_shift_invert`]: today's Euclidean
+/// operator, unchanged, so C1 stands for every such pencil.
+fn solve_with_euclidean_operator(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> Result<EigenSolverResult, ShiftInvertFailure> {
     let n = k.nrows();
     let m_op = SparseMetricOp { m: b.as_ref() };
 
@@ -1567,27 +1612,7 @@ pub fn try_solve_eigen_shift_invert(
     if opts.sigma == 0.0 {
         // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD
         // — the one condition this entry point reports rather than panics on.
-        //
-        // The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
-        // does mean only that. faer's sparse `LltError` also carries a `Generic` arm
-        // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
-        // failure channel would let a resource failure factorizing a large `K_free`
-        // surface to the user as `W_ModalRigidBodyMode: K_free is singular (the model
-        // is under-constrained)` — a confidently wrong diagnosis of an allocation
-        // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
-        // serve. A `Generic` failure is not a domain fact about the model, so it
-        // keeps the panicking contract.
-        let llt = match k.sp_cholesky(Side::Lower) {
-            Ok(llt) => llt,
-            // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
-            Err(SparseLltError::Numeric(_)) => return Err(ShiftInvertFailure::KNotSpd),
-            Err(e @ SparseLltError::Generic(_)) => panic!(
-                "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
-                 ({e:?}) — this is a resource/index failure (allocation or index \
-                 overflow), NOT an under-constrained model; do not report it as a \
-                 rigid-body mode"
-            ),
-        };
+        let llt = stiffness_factor_or_k_not_spd(k.sp_cholesky(Side::Lower))?;
 
         if routes_to_dense_fallback(n, opts.n_modes) {
             // Problem too small for Lanczos; delegate to the direct dense solver.
@@ -1635,8 +1660,8 @@ pub fn try_solve_eigen_shift_invert(
     // statement that no eigenvalue of the pencil lies between zero and σ.  That
     // one bit is the C5 discriminator `with_provenance` reads off this dispatch.
     //
-    // PRD §5.3 PART A lives here: the one singular-shift case faer reports
-    // directly.
+    // PRD §5.3 PART A — the one singular-shift case faer reports directly —
+    // lives in `lu_of_indefinite_shifted_pencil`.
     let (result, cholesky_succeeded) = match shifted.sp_cholesky(Side::Lower) {
         Ok(llt) => {
             let k_op = SparseStiffnessOp {
@@ -1647,36 +1672,15 @@ pub fn try_solve_eigen_shift_invert(
         }
         // `K − σB` is indefinite — the expected case for a σ above some mode,
         // not an error. LU handles it.
-        Err(SparseLltError::Numeric(_)) => match shifted.sp_lu() {
-            Ok(lu) => {
-                let k_op = SparseStiffnessOp {
-                    factor: SparseFactorRef::Lu(&lu),
-                    n,
-                };
-                (lanczos_shift_invert(&k_op, &m_op, opts), false)
-            }
-            // STRUCTURAL rank deficiency — no pivot exists anywhere in the
-            // pattern, so `K − σB` is singular and shift-invert has no operator
-            // to apply.  faer reports the elimination step at which the pivot
-            // search failed (`index`); it is deliberately NOT carried in the
-            // typed value, because C6's remedy is "move σ" and an internal
-            // elimination index names nothing the caller can act on.  It is
-            // recorded here rather than dropped silently.
-            Err(SparseLuError::SymbolicSingular { .. }) => {
-                return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
-            }
-            Err(e @ SparseLuError::Generic(_)) => panic!(
-                "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
-                 ({e:?}) — this is a resource/index failure (allocation or index \
-                 overflow), NOT a singular shift; do not report it as one"
-            ),
-        },
-        Err(e @ SparseLltError::Generic(_)) => panic!(
-            "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
-             ({e:?}) — this is a resource/index failure (allocation or index \
-             overflow), NOT a property of the pencil; do not report it as a \
-             singular shift"
-        ),
+        Err(SparseLltError::Numeric(_)) => {
+            let lu = lu_of_indefinite_shifted_pencil(&shifted, sigma)?;
+            let k_op = SparseStiffnessOp {
+                factor: SparseFactorRef::Lu(&lu),
+                n,
+            };
+            (lanczos_shift_invert(&k_op, &m_op, opts), false)
+        }
+        Err(e @ SparseLltError::Generic(_)) => shifted_cholesky_resource_failure(e),
     };
 
     // PRD §5.3 PART B, on the WHOLE σ≠0 branch — including the arm where the
@@ -1691,6 +1695,140 @@ pub fn try_solve_eigen_shift_invert(
     }
 
     Ok(with_provenance(result, sigma, cholesky_succeeded))
+}
+
+/// The B ≠ cI arm of [`try_solve_eigen_shift_invert`]: the Cholesky-symmetrized
+/// operator of [`LanczosMetric`] (PRD §6, 2026-09-29 amendment).
+///
+/// σ=0 factors `K` itself — never a `K − 0·B` assembly — and runs in it.  At
+/// σ≠0 the shifted pencil is the metric when its Cholesky succeeds; otherwise
+/// `K − σB` is indefinite, it is applied through LU, and the metric is `K`,
+/// which must then be SPD (`Err(KNotSpd)` if not).  Dense fallback, the C6
+/// guard and the C5 evidence are placed exactly as on the Euclidean arm.
+fn solve_with_symmetrized_operator(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> Result<EigenSolverResult, ShiftInvertFailure> {
+    let n = k.nrows();
+    let m_op = SparseMetricOp { m: b.as_ref() };
+
+    if opts.sigma == 0.0 {
+        let g = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
+        if routes_to_dense_fallback(n, opts.n_modes) {
+            return Ok(solve_eigen_dense(k, b, opts));
+        }
+        return Ok(with_provenance(
+            lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&g), &m_op, opts),
+            0.0,
+            true,
+        ));
+    }
+
+    if routes_to_dense_fallback(n, opts.n_modes) {
+        return Ok(solve_eigen_dense(k, b, opts));
+    }
+
+    let shifted = shifted_pencil(k, b, opts.sigma);
+    let sigma = opts.sigma;
+
+    // PRD §5.1 dispatch, Cholesky FIRST: its success is both the metric and the
+    // Sylvester evidence C5 reads off this dispatch.
+    let (result, cholesky_succeeded) = match SplitCholesky::try_new_col_major(shifted.as_ref()) {
+        Ok(h) => (
+            lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&h), &m_op, opts),
+            true,
+        ),
+        Err(SparseLltError::Numeric(_)) => {
+            let lu = lu_of_indefinite_shifted_pencil(&shifted, sigma)?;
+            let g_k = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
+            let shifted_inverse = SparseStiffnessOp {
+                factor: SparseFactorRef::Lu(&lu),
+                n,
+            };
+            let metric = LanczosMetric::Stiffness {
+                k_factor: &g_k,
+                shifted_inverse: &shifted_inverse,
+            };
+            (lanczos_shift_invert_in_metric(metric, &m_op, opts), false)
+        }
+        Err(e @ SparseLltError::Generic(_)) => shifted_cholesky_resource_failure(e),
+    };
+
+    // PRD §5.3 PART B, on the whole σ≠0 branch, exactly as on the Euclidean arm.
+    if shift_is_numerically_singular(
+        &result.eigenvalues,
+        sigma,
+        pencil_lambda_resolution_floor(&shifted, b),
+    ) {
+        return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
+    }
+
+    Ok(with_provenance(result, sigma, cholesky_succeeded))
+}
+
+/// A Cholesky of `K` itself: a NUMERIC failure is the documented
+/// `Err(KNotSpd)`, and anything else panics.
+///
+/// The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
+/// does mean only that. faer's sparse `LltError` also carries a `Generic` arm
+/// (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
+/// failure channel would let a resource failure factorizing a large `K_free`
+/// surface to the user as `W_ModalRigidBodyMode: K_free is singular (the model
+/// is under-constrained)` — a confidently wrong diagnosis of an allocation
+/// problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
+/// serve. A `Generic` failure is not a domain fact about the model, so it keeps
+/// the panicking contract.
+fn stiffness_factor_or_k_not_spd<F>(
+    factorization: Result<F, SparseLltError>,
+) -> Result<F, ShiftInvertFailure> {
+    match factorization {
+        Ok(factor) => Ok(factor),
+        // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
+        Err(SparseLltError::Numeric(_)) => Err(ShiftInvertFailure::KNotSpd),
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT an under-constrained model; do not report it as a \
+             rigid-body mode"
+        ),
+    }
+}
+
+/// LU of a `K − σB` whose Cholesky found it indefinite — the expected case for a
+/// σ above some mode, not an error.
+///
+/// PRD §5.3 PART A lives here: STRUCTURAL rank deficiency — no pivot exists
+/// anywhere in the pattern, so `K − σB` is singular and shift-invert has no
+/// operator to apply.  faer reports the elimination step at which the pivot
+/// search failed (`index`); it is deliberately NOT carried in the typed value,
+/// because C6's remedy is "move σ" and an internal elimination index names
+/// nothing the caller can act on.
+fn lu_of_indefinite_shifted_pencil(
+    shifted: &SparseColMat<usize, f64>,
+    sigma: f64,
+) -> Result<Lu<usize, f64>, ShiftInvertFailure> {
+    match shifted.sp_lu() {
+        Ok(lu) => Ok(lu),
+        Err(SparseLuError::SymbolicSingular { .. }) => {
+            Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma })
+        }
+        Err(e @ SparseLuError::Generic(_)) => panic!(
+            "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT a singular shift; do not report it as one"
+        ),
+    }
+}
+
+/// The panic for a `Generic` failure of the Cholesky of `K − σB`.
+fn shifted_cholesky_resource_failure(e: SparseLltError) -> ! {
+    panic!(
+        "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
+         ({e:?}) — this is a resource/index failure (allocation or index \
+         overflow), NOT a property of the pencil; do not report it as a \
+         singular shift"
+    )
 }
 
 /// The pencil's own λ-space resolution floor: the distance below which two
