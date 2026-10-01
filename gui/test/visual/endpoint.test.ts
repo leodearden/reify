@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { resolveDebugPort, debugUrlForPort } from './endpoint.js';
+import { describe, it, expect, vi } from 'vitest';
+import { resolveDebugPort, debugUrlForPort, resolveVitePort } from './endpoint.js';
 
 describe('resolveDebugPort', () => {
   it('returns the port from REIFY_DEBUG_PORT when valid', () => {
@@ -41,4 +41,30 @@ describe('debugUrlForPort', () => {
   it('formats port 3939 correctly', () => {
     expect(debugUrlForPort(3939)).toBe('http://127.0.0.1:3939/mcp');
   });
+});
+
+describe('resolveVitePort', () => {
+  const ALLOCATED = 40123;
+  const allocator = () => vi.fn(async () => ALLOCATED);
+
+  it('honours a valid REIFY_VITE_PORT without allocating', async () => {
+    const allocate = allocator();
+    await expect(resolveVitePort({ REIFY_VITE_PORT: '5173' }, allocate)).resolves.toBe(5173);
+    expect(allocate).not.toHaveBeenCalled();
+  });
+
+  it('allocates a free port when REIFY_VITE_PORT is unset', async () => {
+    const allocate = allocator();
+    await expect(resolveVitePort({}, allocate)).resolves.toBe(ALLOCATED);
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['abc', '0', '65536', ' 5173', '5173x', ''])(
+    'replaces invalid REIFY_VITE_PORT %j with an allocated port',
+    async (raw) => {
+      const allocate = allocator();
+      await expect(resolveVitePort({ REIFY_VITE_PORT: raw }, allocate)).resolves.toBe(ALLOCATED);
+      expect(allocate).toHaveBeenCalledTimes(1);
+    },
+  );
 });
