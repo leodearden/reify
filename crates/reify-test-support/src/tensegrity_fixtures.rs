@@ -632,4 +632,97 @@ mod tests {
             "cap 1 must be the bottom ring, which is exactly the anchored set"
         );
     }
+
+    /// The tent lowered to a `Tensegrity` Value: a PURE membrane — `surfaces`
+    /// PRESENT and carrying [`TENT_TRIS`], struts and cables present but empty —
+    /// over nodes bit-identical to [`TENT_NODE_COORDS`].
+    #[test]
+    fn tent_membrane_tensegrity_lowers_the_golden() {
+        let v = tent_membrane_tensegrity();
+        let Value::StructureInstance(d) = &v else {
+            panic!("expected a Value::StructureInstance, got {v:?}");
+        };
+        assert_eq!(d.type_name, "Tensegrity", "the type name every consumer matches on");
+
+        let fields = &d.fields;
+        assert_eq!(fields.len(), 4, "nodes/struts/cables/surfaces — `surfaces` must be PRESENT");
+        assert_eq!(
+            fields.get("surfaces"),
+            Some(&index_lists(&TENT_TRIS)),
+            "`surfaces` carries the tent fan, lowered to nested Int lists"
+        );
+        for key in ["struts", "cables"] {
+            assert_eq!(
+                fields.get(key),
+                Some(&Value::List(vec![])),
+                "a pure membrane: `{key}` must be present and empty"
+            );
+        }
+
+        let nodes = match fields.get("nodes") {
+            Some(Value::List(nodes)) => nodes,
+            other => panic!("`nodes` must be a Value::List, got {other:?}"),
+        };
+        assert_eq!(nodes.len(), TENT_NODE_COORDS.len(), "one node per TENT_NODE_COORDS row");
+        for (i, (node, want)) in nodes.iter().zip(TENT_NODE_COORDS).enumerate() {
+            let lifted = point_components(node);
+            for (axis, c) in ["x", "y", "z"].iter().zip(0..3) {
+                assert_bits_eq(lifted[c], want[c], &format!("tent node {i} {axis}"));
+            }
+        }
+    }
+
+    /// The relations the tent's consumers lean on, read off the consts rather than
+    /// restated: a planar anchored boundary, ONE free node seeded off that plane
+    /// (without which "the free node returns to z = 0" is vacuous), and a closed
+    /// fan of triangles around that free node.
+    #[test]
+    fn tent_golden_is_a_planar_anchored_fan_around_one_off_plane_free_node() {
+        let node_count = TENT_NODE_COORDS.len() as i64;
+        for a in TENT_ANCHORS {
+            assert!((0..node_count).contains(&a), "anchor {a} must index a tent node");
+        }
+        let mut distinct = TENT_ANCHORS.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), TENT_ANCHORS.len(), "anchors must be distinct");
+
+        let free_nodes: Vec<i64> = (0..node_count).filter(|n| !TENT_ANCHORS.contains(n)).collect();
+        let [free] = free_nodes[..] else {
+            panic!("the tent must have exactly one free node, got {free_nodes:?}");
+        };
+
+        for a in TENT_ANCHORS {
+            assert_bits_eq(
+                TENT_NODE_COORDS[a as usize][2],
+                0.0,
+                &format!("anchor {a} must lie in the z = 0 boundary plane"),
+            );
+        }
+        let free_z = TENT_NODE_COORDS[free as usize][2];
+        assert!(
+            free_z.abs() > 1e-6,
+            "free node {free} must be seeded OFF the boundary plane, got z = {free_z}"
+        );
+
+        for tri in TENT_TRIS {
+            assert_eq!(
+                tri.iter().filter(|&&n| n == free).count(),
+                1,
+                "triangle {tri:?} must be hinged on free node {free} exactly once"
+            );
+            let corners: Vec<i64> = tri.into_iter().filter(|&n| n != free).collect();
+            assert!(
+                corners.iter().all(|c| TENT_ANCHORS.contains(c)) && corners[0] != corners[1],
+                "triangle {tri:?} must span two distinct anchors besides the free node"
+            );
+        }
+        for a in TENT_ANCHORS {
+            let uses = TENT_TRIS.iter().filter(|tri| tri.contains(&a)).count();
+            assert_eq!(
+                uses, 2,
+                "anchor {a} must sit in exactly two triangles for the fan to close"
+            );
+        }
+    }
 }
