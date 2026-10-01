@@ -8,8 +8,9 @@
  * CI integration: invoke this script in a CI job after the `cargo build` step,
  * once `.github/workflows/` exists in the repo (task TBD).
  *
- * Requires the reify-gui debug server to accept connections on 127.0.0.1:3939.
- * The server is started automatically by spawning scripts/run-gui-dev.sh.
+ * The harness picks the debug and vite ports per run (REIFY_DEBUG_PORT /
+ * REIFY_VITE_PORT override them) and starts the reify-gui debug server
+ * automatically by spawning scripts/run-gui-dev.sh.
  */
 
 import * as fs from "node:fs";
@@ -21,7 +22,7 @@ import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
-import { resolveDebugPort, debugUrlForPort, allocateFreePort } from "./endpoint.js";
+import { resolveDebugPort, debugUrlForPort, allocateFreePort, resolveVitePort } from "./endpoint.js";
 import { runScenarioSteps } from "./orchestrate.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -362,6 +363,11 @@ const _resolvedDebugPort = process.env["REIFY_DEBUG_PORT"]
 DEBUG_URL = debugUrlForPort(_resolvedDebugPort);
 // Propagate the chosen port so the child GUI binds the same port we target.
 process.env["REIFY_DEBUG_PORT"] = String(_resolvedDebugPort);
+// Likewise a per-run vite port, carried to scripts/run-gui-dev.sh by spawnGui's
+// `...process.env`, so concurrent runs never contend for :1420.
+const _resolvedVitePort = await resolveVitePort(process.env);
+process.env["REIFY_VITE_PORT"] = String(_resolvedVitePort);
+console.log(`[harness] vite port ${_resolvedVitePort}`);
 
 const harness = MODE === "value" ? runValueScenarios() : main();
 

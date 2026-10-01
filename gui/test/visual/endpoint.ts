@@ -3,26 +3,42 @@ import * as net from 'node:net';
 const DEFAULT_DEBUG_PORT = 3939;
 
 /**
+ * A TCP port from a raw env value, or undefined unless it is 1..65535 written
+ * as pure decimal digits — strict, so whitespace-padded (" 4500 ") and
+ * trailing garbage ("4500x") that parseInt would silently accept are rejected.
+ */
+function parsePort(raw: string | undefined): number | undefined {
+  if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+  const parsed = parseInt(raw, 10);
+  return parsed >= 1 && parsed <= 65535 ? parsed : undefined;
+}
+
+/**
  * Resolve the reify-debug port from the environment.
  *
- * Accepts only pure decimal digit strings (no whitespace, no trailing chars),
- * matching the Rust `parse_debug_port` contract in `debug_server.rs`.
- * Falls back to DEFAULT_DEBUG_PORT (3939) for unset / empty / non-digit /
- * out-of-range input.
+ * Accepts only what `parsePort` accepts, matching the Rust `parse_debug_port`
+ * contract in `debug_server.rs`. Falls back to DEFAULT_DEBUG_PORT (3939) for
+ * unset / empty / non-digit / out-of-range input.
  *
  * Cross-ref: `gui/sidecar/src/session.ts` `resolveReifyDebugUrl` uses identical
  * validation logic; `gui/src-tauri/src/debug_server.rs` `parse_debug_port` is
  * the Rust source-of-truth.  Keep all three in lockstep if rules change.
  */
 export function resolveDebugPort(env: Record<string, string | undefined> = process.env): number {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return DEFAULT_DEBUG_PORT;
-  // Strict digits-only — rejects whitespace-padded (" 4500 ") and trailing
-  // garbage ("4500x") that parseInt would silently accept.
-  if (!/^\d+$/.test(raw)) return DEFAULT_DEBUG_PORT;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return DEFAULT_DEBUG_PORT;
-  return parsed;
+  return parsePort(env['REIFY_DEBUG_PORT']) ?? DEFAULT_DEBUG_PORT;
+}
+
+/**
+ * Resolve the vite dev-server port for one harness run: a valid
+ * REIFY_VITE_PORT is honoured, as for the debug port; otherwise a free port is
+ * allocated, so concurrent harness runs never contend for :1420. reify-gui
+ * follows it via its startup devUrl retarget (gui/src-tauri/src/dev_url.rs).
+ */
+export async function resolveVitePort(
+  env: Record<string, string | undefined> = process.env,
+  allocate: () => Promise<number> = allocateFreePort,
+): Promise<number> {
+  return parsePort(env['REIFY_VITE_PORT']) ?? allocate();
 }
 
 export function debugUrlForPort(port: number): string {
