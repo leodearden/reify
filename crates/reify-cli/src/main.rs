@@ -611,7 +611,7 @@ fn merge_post_build_verdicts(
         if new_sat == reify_ir::Satisfaction::Indeterminate {
             continue;
         }
-        entry.satisfaction = new_sat;
+        entry.set_verdict(new_sat, None);
         upgraded.insert(indeterminacy_subject(entry).into_owned());
     }
     if upgraded.is_empty() {

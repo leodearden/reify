@@ -1338,6 +1338,26 @@ pub struct ConstraintCheckEntry {
     pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
 }
 
+impl ConstraintCheckEntry {
+    /// The only sanctioned way to overwrite a verdict after construction: the
+    /// reason moves with the satisfaction, so a re-check can never leave a
+    /// stale reason on a definite verdict or a reasonless Indeterminate.
+    pub fn set_verdict(
+        &mut self,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) {
+        debug_assert_eq!(
+            indeterminate_reason.is_some(),
+            satisfaction == Satisfaction::Indeterminate,
+            "constraint {}: a reason accompanies exactly an Indeterminate verdict",
+            self.id,
+        );
+        self.satisfaction = satisfaction;
+        self.indeterminate_reason = indeterminate_reason;
+    }
+}
+
 /// Result of a full build (eval + geometry).
 #[derive(Debug)]
 pub struct BuildResult {

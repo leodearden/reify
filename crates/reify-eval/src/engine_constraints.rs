@@ -13,9 +13,9 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
-    ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, ReprKind, Satisfaction, StructureInstanceData, StructureTypeId, Value,
-    ValueMap,
+    ConstraintResult, DeterminacyState, GeometryHandleId, IndeterminateReason, KernelHandle,
+    OptimizedImplInput, PersistentMap, ReprKind, Satisfaction, StructureInstanceData,
+    StructureTypeId, TransientReason, Value, ValueMap,
 };
 
 use crate::graph::EvaluationGraph;
@@ -2246,23 +2246,18 @@ impl Engine {
             .and_then(|n| self.geometry_kernels.get(n));
 
         for w in work {
-            let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
-                GdtConformanceResolution::Indeterminate(reason) => (
-                    Satisfaction::Indeterminate,
-                    Some(gdt_indeterminate_diag(w.span, &reason)),
-                ),
+            let (satisfaction, reason, diag) = match w.resolution {
+                GdtConformanceResolution::Indeterminate(detail) => gdt_unmeasured(w.span, detail),
                 GdtConformanceResolution::Resolved {
                     actual,
                     feature,
                     zone_m,
                 } => match &kernel {
-                    None => (
-                        Satisfaction::Indeterminate,
-                        Some(gdt_indeterminate_diag(
-                            w.span,
-                            "no geometry kernel available to measure the `actual` deviation \
-                             against the nominal feature",
-                        )),
+                    None => gdt_unmeasured(
+                        w.span,
+                        "no geometry kernel available to measure the `actual` deviation \
+                         against the nominal feature"
+                            .to_string(),
                     ),
                     Some(k) => {
                         let query = reify_ir::GeometryQuery::MaxDeviation {
@@ -2273,23 +2268,17 @@ impl Engine {
                         match k.query(&query) {
                             Ok(reply) => match measured_deviation_m(&reply) {
                                 Some(measured_m) => gdt_verdict(zone_m, measured_m, w.span),
-                                None => (
-                                    Satisfaction::Indeterminate,
-                                    Some(gdt_indeterminate_diag(
-                                        w.span,
-                                        &format!(
-                                            "geometry kernel returned an unusable MaxDeviation \
-                                             reply ({reply:?})"
-                                        ),
-                                    )),
+                                None => gdt_unmeasured(
+                                    w.span,
+                                    format!(
+                                        "geometry kernel returned an unusable MaxDeviation \
+                                         reply ({reply:?})"
+                                    ),
                                 ),
                             },
-                            Err(err) => (
-                                Satisfaction::Indeterminate,
-                                Some(gdt_indeterminate_diag(
-                                    w.span,
-                                    &format!("geometry kernel MaxDeviation query failed: {err}"),
-                                )),
+                            Err(err) => gdt_unmeasured(
+                                w.span,
+                                format!("geometry kernel MaxDeviation query failed: {err}"),
                             ),
                         }
                     }
@@ -2299,13 +2288,13 @@ impl Engine {
             // Weave: OVERRIDE the matching entry in caller order; push if absent
             // (defensive — the scalar path normally pre-populates it).
             if let Some(entry) = constraint_results.iter_mut().find(|e| e.id == w.id) {
-                entry.satisfaction = satisfaction;
+                entry.set_verdict(satisfaction, reason);
             } else {
                 constraint_results.push(ConstraintCheckEntry {
                     id: w.id.clone(),
                     label: Some("Conforms".to_string()),
                     satisfaction,
-                    indeterminate_reason: None,
+                    indeterminate_reason: reason,
                 });
             }
             if let Some(d) = diag {
@@ -2644,18 +2633,15 @@ fn measured_deviation_m(reply: &Value) -> Option<f64> {
 /// else Violated with a diagnostic carrying the measured magnitude + zone width
 /// (both in mm). Mirrors the shipped scalar predicate `effective_tolerance_zone(...)
 /// >= measured_deviation`.
-fn gdt_verdict(
-    zone_m: f64,
-    measured_m: f64,
-    span: SourceSpan,
-) -> (Satisfaction, Option<Diagnostic>) {
+fn gdt_verdict(zone_m: f64, measured_m: f64, span: SourceSpan) -> GdtOutcome {
     if zone_m >= measured_m {
-        return (Satisfaction::Satisfied, None);
+        return (Satisfaction::Satisfied, None, None);
     }
     let measured_mm = measured_m * 1e3;
     let zone_mm = zone_m * 1e3;
     (
         Satisfaction::Violated,
+        None,
         Some(
             Diagnostic::error(format!(
                 "Conforms VIOLATED: measured deviation {measured_mm:.4} mm exceeds the \
@@ -2667,16 +2653,24 @@ fn gdt_verdict(
     )
 }
 
-/// Build the Indeterminate diagnostic for a geometric Conforms that could not be
-/// measured (missing kernel, unrealizable handle, kernel error). Warning, not
-/// error — Indeterminate never fails the check (C1).
-fn gdt_indeterminate_diag(span: SourceSpan, reason: &str) -> Diagnostic {
-    Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
+/// A woven geometric-Conforms verdict: the satisfaction, the reason recorded
+/// when it is Indeterminate, and the diagnostic reporting it.
+type GdtOutcome = (Satisfaction, Option<IndeterminateReason>, Option<Diagnostic>);
+
+/// The Indeterminate outcome for a geometric Conforms that could not be
+/// measured (missing kernel, unrealizable handle, kernel error). The warning is
+/// rendered from the recorded reason; Warning, not error — Indeterminate never
+/// fails the check (C1).
+fn gdt_unmeasured(span: SourceSpan, detail: String) -> GdtOutcome {
+    let reason =
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable { detail });
+    let diagnostic = Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
         .with_code(DiagnosticCode::ConstraintIndeterminate)
         .with_label(DiagnosticLabel::new(
             span,
             "geometric conformance could not be measured",
-        ))
+        ));
+    (Satisfaction::Indeterminate, Some(reason), Some(diagnostic))
 }
 
 /// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
