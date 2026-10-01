@@ -1219,12 +1219,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
                 // canonical cite → tracked; β resolves the on-line cites. No
                 // above-line lookback here (that is a stub-macro convention),
                 // so an unrelated cite on the prior line cannot mask this one.
-                // Deduped like arm (4): `resolve_liveness_keyed` emits one
-                // finding per id, so a line naming the same id twice would
-                // otherwise report it twice.
-                let mut ids = extract_cites(line);
-                dedup_in_place(&mut ids);
-                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+                out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
             } else if has_malformed_cite(line) {
                 out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
@@ -1298,9 +1293,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // (6′) discharged phantom tracking: the cite backs the claim, so β
             // re-checks it as arm (3) does (PRD §19(d)). A `// G-allow:` line
             // stays with its own lane, as in arm (7) choice (iii).
-            let mut ids = extract_cites(line);
-            dedup_in_place(&mut ids);
-            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         } else if is_rust
             && line.trim_start().starts_with("//")
             && has_canon
@@ -1353,14 +1346,22 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // §8.2's `prd_relative_cite` kills the PRD-relative class
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
-            let mut ids = extract_cites(line);
-            dedup_in_place(&mut ids);
-            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         }
 
         prev = Some(line);
     }
     out
+}
+
+/// The canonical cites on `line`, each id once, in first-seen order — the
+/// payload of a `Cited` entry anchored on its own line. Deduped because
+/// `resolve_liveness_keyed` emits one finding per id, so a line naming the
+/// same id twice would otherwise report it twice.
+fn on_line_cites(line: &str) -> Vec<u32> {
+    let mut ids = extract_cites(line);
+    dedup_in_place(&mut ids);
+    ids
 }
 
 /// Order-preserving in-place dedup of cite ids. Cite lists are tiny (1–2
