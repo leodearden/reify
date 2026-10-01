@@ -22,6 +22,7 @@ import {
   DEFAULT_CONSTRAINT_HEIGHT,
 } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
+import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -1261,6 +1262,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
       return { ok: true };
     },
+
+    scrub_range_input: (params) => driveFormControl(RANGE_INPUT, params),
+    edit_text_input: (params) => driveFormControl(TEXT_INPUT, params),
 
     type_in_editor: (params) => {
       const content = params.content as string;

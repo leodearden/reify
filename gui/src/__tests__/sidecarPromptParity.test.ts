@@ -63,6 +63,8 @@ const NOT_ADVERTISED_TO_SIDECAR = {
     'scroll',
     'wait_for',
     'wait_for_selector',
+    'scrub_range_input',
+    'edit_text_input',
   ],
   testHarness: [
     'health',
