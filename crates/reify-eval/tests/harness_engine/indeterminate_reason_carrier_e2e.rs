@@ -56,8 +56,24 @@ structure Bracket {
 }
 "#;
 
+/// A RepresentationWithin on a surface that never measured: its Indeterminate
+/// is decided by the engine, not the checker. Stdlib-free (`mm` is built in).
+const REPRESENTATION_WITHIN_UNMEASURED: &str = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom = MyGeom()
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#;
+
 fn check_kernel_less(source: &str) -> CheckResult {
-    let compiled = compile_source_with_stdlib(source);
+    check_compiled(compile_source_with_stdlib(source))
+}
+
+fn check_compiled(compiled: reify_compiler::CompiledModule) -> CheckResult {
     let compile_errors: Vec<&Diagnostic> = compiled
         .diagnostics
         .iter()
@@ -148,6 +164,38 @@ fn indeterminate_diagnostic_renders_the_recorded_reason() {
             assert!(
                 rendered.contains(&expected.as_str()),
                 "expected diagnostic {expected:?}; ConstraintIndeterminate diagnostics: {rendered:?}"
+            );
+        }
+    }
+}
+
+/// R1 sweep: every Indeterminate a first-party producer decides — the checker
+/// (both reason classes) and the RepresentationWithin peel — carries a reason.
+#[test]
+fn every_first_party_indeterminate_records_a_reason() {
+    let results = [
+        ("dic_inert_connect", check_kernel_less(DIC_INERT_CONNECT)),
+        ("bracket_indeterminate", check_kernel_less(BRACKET_INDETERMINATE)),
+        (
+            "representation_within_unmeasured",
+            check_compiled(reify_test_support::parse_and_compile(
+                REPRESENTATION_WITHIN_UNMEASURED,
+            )),
+        ),
+    ];
+
+    for (source, result) in &results {
+        let indeterminate: Vec<&ConstraintCheckEntry> = result
+            .constraint_results
+            .iter()
+            .filter(|entry| entry.satisfaction == Satisfaction::Indeterminate)
+            .collect();
+        assert!(!indeterminate.is_empty(), "anti-vacuity: {source} has no Indeterminate entry");
+        for entry in indeterminate {
+            assert!(
+                entry.indeterminate_reason.is_some(),
+                "{source}: {} is Indeterminate with no recorded reason",
+                display_name(entry)
             );
         }
     }
