@@ -183,6 +183,7 @@
 //!
 //! [profile.dev.package.reify-solver-elastic]
 //! opt-level = 2   # faer generic kernels monomorphised here; assertions kept on
+//! overflow-checks = false   # faer's QZ relies on usize wrapping (task 7602)
 //! ```
 //!
 //! If a debug-mode performance regression appears (hundreds of seconds),
@@ -797,6 +798,13 @@ fn shift_provenance_from_factorization(sigma: f64, cholesky_succeeded: bool) -> 
 ///   B = 0 to machine precision); the routine handles benign degenerate β
 ///   internally by filtering eigenvalues, so the panic indicates a
 ///   pre-decomposition QZ breakdown rather than a near-singular eigenvalue.
+/// - That claim holds only under release ARITHMETIC semantics.  faer's QZ is
+///   monomorphised in this crate and relies on `usize` wrapping in its
+///   aggressive-early-deflation step, so a build of this crate with
+///   overflow-checks ON panics "attempt to subtract with overflow" on healthy
+///   pencils (e.g. an indefinite B).  The root `Cargo.toml` disables
+///   overflow-checks for this package in dev for that reason;
+///   `dense_solve_completes_on_the_indefinite_136dof_pencil` is the tripwire.
 pub fn solve_eigen_dense(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,

@@ -178,9 +178,18 @@ split-debuginfo = "unpacked"
 #     remain ~220× slower than release even after (1).  Fixed by per-crate
 #     override on reify-solver-elastic (opt-level = 2 — enables vectorisation
 #     while preserving debug symbols and debuggability for non-numeric code).
-#     debug-assertions and overflow-checks are intentionally left at their dev
-#     defaults (true) here so that reify-solver-elastic's own debug_assert!
-#     invariants and overflow detection remain active during ordinary dev builds.
+#     debug-assertions stays at its dev default (true), so reify-solver-elastic's
+#     own debug_assert! invariants remain active during ordinary dev builds.
+#
+#     overflow-checks, however, is DISABLED here (task 7602).  faer 0.24's
+#     generic QZ (gevd_real) is monomorphised in this package, and its
+#     aggressive-early-deflation step relies on usize wrapping arithmetic
+#     (linalg/gevd/qz_real/mod.rs:2222 `kwbot = kwtop.wrapping_sub(1)`, then
+#     :2287 `ihi - kwbot`).  That wraps to the correct LAPACK value in release
+#     but panics "attempt to subtract with overflow" under overflow-checks, so
+#     disabling them gives dev builds release semantics for that code.
+#     Regression test: dense_solve_completes_on_the_indefinite_136dof_pencil in
+#     crates/reify-solver-elastic/tests/eigensolve_synthetic.rs.
 #
 # Measured (task 4055):
 #   before fix        — release: 0.64 s, debug (ignored): 300–540 s
@@ -202,3 +211,4 @@ overflow-checks = false
 
 [profile.dev.package.reify-solver-elastic]
 opt-level = 2
+overflow-checks = false
