@@ -5290,7 +5290,7 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * param at its OWN boundary, BEFORE resolution — so `{"testId": 3}` can never
    * coerce to `"3"` and be answered with a claim about the DOM. Most of them
    * resolve by `testId`; `open_menu` resolves by `name`, the tree-node tools by
-   * `path`, and the four whole-selector tools by `selector`, and the rule binds
+   * `path`, and the six whole-selector tools by `selector`, and the rule binds
    * those identically.
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
