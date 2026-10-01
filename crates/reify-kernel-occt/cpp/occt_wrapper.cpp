@@ -766,7 +766,7 @@ uint64_t boolean_pass_count() {
 
 // Whether build_bop_algorithm runs OCCT's parallel mode, per calling thread like
 // the pass counter above. Rationale and contract: src/boolean_parallelism.rs.
-constexpr bool kBooleanRunParallelByDefault = false;
+constexpr bool kBooleanRunParallelByDefault = true;
 static thread_local bool t_boolean_run_parallel = kBooleanRunParallelByDefault;
 
 void set_boolean_run_parallel(bool parallel) {

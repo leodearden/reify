@@ -38,7 +38,7 @@ pub enum BooleanParallelism {
 /// `kBooleanRunParallelByDefault` in `cpp/occt_wrapper.cpp`, which is what an
 /// OCCT build actually reads; the unit test below keeps the two in step.
 #[cfg(any(not(has_occt), test))]
-const DEFAULT: BooleanParallelism = BooleanParallelism::Serial;
+const DEFAULT: BooleanParallelism = BooleanParallelism::Parallel;
 
 /// The calling thread's [`BooleanParallelism`].
 #[cfg(has_occt)]
