@@ -64,6 +64,8 @@ export const FORM_CONTROL_ERRORS = {
   notEditable: (state: 'disabled' | 'read-only') => `control is ${state}`,
   notRepresentable: (requested: string, sanitised: string) =>
     `value ${JSON.stringify(requested)} is not representable by this control (it reads back as ${JSON.stringify(sanitised)}); no event was dispatched`,
+  detached: (dispatched: number, total: number) =>
+    `the control left the document after ${dispatched} of ${total} input events (the application replaced or removed it mid-gesture); the rest of the gesture was not dispatched`,
 } as const;
 
 /**
@@ -178,18 +180,26 @@ function nextAnimationFrame(): Promise<void> {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-/** Type each value in turn, one `input` event and one animation frame apiece. */
-async function typeValues(el: HTMLInputElement, values: readonly string[]): Promise<void> {
-  for (const v of values) {
+/**
+ * Type each value in turn, one `input` event and one animation frame apiece,
+ * stopping the moment the control has left the document: an event on a
+ * detached node reaches no delegated handler, so carrying on would report a
+ * gesture the application never saw.
+ */
+async function typeValues(el: HTMLInputElement, values: readonly string[]): Promise<Refusal | null> {
+  for (const [dispatched, v] of values.entries()) {
+    if (!el.isConnected) return { error: FORM_CONTROL_ERRORS.detached(dispatched, values.length) };
     el.value = v;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     await nextAnimationFrame();
   }
+  return el.isConnected ? null : { error: FORM_CONTROL_ERRORS.detached(values.length, values.length) };
 }
 
-async function performGesture(el: HTMLInputElement, gesture: Gesture): Promise<FormControlResult> {
+async function performGesture(el: HTMLInputElement, gesture: Gesture): Promise<FormControlResult | Refusal> {
   el.dispatchEvent(new FocusEvent('focus'));
-  await typeValues(el, gesture.values);
+  const detached = await typeValues(el, gesture.values);
+  if (detached) return detached;
   const terminal = TERMINAL_EVENTS[gesture.commit];
   if (terminal) el.dispatchEvent(terminal());
   return { ok: true, value: el.value, inputEvents: gesture.values.length, commit: gesture.commit };

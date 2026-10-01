@@ -478,7 +478,8 @@ fn tool_defs() -> Vec<ToolDef> {
                           release (a `change` event, the durable write). It never calls a Tauri \
                           command itself. `selector` must match exactly one element: zero or several \
                           matches are errors, never a guess. A value the control cannot represent \
-                          (outside min/max, off the step) is refused before any event fires. Returns \
+                          (outside min/max, off the step) is refused before any event fires, and a \
+                          control that leaves the document mid-gesture stops it with an error. Returns \
                           { ok: true, value, inputEvents, commit }, where `value` is the control's \
                           DOM read-back after the gesture, reported and not judged; or { error }.",
             input_schema: json!({
@@ -516,7 +517,8 @@ fn tool_defs() -> Vec<ToolDef> {
                           `commit: 'blur'` (a blur event); `commit: 'hold'` leaves the edit open. It \
                           never calls a Tauri command itself. `selector` must match exactly one \
                           element: zero or several matches are errors, never a guess. A value the \
-                          control cannot represent is refused before any event fires. Returns \
+                          control cannot represent is refused before any event fires, and a control \
+                          that leaves the document mid-gesture stops it with an error. Returns \
                           { ok: true, value, inputEvents, commit }, where `value` is the control's \
                           DOM read-back after the gesture, reported and not judged (a commit may \
                           legitimately rewrite it to the at-rest display); or { error }.",
