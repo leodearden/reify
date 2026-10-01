@@ -91,7 +91,7 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 error: test failed, to rerun pass `--test integ`
 """
 
-# cargo test -- nomatch, throwaway crate, 2026-10-01
+# cargo test with a filter matching nothing, throwaway crate, 2026-10-01
 LIBTEST_NO_MATCH = """\
      Running unittests src/lib.rs (target/debug/deps/tallyprobe-a9e948e700f99f5f)
 
@@ -106,7 +106,7 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
 """
 
-# cargo test --test crash (SIGABRT), throwaway crate, 2026-10-01
+# cargo test, a test binary that aborts (SIGABRT), throwaway crate, 2026-10-01
 LIBTEST_CRASH = """\
      Running tests/crash.rs (target/debug/deps/crash-83c1c8e636fd23ff)
 
@@ -114,7 +114,7 @@ running 1 test
 error: test failed, to rerun pass `--test crash`
 
 Caused by:
-  process didn't exit successfully: `/tmp/tallyprobe/target/debug/deps/crash-83c1c8e636fd23ff` (signal: 6, SIGABRT: process abort signal)
+  process didn't exit successfully: `…/crash-83c1c8e636fd23ff` (signal: 6, SIGABRT: process abort signal)
 """
 
 # LIBTEST_GREEN's first binary, then a run killed mid-binary
@@ -151,6 +151,113 @@ INDENTED_RESULT = (
     "    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; "
     "0 filtered out; finished in 0.00s\n"
 )
+
+
+# cargo nextest run --no-fail-fast, throwaway crate, 2026-10-01
+NEXTEST_FAILED = """\
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+────────────
+ Nextest run ID ae9599b4-a118-462b-8a12-879c416171ac with nextest profile: default
+    Starting 5 tests across 3 binaries (1 test skipped)
+        FAIL [   0.063s] (1/5) tallyprobe::integ integ_fail
+  stdout ───
+
+    running 1 test
+    test integ_fail ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.05s
+  stderr ───
+        PASS [   0.090s] (2/5) tallyprobe tests::ok_one
+        PASS [   0.115s] (3/5) tallyprobe::green green_ok
+        PASS [   0.126s] (4/5) tallyprobe::integ integ_ok
+        PASS [   0.152s] (5/5) tallyprobe tests::ok_two
+────────────
+     Summary [   0.153s] 5 tests run: 4 passed, 1 failed, 1 skipped
+        FAIL [   0.063s] (1/5) tallyprobe::integ integ_fail
+error: test run failed
+"""
+
+# cargo nextest run --no-capture, throwaway crate, 2026-10-01
+NEXTEST_NO_CAPTURE = """\
+    Starting 2 tests across 1 binary
+       START [         ] (1/2) tallyprobe tests::ok_one
+
+running 1 test
+test tests::ok_one ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+
+        PASS [   0.029s] (1/2) tallyprobe tests::ok_one
+       START [         ] (2/2) tallyprobe tests::ok_two
+
+running 1 test
+test tests::ok_two ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+
+        PASS [   0.029s] (2/2) tallyprobe tests::ok_two
+     Summary [   0.040s] 2 tests run: 2 passed, 0 skipped
+"""
+
+# cargo nextest run, one test past its timeout, throwaway crate, 2026-10-01
+NEXTEST_TIMED_OUT = """\
+    Starting 3 tests across 2 binaries
+     TIMEOUT [   0.321s] (3/3) tallyprobe::timing hangs
+     Summary [   0.323s] 3 tests run: 2 passed (1 slow), 1 timed out, 0 skipped
+"""
+
+# cargo nextest run (fail-fast), throwaway crate, 2026-10-01
+NEXTEST_CANCELLED = """\
+    Starting 5 tests across 3 binaries (1 test skipped)
+  Cancelling due to test failure:
+     Summary [   0.144s] 4/5 tests run: 3 passed, 1 failed, 1 skipped
+warning: 1/5 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+"""
+
+# DERIVED from the measured N/M form above: a partial run with no failure
+NEXTEST_INTERRUPTED = """\
+    Starting 5 tests across 3 binaries
+     Summary [   0.144s] 3/5 tests run: 3 passed, 0 skipped
+"""
+
+# cargo nextest run killed after its first test, throwaway crate, 2026-10-01
+NEXTEST_KILLED = """\
+    Starting 5 tests across 3 binaries
+        PASS [   0.090s] (1/5) tallyprobe tests::ok_one
+"""
+
+# cargo nextest run with a filter matching nothing, throwaway crate, 2026-10-01
+NEXTEST_NO_MATCH = """\
+    Starting 0 tests across 3 binaries (6 tests skipped)
+     Summary [   0.000s] 0 tests run: 0 passed, 6 skipped
+error: no tests to run
+"""
+
+# cargo nextest run, one test, throwaway crate, 2026-10-01
+NEXTEST_SINGULAR = """\
+    Starting 1 test across 1 binary
+     Summary [   0.132s] 1 test run: 1 passed, 0 skipped
+"""
+
+# data/verify-logs/6979, two nextest runs in one verify log
+VERIFY_LOG_TWO_RUNS = """\
+    Starting 22745 tests across 526 binaries (62 tests and 6 binaries skipped)
+     Summary [ 594.200s] 22745 tests run: 22745 passed (9 slow, 1 leaky), 62 skipped
+    Starting 1165 tests across 3 binaries
+     Summary [  23.415s] 1165 tests run: 1165 passed, 0 skipped
+"""
+
+# cargo nextest run; cargo test --doc, throwaway crate, 2026-10-01
+NEXTEST_THEN_DOCTEST = NEXTEST_SINGULAR + """\
+   Doc-tests tallyprobe
+
+running 1 test
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
+# skim cargo wrapper, throwaway crate, 2026-10-01
+SKIM_FAILED = "PASS: 5 | FAIL: 1 | SKIP: 1\n"
+SKIM_GREEN = "PASS: 1 | FAIL: 0 | SKIP: 0\n"
+SKIM_EMPTY = "PASS: 0 | FAIL: 0 | SKIP: 0\n"
 
 
 class TestLibtest(unittest.TestCase):
@@ -222,6 +329,96 @@ class TestLibtest(unittest.TestCase):
             {v.name: int(v) for v in ctt.Verdict},
             {"GREEN": 0, "FAILED": 1, "INCOMPLETE": 3, "NOTHING_RAN": 4},
         )
+
+
+class TestNextest(unittest.TestCase):
+
+    def test_replayed_libtest_line_is_not_a_second_summary(self):
+        tally = ctt.tally_text(NEXTEST_FAILED)
+        self.assertEqual(len(tally.summaries), 1)
+        self.assertEqual(tally.summaries[0].dialect, ctt.Dialect.NEXTEST)
+        self.assertEqual(tally.passed, 4)
+        self.assertEqual(tally.failed, 1)
+        self.assertEqual(tally.skipped, 1)
+        self.assertEqual(tally.binaries, 3)
+        self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
+
+    def test_no_capture_per_test_libtest_lines_are_not_counted(self):
+        tally = ctt.tally_text(NEXTEST_NO_CAPTURE)
+        self.assertEqual(len(tally.summaries), 1)
+        self.assertEqual(tally.passed, 2)
+        self.assertEqual(tally.binaries, 1)
+        self.assertEqual(tally.verdict, ctt.Verdict.GREEN)
+
+    def test_timed_out_is_a_failure_and_slow_is_not_a_count(self):
+        tally = ctt.tally_text(NEXTEST_TIMED_OUT)
+        self.assertEqual(tally.passed, 2)
+        self.assertEqual(tally.failed, 1)
+        self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
+
+    def test_cancelled_run_is_failed_and_incomplete(self):
+        tally = ctt.tally_text(NEXTEST_CANCELLED)
+        self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
+        self.assertFalse(tally.summaries[0].complete)
+
+    def test_partial_run_without_failure_is_incomplete(self):
+        tally = ctt.tally_text(NEXTEST_INTERRUPTED)
+        self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
+        self.assertEqual(tally.passed, 3)
+
+    def test_region_open_at_eof_is_incomplete(self):
+        tally = ctt.tally_text(NEXTEST_KILLED)
+        self.assertEqual(tally.summaries, ())
+        self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
+
+    def test_zero_match_filter_is_nothing_ran(self):
+        tally = ctt.tally_text(NEXTEST_NO_MATCH)
+        self.assertEqual(tally.verdict, ctt.Verdict.NOTHING_RAN)
+        self.assertEqual(tally.skipped, 6)
+
+    def test_singular_forms(self):
+        tally = ctt.tally_text(NEXTEST_SINGULAR)
+        self.assertEqual(tally.passed, 1)
+        self.assertEqual(tally.binaries, 1)
+        self.assertEqual(tally.verdict, ctt.Verdict.GREEN)
+
+    def test_two_runs_in_one_log_are_summed(self):
+        tally = ctt.tally_text(VERIFY_LOG_TWO_RUNS)
+        self.assertEqual(len(tally.summaries), 2)
+        self.assertEqual(tally.passed, 23910)
+        self.assertEqual(tally.skipped, 62)
+        self.assertEqual(tally.binaries, 529)
+        self.assertEqual(tally.verdict, ctt.Verdict.GREEN)
+
+    def test_closed_region_does_not_swallow_later_libtest(self):
+        tally = ctt.tally_text(NEXTEST_THEN_DOCTEST)
+        self.assertEqual([s.dialect for s in tally.summaries],
+                         [ctt.Dialect.NEXTEST, ctt.Dialect.LIBTEST])
+        self.assertEqual(tally.passed, 2)
+
+
+class TestSkim(unittest.TestCase):
+
+    def test_skim_line_is_a_summary_without_binaries(self):
+        tally = ctt.tally_text(SKIM_FAILED)
+        self.assertEqual(len(tally.summaries), 1)
+        summary = tally.summaries[0]
+        self.assertEqual(summary.dialect, ctt.Dialect.SKIM)
+        self.assertEqual((summary.passed, summary.failed, summary.skipped),
+                         (5, 1, 1))
+        self.assertIsNone(summary.binaries)
+        self.assertIsNone(tally.binaries)
+        self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
+
+    def test_skim_verdicts(self):
+        self.assertEqual(ctt.tally_text(SKIM_GREEN).verdict, ctt.Verdict.GREEN)
+        self.assertEqual(ctt.tally_text(SKIM_EMPTY).verdict,
+                         ctt.Verdict.NOTHING_RAN)
+
+    def test_unknown_binaries_make_the_total_unknown_not_the_counts(self):
+        tally = ctt.tally_text(SKIM_GREEN + LIBTEST_GREEN)
+        self.assertIsNone(tally.binaries)
+        self.assertEqual(tally.passed, 5)
 
 
 if __name__ == "__main__":
