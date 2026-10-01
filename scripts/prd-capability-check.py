@@ -1059,6 +1059,8 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
         check      → [reify, check, <abs-fixture>]
         ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
+    The fixture is always the final argv token; fixture_argument() reads it back.
+
     Fixture-path resolution: build_command() resolves probe.fixture to an
     absolute path via os.path.join(repo_root, probe.fixture) so that the path
     survives any CWD change — in particular, grammar probes run with
@@ -1100,6 +1102,16 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
 
     # Should not reach here after load_probe_set validation, but be defensive.
     raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+def fixture_argument(command: List[str]) -> Optional[str]:
+    """Return the fixture a build_command() argv names, or None if it names none.
+
+    build_command() places the fixture as the final argument for every probe
+    kind; this reader is the one place that layout is read back.  An argv with
+    no argument names no fixture, because argv[0] is the program.
+    """
+    return command[-1] if len(command) >= 2 else None
 
 
 # ---------------------------------------------------------------------------
