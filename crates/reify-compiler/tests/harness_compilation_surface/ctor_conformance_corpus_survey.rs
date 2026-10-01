@@ -3805,7 +3805,10 @@ enum HostShape {
 
 fn host_shape(rel: &str) -> HostShape {
     let path = std::path::Path::new(rel);
-    let file = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+    let file = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
     if path.components().any(|c| c.as_os_str() == "tests") {
         HostShape::TestsDirectory
     } else if file == "tests.rs" {
@@ -3825,7 +3828,10 @@ fn host_shape(rel: &str) -> HostShape {
 /// assertion iterate zero times and pass vacuously.
 #[test]
 fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
-    let hosts: Vec<&str> = INLINE_FIXTURE_PINNED_HOSTS.iter().map(|(h, _)| *h).collect();
+    let hosts: Vec<&str> = INLINE_FIXTURE_PINNED_HOSTS
+        .iter()
+        .map(|(h, _)| *h)
+        .collect();
 
     assert!(
         hosts.contains(&NAMED_SITE_HOST),
@@ -3887,7 +3893,9 @@ fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
             .unwrap_or_else(|e| panic!("pinned host {host} is unreadable: {e}"));
         let host_lines = host_source.lines().count() as u32;
 
-        let admitted = rust_fixture_scan::inline_ri_snippets(&host_source).snippets.len();
+        let admitted = rust_fixture_scan::inline_ri_snippets(&host_source)
+            .snippets
+            .len();
         if admitted < *floor {
             failures.push(format!(
                 "  {host}: {admitted} admitted snippet(s), floor is {floor} — the host is \
@@ -3896,10 +3904,7 @@ fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
             ));
         }
 
-        let run = survey_inline_corpus(
-            std::path::Path::new(WORKSPACE_ROOT),
-            &[(*host).to_owned()],
-        );
+        let run = survey_inline_corpus(std::path::Path::new(WORKSPACE_ROOT), &[(*host).to_owned()]);
 
         for (member, reason) in &run.not_surveyed {
             if reason == "read-error" {
@@ -4693,8 +4698,16 @@ fn synth_inline_site(file: &str, field: Option<&str>, severity: &str) -> SurveyS
 #[test]
 fn every_inline_row_resolves_to_the_census_disposition() {
     for (field, severity, what) in [
-        (Some("z"), CTOR_CONFORMANCE_SITE_SEVERITY, "an in-scope row with its param recovered"),
-        (None, CTOR_CONFORMANCE_SITE_SEVERITY, "an in-scope row whose param extraction missed"),
+        (
+            Some("z"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+            "an in-scope row with its param recovered",
+        ),
+        (
+            None,
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+            "an in-scope row whose param extraction missed",
+        ),
         (Some("z"), "Warning", "an out-of-scope-severity inline row"),
     ] {
         let site = synth_inline_site(NAMED_SITE_HOST, field, severity);
@@ -4713,7 +4726,11 @@ fn every_inline_row_resolves_to_the_census_disposition() {
 /// it is handed, inline or not, and silently disarming γ's whole signal.
 #[test]
 fn the_census_disposition_is_keyed_on_the_snippet_coordinate_alone() {
-    let mut site = synth_inline_site("examples/definitely_not_waived_anywhere.ri", Some("z"), CTOR_CONFORMANCE_SITE_SEVERITY);
+    let mut site = synth_inline_site(
+        "examples/definitely_not_waived_anywhere.ri",
+        Some("z"),
+        CTOR_CONFORMANCE_SITE_SEVERITY,
+    );
     site.snippet_line = None;
     assert_eq!(
         disposition_of(&site),
@@ -4734,7 +4751,8 @@ fn the_census_disposition_is_keyed_on_the_snippet_coordinate_alone() {
 #[test]
 fn an_inline_row_never_satisfies_a_waiver_entry() {
     let (residual_file, residual_param, ..) = CTOR_CONFORMANCE_CORPUS_RESIDUAL[0];
-    let (debt_key, debt_param, _) = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT[0];
+    let (debt_key, debt_param, _) =
+        reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT[0];
 
     for (file, param) in [
         (residual_file.to_owned(), residual_param),
@@ -4775,15 +4793,15 @@ fn waiver_satisfying_ri_sites() -> Vec<SurveySite> {
         });
     let rejection = CTOR_CONFORMANCE_REJECTION_FIXTURES
         .iter()
-        .map(|(file, param, _)| match param {
-            Some(param) => synth_site(file, 1, "Widget", param, Owner::Unknown),
-            None => {
-                let mut site = synth_site(file, 1, "Widget", "ignored", Owner::Unknown);
+        .map(|(file, param, _)| {
+            let mut site = synth_site(file, 1, "Widget", param.unwrap_or("—"), Owner::Unknown);
+            if param.is_none() {
                 site.field = None;
                 site.code = "CtorArity".to_owned();
-                site.message = format!("{CTOR_ARITY_PREFIX}Widget() expects at most 1 argument, got 2");
-                site
+                site.message =
+                    format!("{CTOR_ARITY_PREFIX}Widget() expects at most 1 argument, got 2");
             }
+            site
         });
     residual.chain(debt).chain(rejection).collect()
 }
@@ -4806,8 +4824,16 @@ fn the_unwaived_assertion_survives_the_inline_half() {
 
     let mut with_inline = baseline;
     with_inline.sites.extend([
-        synth_inline_site(NAMED_SITE_HOST, Some("material"), CTOR_CONFORMANCE_SITE_SEVERITY),
-        synth_inline_site(NAMED_SITE_HOST, Some("youngs_modulus"), CTOR_CONFORMANCE_SITE_SEVERITY),
+        synth_inline_site(
+            NAMED_SITE_HOST,
+            Some("material"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+        ),
+        synth_inline_site(
+            NAMED_SITE_HOST,
+            Some("youngs_modulus"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+        ),
         synth_inline_site(NAMED_SITE_HOST, None, CTOR_CONFORMANCE_SITE_SEVERITY),
     ]);
     assert_no_unwaived_ctor_conformance_sites(&with_inline);
@@ -5412,10 +5438,13 @@ const SHARED_SITE_COLUMNS: &[(&str, SiteCell)] = &[
 fn site_columns(half: CorpusHalf) -> Vec<(&'static str, SiteCell)> {
     let mut columns = SHARED_SITE_COLUMNS.to_vec();
     if half == CorpusHalf::InlineRustHost {
-        columns.insert(1, (SNIPPET_LINE_COLUMN, |s| {
-            s.snippet_line
-                .map_or_else(|| "—".to_owned(), |n| n.to_string())
-        }));
+        columns.insert(
+            1,
+            (SNIPPET_LINE_COLUMN, |s| {
+                s.snippet_line
+                    .map_or_else(|| "—".to_owned(), |n| n.to_string())
+            }),
+        );
     }
     columns
 }
@@ -5599,7 +5628,9 @@ fn push_inline_section(md: &mut String, inline: &SurveyRun) {
         &inline.not_surveyed,
         "_(none — every extracted snippet reached the compile phase)_\n\n",
     );
-    md.push_str("#### Partially swept (sites collected, but the snippet also failed to compile)\n\n");
+    md.push_str(
+        "#### Partially swept (sites collected, but the snippet also failed to compile)\n\n",
+    );
     push_coverage_table(md, &inline.partial, "_(none)_\n\n");
 }
 
@@ -6124,7 +6155,11 @@ fn render_survey_orders_rows_deterministically_within_a_group() {
     sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
     assert_eq!(
-        render_survey(&mk(shuffled), &SurveyRun::default(), &SurveyStamp::at("sha")),
+        render_survey(
+            &mk(shuffled),
+            &SurveyRun::default(),
+            &SurveyStamp::at("sha")
+        ),
         render_survey(&mk(sorted), &SurveyRun::default(), &SurveyStamp::at("sha")),
         "rows must render in (file, line, field) order regardless of input order"
     );
@@ -6881,11 +6916,7 @@ fn render_survey_gives_the_inline_half_a_snippet_line_column() {
 #[test]
 fn render_survey_states_an_inline_site_count_that_equals_the_rendered_rows() {
     let inline_run = synth_inline_run();
-    let md = render_survey(
-        &SurveyRun::default(),
-        &inline_run,
-        &SurveyStamp::at("sha"),
-    );
+    let md = render_survey(&SurveyRun::default(), &inline_run, &SurveyStamp::at("sha"));
     // Scoped to the GROUP tables: the coverage subsection below them renders
     // `| `member` | `reason` |` rows of its own, which are members and not
     // sites, and counting those would make the assertion meaningless.
@@ -7150,10 +7181,7 @@ fn the_inline_limitation_states_figures_the_run_recomputed() {
 fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
     let drifted = SurveyStamp {
         anchor: "cafe1234".to_owned(),
-        drifted: vec![
-            "examples/a.ri".to_owned(),
-            "crates/c/tests/h.rs".to_owned(),
-        ],
+        drifted: vec!["examples/a.ri".to_owned(), "crates/c/tests/h.rs".to_owned()],
     };
     let md = render_survey(&SurveyRun::default(), &SurveyRun::default(), &drifted);
     for path in &drifted.drifted {
@@ -7379,10 +7407,7 @@ fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
                  \n";
     assert_eq!(
         drift_within_corpus(drift, &corpus),
-        vec![
-            "examples/a.ri".to_owned(),
-            "crates/c/tests/h.rs".to_owned(),
-        ],
+        vec!["examples/a.ri".to_owned(), "crates/c/tests/h.rs".to_owned(),],
         "the disclosure must name BOTH halves' members and NOTHING else — a `.rs` \
          outside the host corpus is churn no row describes, and listing it would \
          flood the header"
@@ -7775,4 +7800,3 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
          lands. Re-run the survey generator to re-stamp the merge base."
     );
 }
-
