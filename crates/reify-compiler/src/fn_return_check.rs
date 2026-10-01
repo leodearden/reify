@@ -85,6 +85,36 @@ pub(crate) fn reconcile_fn_return(
     }
 }
 
+/// Report a bodyless required trait assoc fn that has no return annotation.
+///
+/// With no body that could ever reconcile it, callers and conformers would
+/// type its result as the defaulted `Real`.
+pub(crate) fn require_bodyless_return_annotation(
+    fn_def: &reify_ast::FnDef,
+    trait_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if fn_def.body.is_some() || fn_def.return_type.is_some() {
+        return;
+    }
+    diagnostics.push(
+        diag_at(
+            FN_RETURN_RECONCILE_SEVERITY,
+            format!(
+                "required associated function '{trait_name}::{}' has no return type \
+                 annotation; with no body to check against, callers and conformers type \
+                 its result as `Real`; annotate its return type",
+                fn_def.name
+            ),
+        )
+        .with_code(DiagnosticCode::FnReturnTypeUnannotated)
+        .with_label(DiagnosticLabel::new(
+            fn_def.span,
+            "required associated function without a return type annotation",
+        )),
+    );
+}
+
 /// Whether an assoc-fn body reads its `self` receiver.
 ///
 /// Such a conformer body is not reconciled: `compile_assoc_function`'s body
