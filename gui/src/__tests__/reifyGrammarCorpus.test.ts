@@ -5429,6 +5429,7 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/ir_clean_eval.ri',
   'tests/prd-gate/fixtures/ivf_override_violates_constraint.ri',
   'tests/prd-gate/fixtures/jacobian_column_members.ri',
+  'tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri',
   'tests/prd-gate/fixtures/numeric_floor_bare_baseline.ri',
   'tests/prd-gate/fixtures/numeric_floor_dimensioned_silent_accept.ri',
   'tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri',

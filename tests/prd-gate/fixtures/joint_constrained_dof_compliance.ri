@@ -1,0 +1,46 @@
+// Fixture (task 7163): the user-observable signal that the six std.kinematic
+// joint structures carry compliance on their CONSTRAINED DOFs, one named field
+// per symmetry group, with `none` (the default) meaning ideal-rigid.
+//
+// Before this task the constructor form below was unwritable. Measured on the
+// pre-task tree, `Prismatic(axis: …, radial_stiffness: some(…))` emitted
+//
+//     error[E_CTOR_UNKNOWN_FIELD]: … `radial_stiffness` …
+//
+// so a clean `reify check` of the six constructor cells is the compile signal.
+//
+// The connector-form edge at the bottom is NOT signalled by `reify check`: on
+// the pre-task tree an unknown connector-block param is silently DROPPED and the
+// file still checks clean (filed as a follow-up from 7163). Its signal is the
+// eval assertion in the companion Rust test
+// (crates/reify-eval-fea-tests/tests/flexure_joint_fields_e2e.rs), which reads
+// the declared stiffness back off the synthetic `__connector_0` instance.
+//
+// Every (cell, field) pair carries a DISTINCT magnitude, so a field wired to the
+// wrong slot reads back the wrong number rather than a coincidentally equal one.
+
+module joint_constrained_dof_compliance
+
+structure def Rail {
+    port guide : MechanicalPort {}
+}
+
+structure def Carriage {
+    port bore : MechanicalPort {}
+}
+
+structure def JointConstrainedDofCompliance {
+    // Torsional group omitted: reads back as `none`, i.e. ideal-rigid.
+    let air_bearing = Prismatic(axis: vec3(1.0, 0.0, 0.0), radial_stiffness: some(210N/um), tilt_stiffness: some(5100N*m/rad^2))
+    let spindle = Revolute(axis: vec3(0.0, 0.0, 1.0), axial_stiffness: some(220N/um), radial_stiffness: some(230N/um), tilt_stiffness: some(5200N*m/rad^2))
+    let quill = Cylindrical(axis: vec3(0.0, 0.0, 1.0), radial_stiffness: some(240N/um), tilt_stiffness: some(5300N*m/rad^2))
+    let puck = Planar(axis_x: vec3(1.0, 0.0, 0.0), axis_y: vec3(0.0, 1.0, 0.0), normal_stiffness: some(250N/um), tilt_stiffness: some(5400N*m/rad^2))
+    let ball = Spherical(translational_stiffness: some(260N/um))
+    let foot = Fixed(translational_stiffness: some(270N/um), rotational_stiffness: some(5500N*m/rad^2))
+    // No compliance declared anywhere: every constrained group is ideal-rigid.
+    let ideal = Prismatic(axis: vec3(1.0, 0.0, 0.0))
+
+    sub rail = Rail()
+    sub carriage = Carriage()
+    connect carriage.bore -> rail.guide : Prismatic { axis = vec3(1.0, 0.0, 0.0), radial_stiffness = some(280N/um), tilt_stiffness = some(5600N*m/rad^2) }
+}
