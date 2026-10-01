@@ -1,7 +1,8 @@
 /**
- * Shared test helpers for the debug-bridge test suite.
- * Centralises the ViewStateStore mock so that adding a newly-reachable
- * bridge method requires updating one place instead of three test files.
+ * Shared test helpers for the debug-bridge test suite: the store mocks a
+ * bridge is initialised with, and the dispatcher that drives a debug request
+ * through it. One copy each, so a change to a store shape or to the response
+ * envelope is one edit rather than one per test file.
  */
 import { vi, expect } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
@@ -100,8 +101,18 @@ export type DebugRequestHandler = (event: {
 /**
  * Build a `dispatchCmd`: invoke the captured debug-request handler and return
  * the parsed `debug_response` payload. Requires `@tauri-apps/api/core` to be
- * mocked by the calling test file. Takes a THUNK because the caller's captured
- * handler is reassigned per test.
+ * mocked by the calling test file.
+ *
+ * debugBridge.test.tsx once held 17 byte-identical copies of this body, one per
+ * describe block, so a change to the response envelope meant 17 edits and any
+ * missed one drifted silently. Takes a THUNK rather than the handler itself
+ * because each caller's `capturedHandler` is reassigned by its `beforeEach` —
+ * capturing the value here would freeze it at `undefined`.
+ *
+ * The callers' `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
+ * they genuinely differ (some call `initDebugBridge` up front, others per test;
+ * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
+ * to be parameterised into something longer than the lines it replaced.
  */
 export function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
   return async function dispatchCmd(

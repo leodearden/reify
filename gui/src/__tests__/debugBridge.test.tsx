@@ -41,41 +41,12 @@ import {
 } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import {
+  makeCmdDispatcher,
+  makeDebugStores,
+  type DebugRequestHandler,
+} from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
-
-type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
-
-/**
- * Build a describe-block's `dispatchCmd`: invoke the captured debug-request
- * handler and return the parsed `debug_response` payload.
- *
- * Every block in this file had its own byte-identical copy of this nine-line
- * body (17 of them), so a change to the response envelope meant 17 edits and any
- * missed one drifted silently. Takes a THUNK rather than the handler itself
- * because each block's `capturedHandler` is reassigned by its `beforeEach` —
- * capturing the value here would freeze it at `undefined`.
- *
- * The per-block `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
- * they genuinely differ (some call `initDebugBridge` up front, others per test;
- * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
- * to be parameterised into something longer than the four lines it replaced.
- */
-function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
-  return async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await getHandler()!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  };
-}
 
 // jsdom 25 does not implement document.elementFromPoint — the method is simply
 // absent from the document prototype. vi.spyOn requires the property to exist
@@ -90,67 +61,19 @@ if (typeof document.elementFromPoint !== 'function') {
   });
 }
 
+/** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
+  const stores = makeDebugStores();
   return {
-    engine: {
-      state: {
-        meshes: {} as any,
-        values: {} as any,
-        constraints: {} as any,
-        evalStatus: { phase: 'idle' },
-        compileDiagnostics: [],
-        tessellationDiagnostics: [],
-      },
-      initFromState: vi.fn(),
-      setCompileDiagnostics: vi.fn(),
-      setTessellationDiagnostics: vi.fn(),
-    },
-    editor: {
-      state: {
-        openFiles: [],
-        activeFile: null,
-        dirtyFiles: [],
-        externallyChanged: [],
-        cursorPosition: null,
-      },
-      openFile: vi.fn(),
-      closeFile: vi.fn(),
-    },
+    ...stores,
     selection: {
+      ...stores.selection,
       state: {
+        ...stores.selection.state,
         selectedEntity: selectedEntities[selectedEntities.length - 1] ?? null,
-        // Cast to any until step-36 adds the fields to the DebugStores type
-        ...(selectedEntities.length > 0 ? { selectedEntities } : { selectedEntities: [] }),
-        ...(anchorEntity !== null ? { anchorEntity } : { anchorEntity: null }),
-        hoveredEntity: null,
-        highlightedParams: [],
-      } as any,
-      selectEntity: vi.fn(),
-      hoverEntity: vi.fn(),
-      clearSelection: vi.fn(),
-      toggleSelect: vi.fn(),
-    },
-    claude: {
-      state: {
-        messages: [],
-        sessionStatus: 'idle',
-        currentMessageId: null,
+        selectedEntities,
+        anchorEntity,
       },
-    },
-    viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
     },
   };
 }
