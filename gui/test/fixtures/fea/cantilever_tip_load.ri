@@ -25,7 +25,7 @@ structure CantileverTipLoad {
     let tip_load = PointLoad(point: "tip", force: 1000.0)
 
     // Supports: fully clamped (fixed) at the beam root.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve via the @optimized dispatcher (solver::elastic_static trampoline).
     // Direct list literals [tip_load] / [mount] type-check against List<Load> /

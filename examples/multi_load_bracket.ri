@@ -74,7 +74,7 @@ structure MultiLoadBracket {
     // (the v0.3 cache key excludes loads from the mesh hash — see PRD
     // "Cache reuse is the natural common case").
 
-    let mount = FixedSupport("mount_face")
+    let mount = FixedSupport(target: face(body, "mount_face"))
 
     let operating = LoadCase(
         name:     "operating",

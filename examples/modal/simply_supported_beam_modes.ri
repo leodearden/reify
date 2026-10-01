@@ -70,8 +70,8 @@ structure SimplySupportedBeamModes {
     // PinnedSupports because the structure is pinned — the trampoline reads the
     // support KIND per face (task 6663), so a FixedSupport here would mean a
     // genuinely clamped end and a ~2.27x higher fundamental.
-    let pin_min = PinnedSupport(target: "x_min")
-    let pin_max = PinnedSupport(target: "x_max")
+    let pin_min = PinnedSupport(target: face(beam, "x_min"))
+    let pin_max = PinnedSupport(target: face(beam, "x_max"))
 
     // Modal options: extract the first 3 modes, undamped, bending in z, at
     // element_order = ElementOrder.P2 — the P2-tet path that resolves bending
@@ -127,4 +127,5 @@ structure SimplySupportedBeamModes {
     let f1 = first_frequency(result)
     let f2 = mode_frequency(result, 1)
     let f3 = mode_frequency(result, 2)
+    let beam = box(length, width, height)
 }

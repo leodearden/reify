@@ -58,7 +58,7 @@ structure FdmBracket {
 
     // FEA loads and supports: cantilever with tip load.
     let load    = PointLoad(point: "tip", force: 1000.0)
-    let support = FixedSupport(target: "root")
+    let support = FixedSupport(target: face(body, "root"))
 
     // As-printed heterogeneous solve — 6-arg Field overload (no options arg).
     // `material` is Field<Point3<Length>, AnisotropicMaterial> → per-element

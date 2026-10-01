@@ -1264,12 +1264,13 @@ structure FeaCantileverDeterministic {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
         ElasticOptions(deterministic: true)
     )
+    let body = box(length, width, height)
 }
 "#;
 
@@ -1408,7 +1409,7 @@ structure FeaCantileverDivAccessor {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
@@ -1421,6 +1422,7 @@ structure FeaCantileverDivAccessor {
 
     // Coexistence: stress accessor must survive alongside divergence.
     let stress = result.stress
+    let body = box(length, width, height)
 }
 "#;
 
@@ -1517,7 +1519,7 @@ structure FeaCantileverGradCurlAccessor {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
@@ -1534,6 +1536,7 @@ structure FeaCantileverGradCurlAccessor {
 
     // Coexistence: stress accessor must survive alongside the new params.
     let stress = result.stress
+    let body = box(length, width, height)
 }
 "#;
 

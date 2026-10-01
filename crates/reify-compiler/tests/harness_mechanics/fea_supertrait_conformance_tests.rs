@@ -75,9 +75,10 @@ structure SmokeDirect {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -134,9 +135,10 @@ structure BucklingPreserve {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         BucklingOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -174,9 +176,10 @@ structure NonConforming {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -232,9 +235,10 @@ structure StructRefNonConforming {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -304,9 +308,10 @@ structure DirectConformer {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);

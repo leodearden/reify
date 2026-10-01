@@ -91,12 +91,13 @@ structure def PrinterPrintEnvelope {
     let gantry_length = 500mm
     let gantry_width  = 60mm
     let gantry_height = 40mm
+    let gantry        = box(gantry_length, gantry_width, gantry_height)
 
     let material = Aluminium_6061_T6()
     let mi = FEAMaterialInput(material: material)
 
-    let mount_left  = PinnedSupport(target: "x_min")
-    let mount_right = PinnedSupport(target: "x_max")
+    let mount_left  = PinnedSupport(target: face(gantry, "x_min"))
+    let mount_right = PinnedSupport(target: face(gantry, "x_max"))
 
     let modal_opts = ModalOptions(
         n_modes: 7,

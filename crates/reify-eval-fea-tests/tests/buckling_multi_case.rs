@@ -48,16 +48,17 @@ structure def BucklingMultiCaseFixture {
     let lc1 = LoadCase(
         name:     "operating",
         loads:    [PointLoad(point: "top", force: 1000.0)],
-        supports: [FixedSupport(target: "base")],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
         loads:    [PointLoad(point: "top", force: 2000.0)],
-        supports: [FixedSupport(target: "base")],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
     let result = solve_buckling_load_cases(
         Steel_AISI_1045(), 800mm, 20mm, 20mm, [lc1, lc2]
     )
+    let body = box(800mm, 20mm, 20mm)
 }
 "#;
 

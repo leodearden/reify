@@ -29,9 +29,10 @@ structure def GravityStd {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Gravity()],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions(deterministic: true)
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -41,9 +42,10 @@ structure def GravityDoubleMag {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Gravity(magnitude: 2*STANDARD_GRAVITY())],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions(deterministic: true)
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -53,9 +55,10 @@ structure def GravityDoubleDensity {
     let result = solve_elastic_static(
         Steel_AISI_1045(density: 15700kg/m^3), 1000mm, 100mm, 100mm,
         [Gravity()],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions(deterministic: true)
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -65,9 +68,10 @@ structure def GravityZeroMag {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Gravity(magnitude: 0*STANDARD_GRAVITY())],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions(deterministic: true)
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

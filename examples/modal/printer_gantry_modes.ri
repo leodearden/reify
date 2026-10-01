@@ -96,8 +96,8 @@ structure PrinterGantryModes {
     // trampoline discriminated on target face NAMES alone; that spelling would
     // now mean genuinely clamped mounts, which is not what a rested crossbeam
     // is.)
-    let mount_left  = PinnedSupport(target: "x_min")
-    let mount_right = PinnedSupport(target: "x_max")
+    let mount_left  = PinnedSupport(target: face(beam, "x_min"))
+    let mount_right = PinnedSupport(target: face(beam, "x_max"))
 
     // Modal options: request n_modes = 7 at element_order = ElementOrder.P2.
     //
@@ -146,4 +146,5 @@ structure PrinterGantryModes {
     let f3 = mode_frequency(result, 2)
     let f4 = mode_frequency(result, 3)
     let f5 = mode_frequency(result, 4)
+    let beam = box(length, width, height)
 }

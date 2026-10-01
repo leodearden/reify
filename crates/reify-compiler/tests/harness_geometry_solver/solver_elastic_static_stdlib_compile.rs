@@ -175,9 +175,10 @@ structure FEACantileverTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -206,7 +207,7 @@ structure FEAPressureTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PressureLoad(magnitude: 1000000.0, face: face(body, "x_max"), direction: "normal")],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
 }
@@ -238,9 +239,10 @@ structure FEABadLoads {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Steel_AISI_1045()],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -272,10 +274,11 @@ structure FEAMultiCaseTest {
         [LoadCase(
             name: "c",
             loads: [PointLoad(point: "tip", force: 1000.0)],
-            supports: [FixedSupport(target: "root")]
+            supports: [FixedSupport(target: face(body, "root"))]
         )],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -347,9 +350,10 @@ structure DirectPassRegression {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module2 = reify_test_support::compile_source_with_stdlib(good_src);
@@ -493,7 +497,7 @@ structure FEABodyCantilever {
         Steel_AISI_1045(),
         body,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
 }
@@ -539,12 +543,13 @@ structure StressPredicateProbe {
     let r = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
     let vm = von_mises(r.stress)
     let peak = max(von_mises(r.stress))
     constraint max(von_mises(r.stress)) < yield_limit
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);

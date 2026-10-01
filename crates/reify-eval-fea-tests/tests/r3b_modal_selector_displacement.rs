@@ -510,7 +510,7 @@ structure R3bSelectorOverloadProbe {{
 
     let material = Steel_AISI_1045()
     let mi = FEAMaterialInput(material: material)
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],

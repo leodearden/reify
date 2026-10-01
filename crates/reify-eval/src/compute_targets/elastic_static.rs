@@ -364,20 +364,21 @@ fn first_instance_source_span(list: &Value) -> Option<SourceSpan> {
 /// supplied (see `fea_no_loads.ri` / `examples/fea_cantilever_smoke.ri`).
 const SYNTHETIC_CLAMP_FACE: &str = "root";
 
-/// `true` if any `Value::StructureInstance` in `supports` carries a `target`
-/// field equal to `Value::String(face)`.
+/// `true` if any `Value::StructureInstance` in `supports` carries a typed
+/// `target` selector whose single `Named` leaf is `face`, whatever its kind
+/// (`face(body, "root")`, `edge(body, "root")`, …).
 ///
-/// A lightweight `.ri`-source-level check, NOT real topology selector
-/// resolution (owned by #5313): reads each support's raw
-/// `target` field as authored. The kernel-less trampoline (no BUILD-time
-/// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
-/// original `Value::String`, never a resolved handle list.
+/// A name read, NOT topology selector resolution: the kernel-less trampoline
+/// receives the target as the `Value::Selector` the named-leaf ctor minted,
+/// and [`bc_resolve::named_leaf_target`] reads its name. A bare
+/// `Value::String` is never a target (D8). Interim name read; Bmig2-consume
+/// (#5313, PRD D9) replaces it with node-set resolution.
 fn any_support_targets(supports: &[Value], face: &str) -> bool {
     supports.iter().any(|s| {
         matches!(
             s,
             Value::StructureInstance(data)
-                if data.fields.get("target") == Some(&Value::String(face.to_string()))
+                if data.fields.get("target").and_then(bc_resolve::named_leaf_target) == Some(face)
         )
     })
 }
@@ -666,8 +667,8 @@ pub fn solve_elastic_static_trampoline(
     // proceed. Unlike the empty-supports branch, a PRESENT support exists to
     // reference, so the diagnostic carries the first support's `.ri`
     // construction-site span. Selector RESOLUTION against real topology
-    // is owned by #5313 — this is a lightweight string check
-    // (`any_support_targets`).
+    // stays deferred to Bmig2-consume (#5313) — this reads only the typed
+    // target's Named-leaf name (`any_support_targets`).
     //
     // No `structured_detail` push here (unlike the empty-supports branch):
     // `FeaFailure::structured_detail()` asserts `support_count == 0` — the
@@ -13249,7 +13250,7 @@ mod tests {
     /// Sibling to `..._malformed_options_field`: `supports` ([5]) is also
     /// outside the gate (see the "Scope" comment above `gate_or_fail!`). A
     /// `FixedSupport` with a malformed `target` field (`Value::Real`, not
-    /// the `Value::String`/`Value::List` that `any_support_targets` /
+    /// the `Value::Selector`/`Value::List` that `any_support_targets` /
     /// `target_node_set` each pattern-match on) fails both matches and
     /// falls through to the same untargeted-support path already exercised
     /// by every other test's no-target `shell9_make_supports()` baseline —
@@ -13257,7 +13258,7 @@ mod tests {
     #[test]
     fn validate_all_inputs_gate_does_not_panic_on_malformed_supports_field() {
         let malformed_support_fields: PersistentMap<String, Value> =
-            [("target".to_string(), Value::Real(1.0))] // malformed: must be Value::String/List
+            [("target".to_string(), Value::Real(1.0))] // malformed: must be Value::Selector/List
                 .into_iter()
                 .collect();
         let malformed_supports = Value::List(vec![Value::StructureInstance(Box::new(

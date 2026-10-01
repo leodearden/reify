@@ -12,7 +12,9 @@
 
 #![allow(clippy::mutable_key_type)]
 
+use reify_core::ty::SelectorKind;
 use reify_core::{Severity, ValueCellId};
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
@@ -24,10 +26,25 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
+/// Assert `v` is the Face selector whose single `Named` leaf is `name` — what
+/// `face(body, "<name>")` evaluates to (task 5312: `target` is a typed selector).
+fn assert_named_face(v: Option<&Value>, name: &str) {
+    match v {
+        Some(Value::Selector(sv)) => {
+            assert_eq!(sv.kind, SelectorKind::Face, "selector kind of {sv:?}");
+            assert!(
+                matches!(&sv.node, SelectorNode::Leaf { query: LeafQuery::Named(n), .. } if n == name),
+                "expected a Named({name:?}) leaf, got {sv:?}"
+            );
+        }
+        other => panic!("expected a Face Value::Selector named {name:?}, got {other:?}"),
+    }
+}
+
 // ── SIR-β-sup step-1 (RED) → step-2 (GREEN) tests ───────────────────────────
 
-/// task 3546 step-1: bare `PinnedSupport()` constructor lowers to a
-/// `Value::StructureInstance` whose `type_name` is `"PinnedSupport"` and whose
+/// task 3546 step-1: a `PinnedSupport(target: face(body, ..))` constructor lowers
+/// to a `Value::StructureInstance` whose `type_name` is `"PinnedSupport"` and whose
 /// fields carry the single declared default: `target = ""`.
 ///
 /// RED before step-2 declares `structure def PinnedSupport : Support { ... }`
@@ -38,7 +55,8 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 fn pinned_support_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
 structure def PinnedSupportFixture {
-    let support = PinnedSupport()
+    let body = box(1m, 0.1m, 0.1m)
+    let support = PinnedSupport(target: face(body, "x_min"))
 }
 "#;
 
@@ -60,13 +78,7 @@ structure def PinnedSupportFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            // target default = ""
-            assert_eq!(
-                field(&data.fields, "target"),
-                Some(&Value::String(String::new())),
-                "PinnedSupport.target default must be \"\"; fields: {:?}",
-                data.fields
-            );
+            assert_named_face(field(&data.fields, "target"), "x_min");
         }
         other => panic!(
             "expected Value::StructureInstance for PinnedSupportFixture.support — \
@@ -76,13 +88,14 @@ structure def PinnedSupportFixture {
 }
 
 /// task 3546 step-1: member-access chain `self.support.target` reads
-/// through the `PinnedSupport` structure instance and resolves to
-/// `Value::String("")` (the default declared in the structure def).
+/// through the `PinnedSupport` structure instance and resolves to the typed
+/// target selector it was constructed with.
 #[test]
 fn pinned_support_member_access_target() {
     const SOURCE: &str = r#"
 structure def PinnedSupportAccess {
-    let support = PinnedSupport()
+    let body    = box(1m, 0.1m, 0.1m)
+    let support = PinnedSupport(target: face(body, "x_min"))
     let target  = self.support.target
 }
 "#;
@@ -97,11 +110,7 @@ structure def PinnedSupportAccess {
         .get(&id)
         .unwrap_or_else(|| panic!("PinnedSupportAccess.target cell missing from eval result"));
 
-    assert_eq!(
-        target,
-        &Value::String(String::new()),
-        "self.support.target must resolve to Value::String(\"\"); got {target:?}"
-    );
+    assert_named_face(Some(target), "x_min");
 }
 
 /// task 3546 amendment — explicit `target` field round-trips a non-default value.
@@ -109,14 +118,15 @@ structure def PinnedSupportAccess {
 /// The retired builtin test `pinned_support_returns_map_with_correct_fields` covered
 /// round-tripping an explicit selector string through the `target` key on the old
 /// `Value::Map`; this test pins the same contract on the structure-def evaluation
-/// path (field-round-trip guard for `PinnedSupport(target: "face_1")`).
+/// path (field-round-trip guard for `PinnedSupport(target: face(body, "face_1"))`).
 ///
 /// Mirrors `FixedSupport` boundary suite behaviour for explicit args.
 #[test]
 fn pinned_support_explicit_target_field_round_trips() {
     const SOURCE: &str = r#"
 structure def PinnedSupportExplicit {
-    let support = PinnedSupport(target: "face_1")
+    let body    = box(1m, 0.1m, 0.1m)
+    let support = PinnedSupport(target: face(body, "face_1"))
 }
 "#;
 
@@ -137,13 +147,7 @@ structure def PinnedSupportExplicit {
                 "expected type_name=\"PinnedSupport\"; got {:?}",
                 data.type_name
             );
-            assert_eq!(
-                field(&data.fields, "target"),
-                Some(&Value::String("face_1".to_string())),
-                "PinnedSupport(target: \"face_1\").target must round-trip as \
-                 Value::String(\"face_1\"); fields: {:?}",
-                data.fields
-            );
+            assert_named_face(field(&data.fields, "target"), "face_1");
         }
         other => panic!(
             "expected Value::StructureInstance for PinnedSupportExplicit.support — \
@@ -152,7 +156,7 @@ structure def PinnedSupportExplicit {
     }
 }
 
-/// task 3546 step-1: trait-typed param admission — `param sup : Support = PinnedSupport()`
+/// task 3546 step-1: trait-typed param admission — `param sup : Support = PinnedSupport(..)`
 /// compiles without any Error-severity diagnostics, confirming that `PinnedSupport`
 /// nominally conforms to `trait Support` (the empty-marker form from SIR-α wave-1).
 ///
@@ -162,7 +166,8 @@ structure def PinnedSupportExplicit {
 fn trait_typed_param_admits_pinned_support() {
     const SOURCE: &str = r#"
 structure def SupportHolder {
-    param sup : Support = PinnedSupport()
+    let body = box(1m, 0.1m, 0.1m)
+    param sup : Support = PinnedSupport(target: face(body, "x_min"))
 }
 "#;
 

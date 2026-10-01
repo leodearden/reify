@@ -212,12 +212,13 @@ structure FeaCantileverAdaptiveConverged {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
         ElasticOptions(adaptive: true, target_accuracy: 0.9)
     )
+    let body = box(length, width, height)
 }
 "#;
 
@@ -235,12 +236,13 @@ structure FeaCantileverAdaptiveBudgetCapped {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
         ElasticOptions(adaptive: true, target_accuracy: 0.001, max_refinement_iterations: 0)
     )
+    let body = box(length, width, height)
 }
 "#;
 
@@ -254,12 +256,13 @@ structure FeaCantileverAdaptiveControl {
 
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount],
         ElasticOptions()
     )
+    let body = box(length, width, height)
 }
 "#;
 

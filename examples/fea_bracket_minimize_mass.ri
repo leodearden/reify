@@ -122,7 +122,7 @@ structure FeaBracketMinimizeMass {
 
     // "root" is the face name the synthetic cantilever clamp honours
     // (`SYNTHETIC_CLAMP_FACE`, elastic_static.rs) — the x_min end.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // Mirrors `Steel_AISI_1045.yield_stress = some(310MPa)`. A plain Pressure
     // literal rather than the field itself: `yield_stress` is `Option<Pressure>`

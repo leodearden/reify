@@ -81,10 +81,10 @@ structure ClampedClampedBeamModes {
     let mi = FEAMaterialInput(material: material)
 
     // The two support KINDS under test, on the SAME two end faces.
-    let fix_min = FixedSupport(target: "x_min")
-    let fix_max = FixedSupport(target: "x_max")
-    let pin_min = PinnedSupport(target: "x_min")
-    let pin_max = PinnedSupport(target: "x_max")
+    let fix_min = FixedSupport(target: face(beam, "x_min"))
+    let fix_max = FixedSupport(target: face(beam, "x_max"))
+    let pin_min = PinnedSupport(target: face(beam, "x_min"))
+    let pin_max = PinnedSupport(target: face(beam, "x_max"))
 
     // Three otherwise-identical ModalOptions differing ONLY in support kind.
     let opts_fixed = ModalOptions(
@@ -135,4 +135,5 @@ structure ClampedClampedBeamModes {
     let f1_fixed   = first_frequency(result_fixed)
     let f1_pinned  = first_frequency(result_pinned)
     let f1_propped = first_frequency(result_propped)
+    let beam = box(span, h, h2)
 }

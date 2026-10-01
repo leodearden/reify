@@ -127,7 +127,7 @@ structure FeaOptimizedBracket {
 
     let material = Steel_AISI_1045()
     let tip_load  = PointLoad(point: "tip", force: 50.0)
-    let mount     = FixedSupport(target: "root")
+    let mount     = FixedSupport(target: face(body, "root"))
 
     let yield_limit = 310MPa
 
@@ -149,6 +149,7 @@ structure FeaOptimizedBracket {
     ).max_von_mises < yield_limit
 
     minimize thickness
+    let body = box(length, width, thickness)
 }
 "#;
 

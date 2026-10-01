@@ -46,6 +46,7 @@ use reify_stdlib::modal::transient::{
     sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
 
+use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -3859,8 +3860,8 @@ fn build_dirichlet_bcs(
     //
     //   * A support whose target names NO recognized face constrains nothing
     //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
-    //     so it must not give another face company — otherwise a typo, or the
-    //     stdlib's own `param target : String = ""` default, flips a
+    //     so it must not give another face company — otherwise a typo'd name,
+    //     or a support carrying no target at all, flips a
     //     `PinnedSupport` on a beam end from a clamp to a lone simple support,
     //     turning a well-posed cantilever into a mechanism. Pinned by
     //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
@@ -4026,7 +4027,7 @@ fn pinned_end_face_realization_diagnostics(
         }
         let message = if simply_supported {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" is realized as \
                  {PINNED_BEAM_END_REALIZATION}, because BOTH beam-axis end faces are pinned; \
                  ONE axial (X) anchor is added at the x_min neutral-axis node so K_free is not \
                  singular. The same declaration clamps all 3 translational DOFs when it is the \
@@ -4034,14 +4035,14 @@ fn pinned_end_face_realization_diagnostics(
             )
         } else if let FaceCompany::WithAnotherFace(other) = company {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" is realized as \
                  {PINNED_BEAM_END_REALIZATION}, because the model's supports also name \
                  \"{other}\". Were this the only face named, the SAME declaration would clamp \
                  all 3 translational DOFs instead and the fundamental would rise."
             )
         } else {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" clamps all 3 \
                  translational DOFs, because it is the only face the model's supports name (a \
                  lone simple support is a mechanism). Naming a second distinct face would \
                  re-realize this one as {PINNED_BEAM_END_REALIZATION}, and the fundamental \
@@ -4261,9 +4262,9 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
 /// `StructureInstance.type_name` by [`support_targets`].
 ///
 /// `FixedSupport` and `PinnedSupport` are declared with IDENTICAL field shapes
-/// (`param target : String = ""`, crates/reify-compiler/stdlib/fea_multi_case.ri
-/// :355 and :380), so the `target` field alone cannot tell them apart — the kind
-/// has to be read off the instance's `type_name` (task 6663).
+/// (`param target : Selector`, crates/reify-compiler/stdlib/fea_multi_case.ri),
+/// so the `target` field alone cannot tell them apart — the kind has to be read
+/// off the instance's `type_name` (task 6663).
 ///
 /// **Deliberately NOT named `SupportKind`.** `reify_solver_elastic::SupportKind`
 /// (re-exported from that crate's `lib.rs`, and this module already imports
@@ -4331,8 +4332,8 @@ fn is_beam_axis_end_face(target: &str) -> bool {
 /// Keeping both on one predicate is what stops a support that can select NO
 /// node from silently changing another face's realization: before task 6663's
 /// amendment the decision read `targets.len()`, so `[Pinned("x_min"),
-/// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
-/// default — counted as two supports and flipped `x_min` from a clamp
+/// Fixed("<typo>")]` — or a support naming the empty face — counted as two
+/// supports and flipped `x_min` from a clamp
 /// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
 ///
 /// The `(axis, is_max)` return is also what makes face identity independent of
@@ -4476,8 +4477,12 @@ fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) 
 }
 
 /// Collect the `(declared kind, target face name)` pairs from the options'
-/// `boundary_conditions` list. Non-StructureInstance entries and entries without
-/// a string `target` are skipped.
+/// `boundary_conditions` list. The face name is the `Named` leaf of the typed
+/// `target` selector (`face(beam, "x_min")` → `"x_min"`), read by
+/// [`named_leaf_target`]. Non-StructureInstance entries, entries without a
+/// target, and entries whose target is not a Named-leaf selector — a bare
+/// `Value::String` included (D8) — are skipped. Interim name read;
+/// Bmig2-consume (#5313, PRD D9) replaces it with node-set resolution.
 ///
 /// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
 /// [`DeclaredSupport::Pinned`], and EVERY other type name to
@@ -4494,14 +4499,14 @@ fn support_targets(options: &Value) -> Vec<(DeclaredSupport, String)> {
     {
         for item in items {
             if let Value::StructureInstance(support) = item
-                && let Some(Value::String(target)) = support.fields.get("target")
+                && let Some(target) = support.fields.get("target").and_then(named_leaf_target)
             {
                 let kind = if support.type_name == "PinnedSupport" {
                     DeclaredSupport::Pinned
                 } else {
                     DeclaredSupport::Fixed
                 };
-                targets.push((kind, target.clone()));
+                targets.push((kind, target.to_owned()));
             }
         }
     }
@@ -7784,7 +7789,7 @@ mod tests {
             (0..f.n_nodes())
                 .filter(|&n| on_y_min(n))
                 .all(|n| clamped(&pin_pin_plus_side, n)),
-            "the FixedSupport(\"y_min\") must clamp all three DOFs on every \
+            "the FixedSupport on y_min must clamp all three DOFs on every \
              y_min node — the pin-pin special case must not discard it",
         );
         assert!(
@@ -8125,11 +8130,11 @@ mod tests {
     /// Amendment (review suggestion 3): a support that names NO recognized face
     /// must not vote on another face's realization.
     ///
-    /// `support_targets` collects every `StructureInstance` carrying a *string*
-    /// `target`, including the stdlib's own `param target : String = ""` default
-    /// and any typo'd or static-path name (`"root"`). Before this amendment
-    /// `build_dirichlet_bcs` counted those into `n_supports`, so
-    /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
+    /// `support_targets` collects every `StructureInstance` carrying a
+    /// Named-leaf `target`, including any typo'd or static-path name
+    /// (`"root"`). Before this amendment `build_dirichlet_bcs` counted those
+    /// into `n_supports`, so `[Pinned("x_min"), Fixed("")]` (then the stdlib's
+    /// empty String default) reached `face_realization` as a
     /// TWO-support model and flipped x_min from a full clamp (a well-posed
     /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
     /// surviving rigid-body modes, reported under a mere Warning. That vote
@@ -9090,7 +9095,7 @@ mod tests {
     }
 
     /// Solve the shared #6878 CANTILEVER fixture (20 x 50 x 100 mm steel beam,
-    /// `FixedSupport(target: "x_min")`, `n_modes = 3`) built from a `Damped`
+    /// `FixedSupport(target: face(beam, "x_min"))`, `n_modes = 3`) built from a `Damped`
     /// material of loss factor `eta`, under `damping`, returning `(f, ζ)` per mode.
     ///
     /// Shared by the step-7 additive-composition twin and the step-15 near-zero-band

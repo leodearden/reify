@@ -598,17 +598,18 @@ structure def SolveLoadCasesFixture {
     let lc1       = LoadCase(
         name:     "operating",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2       = LoadCase(
         name:     "overload",
         loads:    [PointLoad(point: "tip", force: 2000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result        = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
     let case_list     = case_names(result)
     let op_case       = result_for(result, "operating")
     let missing_case  = result_for(result, "missing")
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -772,16 +773,17 @@ structure def PerCaseOptionsFixture {
     let lc_high  = LoadCase(
         name:     "high_res",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
         options:  some(ElasticOptions(max_iter: 500)),
     )
     let lc_low   = LoadCase(
         name:     "low_res",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result     = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
     let case_list  = case_names(result)
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -902,9 +904,10 @@ structure def SingleCaseFixture {
     let lc1  = LoadCase(
         name:     "only",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -919,14 +922,15 @@ structure def TwoCaseSharedMeshFixture {
     let lc1  = LoadCase(
         name:     "light",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2  = LoadCase(
         name:     "heavy",
         loads:    [PointLoad(point: "tip", force: 5000.0)],
-        supports: [FixedSupport(target: "root")],
+        supports: [FixedSupport(target: face(body, "root"))],
     )
     let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

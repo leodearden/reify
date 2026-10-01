@@ -1015,16 +1015,17 @@ structure ProbeTransitiveConformance {
         ABS_Plastic(),
         1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
     let b = solve_buckling(
         Steel_AISI_1045(),
         1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         BucklingOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let compiled = compile_source_with_stdlib(satisfies_source);

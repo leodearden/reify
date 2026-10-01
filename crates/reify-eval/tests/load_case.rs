@@ -53,8 +53,9 @@ structure def LoadCaseFixture {
     let case = LoadCase(
         name: "g",
         loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
-        supports: [FixedSupport(target: "r")]
+        supports: [FixedSupport(target: face(body, "r"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -182,11 +183,12 @@ structure def LoadCaseAccess {
     let case          = LoadCase(
         name: "g",
         loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
-        supports: [FixedSupport(target: "r")]
+        supports: [FixedSupport(target: face(body, "r"))]
     )
     let case_name     = self.case.name
     let first_load    = self.case.loads[0]
     let first_support = self.case.supports[0]
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

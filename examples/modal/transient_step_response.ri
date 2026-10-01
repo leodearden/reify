@@ -66,7 +66,7 @@ structure CantileverStepResponse {
 
     // Cantilever: clamp the root (x_min) face. A single FixedSupport signals the
     // clamped-free configuration to the trampoline.
-    let root = FixedSupport(target: "x_min")
+    let root = FixedSupport(target: face(beam, "x_min"))
 
     // Modal options: first 3 modes, Rayleigh-damped (β = 0.0003 → ζ₁ > 0 so a
     // decay envelope exists), bending in z, at element_order = ElementOrder.P1

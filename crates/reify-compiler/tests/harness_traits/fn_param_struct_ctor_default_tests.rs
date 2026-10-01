@@ -246,8 +246,9 @@ structure ElasticDefaultsTest {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")]
+        [FixedSupport(target: face(body, "root"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(src);
@@ -342,8 +343,9 @@ structure BucklingDefaultsTest {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")]
+        [FixedSupport(target: face(body, "root"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(src);
@@ -482,8 +484,9 @@ structure NonConformingPaddedCall {
         100mm,
         100mm,
         [PointLoad(point: "tip", force: 1000.0)],
-        [FixedSupport(target: "root")]
+        [FixedSupport(target: face(body, "root"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(src);

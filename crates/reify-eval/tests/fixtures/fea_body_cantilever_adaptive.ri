@@ -36,7 +36,7 @@ structure FeaBodyCantileverAdaptive {
     let body = box(1000mm, 100mm, 100mm)
 
     let tip_load = PointLoad(point: "tip", force: 1000.0)
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material,

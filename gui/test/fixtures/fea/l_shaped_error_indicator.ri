@@ -49,7 +49,7 @@ structure LShapedErrorIndicator {
     // NOTE: "tip"/"root" are canonical box-grid keywords resolved independently
     // of the `body` geometry below (the solve never reads `body` — see the
     // header note), so they carry over unchanged from the cantilever fixture.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve via the @optimized dispatcher (solver::elastic_static trampoline).
     // adaptive:true is REQUIRED for error_indicator to populate (see header).

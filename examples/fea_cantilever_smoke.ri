@@ -56,7 +56,7 @@ structure FeaCantileverSmoke {
     let tip_load = PointLoad(point: "tip", force: 1000.0)
 
     // Supports: fully clamped (fixed) at the beam root.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in

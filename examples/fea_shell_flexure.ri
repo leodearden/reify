@@ -59,7 +59,7 @@ structure FeaShellFlexure {
     let tip_load = PointLoad(point: "tip", force: 10.0)
 
     // Supports: fully clamped (fixed) at the flexure root.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in

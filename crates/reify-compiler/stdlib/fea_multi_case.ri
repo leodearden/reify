@@ -355,14 +355,18 @@ structure def PointLoad : Load {
 
 // FixedSupport — wave-1 replacement for the `FixedSupport` builtin
 // (supports.rs). The `target` field mirrors the `target` key emitted by the
-// pre-retirement `eval_supports("FixedSupport", ...)` Map. `target : String`
-// is a geometry-selector placeholder; actual migration to a Face/Body selector
-// type is owned by the FEA Load/Support follow-on PRD (depends on
-// docs/prds/topology-selector-value-type.md §10 + task 4092).
+// pre-retirement `eval_supports("FixedSupport", ...)` Map.
+//
+//   `target` — the supported geometry, a REQUIRED kind-agnostic `Selector`
+//              (face, edge, vertex or body), e.g. `face(body, "root")`
+//              (task 5312; docs/prds/v0_6/fea-load-support-selector-migration.md
+//              D10). A bare String is a compile error. The solver reads the
+//              target's Named leaf through an interim name shim until
+//              Bmig2-consume (#5313) resolves it to an FE node set.
 //
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads cross-PRD table).
 structure def FixedSupport : Support {
-    param target : String = ""
+    param target : Selector
 }
 
 // PinnedSupport — wave-2 replacement for the `PinnedSupport` builtin
@@ -371,9 +375,12 @@ structure def FixedSupport : Support {
 // by the pre-retirement `make_kind_map("pinned_support", ...)` call
 // (crates/reify-stdlib/src/supports.rs; Q-SIR-4 preserve-don't-redesign):
 //
-//   `target` — geometry selector target. `String` is a placeholder for
-//              `Selector` until the topology-selector type aliases land;
-//              mirrors the `target` key in the retired builtin.
+//   `target` — the supported geometry, a REQUIRED kind-agnostic `Selector`,
+//              e.g. `face(beam, "x_min")` (task 5312;
+//              docs/prds/v0_6/fea-load-support-selector-migration.md D10).
+//              A bare String is a compile error. As for FixedSupport, the
+//              solver reads the Named leaf through an interim name shim until
+//              Bmig2-consume (#5313) resolves it to an FE node set.
 //
 // The BC-framework semantics (translational-DOF-only constraint, 6-DOF
 // distinction for shell entities — explicit-pin opt-out from rotational
@@ -381,13 +388,9 @@ structure def FixedSupport : Support {
 // DoF logic solver-side preserves the downstream FEA contract unchanged.
 // Same boundary as for FixedSupport.
 //
-// All fields default so a bare `PinnedSupport()` constructor succeeds
-// (covers SIR-β-sup boundary tests in `crates/reify-eval/tests/pinned_support.rs`
-// and the golden in `crates/reify-eval/tests/golden/structure_instance.txt`).
-//
 // PRD: docs/prds/v0_3/structure-instance-runtime.md §8 Phase 2 task SIR-β-sup.
 structure def PinnedSupport : Support {
-    param target : String = ""
+    param target : Selector
 }
 
 // PressureLoad — wave-2 replacement for the `pressure_load` builtin
