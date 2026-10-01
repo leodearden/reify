@@ -2606,6 +2606,40 @@ class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
             "warning: W_X: something\n" + _reify_missing_fixture_stderr(_LEAF_FIXTURE))
         self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
 
+    def test_longer_path_ending_in_the_fixture_name_blocks(self):
+        """A relayed short fixture is a path token, not a suffix of any path."""
+        for other in ("tests/prd-gate/fixtures/subleaf.ri", "/other/leaf.ri"):
+            with self.subTest(other=other):
+                self._assert_blocks(self._result(
+                    f"suffix {other} cap", _reify_missing_fixture_stderr(other),
+                    command=["reify", "check", "leaf.ri"]))
+
+    def test_fixture_delimited_as_a_whole_token_is_fixture_absent(self):
+        for label, stderr in (
+            ("reify", _reify_missing_fixture_stderr("leaf.ri")),
+            ("perror", "cat: leaf.ri: No such file or directory"),
+            ("quoted", "can't open file 'leaf.ri': [Errno 2] No such file or directory"),
+            ("backticked", "failed to read `leaf.ri` (os error 2)"),
+        ):
+            with self.subTest(spelling=label):
+                rec = self._result(f"{label} cap", stderr,
+                                   command=["reify", "check", "leaf.ri"])
+                self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+
+    def test_missing_grammar_fixture_still_blocks(self):
+        """tree-sitter's missing-file report names neither the path nor ENOENT.
+
+        Pins today's fail-closed outcome for grammar probes (#8122), whose
+        fixture-absent case the reify-specific anchor cannot see.
+        """
+        self._assert_blocks(dict(
+            self._result(
+                "grammar absent cap",
+                "Error: No files were found at or matched by the provided "
+                "pathname/glob",
+                command=["tree-sitter", "parse", "--quiet", _LEAF_FIXTURE]),
+            probe_kind="grammar"))
+
 
 # ---------------------------------------------------------------------------
 # task #7257 step-09 (RED): RESULTS_SCHEMA must constrain the record shape

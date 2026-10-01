@@ -341,6 +341,15 @@ def _reports_enoent(line: str) -> bool:
             or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
 
 
+def _path_token_re(path: str) -> "re.Pattern[str]":
+    """Match `path` as a whole path token, never as the tail of a longer path.
+
+    `/` is deliberately not a left delimiter, so `leaf.ri` does not match
+    inside `/other/leaf.ri` or `fixtures/subleaf.ri`.
+    """
+    return re.compile(r"(?:^|[\s'\"`])" + re.escape(path) + r"(?=[\s'\"`:]|$)")
+
+
 def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     """True iff the record's captured stderr says the probe's fixture did not exist.
 
@@ -378,12 +387,26 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     spelling and must still match.
 
     The signature is ANCHORED TO THE TARGET: it must sit on a stderr line that
-    also names the probe's own fixture, read from the record's argv by
-    pcc.fixture_argument (reify renders `Error reading <fixture>: ...`).  That
-    excludes ENOENT text a genuine FAIL merely quotes, an ENOENT about some
-    other path (an imported module, a data file, the α script itself), and a
-    signature on a line that does not name the fixture.  An argv naming no
-    fixture never qualifies.
+    also names the probe's own fixture as a whole path token, read from the
+    record's argv by pcc.fixture_argument (reify renders `Error reading
+    <fixture>: ...`).  That excludes ENOENT text quoted on a line that does not
+    name the fixture, an ENOENT about some other path (an imported module, a
+    data file, the α script itself, or a longer path that merely ends in the
+    fixture's name), and a signature on a line that does not name the fixture.
+    An argv naming no fixture never qualifies.
+
+    RESIDUAL LIMITATION: the anchor narrows the quoting hazard but does not
+    close it.  A genuine FAIL whose diagnostic line both names the fixture and
+    quotes the ENOENT text (`<fixture>:3: expected "No such file or
+    directory"`) is still mis-routed to FIXTURE_ABSENT, which downgrades BLOCKS
+    to INCOMPLETE and never reaches PASS.  The principled fix is for α to tag
+    the record structurally at probe time; follow-up ticket
+    tkt_0RVA2VQZR806G3PZTQVH0JCDXG.
+
+    GRAMMAR PROBES ARE NOT COVERED: tree-sitter reports a missing file as
+    `Error: No files were found at or matched by the provided pathname/glob`,
+    which names neither the path nor ENOENT.  A never-written grammar fixture
+    therefore still blocks, failing closed.  Tracked by #8122.
 
     Args:
         rec: An α --json result record.
@@ -398,7 +421,8 @@ def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
     fixture = pcc.fixture_argument(normalize_command(rec.get("command")))
     if not fixture:
         return False
-    return any(fixture in line and _reports_enoent(line)
+    names_fixture = _path_token_re(fixture)
+    return any(names_fixture.search(line) and _reports_enoent(line)
                for line in stderr.splitlines())
 
 
