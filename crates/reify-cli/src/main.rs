@@ -3099,7 +3099,7 @@ fn check_gating_error(
 enum ConstraintOutcome {
     /// Every constraint evaluated to `Satisfied`.
     AllSatisfied,
-    /// No constraints violated, but some were `Indeterminate` (undef inputs).
+    /// No constraints violated, but some were `Indeterminate`.
     SomeIndeterminate(usize),
     /// At least one constraint evaluated to `Violated`.
     SomeViolated,
@@ -3117,12 +3117,23 @@ fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String 
     }
 }
 
+/// The line naming an `Indeterminate` entry: its display label, followed by
+/// `: {reason}` when its producer recorded one. Nothing stands in for an
+/// absent reason. Shared by both reports so the two renderings cannot drift.
+fn indeterminate_subject_line(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    let label = constraint_display_label(entry);
+    match &entry.indeterminate_reason {
+        Some(reason) => format!("{label}: {reason}"),
+        None => label,
+    }
+}
+
 /// Write the strict-failure detail block for indeterminate constraints.
 ///
-/// Emits a header naming the count of `Indeterminate` entries and a generic
-/// "why" (inputs undefined), then one indented line per `Indeterminate` entry
-/// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
-/// `Satisfied` and `Violated` entries are silently skipped.
+/// Emits a header naming the count of `Indeterminate` entries, then one
+/// indented [`indeterminate_subject_line`] per `Indeterminate` entry, so each
+/// shows the reason recorded for it rather than a guessed one. `Satisfied` and
+/// `Violated` entries are silently skipped.
 ///
 /// `n` is the already-computed indeterminate count from
 /// [`ConstraintOutcome::SomeIndeterminate`]; it is used directly in the header
@@ -3132,16 +3143,12 @@ fn report_indeterminate_detail(
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
 ) {
-    let _ = writeln!(
-        out,
-        "Strict check failed: {n} constraint(s) INDETERMINATE \
-         \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
-    );
+    let _ = writeln!(out, "Strict check failed: {n} constraint(s) INDETERMINATE:");
     for entry in results
         .iter()
         .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
     {
-        let _ = writeln!(out, "  {}", constraint_display_label(entry));
+        let _ = writeln!(out, "  {}", indeterminate_subject_line(entry));
     }
 }
 
@@ -3149,11 +3156,13 @@ fn report_indeterminate_detail(
 ///
 /// Returns a [`ConstraintOutcome`] indicating the overall result.
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
-/// constraint id's Display representation when `entry.label` is `None`.
+/// constraint id's Display representation when `entry.label` is `None`; an
+/// `Indeterminate` entry is printed as `  INDETERMINATE {line}` with its
+/// [`indeterminate_subject_line`], which shows the recorded reason.
 ///
 /// **Indeterminate constraints are intentionally treated as non-violating.**
-/// `Indeterminate` arises when a constraint's inputs are undefined — typically
-/// from `auto` parameters not yet resolved by the solver. Treating these as
+/// `Indeterminate` means the constraint could not be decided on this run — for
+/// example an `auto` parameter not yet resolved by the solver. Treating these as
 /// violations would block evaluations that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
 /// a `SomeViolated` outcome.
@@ -3164,21 +3173,21 @@ fn report_constraint_results(
     let mut violated = false;
     let mut indeterminate_count: usize = 0;
     for entry in results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "OK",
+        let (status, subject) = match entry.satisfaction {
+            Satisfaction::Satisfied => ("OK", constraint_display_label(entry)),
             Satisfaction::Violated => {
                 violated = true;
-                "VIOLATED"
+                ("VIOLATED", constraint_display_label(entry))
             }
             // Indeterminate does not count as violated — undef inputs
             // (auto params, partial evaluation) are not violations.
             // Undef propagates as quiet-NaN semantics.
             Satisfaction::Indeterminate => {
                 indeterminate_count += 1;
-                "INDETERMINATE"
+                ("INDETERMINATE", indeterminate_subject_line(entry))
             }
         };
-        let _ = writeln!(out, "  {} {}", status, constraint_display_label(entry));
+        let _ = writeln!(out, "  {} {}", status, subject);
     }
     if violated {
         ConstraintOutcome::SomeViolated
