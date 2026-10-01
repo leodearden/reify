@@ -2021,6 +2021,60 @@ mod cli {
     /// `layer_violations_from_wire` → `player::check` → `Finding{pattern:PLayerViolation, ...}`.
     #[test]
     fn player_dispatch_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Json));
+    }
+
+    /// SSE sibling of `player_dispatch_forwards_canned_layer_violation`: the
+    /// same canned violation and the same assertions, with the mock answering
+    /// `initialize` and `tools/call` as `text/event-stream` frames. Proves the
+    /// jcodemunch client decodes SSE-framed replies end-to-end, not just the
+    /// fused-memory client the `http_loader` SSE tests cover.
+    #[test]
+    fn player_dispatch_via_sse_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Sse));
+    }
+
+    /// A jcodemunch `initialize` reply whose SSE `data:` payload is not JSON
+    /// is refused at construction, so the run fail-softs to zero findings and
+    /// exit 0 — and the breadcrumb names the decode refusal itself.
+    ///
+    /// "jcodemunch unreachable" alone would be a false green: a refused
+    /// connection prints the same prefix. "SSE data parse" is what proves the
+    /// malformed payload was refused rather than skipped. The empty findings
+    /// array doubles as the never-reached-`tools/call` guard: had the canned
+    /// responder been reached, its violation would surface as a finding.
+    #[test]
+    fn player_via_sse_malformed_data_fails_soft_with_the_data_parse_breadcrumb() {
+        let out = run_player_with_canned_violation(Framing::SseMalformedData);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a malformed SSE `initialize` reply must fail soft (exit 0), not refuse; \
+             got {:?}\nstderr: {stderr}",
+            out.status.code(),
+        );
+        assert!(
+            stderr.contains("jcodemunch unreachable"),
+            "expected the construction-layer fail-soft breadcrumb; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("SSE data parse"),
+            "expected the breadcrumb to name the SSE data-parse refusal; stderr: {stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a refused handshake must never reach `tools/call`; got findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// Run `--pattern PLAYER` against a mock jcodemunch speaking `framing`,
+    /// whose `get_layer_violations` answers one canned
+    /// `crates/reify-cli` → `crates/reify-kernel` violation.
+    fn run_player_with_canned_violation(framing: Framing) -> std::process::Output {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -2042,7 +2096,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let mock = spawn_mock_mcp(|_args| {
+        let mock = spawn_mock_mcp_shaped(framing, ResultShape::StructuredContent, |_args| {
             Some(serde_json::json!({
                 "violations": [{
                     "from": "crates/reify-cli",
@@ -2075,7 +2129,12 @@ mod cli {
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
 
         mock.stop();
+        out
+    }
 
+    /// Exactly one `PLayerViolation/Low` finding, carrying the canned
+    /// violation of [`run_player_with_canned_violation`] directionally.
+    fn assert_one_canned_layer_violation(out: &std::process::Output) {
         // PLayerViolation is Severity::Low → high_severity_exit_code == 0.
         assert_eq!(
             out.status.code(),
