@@ -45,8 +45,28 @@ pub(crate) fn reconcile_fn_return(
                 ));
             }
         }
-        Some(_) => {}
+        Some(annotation) => {
+            if annotation_is_reconciled(declared) && body_contradicts(declared, produced) {
+                diagnostics.push(mismatched_return(
+                    &compiled.name,
+                    declared,
+                    annotation.span,
+                    produced,
+                    body_span,
+                ));
+            }
+        }
     }
+}
+
+/// Whether an explicit return annotation resolving to `declared` is checked.
+///
+/// Only `Int` and `Scalar` are, mirroring the param and let annotation checks
+/// (`check_param_default_type` / `check_let_annotation_type`): other declared
+/// types (enums under erasure, `Option`, trait objects, collections) have
+/// known body-inference gaps that would report correct code.
+fn annotation_is_reconciled(declared: &Type) -> bool {
+    matches!(declared, Type::Int | Type::Scalar { .. })
 }
 
 /// Whether a body producing `body` contradicts a signature declaring
@@ -88,5 +108,30 @@ fn unannotated_return(
         format!(
             "body produces `{produced}`; the un-annotated return type defaults to `{defaulted}`"
         ),
+    ))
+}
+
+fn mismatched_return(
+    fn_name: &str,
+    declared: &Type,
+    annotation_span: SourceSpan,
+    produced: &Type,
+    body_span: SourceSpan,
+) -> Diagnostic {
+    diag_at(
+        FN_RETURN_RECONCILE_SEVERITY,
+        format!(
+            "function '{fn_name}' declares return type `{declared}` but its body produces \
+             `{produced}`"
+        ),
+    )
+    .with_code(DiagnosticCode::FnReturnTypeMismatch)
+    .with_label(DiagnosticLabel::new(
+        annotation_span,
+        "declared return type",
+    ))
+    .with_label(DiagnosticLabel::new(
+        body_span,
+        format!("body produces `{produced}`"),
     ))
 }
