@@ -34,6 +34,23 @@ pub struct MeshingOptions {
     pub deterministic: bool,
 }
 
+impl MeshingOptions {
+    /// The `General.NumThreads` every 3D entry point hands gmsh: one worker
+    /// when output must be deterministic, otherwise the caller's `threads`,
+    /// otherwise the host's available parallelism. `threads` stays a pure
+    /// performance hint, outside the cache key.
+    pub fn resolved_num_threads(&self) -> u32 {
+        if self.deterministic {
+            return 1;
+        }
+        self.threads.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+                .unwrap_or(1)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MeshingOptions;

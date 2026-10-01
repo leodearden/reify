@@ -479,20 +479,11 @@ impl GmshKernel {
         ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
         // Thread count: deterministic mode forces 1; otherwise honour
-        // caller override; otherwise probe available parallelism. We avoid
-        // introducing `num_cpus` as a workspace dep — `available_parallelism`
-        // is the std-library equivalent landed in 1.59.
-        let num_threads: f64 = if options.deterministic {
-            1.0
-        } else {
-            match options.threads {
-                Some(t) => t as f64,
-                None => std::thread::available_parallelism()
-                    .map(|n| n.get() as f64)
-                    .unwrap_or(1.0),
-            }
-        };
-        ffi::option_set_number("General.NumThreads", num_threads)?;
+        // caller override; otherwise probe available parallelism.
+        ffi::option_set_number(
+            "General.NumThreads",
+            f64::from(options.resolved_num_threads()),
+        )?;
 
         // Element order: must be set BEFORE mesh_generate(3) so HXT emits
         // tets of the requested order. Readback later uses the matching
