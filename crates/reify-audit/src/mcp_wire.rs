@@ -1,3 +1,12 @@
+//! The one MCP streamable-HTTP response-body decode, shared by
+//! [`FusedMemoryClient`](crate::fused_memory_client::FusedMemoryClient),
+//! [`JcodemunchClient`](crate::jcodemunch_client::JcodemunchClient) and the
+//! live-serve test harnesses.
+//!
+//! Pure: it takes the response's `Content-Type` and its already-read body and
+//! does no I/O. Envelope policy — the 202 short-circuit, reading the body, the
+//! JSON-RPC `error` check — stays with the caller.
+
 use std::fmt;
 
 use serde_json::Value;
@@ -43,8 +52,25 @@ impl std::error::Error for BodyDecodeError {
 /// Decode one MCP streamable-HTTP response body into its JSON-RPC message,
 /// choosing SSE or bare-JSON framing from `content_type`.
 pub fn decode_body(content_type: &str, body: &str) -> Result<Value, BodyDecodeError> {
-    let _ = (content_type, body);
-    Ok(Value::Null)
+    if content_type.contains("text/event-stream") {
+        let data = body
+            .lines()
+            .find_map(|line| line.strip_prefix("data:"))
+            .ok_or_else(|| BodyDecodeError::SseNoDataLine {
+                body: body.to_owned(),
+            })?;
+        serde_json::from_str(data.trim()).map_err(|source| BodyDecodeError::SseDataParse {
+            source,
+            body: body.to_owned(),
+        })
+    } else if body.is_empty() {
+        Ok(Value::Null)
+    } else {
+        serde_json::from_str(body).map_err(|source| BodyDecodeError::JsonBodyParse {
+            source,
+            body: body.to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
