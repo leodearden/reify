@@ -833,8 +833,14 @@ fn metric_opts(n_modes: usize, sigma: f64) -> EigenSolverOptions {
     }
 }
 
-/// The eigenvalues of `got` and `want` agree as MULTISETS to relative `rel_tol`.
-fn assert_same_eigenvalue_multiset(got: &[f64], want: &[f64], rel_tol: f64, label: &str) {
+/// The eigenvalues of `got` and `want` agree as MULTISETS: each sorted pair
+/// `(g, w)` is within `tolerance(g, w)`.
+fn assert_same_eigenvalue_multiset(
+    got: &[f64],
+    want: &[f64],
+    tolerance: impl Fn(f64, f64) -> f64,
+    label: &str,
+) {
     assert_eq!(got.len(), want.len(), "{label}: eigenvalue count {got:?} vs {want:?}");
     let sorted = |v: &[f64]| {
         let mut v = v.to_vec();
@@ -842,13 +848,26 @@ fn assert_same_eigenvalue_multiset(got: &[f64], want: &[f64], rel_tol: f64, labe
         v
     };
     for (g, w) in sorted(got).into_iter().zip(sorted(want)) {
+        let bound = tolerance(g, w);
         assert!(
-            (g - w).abs() <= rel_tol * g.abs().max(w.abs()),
-            "{label}: λ = {g} vs dense {w} (relative gap {:.3e} > {rel_tol:.0e}); \
+            (g - w).abs() <= bound,
+            "{label}: λ = {g} vs dense {w}, gap {:.3e} > bound {bound:.3e}; \
              got {got:?}, dense {want:?}",
-            (g - w).abs() / g.abs().max(w.abs()),
+            (g - w).abs(),
         );
     }
+}
+
+/// Relative agreement to `rel_tol`.
+fn relative(rel_tol: f64) -> impl Fn(f64, f64) -> f64 {
+    move |g, w| rel_tol * g.abs().max(w.abs())
+}
+
+/// Shift-invert accuracy scales with `|λ − σ|` (λ = σ + 1/μ), and a pure
+/// relative bound is ill-posed where a pencil has λ = 0 exactly, so σ-ladder
+/// comparisons use `1e-9·max(|a|, |b|, |a − σ|, 1e-12)`.
+fn mixed_near_shift(sigma: f64) -> impl Fn(f64, f64) -> f64 {
+    move |g, w| 1e-9 * g.abs().max(w.abs()).max((g - sigma).abs()).max(1e-12)
 }
 
 /// Every contract a metric-Lanczos result owes, measured against dense QZ.
@@ -870,7 +889,7 @@ fn assert_metric_lanczos_matches_dense(
     assert_eq!(result.shift, sigma, "{label}: the shift used must be σ");
 
     let dense = solve_eigen_dense(k, b, opts);
-    assert_same_eigenvalue_multiset(&result.eigenvalues, &dense.eigenvalues, 1e-9, label);
+    assert_same_eigenvalue_multiset(&result.eigenvalues, &dense.eigenvalues, relative(1e-9), label);
     assert_eigen_residuals(k, b, &result.eigenvalues, &result.eigenvectors, 1e-10, label);
 
     for col in 0..result.eigenvectors.ncols() {
@@ -943,4 +962,63 @@ fn metric_lanczos_stiffness_arm_matches_dense_on_indefinite_b() {
         opts.clone(),
     );
     assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "indefinite σ=0.02 Stiffness");
+}
+
+// ---------------------------------------------------------------------------
+// The sparse entry point dispatches B ≠ cI to the symmetrized operator (#7602)
+// ---------------------------------------------------------------------------
+
+/// Run `solve_eigen_shift_invert` across `sigmas` and hold every solve to the
+/// dense reference at the same σ.
+fn assert_shift_invert_matches_dense_across(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    n_modes: usize,
+    sigmas: &[f64],
+    label: &str,
+) {
+    for &sigma in sigmas {
+        let opts = metric_opts(n_modes, sigma);
+        let ctx = format!("{label} σ={sigma}");
+        let lanczos = solve_eigen_shift_invert(k, b, opts.clone());
+        assert!(
+            lanczos.n_converged > 0,
+            "{ctx}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert!(lanczos.converged, "{ctx}: must converge");
+        let dense = solve_eigen_dense(k, b, opts);
+        assert_same_eigenvalue_multiset(
+            &lanczos.eigenvalues,
+            &dense.eigenvalues,
+            mixed_near_shift(sigma),
+            &ctx,
+        );
+        assert_eigen_residuals(k, b, &lanczos.eigenvalues, &lanczos.eigenvectors, 1e-10, &ctx);
+    }
+}
+
+/// SPD, non-identity B, across a σ ladder from 0 to well inside the spectrum.
+#[test]
+fn shift_invert_matches_dense_on_graded_spd_b_across_a_sigma_ladder() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    assert_shift_invert_matches_dense_across(
+        &k,
+        &b,
+        2,
+        &[0.0, 5e-4, 0.05, 0.5, 1.5, 2.5],
+        "graded",
+    );
+}
+
+/// Indefinite B (the buckling stand-in), across shifts of both signs.
+#[test]
+fn shift_invert_matches_dense_on_indefinite_b_across_a_sigma_ladder() {
+    let (k, b) = indefinite_b_pencil(136);
+    assert_shift_invert_matches_dense_across(
+        &k,
+        &b,
+        3,
+        &[0.0, 1e-3, 0.02, -0.02, 0.2, -0.3],
+        "indefinite",
+    );
 }
