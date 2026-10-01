@@ -54,12 +54,18 @@ sweep, whose established facts are PRD §2:
 - **Treads** follow an upper envelope near **~2.075×** the requested deflection.
 - The treads are punctuated by narrow **periodic downward teeth** near **~0.758×**.
   The teeth are **real and recurrent, not isolated exceptions** — they recur across
-  the whole range, at a period that tightens as the request gets finer (PRD §2 has
-  the periods, widths and duty cycle).
-- A **third branch near ~1.49×** appears below `d/R < 2.5e-4` — below ~0.25 mm on a
-  1 m-radius sphere. It is **outside** the envelope/tooth characterization above:
-  do not extrapolate that characterization that low, and do not read a reading
-  taken down there as a tread.
+  the range **above** the third branch's onset (`d/R` ≳ 2.57e-4), at a period that
+  tightens as the request gets finer (PRD §2 has the periods, widths and duty cycle).
+- A **third branch near ~1.49×** has its **onset** at `d/R` ≈ 2.52e-4, which is
+  ~0.252 mm on a 1 m-radius sphere. Below the onset the ~0.758× teeth are absent.
+  The treads continue, punctuated instead by narrow **downward** third-branch
+  windows that widen as `d/R` falls. So below the onset a reading may be a tread
+  **or** a third-branch window: measure it, because the branch decides, not `d/R`.
+- Below a model-derived `d/R` ≈ 6.3e-5, a **`k = −3` state** appears whose readings
+  sit **above** the tread envelope (§3.1).
+
+The ratios and onsets are PRD §2's; the per-`d` readings behind them are
+`docs/notes/precision-refine-envelope-calibration.md` §1.2.
 
 The consequences of "staircase" that matter operationally: the **branch** a
 candidate lands on, not the local slope, decides pass/fail; and two adjacent
@@ -88,9 +94,9 @@ would show the sphere's branches. It does not.
 
 ### 2.2 It IS a two-ladder phase collision on the sphere face
 
-Per PRD §4.1 (rejected alternative C), the mechanism for **which branch** — tread
-or tooth — a candidate lands on is a phase collision between two independently
-quantised ladders on the sphere face:
+Per PRD §4.1 (rejected alternative C), the mechanism for **which branch** a candidate
+lands on is a phase collision between two independently quantised ladders on the
+sphere face:
 
 - **Interior surface nodes** are truncation-quantised at the literal constant
   `0.7 * ArcAngularStep` — `BRepMesh_SphereRangeSplitter`'s angular-step factor.
@@ -103,12 +109,29 @@ deflection does not halve the angular step: it yields an effective step of
 0.70000 and 0.70711** — the splitter's literal factor versus the tessellator's
 derived effective factor — is the phase-collision explanation for the branch.
 
+The branch is selected by the index `k = m − nV`, for request `d` on radius `R`:
+
+```
+theta_d = 2·acos(1 − d/R)          arc angle at the full deflection
+nV      = int(π / (0.7·theta_d)) + 1     interior nodes, splitter's 0.7 factor
+theta_e = 2·acos(1 − (d/2)/R)      arc angle at half the deflection
+m       = ceil(π / theta_e)              seam-edge segments
+```
+
+`k` = 0 is a tooth, −1 a tread, −2 the third branch, and −3 the `k = −3` state.
+For small angles, `nV ≈ π/(0.70000·theta_d)` grows faster than
+`m ≈ π/(0.70711·theta_d)` as `d/R` falls, so `k` drifts more negative. That is why
+the branches have onsets: the teeth die out near `d/R` ≈ 2.57e-4, third-branch
+windows begin near 2.52e-4, and `k = −3` windows begin near 6.3e-5 (all derived).
+
 **Honest status of this model, which must not be blurred:**
 
 - For **branch prediction** it is **exact**: PRD §4.1 records that it predicts the
-  branch correctly at **388/388 measured points**. It is rejected for *production*
-  use only because it depends on OCCT internal, non-API constants that an upgrade
-  could silently move — not because it is unverified.
+  branch correctly at **388/388 measured points**, and task #7266's onset walk adds
+  **26/26** more, including third-branch windows and the `k = −3` state
+  (`docs/notes/precision-refine-envelope-calibration.md` §1.2). It is rejected for
+  *production* use only because it depends on OCCT internal, non-API constants that
+  an upgrade could silently move — not because it is unverified.
 - For the **periods** between teeth it is **not yet shown to predict them at all**.
   That half is a **hypothesis to re-verify, not a checked fact**. PRD §2 has the
   measured periods; nothing here derives them.
@@ -140,20 +163,28 @@ So a value that clears its bound only because it landed on a tooth is **one retu
 away** from the envelope — which, that close to the bound, violates.
 
 **Never tune onto a tooth. Pick a candidate whose ENVELOPE value (~2.075× the
-request) clears the bound.** The teeth deviate **downward only**, so the envelope is
-the branch to size against; a tooth reading is free headroom you must not count on.
+request) clears the bound.** The teeth and the third-branch windows deviate
+**downward only**, so the envelope is the branch to size against. A tooth or
+third-branch reading is free headroom you must not count on.
+
+That downward-only property **fails** below the model-derived `d/R` ≈ 6.3e-5. There,
+the `k = −3` state reads **above** the tread envelope: 2.106× at 0.048 mm and 2.111×
+at 0.04837 mm on a 1 m sphere (measured, task #7266). So this envelope argument
+holds only for `d/R` ≳ 6.3e-5.
 
 ### 3.2 Farther below the bound, the envelope is an observation, not a bound
 
-`~2.075×` is an **observed supremum over the regime walked** (`d/R ≳ 2.5e-4`), **not
-a proven bound**. Three careful readings disagree on it, and the disagreement is not
-noise:
+`~2.075×` is an **observed supremum over the regime walked**, **not a proven
+bound**. That regime is calibration note §1.2's `d` ≥ 0.3 mm (`d/R` ≥ 3e-4) plus
+task #7266's onset walk down to `d/R` = 1e-4. Careful readings disagree on it, and the
+disagreement is not noise:
 
 | reading | regime | source |
 |---|---|---|
-| 2.079× | `d/R = 3.12e-4` | `docs/notes/precision-refine-envelope-calibration.md` §1.2 — a dense ladder-bracketing sweep, the tightest spacing of the three |
+| 2.079× | `d/R = 3.12e-4` | `docs/notes/precision-refine-envelope-calibration.md` §1.2 — a dense ladder-bracketing sweep, the tightest uniform spacing here |
 | 2.0835× | `d/R ∈ [4e-4, 4e-3]` | PRD §4.1, rejected alternative A — a wider sweep, **higher** despite less density around any one point |
-| 2.106× | `d = 0.048 mm`, `d/R = 4.8e-5` | PRD §4.1, cited **cross-regime** — below the 2.5e-4 floor, so **not** a tread-branch reading |
+| 2.0861× | `d/R = 2.4682e-4` | calibration note §1.2, task #7266's onset walk — a tread **below** the third branch's onset |
+| 2.106×, 2.111× | `d` = 0.048, 0.04837 mm (`d/R` ≈ 4.8e-5) | PRD §4.1 (2.106×), re-measured with 2.111× in task #7266 (calibration note §1.2) — the model `k = −3` state, **not** a tread |
 
 The finer regime gave the **larger** value, which is exactly why PRD §4.1 rejects
 sizing any constant from a finite sweep: such a constant fails **silently** when it
@@ -162,8 +193,8 @@ is slightly too small, the worst failure mode available for a safety property.
 Practical reading for a fixture author:
 
 - Size against the envelope, and take the largest of the readings above that you can
-  defend for your regime as the anchor — including the cross-regime 2.106× if you
-  want a conservative one.
+  defend for your regime as the anchor — including the `k = −3` state's 2.111× if
+  you want a conservative one.
 - Treat any margin you compute from these ratios as an argument about the
   *envelope*, never as a prediction of the achieved value. The only way to learn the
   achieved value at a candidate is to measure it (recipe:
