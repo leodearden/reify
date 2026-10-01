@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::fn_return_check::reconcile_fn_return;
+use crate::fn_return_check::{FnOwner, reconcile_fn_return};
 use crate::types::TopologyTemplate;
 
 /// Push the appropriate unresolved-type diagnostic for a fn signature position.
@@ -418,7 +418,7 @@ pub(crate) fn compile_function(
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
     };
-    reconcile_fn_return(fn_def, &compiled, diagnostics);
+    reconcile_fn_return(fn_def, FnOwner::Free, &compiled, diagnostics);
     Some(compiled)
 }
 
@@ -794,7 +794,7 @@ pub(crate) fn compile_assoc_function(
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: fn_def.name.clone(),
         doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
@@ -809,7 +809,14 @@ pub(crate) fn compile_assoc_function(
         annotations,
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
-    })
+    };
+    reconcile_fn_return(
+        fn_def,
+        FnOwner::Conformer(conformer_name),
+        &compiled,
+        diagnostics,
+    );
+    Some(compiled)
 }
 
 /// Resolve a type name in field context. Unlike resolve_type_name, unresolved

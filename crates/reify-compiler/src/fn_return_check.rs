@@ -4,7 +4,7 @@
 //! body the signature contradicts hands every caller a mistyped value.
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type};
-use reify_ir::CompiledFunction;
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 use crate::conformance::diag_at;
 use crate::type_compat::type_compatible;
@@ -18,6 +18,28 @@ use crate::type_compat::type_compatible;
 /// documented on `CTOR_FIELD_CONFORMANCE_SEVERITY`.
 pub(crate) const FN_RETURN_RECONCILE_SEVERITY: Severity = Severity::Warning;
 
+/// What a compiled fn belongs to.
+#[derive(Clone, Copy)]
+pub(crate) enum FnOwner<'a> {
+    /// A module fn, or a trait-static fn compiled under its namespaced name.
+    Free,
+    /// A trait associated fn compiled for the named conformer.
+    Conformer(&'a str),
+}
+
+impl FnOwner<'_> {
+    /// How diagnostics name the fn. An injected default body is compiled once
+    /// per conformer, so naming the conformer keeps same-span reports distinct.
+    fn subject(self, fn_name: &str) -> String {
+        match self {
+            FnOwner::Free => format!("function '{fn_name}'"),
+            FnOwner::Conformer(conformer) => {
+                format!("associated function '{fn_name}' (conformer '{conformer}')")
+            }
+        }
+    }
+}
+
 /// Report a compiled fn whose body's result type contradicts its return type.
 ///
 /// An explicit annotation is checked by the annotated arm; an absent one means
@@ -25,12 +47,16 @@ pub(crate) const FN_RETURN_RECONCILE_SEVERITY: Severity = Severity::Warning;
 /// anything else is reported as un-annotated.
 pub(crate) fn reconcile_fn_return(
     fn_def: &reify_ast::FnDef,
+    owner: FnOwner<'_>,
     compiled: &CompiledFunction,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(body) = &fn_def.body else {
         return;
     };
+    if matches!(owner, FnOwner::Conformer(_)) && reads_receiver(fn_def, compiled) {
+        return;
+    }
     let declared = &compiled.return_type;
     let produced = &compiled.body.result_expr.result_type;
     let body_span = body.result_expr.span;
@@ -38,7 +64,7 @@ pub(crate) fn reconcile_fn_return(
         None => {
             if body_contradicts(declared, produced) {
                 diagnostics.push(unannotated_return(
-                    &compiled.name,
+                    &owner.subject(&compiled.name),
                     declared,
                     produced,
                     body_span,
@@ -48,7 +74,7 @@ pub(crate) fn reconcile_fn_return(
         Some(annotation) => {
             if annotation_is_reconciled(declared) && body_contradicts(declared, produced) {
                 diagnostics.push(mismatched_return(
-                    &compiled.name,
+                    &owner.subject(&compiled.name),
                     declared,
                     annotation.span,
                     produced,
@@ -57,6 +83,32 @@ pub(crate) fn reconcile_fn_return(
             }
         }
     }
+}
+
+/// Whether an assoc-fn body reads its `self` receiver.
+///
+/// Such a conformer body is not reconciled: `compile_assoc_function`'s body
+/// scope has no conformer template, so a receiver-member read types as the
+/// dimensionless `Real` fallback rather than the member's declared type, and
+/// reconciling it would report correct code. Task #8118 types those reads from
+/// the conformer, after which this gate can go.
+fn reads_receiver(fn_def: &reify_ast::FnDef, compiled: &CompiledFunction) -> bool {
+    let Some(receiver) = fn_def.params.iter().find(|p| p.is_self) else {
+        return false;
+    };
+    let mut found = false;
+    let mut visit = |expr: &CompiledExpr| {
+        if let CompiledExprKind::ValueRef(id) = &expr.kind
+            && id.member == receiver.name
+        {
+            found = true;
+        }
+    };
+    for (_, let_expr) in &compiled.body.let_bindings {
+        let_expr.walk(&mut visit);
+    }
+    compiled.body.result_expr.walk(&mut visit);
+    found
 }
 
 /// Whether an explicit return annotation resolving to `declared` is checked.
@@ -89,7 +141,7 @@ fn body_contradicts(declared: &Type, body: &Type) -> bool {
 }
 
 fn unannotated_return(
-    fn_name: &str,
+    subject: &str,
     defaulted: &Type,
     produced: &Type,
     body_span: SourceSpan,
@@ -97,9 +149,8 @@ fn unannotated_return(
     diag_at(
         FN_RETURN_RECONCILE_SEVERITY,
         format!(
-            "function '{fn_name}' has no return type annotation, so callers type its \
-             result as `{defaulted}`, but its body produces `{produced}`; annotate its \
-             return type"
+            "{subject} has no return type annotation, so callers type its result as \
+             `{defaulted}`, but its body produces `{produced}`; annotate its return type"
         ),
     )
     .with_code(DiagnosticCode::FnReturnTypeUnannotated)
@@ -112,7 +163,7 @@ fn unannotated_return(
 }
 
 fn mismatched_return(
-    fn_name: &str,
+    subject: &str,
     declared: &Type,
     annotation_span: SourceSpan,
     produced: &Type,
@@ -120,10 +171,7 @@ fn mismatched_return(
 ) -> Diagnostic {
     diag_at(
         FN_RETURN_RECONCILE_SEVERITY,
-        format!(
-            "function '{fn_name}' declares return type `{declared}` but its body produces \
-             `{produced}`"
-        ),
+        format!("{subject} declares return type `{declared}` but its body produces `{produced}`"),
     )
     .with_code(DiagnosticCode::FnReturnTypeMismatch)
     .with_label(DiagnosticLabel::new(
