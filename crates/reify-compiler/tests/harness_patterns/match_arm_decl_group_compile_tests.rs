@@ -15,8 +15,9 @@ use reify_ast::{
     Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
     MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
 };
-use reify_compiler::GuardedDeclGroup;
-use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
+use reify_compiler::{CompiledModule, GuardedDeclGroup};
+use reify_core::{ContentHash, ModulePath, Severity, SourceSpan, Type};
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── AST construction helpers ────────────────────────────────────────────────
 
@@ -612,6 +613,166 @@ fn match_arm_decl_group_discriminant_not_enum_emits_diagnostic() {
         bolt_template.match_arm_groups
     );
 }
+
+// ─── Applied (generic-enum) discriminants (task 8016) ────────────────────────
+//
+// PRD generic-enum-type-arg-retention ε2.  These tests compile inline `.ri`
+// source with the stdlib prelude instead of hand-building an AST: `Result` is
+// a PRELUDE enum, which the no-prelude `reify_compiler::compile` used by the
+// hand-built tests in this file cannot see.
+
+/// The `match_arm_groups` of the compiled `Bolt` template.
+fn bolt_match_arm_groups(compiled: &CompiledModule) -> &[GuardedDeclGroup] {
+    &compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled")
+        .match_arm_groups
+}
+
+/// The messages of `compiled`'s Error-severity diagnostics.
+fn error_messages(compiled: &CompiledModule) -> Vec<&str> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect()
+}
+
+/// `compiled` has no error diagnostic, and `Bolt` registered a `head` cluster
+/// of exactly two arms, typed `HexHead` then `SocketHead`.
+fn assert_head_cluster_registered(compiled: &CompiledModule) {
+    let errors = error_messages(compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {errors:#?}"
+    );
+
+    let head = bolt_match_arm_groups(compiled)
+        .iter()
+        .find(|g| g.name == "head")
+        .expect("match_arm_groups should contain a group named 'head'");
+    let arm_types: Vec<&Type> = head.arms.iter().map(|arm| &arm.arm_type).collect();
+    assert_eq!(
+        arm_types,
+        [
+            &Type::StructureRef("HexHead".to_string()),
+            &Type::StructureRef("SocketHead".to_string()),
+        ],
+        "'head' arms must be typed HexHead then SocketHead, in arm order"
+    );
+}
+
+/// An annotated generic-enum param — a `Type::Applied` discriminant — lowers to
+/// the same two-arm cluster as a bare-enum discriminant.
+#[test]
+fn match_arm_decl_group_applied_generic_enum_param_discriminant_registers_cluster() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+        structure def HexHead {}
+        structure def SocketHead {}
+        structure def Bolt {
+            param r : Result<Length, String> = Ok { value: 5mm }
+            match r {
+                Ok => sub head : HexHead,
+                Err => sub head : SocketHead
+            }
+        }
+        "#,
+    );
+
+    assert_head_cluster_registered(&compiled);
+}
+
+/// The `Type::Applied` discriminant must reach its `EnumDef`, not merely skip
+/// the enum-type gate: leaving out `Err` is reported as a missing variant and
+/// registers no cluster.
+#[test]
+fn match_arm_decl_group_applied_generic_enum_param_non_exhaustive_emits_diagnostic() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+        structure def HexHead {}
+        structure def SocketHead {}
+        structure def Bolt {
+            param r : Result<Length, String> = Ok { value: 5mm }
+            match r {
+                Ok => sub head : HexHead
+            }
+        }
+        "#,
+    );
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("non-exhaustive match on 'Result'") && m.contains("'Err'")),
+        "expected a non-exhaustive-match diagnostic naming 'Err', got: {errors:#?}"
+    );
+    assert!(
+        !errors.iter().any(|m| m.contains("expected an enum")),
+        "an Applied enum discriminant must not be refused as a non-enum, got: {errors:#?}"
+    );
+    assert!(
+        bolt_match_arm_groups(&compiled).is_empty(),
+        "no cluster should be registered for a non-exhaustive match, got: {:?}",
+        bolt_match_arm_groups(&compiled)
+    );
+}
+
+/// Must stay green once δ types a `let`-bound enum construction as `Type::Applied`.
+#[test]
+fn match_arm_decl_group_let_bound_generic_enum_construction_registers_cluster() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+        structure def HexHead {}
+        structure def SocketHead {}
+        structure def Bolt {
+            let r = Ok { value: 5mm }
+            match r {
+                Ok => sub head : HexHead,
+                Err => sub head : SocketHead
+            }
+        }
+        "#,
+    );
+
+    assert_head_cluster_registered(&compiled);
+}
+
+/// `Type::Applied` is not enum-exclusive: a generic STRUCTURE discriminant is
+/// still refused, so accepting an Applied enum cannot become accepting any
+/// Applied type.
+#[test]
+fn match_arm_decl_group_applied_generic_structure_discriminant_emits_diagnostic() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+        structure def HexHead {}
+        structure def Holder<T> { param v : T }
+        structure def Bolt {
+            param h : Holder<Length>
+            match h { Hex => sub head : HexHead }
+        }
+        "#,
+    );
+
+    let errors = error_messages(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("expected an enum") && m.contains("Holder<")),
+        "expected an 'expected an enum' diagnostic naming the Applied type, got: {errors:#?}"
+    );
+    assert!(
+        bolt_match_arm_groups(&compiled).is_empty(),
+        "no cluster should be registered for a generic-structure discriminant, got: {:?}",
+        bolt_match_arm_groups(&compiled)
+    );
+}
+
+// ─── Diagnostic-coverage tests, continued ────────────────────────────────────
 
 /// suggestion 9b: discriminant name not in scope → "not found in scope" diagnostic.
 ///
