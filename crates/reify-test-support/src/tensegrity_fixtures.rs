@@ -88,7 +88,10 @@ fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
 /// Raw coordinates as `Value::Point`s of LENGTH-dimensioned SI-metre
 /// `Value::Scalar`s, via [`crate::values::point3`].
 fn lift_points(coords: impl IntoIterator<Item = [f64; 3]>) -> Vec<Value> {
-    coords.into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
+    coords
+        .into_iter()
+        .map(|[x, y, z]| point3(x, y, z))
+        .collect()
 }
 
 /// [`triplex_node_coords`], lifted by [`lift_points`].
@@ -689,10 +692,17 @@ mod tests {
         let Value::StructureInstance(d) = &v else {
             panic!("expected a Value::StructureInstance, got {v:?}");
         };
-        assert_eq!(d.type_name, "Tensegrity", "the type name every consumer matches on");
+        assert_eq!(
+            d.type_name, "Tensegrity",
+            "the type name every consumer matches on"
+        );
 
         let fields = &d.fields;
-        assert_eq!(fields.len(), 4, "nodes/struts/cables/surfaces — `surfaces` must be PRESENT");
+        assert_eq!(
+            fields.len(),
+            4,
+            "nodes/struts/cables/surfaces — `surfaces` must be PRESENT"
+        );
         assert_eq!(
             fields.get("surfaces"),
             Some(&index_lists(&TENT_TRIS)),
@@ -710,7 +720,11 @@ mod tests {
             Some(Value::List(nodes)) => nodes,
             other => panic!("`nodes` must be a Value::List, got {other:?}"),
         };
-        assert_eq!(nodes.len(), TENT_NODE_COORDS.len(), "one node per TENT_NODE_COORDS row");
+        assert_eq!(
+            nodes.len(),
+            TENT_NODE_COORDS.len(),
+            "one node per TENT_NODE_COORDS row"
+        );
         for (i, (node, want)) in nodes.iter().zip(TENT_NODE_COORDS).enumerate() {
             let lifted = point_components(node);
             for (axis, c) in ["x", "y", "z"].iter().zip(0..3) {
@@ -727,14 +741,23 @@ mod tests {
     fn tent_golden_is_a_planar_anchored_fan_around_one_off_plane_free_node() {
         let node_count = TENT_NODE_COORDS.len() as i64;
         for a in TENT_ANCHORS {
-            assert!((0..node_count).contains(&a), "anchor {a} must index a tent node");
+            assert!(
+                (0..node_count).contains(&a),
+                "anchor {a} must index a tent node"
+            );
         }
         let mut distinct = TENT_ANCHORS.to_vec();
         distinct.sort_unstable();
         distinct.dedup();
-        assert_eq!(distinct.len(), TENT_ANCHORS.len(), "anchors must be distinct");
+        assert_eq!(
+            distinct.len(),
+            TENT_ANCHORS.len(),
+            "anchors must be distinct"
+        );
 
-        let free_nodes: Vec<i64> = (0..node_count).filter(|n| !TENT_ANCHORS.contains(n)).collect();
+        let free_nodes: Vec<i64> = (0..node_count)
+            .filter(|n| !TENT_ANCHORS.contains(n))
+            .collect();
         let [free] = free_nodes[..] else {
             panic!("the tent must have exactly one free node, got {free_nodes:?}");
         };

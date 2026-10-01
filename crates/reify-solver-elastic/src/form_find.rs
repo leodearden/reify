@@ -1579,7 +1579,10 @@ mod tests {
     /// documented there.
     fn tent_membrane() -> MembraneCase {
         let index = |i: i64| usize::try_from(i).expect("tent fixture indices are non-negative");
-        let surfaces = TENT_TRIS.iter().map(|&[i, j, k]| (index(i), index(j), index(k))).collect();
+        let surfaces = TENT_TRIS
+            .iter()
+            .map(|&[i, j, k]| (index(i), index(j), index(k)))
+            .collect();
         let anchors = TENT_ANCHORS.into_iter().map(index).collect();
         (TENT_NODE_COORDS.to_vec(), surfaces, anchors)
     }
