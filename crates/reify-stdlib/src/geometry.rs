@@ -92,8 +92,9 @@ type DecomposedTransform = (QuatComponents, [f64; 3], DimensionVector);
 /// - any component is non-numeric or non-finite.
 ///
 /// This consolidates the destructure-and-validate pattern shared by
-/// `transform_compose`, `transform_inverse`, `transform_log`, and
-/// `transform_exp`.
+/// `transform_compose`, `transform_log`, and — through
+/// [`classify_transform_operand_args`] — `transform_inverse` and
+/// `affine_from_transform`.
 fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
     let (rotation, translation) = match v {
         Value::Transform {
@@ -594,15 +595,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // `affine_from_transform(t)`: widen a rigid Transform to a general affine
         // map. The rotation quaternion becomes an orthogonal 3×3 (det=+1) whose
         // columns are R·x̂, R·ŷ, R·ẑ (built via quat_rotate on the basis vectors),
-        // and the translation passes through in SI meters. The identity quaternion
-        // yields the identity matrix exactly. Non-Transform / bad arity → Undef.
+        // and the translation passes through in SI meters, so it must be LENGTH
+        // (RULING #6089). The identity quaternion yields the identity matrix
+        // exactly. Non-Transform / bad arity / non-LENGTH translation → Undef,
+        // the last explained by `diagnose`.
         "affine_from_transform" => {
-            if args.len() != 1 {
+            let Ok((q, translation)) = classify_transform_operand_args(args) else {
                 return Some(Value::Undef);
-            }
-            let (q, translation, _dim) = match decompose_transform(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
             };
             // Rotation-matrix columns = R applied to each basis vector.
             let (c0x, c0y, c0z) = quat_rotate(q, 1.0, 0.0, 0.0);
@@ -901,12 +900,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         }
 
         "transform_inverse" => {
-            if args.len() != 1 {
+            // A non-LENGTH translation is Undef here (RULING #6089) and explained
+            // by `diagnose`; the output translation is therefore LENGTH too.
+            let Ok((r_q, t)) = classify_transform_operand_args(args) else {
                 return Some(Value::Undef);
-            }
-            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
             };
             // Normalize R first (1e-24 gate — see normalize_quat_input).
             let r_n = match normalize_quat_input(r_q) {
@@ -929,9 +926,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             Value::Transform {
                 rotation: Box::new(r_inv_val),
                 translation: Box::new(Value::Vector(vec![
-                    make_dimensioned_component(t_dim, -rtx),
-                    make_dimensioned_component(t_dim, -rty),
-                    make_dimensioned_component(t_dim, -rtz),
+                    Value::length(-rtx),
+                    Value::length(-rty),
+                    Value::length(-rtz),
                 ])),
             }
         }
@@ -1524,6 +1521,10 @@ fn decode_direction(v: &Value) -> Option<[f64; 3]> {
 /// origin — so a classifier that destructured `Value::Plane { origin, .. }` and
 /// read only the origin would emit a LENGTH rejection for a plane whose actual
 /// fault is a malformed normal.
+///
+/// The same vocabulary serves [`classify_transform_operand_args`] (RULING
+/// #6089), whose one diagnosable fault is likewise a non-LENGTH displacement
+/// operand.
 enum DatumFault {
     /// Every SHAPE / CONSISTENCY cause: wrong arity, the wrong `Value` variant,
     /// a component count other than three, a non-numeric or non-finite
@@ -1537,7 +1538,8 @@ enum DatumFault {
     /// ONE fault this family diagnoses.
     NotLength {
         /// The offending parameter as the author wrote it, taken from the
-        /// datum-constructor signature block in `reify-compiler/src/units.rs`.
+        /// datum-constructor signature block in `reify-compiler/src/units.rs`
+        /// (or, for a `Transform` operand, its field path `t.translation`).
         arg_name: &'static str,
         /// Minted by the shared owner, so the wording is never re-rendered here
         /// (Contract C1 invariant (i)).
@@ -1714,6 +1716,44 @@ fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
     let x = decode_direction(&args[1]).ok_or(DatumFault::Shape)?;
     let z = decode_direction(&args[2]).ok_or(DatumFault::Shape)?;
     Ok((o, x, z))
+}
+
+/// Decode the one `Transform` operand of `affine_from_transform(t)` and
+/// `transform_inverse(t)` into its quaternion and its translation in SI metres.
+///
+/// RULING #6089 (Leo, 2026-08-07): a `Transform`'s translation is a displacement
+/// and carries LENGTH. This is the ONE predicate both eval arms and their
+/// [`diagnose`] arm read (the [`DatumFault`] discipline), and `t.translation`
+/// names the offending field of the builtins' `t` parameter.
+///
+/// Every [`decompose_transform`] failure — a rotation fault included — is judged
+/// BEFORE the dimension and is a `Shape` fault, so it is never blamed on the
+/// translation.
+fn classify_transform_operand_args(
+    args: &[Value],
+) -> Result<(QuatComponents, [f64; 3]), DatumFault> {
+    let [operand] = args else {
+        return Err(DatumFault::Shape);
+    };
+    let (q, translation, dim) = decompose_transform(operand).ok_or(DatumFault::Shape)?;
+    if dim == DimensionVector::LENGTH {
+        return Ok((q, translation));
+    }
+    let Value::Transform { translation, .. } = operand else {
+        return Err(DatumFault::Shape);
+    };
+    let Value::Vector(items) = translation.as_ref() else {
+        return Err(DatumFault::Shape);
+    };
+    match length_group_rejection(items) {
+        Some(rejection) => Err(DatumFault::NotLength {
+            arg_name: "t.translation",
+            rejection,
+        }),
+        // Unreachable once `decompose_transform` accepted a non-LENGTH group;
+        // fail CLOSED, exactly as `classify_affine_map_args` does.
+        None => Err(DatumFault::Shape),
+    }
 }
 
 /// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
