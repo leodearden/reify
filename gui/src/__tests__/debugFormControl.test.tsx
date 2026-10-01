@@ -516,3 +516,35 @@ describe('representability preflight: refused before a single event fires', () =
     expect(controls[0].value).toBe('10mm');
   });
 });
+
+// ── A control replaced mid-gesture ───────────────────────────────────────────
+//
+// Measured live (task 7680): the app can unmount the very <input> a gesture is
+// driving, a few frames in. Events dispatched to a detached node reach no
+// delegated handler, so carrying on would answer {ok:true} for a gesture the
+// application never saw.
+
+describe('a control that leaves the document mid-gesture is refused, never a false ok', () => {
+  it.each([
+    { tool: 'scrub_range_input', html: RANGE_HTML, frames: ['50', '60', '70'], value: '80', commit: 'change', removeOnInput: 2, events: ['focus', 'input', 'input'] },
+    { tool: 'scrub_range_input', html: RANGE_HTML, frames: [], value: '80', commit: 'change', removeOnInput: 1, events: ['focus', 'input'] },
+    { tool: 'edit_text_input', html: TEXT_HTML, frames: ['1', '15'], value: '150mm', commit: 'enter', removeOnInput: 1, events: ['focus', 'input'] },
+  ])(
+    '$tool: removed on input $removeOnInput, then nothing more is dispatched',
+    async ({ tool, html, frames, value, commit, removeOnInput, events: expected }) => {
+      const { controls, events } = mountControls(html);
+      let inputs = 0;
+      controls[0].addEventListener('input', () => {
+        inputs += 1;
+        if (inputs === removeOnInput) controls[0].parentElement!.remove();
+      });
+
+      const result = await dispatchCmd(50, tool, { selector: HOST_SELECTOR, value, frames, commit });
+
+      expect(result).toEqual({
+        error: FORM_CONTROL_ERRORS.detached(removeOnInput, frames.length + 1),
+      });
+      expect(events).toEqual(expected);
+    },
+  );
+});
