@@ -239,3 +239,62 @@ describe('reify.grammar — `sketch` is a contextual keyword', () => {
     expect(countNodesNamed(src, 'SketchBlock')).toBe(0);
   });
 });
+
+// ── `auto(<expr>)` seed ─────────────────────────────────────────────────────
+
+describe('reify.grammar — auto(<expr>) seed in positional argument position', () => {
+  it('reads `auto(10mm)` as exactly one AutoSeed, never an AutoKeyword', () => {
+    const src = 'structure def S { let b = point(auto(10mm), 0mm) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'auto(10mm)')).toEqual(['AutoSeed']);
+    expect(countNodesNamed(src, 'AutoKeyword')).toBe(0);
+  });
+
+  it('admits the seed in a non-first position', () => {
+    const src = 'structure def S { let b = f(x, auto(1mm)) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'AutoSeed')).toBe(1);
+  });
+
+  it.each([
+    ['FunctionCall', 'f(auto(1mm))'],
+    ['NamespacedCall', 'a.b(auto(1mm))'],
+    ['TraitMethodCall', 'Foo::bar(auto(1mm))'],
+    ['AdHocSelector', 'body @ faces(auto(1mm))'],
+  ])('reaches the seed through the %s consumer', (consumer, call) => {
+    const src = `structure def S { let b = ${call} }`;
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, consumer)).toBe(1);
+    expect(countNodesNamed(src, 'AutoSeed')).toBe(1);
+  });
+
+  it('admits the seed inside a sketch body', () => {
+    const src = inSketch(
+      'let a = point(0mm, 0mm)',
+      'let b = point(auto(10mm), 0mm)',
+      'horizontal(ab)',
+    );
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'AutoSeed')).toBe(1);
+  });
+
+  // Each boundary below matches grammar.js, which keeps these readings.
+  it('still rejects bare positional `auto` (task 3808)', () => {
+    expect(countErrorNodes('structure def S { let x = f(auto) }')).toBeGreaterThan(0);
+  });
+
+  it('still rejects the named-parameter auto form in positional position', () => {
+    expect(countErrorNodes('structure def S { let x = f(auto(seed = 5mm)) }')).toBeGreaterThan(0);
+  });
+
+  it('does not admit the seed at a binding site', () => {
+    expect(countErrorNodes('structure def S { let x : Length = auto(5mm) }')).toBeGreaterThan(0);
+  });
+
+  it('keeps a named-argument `auto(free)` an AutoKeyword', () => {
+    const src = 'structure def S { let x = f(x: auto(free)) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'AutoKeyword')).toBe(1);
+    expect(countNodesNamed(src, 'AutoSeed')).toBe(0);
+  });
+});
