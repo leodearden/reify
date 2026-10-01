@@ -333,7 +333,8 @@ task 5465 promoted.
    (tasks 4234/4235). A concrete `Scalar<Length>` param receiving a `ScalarParam("Q")` arg
    would newly false-reject. See D4-5.
 4. **`arg_acceptance` is not reusable *today*.** The house rejection-wording template with
-   `migration_hint` lives at `crates/reify-eval/src/arg_acceptance.rs` — in **reify-eval**,
+   `migration_hint` lives at `crates/reify-eval/src/arg_acceptance.rs` *(pre-relocation;
+   #5791 moved the module to `crates/reify-ir/src/arg_acceptance.rs`)* — in **reify-eval**,
    which *depends on* reify-compiler (`reify-eval/Cargo.toml`), not the reverse
    (`reify-compiler/Cargo.toml` deps: ast, core, ir, syntax, config). Importing it today
    inverts the dependency graph. Adopt the **wording shape**, not the type — **but note that
