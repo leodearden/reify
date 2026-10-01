@@ -214,6 +214,18 @@ describe('reify.grammar — auto(<expr>) seed in positional argument position', 
     expect(countNodesNamed(src, 'AutoSeed')).toBe(1);
   });
 
+  // grammar.js reads positional `auto(free)` as a seed whose value is the
+  // identifier `free`; the free-modifier arm is unreachable in argument position.
+  it.each([
+    ['a structure let', 'structure def S { let b = f(auto(free)) }'],
+    ['a sketch body', 'structure def S { sketch s { let b = point(auto(free), 0mm) } }'],
+  ])('reads positional `auto(free)` in %s as one AutoSeed, never an AutoKeyword', (_where, src) => {
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'auto(free)')).toContain('AutoSeed');
+    expect(countNodesNamed(src, 'AutoSeed')).toBe(1);
+    expect(countNodesNamed(src, 'AutoKeyword')).toBe(0);
+  });
+
   // Each boundary below matches grammar.js, which keeps these readings.
   it('still rejects bare positional `auto` (task 3808)', () => {
     expect(countErrorNodes('structure def S { let x = f(auto) }')).toBeGreaterThan(0);

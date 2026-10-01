@@ -1712,8 +1712,12 @@ argument {
 // that upstream still rejects (task 3808). No marker is needed: `auto` is a
 // context-free `kw`, so `expression` never starts with it. The compiler, not
 // the grammar, rejects the seed outside sketch scope.
+//
+// The `free` arm stands in for upstream's identifier seed: grammar.js reads
+// positional `auto(free)` as a seed whose value is the identifier `free`, but
+// `free` is a context-free `kw` here and never lexes as an `Identifier`.
 AutoSeed {
-  kw<"auto"> "(" expression ")"
+  kw<"auto"> "(" (expression | kw<"free">) ")"
 }
 
 MemberAccess {
