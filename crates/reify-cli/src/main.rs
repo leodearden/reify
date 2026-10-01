@@ -3810,7 +3810,7 @@ mod tests {
     use super::*;
     use reify_core::ConstraintNodeId;
     use reify_eval::ConstraintCheckEntry;
-    use reify_ir::Satisfaction;
+    use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
 
     /// A parse error the CLI prints must be one a user can JUMP TO.
     ///
@@ -3926,6 +3926,44 @@ mod tests {
             satisfaction,
             indeterminate_reason: None,
         }
+    }
+
+    fn make_indeterminate_entry(
+        entity: &str,
+        index: u32,
+        label: Option<&str>,
+        reason: TransientReason,
+    ) -> ConstraintCheckEntry {
+        ConstraintCheckEntry {
+            indeterminate_reason: Some(IndeterminateReason::Transient(reason)),
+            ..make_entry(entity, index, label, Satisfaction::Indeterminate)
+        }
+    }
+
+    fn operator_undefined_without_kinds() -> TransientReason {
+        TransientReason::OperatorUndefinedForKinds { kinds: vec![] }
+    }
+
+    #[test]
+    fn indeterminate_line_renders_the_recorded_reason() {
+        let entries = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_indeterminate_entry(
+                "Beam",
+                0,
+                Some("load"),
+                operator_undefined_without_kinds(),
+            ),
+        ];
+        let (_, output) = run_report(&entries);
+
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec![
+                "  OK stress_limit",
+                "  INDETERMINATE load: operator undefined for these operand kinds",
+            ]
+        );
     }
 
     #[test]
@@ -4382,42 +4420,48 @@ mod tests {
         // (no label — must fall back to id Display "Foo#constraint[3]").
         let entries = vec![
             make_entry("Bracket", 0, Some("c_ok"), Satisfaction::Satisfied),
-            make_entry("Bracket", 1, Some("c_bad"), Satisfaction::Indeterminate),
+            make_indeterminate_entry(
+                "Bracket",
+                1,
+                Some("c_bad"),
+                TransientReason::UndefInputs {
+                    cells: vec![reify_core::ValueCellId::new("Bracket", "tolerance")],
+                },
+            ),
             make_entry("Bracket", 2, Some("c_v"), Satisfaction::Violated),
-            make_entry("Foo", 3, None, Satisfaction::Indeterminate),
+            make_indeterminate_entry("Foo", 3, None, operator_undefined_without_kinds()),
         ];
         let mut buf = Vec::new();
         report_indeterminate_detail(2, &entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        // (a) Header names the count (2) and mentions undefined inputs.
-        assert!(
-            output.contains("2"),
-            "header should name the indeterminate count (2), got: {output}"
+        // Each listed constraint names the reason its producer recorded, and
+        // the header guesses none.
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec![
+                "Strict check failed: 2 constraint(s) INDETERMINATE:",
+                "  c_bad: undefined inputs: Bracket.tolerance",
+                "  Foo#constraint[3]: operator undefined for these operand kinds",
+            ]
         );
-        assert!(
-            output.contains("undefined"),
-            "header should mention undefined inputs, got: {output}"
-        );
+        for guess in ["inputs undefined", "e.g.", "auto-params unresolved"] {
+            assert!(!output.contains(guess), "the deleted guess {guess:?} is back: {output}");
+        }
+    }
 
-        // (b) Lists "c_bad" and id-Display fallback "Foo#constraint[3]".
-        assert!(
-            output.contains("c_bad"),
-            "output should list 'c_bad', got: {output}"
-        );
-        assert!(
-            output.contains("Foo#constraint[3]"),
-            "output should list id fallback 'Foo#constraint[3]', got: {output}"
-        );
+    /// An Indeterminate with no recorded reason is listed bare: nothing is
+    /// fabricated in its place.
+    #[test]
+    fn report_indeterminate_detail_without_a_reason_lists_the_bare_label() {
+        let entries = vec![make_entry("Part", 0, Some("load"), Satisfaction::Indeterminate)];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(1, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
 
-        // (c) Does NOT list "c_ok" or "c_v" (only Indeterminate entries).
-        assert!(
-            !output.contains("c_ok"),
-            "output must NOT list satisfied constraint 'c_ok', got: {output}"
-        );
-        assert!(
-            !output.contains("c_v"),
-            "output must NOT list violated constraint 'c_v', got: {output}"
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec!["Strict check failed: 1 constraint(s) INDETERMINATE:", "  load"]
         );
     }
 
