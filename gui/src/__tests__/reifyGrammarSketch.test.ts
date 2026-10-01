@@ -43,7 +43,9 @@ describe('reify.grammar — `pub` / `priv` / `aux` prefixes on a let declaration
   });
 
   it('admits the prefix in a port body', () => {
-    expect(countErrorNodes('structure def S { port p : in F { aux let x = 1mm } }')).toBe(0);
+    const src = 'structure def S { port p : in F { aux let x = 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(sourceOfNodeNamed(src, 'LetDeclaration')).toBe('aux let x = 1mm');
   });
 
   it.each(['aux sub a = B()', 'priv aux sub a = B()'])(
@@ -87,7 +89,11 @@ describe('reify.grammar — sketch blocks', () => {
   });
 
   it('admits a type-annotated entity', () => {
-    expect(countErrorNodes('structure def S { sketch s { let a : Point2 = point(0mm, 0mm) } }')).toBe(0);
+    const src = 'structure def S { sketch s { let a : Point2 = point(0mm, 0mm) } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'LetDeclaration')).toBe(1);
+    expect(countNodesNamed(src, 'TypeAnnotation')).toBe(1);
+    expect(sourceOfNodeNamed(src, 'TypeAnnotation')).toBe(': Point2');
   });
 
   it('admits an empty body', () => {
@@ -156,7 +162,10 @@ describe('reify.grammar — `sketch` is a contextual keyword', () => {
   });
 
   it('leaves `sketch` an ordinary identifier as an operand', () => {
-    expect(countErrorNodes('structure def S { let y = sketch + 1 }')).toBe(0);
+    const src = 'structure def S { let y = sketch + 1 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'sketch')).toContain('Identifier');
+    expect(keywordSpans(src)).not.toContain('sketch');
   });
 
   it('reads `sketch = 5mm` in a specialization body as a param assignment', () => {
