@@ -55,8 +55,14 @@ All reproduced 2026-08-07 (main `43c076ea54` era), deterministic (61/61 identica
 digit-for-digit on a second binary and machine state).
 
 - Achieved facet-chord deviation is a **staircase** in requested `#precision` — not smooth, not a
-  simple sawtooth. Treads follow an upper envelope at **~2.075 ×** the request, punctuated by narrow
-  periodic **downward teeth at ~0.758 ×**, plus a third branch at **~1.49 ×** for `d/R < 2.5e-4`.
+  simple sawtooth. Treads follow an upper envelope at **~2.075 ×** the request. Above
+  `d/R ≈ 2.57e-4` they are punctuated by narrow periodic **downward teeth at ~0.758 ×**. Below
+  `d/R ≈ 2.52e-4` the teeth are gone. The treads are punctuated instead by narrow downward windows of a
+  **third branch at ~1.46–1.50 ×**, which widen as `d/R` falls. `2.5e-4` is that branch's **onset,
+  not a regime boundary**: treads persist below it (0.10 mm on a 1 m sphere, `d/R` = 1e-4, measures
+  2.078 ×). Below a model-derived `d/R ≈ 6.3e-5`, a fourth (`k = −3`) state reads **above** the tread
+  envelope: 2.106 × at 0.048 mm and 2.111 × at 0.04837 mm. Re-measured 2026-10-01, task #7266 —
+  `docs/notes/precision-refine-envelope-calibration.md` §1.2.
 - The teeth are real and recurrent: near 0.65 mm, period ~0.022 mm, width ~8.5 µm (~39 % duty
   cycle); near 0.30 mm the period tightens to ~0.006 mm.
 - Transitions are brutal: `0.5955mm → 1.223e-3 m` but `0.5960mm → 4.541e-4 m`. **A 0.08 % change in
@@ -220,7 +226,8 @@ takes 0.35 s and no kernel path is entered at all — the structural basis for F
   classes present — any part containing a sphere degenerates to A's rate. Per-face control requires
   the advanced `IMeshTools_Context` route: much more complexity, same outcome.
 - **C — closed-form correction from the two-ladder model.** Exact for spheres (predicts the branch at
-  388/388 measured points) but sphere-only, and it depends on OCCT **internal** constants (`0.7` in
+  388/388 measured points, and at all 26 points of task #7266's onset walk, including the
+  third-branch windows and the `k = −3` state) but sphere-only, and it depends on OCCT **internal** constants (`0.7` in
   `BRepMesh_SphereRangeSplitter.cxx:25-27`, `0.5` in `BRepMesh_CurveTessellator.cxx:74`) that are not
   API. An OCCT upgrade silently invalidates it — brittle in the same silent way as A.
 
