@@ -222,11 +222,10 @@ pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// Re-adding any of these would suppress a warning that *should* fire, so the
 /// reasons are recorded rather than left to be rediscovered:
 ///
-/// * **Collection/tensor METHOD names** (`reify-expr/src/lib.rs:3864`
-///   `eval_method_call`): `all`, `any`, `concat`, `contains_key`, `count`,
-///   `filter`, `fold`, `keys`, `lower`, `map`, `span`, `sum`, `upper`,
-///   `values`, and the datum-projection members `dir`, `origin`, `normal`,
-///   `x`, `y`, `z`, `xy_plane`. These are `MethodCall`/`MemberAccess`
+/// * **Collection/tensor METHOD names** (`reify-expr`'s `eval_method_call`):
+///   `count`, `keys`, `lower`, `span`, `sum`, `upper`, `values`, and the
+///   datum-projection members `dir`, `origin`, `normal`, `x`, `y`, `z`,
+///   `xy_plane`. These are `MethodCall`/`MemberAccess`
 ///   receivers, not `FunctionCall` callees, so the terminal fallback never
 ///   sees them.
 /// * **Euler convention STRING literals** (`reify-stdlib/src/orientation.rs:75-86`):
