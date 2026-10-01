@@ -6,8 +6,9 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered
 member is the thin wrapper tests/infra/test_cargo_test_tally.sh, which invokes
 this file.
 
-Every fixture is real captured output (cargo stable, cargo-nextest 0.9.136,
-the host's skim), trimmed of Compiling/Finished noise.
+Fixtures are real captured output (cargo stable, cargo-nextest 0.9.136, the
+host's skim), trimmed of Compiling/Finished noise, unless labelled DERIVED or
+quoted from a named document.
 """
 
 import importlib.util
@@ -121,7 +122,7 @@ Caused by:
   process didn't exit successfully: `…/crash-83c1c8e636fd23ff` (signal: 6, SIGABRT: process abort signal)
 """
 
-# LIBTEST_GREEN's first binary, then a run killed mid-binary
+# DERIVED: LIBTEST_GREEN's first binary, then a run killed mid-binary
 LIBTEST_TRUNCATED = """\
      Running unittests src/lib.rs (target/debug/deps/tallyprobe-a9e948e700f99f5f)
 
@@ -138,6 +139,38 @@ running 2 tests
 test integ_ok ... ok
 """
 
+# cargo test --doc, rustdoc SIGKILLed mid-run, throwaway crate, 2026-10-01
+DOCTEST_CRASH = """\
+   Doc-tests tallyprobe
+
+running 1 test
+error: doctest failed, to rerun pass `--doc`
+
+Caused by:
+  process didn't exit successfully: `…/rustdoc --edition=2024 --crate-type lib --crate-name tallyprobe --test src/lib.rs …` (signal: 9, SIGKILL: kill)
+"""
+
+# the same capture: the orphaned merged-doctest harness wrote these lines
+# after cargo had exited 101
+DOCTEST_CRASH_ORPHAN_TAIL = """\
+test src/lib.rs - crashes_rustdoc (line 1) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
+"""
+
+# TERM=xterm-256color cargo test --color always -- --color always, throwaway
+# crate, 2026-10-01. libtest resets colour with `ESC ( B ESC [ m`.
+LIBTEST_COLOUR = (
+    "\x1b[1m\x1b[92m     Running\x1b[0m unittests src/lib.rs "
+    "(target/debug/deps/tallyprobe-a9e948e700f99f5f)\n"
+    "\n"
+    "running 1 test\n"
+    "test tests::ok_one ... \x1b[32mok\x1b(B\x1b[m\n"
+    "\n"
+    "test result: \x1b[32mok\x1b(B\x1b[m. 1 passed; 0 failed; 0 ignored; "
+    "0 measured; 0 filtered out; finished in 0.00s\n"
+)
+
 # skim cargo wrapper, 300s cap (exits 0), 2026-10-01
 SKIM_TIMEOUT = "Error: command timed out after 300s\n"
 
@@ -147,10 +180,11 @@ error[E0425]: cannot find value `x` in this scope
 error: could not compile `tallyprobe` (test "integ") due to 1 previous error
 """
 
-# reify's own .ri test runner (examples/m11_annotations.ri)
+# reify's own .ri test runner (examples/m11_annotations.ri), quoted from
+# docs/prds/v0_6/driver-contract-implementation.md
 REIFY_RI_RUNNER = "test result: ok. 0 passed; 0 failed; 1 indeterminate\n"
 
-# a nextest-replayed libtest line, alone
+# DERIVED from NEXTEST_FAILED: a nextest-replayed libtest line, alone
 INDENTED_RESULT = (
     "    test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; "
     "0 filtered out; finished in 0.00s\n"
@@ -223,6 +257,12 @@ NEXTEST_INTERRUPTED = """\
      Summary [   0.144s] 3/5 tests run: 3 passed, 0 skipped
 """
 
+# DERIVED from NEXTEST_SINGULAR: a Summary tail this tool does not parse
+NEXTEST_SUMMARY_DRIFT = """\
+    Starting 3 tests across 1 binary
+     Summary [   0.132s] 3 tests run: 3 passed, 0 skipped, weird
+"""
+
 # cargo nextest run killed after its first test, throwaway crate, 2026-10-01
 NEXTEST_KILLED = """\
     Starting 5 tests across 3 binaries
@@ -249,6 +289,18 @@ VERIFY_LOG_TWO_RUNS = """\
     Starting 1165 tests across 3 binaries
      Summary [  23.415s] 1165 tests run: 1165 passed, 0 skipped
 """
+
+# TERM=xterm-256color cargo nextest run --color always, throwaway crate,
+# 2026-10-01
+NEXTEST_COLOUR = (
+    "\x1b[32;1m    Starting\x1b[0m \x1b[1m1\x1b[0m test across "
+    "\x1b[1m1\x1b[0m binary\n"
+    "\x1b[32;1m        PASS\x1b[0m [   0.008s] (1/1) \x1b[35;1mtallyprobe\x1b[0m "
+    "\x1b[36mtests\x1b[0m\x1b[36m::\x1b[0m\x1b[34;1mok_one\x1b[0m\n"
+    "\x1b[32;1m     Summary\x1b[0m [   0.009s] \x1b[1m1\x1b[0m test run: "
+    "\x1b[1m1\x1b[0m \x1b[32;1mpassed\x1b[0m, \x1b[1m0\x1b[0m "
+    "\x1b[33;1mskipped\x1b[0m\n"
+)
 
 # cargo nextest run; cargo test --doc, throwaway crate, 2026-10-01
 NEXTEST_THEN_DOCTEST = NEXTEST_SINGULAR + """\
@@ -302,6 +354,13 @@ class TestLibtest(unittest.TestCase):
         self.assertEqual(tally.summaries, ())
         self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
 
+    def test_crashed_doctest_is_failed(self):
+        for text in (DOCTEST_CRASH, DOCTEST_CRASH + DOCTEST_CRASH_ORPHAN_TAIL):
+            with self.subTest(text=text[-40:]):
+                tally = ctt.tally_text(text)
+                self.assertEqual(tally.cargo_target_failures, 1)
+                self.assertEqual(tally.verdict, ctt.Verdict.FAILED)
+
     def test_binary_header_without_result_is_incomplete(self):
         tally = ctt.tally_text(LIBTEST_TRUNCATED)
         self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
@@ -319,14 +378,15 @@ class TestLibtest(unittest.TestCase):
                 self.assertEqual(tally.summaries, ())
                 self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
 
-    def test_sgr_colour_escapes_are_ignored(self):
-        plain = next(line for line in LIBTEST_GREEN.splitlines()
-                     if line.startswith("test result:"))
-        coloured = "\x1b[1m" + plain.replace(
-            "ok.", "\x1b[32mok\x1b[0m.", 1) + "\x1b[0m"
-        tally = ctt.tally_text(coloured)
-        self.assertEqual(tally.passed, 2)
-        self.assertEqual(tally.verdict, ctt.Verdict.GREEN)
+    def test_colour_escapes_are_ignored(self):
+        for text, dialect in ((LIBTEST_COLOUR, ctt.Dialect.LIBTEST),
+                              (NEXTEST_COLOUR, ctt.Dialect.NEXTEST)):
+            with self.subTest(dialect=dialect):
+                tally = ctt.tally_text(text)
+                self.assertEqual([s.dialect for s in tally.summaries], [dialect])
+                self.assertEqual(tally.passed, 1)
+                self.assertEqual(tally.binaries, 1)
+                self.assertEqual(tally.verdict, ctt.Verdict.GREEN)
 
     def test_verdict_values_are_exit_codes(self):
         self.assertEqual(
@@ -369,6 +429,14 @@ class TestNextest(unittest.TestCase):
         tally = ctt.tally_text(NEXTEST_INTERRUPTED)
         self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
         self.assertEqual(tally.passed, 3)
+
+    def test_unparseable_summary_is_incomplete_and_says_so(self):
+        tally = ctt.tally_text(NEXTEST_SUMMARY_DRIFT)
+        self.assertEqual(tally.summaries, ())
+        self.assertEqual(tally.unfinished_binaries, 1)
+        self.assertEqual(tally.verdict, ctt.Verdict.INCOMPLETE)
+        verdict_line = ctt.format_text(tally).splitlines()[-1]
+        self.assertIn("nextest Summary", verdict_line)
 
     def test_region_open_at_eof_is_incomplete(self):
         tally = ctt.tally_text(NEXTEST_KILLED)

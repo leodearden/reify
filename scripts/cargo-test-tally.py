@@ -127,13 +127,13 @@ class Tally:
         }
 
 
-_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[ -/]+[0-~])")
 _LIBTEST_RESULT = re.compile(
     r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; "
     r"(\d+) measured; (\d+) filtered out"
 )
 _LIBTEST_BINARY_HEADER = re.compile(r"^\s+(?:Running \S.* \(.+\)|Doc-tests \S+)$")
-_CARGO_TARGET_FAILED = re.compile(r"^error: test failed, to rerun pass ")
+_CARGO_TARGET_FAILED = re.compile(r"^error: (?:doc)?test failed, to rerun pass ")
 _NEXTEST_START = re.compile(r"^\s*Starting (\d+) tests? across (\d+) binar(?:y|ies)\b")
 _NEXTEST_SUMMARY = re.compile(
     r"^\s*Summary \[\s*[\d.]+s\]\s+(?:(\d+)/)?(\d+) tests? run: (.*)$"
@@ -260,7 +260,7 @@ def tally_lines(lines: Iterable[str]) -> Tally:
     """Tally a capture in one pass; line N of `lines` is reported as line N."""
     tally_pass = _TallyPass()
     for line_no, raw in enumerate(lines, start=1):
-        tally_pass.feed(line_no, _ANSI_CSI.sub("", raw).rstrip())
+        tally_pass.feed(line_no, _ANSI_ESCAPE.sub("", raw).rstrip())
     return tally_pass.finish()
 
 
@@ -284,12 +284,13 @@ def _format_summary(index: int, summary: Summary) -> str:
 
 
 def _incomplete_reason(tally: Tally) -> str:
+    if tally.unfinished_binaries:
+        return (f"{tally.unfinished_binaries} binary or nextest run(s) started "
+                "but never reported a result: killed mid-run, or a nextest "
+                "Summary line this tool cannot parse")
     if not tally.summaries:
         return ("no summary line recognised: the run was killed, timed out, "
                 "failed to compile, or hit the skim 300s cap")
-    if tally.unfinished_binaries:
-        return (f"{tally.unfinished_binaries} binary or nextest run(s) never "
-                "reported a result")
     return "a partial nextest run (N/M tests run)"
 
 
