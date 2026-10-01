@@ -1072,6 +1072,7 @@ fn solve_generalized_eigen(
                         eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                         n_converged: 0,
                         converged: false,
+                        residual_check_failures: 0,
                         shift: sigma,
                         // Nothing was factored and no spectrum was computed, so
                         // C5 forbids ESTABLISHING `false` here — the same
@@ -1099,6 +1100,7 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                residual_check_failures: 0,
                 shift: opts.sigma,
                 // No spectrum was computed at all here, so `false` cannot be
                 // ESTABLISHED and C5 forbids assuming it.  The rule itself lives

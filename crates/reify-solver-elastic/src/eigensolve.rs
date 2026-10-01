@@ -272,8 +272,25 @@ pub struct EigenSolverResult {
     /// converged Krylov eigenvalues were near-zero and filtered out.
     pub n_converged: usize,
     /// `true` iff all requested `n_modes` eigenvalues were returned
-    /// (`eigenvalues.len() == n_modes`).
+    /// (`eigenvalues.len() == n_modes`) AND every returned pair passed the
+    /// post-solve residual check
+    /// ([`residual_check_failures`](Self::residual_check_failures) `== 0`).
     pub converged: bool,
+    /// How many RETURNED Lanczos pairs failed the post-solve residual check.
+    ///
+    /// faer's lock test reads a Krylov ESTIMATE and never re-applies the
+    /// operator, so a pair is re-checked here on the operator `S` the Lanczos
+    /// actually ran: it is verified iff
+    /// `‖S·y − μ·y‖ ≤ max(10·tol, 1e-6·|μ|·‖y‖)`.  By Bauer–Fike, a verified
+    /// pair's `λ − σ` is within the larger of the caller's tolerance and 1e-6
+    /// relative of a true eigenvalue's.  For the Cholesky-symmetrized operator
+    /// the residual equals `|μ|·‖G⁻¹(Kφ − λBφ)‖` — the generalized residual in
+    /// the `W⁻¹` norm the Lanczos ran in.
+    ///
+    /// Failed pairs are still returned (C2 selection is unchanged); they make
+    /// [`converged`](Self::converged) `false`.  Always `0` on the dense path,
+    /// which computes the spectrum directly.
+    pub residual_check_failures: usize,
     /// Whether any eigenvalue of the pencil lies STRICTLY between zero and
     /// [`shift`](Self::shift) AND is absent from the returned set — i.e.
     /// whether this result is a *window* around σ rather than the bottom of the
@@ -919,6 +936,7 @@ pub fn solve_eigen_dense(
         eigenvectors,
         n_converged: 0,
         converged: n_take == opts.n_modes,
+        residual_check_failures: 0,
         shift: opts.sigma,
         shift_skipped_modes,
     }
@@ -1060,7 +1078,7 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     let op = CompositeShiftInvertOp { k_op, m_op, n };
     let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
     // Euclidean operator: the Ritz vectors ARE the pencil's eigenvectors.
-    finish_lanczos_result(ritz, &opts, |_| {})
+    finish_lanczos_result(&op, ritz, &opts, |_| {})
 }
 
 /// The SPD metric `W = G·Gᵀ` a Cholesky-symmetrized Lanczos runs in.
@@ -1217,7 +1235,7 @@ pub fn lanczos_shift_invert_in_metric<M: MetricOp>(
         n,
     };
     let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
-    finish_lanczos_result(ritz, &opts, |vectors| {
+    finish_lanczos_result(&op, ritz, &opts, |vectors| {
         recover_pencil_eigenvectors(factor, vectors)
     })
 }
@@ -1231,6 +1249,49 @@ fn recover_pencil_eigenvectors(factor: &SplitCholesky, mut vectors: MatMut<'_, f
             vectors[(i, j)] /= norm;
         }
     }
+}
+
+/// The `κ` in `‖S·y − μ·y‖ ≤ max(κ·tol, δ·|μ|·‖y‖)`: a pair meeting the
+/// caller's own tolerance is never rejected (PRD
+/// `docs/prds/v0_6/shift-invert-eigensolve.md` §11 Q1).
+const RITZ_RESIDUAL_TOL_SLACK: f64 = 10.0;
+
+/// The `δ` in the same bound: a pair accurate to 1e-6 relative is never
+/// rejected, even below the operator's rounding floor (PRD §11 Q1).
+const RITZ_RELATIVE_RESIDUAL_FLOOR: f64 = 1e-6;
+
+/// Whether a Ritz pair `(μ, y)` with recomputed residual `‖S·y − μ·y‖` is a
+/// verified eigenpair of `S`.  A non-finite residual never is.
+fn ritz_pair_is_verified(residual_norm: f64, mu: f64, y_norm: f64, tol: f64) -> bool {
+    residual_norm
+        <= f64::max(
+            RITZ_RESIDUAL_TOL_SLACK * tol,
+            RITZ_RELATIVE_RESIDUAL_FLOOR * mu.abs() * y_norm,
+        )
+}
+
+/// How many of the pairs `(mu[j], ritz_vectors[:, j])` fail
+/// [`ritz_pair_is_verified`] on `op`, with one batched apply.
+fn count_unverified_ritz_pairs(
+    op: &dyn LinOp<f64>,
+    ritz_vectors: MatRef<'_, f64>,
+    mu: &[f64],
+    tol: f64,
+) -> usize {
+    let n_pairs = ritz_vectors.ncols();
+    if n_pairs == 0 {
+        return 0;
+    }
+    let mut applied = Mat::<f64>::zeros(ritz_vectors.nrows(), n_pairs);
+    let mut buf = MemBuffer::new(op.apply_scratch(n_pairs, Par::Seq));
+    op.apply(applied.as_mut(), ritz_vectors, Par::Seq, MemStack::new(&mut buf));
+    (0..n_pairs)
+        .filter(|&j| {
+            let y = ritz_vectors.col(j);
+            let residual = (applied.col(j) - y * faer::Scale(mu[j])).norm_l2();
+            !ritz_pair_is_verified(residual, mu[j], y.norm_l2(), tol)
+        })
+        .count()
 }
 
 /// Option guards shared by both Lanczos cores.
@@ -1316,10 +1377,12 @@ fn run_partial_self_adjoint_eigen(
 }
 
 /// Turn converged Ritz pairs into an [`EigenSolverResult`]: back-shift (C4),
-/// select (C2), order (C3), then `recover_eigenvectors` maps the selected Ritz
+/// select (C2), order (C3), verify each selected pair on `op` — the operator
+/// the Lanczos ran on — and then `recover_eigenvectors` maps the selected Ritz
 /// vectors to the pencil's eigenvectors in place (identity for the Euclidean
 /// operator).
 fn finish_lanczos_result(
+    op: &dyn LinOp<f64>,
     ritz: RitzPairs,
     opts: &EigenSolverOptions,
     recover_eigenvectors: impl FnOnce(MatMut<'_, f64>),
@@ -1363,9 +1426,6 @@ fn finish_lanczos_result(
     // prefix cannot move anything.  C1 is preserved.
     let n_take = select_nearest_to_shift(&mut pairs, shift_used, opts.n_modes);
     order_by_abs_lambda(&mut pairs[..n_take]);
-    // Track what the caller actually receives: converged iff we hand back
-    // all n_modes eigenvalues.
-    let converged = n_take == opts.n_modes;
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
     let mut eigenvectors = Mat::<f64>::zeros(ritz.vectors.nrows(), n_take);
@@ -1375,13 +1435,21 @@ fn finish_lanczos_result(
             .col_as_slice_mut(out_col)
             .copy_from_slice(ritz.vectors.col_as_slice(src_col));
     }
+    let selected_mu: Vec<f64> = pairs[..n_take].iter().map(|&(_, src)| ritz.mu[src]).collect();
+    let residual_check_failures =
+        count_unverified_ritz_pairs(op, eigenvectors.as_ref(), &selected_mu, opts.tol);
     recover_eigenvectors(eigenvectors.as_mut());
+
+    // Track what the caller actually receives: converged iff we hand back all
+    // n_modes eigenvalues AND every one of them is a verified eigenpair.
+    let converged = n_take == opts.n_modes && residual_check_failures == 0;
 
     EigenSolverResult {
         eigenvalues,
         eigenvectors,
         n_converged: n_conv,
         converged,
+        residual_check_failures,
         shift: shift_used,
         // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
         // cannot count what it skipped may not assume `false`.  Both cores are
