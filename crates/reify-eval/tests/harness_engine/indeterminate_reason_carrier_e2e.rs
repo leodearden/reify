@@ -7,54 +7,27 @@
 //! `Engine::check` path — the one `reify check` takes — and read the reason off
 //! each `ConstraintCheckEntry`.
 //!
-//! The sources are byte-mirrors of the committed fixtures so the tests track
-//! the same user-observable signal the PRD measured.
+//! The sources are the committed `reify check` fixtures themselves, loaded
+//! from the CLI harness, so this test and the CLI test exercise one program.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
-use reify_eval::{CheckResult, ConstraintCheckEntry, Engine};
-use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
-use reify_test_support::compile_source_with_stdlib;
+use reify_eval::{BuildScheduler, CheckResult, ConstraintCheckEntry, Engine};
+use reify_ir::{
+    ExportFormat, GeometryHandleId, IndeterminateReason, Satisfaction, TransientReason, Value,
+};
+use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 
-/// Byte-mirror of `docs/prds/v0_6/fixtures/dic_inert_connect.ri`.
-const DIC_INERT_CONNECT: &str = r#"module dic_inert_connect
+/// The `reify check` fixture the CLI harness drives: an ad-hoc @-selector
+/// connect whose frame_align constraint is Indeterminate.
+const DIC_INERT_CONNECT: &str =
+    include_str!("../../../reify-cli/tests/fixtures/dic_inert_connect.ri");
 
-// INV-SF-4 probe: ad-hoc @-selector connect generates a frame_align constraint
-// that is INDETERMINATE in every possible run (structurally inert). Baseline
-// 2026-07-24: non-strict check reports "No constraints violated (1
-// indeterminate)." exit 0; strict detail MISATTRIBUTES the reason as "inputs
-// undefined" while the recorded reason is "operator undefined for these
-// operand kinds".
-
-trait T {
-    param d : Length
-}
-
-structure def DicInertRig {
-    let shape = cylinder(10mm, 20mm)
-    port a : out T { param d : Length = 5mm }
-    port b : in T { param d : Length = 5mm }
-    connect a @ face("top") -> b @ face("bottom")
-}
-"#;
-
-/// `crates/reify-cli/tests/fixtures/bracket_indeterminate.ri` with a module
-/// declaration: the `auto` tolerance is never resolved, so the constraint that
-/// reads it is Indeterminate for want of an input.
-const BRACKET_INDETERMINATE: &str = r#"module dic_bracket_indeterminate
-
-structure Bracket {
-    param width: Length = 80mm
-    param height: Length = 100mm
-    param thickness: Length = 5mm
-    param tolerance: Length = auto
-
-    constraint thickness > 2mm
-    constraint tolerance > 0.1mm
-
-    let body = box(width, height, thickness)
-}
-"#;
+/// The `reify check` fixture the CLI harness drives: the `auto` tolerance is
+/// never resolved, so the constraint that reads it is Indeterminate for want
+/// of an input.
+const BRACKET_INDETERMINATE: &str =
+    include_str!("../../../reify-cli/tests/fixtures/bracket_indeterminate.ri");
 
 /// A RepresentationWithin on a surface that never measured: its Indeterminate
 /// is decided by the engine, not the checker. Stdlib-free (`mm` is built in).
@@ -66,6 +39,15 @@ structure MyGeom {
 structure Checker {
     param subject : MyGeom = MyGeom()
     constraint RepresentationWithin(subject, 1mm)
+}
+"#;
+
+/// A constraint that only a realized geometry can decide: Indeterminate on the
+/// kernel-less check surface, definite once `build()` has realized `part`.
+const VOLUME_GATED: &str = r#"
+structure Widget {
+    param part : Solid = box(10mm, 10mm, 10mm)
+    constraint volume(part) <= 2000mm^3
 }
 "#;
 
@@ -199,4 +181,47 @@ fn every_first_party_indeterminate_records_a_reason() {
             );
         }
     }
+}
+
+/// `Engine::build` re-checks every Indeterminate entry once geometry has
+/// realized; an entry it upgrades must drop the reason the first check
+/// recorded, or the report would explain a verdict that no longer holds.
+#[test]
+fn build_recheck_upgrade_clears_the_recorded_reason() {
+    let checked = check_kernel_less(VOLUME_GATED);
+    let [before] = checked.constraint_results.as_slice() else {
+        panic!(
+            "expected one constraint entry; got {:?}",
+            checked.constraint_results
+        );
+    };
+    assert_eq!(before.satisfaction, Satisfaction::Indeterminate);
+    assert!(
+        before.indeterminate_reason.is_some(),
+        "anti-vacuity: the first check must record a reason for the re-check to clear"
+    );
+
+    // 1000 mm³ for whichever handle `part` realizes to.
+    let kernel = (1..=4u64).fold(MockGeometryKernel::new(), |kernel, handle| {
+        kernel.with_volume_result(GeometryHandleId(handle), Value::Real(1e-6))
+    });
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    let built = engine.build(
+        &compile_source_with_stdlib(VOLUME_GATED),
+        ExportFormat::Step,
+    );
+
+    let after = built
+        .constraint_results
+        .iter()
+        .find(|entry| entry.id == before.id)
+        .unwrap_or_else(|| {
+            panic!(
+                "build lost {}; got {:?}",
+                before.id, built.constraint_results
+            )
+        });
+    assert_eq!(after.satisfaction, Satisfaction::Satisfied);
+    assert_eq!(after.indeterminate_reason, None);
 }

@@ -1,11 +1,10 @@
 module dic_inert_connect
 
-// INV-SF-4 probe: ad-hoc @-selector connect generates a frame_align constraint
-// that is INDETERMINATE in every possible run (structurally inert). Baseline
-// 2026-07-24: non-strict check reports "No constraints violated (1
-// indeterminate)." exit 0; strict detail MISATTRIBUTES the reason as "inputs
-// undefined" while the recorded reason is "operator undefined for these
-// operand kinds".
+// An ad-hoc @-selector connect generates a frame_align constraint that is
+// INDETERMINATE in every run (structurally inert): the face-selector frames
+// carry no value-cell inputs, so the checker records the reason "operator
+// undefined for these operand kinds". The connect_compat constraint beside it
+// is satisfied.
 
 trait T {
     param d : Length
