@@ -239,6 +239,8 @@ describe('edit_text_input against the real PropertyEditor', () => {
     async (commit) => {
       const onSetParameter = vi.fn();
       renderEditor(onSetParameter);
+      const atRest = document.querySelector<HTMLInputElement>(EDIT_SELECTOR)!.value;
+      expect(atRest).not.toBe('150mm');
 
       const result = await dispatchCmd(4, 'edit_text_input', {
         selector: EDIT_SELECTOR,
@@ -247,10 +249,9 @@ describe('edit_text_input against the real PropertyEditor', () => {
         commit,
       });
 
-      expect(result).toMatchObject({ ok: true, inputEvents: 5, commit });
-      // A read-back, not a verdict: after the commit the editor legitimately
-      // rewrites the control to its at-rest display.
-      expect(typeof result.value).toBe('string');
+      // A read-back, not a verdict: the commit ends the edit, so the editor
+      // rewrites the control to its at-rest display of the (unrefreshed) values.
+      expect(result).toEqual({ ok: true, value: atRest, inputEvents: 5, commit });
       expect(onSetParameter.mock.calls).toEqual([[EDIT_CELL, '150mm']]);
       expect(appInvokes()).toEqual([]);
     },
@@ -359,24 +360,45 @@ describe.each(TOOLS)('$tool: parameter validation runs before any DOM resolution
     expect(controls[0].value).toBe(before);
   });
 
-  it('checks selector, then commit, then value, then frames', async () => {
+  it('an unusable selector is answered before any other parameter', async () => {
     const { events } = mountControls(t.html);
-    const allWrong = { selector: 3, commit: 'bogus', value: 5, frames: [7] };
 
-    expect(await dispatchCmd(11, t.tool, allWrong)).toEqual({ error: 'selector is required' });
-    // A selector that matches NOTHING: were resolution first, this would be notFound.
-    const resolvable = { ...allWrong, selector: NOTHING_SELECTOR };
-    expect(await dispatchCmd(12, t.tool, resolvable)).toEqual({
-      error: FORM_CONTROL_ERRORS.commitNotAllowed('bogus', t.spec.commits),
-    });
-    expect(await dispatchCmd(13, t.tool, { ...resolvable, commit: t.commit })).toEqual({
-      error: FORM_CONTROL_ERRORS.valueNotString,
-    });
-    expect(
-      await dispatchCmd(14, t.tool, { ...resolvable, commit: t.commit, value: '50' }),
-    ).toEqual({ error: FORM_CONTROL_ERRORS.framesNotStrings });
+    const result = await dispatchCmd(11, t.tool, { selector: 3, commit: 'bogus', value: 5, frames: [7] });
+
+    expect(result).toEqual({ error: 'selector is required' });
     expect(events).toEqual([]);
   });
+
+  // A selector that matches NOTHING: were resolution reached, the answer would
+  // be notFound. Which wrong parameter is reported first is not the contract.
+  const WRONG = { commit: 'bogus', value: 5, frames: [7] };
+  const ERROR_FOR: Record<keyof typeof WRONG, string> = {
+    commit: FORM_CONTROL_ERRORS.commitNotAllowed('bogus', t.spec.commits),
+    value: FORM_CONTROL_ERRORS.valueNotString,
+    frames: FORM_CONTROL_ERRORS.framesNotStrings,
+  };
+  const WRONG_SUBSETS: (keyof typeof WRONG)[][] = [
+    ['commit'],
+    ['value'],
+    ['frames'],
+    ['commit', 'value'],
+    ['commit', 'frames'],
+    ['value', 'frames'],
+    ['commit', 'value', 'frames'],
+  ];
+  it.each(WRONG_SUBSETS.map((keys) => ({ keys, label: keys.join(' + ') })))(
+    'wrong $label with a selector matching nothing: a parameter error, never notFound',
+    async ({ keys }) => {
+      const { events } = mountControls(t.html);
+      const params: Record<string, unknown> = { selector: NOTHING_SELECTOR, value: '50', commit: t.commit };
+      for (const key of keys) params[key] = WRONG[key];
+
+      const result = await dispatchCmd(12, t.tool, params);
+
+      expect(keys.map((key) => ({ error: ERROR_FOR[key] }))).toContainEqual(result);
+      expect(events).toEqual([]);
+    },
+  );
 });
 
 describe('strict resolution: exactly one element, never a guess', () => {
