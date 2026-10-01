@@ -29,12 +29,27 @@ Verdict enum).
 from __future__ import annotations
 
 import argparse
+import functools
+import shlex
 import sys
 import time
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+
+# The Monitor tool schema: "Deadlines above 600000ms are capped" (measured
+# 2026-09-27 and 2026-10-01).
+MONITOR_TIMEOUT_CAP_MS = 600_000
+PROBE_TIMEOUT_SECONDS = 10
+_WORST_CASE_PROBE_CALLS = 5  # fetch, merge-base, then a cold MCP session's 3 POSTs
+_STARTUP_SLACK_SECONDS = 10
+PROBE_ROUND_RESERVE_SECONDS = (_WORST_CASE_PROBE_CALLS * PROBE_TIMEOUT_SECONDS
+                               + _STARTUP_SLACK_SECONDS)
+DEFAULT_INTERVAL_SECONDS = 30.0
+SCRIPT_PATH = Path(__file__).resolve()
+DEFAULT_REPO = SCRIPT_PATH.parents[1]
 
 
 class Verdict(IntEnum):
@@ -155,15 +170,121 @@ def _exit_code_table() -> str:
     return "exit codes (the verdict):\n" + "\n".join(rows)
 
 
+class SelectorKind(StrEnum):
+    """Each value IS merge_status's argument name."""
+    REQUEST_ID = "request_id"
+    TASK_ID = "task_id"
+    BRANCH = "branch"
+
+    @property
+    def flag(self) -> str:
+        return "--" + self.value.replace("_", "-")
+
+
+@dataclass(frozen=True)
+class MergeSelector:
+    kind: SelectorKind
+    value: str
+
+    def arguments(self) -> dict[str, str]:
+        return {self.kind.value: self.value}
+
+
+@dataclass(frozen=True)
+class Options:
+    commit: str
+    selector: MergeSelector
+    host_timeout_ms: int
+    interval_seconds: float
+    ref: str
+    fetch_remote: str | None
+    repo: Path
+    escalation_url: str | None
+
+
+def _positive_seconds(text: str) -> float:
+    seconds = float(text)
+    if not seconds > 0:
+        raise argparse.ArgumentTypeError(f"must be > 0 seconds: {text}")
+    return seconds
+
+
+def _non_negative_ms(text: str) -> int:
+    ms = int(text)
+    if ms < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0 ms: {text}")
+    return ms
+
+
+def _resolved_path(text: str) -> Path:
+    return Path(text).resolve()
+
+
 def build_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description=__doc__, epilog=_exit_code_table(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--commit", required=True, metavar="REV",
+                        help="Commit to wait for; resolved to a SHA once at start.")
+    selectors = parser.add_mutually_exclusive_group(required=True)
+    for kind in SelectorKind:
+        selectors.add_argument(kind.flag, dest="selector", metavar=kind.name,
+                               type=functools.partial(MergeSelector, kind),
+                               help=f"merge_status selector ({kind.value}).")
+    parser.add_argument("--host-timeout-ms", type=_non_negative_ms,
+                        default=MONITOR_TIMEOUT_CAP_MS, metavar="MS",
+                        help="The host's kill deadline: Monitor timeout_ms or Bash "
+                             "timeout, the same number (default: %(default)s, the "
+                             "Monitor cap).")
+    parser.add_argument("--interval", dest="interval_seconds", type=_positive_seconds,
+                        default=DEFAULT_INTERVAL_SECONDS, metavar="SECONDS",
+                        help="Seconds between poll rounds (default: %(default)s).")
+    parser.add_argument("--ref", default="main",
+                        help="Ref the commit must reach (default: %(default)s).")
+    parser.add_argument("--fetch", dest="fetch_remote", metavar="REMOTE",
+                        help="git fetch REMOTE before each ancestry check "
+                             "(use with --ref REMOTE/main).")
+    parser.add_argument("--repo", type=_resolved_path, default=DEFAULT_REPO,
+                        help="Repository to check (default: this script's checkout).")
+    parser.add_argument("--escalation-url", metavar="URL",
+                        help="Escalation MCP URL (default: <repo>/.mcp.json "
+                             "mcpServers.escalation.url).")
+    return parser
+
+
+def parse_options(argv: list[str] | None = None) -> Options:
+    return Options(**vars(build_parser().parse_args(argv)))
+
+
+def invocation_budget_seconds(host_timeout_ms: int) -> float:
+    """Poll budget that lets the last round finish before the host kills us."""
+    return max(0.0, host_timeout_ms / 1000 - PROBE_ROUND_RESERVE_SECONDS)
+
+
+def rearm_argv(options: Options) -> list[str]:
+    """Every option spelled out, so a re-arm is the identical command."""
+    argv = [
+        "--commit", options.commit,
+        options.selector.kind.flag, options.selector.value,
+        "--host-timeout-ms", str(options.host_timeout_ms),
+        "--interval", str(options.interval_seconds),
+        "--ref", options.ref,
+        "--repo", str(options.repo),
+    ]
+    if options.fetch_remote is not None:
+        argv += ["--fetch", options.fetch_remote]
+    if options.escalation_url is not None:
+        argv += ["--escalation-url", options.escalation_url]
+    return argv
+
+
+def rearm_command(options: Options) -> str:
+    return shlex.join(["python3", str(SCRIPT_PATH), *rearm_argv(options)])
 
 
 def main(argv: list[str] | None = None) -> int:
-    build_parser().parse_args(argv)
+    parse_options(argv)
     return _USAGE_EXIT
 
 
