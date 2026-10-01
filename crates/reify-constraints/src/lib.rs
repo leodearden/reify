@@ -134,14 +134,15 @@ fn classify_undef(
         return TransientReason::OperatorUndefinedForKinds { kinds };
     }
 
-    let mut cells: Vec<reify_core::ValueCellId> = leaf_ids
+    // Ordered as rendered; the id breaks ties because rendering is not injective.
+    let cells: std::collections::BTreeSet<(String, reify_core::ValueCellId)> = leaf_ids
         .into_iter()
         .filter(|id| values.get(id).is_none_or(Value::is_undef))
+        .map(|id| (id.to_string(), id))
         .collect();
-    cells.sort();
-    cells.dedup();
-    cells.sort_by_cached_key(ToString::to_string);
-    TransientReason::UndefInputs { cells }
+    TransientReason::UndefInputs {
+        cells: cells.into_iter().map(|(_, id)| id).collect(),
+    }
 }
 
 /// A short human-readable label for the kind of a defined `Value`.

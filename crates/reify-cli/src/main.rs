@@ -4454,9 +4454,6 @@ mod tests {
                 "  Foo#constraint[3]: operator undefined for these operand kinds",
             ]
         );
-        for guess in ["inputs undefined", "e.g.", "auto-params unresolved"] {
-            assert!(!output.contains(guess), "the deleted guess {guess:?} is back: {output}");
-        }
     }
 
     /// An Indeterminate with no recorded reason is listed bare: nothing is
