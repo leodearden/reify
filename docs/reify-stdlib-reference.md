@@ -278,12 +278,17 @@ let transform3_identity : Transform<3>
 fn project(point: Point3<Length>, to: Frame<3>) -> Point3<Length>
 fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 
-enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX,   // Tait-Bryan
+                       XYX, XZX, YXY, YZY, ZXZ, ZYZ }  // proper / classic Euler
 ```
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
 
-**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+**What a convention names:** the three angles rotate about the named **body** axes, in the named order, composed intrinsically as `q = q_a · q_b · q_c`. The twelve conventions fall into two families that differ in where they break. **Tait-Bryan** (three distinct axes, e.g. `XYZ`) is singular where the middle angle reaches ±90°; **proper/classic Euler** (first axis repeated as third, e.g. `ZXZ`) is singular where the middle angle reaches 0 or π. So the choice is not cosmetic: it places the gimbal-lock locus somewhere different, and the right convention is the one whose singularity your mechanism never visits.
+
+**Qualified `EulerConvention` values only:** the convention argument must be a qualified enum value (`EulerConvention.XYZ`). A **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. A `String` is no longer accepted in any spelling — the lowercase-string path (`"xyz"`) and its case-sensitivity trap were removed in task #6082, and a String convention now raises a compile-time `ArgTypeMismatch` rather than silently evaluating to `Undef`.
+
+**Argument-order asymmetry, deliberate:** `orient_euler` takes its convention FIRST, `orient_to_euler` takes it LAST. `orient_euler` is a *constructor* whose convention is a mode selector for the three angles that follow, matching `R_xyz(a, b, c)` notation. `orient_to_euler` is a *decomposer*, so it is subject-first like its siblings `orient_log(q)` / `orient_to_axis_angle(q)` / `orient_inverse(q)`. Please do not "fix" the asymmetry by aligning them.
 
 #### SO(3) and SE(3) operations (v0.2)
 
@@ -306,7 +311,7 @@ fn orient_log(q: Orientation<3>) -> Vector3<Angle>                   // axis * a
 fn orient_exp(rot_vec: Vector3<Angle>) -> Orientation<3>             // inverse of orient_log
 fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
 fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
-fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
+fn orient_to_euler(q: Orientation<3>, convention: EulerConvention) -> List<Angle>  // 3 elements
 
 // SE(3) — rigid-body transforms on Transform<3>
 fn transform_compose(a: Transform<3>, b: Transform<3>) -> Transform<3>   // bit-equal to a * b
@@ -1253,16 +1258,38 @@ string), anything under `examples/**`, or anything inside a `tests/` tree or a
 rather than reading them. Re-running the sweep therefore yields many hits for both
 properties below; none of them is a reader.
 
-| Property | Declared at | Production readers | Owner |
+| Property | Declared at | Production readers | Ruling |
 |---|---|---|---|
-| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
-| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+
+Both rows record a CLOSED decision (#5801), not an open tracking cite. This
+subsection is the single home for that ruling and its rationale; each declaration
+site carries only a pointer back here.
+
+- **No consumer is landed.** Nothing consumes either value: there is no thermal
+  solver to read `thermal_expansion`, and no orthotropic-shear path that would read
+  `shear_modulus` on its own. Building either is out of scope for
+  `docs/prds/v0_6/dimension-checked-readers.md` §10.
+- **Neither is retired.** `thermal_expansion` is a *required* member of
+  `ThermallyCharacterized`, so deleting it would break every conformer and drop the
+  trait contract shown above. `shear_modulus` is optional (`= undef`), so keeping
+  it inert costs conformers nothing, and the conformers that do supply it keep a
+  real datasheet value.
+- **Neither is an INV-SF-5 placeholder.** Each is fully typed, dimensioned and
+  *data-carrying*. That is a runtime claim, so it is pinned in code rather than
+  only here: `crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that
+  `shear_modulus` reaches eval in SI (`eval_with_prelude_trait_conformance`), and
+  that all three required `ThermallyCharacterized` scalars do
+  (`eval_carries_thermally_characterized_scalars_in_si`). With no reader to notice
+  a value going missing, that suite is what goes red if one stops arriving, so the
+  ruling must then be revisited rather than quietly becoming false.
 
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
 
-- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
-  **not** declared-only — `structural_physical.ri:150` carries
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:157`) is
+  **not** declared-only — `structural_physical.ri:159` carries
   `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
   the zero-reader claim holds only when scoped to **Rust/host** readers.
 - `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
@@ -1273,9 +1300,21 @@ declared at two independent sites, and they differ:
 The second site is nonetheless **not** registered above. The ratified ruling in
 **#5801** names both declaration sites and treats `thermal_conductivity` as one
 property that it explicitly does not own, so adding a row against #5801 would
-assign it an ownership it declines. Splitting the two sites — and deciding whether
-the trait-scoped one needs its own owner — is #5801's call, not this reference's;
-it is recorded here so the distinction is not silently lost.
+assign it an ownership it declines.
+
+#5801 has since answered the split question this reference left to it: **no
+separate owner is needed, because the ruling is trait-scoped.** Inertness at
+`ThermallyCharacterized` follows from what the trait *is* — a material-datasheet
+characterization surface with no thermal solver behind it — and not from any one
+param. The measurement behind that: the trait's **entire** required scalar triple
+is reader-free — `thermal_conductivity` (`:39`), `specific_heat` (`:40`) and
+`thermal_expansion` (`:41`) — where `specific_heat`'s only non-declaration hit
+repo-wide is a test fn name below the `#[cfg(test)]` boundary in
+`crates/reify-core/src/dimension.rs`. Registering one of the three while leaving
+two unmentioned is what made this table look arbitrary and invited re-filing; a
+trait-scoped ruling removes that without minting a speculative new owner, and
+without the ownership #5801 declines. The distinction between the two
+`thermal_conductivity` sites stays recorded above so it is not silently lost.
 
 This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
 and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
@@ -1774,8 +1813,9 @@ you apply. They are documented here so the operator `curl` and the result
 channel `curl` sit adjacent and cannot be confused.
 
 ```
-ElasticResult.curl     : Field<Point3<Length>, Vector3<Real>>    // ∇×u
-ElasticResult.rotation : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation     : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.shear_angles : Field<Point3<Length>, Vector3<Angle>>   // (γ_yz, γ_zx, γ_xy)
 ```
 
 (`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
@@ -1813,6 +1853,22 @@ Having `rotation` carry a real ANGLE unlocks three things that
   yet — a per-component `deg` comparison is still out of reach;
 - a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
   than a bare frequency (1/s).
+
+`shear_angles` (task #6183) is the second named crossing, built the same way
+from `gradient`. Its components are the Voigt-order **engineering** shear
+strains (γ_yz, γ_zx, γ_xy), with γ_ij = ∂u_i/∂x_j + ∂u_j/∂x_i = 2·ε_ij — the
+doubled symmetric off-diagonals of `gradient`, read as angles (× η = 1 rad).
+`gradient` itself stays `Tensor<2,3,Real>`: a tensor has one quantity slot, so
+an angle reading of it is extracted by a named channel, never by retyping it.
+The same small-deformation proviso applies (‖∇u‖ ≪ 1). It is populated on the
+tet/solid path and `undef` on the shell path.
+
+Worked example: `examples/differential_field_ops.ri` carries
+`constraint shear_probe < shear_allowable`, where `shear_probe` is `magnitude`
+of the sampled `Vector3<Angle>`, gated in CI by `differential_field_ops_e2e`.
+Bounding the magnitude is conservative, since ‖γ‖₂ ≥ max_i |γ_i|.
+Per-component `deg` comparisons stay in the Rust harness until in-language
+Vector3 component access exists.
 
 See `docs/prds/v0_6/differential-field-operators.md` for the decision table
 and the full channel specification.
@@ -1954,7 +2010,7 @@ fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionV
 fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. It re-drives that joint's whole geometry at the derived value — the parent's axis *and* its mount (the optional pivot third argument of `prismatic`/`revolute`, a `point3` or `frame3`) — so `transform_at(couple(p, r, o), v)` equals `transform_at(p, r * v + o)`: a lead-screw follower on a corner-pivoted lift travels at that corner, not at the world origin. The coupling captures its parent by value when it is built, so only a mount the parent already carries at that point is inherited: a `relate`-solved mount (a `sub … at auto` placement), which the engine writes into the parent joint's cell after evaluation, does not reach a coupling of that joint (task #7194). A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
 **`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
@@ -1970,10 +2026,10 @@ fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+These are the registered builtin names (the `"joint_axis"`, `"joint_range"`, `"joint_ratio"`, and `"joint_offset"` arms of `eval_joints` in `crates/reify-stdlib/src/joints.rs`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
-**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
+**Jacobian.** `joint_jacobian` is a live builtin (the `"joint_jacobian"` arm of `eval_joints` in
+`crates/reify-stdlib/src/joints.rs`, delegating to `joint_jacobian_value`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned type is `JacobianColumn`: the partial derivative of pose with respect
@@ -2022,7 +2078,7 @@ fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world(), pose: Tr
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. On a **closing** `body()` call whose `at` already carries a *different* recorded `parent`, `pose` has a different, single meaning: that closing edge is a **rigid 0-DOF tie from `parent` to `at` whose transform is `pose`**. The closure enforces `T_tree(at) == T(parent) ∘ pose`, and the closing body's own `world_transform` is that same frame — the pose is consumed by the tie and is **not** additionally applied on top of `at`. That is what makes a rigid platform carried by several joints at *different* pivots expressible; without it the closure would demand that the two pivots coincide. A loop closed the **other** way — an edge whose `parent` already reaches `at` by walking upward, including the self-loop `at == parent` — records its closure but leaves `pose` **out** of the residual, and its body keeps the ordinary `T(at) ∘ pose` placement. Such a closure is not solver-feedable anyway (its recorded pair carries the closing joint on both sides, so one joint would have to hold two independent values), so there is nothing for the tie to constrain — a rigid multi-pivot offset belongs on a closing edge of the first kind. A closing edge whose `parent` is `world()` is rejected at build time with `error = "world_parented_closure"`: such a closure has no joint on the closing side, so the loop-closure solver has no free variable to satisfy it — parent the closing edge to a joint on the other branch of the loop instead. That rejection currently surfaces only as the `error` key on the `Mechanism` value and the resulting `undef` in `snapshot()` and every cell downstream of it; unlike `error[E_MECHANISM_DUPLICATE_SOLID]` it has no typed diagnostic yet, so nothing names the cause in a `reify check` report (#7354). (A plain **open** edge parented to `world()` is the ordinary ground-frame attachment and is unaffected.) `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
 **Closed chains (reserved diagnostic, not emitted).** `mechanism()` builds a directed graph of bodies connected through joints. An earlier draft of this section documented closed chains — bodies reachable via two distinct joint paths — as a build-time error:
 
@@ -2034,7 +2090,7 @@ error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
   | path 2: world -> joint_c -> body
 ```
 
-That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
+That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally (with the single exception noted above: a closing edge parented to `world()` is rejected, because it leaves the solver no free variable on the closing side) — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
 
 ### 13.3 `std.mechanism.snapshot`
 

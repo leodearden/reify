@@ -797,6 +797,92 @@ D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
 assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
     test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 
+# DM1-DM5 — a --touch path that does not exist is warned and skipped, never
+# created (task #7231). ONE invocation carries every shape a stale or mistyped
+# --touch can take: a missing file under an existing dir, a missing parent, and a
+# DANGLING symlink (a plain `touch` follows the link and creates its target).
+# D_BASE is reused read-only as the clone source, exactly as D0 does.
+DM_LANE="$(make_isolated_lane D-touchmiss)"
+mkdir -p "$DM_LANE/src" "$DM_LANE/.git"
+echo '[core]' > "$DM_LANE/.git/config"
+DM_EXISTING="$DM_LANE/src/real.rs"
+echo 'pub fn real() {}' > "$DM_EXISTING"
+DM_MISSING="$DM_LANE/src/typo_missing.rs"           # parent exists, file absent
+DM_MISSING_PARENT="$DM_LANE/no_such_dir/stale.rs"   # parent absent
+DM_LINK="$DM_LANE/src/dangling.rs"
+ln -s ghost_target.rs "$DM_LINK"
+DM_LINK_TARGET="$DM_LANE/src/ghost_target.rs"       # what a following touch would create
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM_LANE" --fresh-checkout \
+        --touch "$DM_EXISTING" --touch "$DM_MISSING" \
+        --touch "$DM_MISSING_PARENT" --touch "$DM_LINK"
+
+assert "DM1: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
+    bash -c '[ "$1" -eq 0 ] && [ "$2" = "$3" ]' _ "$RC" "$OUT" "$DM_LANE/target"
+assert "DM2: a --touch path that does not exist is not created" \
+    bash -c '[ ! -e "$1" ]' _ "$DM_MISSING"
+assert "DM3: a dangling-symlink --touch path does not create the link's target" \
+    bash -c '[ ! -e "$1" ] && [ -L "$2" ]' _ "$DM_LINK_TARGET" "$DM_LINK"
+# Attributability, not wording: each skipped path is named on a [warn] line.
+for _dm_skipped in "$DM_MISSING" "$DM_MISSING_PARENT" "$DM_LINK"; do
+    assert "DM4: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF -- "$2"' _ "$ERR_OUT" "$_dm_skipped"
+done
+DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
+assert "DM5: the existing --touch path listed beside the misses is still touched to now" \
+    test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
+
+# DM6-DM7 — the counterpart of DM1-DM5: a `touch` that FAILS on a path that DOES
+# exist must still abort the seed (empty STDOUT, so the caller rebuilds cold); it
+# is never swallowed as a skip. Both delta sources (--touch and git diff) stamp
+# through one helper, and a helper called from an `if` runs with errexit
+# suspended, so that abort cannot be left to `set -e`. DM6 is the discriminating
+# case: a --touch path has no second net. On the git-diff route the inv.9
+# post-condition (_assert_no_stale_delta_stamp) would also refuse the unstamped
+# path, so DM7 pins the OUTCOME there, not which of the two caught it.
+# A PATH shim fails ONLY the plain single-operand `touch <path>` naming
+# REIFY_TEST_TOUCH_FAIL_PATH (the delta touch); the multi-operand `-h -d` bulk
+# stamp and every other touch reach the real /bin/touch.
+DM_SHIM_DIR="$(mktemp -d "$_REAL_STUB_ROOT/touch-shim-XXXXXX")"
+cat > "$DM_SHIM_DIR/touch" << 'DM_TOUCH_SHIM_EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "${REIFY_TEST_TOUCH_FAIL_PATH:-}" ]; then
+    echo "touch: cannot touch '$1': Permission denied" >&2
+    exit 1
+fi
+exec /bin/touch "$@"
+DM_TOUCH_SHIM_EOF
+chmod +x "$DM_SHIM_DIR/touch"
+
+DM6_LANE="$(make_isolated_lane D-touchfail)"
+mkdir -p "$DM6_LANE/src"
+DM6_PATH="$DM6_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM6_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM6_PATH" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM6_LANE" --fresh-checkout --touch "$DM6_PATH"
+assert "DM6: a failing touch on an existing --touch path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM6: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM6_PATH"
+
+DM7_LANE="$(make_isolated_lane D-gitdeltafail)"
+mkdir -p "$DM7_LANE/src"
+DM7_PATH="$DM7_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM7_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM7_PATH" \
+REIFY_TEST_GIT_DIFF_FILES="src/unstampable.rs" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM7_LANE" --fresh-checkout --base-commit shaX
+assert "DM7: a failing touch on an existing git-delta path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM7: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM7_PATH"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3485,11 +3571,12 @@ assert "S2d: positive control: STDOUT is exactly <lane>/target" \
 # sub-second inversion holes cargo still mis-gates on (§9.5 inv.12).
 #
 # WHY the delta path here is itself a replay file: the seed stamps every delta
-# path to NOW (`touch "${TOUCH_PATHS[@]}"`, no -d), so a fixture CANNOT pre-arrange
-# a tie against a base-stamped `output` — the pre-stamp is overwritten during the
-# run. Passing the lane's own `output` via --touch makes the oldest delta and the
-# newest `output` the SAME inode, which is a tie by construction and needs no
-# wall-clock luck. Artificial as a delta path, exact as an operator pin.
+# path to NOW (`_touch_explicit_delta`'s plain `touch`, no -d), so a fixture
+# CANNOT pre-arrange a tie against a base-stamped `output` — the pre-stamp is
+# overwritten during the run. Passing the lane's own `output` via --touch makes
+# the oldest delta and the newest `output` the SAME inode, which is a tie by
+# construction and needs no wall-clock luck. Artificial as a delta path, exact as
+# an operator pin.
 IFS='|' read -r S2T_BASE S2T_LANE S2T_DELTA \
     <<< "$(_s_make_fixture S2t "2024-06-01 00:00:00.123456789")"
 S2T_OUTPUT="$S2T_LANE/target/debug/build/fakecc-1111/output"
@@ -4282,18 +4369,11 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # pool-bucket suite's C-P3 discipline requires load-independent verdicts). The
 # shim opens its own log file so the probe cannot perturb what it measures.
 #
-# fd-PROBING MECHANIC: reading a descriptor via `$(readlink /proc/self/fd/N)`
-# does NOT work here — command substitution itself runs in a subshell whose
-# OWN fd 1 is the internal pipe bash uses to capture $(...)'s output, so
-# `/proc/self/fd/1` inside that subshell always resolves to THAT capture
-# pipe, never to the shim's real, inherited fd 1 (verified empirically while
-# building this block: it read back `pipe:*` unconditionally, fix or no fix).
-# The shim instead captures `$BASHPID` — its own real PID, stable across the
-# fd redirects being probed — into a plain variable FIRST, then uses that
-# fixed value in `/proc/$BASHPID/fd/N` from inside the command substitution.
-# That decouples "what redirect does the probe's own output need" from "whose
-# fd table am I inspecting", which a self-referential `/proc/self` can never
-# do.
+# fd-PROBING MECHANIC: the shim captures its own PID (`$BASHPID`) into a
+# plain variable FIRST, outside any command substitution, and reads each
+# descriptor through that saved PID's /proc fd directory. A self-referential
+# probe spelled inside `$(...)` reads the capture pipe instead; mechanism and
+# guard: tests/infra/README.md "Self-referential fd-probe guard".
 #
 # The whole invocation deliberately mirrors the real blocking caller,
 # scripts/warm-lane-gc.sh:648-649 — `bash "$SCRIPT" ... 2>&1 | consumer` — so

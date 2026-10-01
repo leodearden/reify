@@ -11,14 +11,12 @@
 // (unconditional) and `#[cfg(has_gmsh)] pub use mesh_boundary::{BoundaryAttributedReport,
 // mesh_surface_to_volume_with_attribution}` to lib.rs.
 use reify_kernel_gmsh::EntityAttribution;
-use reify_ir::{GeometryHandleId, Mesh, NodeAttachment};
+use reify_ir::{GeometryHandleId, NodeAttachment};
 
-// `entity_census` and `prismatic_box_mesh` are shared with
-// `tests/classify_feature_angle.rs` through `tests/common/mod.rs` (#6830): the
-// raw-FFI classify prelude was duplicated here verbatim and had to be updated
-// in lockstep. Only the prelude is shared — the assertions below are this
-// file's own contract. The module's file-level `#![allow(dead_code)]` covers
-// the parts this binary does not use.
+// `entity_census`, `prismatic_box_mesh` and `subdivided_unit_cube_surface` come
+// from `tests/common/mod.rs`; the assertions below are this file's own
+// contract. The module's file-level `#![allow(dead_code)]` covers the parts
+// this binary does not use.
 //
 // Call sites stay path-qualified rather than taking a top-level
 // `use common::{entity_census, prismatic_box_mesh};` the way
@@ -33,57 +31,6 @@ mod common;
 
 fn h(n: u64) -> GeometryHandleId {
     GeometryHandleId(n)
-}
-
-/// Build a 2×2-subdivided unit cube (side 1.0, centred at origin):
-/// 8 corners + 12 edge midpoints + 6 face centres = 26 unique vertices, 48 triangles.
-/// Shared with gmsh_classify_diagnostics.rs (duplicated — separate compilation units).
-fn subdivided_unit_cube_surface() -> Mesh {
-    #[rustfmt::skip]
-    let corners: [[f32; 3]; 8] = [
-        [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
-        [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],
-        [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5],
-        [-0.5,  0.5,  0.5], [ 0.5,  0.5,  0.5],
-    ];
-    #[rustfmt::skip]
-    let edges: [[f32; 3]; 12] = [
-        [ 0.0, -0.5, -0.5], [-0.5,  0.0, -0.5], [ 0.5,  0.0, -0.5], [ 0.0,  0.5, -0.5],
-        [ 0.0, -0.5,  0.5], [-0.5,  0.0,  0.5], [ 0.5,  0.0,  0.5], [ 0.0,  0.5,  0.5],
-        [-0.5, -0.5,  0.0], [ 0.5, -0.5,  0.0], [-0.5,  0.5,  0.0], [ 0.5,  0.5,  0.0],
-    ];
-    #[rustfmt::skip]
-    let face_centers: [[f32; 3]; 6] = [
-        [ 0.0,  0.0, -0.5], [ 0.0,  0.0,  0.5],
-        [ 0.0, -0.5,  0.0], [ 0.0,  0.5,  0.0],
-        [-0.5,  0.0,  0.0], [ 0.5,  0.0,  0.0],
-    ];
-    let mut vertices: Vec<f32> = Vec::with_capacity(26 * 3);
-    for c in &corners { vertices.extend_from_slice(c); }
-    for e in &edges   { vertices.extend_from_slice(e); }
-    for f in &face_centers { vertices.extend_from_slice(f); }
-    #[rustfmt::skip]
-    let indices: Vec<u32> = vec![
-        // Bottom (z=-0.5): vertex indices 8=edge[0], 9=edge[1], 10=edge[2], 11=edge[3], 20=fc[0]
-        0, 9,20,  0,20, 8,  8,20,10,  8,10, 1,
-        9, 2,11,  9,11,20, 20,11, 3, 20, 3,10,
-        // Top (z=0.5)
-        4,12,21,  4,21,13, 12, 5,14, 12,14,21,
-       13,21,15, 13,15, 6, 21,14, 7, 21, 7,15,
-        // Front (y=-0.5)
-        0, 8,22,  0,22,16,  8, 1,17,  8,17,22,
-       16,22,12, 16,12, 4, 22,17, 5, 22, 5,12,
-        // Back (y=0.5)
-        2,18,23,  2,23,11, 11,23,19, 11,19, 3,
-       18, 6,15, 18,15,23, 23,15, 7, 23, 7,19,
-        // Left (x=-0.5)
-        0,16,24,  0,24, 9,  9,24,18,  9,18, 2,
-       16, 4,13, 16,13,24, 24,13, 6, 24, 6,18,
-        // Right (x=0.5)
-        1,10,25,  1,25,17, 10, 3,19, 10,19,25,
-       17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
-    ];
-    Mesh { vertices, indices, normals: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +88,7 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
     use reify_ir::ElementOrderTag;
     use std::collections::BTreeSet;
 
-    let surface = subdivided_unit_cube_surface();
+    let surface = common::subdivided_unit_cube_surface();
 
     // Unit cube: 6 B-rep faces, 12 B-rep edges, 8 B-rep vertices.
     // Anchor positions match gmsh classify_surfaces output for the unit cube
@@ -265,7 +212,7 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
     use reify_ir::ElementOrderTag;
     use std::collections::{BTreeSet, HashMap};
 
-    let surface = subdivided_unit_cube_surface();
+    let surface = common::subdivided_unit_cube_surface();
 
     // Same attribution as the signal test.
     let attribution = EntityAttribution {
@@ -429,7 +376,7 @@ fn classify_surfaces_over_decomposes_unit_cube() {
     // shared with tests/classify_feature_angle.rs. The angle constants are still
     // imported here because the cause diagnosis below reads them.
     let (n0, n1, n2) =
-        common::entity_census(&subdivided_unit_cube_surface(), "reify_overdecomp_probe");
+        common::entity_census(&common::subdivided_unit_cube_surface(), "reify_overdecomp_probe");
 
     // Property assertion (version-robust): over-decomposition must exceed the
     // geometric B-rep count (8/12/6) regardless of gmsh version or classify
@@ -497,7 +444,7 @@ fn classify_surfaces_over_decomposes_unit_cube() {
 #[cfg(has_gmsh)]
 #[test]
 fn entity_census_tracks_its_surface_argument() {
-    let subdivided = common::entity_census(&subdivided_unit_cube_surface(), "reify_6830_subdiv");
+    let subdivided = common::entity_census(&common::subdivided_unit_cube_surface(), "reify_6830_subdiv");
     let welded =
         common::entity_census(&common::prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_welded");
 

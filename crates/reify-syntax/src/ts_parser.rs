@@ -15,15 +15,12 @@ use fault_diagnosis::{
     MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
 };
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.node_text($child)),
-                $self.span($child),
-            );
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -73,6 +70,14 @@ pub fn parse_with_prelude_enums<'a>(
 
     let mut lowering = Lowering::with_prelude_enums(source, prelude_enum_names);
     lowering.lower_source_file(root);
+
+    // INV-SF-7 (#7094): report member-list bodies where a member silently
+    // absorbed the following line. All logic lives in `member_continuation`;
+    // this stays a call site so the merge surface against the pending
+    // `ts_parser.rs` work on `task/5392` is one hunk.
+    for (span, message) in crate::member_continuation::check_member_continuations(root) {
+        lowering.push_error(message, span);
+    }
 
     let content_hash = ContentHash::of_str(source);
 
@@ -233,12 +238,40 @@ impl<'a> Lowering<'a> {
     /// missing `;` in a function body evaporate a `let` binding and change the
     /// program's value with no diagnostic at all.
     ///
-    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
     /// multi-line slice of source is what made these diagnostics unreadable and
-    /// mislocated. `message` must be a fixed, one-line description.
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
     }
 
     /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
@@ -933,7 +966,18 @@ impl<'a> Lowering<'a> {
         let alias_node = node.child_by_field_name("alias");
 
         let (path, kind) = if let Some(items) = items_node {
-            // Destructured: `import a.b.{C, D}`
+            // Destructured: `import a.b.{C, D}` — canonical per the
+            // `import_path` production in `docs/reify-language-spec.md` §15
+            // "Grammar Summary".
+            //
+            // The `items`/`alias` FIELDS are what select the ImportKind here,
+            // which is why the brace list stays a field on `import_declaration`
+            // rather than folding into `import_path` as the spec EBNF nests it.
+            //
+            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
+            // directly instead of routing through `check_and_lower!`, so an
+            // ERROR nested in the subtree never becomes a diagnostic. Latent,
+            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();
@@ -2006,14 +2050,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
@@ -2024,10 +2075,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -2592,6 +2640,12 @@ impl<'a> Lowering<'a> {
                 "relate block",
                 self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
+            "sketch_block" => check_and_lower!(
+                self,
+                child,
+                "sketch block",
+                self.lower_sketch_block(child).map(MemberDecl::Sketch)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
@@ -2601,9 +2655,8 @@ impl<'a> Lowering<'a> {
             // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
             // task #5392: this was the ONE member kind without a `has_error()` guard, so a
             // fault inside a member fn body evaporated silently. Routed through
-            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
-            // avoids that macro's `node_text` source echo and so a more specific inner
-            // message is not overwritten by a vague outer one. A bodyless
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
             // `function_signature` is well-formed and lowers to `body: None` as before —
             // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
@@ -2807,10 +2860,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -3645,6 +3696,74 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `sketch_block` CST node into a [`SketchDecl`]
+    /// (constrained-2d-sketch α, task 5506; PRD
+    /// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+    ///
+    /// Infallible-`Some` in the same shape as [`Self::lower_relate_block`]:
+    /// fallibility is carried by the `check_and_lower!` at the dispatch site, so
+    /// an ERROR-bearing block pushes a diagnostic and yields `None` rather than a
+    /// partially-lowered member.
+    ///
+    /// # Body mapping
+    ///
+    /// The grammar admits exactly two body child kinds. Each maps onto an
+    /// EXISTING `MemberDecl` variant rather than a new sketch-specific one — a
+    /// second new variant would re-open the whole exhaustiveness blast radius
+    /// (10 src + 9 test matches) for zero gain:
+    ///
+    ///   * `let_declaration` → `MemberDecl::Let` via [`Self::lower_let`]. `aux`
+    ///     detection is NOT reimplemented here: `lower_let` already calls
+    ///     `has_aux_keyword` and sets `LetDecl.is_aux`, which is exactly PRD §5
+    ///     D12's construction-geometry marking.
+    ///   * `relation_member` → a single-expression `MemberDecl::Relate`, the
+    ///     same bare-expression shape `relate { }` already uses, so γ can reuse
+    ///     `check_relate_relations` verbatim.
+    ///
+    /// Members are collected in SOURCE ORDER and left UNCLASSIFIED: PRD §7 C2's
+    /// entity/constraint split is semantic (it depends on what each call
+    /// resolves to) and belongs to γ.
+    ///
+    /// A body child that lowers to `None` is skipped rather than substituted, so
+    /// the member count is a faithful record of what actually lowered.
+    fn lower_sketch_block(&mut self, node: tree_sitter::Node) -> Option<SketchDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "let_declaration" => {
+                    if let Some(decl) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(decl));
+                    }
+                }
+                "relation_member" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        members.push(MemberDecl::Relate(RelateDecl {
+                            relations: vec![expr],
+                            span: self.span(child),
+                            content_hash: self.content_hash(child),
+                        }));
+                    }
+                }
+                // Anonymous tokens (`sketch`, the braces) and the `name`
+                // identifier. Nothing else is grammatically reachable here.
+                _ => {}
+            }
+        }
+
+        Some(SketchDecl {
+            name,
+            members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     /// Lower the `relation_member` children of a `relate_block` or
     /// `sub_relate_block` CST node into their relation expressions, in source
     /// order (task δ 4384). Each `relation_member` is `field('expr',
@@ -3785,10 +3904,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -3920,10 +4036,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -4137,6 +4250,28 @@ impl<'a> Lowering<'a> {
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
+            // Positional `auto(<expr>)` in call-argument position
+            // (constrained-2d-sketch α, task 5506; PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §5 D6). It IS the named
+            // form `auto(seed = <expr>)`, so it lowers to the existing
+            // `ExprKind::Auto` shape rather than a new variant, and every Auto
+            // consumer keeps working unchanged. Outside sketch scope that shape
+            // is rejected loudly by reify-compiler `expr.rs`'s
+            // `reject_auto_in_arg_list` (E_AUTO_NOT_AT_BINDING_SITE), pinned by
+            // cases (l)-(n) of `harness_auto_binding/auto_not_at_binding_site_tests.rs`.
+            // `free` is always false: the grammar's `auto_seed` rule admits only
+            // the parenthesized-expression form (rationale: that rule in
+            // grammar.js).
+            "auto_seed" => node
+                .child_by_field_name("seed")
+                .and_then(|seed_node| self.lower_expr(seed_node))
+                .map(|seed| Expr {
+                    kind: ExprKind::Auto {
+                        free: false,
+                        params: vec![("seed".to_string(), seed)],
+                    },
+                    span: self.span(node),
+                }),
             "quantity_literal" => self.lower_quantity_literal(node),
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
@@ -6050,6 +6185,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
                 MemberDecl::Relate(_) => "relate".into(),
+                MemberDecl::Sketch(sk) => format!("sketch:{}", sk.name),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -6239,6 +6375,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
                 MemberDecl::Relate(r) => r.span,
+                MemberDecl::Sketch(sk) => sk.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -6374,6 +6511,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
                 MemberDecl::Relate(_) => {}
+                MemberDecl::Sketch(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -6444,6 +6582,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
                 MemberDecl::Relate(r) => (r.span, r.content_hash),
+                MemberDecl::Sketch(sk) => (sk.span, sk.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -6560,6 +6699,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -6582,6 +6722,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -7584,8 +7725,9 @@ mod tests {
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -7595,20 +7737,11 @@ mod tests {
         // `{ … }` as a member-level ERROR node rather than a connect_body,
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
+        let source = "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7737,20 +7870,14 @@ mod tests {
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
-        );
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // port_body. When lower_port_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
+        let source = "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_port_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in port body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7805,6 +7932,24 @@ mod tests {
             "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
+    }
+
+    // ── Guarded block ERROR arm ────────────────────────────────
+
+    /// A guarded block is a member list, so its `ERROR` arm takes the member-list policy
+    /// (`diagnose_error_node`): no source echo, located at the fault (INV-SF-7, task #6156).
+    ///
+    /// Only a direct call reaches this arm. Through `parse`, `lower_member` refuses a faulty
+    /// `guarded_block` via `check_and_lower!` before `lower_guarded_block` ever runs.
+    #[test]
+    fn lower_guarded_block_error_node_emits_diagnostic() {
+        let source = "structure S {\n  param x: Real = 1\n  where x > 0 {\n    let a = 1\n    ) (\n      ] [\n    let b = 2\n  }\n}\n";
+        let errors = lower_node_with_errors(source, "guarded_block", |l, n| {
+            l.lower_guarded_block(n);
+        });
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in guarded block");
+        assert_eq!(errors[0].span.start as usize, source.find(") (").unwrap());
     }
 
     // ── Constraint def defensive catch-all tests ───────────────

@@ -1982,7 +1982,12 @@ fn phase15_phase2_parity_deepest_expressible_cross_sub_read() {
 /// for a message that actually reaches the user. A structure with no
 /// template-scope pass gets no `ComputeNode` either, so the registered-target
 /// gate suppresses it first. Hence the fix is structural — `DeclineCause`
-/// carries which condition fired, and the reporter emits only `InputsDiffer`.
+/// carries which condition fired, and the reporter SUPPRESSES exactly one
+/// cause: `NoTemplateValue`. Stating the cause gate as the ONE suppressed cause
+/// rather than as the reported ones is the form that does not drift — reported
+/// causes accrue (`InputsDiffer` and `InputNotComparable` today, after #7021
+/// split presence asymmetry out of the divergence branch), while the branch
+/// with nothing honest to print is the fixed point.
 ///
 /// This fixture is the registered-but-Failed shape INSIDE an instantiated
 /// `sub`, i.e. the exact quadrant that misfired.

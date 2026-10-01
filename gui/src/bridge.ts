@@ -13,6 +13,9 @@ import type {
   ValueData,
   ConstraintData,
   EvaluationStatus,
+  EvalGeneration,
+  PublishedState,
+  RawPublishedState,
   SourceLocation,
   FileData,
   SerializationError,
@@ -34,7 +37,7 @@ import type {
   DisplayDirective,
   AppearanceDirective,
 } from './types';
-import { convertRawMesh, convertRawGuiState } from './types';
+import { convertRawMesh, convertRawGuiState, convertRawPublishedState } from './types';
 import type {
   OutboundMessage,
   TextDelta,
@@ -49,28 +52,69 @@ import type {
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
-/** Fetch the full initial GUI state from the backend. Converts mesh wire data to typed arrays. */
-export async function getInitialState(): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('get_initial_state');
-  return convertRawGuiState(raw);
+/**
+ * The full GUI state, stamped with the generation it was published under for
+ * `engineStore.applyPublishedState`. Converts mesh wire data to typed arrays.
+ */
+async function fetchPublishedState(): Promise<PublishedState> {
+  const raw = await invoke<RawPublishedState>('get_initial_state');
+  return convertRawPublishedState(raw);
+}
+
+/** Fetch the full initial GUI state from the backend, stamped with its publish generation. */
+export async function getInitialState(): Promise<PublishedState> {
+  return fetchPublishedState();
 }
 
 /** Refresh the full GUI state for recovery from missed events. Semantic alias for getInitialState. */
-export async function refreshFullState(): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('get_initial_state');
-  return convertRawGuiState(raw);
+export async function refreshFullState(): Promise<PublishedState> {
+  return fetchPublishedState();
 }
 
-/** Set a parameter value by cell ID. Returns the updated GUI state for optional reconciliation. */
-export async function setParameter(cellId: string, value: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('set_parameter', { cellId, value });
-  return convertRawGuiState(raw);
+/**
+ * When an edit was made: `epoch` identifies the page load and `seq` grows with
+ * every edit. The backend uses it to run only the newest edit of each cell or
+ * editor buffer, so older queued edits of that target resolve without running.
+ */
+export interface EditOrder {
+  epoch: number;
+  seq: number;
+}
+
+// Random rather than clock-based: the backend compares epochs only for
+// equality, and a reload restarts `seq`.
+const EDIT_EPOCH = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+let lastEditSeq = 0;
+
+function nextEditOrder(): EditOrder {
+  lastEditSeq += 1;
+  return { epoch: EDIT_EPOCH, seq: lastEditSeq };
+}
+
+/**
+ * Set a parameter value DURABLY by cell ID: the backend writes it back into the
+ * `.ri` source (INV-GUI-3). One call per user gesture — Enter/blur in the edit
+ * box, release of a slider. Resolves once the edit was applied or superseded by
+ * a newer edit of the cell; the resulting state arrives through delta events.
+ */
+export async function setParameter(cellId: string, value: string): Promise<void> {
+  await invoke('set_parameter', { cellId, value, order: nextEditOrder() });
+}
+
+/**
+ * Show a parameter value TRANSIENTLY — the per-frame cadence of a drag, which
+ * keeps the viewport tracking the pointer without rewriting the design at RAF
+ * rate. The value expires; {@link setParameter} is what makes an edit durable.
+ * Resolves like {@link setParameter}.
+ */
+export async function previewParameter(cellId: string, value: string): Promise<void> {
+  await invoke('preview_parameter', { cellId, value, order: nextEditOrder() });
 }
 
 /**
  * Register the GUI's PASSIVE observed-demand sources (selective-demand
  * precondition, task 4532). OBSERVATIONAL ONLY — the backend records a
- * would-prune measurement that rides back on the NEXT `set_parameter` response's
+ * would-prune measurement onto the NEXT edit's state, as
  * `GuiState.demand_prune_measurement`; this command itself returns nothing and
  * cannot perturb evaluation.
  *
@@ -102,10 +146,13 @@ export async function syncDemand(visibleRealizations: string[]): Promise<void> {
   return invoke('sync_demand', { visibleRealizations });
 }
 
-/** Update source file content. Returns the updated GUI state for optional reconciliation. */
-export async function updateSource(path: string, content: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('update_source', { path, content });
-  return convertRawGuiState(raw);
+/**
+ * Sync the editor's buffer for `path` to the backend, which recompiles it.
+ * Resolves once the sync was applied or superseded by a newer sync of the
+ * buffer; the resulting state arrives through delta events.
+ */
+export async function updateSource(path: string, content: string): Promise<void> {
+  await invoke('update_source', { path, content, order: nextEditOrder() });
 }
 
 /** Save a file to disk. */
@@ -118,10 +165,14 @@ export async function openFile(path: string): Promise<FileData> {
   return invoke<FileData>('open_file', { path });
 }
 
-/** Open a file and load it into the engine for evaluation. Returns updated GUI state. */
-export async function openFileEngine(path: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('open_file_engine', { path });
-  return convertRawGuiState(raw);
+/**
+ * Open a file and load it into the engine for evaluation. Returns the updated
+ * GUI state, stamped with the generation it was published under for
+ * `engineStore.applyPublishedState`.
+ */
+export async function openFileEngine(path: string): Promise<PublishedState> {
+  const raw = await invoke<RawPublishedState>('open_file_engine', { path });
+  return convertRawPublishedState(raw);
 }
 
 /** Export geometry to a file in the specified format. */
@@ -506,6 +557,26 @@ export async function onEvaluationStatus(
 ): Promise<UnlistenFn> {
   return listen<EvaluationStatus>('evaluation-status', (event) => {
     callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to the generation of each edit or evaluation the backend starts
+ * running. Everything that generation makes the frontend see follows its
+ * announcement — the fence `engineStore.applyPublishedState` orders
+ * whole-state replies against.
+ */
+export async function onEvalGeneration(
+  callback: (generation: number) => void,
+): Promise<UnlistenFn> {
+  // Payload shape: docs/gui-event-channels/eval-generation.md (§2)
+  return listen<unknown>('eval-generation', (event) => {
+    const p = event.payload;
+    if (!isPlainObject(p) || typeof p['generation'] !== 'number') {
+      console.warn('[eval-generation] malformed payload; dropping event', p);
+      return;
+    }
+    callback((p as unknown as EvalGeneration).generation);
   });
 }
 

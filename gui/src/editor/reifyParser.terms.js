@@ -204,5 +204,6 @@ export const
   JointBody = 249,
   ImportDeclaration = 250,
   _import = 251,
-  ImportItems = 252,
-  as = 253
+  ImportItemsOpen = 252,
+  ImportItems = 253,
+  as = 254

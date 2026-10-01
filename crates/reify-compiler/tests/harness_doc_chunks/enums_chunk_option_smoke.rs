@@ -556,7 +556,7 @@ fn undef_subject_propagates_through_every_documented_combinator() {
 /// `match` expression cannot be produced by a future typing error on
 /// `param c : Option<Length>` or a resolution error on the wrapper — precisely the confound
 /// the paragraph above says this test exists to guard against. It also stops the ratchet
-/// depending on generic-message wording, whose broadening is #5392's follow-up #6156.
+/// depending on generic-message wording.
 ///
 /// The final assertion uses the non-panicking `_allow_parse_errors` variant
 /// deliberately: the plain `compile_source_with_stdlib` panics on parse errors,

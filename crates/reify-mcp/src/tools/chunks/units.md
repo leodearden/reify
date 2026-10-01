@@ -105,7 +105,8 @@ that replaces it. `g` stands for any let-bound geometry.
      test can observe. Constructors rejected only at build/eval time are a separate block; do not
      move a row between the two without moving it in the tests as well.
 
-     FORMAT IS LOAD-BEARING: one row per line, the two columns separated by `-->`, never wrapped.
+     FORMAT IS LOAD-BEARING: one row per line, the two columns separated by the arrow
+     (units_chunk_smoke.rs's ROW_SEPARATOR), never wrapped.
      `//` annotations are stripped before scraping, so a row may carry one. The test binds
      `let g = box(10mm, 10mm, 10mm)` around each form, which is what makes the `g` rows real. -->
 

@@ -46,6 +46,15 @@
 //!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
 //!   the canonical enumeration of every position routed through the eval-layer
 //!   LENGTH chokepoint.
+//! - The ANGLE producer positions of PRD
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md` leaf ζ (task 5782):
+//!   the transform, sweep, curve, modify and pattern producers whose angle
+//!   occupies a real positional index at the call site, all built by
+//!   [`angle_arg`].
+//! - The Euler builtins' `convention` slot (task #6082) — `orient_euler` and
+//!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
+//!   here only because the mechanism is name-keyed and generic. They are the
+//!   table's only `ExpectedArg::Enum` slots.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -69,13 +78,16 @@
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
 //!   correct `.ri` outright.
-//! - **Every ANGLE belongs to
-//!   `docs/prds/v0_6/angle-units-surface-convergence.md`** by binding seam
-//!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
-//!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
-//!   precedent to extend; adding a new one here would be a scope violation.
-//!   It is also why those slots still carry no migration hint: eval gained one
-//!   at leaf β, and PRD 3 closes the compile half at leaf ζ (task 5782).
+//! - **ANGLE positions ARE gated here, on one hint-carrying template.** PRD
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md` leaf ζ (task 5782)
+//!   executed the seam decree this rule used to DEFER to: every angle that
+//!   occupies a real positional index at a call site is slotted, built by
+//!   [`angle_arg`] so the wording cannot fork (decision D11), and the
+//!   pre-existing selector `tol` slots moved onto that same template in the
+//!   same change. Two angles are still absent, and neither is a gap: an axis
+//!   DIRECTION component is dimensionless (the ORIGIN-vs-DIRECTION rule above),
+//!   and `revolve_full`'s 2π is SYNTHESIZED at lowering rather than written by
+//!   an author, so there is no positional index to key on.
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
 //!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
 //!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
@@ -110,7 +122,9 @@
 //!   gated at eval, so they are eligible in the mechanical sense; they are
 //!   simply not among the families task 5750's leaf scoped, and no fixture
 //!   forced the decision. A later leaf can add them by following the arms
-//!   above verbatim.
+//!   above verbatim. `arc`'s two ANGLES are the exception: PRD 3 leaf ζ
+//!   (task 5782) slotted them, which leaves its centre and radius — and
+//!   `line_segment` and `helix` — outside the table, unchanged.
 //!
 //! - The ARITY-OPEN variadic route — `polygon`'s 2-D vertex pairs, `interp`
 //!   and `bezier`'s coordinate triples, and `nurbs`' `2 .. 2 + 3·n_points`
@@ -230,7 +244,7 @@
 //! skipped here and still relies on the eval-layer gate.  Both layers are load-
 //! bearing; removing either leaves a hole.
 
-use reify_core::units::{DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
+use reify_core::units::{ANGLE_MIGRATION_HINT, DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
@@ -257,19 +271,21 @@ pub(crate) enum ExpectedArg {
         /// Human-readable type name for diagnostic messages
         /// (e.g., `"Density"`, `"Angle"`, `"Length"`).
         type_name: &'static str,
-        /// Optional migration hint appended to the rejection message.
+        /// Migration hint appended to the rejection message.
         ///
         /// Mirrors `ArgSpec::migration_hint` in
         /// `crates/reify-eval/src/arg_acceptance.rs`, and carries the SAME
         /// `&'static str` — both sides read
         /// [`reify_core::units::LENGTH_MIGRATION_HINT`] /
+        /// [`reify_core::units::ANGLE_MIGRATION_HINT`] /
         /// [`reify_core::units::DENSITY_MIGRATION_HINT`] rather than repeating
         /// the literal, so the compile-time and runtime diagnostics for one
         /// authoring mistake cannot drift apart (PRD
         /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
         ///
-        /// `None` where the eval layer likewise offers no hint — see the ANGLE
-        /// slots below.
+        /// Non-optional: a dimensioned slot always has a literal spelling to
+        /// migrate TO, so a hint-less `Scalar` slot is unrepresentable. Only
+        /// [`ExpectedArg::Int`] and [`ExpectedArg::Enum`] render un-hinted.
         ///
         /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
         /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
@@ -282,7 +298,7 @@ pub(crate) enum ExpectedArg {
         /// `tests/struct_ctor_field_conformance_tests.rs` guards. The
         /// divergence is pinned by
         /// `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`.
-        migration_hint: Option<&'static str>,
+        migration_hint: &'static str,
     },
     /// The integer type `Type::Int` (e.g. `generate`'s count argument, task 3994).
     ///
@@ -298,6 +314,26 @@ pub(crate) enum ExpectedArg {
     /// `None` literally.
     Int {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
+        type_name: &'static str,
+    },
+    /// A specific declared enum type, matched by name against `Type::Enum(_)`
+    /// (the Euler builtins' `convention` slot, task #6082).
+    ///
+    /// No `enum_defs` plumbing is needed to make this sound: `expr.rs`'s
+    /// `EnumAccess` arm validates the variant against
+    /// `reify_ir::EnumDef::contains_variant` before it ever produces a
+    /// `Type::Enum(_)`, so a value of this type is already guaranteed to name a
+    /// DECLARED enum with an EXISTING variant. This slot only has to pin WHICH
+    /// enum — an `OutputFormat` value in a convention slot is the mismatch it
+    /// exists to catch, alongside the `String` that motivated it.
+    ///
+    /// Like `Int`, carries no `migration_hint`: there is no dimensioned-literal
+    /// spelling to migrate to, so [`emit_mismatch`] is passed `None`.
+    Enum {
+        /// The required enum type name (e.g. `"EulerConvention"`).
+        enum_name: &'static str,
+        /// Human-readable type name for diagnostic messages (normally the same
+        /// as `enum_name`).
         type_name: &'static str,
     },
 }
@@ -320,7 +356,34 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
         expected: ExpectedArg::Scalar {
             dimension: DimensionVector::LENGTH,
             type_name: "Length",
-            migration_hint: Some(LENGTH_MIGRATION_HINT),
+            migration_hint: LENGTH_MIGRATION_HINT,
+        },
+    }
+}
+
+/// Build one ANGLE slot — the shape every gated angle position shares.
+///
+/// Hoisted for the same reason [`length_arg`] is, and with a sharper
+/// obligation behind it: PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+/// leaf ζ lands its angle slots at once — the four directional selectors'
+/// `tol`, and every producer angle position across `rotate`, `rotate_around`,
+/// `revolve`, `arc`, `draft` and `circular_pattern` — and decision D11 requires
+/// every ANGLE rejection to read with ONE wording. A longhand literal per slot
+/// would be one more place per slot for a `migration_hint` to go missing,
+/// which is exactly the drift this leaf exists to end: eval and compile
+/// already spent one PRD apart on this field.
+///
+/// Callers need the inline `const { &[…] }` block — a const-fn CALL is not
+/// promotable, as the "Shape" section on [`builtin_arg_slots`] explains for
+/// [`length_arg`].
+const fn angle_arg(index: usize, name: &'static str) -> CheckableArg {
+    CheckableArg {
+        index,
+        name,
+        expected: ExpectedArg::Scalar {
+            dimension: DimensionVector::ANGLE,
+            type_name: "Angle",
+            migration_hint: ANGLE_MIGRATION_HINT,
         },
     }
 }
@@ -396,7 +459,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::MASS_DENSITY,
                 type_name: "Density",
-                migration_hint: Some(DENSITY_MIGRATION_HINT),
+                migration_hint: DENSITY_MIGRATION_HINT,
             },
         }],
 
@@ -406,25 +469,14 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // arg2: tol → ANGLE ("Angle")
         // Task 3523 — faces_perpendicular_to/edges_perpendicular_to share the
         // directional (solid, dir, tol) shape, so arg2 tol is likewise ANGLE.
+        //
+        // Built with [`angle_arg`] like the producer angle positions below, so
+        // every ANGLE rejection reads with one wording (decision D11). Pinned
+        // by `angle_slot_rejection_carries_the_migration_hint`.
         "faces_by_normal"
         | "edges_parallel_to"
         | "faces_perpendicular_to"
-        | "edges_perpendicular_to" => &[CheckableArg {
-            index: 2,
-            name: "tol",
-            expected: ExpectedArg::Scalar {
-                dimension: DimensionVector::ANGLE,
-                type_name: "Angle",
-                // No migration hint, deliberately: eval HAS carried
-                // `ANGLE_MIGRATION_HINT` since PRD 3 leaf β, and bringing these
-                // slots onto that template is leaf ζ (task 5782), not this
-                // layer's to anticipate — adding one early reds
-                // `angle_slot_rejection_carries_no_migration_hint`, which pins
-                // the un-hinted wording on purpose. (Prose, not a
-                // `TODO(#5782)`: a new ptodo fingerprint for no gain.)
-                migration_hint: None,
-            },
-        }],
+        | "edges_perpendicular_to" => const { &[angle_arg(2, "tol")] },
 
         // ── Height-based topology selectors ──────────────────────────────────
         // arg0: geometry handle (unchecked)
@@ -437,7 +489,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
-                    migration_hint: Some(LENGTH_MIGRATION_HINT),
+                    migration_hint: LENGTH_MIGRATION_HINT,
                 },
             },
             CheckableArg {
@@ -446,7 +498,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
-                    migration_hint: Some(LENGTH_MIGRATION_HINT),
+                    migration_hint: LENGTH_MIGRATION_HINT,
                 },
             },
         ],
@@ -464,7 +516,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
-                migration_hint: Some(LENGTH_MIGRATION_HINT),
+                migration_hint: LENGTH_MIGRATION_HINT,
             },
         }],
 
@@ -508,7 +560,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
-                migration_hint: Some(LENGTH_MIGRATION_HINT),
+                migration_hint: LENGTH_MIGRATION_HINT,
             },
         }],
 
@@ -535,7 +587,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
-                    migration_hint: Some(LENGTH_MIGRATION_HINT),
+                    migration_hint: LENGTH_MIGRATION_HINT,
                 },
             },
             CheckableArg {
@@ -544,7 +596,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
                 expected: ExpectedArg::Scalar {
                     dimension: DimensionVector::LENGTH,
                     type_name: "Length",
-                    migration_hint: Some(LENGTH_MIGRATION_HINT),
+                    migration_hint: LENGTH_MIGRATION_HINT,
                 },
             },
         ],
@@ -598,12 +650,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            The FIFTH and widest straddle case.
         //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
         //            not a dimension error.
-        //   arg8:    `angle` — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree; gating it here would be a scope
-        //            violation.
-        //   Pinned by
-        //   `circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle`.
+        //   arg8:    `angle` → ANGLE ("Angle"), gated since PRD 3 leaf ζ
+        //            (task 5782).
+        //   Pinned by `circular_pattern_forms_are_keyed_independently` and
+        //   `circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count`.
         //
         // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
         // arity 4.
@@ -649,7 +699,17 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "ox"),
             length_arg(2, "oy"),
             length_arg(3, "oz"),
+            angle_arg(8, "angle"),
         ] },
+
+        // circular_pattern(target, axis, count, angle) — 4-arg value form
+        //   arg1: `axis`, a decoded Axis VALUE — never an origin slot (the
+        //         STRUCTURAL EXCLUSION above is about the ORIGIN, which this
+        //         form never exposes positionally).
+        //   arg2: `count` — an Int, never a slot.
+        //   arg3: `angle` → ANGLE ("Angle"), since PRD 3 leaf ζ (task 5782).
+        // The guard is load-bearing: index 3 is the `oz` LENGTH at arity 9.
+        "circular_pattern" if arg_count == 4 => const { &[angle_arg(3, "angle")] },
 
         // ── HAZARD: an arity-agnostic arm meets a future value-form overload ─
         //
@@ -836,16 +896,27 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(3, "dz"),
         ] },
 
+        // rotate(target, ax, ay, az, angle)      — 5-arg axis-angle
+        // rotate(target, orientation)            — 2-arg, task 4166's overload
+        //   arg0:    the geometry handle (unchecked — ε=4358's territory).
+        //   args1-3: `ax`/`ay`/`az`, a dimensionless unit-vector DIRECTION.
+        //            Legitimately bare in correct `.ri`, so UNSLOTTED per C1
+        //            invariant 4 and the ORIGIN-vs-DIRECTION rule.
+        //   arg4:    `angle` → ANGLE ("Angle"). PRD 3 leaf ζ, boundary row B4.
+        //
+        // The arity guard is load-bearing: `rotate` is overloaded (see the
+        // HAZARD block below). Pinned by `rotate_angle_slot_is_arity_5_only` and
+        // `rotate_orientation_overload_yields_no_arg_type_mismatch`.
+        "rotate" if arg_count == 5 => const { &[angle_arg(4, "angle")] },
+
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         //   The third STRADDLE case, structurally identical to `revolve`'s:
         //   args1-3: the PIVOT `px`/`py`/`pz` → LENGTH ("Length") — a point in
         //            space.
         //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
         //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
-        //   arg7:    `angle` — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree; gating it here would be a scope
-        //            violation.
+        //   arg7:    `angle` → ANGLE ("Angle"), per
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md`.
         //   `scale` is deliberately absent from this block entirely: its
         //   `factor` (and the `factors` vec3 of its non-uniform form) is a
         //   dimensionless RATIO, so a LENGTH slot would reject correct code.
@@ -854,6 +925,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "px"),
             length_arg(2, "py"),
             length_arg(3, "pz"),
+            angle_arg(7, "angle"),
         ] },
 
         // ── Modify producers (task 5750) ─────────────────────────────────────
@@ -878,15 +950,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // An arity-agnostic `radius@1` slot would therefore demand a Length of
         // a Selector on correct code — the same class of false positive the
         // `linear_pattern_2d` arm's guard exists to prevent, and the reason
-        // these two are the only modify arms that carry an `arg_count` guard.
-        // Every OTHER name below holds its magnitude at a STABLE index across
-        // every arity it accepts, so per the rule stated on this function they
-        // stay unguarded.
+        // every modify arm whose magnitude moves — `fillet`, `chamfer`, `draft`
+        // — carries an `arg_count` guard. Every OTHER name below holds its
+        // magnitude at a STABLE index across every arity it accepts, so per the
+        // rule stated on this function they stay unguarded.
         //
         // NOT slotted here, each for a stated reason:
-        // - `draft`'s `angle` — `docs/prds/v0_6/angle-units-surface-convergence.md`
-        //   owns every ANGLE by binding seam decree; gating one here would be a
-        //   scope violation, not an improvement.
         // - `offset_curve`'s 3rd argument (`"third"`) — a reference Surface
         //   handle OR a direction vec3, disambiguated at eval on the Value
         //   variant. A direction's components are legitimately bare, and
@@ -902,6 +971,14 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // chamfer(target, distance) / chamfer(target, edges, distance)
         "chamfer" if arg_count == 2 => const { &[length_arg(1, "distance")] },
         "chamfer" if arg_count == 3 => const { &[length_arg(2, "distance")] },
+
+        // draft(target, angle, plane) / draft(target, faces, angle, plane)
+        //   arg0: the geometry handle. 3-arg: `angle`@1 → ANGLE, the neutral
+        //   `plane`@2 unslotted. 4-arg: the face SELECTOR@1 unslotted,
+        //   `angle`@2 → ANGLE, `plane`@3 unslotted. Since PRD 3 leaf ζ
+        //   (task 5782); pinned by `draft_angle_slot_moves_with_its_arity`.
+        "draft" if arg_count == 3 => const { &[angle_arg(1, "angle")] },
+        "draft" if arg_count == 4 => const { &[angle_arg(2, "angle")] },
 
         // chamfer_asymmetric(target, edges, d1, d2)
         //   Single-form (`check_arg_count_exact(4)`). BOTH setbacks are
@@ -944,24 +1021,43 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         "extrude" | "extrude_symmetric" => const { &[length_arg(1, "distance")] },
         "pipe" => const { &[length_arg(1, "radius")] },
 
-        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
-        // revolve_full(profile, ox, oy, oz, ax, ay, az)
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)      — 8 call args
+        // revolve_full(profile, ox, oy, oz, ax, ay, az)         — 7 call args
         //   The second STRADDLE case, after `half_space` — three kinds of
-        //   argument in one list, and only one of them gated:
+        //   argument in one list:
         //   args1-3: the axis ORIGIN `ox`/`oy`/`oz` → LENGTH ("Length"). A
         //            point in space; a bare component is read as SI metres.
         //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
         //            vector, legitimately bare in correct `.ri`. UNSLOTTED, for
         //            the same reason `half_space`'s normal is.
-        //   arg7:    `angle` (present only on `revolve`; `revolve_full` injects
-        //            a literal 2π at lowering) — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree. Gating it here would be a scope
-        //            violation AND would make the two layers disagree in the
-        //            direction that PRD has to close together.
+        //   arg7:    `angle` → ANGLE ("Angle") on `revolve` since PRD 3 leaf ζ
+        //            (task 5782). ABSENT from `revolve_full`, which takes 7 call
+        //            arguments and whose `angle`@7 op-arg is a
+        //            compiler-SYNTHESIZED `Value::angle(TAU)` typed
+        //            `Type::angle()` (`geometry.rs`, the type PRD D10 ratified).
+        //            No author writes it, so there is no user-written position
+        //            for this index-keyed table to gate.
+        //
+        // TWO ARMS, not one shared arm plus a bounds check. Letting the pair
+        // share `angle_arg(7, …)` and relying on `compiled_args.get(7)`
+        // returning None at `revolve_full`'s 7-arg call would be correct only by
+        // ACCIDENT: the HAZARD block above spends forty lines establishing that
+        // a bounds check cannot distinguish "index absent" from "index holds a
+        // different parameter", so an arm whose correctness turns on that
+        // distinction must STATE its layout rather than lean on it. Splitting
+        // also makes the two layouts readable side by side, which is what a
+        // reader checking `revolve_full` against its lowering actually needs.
+        //
         //   Both are single-form, so both stay arity-agnostic. Pinned by
-        //   `revolve_slots_the_origin_but_never_the_axis_or_the_angle`.
-        "revolve" | "revolve_full" => const { &[
+        //   `revolve_slots_the_origin_and_the_angle_but_never_the_axis` and by
+        //   `revolve_full_slots_the_origin_only_because_its_2pi_is_synthesized`.
+        "revolve" => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+            angle_arg(7, "angle"),
+        ] },
+        "revolve_full" => const { &[
             length_arg(1, "ox"),
             length_arg(2, "oy"),
             length_arg(3, "oz"),
@@ -984,6 +1080,71 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(0, "semi_major"),
             length_arg(1, "semi_minor"),
         ] },
+
+        // ── Curve producers (PRD 3 leaf ζ, task 5782) ────────────────────────
+        //
+        // Arg names copied from `geometry_curve.rs`'s `arc` lowering arm (D9).
+        //
+        // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
+        //   args0-2: the centre `cx`/`cy`/`cz`, and arg3 `radius` — Length-
+        //            semantic, but deliberately UNSLOTTED here: curve producers
+        //            sit outside task 5750's families, recorded under the module
+        //            doc's "Contract C positions this table deliberately does NOT
+        //            cover" CURVE bullet. PRD 1's territory, not this leaf's.
+        //   args4-5: `start_angle` / `end_angle` → ANGLE ("Angle").
+        //   args6-8: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
+        //
+        // Single-form (`check_arg_count_exact(.., 9, ..)`), so arity-agnostic per
+        // the "guard only genuinely overloaded names" rule. Pinned by
+        // `arc_slots_both_angles_but_neither_its_centre_nor_its_radius` and, at
+        // the message layer, by `arc_bare_angles_are_both_rejected_in_one_pass`.
+        "arc" => const { &[angle_arg(4, "start_angle"), angle_arg(5, "end_angle")] },
+
+        // ── Euler builtins: the convention is an enum, not a String (#6082) ──
+        // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention
+        // comes FIRST and selects the meaning of the three angles that follow
+        // (R_xyz(a, b, c) notation).
+        //
+        // arg0: convention → EulerConvention.
+        // args1-3: the three angles — deliberately UNCHECKED. They are
+        //   semantically ANGLE, but an ANGLE slot would break a live call site
+        //   today: `kinematic_stdlib_smoke.rs` passes bare Reals (0.1, 0.2,
+        //   0.3), not rad-suffixed literals, so the slot would turn a valid
+        //   call into a hard compile error and drag a separable
+        //   dimensioned-literal migration into #6082. Same decision-4
+        //   gradualism as the rest of the table; adding the ANGLE slots means
+        //   migrating those call sites first.
+        //
+        // The arity guard is forward-compat, matching `linear_pattern`'s: 4 is
+        // the only accepted arity today (the eval arm returns Undef otherwise),
+        // so without it a future overload would silently inherit a slot at an
+        // index that denotes a different parameter.
+        "orient_euler" if arg_count == 4 => &[CheckableArg {
+            index: 0,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
+        // orient_to_euler(q, convention) — a DECOMPOSER, so it is SUBJECT-first
+        // like its siblings orient_log(q) / orient_to_axis_angle(q) /
+        // orient_inverse(q), which puts the convention at arg 1. The asymmetry
+        // with the constructor above is deliberate; see #6082 and the comment
+        // on the `EulerConvention` declaration in `stdlib/geometry_traits.ri`.
+        //
+        // arg0: q — the Orientation subject, unchecked (arg0 is never a slot).
+        // arg1: convention → EulerConvention.
+        "orient_to_euler" if arg_count == 2 => &[CheckableArg {
+            index: 1,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
 
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => &[],
@@ -1023,19 +1184,18 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// runtime (γ) diagnostics read consistently per PRD §7.3:
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}"`
 ///
-/// A slot carrying an [`ExpectedArg::Scalar::migration_hint`] appends the hint
-/// with `"; "`, matching `ArgRejection::message`'s own shape (task 5750, PRD
+/// A `Scalar` slot appends its [`ExpectedArg::Scalar::migration_hint`] with
+/// `"; "`, matching `ArgRejection::message`'s own shape (task 5750, PRD
 /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9):
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}; {hint}"`
 ///
 /// Concretely, for a LENGTH slot:
 /// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
-/// The ANGLE slots render the un-hinted form. That is the one place the two
-/// layers knowingly disagree: eval's angle path gained `ANGLE_MIGRATION_HINT`
-/// with PRD 3 leaf β, and PRD 3 leaf ζ (task 5782) brings these slots onto the
-/// same template. Until ζ lands, an angle rejection reads with a repair
-/// instruction at eval and without one at compile time.
+/// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
+/// because the field is non-optional. Only [`ExpectedArg::Int`] and
+/// [`ExpectedArg::Enum`] render un-hinted, and for them there is nothing to
+/// migrate TO.
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1150,7 +1310,7 @@ pub(crate) fn check_builtin_arg_types(
                         slot.name,
                         type_name,
                         actual,
-                        *migration_hint,
+                        Some(*migration_hint),
                         call_span,
                         diagnostics,
                     );
@@ -1164,7 +1324,34 @@ pub(crate) fn check_builtin_arg_types(
                         slot.name,
                         type_name,
                         other,
-                        *migration_hint,
+                        Some(*migration_hint),
+                        call_span,
+                        diagnostics,
+                    );
+                }
+            },
+
+            ExpectedArg::Enum {
+                enum_name,
+                type_name,
+            } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
+
+                // Correct — a value of the required enum type. The variant is
+                // already validated upstream (see `ExpectedArg::Enum`).
+                Type::Enum(actual) if actual == enum_name => continue,
+
+                // Any other concrete type — a `String` (the form task #6082
+                // removed), or an enum of the wrong type — is a definite
+                // mismatch.
+                other => {
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        other,
+                        None,
                         call_span,
                         diagnostics,
                     );
@@ -1339,7 +1526,12 @@ mod tests {
     /// to close: a key added to one copy and not the other would make
     /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
     /// precisely that key, a silent false GREEN.
-    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate"];
+    ///
+    /// Task #6082 added the two Euler builtins for the same structural reason:
+    /// `orient_*` belongs to no units.rs family slice either, so without these
+    /// entries the completeness arm would stay silently vacuous for their
+    /// `convention` slots.
+    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1363,8 +1555,8 @@ mod tests {
     ///   task 5652. They must **not** be moved into
     ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` merely to satisfy that invariant:
     ///   `expr.rs::infer_type`'s `NoUserFunctions` ladder consults
-    ///   `is_geometry_topology_selector` (expr.rs:3243) *ahead of*
-    ///   `is_geometry_function` (expr.rs:3360), and the selector arm resolves its
+    ///   `is_geometry_topology_selector` *ahead of* `is_geometry_function`, and
+    ///   the selector arm resolves its
     ///   result type with
     ///   `topology_selector_result_type(name).expect("is_geometry_topology_selector implies result type")`.
     ///   Neither pattern name has an entry in `topology_selector_result_type`, so
@@ -1385,8 +1577,7 @@ mod tests {
     ///   exempted here for EXACTLY the reason `linear_pattern` is, and the
     ///   consequence of getting it wrong is identical: moving any of them into
     ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion
-    ///   would route every `box(…)` call through the selector arm at
-    ///   expr.rs:3243, whose
+    ///   would route every `box(…)` call through `expr.rs`'s selector arm, whose
     ///   `topology_selector_result_type(name).expect(…)` has no entry for them
     ///   — turning the most common call in the language into a panic. The
     ///   exemption list is the correct lever; the slice is not.
@@ -1398,26 +1589,46 @@ mod tests {
     ///   the primitives above: all fifteen are registered in
     ///   `GEOMETRY_FUNCTION_NAMES`, none is a topology selector, and none may
     ///   be moved into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset
-    ///   assertion.
+    ///   assertion. `revolve` additionally holds an ANGLE slot from leaf ζ, so
+    ///   its listing is no longer task 5750's alone.
     ///
     /// - The task-5750 TRANSFORM producers — `translate` and `rotate_around`.
     ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
     ///   neither is a topology selector, and neither may be moved into the
-    ///   selector slice.
+    ///   selector slice. `rotate_around` additionally holds an ANGLE slot from
+    ///   leaf ζ, so its listing is no longer task 5750's alone.
+    ///
+    /// - The PRD 3 leaf ζ ANGLE producers — `rotate`, `arc` and `draft`. The
+    ///   same story once more: all three are CSG/curve producers registered in
+    ///   `GEOMETRY_FUNCTION_NAMES` (`crates/reify-compiler/src/units.rs`), none
+    ///   is a topology selector, and none may be moved into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion —
+    ///   `topology_selector_result_type` (`units.rs`) has no entry for any of
+    ///   them, so slice membership would turn every `rotate(…)` / `arc(…)` /
+    ///   `draft(…)` call into a panic on `expr.rs`'s
+    ///   `topology_selector_result_type(name).expect(…)`. The other ANGLE-slotted
+    ///   names — `revolve`, `rotate_around`, `circular_pattern` — are listed
+    ///   under their LENGTH-slot families.
     ///
     /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
     ///   `circular_pattern`. Same story a third time: both are CSG producers
     ///   registered in `GEOMETRY_FUNCTION_NAMES`, neither is a topology
     ///   selector, and neither may be moved into
     ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion —
-    ///   doing so would route every `mirror(...)` call through the selector arm
-    ///   at `expr.rs:3243`, whose
+    ///   doing so would route every `mirror(...)` call through `expr.rs`'s
+    ///   selector arm, whose
     ///   `topology_selector_result_type(name).expect(...)` has no entry for
-    ///   them and would panic.
+    ///   them and would panic. `circular_pattern` ALSO holds an ANGLE slot at
+    ///   both of its forms from PRD 3 leaf ζ.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
         "linear_pattern_2d",
+        // Task #6082 — SO(3) builtins, not topology selectors, and members of
+        // no units.rs family slice; their `convention` slot is the table's
+        // only ExpectedArg::Enum.
+        "orient_euler",
+        "orient_to_euler",
         // Task 5750 — primitives.
         "box",
         "box_centered",
@@ -1456,6 +1667,10 @@ mod tests {
         // Task 5662 — pattern origin triples.
         "mirror",
         "circular_pattern",
+        // PRD 3 leaf ζ (task 5782) — ANGLE producers.
+        "rotate",
+        "arc",
+        "draft",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1467,7 +1682,7 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::MASS_DENSITY,
                 type_name: "Density",
-                migration_hint: Some(DENSITY_MIGRATION_HINT),
+                migration_hint: DENSITY_MIGRATION_HINT,
             },
         }
     }
@@ -1479,9 +1694,7 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // Mirrors the table, which stays un-hinted until PRD 3 leaf ζ
-                // (task 5782) — eval HAS carried an angle hint since leaf β.
-                migration_hint: None,
+                migration_hint: ANGLE_MIGRATION_HINT,
             },
         }
     }
@@ -1493,7 +1706,7 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::LENGTH,
                 type_name: "Length",
-                migration_hint: Some(LENGTH_MIGRATION_HINT),
+                migration_hint: LENGTH_MIGRATION_HINT,
             },
         }
     }
@@ -1644,7 +1857,7 @@ mod tests {
                 builtin_arg_slots(name, arg_count),
                 expected,
                 "builtin_arg_slots({name:?}, {arg_count}) must expose exactly the \
-                 expected LENGTH slots; {name} is not an overloaded name, so its \
+                 expected slots; {name} is not an overloaded name, so its \
                  arm must carry no `if arg_count ==` guard"
             );
         }
@@ -1957,59 +2170,157 @@ mod tests {
         }
     }
 
-    /// revolve / revolve_full → the axis ORIGIN triple only.
+    /// revolve → the axis ORIGIN triple AND the angle.
     ///
     /// The second STRADDLE case, after `half_space`. `revolve(profile, ox, oy,
-    /// oz, ax, ay, az, angle)` carries a gated ORIGIN, an un-gated dimensionless
-    /// axis DIRECTION and an ANGLE in one argument list:
+    /// oz, ax, ay, az, angle)` carries three kinds of argument in one list:
     /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
-    ///   SI metres, so they are slotted;
-    /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
-    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
-    ///   by binding seam decree. Gating it HERE would be a scope violation, not
-    ///   an improvement, and would make the two layers disagree in the
-    ///   direction PRD 3 has to close together.
+    ///   SI metres, so they are LENGTH slots (task 5750);
+    /// * `ax`/`ay`/`az` are a dimensionless unit vector, legitimately bare;
+    /// * `angle` is an ANGLE slot since PRD 3 leaf ζ (task 5782).
     ///
-    /// `revolve_full` is the same layout minus the angle (the compiler injects
-    /// a literal 2π), so the origin sits at the same indices and both are
-    /// arity-agnostic single forms.
+    /// The exclusion loop therefore narrows to the DIRECTION alone. That
+    /// narrowing is the assertion: index 7 moving from the excluded set to the
+    /// expected set is what the leaf did, and a reader comparing the two sees
+    /// exactly one position change hands.
+    ///
+    /// Single-form, so arity-agnostic; `revolve_full` is deliberately NOT swept
+    /// alongside it any more — see the control below for why the two can no
+    /// longer share a loop.
     #[test]
-    fn revolve_slots_the_origin_but_never_the_axis_or_the_angle() {
-        for name in ["revolve", "revolve_full"] {
-            assert_slots_at_every_arity(
-                name,
-                &[
-                    length_slot(1, "ox"),
-                    length_slot(2, "oy"),
-                    length_slot(3, "oz"),
-                ],
-            );
+    fn revolve_slots_the_origin_and_the_angle_but_never_the_axis() {
+        assert_slots_at_every_arity(
+            "revolve",
+            &[
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+                angle_slot(7, "angle"),
+            ],
+        );
 
-            // The exclusions stated positively: axis at 4/5/6, angle at 7
-            // (present only on `revolve`).
-            let slotted: Vec<usize> = builtin_arg_slots(name, 8)
-                .iter()
-                .map(|slot| slot.index)
-                .collect();
-            for excluded in [4usize, 5, 6, 7] {
-                assert!(
-                    !slotted.contains(&excluded),
-                    "{name} arg{excluded} is an axis DIRECTION component or the \
-                     ANGLE, neither of which this leaf may gate; got slots at \
-                     {slotted:?}"
-                );
-            }
+        // The exclusion stated positively: the axis DIRECTION at 4/5/6.
+        let slotted: Vec<usize> = builtin_arg_slots("revolve", 8)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for excluded in [4usize, 5, 6] {
+            assert!(
+                !slotted.contains(&excluded),
+                "revolve arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare in correct `.ri`; \
+                 got slots at {slotted:?}"
+            );
         }
     }
 
-    /// `draft` stays wholly slot-free — its only scalar is an ANGLE.
+    /// CONTROL — `revolve_full` gets the origin and NOTHING at index 7.
     ///
-    /// A control for the seam: `draft` sits in the same `compile_modify_op`
-    /// match as every name slotted above, so "the modify family is gated" must
-    /// not be read as "every modify argument is gated".
+    /// This is why `revolve` and `revolve_full` can no longer share one sweep,
+    /// and the reason is positive rather than an omission: `revolve_full`'s CALL
+    /// arity is 7, and the `angle` that appears at index 7 of its LOWERED
+    /// op-args is a compiler-SYNTHESIZED `Value::angle(TAU)` typed
+    /// `Type::angle()` (`geometry.rs`, the type PRD D10 ratified). No author
+    /// ever writes it, so there is no user-written position for an index-keyed
+    /// table to gate — gating one would demand an argument the call form does
+    /// not have.
+    ///
+    /// Asserted at EVERY arity, not just 7: exact slot equality leaves no
+    /// room for an index 4-7 slot anywhere. A shared arm that leaned on
+    /// `compiled_args.get(7)` returning None at the 7-arg call would pass a
+    /// canonical-arity probe and fail here, which is the point: the bounds
+    /// check is an accident of the short call, not a statement about the arm.
     #[test]
-    fn draft_stays_slot_free_because_its_only_scalar_is_an_angle() {
-        assert_slots_at_every_arity("draft", &[]);
+    fn revolve_full_slots_the_origin_only_because_its_2pi_is_synthesized() {
+        assert_slots_at_every_arity(
+            "revolve_full",
+            &[
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+        );
+    }
+
+    /// arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az) → BOTH
+    /// angles, and neither its centre nor its radius.
+    ///
+    /// The table's first CURVE producer. Single-form at exactly 9 args
+    /// (`geometry_curve.rs`' `check_arg_count_exact`), so arity-agnostic per the
+    /// "guard only genuinely overloaded names" rule — a gratuitous
+    /// `arg_count == 9` guard here would silently hollow out short and long
+    /// calls for no gain.
+    ///
+    /// Every exclusion stated positively, because two of them are excluded for
+    /// DIFFERENT reasons and collapsing them would lose the distinction:
+    /// * `cx`/`cy`/`cz`@0-2 and `radius`@3 ARE Length-semantic, and their
+    ///   absence is a SCOPE boundary rather than a judgement that they are
+    ///   dimensionless. Curve producers were outside the four Contract C
+    ///   families of `docs/prds/v0_6/units-length-gate-completion.md` leaf η, so
+    ///   their compile slots remain PRD 1's territory. Inventing them here would
+    ///   be the mirror image of the scope violation this leaf is closing.
+    /// * `ax`/`ay`/`az`@6-8 are a dimensionless unit-vector DIRECTION and are
+    ///   legitimately bare in correct `.ri`, per C1 invariant 4.
+    #[test]
+    fn arc_slots_both_angles_but_neither_its_centre_nor_its_radius() {
+        assert_slots_at_every_arity(
+            "arc",
+            &[angle_slot(4, "start_angle"), angle_slot(5, "end_angle")],
+        );
+
+        let slotted: Vec<usize> = builtin_arg_slots("arc", 9)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for excluded in [0usize, 1, 2, 3] {
+            assert!(
+                !slotted.contains(&excluded),
+                "arc arg{excluded} (centre or radius) IS Length-semantic, but \
+                 curve producers sit outside task 5750's four Contract C \
+                 families — its compile slot is PRD 1's to add, not this leaf's \
+                 to invent; got slots at {slotted:?}"
+            );
+        }
+        for excluded in [6usize, 7, 8] {
+            assert!(
+                !slotted.contains(&excluded),
+                "arc arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare per C1 invariant \
+                 4; got slots at {slotted:?}"
+            );
+        }
+    }
+
+    /// draft(target, angle, plane) / draft(target, faces, angle, plane) → the
+    /// ANGLE, keyed per arity because it MOVES between the two forms.
+    ///
+    /// The same moving-magnitude shape as `fillet`/`chamfer`
+    /// (`geometry_modify.rs`' `draft` arm): angle@1 at arity 3, angle@2 at
+    /// arity 4, where index 1 is the face SELECTOR. Either arity-agnostic
+    /// spelling fires on correct code at the other form — an agnostic angle@1
+    /// would demand an Angle of the face selector at arity 4, and an agnostic
+    /// angle@2 would demand an Angle of the neutral PLANE at arity 3.
+    #[test]
+    fn draft_angle_slot_moves_with_its_arity() {
+        assert_eq!(
+            builtin_arg_slots("draft", 3),
+            vec![angle_slot(1, "angle")],
+            "draft(target, angle, plane) — the angle is arg1; the neutral plane \
+             at arg2 is not a scalar"
+        );
+        assert_eq!(
+            builtin_arg_slots("draft", 4),
+            vec![angle_slot(2, "angle")],
+            "draft(target, faces, angle, plane) — arg1 is the face SELECTOR, the \
+             angle is arg2"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 3 && *n != 4) {
+            assert!(
+                builtin_arg_slots("draft", arity).is_empty(),
+                "draft at arity {arity} is neither accepted form, so it must \
+                 expose NO slots"
+            );
+        }
     }
 
     // ── Task 5750 (units-length η): TRANSFORM LENGTH slots ───────────────────
@@ -2050,21 +2361,49 @@ mod tests {
         );
     }
 
-    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → the PIVOT only.
+    /// rotate(target, ax, ay, az, angle) → the ANGLE only, at arity 5 ONLY.
+    ///
+    /// PRD `docs/prds/v0_6/angle-units-surface-convergence.md` boundary row B4.
+    /// Task 4166's 2-arg `rotate(target, orientation)` overload has no index 4
+    /// and holds an `Orientation` VALUE at index 1, so the arm is arity-guarded
+    /// per the HAZARD block above the primitive arms: arity 2 exposes NO slots
+    /// because nothing there is an angle, not because nothing there is present.
+    #[test]
+    fn rotate_angle_slot_is_arity_5_only() {
+        assert_eq!(
+            builtin_arg_slots("rotate", 5),
+            vec![angle_slot(4, "angle")],
+            "rotate(target, ax, ay, az, angle) — arg0 is the geometry handle, \
+             args 1-3 are a dimensionless unit-vector DIRECTION, and only arg4 \
+             is the ANGLE"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 5) {
+            assert!(
+                builtin_arg_slots("rotate", arity).is_empty(),
+                "rotate at arity {arity} is not the 5-arg axis-angle form, so it \
+                 must expose NO slots — index 4 does not denote `angle` there \
+                 (at arity 2, task 4166's `rotate(target, orientation)`, index 1 \
+                 is an Orientation VALUE); got {:?}",
+                builtin_arg_slots("rotate", arity)
+            );
+        }
+    }
+
+    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → PIVOT and ANGLE.
     ///
     /// The third STRADDLE case, and structurally identical to `revolve`'s: a
     /// gated point in space, an un-gated dimensionless axis DIRECTION, and an
-    /// ANGLE that belongs to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
-    /// decree. All three exclusions are asserted positively.
+    /// ANGLE — slotted since PRD 3 leaf ζ (task 5782). The exclusions are
+    /// asserted positively and narrow to the handle and the direction.
     #[test]
-    fn rotate_around_slots_the_pivot_but_never_the_axis_or_the_angle() {
+    fn rotate_around_slots_the_pivot_and_the_angle_but_never_the_axis() {
         assert_slots_at_every_arity(
             "rotate_around",
             &[
                 length_slot(1, "px"),
                 length_slot(2, "py"),
                 length_slot(3, "pz"),
+                angle_slot(7, "angle"),
             ],
         );
 
@@ -2072,12 +2411,12 @@ mod tests {
             .iter()
             .map(|slot| slot.index)
             .collect();
-        for excluded in [0usize, 4, 5, 6, 7] {
+        for excluded in [0usize, 4, 5, 6] {
             assert!(
                 !slotted.contains(&excluded),
-                "rotate_around arg{excluded} is the geometry handle, an axis \
-                 DIRECTION component, or the ANGLE — none of which this leaf may \
-                 gate; got slots at {slotted:?}"
+                "rotate_around arg{excluded} is the geometry handle or an axis \
+                 DIRECTION component — a dimensionless unit vector, legitimately \
+                 bare in correct `.ri`; got slots at {slotted:?}"
             );
         }
     }
@@ -3124,36 +3463,39 @@ mod tests {
         }
     }
 
-    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH); every other
-    /// arity → empty.
+    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH) + angle@8
+    /// (ANGLE); @ arity 4 → angle@3 (ANGLE); every other arity → empty.
     ///
-    /// Arity 4 gets its own assertion for the same reason arity 2 does on
-    /// `mirror`: `circular_pattern(target, axis, count, angle)` holds an `Axis`
-    /// at index 1.
+    /// Neither form may share an arm with the other, because the same index
+    /// denotes a different parameter in each: index 3 is the `oz` LENGTH at
+    /// arity 9 but the `angle` at arity 4, and index 1 is `ox` at arity 9 but
+    /// the decoded `Axis` VALUE at arity 4 (the same reason arity 2 gets its own
+    /// assertion on `mirror`).
     #[test]
-    fn circular_pattern_origin_slots_are_arity_9_only() {
+    fn circular_pattern_forms_are_keyed_independently() {
         assert_eq!(
             builtin_arg_slots("circular_pattern", 9),
             vec![
                 length_slot(1, "ox"),
                 length_slot(2, "oy"),
                 length_slot(3, "oz"),
+                angle_slot(8, "angle"),
             ],
             "circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — \
-             args 1-3 are the rotation-axis ORIGIN and must be LENGTH"
+             args 1-3 are the rotation-axis ORIGIN (LENGTH) and arg8 is the ANGLE"
         );
-        assert!(
-            builtin_arg_slots("circular_pattern", 4).is_empty(),
-            "at arity 4 (`circular_pattern(target, axis, count, angle)`, the \
-             task-5745 decoded-value form) index 1 is `axis`, an Axis — an ox@1 \
-             LENGTH slot would emit a FALSE ArgTypeMismatch on valid code, so \
-             arity 4 must expose NO slots"
+        assert_eq!(
+            builtin_arg_slots("circular_pattern", 4),
+            vec![angle_slot(3, "angle")],
+            "circular_pattern(target, axis, count, angle) — index 1 is the decoded \
+             Axis VALUE (never an origin slot), index 2 the Int count, and only \
+             index 3 is the ANGLE"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9 && *n != 4) {
             assert!(
                 builtin_arg_slots("circular_pattern", arity).is_empty(),
-                "circular_pattern at arity {arity} is not the 9-arg scalar form, so \
-                 it must expose NO slots — index 1 does not denote `ox` there"
+                "circular_pattern at arity {arity} is neither accepted form, so it \
+                 must expose NO slots"
             );
         }
     }
@@ -3190,37 +3532,41 @@ mod tests {
 
     /// The STRADDLE case, fifth of five, and the widest: `circular_pattern`'s
     /// 9-arg form carries a gated ORIGIN, an un-gated axis DIRECTION, an Int
-    /// `count` and an `angle` this leaf may not touch.
+    /// `count` and a gated `angle`.
     ///
-    /// Modelled on `revolve_slots_the_origin_but_never_the_axis_or_the_angle`:
+    /// Modelled on `revolve_slots_the_origin_and_the_angle_but_never_the_axis`:
     ///
     /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
-    ///   SI metres, so they are slotted;
+    ///   SI metres, so they are slotted LENGTH;
+    /// * `angle` is slotted ANGLE since PRD 3 leaf ζ (task 5782);
     /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
     /// * `count` is an Int — a wrong count is an arity/semantic error, not a
-    ///   dimension error;
-    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
-    ///   by binding seam decree. Gating it HERE would be a scope violation.
+    ///   dimension error.
     #[test]
-    fn circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle() {
+    fn circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count() {
         let slotted: Vec<usize> = builtin_arg_slots("circular_pattern", 9)
             .iter()
             .map(|slot| slot.index)
             .collect();
         assert_eq!(
             slotted,
-            vec![1, 2, 3],
+            vec![1, 2, 3, 8],
             "circular_pattern's slotted index set at arity 9 must be exactly the \
-             ORIGIN triple {{1,2,3}}; got {slotted:?}"
+             ORIGIN triple plus the angle {{1,2,3,8}}; got {slotted:?}"
         );
-        for excluded in [4usize, 5, 6, 7, 8] {
+        for excluded in [4usize, 5, 6] {
             assert!(
                 !slotted.contains(&excluded),
-                "circular_pattern arg{excluded} is an axis DIRECTION component, the \
-                 Int `count`, or the ANGLE — none of which this leaf may gate; got \
-                 slots at {slotted:?}"
+                "circular_pattern arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare; got slots at \
+                 {slotted:?}"
             );
         }
+        assert!(
+            !slotted.contains(&7),
+            "circular_pattern arg7 is the Int `count` — a wrong count is an \
+             arity/semantic error, never a dimension slot; got slots at {slotted:?}"
+        );
     }
 
     /// CORRECT: a dimensioned `Length` origin → 0 diagnostics, both builtins.
@@ -3388,8 +3734,8 @@ mod tests {
         );
         assert!(
             diags.is_empty(),
-            "a 4-arg circular_pattern exposes no slots even though index 1 EXISTS, \
-             got: {:?}",
+            "a 4-arg circular_pattern exposes no slot at index 1 even though \
+             index 1 EXISTS, got: {:?}",
             diags
         );
     }
@@ -3608,7 +3954,7 @@ mod tests {
     /// names happen to sit in a family slice.
     ///
     /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
-    /// admits NO name today. Of the 35 [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
+    /// admits NO name today. Of the [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
     /// `generate` is the only one unreachable from the family slices, and it is
     /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
     /// a NEW non-selector key added to that curated list is now swept even if
@@ -3694,8 +4040,8 @@ mod tests {
     /// [`crate::arg_check::check_arg_count_at_least`], and bare custom pushes
     /// such as `geometry.rs`'s `extrude` arm, which carries NO `"wrong number of
     /// arguments"` label at all. The label is therefore NOT universal. The
-    /// message shape `"{name}() expects … got {N}"` IS: it held for all 34
-    /// observable names across all three emit sites when this ledger was
+    /// message shape `"{name}() expects … got {N}"` IS: it held for every
+    /// observable name across all three emit sites when this ledger was
     /// measured. The trailing `", got {N}"` is matched with `ends_with` and not
     /// `contains`, because `", got 1"` is a prefix of `", got 12"`.
     ///
@@ -3796,7 +4142,7 @@ mod tests {
         }
     }
 
-    /// The PINNED accepted-arity ledger: the 34 slotted names whose lowering
+    /// The PINNED accepted-arity ledger: every slotted name whose lowering
     /// emits an observable arg-count diagnostic, and the arities each accepts.
     ///
     /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
@@ -3807,7 +4153,7 @@ mod tests {
     /// hazard arriving (task 5351's value forms are the named motivating case) —
     /// rather than blindly re-pinning the new value.
     ///
-    /// The 10 slotted names deliberately absent from this list are recorded, with
+    /// The slotted names deliberately absent from this list are recorded, with
     /// the measurement that justifies their absence, in
     /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`]; the completeness arm of
     /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] asserts
@@ -3854,8 +4200,21 @@ mod tests {
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
         ("rotate_around", AcceptedArities::Exactly(&[8])),
         ("translate", AcceptedArities::Exactly(&[4])),
-        // Pattern ORIGIN triples (task 5662) — the only rows here that are
-        // multi-arity because the name is genuinely OVERLOADED: the scalar form
+        // PRD 3 leaf ζ (task 5782). `rotate` is multi-arity because it is
+        // genuinely OVERLOADED — task 4166's 2-arg Orientation form alongside
+        // the 5-arg axis-angle one — and is safe under the coupling rule the
+        // way the pattern rows below are: its arm carries a load-bearing
+        // `if arg_count ==` guard, so the two arities expose DIFFERENT slot
+        // sets and no MULTI_ARITY_AGNOSTIC_SAFE exemption is needed or
+        // permitted. `geometry_transform.rs`' fallback reads
+        // `"rotate() expects 2 or 5 arguments, got {n}"`.
+        ("rotate", AcceptedArities::Exactly(&[2, 5])),
+        ("arc", AcceptedArities::Exactly(&[9])),
+        // `draft` moves its angle between forms; its guarded pair discharges
+        // the coupling rule exactly as `rotate`'s guard does.
+        ("draft", AcceptedArities::Exactly(&[3, 4])),
+        // Pattern ORIGIN triples (task 5662) — multi-arity because the name
+        // is genuinely OVERLOADED: the scalar form
         // and the value form. Both are safe under the coupling rule because
         // their arms carry a load-bearing `if arg_count ==` guard, so no
         // MULTI_ARITY_AGNOSTIC_SAFE exemption is needed; pinned by
@@ -3894,10 +4253,22 @@ mod tests {
     ///
     /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
     /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
-    /// finding — and NOT task 4493/3994's selector family. Nobody should read the
-    /// guard as broader than that. The nine selectors plus `generate` are also
-    /// the names least exposed to the hazard: none is overloaded today, and a
-    /// value-form overload is a producer-side notion (task 5351).
+    /// finding — and NOT task 4493/3994's selector family, nor task #6082's two
+    /// Euler builtins. Nobody should read the guard as broader than that. The
+    /// nine selectors plus `generate` are also the names least exposed to the
+    /// hazard: none is overloaded today, and a value-form overload is a
+    /// producer-side notion (task 5351).
+    ///
+    /// The two Euler builtins are unobservable for a DIFFERENT reason worth
+    /// stating, because it is not the selectors': they have no lowering arm at
+    /// all. Both are pure eval-builtins dispatched through
+    /// `reify_stdlib::eval_builtin`, which answers a wrong-arity call with
+    /// `Value::Undef` at EVAL time rather than a compile diagnostic — so there
+    /// is no arity check for the probe to observe. They are also the one pair
+    /// here that does NOT rely on this exemption for its safety: both arms carry
+    /// an explicit `if arg_count ==` guard (4 and 2), which is the stronger fix
+    /// the agnostic-arm rule asks for, so their slot indices cannot fire on the
+    /// wrong argument even if a future overload appears.
     const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
         // The nine geometry topology selectors (task 4493).
         "center_of_mass",
@@ -3911,6 +4282,13 @@ mod tests {
         "extremal_by_centroid",
         // The task-3994 list combinator, the table's lone `Int` count slot.
         "generate",
+        // The two Euler builtins (task #6082), the table's only
+        // `ExpectedArg::Enum` slots. MEASURED, not assumed: the probe reports
+        // {0..=14} for both — every arity accepted, i.e. no arity diagnostic at
+        // any of them — the same full-set signature as the nine selectors above
+        // and unlike a ledgered name such as `fillet` ({2, 3}).
+        "orient_euler",
+        "orient_to_euler",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by
@@ -4161,7 +4539,7 @@ mod tests {
     /// # What this pins that main's arity tests do not
     ///
     /// [`mirror_origin_slots_are_arity_7_only`] and
-    /// [`circular_pattern_origin_slots_are_arity_9_only`] already pin the slot
+    /// [`circular_pattern_forms_are_keyed_independently`] already pin the slot
     /// SHAPE against a hard-coded arity, and this test deliberately does not
     /// restate them. It pins the LEDGER-side fact they cannot see: each name
     /// carries a MEASURED [`LOWERING_ACCEPTED_ARITIES`] row, that row is
@@ -4205,18 +4583,22 @@ mod tests {
                  value form, so an arity-agnostic arm would demand a Length OF A \
                  PLANE on correct code."
             );
-            let slotted: Vec<usize> = measured
+            // Keyed on INDEX 1 — the origin — not on "any slot": the invariant
+            // is that the origin never reaches the value form's composite.
+            // `circular_pattern`'s value form legitimately slots its angle@3.
+            let origin_slotted: Vec<usize> = measured
                 .iter()
                 .copied()
-                .filter(|&k| !builtin_arg_slots(name, k).is_empty())
+                .filter(|&k| builtin_arg_slots(name, k).iter().any(|s| s.index == 1))
                 .collect();
             assert_eq!(
-                slotted.len(),
+                origin_slotted.len(),
                 1,
-                "exactly ONE of {name}'s accepted arities {measured:?} may carry \
-                 origin slots — the scalar form. The value form hands index 1 a \
-                 composite built by a stdlib producer, so slotting it would fire \
-                 on correct code. Slots found at: {slotted:?}"
+                "exactly ONE of {name}'s accepted arities {measured:?} may carry a \
+                 slot at index 1 (the origin) — the scalar form. The value form \
+                 hands index 1 a composite built by a stdlib producer, so slotting \
+                 it would fire on correct code. Index-1 slots found at arities: \
+                 {origin_slotted:?}"
             );
         }
     }

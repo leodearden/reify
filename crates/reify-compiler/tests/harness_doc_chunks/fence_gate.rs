@@ -90,18 +90,18 @@
 //! deliberately does not touch them — a gate that quietly widened itself into
 //! prose scanning would be asserting a coverage claim it cannot keep.
 //!
-//! The one *fenced* body that does overstate v1 is `functions.md`'s
-//! `## Overloading` listing, whose 3-arg `rotate(geometry, axis, angle)`
-//! overload is the very phantom
+//! `functions.md`'s `## Overloading` listing used to overstate v1 the same way,
+//! with a 3-arg `rotate(geometry, axis, angle)` overload — the very phantom
 //! `a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported`
 //! plants below. It is `reify-schematic` (a signature listing, not compilable
-//! source), so this gate exempts it by design; rather than let the tag make it
-//! cosmetically green, the chunk carries a markdown annotation directly above
-//! that fence, narrowed to what #6890 actually measured — a user 3-arg
-//! DECLARATION wins over the builtin, so the hazard is copying the CALL form
-//! alone, not the overload itself. `.md` is outside `ptodo.rs`'s scanned
-//! extensions (:786), so nothing will flag that `#6890` cite when the task
-//! closes — the follow-up deletes the annotation along with the defect.
+//! source), so this gate exempts it by design and could not have caught it.
+//! What closed it instead was renaming the example to `align`, a name no
+//! builtin arity-gates, so copying the CALL form alone now fails as an
+//! undefined function rather than as a misleading arity error on a real
+//! builtin. The arity of every signature the chunk declares is now pinned
+//! directly by `functions_chunk_overloading_smoke.rs` — a scan over chunk
+//! text, not a fence gate, which is why that guard lives beside this one
+//! rather than inside it.
 //!
 //! The third gap is `reify-fragment`, and it is WIDER than the tag's wording
 //! admits. "Member-level or otherwise context-dependent" asserts that SOME
@@ -147,6 +147,8 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
+use std::path::{Path, PathBuf};
+
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 
 use crate::geometry_chunk_smoke::reify_tagged_fences;
@@ -157,14 +159,16 @@ use crate::geometry_chunk_smoke::reify_tagged_fences;
 
 /// One fenced code block, as this gate sees it.
 #[derive(Debug, Clone)]
-struct Fence {
+pub(crate) struct Fence {
     /// 1-based position in document order across the whole file. This, not the
     /// line number, is what a violation message leads with: a reader counting
     /// fences down a rendered chunk can find "fence #4" without a line-numbered
     /// view of the source.
     ordinal: usize,
     /// 1-based line number of the OPENING delimiter.
-    open_line: usize,
+    pub(crate) open_line: usize,
+    /// 1-based line number of the CLOSING delimiter.
+    pub(crate) close_line: usize,
     /// The info string with surrounding whitespace trimmed; `None` for a bare
     /// opening delimiter.
     tag: Option<String>,
@@ -235,7 +239,7 @@ struct Fence {
 /// Silently dropping it would be the worst outcome for an omission-drift gate:
 /// the offending block would vanish from the scan and the corpus test would go
 /// green *because* the file is malformed.
-fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
+pub(crate) fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
     /// The leading run of a single CommonMark fence character at column 0:
     /// `(character, length)`, or `None` for a line that starts with neither.
     ///
@@ -313,6 +317,7 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
             fences.push(Fence {
                 ordinal: fences.len() + 1,
                 open_line: state.line,
+                close_line: line_no,
                 tag: state.tag,
                 body: state.body.join("\n"),
             });
@@ -638,7 +643,7 @@ const LANGUAGE_CHUNKS_RS: &str = concat!(
 /// Sorted because `read_dir` order is filesystem-dependent: without this a
 /// failure list would shuffle between machines and a diff of two runs would be
 /// unreadable. Mirrors `pdoccover`'s sorted-corpus discipline.
-fn discover_chunk_stems() -> Vec<String> {
+pub(crate) fn discover_chunk_stems() -> Vec<String> {
     let entries = std::fs::read_dir(CHUNKS_DIR).unwrap_or_else(|e| {
         panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunk dir moved")
     });
@@ -661,7 +666,7 @@ fn discover_chunk_stems() -> Vec<String> {
 }
 
 /// The text of one chunk file.
-fn read_chunk_file(stem: &str) -> String {
+pub(crate) fn read_chunk_file(stem: &str) -> String {
     let path = format!("{CHUNKS_DIR}/{stem}.md");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{path} must be readable ({e})"))
@@ -669,8 +674,42 @@ fn read_chunk_file(stem: &str) -> String {
 
 /// The repo-relative label used in violation messages, so a failure reads as a
 /// path a developer can open rather than an absolute build-machine path.
-fn chunk_label(stem: &str) -> String {
+pub(crate) fn chunk_label(stem: &str) -> String {
     format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
+}
+
+/// Every chunk as `(stem, markdown)`, in stem order, for the corpus-wide check
+/// `gate` names — after asserting the scan found the whole corpus, so a check
+/// over a vacuous scan fails rather than passes.
+pub(crate) fn all_chunks(gate: &str) -> Vec<(String, String)> {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — {gate} would \
+         be vacuous",
+        stems.len()
+    );
+    stems
+        .into_iter()
+        .map(|stem| {
+            let markdown = read_chunk_file(&stem);
+            (stem, markdown)
+        })
+        .collect()
+}
+
+/// Repo root, derived from this crate's manifest dir
+/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
+/// binary resolves against.
+pub(crate) fn repo_root() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| {
+            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
+        })
+        .to_path_buf()
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,6 +1177,32 @@ fn an_empty_fence_body_parses_as_the_empty_string() {
     assert_eq!(fences[0].body, "");
 }
 
+/// `close_line` is the 1-based line of the CLOSING delimiter — the one line a
+/// fence's extent cannot be derived from its body without.
+#[test]
+fn close_line_is_the_one_based_line_of_the_closing_delimiter() {
+    let md = "prose\n\
+              ```reify-schematic\n\
+              ```\n\
+              between\n\
+              ```reify\n\
+              structure def S { let n = 1 }\n\
+              ````\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+
+    let extents: Vec<(usize, usize)> = fences
+        .iter()
+        .map(|fence| (fence.open_line, fence.close_line))
+        .collect();
+    assert_eq!(
+        extents,
+        vec![(2, 3), (5, 7)],
+        "an empty-bodied fence closes on the line after it opens; a longer closing run \
+         still closes its fence"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Check 2 — the bare-fence ban
 // ---------------------------------------------------------------------------
@@ -1358,8 +1423,9 @@ fn several_malformed_files_are_all_reported_by_a_single_run() {
 /// which builds a genuine `Severity::Error` `Diagnostic`.
 ///
 /// This is not a hypothetical shape either: `functions.md`'s overloading
-/// example ships exactly this 3-arg `rotate` form today. Finding it costs a
-/// printer_v01 probe cycle; this gate is what makes the compiler say it first.
+/// example shipped exactly this 3-arg `rotate` form until #6890 renamed it to
+/// `align`. Finding it cost a printer_v01 probe cycle; this gate is what makes
+/// the compiler say it first.
 #[test]
 fn a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported() {
     let md = "prose\n\
@@ -1978,7 +2044,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// test, `corpus_counts_are_exact_not_slack`, so a diff that legitimately adds
 /// a chunk or a fence gets a message telling it to re-measure rather than a
 /// vacuity warning describing a bug that did not happen.
-const CHUNK_FILE_COUNT: usize = 17;
+pub(crate) const CHUNK_FILE_COUNT: usize = 17;
 const TOTAL_FENCE_COUNT: usize = 76;
 
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
@@ -2107,7 +2173,7 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
 }
 
 /// Render an accumulated violation list as one panic message.
-fn report(check: &str, violations: &[String]) {
+pub(crate) fn report(check: &str, violations: &[String]) {
     assert!(
         violations.is_empty(),
         "{check}: {} violation(s)\n\n{}\n",

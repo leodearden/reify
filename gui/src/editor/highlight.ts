@@ -148,4 +148,7 @@ export const reifyHighlighting = styleTags({
   // Delimiters
   "( )": t.paren,
   "{ }": t.brace,
+  // The destructured import's `.{` opener is its own token, not a `{` node;
+  // see the ImportDeclaration comment in reify.grammar.
+  ImportItemsOpen: t.brace,
 });

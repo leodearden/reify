@@ -14,12 +14,15 @@
 #     docs/design/merge-verify-lane-dispatch-seam.md
 #
 # In brief (task 5608; escalation esc-5363-5): `<worktree_base>/<lane>.lock` is
-# ONE inode per lane, and dark-factory has FOUR acquirers of that inode family
-# on four independently-tuned waits (seam doc §1) — three that can target
-# `_merge-verify`, plus a task-lane consumer-hold that never does. So a dispatch
-# that lands while a verify-length lease (1–2h) is held burns the full bounded
-# wait before deferring. On an idle lane it costs nothing: the value this guard
-# adds is in the contended case, not on every dispatch.
+# ONE inode per lane, per host, and dark-factory has FIVE acquirers of that
+# inode family, each on its own independently-tuned wait (seam doc §1) — four
+# in-orchestrator sites running on the workstation and sharing its one literal
+# inode (three that can target `_merge-verify`, plus a task-lane consumer-hold
+# that never does), and a fifth outside the in-process orchestrator on a
+# physically separate host, taking that host's own same-named inode. So a
+# dispatch that lands while a verify-length lease (1–2h) is held burns the full
+# bounded wait before deferring. On an idle lane it costs nothing: the value
+# this guard adds is in the contended case, not on every dispatch.
 # How dark-factory CLASSIFIES that timeout is DF-owned and changes as DF
 # changes; it is stated once, in the seam doc's §1 acquirer table. Do not
 # restate it here — this header carried a copy that went stale when DF task
@@ -51,6 +54,13 @@
 #        bounded-wait flock remains that.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The probe itself — shared with scripts/warm-lane-audit.sh, which applies the
+# OPPOSITE fail direction to the same measurement.
+# shellcheck source=scripts/lib_lane_lock.sh
+source "$SCRIPT_DIR/lib_lane_lock.sh"
 
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -117,19 +127,6 @@ LOCK_PATH="${REIFY_WARM_LANE_LOCK_GUARD_LOCK_PATH:-}"
 # PATH is what lets Block D exercise the fail-open branches against a REAL held
 # lock: the fixture's own holder keeps using the real flock.
 FLOCK_BIN="${REIFY_WARM_LANE_LOCK_GUARD_FLOCK:-flock}"
-
-# The would-block exit status asked of flock via -E. `flock -n` returns a bare 1
-# on contention, which is indistinguishable from "flock itself failed" — and
-# reading a tool fault as contention is exactly the false BUSY this guard must
-# never emit. A distinct code separates the two; 124 is chosen only to be
-# DISTINGUISHABLE FROM THAT BARE 1, and it is consumed EXCLUSIVELY here — passed
-# to this script's own `flock -n -s -E` below, and compared against this same
-# variable a few lines further down. It matches dark-factory's current
-# _SEED_WARM_LANE_LOCK_TIMEOUT_RC by CONVENTION (both echo timeout(1)'s 124),
-# NOT by coupling: DF never observes this guard's exit codes and this guard
-# never observes DF's flock rc, so a DF retune of that constant leaves this
-# value entirely correct and must NOT be chased here. Reasoning: seam doc §3.
-FLOCK_CONFLICT_RC=124
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 SUBCOMMAND=""
@@ -210,38 +207,16 @@ else
 fi
 
 # ── probe ──────────────────────────────────────────────────────────────────────
-# Opens an EXISTING lock file READ-ONLY and attempts a non-blocking SHARED
-# flock on that read-only fd: acquired => no exclusive holder => IDLE (released
-# immediately); would-block => a live consumer holds it exclusively => BUSY.
-#
-# Technique copied from scripts/warm-lane-audit.sh's _probe_live, and the three
-# avoidances are load-bearing:
-#   · a MISSING lock file is IDLE and is NEVER created — no `>`-open, no
-#     `>>`-open, no `touch`. Materializing the inode DF serializes on would make
-#     this reader a writer.
-#   · SHARED (-s), not exclusive: every real consumer holds an EXCLUSIVE flock
-#     while live, so a shared request still detects them — but two concurrent
-#     oracles never contend with each other.
-#   · not the `flock <file> <cmd>` convenience form, which opens for writing and
-#     creates the file.
-#
-# DELIBERATE DIVERGENCE FROM _probe_live, on the one question the two disagree
-# about. Audit uses a bare `flock -n -s` and reads EVERY non-zero as LIVE — it
-# conflates a broken or missing flock with contention, i.e. it fails CLOSED.
-# This guard asks for `-E 124` and fails OPEN on anything that is not that exact
-# status. Neither is a bug: audit's output is advisory prose a human reads, and
-# over-reporting LIVE there merely looks conservative, whereas this script's
-# exit 3 gates dispatch, and a false BUSY would wedge the serial merge queue.
-# The consequence to know is that on a host with a degraded flock the two WILL
-# disagree about one inode — audit says LIVE, this guard says IDLE. Two probes
-# of one inode with no shared code path is a real seam; unifying them behind a
-# tri-state helper (IDLE / BUSY / UNMEASURABLE, each caller applying its own
-# fail direction) is filed as follow-up work, since warm-lane-audit.sh is
-# outside task 5608's scope. Seam doc §3 carries the same note.
+# The MEASUREMENT is `lane_lock_probe` in scripts/lib_lane_lock.sh, shared with
+# scripts/warm-lane-audit.sh: it answers IDLE / BUSY / UNMEASURABLE and carries
+# no fail direction at all. This script's contribution is the mapping — it fails
+# OPEN, sending UNMEASURABLE to IDLE with a warning and no sentinel, where the
+# audit sends the same state to LIVE. Why each direction is right for its own
+# consumer: seam doc §3, per the A3 pointer in this file's header.
 #
 # FAIL-OPEN (see `--help`): BUSY is reachable from exactly ONE place below — a
-# completed flock that reported would-block. Every other outcome warns and
-# leaves the verdict IDLE.
+# probe that positively observed an exclusive holder. Every other outcome warns
+# and leaves the verdict IDLE.
 _fail_open() {
     err "Lock probe could not be completed: $*"
     hint "FAIL-OPEN: reporting IDLE (exit 0), sentinel withheld. A false BUSY would defer"
@@ -252,19 +227,9 @@ _fail_open() {
 
 # _probe — sets PROBE_RESULT. Always returns 0: every failure it can encounter
 # is a fail-open degradation, so a non-zero return here would abort the script
-# under `set -e` instead of degrading. Probe statuses are captured with the
-# `rc=0; cmd || rc=$?` idiom rather than by disabling errexit.
+# under `set -e` instead of degrading.
 PROBE_RESULT='IDLE'
 _probe() {
-    local rc=0
-
-    # Tool missing or not executable — a wiring/environment fault, not evidence
-    # about the lane.
-    if ! command -v "$FLOCK_BIN" >/dev/null 2>&1; then
-        _fail_open "flock is missing or not executable (REIFY_WARM_LANE_LOCK_GUARD_FLOCK='$FLOCK_BIN')."
-        return 0
-    fi
-
     # Mount absent: skip the probe entirely rather than deriving a path under a
     # directory that is not there. Nothing is created — not the mount, not the
     # lock.
@@ -282,55 +247,15 @@ _probe() {
         return 0
     fi
 
-    # An ABSENT lock file is not a degradation: it positively means no consumer
-    # has ever taken this lane's lock. IDLE, silently, and never created.
-    [ -e "$LOCK" ] || return 0
-
-    # The read-only open is a SCOPED block redirect, deliberately NOT
-    # `exec 7<"$LOCK" 2>/dev/null`. A redirection attached to a command-less
-    # `exec` is PERMANENT for the shell, so that form would silently discard
-    # every diagnostic emitted after this point — the BUSY message and every
-    # fail-open warning alike, leaving an operator with no way to learn the
-    # measurement had stopped working. warm-lane-audit.sh's _probe_live can use
-    # the `exec` form safely only because it is always called inside a `$( )`
-    # subshell, which contains the permanence; this script probes in the main
-    # shell. The block form also closes fd 7 automatically on every path.
-    #
-    # `2>/dev/null` is ordered BEFORE `7<"$LOCK"` so it is already in effect if
-    # the open itself fails: redirections apply left to right, and bash reports
-    # a failed one on whatever stderr is current at that moment.
-    #
-    # `probed` distinguishes "the body ran" from "the redirect failed" — a
-    # failed redirect skips the body entirely, leaving rc at 0, which would
-    # otherwise be indistinguishable from a successfully acquired lock.
-    local probed=0
-    {
-        probed=1
-        "$FLOCK_BIN" -n -s -E "$FLOCK_CONFLICT_RC" 7 || rc=$?
-        if [ "$rc" -eq 0 ]; then
-            # Acquired, so nobody holds it exclusively. Release at once rather
-            # than relying on the fd close alone.
-            "$FLOCK_BIN" -u 7 || true
-        fi
-    } 2>/dev/null 7<"$LOCK" || true
-
-    if [ "$probed" -ne 1 ]; then
-        _fail_open "cannot open the lock file for reading: $LOCK."
-        return 0
-    fi
-
-    case "$rc" in
-        0)
-            ;;
-        "$FLOCK_CONFLICT_RC")
-            # The ONLY path to BUSY: flock ran to completion and reported that
-            # the shared request would block, which only an exclusive holder can
-            # cause.
-            PROBE_RESULT='BUSY'
-            ;;
-        *)
-            _fail_open "flock exited $rc, which is neither acquired (0) nor would-block ($FLOCK_CONFLICT_RC)."
-            ;;
+    lane_lock_probe "$LOCK" "$FLOCK_BIN"
+    case "$LANE_LOCK_PROBE_STATE" in
+        BUSY)         PROBE_RESULT='BUSY' ;;
+        UNMEASURABLE) _fail_open "$LANE_LOCK_PROBE_DETAIL." ;;
+        IDLE)         ;;
+        # Total by construction (see the audit's mirror image): an unrecognised
+        # state is itself an unmeasurable probe, and takes this script's OWN
+        # fail direction rather than falling through to a silent IDLE.
+        *)            _fail_open "lock probe returned an unrecognised state: $LANE_LOCK_PROBE_STATE." ;;
     esac
     return 0
 }

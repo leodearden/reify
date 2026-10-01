@@ -1,0 +1,20 @@
+module getar_fn_param_rejects_construct
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
+// before-image (usability gap U-1). MEASURED 2026-09-29 with
+// target/debug/reify built 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 1:
+//     error: no matching overload for f(Enum(Result)),
+//            candidates: f(Result<Scalar[m], String>) -> Scalar[m]
+//   `reify eval`  EXIT 1, same diagnostic.
+// A concrete-typed fn parameter cannot accept a constructed variant, because
+// the argument's erased `Enum("Result")` never equals the declared
+// `Applied{Result,[Length,String]}` in the overload ladder's wildcard tier.
+// EXPECTED after β+δ: `reify check` EXIT 0; `reify eval` prints
+// `W.v = 0.001 m`.
+
+fn f(r: Result<Length, String>) -> Length { 1mm }
+
+structure def W {
+    let v = f(Ok { value: 5mm })
+}

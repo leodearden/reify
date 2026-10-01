@@ -135,8 +135,8 @@ tasks:
     (folds 5380)
   capabilities:
   - name: orientation-frame-eval-arms-exist
-    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms + crates/reify-stdlib/src/geometry.rs:512
-      frame_to_frame
+    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms of eval_orientation
+      + grep:crates/reify-stdlib/src/geometry.rs frame_to_frame arm of eval_geometry
     verdict: PASS
     delivered_check:
       kind: grep
@@ -145,7 +145,8 @@ tasks:
       - crates/reify-builtins
       expect: present
   - name: orientation-ctor-registrations-upstream
-    binding: producer:task-5344 upstream — hard add_dependency edge wired at decompose
+    binding: producer:task-5344 (done, landed 2026-08-20, merge 4307a398b7) upstream — hard
+      add_dependency edge wired at decompose; producer edge satisfied
     verdict: PASS
     delivered_check:
       kind: manual
@@ -250,6 +251,19 @@ tasks:
     delivered_check:
       kind: grep
       pattern: closest_point
+      paths:
+      - crates/reify-builtins
+      expect: present
+  - name: representation-within-is-engine-dispatched
+    binding: wired — crates/reify-eval/src/tolerance_combine.rs match_representation_within_shape
+      (exact-name recogniser) reached from Engine::dispatch_constraints (crates/reify-eval/src/engine_constraints.rs);
+      no eval_builtin arm exists; manifested today in crates/reify-compiler/src/unresolved_function.rs
+      EVAL_DEFERRED_BUILTIN_NAMES. Owner ruled by task 7035 (verified 2026-09-24 against
+      main de1ed5dd52)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"RepresentationWithin"'
       paths:
       - crates/reify-builtins
       expect: present
@@ -441,7 +455,7 @@ tasks:
   title: docs-truth leaves — best-practices exemplar + cheatsheet index + discoverability
   capabilities:
   - name: exemplar-gate-exists
-    binding: wired — grep:crates/reify-compiler/tests/examples_smoke.rs auto-compile
+    binding: wired — grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs auto-compile
       gate; examples/best_practices/INDEX.md present
     verdict: PASS
     delivered_check:

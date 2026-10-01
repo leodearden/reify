@@ -12,8 +12,12 @@
 //! GREEN: after step-2 the test binary compiles and all assertions pass.
 
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
-use reify_ir::{FieldSourceKind, Satisfaction, Value};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_expr::EvalContext;
+use reify_expr::sampled::sample_at_point;
+use reify_ir::{FieldSourceKind, SampledField, Satisfaction, Value, ValueMap};
+use reify_test_support::{
+    compile_source_with_stdlib, errors_only, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,14 +39,27 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
     }
 }
 
-/// Extract the `SampledField.data` vec from a named `Value::Field{Sampled}` in
-/// an ElasticResult value.  Panics if the field is absent, not a Sampled field,
-/// or the lambda is not `Value::SampledField`.
-fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
+/// A named `Value::Field{Sampled}` channel of an ElasticResult value: its
+/// declared domain/codomain plus the backing `SampledField`.
+struct SampledChannel {
+    domain: Type,
+    codomain: Type,
+    sf: SampledField,
+}
+
+/// Extract a named `Value::Field{Sampled}` channel from an ElasticResult value.
+/// Panics if the field is absent, not a Sampled field, or the lambda is not
+/// `Value::SampledField`.
+fn extract_sampled_channel(result: &Value, field: &str) -> SampledChannel {
     let field_val = extract_field(result, field)
         .unwrap_or_else(|| panic!("field '{}' not found in result", field));
-    match &field_val {
-        Value::Field { source, lambda, .. } => {
+    match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => {
             assert!(
                 matches!(source, FieldSourceKind::Sampled),
                 "field '{}' source must be Sampled, got: {:?}",
@@ -50,7 +67,11 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
                 source
             );
             match lambda.as_ref() {
-                Value::SampledField(sf) => sf.data.clone(),
+                Value::SampledField(sf) => SampledChannel {
+                    domain: domain_type,
+                    codomain: codomain_type,
+                    sf: sf.clone(),
+                },
                 other => panic!(
                     "field '{}' lambda must be Value::SampledField, got: {:?}",
                     field, other
@@ -59,6 +80,12 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
         }
         other => panic!("field '{}' must be Value::Field, got: {:?}", field, other),
     }
+}
+
+/// Extract the `SampledField.data` vec from a named `Value::Field{Sampled}` in
+/// an ElasticResult value (see [`extract_sampled_channel`]).
+fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
+    extract_sampled_channel(result, field).sf.data
 }
 
 // ── integration gate ──────────────────────────────────────────────────────────
@@ -88,6 +115,10 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
 ///       `rotation[i] == curl[i] / 2` bit-exactly (0 ULP), plus the harness-side
 ///       degree comparison against the small-strain bound implied by the
 ///       already-validated `constraint g_mag < 1.0`.
+///   (d4) The `.ri` `rot_probe` cell is a real ANGLE scalar, not a hollow Undef.
+///   (d5) task #6183 σ — `result.shear_angles` (Vector3<Angle>) is exactly
+///       2 × the symmetric off-diagonals of `result.gradient` (0 ULP), which
+///       itself stays Tensor<2,3,Real>; see [`assert_shear_angles_channel`].
 ///   (e) PHASE 2 — `DifferentialFieldOps.lap_max` ≈ 2.0 within 1e-9
 ///       (max of laplacian(f) where f(x)=x²; exact on quadratics).
 ///       `DifferentialFieldOps.grad_max` ≈ 3.0 within 1e-9
@@ -160,6 +191,19 @@ fn differential_field_ops_integration_gate() {
         g_mag_type
     );
 
+    let shear_probe_type = diff_tmpl
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "shear_probe")
+        .expect("cell 'shear_probe' must exist in DifferentialFieldOps")
+        .cell_type
+        .clone();
+    assert_eq!(
+        shear_probe_type,
+        Type::angle(),
+        "shear_probe = magnitude of a sampled Vector3<Angle> must type as Angle (task #6183)"
+    );
+
     // ── (b) ComputeNode with target == "solver::elastic_static" ──────────────
     let snapshot = engine
         .eval_state()
@@ -195,8 +239,8 @@ fn differential_field_ops_integration_gate() {
     let check_result = engine.check(&compiled);
     assert_eq!(
         check_result.constraint_results.len(),
-        10,
-        "expected exactly 10 constraint results (matching the 10 `constraint` \
+        11,
+        "expected exactly 11 constraint results (matching the 11 `constraint` \
          statements in differential_field_ops.ri), got {} — a regression may \
          have silently dropped constraint registration or evaluation",
         check_result.constraint_results.len()
@@ -568,6 +612,14 @@ fn differential_field_ops_integration_gate() {
         other => panic!("rot_probe must be a Scalar[ANGLE], got: {:?}", other),
     }
 
+    // ── (d5) task #6183 σ — `result.shear_angles` ────────────────────────────
+    assert_shear_angles_channel(
+        result_val,
+        eval_result
+            .values
+            .get(&ValueCellId::new("DifferentialFieldOps", "shear_probe")),
+    );
+
     // No `orient_exp(rotation)` assertion sits beside (d3)/(d4) on purpose:
     // `orient_exp`'s dimension gate in `reify-stdlib`'s `orientation` module
     // still returns `Value::Undef` for an ANGLE argument until ruling #6080
@@ -608,4 +660,178 @@ fn differential_field_ops_integration_gate() {
         "grad_max = max(gradient(linear)) = {} expected ≈ 3.0 (exact on linears, tol=1e-9)",
         grad_max
     );
+}
+
+/// (d5) task #6183 σ: the `shear_angles` channel on the real FEA pipeline.
+///
+/// `shear_angles` holds the Voigt engineering shears (γ_yz, γ_zx, γ_xy), a named
+/// Vector3<Angle> crossing derived from `result.gradient`, which must itself
+/// stay Tensor<2,3,Real> (INV-AD-3). `shear_probe` is the example's `.ri` probe
+/// cell, `magnitude(sample(result.shear_angles, point3(500mm, 50mm, 50mm)))`.
+fn assert_shear_angles_channel(result: &Value, shear_probe: Option<&Value>) {
+    let shear = extract_sampled_channel(result, "shear_angles");
+    let grad = extract_sampled_channel(result, "gradient");
+    assert_eq!(
+        shear.domain,
+        Type::point3(Type::length()),
+        "shear_angles domain must be Point3<Length>"
+    );
+    assert_eq!(
+        shear.codomain,
+        Type::vec3(Type::angle()),
+        "shear_angles codomain must be Vector3<Angle> — a named crossing (task #6183)"
+    );
+    assert_eq!(
+        grad.codomain,
+        Type::tensor(2, 3, Type::dimensionless_scalar()),
+        "gradient codomain must STAY Tensor<2,3,Real> — INV-AD-3: never retype the \
+         tensor; angle readings are extracted by named channels like shear_angles"
+    );
+
+    let g = &grad.sf.data;
+    let gamma = &shear.sf.data;
+    assert_eq!(g.len() % 9, 0, "gradient must be stride-9");
+    let n_nodes = g.len() / 9;
+    assert_eq!(
+        gamma.len(),
+        3 * n_nodes,
+        "shear_angles must carry 3 components per gradient node ({n_nodes} nodes)"
+    );
+    for (k, &c) in gamma.iter().enumerate() {
+        assert!(c.is_finite(), "shear_angles data[{k}] = {c} is not finite");
+    }
+
+    // γ = 2·ε_offdiag at 0 ULP: γ_ij and ε_ij·2 are the same IEEE addition of
+    // the same operands (commutative bitwise), and ×0.5 / ×2 are exact for
+    // normal operands. Voigt order: component c pairs with (i, j).
+    const VOIGT_PAIRS: [(usize, usize); 3] = [(1, 2), (2, 0), (0, 1)];
+    for k in 0..n_nodes {
+        for (c, &(i, j)) in VOIGT_PAIRS.iter().enumerate() {
+            let eps_ij = 0.5 * (g[9 * k + 3 * i + j] + g[9 * k + 3 * j + i]);
+            assert_eq!(
+                gamma[3 * k + c],
+                2.0 * eps_ij,
+                "shear_angles[{k}][{c}] must be EXACTLY 2·ε_{i}{j} of result.gradient (0 ULP)"
+            );
+        }
+    }
+
+    // Whole-field degree bound, RIGOROUSLY implied by the validated
+    // `constraint g_mag < 1.0` (g_mag = max‖∇u‖_F over the same slab):
+    //   |γ_ij| = |g_ij + g_ji| ≤ √2·√(g_ij² + g_ji²) ≤ √2·‖∇u‖_F < √2 rad.
+    let max_gamma_rad = gamma.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    assert!(
+        max_gamma_rad > 0.0,
+        "max|shear_angles| is zero — no shear signal under load"
+    );
+    assert!(
+        max_gamma_rad.to_degrees() < 2f64.sqrt().to_degrees(),
+        "max|shear_angles| = {}° must be below √2 rad = {}°, implied by g_mag < 1.0",
+        max_gamma_rad.to_degrees(),
+        2f64.sqrt().to_degrees()
+    );
+
+    // Harness-side sampling through the production sampler at the example's
+    // probe point. Interpolation is linear, so it commutes with the linear
+    // projection up to rounding (≤~16 ULP of the operands).
+    let length = |m: f64| Value::Scalar {
+        si_value: m,
+        dimension: DimensionVector::LENGTH,
+    };
+    let probe = Value::Point(vec![length(0.5), length(0.05), length(0.05)]);
+    let empty = ValueMap::new();
+    let ctx = EvalContext::simple(&empty);
+    let sampled_shear = sample_at_point(&shear.sf, &probe, &shear.codomain, &ctx);
+    let sampled_grad = sample_at_point(&grad.sf, &probe, &grad.codomain, &ctx);
+    let Value::Vector(shear_components) = &sampled_shear else {
+        panic!("sampled shear_angles must be a Value::Vector, got {sampled_shear:?}")
+    };
+    let Value::Vector(grad_components) = &sampled_grad else {
+        panic!("sampled gradient must be a Value::Vector, got {sampled_grad:?}")
+    };
+    assert_eq!(shear_components.len(), 3, "Voigt shear arity");
+    assert_eq!(grad_components.len(), 9, "gradient arity");
+    let grad_at = |r: usize, c: usize| {
+        grad_components[3 * r + c]
+            .as_f64()
+            .unwrap_or_else(|| panic!("sampled gradient[{r}][{c}] must be numeric"))
+    };
+    let mut sampled_gamma_rad = [0.0_f64; 3];
+    for (c, &(i, j)) in VOIGT_PAIRS.iter().enumerate() {
+        let Value::Scalar {
+            si_value,
+            dimension,
+        } = &shear_components[c]
+        else {
+            panic!(
+                "sampled shear component {c} must be a Scalar, got {:?}",
+                shear_components[c]
+            )
+        };
+        assert_eq!(
+            *dimension,
+            DimensionVector::ANGLE,
+            "sampled shear component {c} must be ANGLE-dimensioned"
+        );
+        let (g_ij, g_ji) = (grad_at(i, j), grad_at(j, i));
+        assert!(
+            (si_value - (g_ij + g_ji)).abs() <= 1e-12 * (g_ij.abs() + g_ji.abs()) + 1e-18,
+            "sampled γ component {c} = {si_value:e} must equal sampled g_{i}{j} + g_{j}{i} = {:e}",
+            g_ij + g_ji
+        );
+        sampled_gamma_rad[c] = *si_value;
+    }
+
+    // The .ri probe cell: a real ANGLE scalar equal to the harness magnitude.
+    let expected_probe = sampled_gamma_rad.iter().map(|c| c * c).sum::<f64>().sqrt();
+    match shear_probe.expect("cell DifferentialFieldOps.shear_probe not found") {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "shear_probe must be ANGLE-dimensioned (task #6183)"
+            );
+            assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "shear_probe = {si_value} must be finite and > 0"
+            );
+            assert!(
+                (si_value - expected_probe).abs() <= 1e-12 * expected_probe,
+                "shear_probe = {si_value:e} must equal the harness-sampled ‖γ‖ = {expected_probe:e}"
+            );
+        }
+        Value::Undef => panic!(
+            "shear_probe is Value::Undef — the sample point is outside the cantilever \
+             bounds, which silently hollows out the .ri shear-limit pin"
+        ),
+        other => panic!("shear_probe must be a Scalar[ANGLE], got: {other:?}"),
+    }
+}
+
+/// Non-vacuity control for the example's shear-limit fn: its `Vector3<Angle>`
+/// parameter must REJECT wrong-quantity sampled vectors, so the typed pass of
+/// `sample(result.shear_angles, ..)` is a real check. Compile-only.
+#[test]
+fn shear_limit_fn_rejects_non_angle_sampled_vectors() {
+    let source = diff_field_ops_source();
+    let needle = "sample(result.shear_angles,";
+    assert_eq!(
+        source.matches(needle).count(),
+        1,
+        "precondition: the example must sample result.shear_angles exactly once"
+    );
+    // curl is Vector3<Real> (bare dimensionless); displacement is Vector3<Length>.
+    for wrong in ["result.curl", "result.displacement"] {
+        let mutated = source.replace(needle, &format!("sample({wrong},"));
+        let compiled = compile_source_with_stdlib(&mutated);
+        let errors = errors_only(&compiled);
+        assert!(
+            errors.iter().any(|d| d.message.contains("shear_magnitude")),
+            "passing sample({wrong}, ..) to shear_magnitude(Vector3<Angle>) must be \
+             rejected with a diagnostic naming the fn; got errors: {errors:?}"
+        );
+    }
 }

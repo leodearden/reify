@@ -479,11 +479,16 @@ pub(crate) fn eigensolve_modal(
     for (i, &f) in frequencies.iter().enumerate() {
         let omega = 2.0 * PI * f;
         if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
-            diagnostics.push(Diagnostic::warning(format!(
-                "W_ModalRigidBodyMode: mode {i} has near-zero angular frequency \
-                 ω = {omega:.3e} rad/s (≤ {RIGID_BODY_OMEGA_TOL:.1e}); the model \
-                 may be under-constrained (rigid-body or spurious mode)."
-            )));
+            // σ from `eig.shift` — the shift ACTUALLY used — for the same
+            // reason `W_ShiftSkippedModes` below names it from there: both
+            // clauses tell the author to move a σ, so neither may name a σ the
+            // solve might not have applied.
+            diagnostics.push(rigid_body_mode_diagnostic(
+                i,
+                omega,
+                RIGID_BODY_OMEGA_TOL,
+                eig.shift,
+            ));
         }
     }
 
@@ -492,9 +497,10 @@ pub(crate) fn eigensolve_modal(
     // implementation able to report two at once can send an author to fix the
     // wrong thing. [`ModalSolveFault`] carries the rationale.
     //
-    // TODO(#7261): δ owns the FULL surfacing of the shift fault — the λ-space
-    // surface conversion, `ShiftSkippedModes`, and the `.ri` fixture pair. Only
-    // the refusal lands here, so δ verifies and extends rather than builds.
+    // δ (#7261) landed the rest of the shift's surfacing beside this match: the
+    // λ-space read in `extract_eigen_knobs` and the `W_ShiftSkippedModes`
+    // provenance warning below. The refusal stays HERE, in the fault match,
+    // because it is a fault; the warning is deliberately not a fourth arm.
     match fault {
         ModalSolveFault::None => {}
         // The `W_ModalRigidBodyMode` prefix is deliberate: the model IS
@@ -552,6 +558,36 @@ pub(crate) fn eigensolve_modal(
              the result is partial (raise max_iters/tol or lower n_modes).",
             n_modes_out, eigen_opts.n_modes,
         )));
+    }
+
+    // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
+    // around σ, not the bottom of the spectrum, because some eigenvalue lies
+    // between zero and σ and is absent from it. Advisory, not an error —
+    // inspecting a band around σ is a legitimate use.
+    //
+    // σ is named from `eig.shift` — the shift ACTUALLY used, per that field's
+    // contract — never from `eigen_opts.sigma`: a caller must not have to infer
+    // which σ was applied.
+    //
+    // The count is OMITTED from α's template. `EigenSolverResult` carries only
+    // the C5 BOOLEAN; there is no count field to read, and α's rustdoc records
+    // that omitting the count is always correct while including it is correct
+    // only on the dense path (the Lanczos path's Cholesky/LU discriminator
+    // yields a boolean, not an inertia count). Do not "improve" this into a
+    // fabricated number.
+    //
+    // Suppressed unless there is a result to describe — the rule and its three
+    // empty-result channels live in [`shift_window_is_reportable`].
+    if shift_window_is_reportable(eig.shift_skipped_modes, fault, frequencies.len()) {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
+                 it; the result is a window around sigma, not the bottom of the \
+                 spectrum",
+                eig.shift,
+            ))
+            .with_code(DiagnosticCode::ShiftSkippedModes),
+        );
     }
 
     ModalCoreResult {
@@ -792,6 +828,94 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
          the eigensolve (e.g. an ill-conditioned or non-PSD stiffness/mass \
          assembly) — treat this result's mode ordering as unverified."
     ))
+}
+
+/// The [`ModalCoreResult::diagnostics`] entry pushed for a per-mode `ω ≈ 0`, one
+/// mode at a time.
+///
+/// Extracted from the loop in [`eigensolve_modal`] so the exact rendering can be
+/// asserted DIRECTLY, without a test having to reproduce a spurious eigenvalue
+/// numerically — the σ ≠ 0 case below is reachable only through a near-singular
+/// `K − σM`, which is not a thing a deterministic test should have to conjure.
+///
+/// ONE format template, never two `format!` arms for one condition: two
+/// templates drift, which is the SPOT violation this file guards against
+/// elsewhere.
+///
+/// At σ ≠ 0 a shift clause is APPENDED — one template with an optional part,
+/// the same discipline α mandates for `W_ShiftSkippedModes`. A near-zero mode
+/// at a shifted solve is more likely a spurious artifact of a near-singular
+/// `K − σM` than a rigid-body mode of the model, so the remedy is to move σ,
+/// not to add supports. Without the clause this warning sends the author to fix
+/// the one thing that is not broken.
+///
+/// The σ = 0 rendering is today's, BYTE FOR BYTE — every existing caller and
+/// assertion keyed on this message reads the unshifted path — so the
+/// `W_ModalRigidBodyMode:` prefix (a consumer grouping key, and the anchor for
+/// β's negative assertions), the `{omega:.3e}` / `{tol:.1e}` formats and the
+/// clause order all stay put. No [`DiagnosticCode`] is attached and the severity
+/// stays `Warning`: this is not one of α's three codes, and inventing a fourth
+/// is out of scope.
+///
+/// `sigma` is the shift ACTUALLY USED — [`EigenSolverResult::shift`], never the
+/// requested [`EigenSolverOptions::sigma`]. Same rule, and for the same reason,
+/// as `W_ShiftSkippedModes` in [`eigensolve_modal`]: both diagnostics name a σ
+/// to an author who is being told to move it, so a path that did not honor the
+/// requested shift must name the one it solved at rather than the one it was
+/// handed.
+fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f64) -> Diagnostic {
+    let shift_note = if sigma == 0.0 {
+        String::new()
+    } else {
+        format!(
+            " A non-zero spectral shift sigma = {sigma} was applied; at a \
+             shifted solve a near-zero mode is more likely a spurious artifact \
+             of a near-singular K − sigma·M than a rigid-body mode of the \
+             model, so move sigma before adding supports."
+        )
+    };
+    Diagnostic::warning(format!(
+        "W_ModalRigidBodyMode: mode {mode_index} has near-zero angular frequency \
+         ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
+         may be under-constrained (rigid-body or spurious mode).{shift_note}"
+    ))
+}
+
+/// Whether a `W_ShiftSkippedModes` window claim would describe a result that
+/// EXISTS.
+///
+/// "The returned set is a window around σ" is a statement ABOUT a returned mode
+/// set, so an empty one makes it confidently wrong — and the C5 flag alone does
+/// not exclude that, because two of the three ways a shifted solve can come back
+/// empty carry `shift_skipped_modes == true`:
+///
+/// * the REFUSAL (`ShiftAtEigenvalue`) and the over-ceiling degenerate return,
+///   both via `conservative_shift_provenance(σ)`: no spectrum was computed, so
+///   C5 forbids establishing `false`. Both are faults, and both are suppressed
+///   here by `fault == None` alone;
+/// * a solve that CONVERGED NOTHING. Today `try_solve_eigen_shift_invert`
+///   folds that into the refusal — `shift_is_numerically_singular` returns
+///   `true` for an empty eigenvalue list, so the σ≠0 branch never returns `Ok`
+///   with no eigenpairs (MEASURED: every starved shifted solve reachable from
+///   `eigensolve_modal` arrives carrying `E_ShiftAtEigenvalue`). So the
+///   emptiness test is NOT load-bearing today.
+///
+/// It is kept anyway because the fault test is a PROXY for the property, and a
+/// proxy maintained in another crate is the kind that breaks silently: #7617 is
+/// chartered to split `ShiftAtEigenvalue`'s two causes, and a "converged
+/// nothing" outcome that stops being a refusal makes `fault == None` with an
+/// empty result live. Keying on the property directly costs one comparison and
+/// cannot be invalidated from outside this function.
+///
+/// Deliberately NOT gated on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
+/// `false` by a successful Cholesky, which is the case a `σ != 0.0` test would
+/// get wrong.
+fn shift_window_is_reportable(
+    shift_skipped_modes: bool,
+    fault: ModalSolveFault,
+    n_modes_returned: usize,
+) -> bool {
+    shift_skipped_modes && fault == ModalSolveFault::None && n_modes_returned > 0
 }
 
 /// Largest `n_free` for which a SINGULAR `K_free` is still routed to the dense
@@ -3114,6 +3238,52 @@ fn extract_loss_factor(val: &Value) -> Option<f64> {
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
 /// is not a StructureInstance or a field is missing / malformed. Mirrors
 /// buckling's `extract_buckling_options`.
+///
+/// # σ is in EIGENVALUE (λ) space
+///
+/// The returned σ is in the same space [`EigenSolverOptions::sigma`] and
+/// [`EigenSolverResult::shift`] document, whose rustdoc states that unit
+/// conversion is the CALLER's job — and this trampoline is that caller.
+///
+/// On this branch the conversion is the identity: `ModalOptions.sigma : Real` is
+/// ALREADY λ-space (`modal_analysis.ri`'s `sigma` field note — "spectral-shift
+/// origin (in eigenvalue units)"), so the read is a pass-through and there is NO
+/// unit crossing here. That is the surface-agnostic contract PRD §7.1 names:
+/// `EigenSolverOptions.sigma` receives λ-space, so leaves α and β never learn
+/// which author-facing surface fed them.
+///
+/// If #6097 later retypes the surface to `shift_frequency : Frequency`, the
+/// `λ = (2π·f)²` conversion belongs HERE, at the trampoline, via the declared
+/// inverse helper in `crates/reify-stdlib/src/modal/free_vibration.rs` — never
+/// as a bare inline `2.0 * PI * f` in this file, which INV-AD-4
+/// (`boundaries-declare-angle-convention`) makes a defect even when the number
+/// it computes is right.
+///
+/// # Which value shapes σ accepts, and which it refuses
+///
+/// A `Real`-typed `.ri` param does not arrive as one Rust variant: a literal
+/// `sigma: 2` arrives as [`Value::Int`], and a value that has been through the
+/// dimensional machinery arrives as a DIMENSIONLESS [`Value::Scalar`]. All
+/// three are accepted, the same `tolerated` discipline [`extract_loss_factor`]
+/// spells out one knob up. The shape list is kept EXPLICIT rather than widened
+/// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
+/// part: [`read_scalar_si`] is dimension-BLIND.
+///
+/// The widening is scoped to σ, and `tol` — declared `param tol : Real` beside
+/// it — is the REMAINING instance of this class: a literal `tol: 1` arrives as
+/// [`Value::Int`] and silently becomes the 1e-9 default, exactly as `sigma: 2`
+/// did before this leaf. Left open deliberately (it is outside δ's scope) and
+/// named here so the next reader does not have to rediscover it; filed as a
+/// follow-up, which should also audit `n_modes`/`max_iters` for the
+/// mirror-image [`Value::Real`] spelling.
+///
+/// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
+/// back to the default. That shape is #6097's future `shift_frequency` surface,
+/// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
+/// strictly WORSE than dropping the value, because a wrong shift returns a
+/// plausible-looking spectrum from the wrong band rather than an obviously
+/// unshifted one. Converting it here would also duplicate #6097's scope and
+/// manufacture the INV-AD-4 crossing this branch deliberately does not have.
 fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
     let default_n_modes = 10_usize;
     let default_tol = 1e-9_f64;
@@ -3143,9 +3313,27 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
+    // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
+    // ONCE through `read_scalar_si` so the tolerated spellings cannot drift
+    // apart from it — the `tolerated` shape [`extract_loss_factor`] spells out
+    // one knob up, which also keeps the finite guard in a single copy rather
+    // than one per accepted shape. A non-finite σ still falls back: it would
+    // poison `K − σM`.
     let sigma = match data.fields.get("sigma") {
-        Some(Value::Real(r)) if r.is_finite() => *r,
-        _ => default_sigma,
+        Some(raw) => {
+            let tolerated = match raw {
+                Value::Real(_) | Value::Int(_) => true,
+                Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+                _ => false,
+            };
+            let s = read_scalar_si(raw);
+            if tolerated && s.is_finite() {
+                s
+            } else {
+                default_sigma
+            }
+        }
+        None => default_sigma,
     };
     (n_modes, tol, max_iters, sigma)
 }
@@ -3523,23 +3711,22 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 ///     cantilever root clamp (step-16), and — with BOTH end faces named — the
 ///     genuine clamped-clamped beam.
 ///
-///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
-///     named face, leaving the bending rotation `dw/dx` free (it is carried by
-///     the axial `u(z)`, not by `w`) — but ONLY on a beam-axis end face of a
-///     model that carries another support. A lone or non-beam-axis pinned face
-///     clamps instead, matching `PinnedOnTetEquivalentToFixed`; see
-///     [`face_realization`] for why that scoping is load-bearing.
+///   • **`PinnedSupport`** — a simple support: pin the transverse (Z) DOF on
+///     every node of the named face plus the lateral (Y) DOF at the face's
+///     neutral-axis node, leaving both bending rotations free (see
+///     [`FaceRealization::PinTransverse`]) — but ONLY on a beam-axis end face of
+///     a model whose supports name another distinct recognized face. A lone or
+///     non-beam-axis pinned face clamps instead, matching
+///     `PinnedOnTetEquivalentToFixed`; see [`face_realization`] for why that
+///     scoping is load-bearing.
 ///
 ///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
 ///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
-///     face is `PinnedSupport`, the two end faces are realized by
-///     [`simply_supported_pin_pin_bcs`], which adds the three minimal
-///     neutral-axis anchors that the per-face rule alone cannot supply. Neither
-///     end face is clamped in that configuration, so without those anchors
-///     `K_free` is singular (see step-4's comment there for why the mixed
-///     propped-cantilever case needs no such anchors). Supports naming any OTHER
-///     face are still realized per-face and UNIONed on top — the special case
-///     re-interprets the two end faces, it never discards a support.
+///     face is `PinnedSupport`, both end faces are simple supports and nothing
+///     else restrains the beam axially, so ONE axial anchor is added
+///     ([`pin_pin_axial_anchor`]). It re-interprets nothing: every face,
+///     including the two ends, is realized per-face exactly as in any other
+///     configuration.
 ///
 /// **Why the kind matters here, even though a face-pin equals a face-clamp on a
 /// solid tet body** (`reify-solver-elastic/src/shell_boundary.rs:133-140`,
@@ -3572,14 +3759,15 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// # Diagnostics
 ///
 /// Returns a [`DirichletRealization`], not a bare vector, because the
-/// `PinnedSupport` realization DECISION is count-dependent and would otherwise
-/// be invisible: adding or removing a support elsewhere on the body silently
-/// re-realizes a pinned beam end (clamp ⇄ transverse pin), and the author's only
-/// observable would be a frequency that moved. Every such face therefore carries
-/// one `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic naming what it
-/// was realized as AND why — see
-/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this is
-/// a reporting channel only.
+/// `PinnedSupport` realization decision depends on whether the model's
+/// supports name ANOTHER DISTINCT RECOGNIZED face, and would otherwise be
+/// invisible: naming or un-naming a second face elsewhere on the body
+/// silently re-realizes a pinned beam end (clamp ⇄ simple support), and the
+/// author's only observable would be a frequency that moved. Every such face
+/// therefore carries one `I_ModalPinnedFaceRealization` `Severity::Info`
+/// diagnostic naming what it was realized as AND why — see
+/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this
+/// is a reporting channel only.
 fn build_dirichlet_bcs(
     options: &Value,
     nodes: &[[f64; 3]],
@@ -3588,33 +3776,34 @@ fn build_dirichlet_bcs(
     height: f64,
 ) -> DirichletRealization {
     let targets = support_targets(options);
-    // Count DISTINCT recognized FACES, not supports. Two hazards fall out of
-    // that one choice, and both are mechanism classes:
+    // Each target's realization is decided from its own [`FaceCompany`] — a
+    // face-LOCAL fact, not a model-wide count. Two hazards fall out of that one
+    // choice, and both are mechanism classes:
     //
     //   * A support whose target names NO recognized face constrains nothing
     //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
-    //     so it must not vote on another face's realization — otherwise a typo,
-    //     or the stdlib's own `param target : String = ""` default, flips a
-    //     `PinnedSupport` on a beam end from a clamp to a transverse-only pin,
+    //     so it must not give another face company — otherwise a typo, or the
+    //     stdlib's own `param target : String = ""` default, flips a
+    //     `PinnedSupport` on a beam end from a clamp to a lone simple support,
     //     turning a well-posed cantilever into a mechanism. Pinned by
     //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
     //   * DUPLICATES collapse. `[Pinned("x_min"), Pinned("x_min")]` — the
-    //     ordinary copy-paste authoring error — names ONE face but counted as
-    //     TWO supports, so it flipped x_min to a transverse-only pin for exactly
-    //     the same mechanism outcome (measured: 4 surviving rigid-body modes,
-    //     reported under a mere `W_ModalRigidBodyMode` Warning). Counting faces
-    //     makes it a lone support again, restoring the pre-6663 cantilever.
-    //     Pinned by `build_dirichlet_bcs_ignores_duplicate_face_targets`.
+    //     ordinary copy-paste authoring error — names ONE face twice, and a
+    //     face cannot be its own company, so it stays `Alone`, restoring the
+    //     pre-6663 cantilever instead of flipping to a lone simple support —
+    //     a mechanism, reported under a mere `W_ModalRigidBodyMode` Warning.
+    //     Pinned by
+    //     `build_dirichlet_bcs_ignores_duplicate_face_targets`.
     //
-    // Under face counting, `PinTransverse` can fire ONLY when a beam-axis end
-    // face and some second DISTINCT face are both named — and every such
-    // configuration is well posed: the pin-pin special case below (both ends
-    // pinned, three neutral-axis anchors added), a propped cantilever (the other
-    // end `Fixed`, hence fully clamped), or an end pin plus a non-end face,
-    // which always clamps (see [`face_realization`]). So this closes the
-    // transverse-pin mechanism class outright rather than documenting it as a
-    // residual. `solve_generalized_eigen`'s singular-K fallback remains the
-    // backstop for a singular K_free arriving by any other route.
+    // `PinTransverse` can fire ONLY when a beam-axis end face has another
+    // DISTINCT face's company — and every such configuration is well posed:
+    // the pin-pin special case below (both ends simple supports, one axial
+    // anchor added), a propped cantilever (the other end `Fixed`, hence fully
+    // clamped), or an end pin plus a non-end face, which always clamps (see
+    // [`face_realization`]). So this closes the transverse-pin mechanism class
+    // outright rather than documenting it as a residual.
+    // `solve_generalized_eigen`'s singular-K fallback remains the backstop for
+    // a singular K_free arriving by any other route.
     //
     // All three shapes are pinned by tests, so the argument cannot rot silently:
     // the pin-pin case and the propped cantilever by
@@ -3622,24 +3811,31 @@ fn build_dirichlet_bcs(
     // where the whole argument rests on the non-end face being a FULL clamp — by
     // `build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end` (iii).
     //
-    // The count is still non-local, which is why every pinned end face also
-    // reports what it was realized as: see
-    // [`pinned_end_face_realization_diagnostics`].
-    let faces_named: BTreeSet<(usize, bool)> =
-        targets.iter().filter_map(|(_, t)| face_bound(t)).collect();
-    let n_faces = faces_named.len();
+    // A face's company is still something the author did not write on the
+    // support, which is why every pinned end face also reports what it was
+    // realized as: see [`pinned_end_face_realization_diagnostics`].
 
-    // Resolve every support to (what it constrains, which face) up front, so the
-    // two branches below share ONE realization policy.
+    // Resolve every support's `FaceCompany` up front — ONCE per target — so
+    // the per-face realization below and the diagnostics after it read the
+    // exact same fact instead of each deriving their own; see
+    // `pinned_end_face_realization_diagnostics`'s "One pass, two consumers".
+    let companies: Vec<FaceCompany> = targets
+        .iter()
+        .map(|(_, target)| face_company(target, &targets))
+        .collect();
     let faces: Vec<(FaceRealization, &str)> = targets
         .iter()
-        .map(|(kind, target)| (face_realization(*kind, target, n_faces), target.as_str()))
+        .zip(companies.iter())
+        .map(|((kind, target), company)| {
+            (face_realization(*kind, target, company), target.as_str())
+        })
         .collect();
 
     // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
     // and every support naming an end face is Pinned. A single `FixedSupport`
-    // among them makes this a clamped or propped configuration instead, which
-    // the per-face realization below handles directly.
+    // among them makes this a clamped or propped configuration instead. Each
+    // pinned end has the other as company, so both are already `PinTransverse`
+    // simple supports; the special case only adds the axial anchor.
     let names_face = |face: &str| targets.iter().any(|(_, t)| t == face);
     let end_face_supports_all_pinned = targets
         .iter()
@@ -3647,26 +3843,15 @@ fn build_dirichlet_bcs(
         .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
     let simply_supported =
         names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned;
-    let diagnostics = pinned_end_face_realization_diagnostics(&targets, n_faces, simply_supported);
+    let diagnostics =
+        pinned_end_face_realization_diagnostics(&targets, &companies, simply_supported);
 
+    let mut bcs = per_face_bcs(&faces, nodes, length, width, height);
     if simply_supported {
-        // The special case re-interprets the TWO END FACES only. Every support
-        // naming another face is still realized per-face and unioned on top, so
-        // e.g. `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` is a
-        // simply-supported beam that is ALSO clamped on y_min, not a plain
-        // simply-supported beam with the y_min clamp silently discarded.
-        let mut bcs = simply_supported_pin_pin_bcs(nodes, length, height);
-        let others: Vec<(FaceRealization, &str)> = faces
-            .iter()
-            .copied()
-            .filter(|(_, t)| !is_beam_axis_end_face(t))
-            .collect();
-        bcs.extend(per_face_bcs(&others, nodes, length, width, height));
-        return DirichletRealization { bcs: normalize_bcs(bcs), diagnostics };
+        bcs.push(pin_pin_axial_anchor(nodes, height));
     }
-
     DirichletRealization {
-        bcs: normalize_bcs(per_face_bcs(&faces, nodes, length, width, height)),
+        bcs: normalize_bcs(bcs),
         diagnostics,
     }
 }
@@ -3676,20 +3861,30 @@ fn build_dirichlet_bcs(
 /// their own declaration.
 ///
 /// A struct rather than a bare `Vec<DirichletBc>` because the `PinnedSupport`
-/// realization is decided from a NON-LOCAL count ([`face_realization`]'s
-/// `n_faces`), so the two halves must be produced by the SAME pass over the same
-/// supports — a sibling function recomputing the decision could drift from the
-/// one that actually emitted the DOFs, which is precisely the silent-BC-
-/// reinterpretation class task 6663 exists to close.
+/// realization is decided per-face via [`face_company`], so the two halves
+/// must be produced from the SAME per-target [`FaceCompany`] vector:
+/// [`build_dirichlet_bcs`] computes it once and shares it with
+/// [`pinned_end_face_realization_diagnostics`], so the note cannot drift from
+/// the DOFs that were actually emitted — a sibling function recomputing the
+/// decision from scratch is precisely the silent-BC-reinterpretation class
+/// task 6663 exists to close.
 struct DirichletRealization {
     /// The homogeneous Dirichlet set: sorted by `dof` and deduplicated.
     bcs: Vec<DirichletBc>,
-    /// `Severity::Info` notes about count-dependent realizations. Empty for
+    /// `Severity::Info` notes about context-dependent realizations. Empty for
     /// every model whose supports are all `FixedSupport`, and for every
     /// `PinnedSupport` that names no beam-axis end face — those realizations are
     /// unconditional and need no explanation.
     diagnostics: Vec<Diagnostic>,
 }
+
+/// What a `PinnedSupport` on a beam-axis end face is realized as whenever it is
+/// not clamped ([`FaceRealization::PinTransverse`]), in the words every
+/// `I_ModalPinnedFaceRealization` note uses — spelled once so the three notes
+/// cannot drift apart from each other or from the realized DOFs.
+const PINNED_BEAM_END_REALIZATION: &str = "a transverse (Z) pin across the face plus a lateral \
+     (Y) anchor at its neutral-axis node — the simply-supported beam idealization, both bending \
+     rotations free";
 
 /// One `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic per DISTINCT
 /// beam-axis end face carrying a `PinnedSupport`, naming what that face was
@@ -3698,38 +3893,51 @@ struct DirichletRealization {
 /// # Why this exists
 ///
 /// [`face_realization`] decides what a `PinnedSupport` on a beam end constrains
-/// from a count of the model's DISTINCT named faces, i.e. from something the
-/// author did NOT write on that support. Going from `[Pinned("x_min")]` to
-/// `[Pinned("x_min"), Fixed("y_min")]` re-realizes x_min from a full 3-DOF clamp
-/// to a Z-only transverse pin, and vice versa on removal — a change of
-/// idealization on a face that was never edited. Without a diagnostic the only
-/// observable is a frequency that moved, which is the same
-/// silent-BC-reinterpretation failure mode this task closes, merely narrowed
-/// from "the kind is ignored" to "the kind is read in a context you cannot see".
+/// from whether the model's supports name another distinct recognized face,
+/// i.e. from something the author did NOT write on that support. Going from
+/// `[Pinned("x_min")]` to `[Pinned("x_min"), Fixed("y_min")]` re-realizes
+/// x_min from a full 3-DOF clamp to a simple support (a transverse Z pin plus
+/// a lateral Y anchor), and vice versa on removal — a change of idealization
+/// on a face that was never edited.
+/// Without a diagnostic the only observable is a frequency that moved, which
+/// is the same silent-BC-reinterpretation failure mode this task closes,
+/// merely narrowed from "the kind is ignored" to "the kind is read in a
+/// context you cannot see".
 ///
 /// The scoping argument in [`face_realization`] stands: no reachable
 /// `PinTransverse` configuration is a mechanism. This does not change any
-/// number; it puts the count-dependence in the same diagnostic stream the rest
-/// of the modal solve reports through, so the flip is legible in BOTH directions
-/// (pinned as a transverse pin, and pinned-therefore-clamped).
+/// number; it puts the face-company-dependence in the same diagnostic stream
+/// the rest of the modal solve reports through, so the flip is legible in
+/// BOTH directions (pinned as a simple support, and pinned-therefore-clamped).
+///
+/// # One pass, two consumers
+///
+/// `companies` is the SAME per-target [`FaceCompany`] vector
+/// [`build_dirichlet_bcs`] computed to decide the DOFs (`face_company` is
+/// called once per target, there, not here), so the message below is read
+/// off the exact fact that drove the realization rather than a second call
+/// to `face_company` that could in principle disagree. `WithAnotherFace`'s
+/// payload is also what lets the message name the specific other face
+/// (review suggestion 4), instead of merely asserting that one exists.
 ///
 /// # What is reported, and what is not
 ///
 /// One note per distinct face, not per support: `[Pinned("x_min"),
-/// Pinned("x_min")]` is one face (the same `face_bound` set the count runs over,
-/// so the message can never disagree with the decision it describes) and gets
-/// one note. `FixedSupport` is silent — it clamps unconditionally, so there is
-/// nothing context-dependent to explain. A `PinnedSupport` on a NON-end face is
-/// silent for the same reason (it always clamps). A `PinnedSupport` whose target
-/// names no recognized face is silent because it selects nothing at all.
+/// Pinned("x_min")]` is one face (the same `face_bound` predicate the decision
+/// itself reads, so the message can never disagree with the decision it
+/// describes) and gets one note. `FixedSupport` is silent — it clamps
+/// unconditionally, so there is nothing context-dependent to explain. A
+/// `PinnedSupport` on a NON-end face is silent for the same reason (it always
+/// clamps). A `PinnedSupport` whose target names no recognized face is silent
+/// because it selects nothing at all.
 fn pinned_end_face_realization_diagnostics(
     targets: &[(DeclaredSupport, String)],
-    n_faces: usize,
+    companies: &[FaceCompany],
     simply_supported: bool,
 ) -> Vec<Diagnostic> {
     let mut seen: BTreeSet<(usize, bool)> = BTreeSet::new();
     let mut out = Vec::new();
-    for (kind, target) in targets {
+    for ((kind, target), company) in targets.iter().zip(companies.iter()) {
         if *kind != DeclaredSupport::Pinned || !is_beam_axis_end_face(target) {
             continue;
         }
@@ -3741,27 +3949,26 @@ fn pinned_end_face_realization_diagnostics(
         }
         let message = if simply_supported {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
-                 transverse (Z) pin — the simply-supported beam idealization — because BOTH \
-                 beam-axis end faces are pinned; three minimal neutral-axis anchors are added \
-                 so K_free is not singular. The same declaration clamps all 3 translational \
-                 DOFs when it is the only face the model's supports name."
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                 {PINNED_BEAM_END_REALIZATION}, because BOTH beam-axis end faces are pinned; \
+                 ONE axial (X) anchor is added at the x_min neutral-axis node so K_free is not \
+                 singular. The same declaration clamps all 3 translational DOFs when it is the \
+                 only face the model's supports name."
             )
-        } else if face_realization(*kind, target, n_faces) == FaceRealization::PinTransverse {
+        } else if let FaceCompany::WithAnotherFace(other) = company {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
-                 transverse (Z) pin — the simply-supported beam idealization — because the \
-                 model's supports name {n_faces} distinct faces. Were this the only face \
-                 named, the SAME declaration would clamp all 3 translational DOFs instead and \
-                 the fundamental would rise."
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                 {PINNED_BEAM_END_REALIZATION}, because the model's supports also name \
+                 \"{other}\". Were this the only face named, the SAME declaration would clamp \
+                 all 3 translational DOFs instead and the fundamental would rise."
             )
         } else {
             format!(
                 "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
                  translational DOFs, because it is the only face the model's supports name (a \
-                 lone transverse pin is a mechanism). Naming a second distinct face would \
-                 re-realize this one as a transverse (Z) pin — the simply-supported beam \
-                 idealization — and the fundamental would drop."
+                 lone simple support is a mechanism). Naming a second distinct face would \
+                 re-realize this one as {PINNED_BEAM_END_REALIZATION}, and the fundamental \
+                 would drop."
             )
         };
         out.push(Diagnostic::info(message));
@@ -3785,22 +3992,23 @@ fn pinned_end_face_realization_diagnostics(
 ///
 /// It is about THIS function: given `(realization, face)` pairs, each pair is
 /// selected and emitted independently of the others. It is NOT a whole-pipeline
-/// claim, because the upstream realization DECISION is still count-dependent:
-/// [`face_realization`] takes `n_faces`, so adding a support **that names a
-/// second DISTINCT recognized face** can flip a `Pinned` beam-end face from a
-/// clamp to a transverse-only pin without that face being mentioned again. That
-/// is a deliberate, documented trade-off (see [`face_realization`]'s "Why
-/// `Pinned` is not Z-only, always"), not an oversight — and, since review
+/// claim, because the upstream realization DECISION is still context-dependent:
+/// [`face_realization`] takes a [`FaceCompany`], so adding a support **that
+/// names a second DISTINCT recognized face** can flip a `Pinned` beam-end face
+/// from a clamp to a simple support (transverse pin plus lateral anchor)
+/// without that face being mentioned again. That is a deliberate, documented
+/// trade-off (see [`face_realization`]'s "Why `Pinned` is not a simple support,
+/// always"), not an oversight — and, since review
 /// suggestion 1, a REPORTED one: every pinned beam-end face carries an
 /// `I_ModalPinnedFaceRealization` Info diagnostic naming which way it went and
 /// why ([`pinned_end_face_realization_diagnostics`]), so the flip is legible
 /// without re-reading this paragraph. It still means "adds rather than
 /// reinterprets" holds for face SELECTION and DOF emission, not for
 /// the choice of realization. Two inputs that used to perturb that decision no
-/// longer can, because the count runs over DISTINCT FACES via [`face_bound`]: a
-/// support naming NO recognized face cannot vote on a realization it cannot
-/// contribute a single DOF to, and a support DUPLICATING a face already named
-/// adds nothing to vote with.
+/// longer can, because face identity runs over DISTINCT FACES via
+/// [`face_bound`]: a support naming NO recognized face cannot give another
+/// face company, and a support DUPLICATING a face already named adds no OTHER
+/// face to be company for.
 ///
 /// The result is a raw union: repeats are possible when two faces share a corner
 /// node, so callers must pass it through [`normalize_bcs`].
@@ -3811,73 +4019,65 @@ fn per_face_bcs(
     width: f64,
     height: f64,
 ) -> Vec<DirichletBc> {
-    let eps = 1e-9_f64;
     let extent = [length, width, height];
+    let zero_dof = |dof: usize| DirichletBc { dof, value: 0.0 };
     let mut bcs = Vec::new();
     for (realization, target) in faces {
         // Face-name vocabulary lives in ONE place ([`face_bound`]), shared with
-        // the support count in `build_dirichlet_bcs`, so the set of names that
-        // can select nodes and the set that can influence a realization cannot
+        // `face_company` in `build_dirichlet_bcs`, so the set of names that can
+        // select nodes and the set that can influence a realization cannot
         // drift apart. An unrecognized name selects nothing, exactly as the
         // former inline `_ => false` arm did.
         let Some((axis, is_max)) = face_bound(target) else {
             continue;
         };
-        for (n, coord) in nodes.iter().enumerate() {
-            let on_face = if is_max {
-                coord[axis] >= extent[axis] - eps
-            } else {
-                coord[axis] <= eps
-            };
-            if !on_face {
-                continue;
+        let on_face = face_nodes(nodes, axis, is_max, extent[axis]);
+        match realization {
+            // Clamp: all three translational DOFs on every node of the face.
+            FaceRealization::ClampAllDofs => {
+                bcs.extend(on_face.flat_map(|n| (0..3).map(move |a| zero_dof(3 * n + a))));
             }
-            match realization {
-                // Clamp: all three translational DOFs on this face's node.
-                FaceRealization::ClampAllDofs => {
-                    for axis in 0..3 {
-                        bcs.push(DirichletBc {
-                            dof: 3 * n + axis,
-                            value: 0.0,
-                        });
-                    }
-                }
-                // Simple support: the transverse (Z) DOF only, so the bending
-                // rotation at the support stays free.
-                //
-                // NOTE the deliberate ASYMMETRY with the pin-pin branch in
-                // `build_dirichlet_bcs`, which adds three minimal neutral-axis
-                // anchors on top of its Z pins. That branch needs them because a
-                // simply-supported beam is a WELL-POSED structure whose 2-D
-                // bending idealization the anchors do not disturb — they sit on
-                // the neutral axis, on the vertical modes' own node line.
-                //
-                // No such anchors belong here, and none are needed:
-                // `face_realization` scopes `PinTransverse` to a beam-axis end
-                // face of a model naming a second DISTINCT face, and
-                // `build_dirichlet_bcs` argues at its count site that every such
-                // configuration is well posed. The three mechanism shapes that
-                // could once reach this arm are all closed upstream — a LONE
-                // pin, an OFF-AXIS pin pair, and (since the count became a set
-                // over `face_bound`) a pin whose only company is a support
-                // naming no recognized face or DUPLICATING the same one.
-                //
-                // Should a singular K_free still arrive here by some route this
-                // reasoning does not cover, the intended outcome is unchanged:
-                // NOT invented anchors, which would return plausible-looking
-                // frequencies for a structure that has none — the exact
-                // silent-wrong-answer class task 6663 exists to close — but the
-                // singular-K fallback in `solve_generalized_eigen`, which routes
-                // it to the graceful `W_ModalRigidBodyMode` path rather than the
-                // shift-invert Cholesky.
-                FaceRealization::PinTransverse => bcs.push(DirichletBc {
-                    dof: 3 * n + 2,
-                    value: 0.0,
-                }),
+            // Simple support: Z on every node of the face, plus Y at the face's
+            // neutral-axis node. See `FaceRealization::PinTransverse` for why
+            // that leaves both bending rotations free.
+            FaceRealization::PinTransverse => {
+                assert_eq!(
+                    axis, 0,
+                    "PinTransverse is a beam-END realization: `face_realization` yields it \
+                     only for a beam-axis end face, got {target:?}",
+                );
+                bcs.extend(on_face.map(|n| zero_dof(3 * n + 2)));
+                let x_face = if is_max { extent[axis] } else { 0.0 };
+                bcs.push(zero_dof(
+                    3 * end_face_neutral_axis_node(nodes, x_face, height) + 1,
+                ));
             }
         }
     }
     bcs
+}
+
+/// The indices of the nodes on the face `(axis, is_max)` selects (see
+/// [`face_bound`]): coordinate `axis` within `1e-9` of `0` for a min face, or
+/// of `extent` for a max face.
+fn face_nodes(
+    nodes: &[[f64; 3]],
+    axis: usize,
+    is_max: bool,
+    extent: f64,
+) -> impl Iterator<Item = usize> + '_ {
+    let eps = 1e-9_f64;
+    nodes
+        .iter()
+        .enumerate()
+        .filter(move |(_, coord)| {
+            if is_max {
+                coord[axis] >= extent - eps
+            } else {
+                coord[axis] <= eps
+            }
+        })
+        .map(|(n, _)| n)
 }
 
 /// Sort a homogeneous Dirichlet set by `dof` and drop repeats.
@@ -3893,76 +4093,37 @@ fn normalize_bcs(mut bcs: Vec<DirichletBc>) -> Vec<DirichletBc> {
     bcs
 }
 
-/// Realize the simply-supported (pin-pin) Dirichlet BCs for the beam (step-18).
-///
-/// A simply-supported beam pins the transverse deflection at both ends while
-/// leaving the bending rotation `dw/dx` free, giving natural frequencies in the
-/// `fₙ = ((nπ)²/2π)·√(EI/ρAL⁴)` family. Realizing that in the 3-D solid model
-/// without spuriously clamping the rotation (which would yield the *fixed-fixed*
-/// family, ~2.45× higher) requires care:
-///
-///   1. **Simple supports** — pin ONLY the transverse Z DOF on every node of
-///      both end faces (`x ≈ 0` and `x ≈ L`). The bending rotation at a support
-///      is carried by the *axial* displacement `u(z) = −(z − z_c)·dw/dx`, NOT by
-///      `w`, so pinning `w` (not `u`) on the end face leaves `dw/dx` free — a
-///      genuine simple support. Pinning `w` across the full end face also removes
-///      three rigid-body modes whose `w`-field is nonzero there: the Z
-///      translation, the X-axis twist, and the global rigid Y-rotation.
-///
-///   2. **Minimal anchors** — the three rigid-body modes left after step 1 (the X
-///      translation, the Y translation, and the in-plane Z-rotation) must be
-///      removed or `K_free` is singular and the shift-invert Cholesky fails.
-///      They are killed at the two end-face NEUTRAL-axis nodes (`z = h/2`):
-///      - pin **X** at the `x_min` neutral node → removes X translation;
-///      - pin **Y** at the `x_min` AND `x_max` neutral nodes (separated by `L`
-///        along x) → removes Y translation *and* the in-plane Z-rotation
-///        (a single Y anchor cannot remove both — a rotation about the vertical
-///        axis through that one node leaves it fixed; two anchors separated in
-///        x pin the rotation too).
-///
-/// Both anchor families are non-intrusive to the vertical bending modes (the
-/// task's headline signal): the vertical mode has `u = 0` at the neutral axis
-/// (so the X anchor sits on its node line) and `v = 0` everywhere (so the Y
-/// anchors never load it). Anchoring at the neutral axis — rather than clamping
-/// `u` across a full face — is precisely what keeps the support rotation free.
-fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) -> Vec<DirichletBc> {
-    // `width` is not a parameter: the Z simple-support spans the full end face by
-    // node coordinate, and the anchors sit on the y = 0 neutral-axis node line.
-    let eps = 1e-9_f64;
-    let mut bcs = Vec::new();
+/// The node every beam-end anchor sits on: the one nearest `(x, 0, h/2)` —
+/// on the end face at `x`, on the `y = 0` edge, at mid-height, the vertical
+/// bending neutral axis. The single placement rule for the lateral anchor of
+/// [`FaceRealization::PinTransverse`] and for [`pin_pin_axial_anchor`].
+fn end_face_neutral_axis_node(nodes: &[[f64; 3]], x: f64, height: f64) -> usize {
+    nearest_node(nodes, [x, 0.0, height / 2.0])
+}
 
-    // (1) Simple supports: pin the transverse (Z) DOF on both end faces.
-    for (n, coord) in nodes.iter().enumerate() {
-        let on_end = coord[0] <= eps || coord[0] >= length - eps;
-        if on_end {
-            bcs.push(DirichletBc {
-                dof: 3 * n + 2,
-                value: 0.0,
-            }); // Z (bending)
-        }
+/// The pin-pin special case's ONE extra constraint: the axial (X) DOF at the
+/// `x_min` face's neutral-axis node.
+///
+/// With both beam-axis end faces realized as simple supports
+/// ([`FaceRealization::PinTransverse`]), axial translation is the ONLY
+/// rigid-body mode left. The two faces' Z pins remove the Z translation, the
+/// X-axis twist and the rigid Y-rotation; their two Y anchors, separated by
+/// `L` along x, remove the Y translation and the rigid Z-rotation (one anchor
+/// alone could not — a rotation about the vertical axis through it leaves it
+/// fixed). Nothing restrains X, so without this anchor `K_free` is singular
+/// and the shift-invert Cholesky fails. It sits on the neutral axis, where
+/// vertical bending's `u = −(z − h/2)·dw/dx` vanishes, so it leaves the
+/// support rotation free.
+fn pin_pin_axial_anchor(nodes: &[[f64; 3]], height: f64) -> DirichletBc {
+    DirichletBc {
+        dof: 3 * end_face_neutral_axis_node(nodes, 0.0, height),
+        value: 0.0,
     }
-
-    // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
-    let root = nearest_node(nodes, [0.0, 0.0, height / 2.0]);
-    let tip = nearest_node(nodes, [length, 0.0, height / 2.0]);
-    bcs.push(DirichletBc {
-        dof: 3 * root,
-        value: 0.0,
-    }); // X anchor (axial)
-    bcs.push(DirichletBc {
-        dof: 3 * root + 1,
-        value: 0.0,
-    }); // Y anchor (lateral, root)
-    bcs.push(DirichletBc {
-        dof: 3 * tip + 1,
-        value: 0.0,
-    }); // Y anchor (lateral, tip)
-    bcs
 }
 
 /// Index of the mesh node nearest `target` in Euclidean distance.
 ///
-/// Used to place the simply-supported anchors on the end-face neutral-axis nodes
+/// Used by [`end_face_neutral_axis_node`] to place the beam-end anchors
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
 ///
@@ -4052,9 +4213,25 @@ enum FaceRealization {
     /// also how a *pinned* face is realized everywhere else in the system
     /// (`PinnedOnTetEquivalentToFixed`), so it is the default, not the exception.
     ClampAllDofs,
-    /// Pin the transverse (Z) DOF only, leaving the bending rotation `dw/dx`
-    /// free. The simply-supported BEAM idealization — see [`face_realization`]
-    /// for why it is scoped rather than applied to every `PinnedSupport`.
+    /// A simple support on a beam-axis end face: pin the transverse (Z) DOF on
+    /// every node of the face, plus the lateral (Y) DOF at ONE node, the
+    /// face's neutral-axis node ([`end_face_neutral_axis_node`]). The
+    /// simply-supported BEAM idealization — see [`face_realization`] for why it
+    /// is scoped rather than applied to every `PinnedSupport`.
+    ///
+    /// Both bending rotations stay free. `dw/dx` at the support is carried by
+    /// the axial `u(z) = −(z − h/2)·dw/dx`, not by `w`, so pinning `w` across
+    /// the face leaves it free; `dv/dx` is likewise carried by `u`, and a Y
+    /// anchor at a single node leaves the rotation about the vertical axis
+    /// through it free. The anchor sits at `z = h/2`, where vertical bending's
+    /// Poisson lateral displacement `v = ν(z − h/2)κ(y − b/2)` vanishes, so it
+    /// does not load the vertical modes.
+    ///
+    /// The anchor is a lateral SUPPORT, not only rigid-body removal: an end
+    /// pinned in Z alone is laterally FREE, which would leave
+    /// `[Fixed("x_min"), Pinned("x_max")]` a lateral clamped-free cantilever
+    /// whose first Y-bending mode sits `(3.9266 / 1.8751)² ≈ 4.4×` below the
+    /// propped bending fundamental.
     PinTransverse,
 }
 
@@ -4071,20 +4248,21 @@ fn is_beam_axis_end_face(target: &str) -> bool {
 /// This is the SINGLE place the face-name vocabulary is written down. Two
 /// callers depend on it agreeing with itself:
 ///   * [`per_face_bcs`] selects a face's nodes through it, and
-///   * [`build_dirichlet_bcs`] collects the model's DISTINCT faces through it to
-///     decide whether a `PinnedSupport` on a beam end realizes as a transverse
-///     pin or a clamp.
+///   * [`face_company`] compares faces' bounds through it to decide whether a
+///     `PinnedSupport` on a beam end realizes as a simple support or a clamp.
 ///
 /// Keeping both on one predicate is what stops a support that can select NO
 /// node from silently changing another face's realization: before task 6663's
-/// amendment the count was `targets.len()`, so `[Pinned("x_min"),
+/// amendment the decision read `targets.len()`, so `[Pinned("x_min"),
 /// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
 /// default — counted as two supports and flipped `x_min` from a clamp
 /// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
 ///
-/// The `(axis, is_max)` return is also what makes that count a SET: identifying
-/// a face by the bound it selects, rather than by its spelling, is what collapses
-/// `[Pinned("x_min"), Pinned("x_min")]` back to one face and so to a clamp.
+/// The `(axis, is_max)` return is also what makes face identity independent of
+/// spelling: identifying a face by the bound it selects, rather than by its
+/// target string, is what makes `[Pinned("x_min"), Pinned("x_min")]`'s second
+/// entry resolve to the SAME face as the first rather than another one, so
+/// [`face_company`] reports it `Alone` rather than in company.
 fn face_bound(target: &str) -> Option<(usize, bool)> {
     match target {
         "x_min" => Some((0, false)),
@@ -4097,64 +4275,123 @@ fn face_bound(target: &str) -> Option<(usize, bool)> {
     }
 }
 
-/// Decide what `kind` constrains on `target`, given how many DISTINCT
-/// RECOGNIZED faces the model's supports name (`n_faces` — see [`face_bound`];
-/// a support that can select no node contributes no face, and two supports
-/// naming the SAME face contribute one, because neither may flip another face's
+/// Whether the model's supports name a recognized face OTHER than `target`'s
+/// own — the face-LOCAL fact [`face_realization`] decides a `PinnedSupport`
+/// beam end's transverse-pin eligibility from, in place of a model-wide count.
+///
+/// Not `Copy` (review suggestion 4): `WithAnotherFace` carries the OTHER
+/// face's target name, so [`pinned_end_face_realization_diagnostics`] can
+/// name it in the note instead of only asserting that it exists.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum FaceCompany {
+    /// No support names a recognized face other than this one's own.
+    Alone,
+    /// At least one support names a DISTINCT recognized face — this is its
+    /// target string, as declared (the first one found, when there are
+    /// several).
+    WithAnotherFace(String),
+}
+
+/// Decide `target`'s [`FaceCompany`]: whether `targets` names a recognized
+/// face other than `target`'s own, identified by [`face_bound`] rather than by
+/// spelling.
+///
+/// # Precondition
+///
+/// `target` is expected to be the target of one of the entries in `targets` —
+/// both call sites ask this only of a face that is itself one of the model's
+/// declared support targets ([`build_dirichlet_bcs`] maps over `targets`
+/// itself to build `companies`, and
+/// [`pinned_end_face_realization_diagnostics`] receives that same vector
+/// zipped with `targets`). The function still returns for a `target` outside
+/// that list, but nothing relies on that answer meaning anything — see
+/// `face_company_identifies_faces_by_bound` for the cases that matter.
+///
+/// The KIND each support declared is deliberately not read here — company is
+/// about which faces are RECOGNIZED, not about what any of them constrain;
+/// [`face_realization`] is what reads the kind. Identifying a face by the
+/// coordinate bound [`face_bound`] resolves it to, rather than by its target
+/// string, is what makes a duplicate spelling of `target` not count as
+/// "another face" (it resolves to the same bound as `target`'s own) and an
+/// unrecognized or empty target no face at all (`face_bound` returns `None`,
+/// which cannot equal anything).
+fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceCompany {
+    let own = face_bound(target);
+    match targets
+        .iter()
+        .find(|(_, t)| face_bound(t).is_some_and(|b| Some(b) != own))
+    {
+        Some((_, other)) => FaceCompany::WithAnotherFace(other.clone()),
+        None => FaceCompany::Alone,
+    }
+}
+
+/// Decide what `kind` constrains on `target`, given whether the model's
+/// supports name another DISTINCT RECOGNIZED face (`company` — see
+/// [`face_company`], which reads [`face_bound`]; a support that can select no
+/// node contributes no face, and a support naming the SAME face as `target`
+/// gives it no OTHER face's company, because neither may flip `target`'s own
 /// realization).
 ///
-/// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
-/// beam-axis end face of a model that names at least one other DISTINCT face;
+/// `Fixed` always clamps. `Pinned` realizes as a simple support
+/// ([`FaceRealization::PinTransverse`]: a transverse pin plus a lateral anchor)
+/// ONLY on a beam-axis end face that has another DISTINCT face's company;
 /// otherwise it clamps like every other pinned face in the system.
 ///
-/// Because that decision reads a count the author did not write on the support,
-/// [`build_dirichlet_bcs`] reports it: every pinned beam-end face gets an
-/// `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions (see
-/// [`pinned_end_face_realization_diagnostics`]). The rules below decide the
-/// number; that diagnostic is what makes the decision legible.
+/// Because that decision reads a fact the author did not write on the
+/// support, [`build_dirichlet_bcs`] reports it: every pinned beam-end face
+/// gets an `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions
+/// (see [`pinned_end_face_realization_diagnostics`]). The rules below decide
+/// the realization; that diagnostic is what makes the decision legible.
 ///
-/// # Why `Pinned` is not "Z-only, always"
+/// # Why `Pinned` is not a simple support, always
 ///
-/// The Z-only realization is a property of the simply-supported BEAM
+/// The simple-support realization is a property of the simply-supported BEAM
 /// idealization, not of the `PinnedSupport` kind. Everywhere else in the system
 /// a pin on a solid tet body is a full 3-DOF clamp
 /// (`reify-solver-elastic/src/shell_boundary.rs`,
 /// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`; the static path's
 /// `loads_supports_to_bc_node_sets` clamps all three DOFs for any support kind).
-/// Applying Z-only per face unconditionally would make the same DSL word mean
+/// Applying it per face unconditionally would make the same DSL word mean
 /// two different things in two solvers, and would regress two configurations
 /// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
 /// mere Warning:
 ///
 ///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
-///     restraint, so a transverse-only pin is a mechanism by construction
-///     (measured: four surviving rigid-body modes). Pre-6663 this returned the
-///     cantilever answer, which is also what `PinnedOnTetEquivalentToFixed`
-///     says a single pinned tet face means. Clamping restores that.
+///     restraint, and a lone simple support is a mechanism by construction:
+///     nothing restrains the X translation, the hinge rotation about the
+///     face's own Y axis, or the rotation about the vertical axis through its
+///     single lateral anchor. Pre-6663 this returned the cantilever answer,
+///     which is also what
+///     `PinnedOnTetEquivalentToFixed` says a single pinned tet face means.
+///     Clamping restores that.
 ///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
 ///     beam end, so Z-pinning both leaves the beam free to slide axially.
 ///
 /// Both propped configurations the task cares about are unaffected: the
 /// pin-pin special case in [`build_dirichlet_bcs`] handles two pinned end
 /// faces, and `[Fixed("x_min"), Pinned("x_max")]` still realizes x_max as a
-/// genuine transverse-only prop (two distinct faces, beam-axis end face).
+/// genuine simple-support prop (two distinct faces, beam-axis end face).
 ///
-/// # Why the count is over FACES and not over supports
+/// # Why company is about FACES and not about supports
 ///
 /// A duplicated support — `[Pinned("x_min"), Pinned("x_min")]`, the ordinary
-/// copy-paste authoring error — names one face twice. Counting SUPPORTS made
-/// that a two-support model and flipped x_min to `PinTransverse`, i.e. turned a
-/// well-posed cantilever into a 4-rigid-body-mode mechanism whose ≈ 0 Hz modes
-/// come back under a mere `W_ModalRigidBodyMode` Warning. Counting distinct
-/// faces makes the duplicate a lone support again (the pre-6663 clamp) and, as
-/// [`build_dirichlet_bcs`] argues at the count site, leaves NO reachable
-/// `PinTransverse` configuration that is a mechanism: a second distinct face is
-/// either the other beam end (pin-pin special case, or `Fixed` and therefore
-/// clamped) or a non-end face, which always clamps.
-fn face_realization(kind: DeclaredSupport, target: &str, n_faces: usize) -> FaceRealization {
+/// copy-paste authoring error — names one face twice. Reading SUPPORTS as
+/// company made that a two-support model and flipped x_min to `PinTransverse`,
+/// i.e. turned a well-posed cantilever into a 4-rigid-body-mode mechanism
+/// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
+/// Reading distinct FACES as company makes the duplicate `Alone` again (the
+/// pre-6663 clamp) and, as [`build_dirichlet_bcs`] argues in its own comment,
+/// leaves NO reachable `PinTransverse` configuration that is a mechanism: a
+/// second distinct face is either the other beam end (pin-pin special case, or
+/// `Fixed` and therefore clamped) or a non-end face, which always clamps.
+fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) -> FaceRealization {
     match kind {
         DeclaredSupport::Fixed => FaceRealization::ClampAllDofs,
-        DeclaredSupport::Pinned if is_beam_axis_end_face(target) && n_faces > 1 => {
+        DeclaredSupport::Pinned
+            if is_beam_axis_end_face(target)
+                && matches!(company, FaceCompany::WithAnotherFace(_)) =>
+        {
             FaceRealization::PinTransverse
         }
         DeclaredSupport::Pinned => FaceRealization::ClampAllDofs,
@@ -4246,17 +4483,23 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, ModalAnalysisCache, ModalAssembly,
+        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, DeclaredSupport, FaceCompany,
+        FaceRealization,
+        ModalAnalysisCache, ModalAssembly,
         ModalCoreResult, ModalDampingPlan, ModalMesh, ModalTrampolineRun, TransientCache,
         assemble_mechanism_km,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
+        extract_loss_factor, extract_reference_direction, face_company, face_realization,
+        frobenius_norm,
+        mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
-        ModalSolveFault, simply_supported_pin_pin_bcs, solve_generalized_eigen,
+        resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
+        run_transient_response,
+        ModalSolveFault, shift_window_is_reportable,
+        solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
@@ -5335,8 +5578,10 @@ mod tests {
         );
     }
 
-    /// The Dirichlet set a transverse-only pin on the `x_min` face emits: the Z
-    /// DOF of every node on that face and nothing else.
+    /// A transverse-only pin on the `x_min` face: the Z DOF of every node on
+    /// that face and nothing else. No realization emits this set —
+    /// `PinTransverse` also anchors the face's lateral DOF — but it is
+    /// SINGULAR, which is what the solver-layer tests below need.
     ///
     /// **Amendment (review suggestion 1): built by hand, deliberately.** The two
     /// tests below are about a DOWNSTREAM contract — `solve_modal_core` must
@@ -5344,8 +5589,8 @@ mod tests {
     /// contract is a solver-layer one. Until this amendment they reached it
     /// through the DSL, with `[Pinned("x_min"), Pinned("x_min")]`: a duplicated
     /// support kept the SUPPORT count above 1, so `face_realization` returned
-    /// `PinTransverse` on a singly-supported model. That input now clamps
-    /// (`build_dirichlet_bcs` counts DISTINCT FACES — see
+    /// `PinTransverse` on a singly-supported model. That input now clamps (the
+    /// duplicate resolves to the SAME face via `face_company` — see
     /// `build_dirichlet_bcs_ignores_duplicate_face_targets`), and no DSL input
     /// reaches this shape any more, which is exactly the point of that fix.
     ///
@@ -5369,10 +5614,8 @@ mod tests {
     /// Task 6663 / review blocker (a): a transverse-pin-ONLY support set must
     /// not panic.
     ///
-    /// `per_face_bcs`'s `FaceRealization::PinTransverse` branch emits Z-only
-    /// constraints and adds NO rigid-body anchors (deliberately — see its NOTE;
-    /// such a set is genuinely a mechanism and anchors must not be invented for
-    /// it). `eigensolve_modal`'s guard is
+    /// The subject is a Z-only set on one face with NO rigid-body anchors,
+    /// which is genuinely a mechanism. `eigensolve_modal`'s guard is
     /// `n_dofs - n_free < 6`, which counts CONSTRAINED DOFs rather than
     /// rigid-body modes actually removed: one Z DOF per face node here is
     /// 14 ≥ 6, so `force_dense` stays false, the solve takes the shift-invert
@@ -5674,16 +5917,31 @@ mod tests {
     /// bypass the shifted factorization entirely, leaving the fixture testing
     /// nothing.
     fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
-        const N_NODES: usize = 29;
-        const N_FREE: usize = 80;
-        let n_dofs = 3 * N_NODES;
+        laplacian_modal_assembly_sized(29, 80)
+    }
+
+    /// [`laplacian_modal_assembly`] at a caller-chosen size, so a test can pick
+    /// which DISPATCH ARM of [`solve_generalized_eigen`] it exercises — the two
+    /// arms compute `shift_skipped_modes` by structurally different predicates
+    /// (absence-based and exact on the dense arm, Cholesky/LU-based and
+    /// conservative on the Lanczos arm), so one arm's coverage is not the
+    /// other's.
+    ///
+    /// The constraint set is always the TRAILING `n_dofs − n_free` DOFs, which
+    /// keeps `K_free` the leading principal submatrix of the tridiagonal and so
+    /// keeps the closed form [`laplacian_lambda`]`(n_free, k)` exact.
+    fn laplacian_modal_assembly_sized(
+        n_nodes: usize,
+        n_free: usize,
+    ) -> (ModalAssembly, Vec<DirichletBc>) {
+        let n_dofs = 3 * n_nodes;
         let (k_full, m_full) = laplacian_pencil(n_dofs);
-        let bcs: Vec<DirichletBc> = (N_FREE..n_dofs)
+        let bcs: Vec<DirichletBc> = (n_free..n_dofs)
             .map(|dof| DirichletBc { dof, value: 0.0 })
             .collect();
         assert!(
-            n_dofs - bcs.len() == N_FREE && bcs.len() >= 6,
-            "the fixture must leave n_free = {N_FREE} free DOFs while keeping \
+            n_dofs - bcs.len() == n_free && bcs.len() >= 6,
+            "the fixture must leave n_free = {n_free} free DOFs while keeping \
              `under_constrained` false",
         );
         let assembly = ModalAssembly {
@@ -5691,7 +5949,7 @@ mod tests {
             stiffness_matrix_norm: frobenius_norm(&k_full),
             k_full,
             m_full,
-            n_nodes: N_NODES,
+            n_nodes,
         };
         (assembly, bcs)
     }
@@ -5836,6 +6094,472 @@ mod tests {
             "the control must actually solve, or it cannot witness that the \
              refusal is about σ rather than about the fixture",
         );
+    }
+
+    /// Every `W_ShiftSkippedModes` diagnostic on a modal result, keyed on the
+    /// typed code rather than on prose — the convention this file's existing
+    /// shift assertions already follow.
+    fn shift_skipped_warnings(result: &ModalCoreResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ShiftSkippedModes))
+            .collect()
+    }
+
+    /// δ (#7261): the shift-provenance warning must not stand beside a solve
+    /// that returned NOTHING.
+    ///
+    /// `solve_generalized_eigen` sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(sigma)` — i.e. `sigma != 0.0` — on the
+    /// refused branch, because that branch computed no spectrum and C5 forbids
+    /// ESTABLISHING `false` without evidence. So the flag is `true` here while
+    /// the result holds ZERO eigenpairs.
+    ///
+    /// Emitting "the result is a window around sigma" beside "the solve returned
+    /// nothing" is a confidently wrong statement about a result that does not
+    /// exist — the same defect class as `W_ModalConvergence` standing beside the
+    /// refusal and advising "raise max_iters", which β already fences off. The
+    /// gate therefore keys on the FAULT, not on the flag and not on σ.
+    ///
+    /// The `E_ShiftAtEigenvalue` half is asserted too, so this test cannot pass
+    /// by the refusal itself having regressed into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_a_refused_solve() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a solve that returned nothing; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ShiftAtEigenvalue)),
+            "the refusal must still be raised, or this test passes for the wrong \
+             reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "a refused solve holds no eigenpairs, so it cannot be described as a \
+             window around σ; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): σ = 0 can never raise the shift-provenance warning.
+    ///
+    /// `shift_provenance_from_factorization` and `conservative_shift_provenance`
+    /// both start from `sigma != 0.0`, so the flag is unconditionally `false` on
+    /// an unshifted solve. Pins that the warning is about WHERE σ was put, not
+    /// raised by every shift-capable solve — and asserts the control actually
+    /// solved, since a silent empty result would witness nothing.
+    #[test]
+    fn shift_skipped_modes_is_silent_at_sigma_zero() {
+        let (assembly, bcs) = laplacian_modal_assembly();
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 0.0,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "the control must actually solve, or it witnesses nothing",
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "an unshifted solve skips nothing by construction; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): THE DISCRIMINATING NEGATIVE — σ ≠ 0 below the first mode is
+    /// silent.
+    ///
+    /// With `0 < σ < λ₁`, `K − σM` stays positive definite, so Cholesky
+    /// SUCCEEDS and `shift_provenance_from_factorization` ESTABLISHES `false`
+    /// from real evidence rather than defaulting to it. Nothing was skipped:
+    /// the returned set is still the bottom of the spectrum.
+    ///
+    /// A naive `if sigma != 0.0` emission would wrongly fire here. This test is
+    /// what pins that δ READS the C5 flag rather than re-deriving a rule of its
+    /// own from σ, and it is the guard rail that keeps the fault gate from being
+    /// written too wide.
+    #[test]
+    fn shift_skipped_modes_is_silent_for_a_shift_below_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 1) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a shift below λ₁ is a healthy solve and must return modes; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "no eigenvalue lies between 0 and σ = {sigma}, so nothing was \
+             skipped; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): the positive case at unit granularity, independent of the FEA
+    /// fixture.
+    ///
+    /// σ placed strictly BETWEEN λ₃ and λ₄ with `n_modes = 2` makes `K − σM`
+    /// indefinite: Cholesky fails, LU wins, and
+    /// `shift_provenance_from_factorization` reports `true` — while the solve
+    /// still returns modes, so there is a real result to describe as a window.
+    /// The midpoint keeps σ off both eigenvalues, so this exercises the skipped
+    /// path rather than β's refusal.
+    #[test]
+    fn shift_skipped_modes_warns_once_for_a_shift_above_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "this is a SUCCESSFUL shifted solve — the window it returns is the \
+             thing the warning describes; got {:?}",
+            result.diagnostics,
+        );
+
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a skipped-mode window must be reported EXACTLY once; got {:?}",
+            result.diagnostics,
+        );
+        assert_eq!(
+            warnings[0].severity,
+            Severity::Warning,
+            "inspecting a band around σ is legitimate, so this stays advisory",
+        );
+        assert!(
+            warnings[0].message.starts_with("W_ShiftSkippedModes:"),
+            "consumers key on the prefix, not the prose; got {:?}",
+            warnings[0].message,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} so a reader never has to infer \
+             which shift produced the window; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// Amendment (suggestion 1): the window claim is gated on a RESULT THAT
+    /// EXISTS, over the whole input cube.
+    ///
+    /// Asserted on [`shift_window_is_reportable`] directly, for the same reason
+    /// [`rigid_body_mode_diagnostic`] is: one corner — `fault == None` with a
+    /// `true` flag and ZERO modes — is not reachable through `eigensolve_modal`
+    /// today, because `try_solve_eigen_shift_invert` folds a zero-converged
+    /// shifted solve into `ShiftAtEigenvalue` (`shift_is_numerically_singular`
+    /// answers `true` for an empty eigenvalue list). MEASURED: every starved
+    /// shifted solve reachable from here — σ ∈ {5, 10, 10², 10⁴, 10⁸} on the
+    /// n_free = 80 pencil at `tol = 1e-300, max_iters = 1` — came back carrying
+    /// `E_ShiftAtEigenvalue`, never an empty success.
+    ///
+    /// Driving the predicate directly is therefore the only way to pin that
+    /// corner, and pinning it is the point: it is what makes the emptiness test
+    /// survive #7617 splitting that refusal's two causes, after which the corner
+    /// goes live. The two REACHABLE empty results keep their own end-to-end
+    /// tests below.
+    #[test]
+    fn shift_window_is_reportable_only_for_a_non_empty_result_at_no_fault() {
+        let faults = [
+            ModalSolveFault::None,
+            ModalSolveFault::SingularKOverCeiling,
+            ModalSolveFault::ShiftAtEigenvalue(2.5),
+        ];
+        for flag in [false, true] {
+            for fault in faults {
+                for n_modes_returned in [0_usize, 1, 7] {
+                    let expected =
+                        flag && fault == ModalSolveFault::None && n_modes_returned > 0;
+                    assert_eq!(
+                        shift_window_is_reportable(flag, fault, n_modes_returned),
+                        expected,
+                        "flag = {flag}, fault = {fault:?}, modes = {n_modes_returned}: \
+                         a window claim is legitimate ONLY when the C5 flag is set, \
+                         nothing faulted, and there is a mode set to describe",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Amendment (suggestion 3): the OTHER empty-at-σ≠0 result — the
+    /// over-ceiling degenerate return — is suppressed too.
+    ///
+    /// `solve_generalized_eigen`'s last arm sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(σ)` exactly as the refusal does, so the
+    /// flag is `true` here while the result holds no eigenpairs. This is the arm
+    /// where the suppression matters MOST: it already pushes a
+    /// `W_ModalRigidBodyMode` AND an `E_ModalNoModesComputed`, both saying "add
+    /// supports", so a leaked window claim would stack a third, contradictory
+    /// remedy on top of them.
+    ///
+    /// Driven with fewer than `RIGID_BODY_DOFS` constrained DOFs (which sets
+    /// `force_dense`) above [`DENSE_FALLBACK_MAX_DIM`], the two conditions that
+    /// arm requires. Two-sided like its refusal sibling: the Error is asserted
+    /// PRESENT so this cannot pass by the degenerate return having regressed
+    /// into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_an_over_ceiling_result() {
+        // 350 nodes → 1050 free DOFs > DENSE_FALLBACK_MAX_DIM = 1024, with ZERO
+        // constrained DOFs so `under_constrained` (< 6) sets `force_dense`.
+        const N_NODES: usize = 350;
+        let n_dofs = 3 * N_NODES;
+        assert!(
+            n_dofs > DENSE_FALLBACK_MAX_DIM,
+            "the fixture must sit ABOVE the dense-fallback ceiling",
+        );
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &[],
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 1.5,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a degenerate return with no modes; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the over-ceiling refusal must still be raised, or this test passes \
+             for the wrong reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "this result holds no eigenpairs and already carries an \"add \
+             supports\" remedy; a window claim would be a third, contradictory \
+             one; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// Amendment (suggestion 4): the DENSE arm's provenance reaches the warning
+    /// too.
+    ///
+    /// The two dispatch arms compute `shift_skipped_modes` by structurally
+    /// different predicates — the dense arm's
+    /// `any_eigenvalue_skipped_between_zero_and_shift` is ABSENCE-based and
+    /// exact, the Lanczos arm's `shift_provenance_from_factorization` is
+    /// Cholesky/LU-based and conservative. Every other test here (and the
+    /// committed `.ri` fixture pair, deliberately sized to n_free = 504) routes
+    /// to the Lanczos arm, so without this one the dense half of the emission is
+    /// wired but unwitnessed.
+    ///
+    /// `n_free = 63 ≤ max(64, 2·n_modes)` takes the small-model dense arm before
+    /// any factorization is attempted. σ between λ₃ and λ₄ with `n_modes = 2`
+    /// selects {λ₃, λ₄} and leaves λ₁, λ₂ inside `(0, σ)` and ABSENT — exactly
+    /// the condition that predicate tests.
+    #[test]
+    fn shift_skipped_modes_warns_once_on_the_dense_path() {
+        const N_NODES: usize = 23;
+        const N_FREE: usize = 63;
+        const N_MODES: usize = 2;
+        assert!(
+            N_FREE <= 64.max(2 * N_MODES),
+            "the fixture must take the SMALL-MODEL DENSE arm, or it witnesses \
+             the same Lanczos predicate every other test already covers",
+        );
+        let (assembly, bcs) = laplacian_modal_assembly_sized(N_NODES, N_FREE);
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: N_MODES,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert_eq!(
+            result.frequencies.len(),
+            N_MODES,
+            "the dense arm returns the whole spectrum and selects from it, so \
+             this is a SUCCESSFUL solve with a real window to describe; got {:?}",
+            result.diagnostics,
+        );
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "λ₁ and λ₂ lie in (0, σ) and are absent from the selected set, so \
+             the dense path's exact predicate must report the window EXACTLY \
+             once; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} on this arm too; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// The exact σ = 0 rendering of [`rigid_body_mode_diagnostic`], as every
+    /// existing caller and assertion reads it today. Any change to
+    /// `RIGID_BODY_OMEGA_TOL`, to the `{omega:.3e}` / `{tol:.1e}` formats or to
+    /// the clause order moves this string, which is the point.
+    const RIGID_BODY_MESSAGE_AT_SIGMA_ZERO: &str =
+        "W_ModalRigidBodyMode: mode 0 has near-zero angular frequency \
+         ω = 0.000e0 rad/s (≤ 1.0e0); the model \
+         may be under-constrained (rigid-body or spurious mode).";
+
+    /// δ (#7261): the UNSHIFTED rigid-body message does not move.
+    ///
+    /// Asserted as full equality rather than by prefix: this is a regression
+    /// floor for every existing consumer of the unshifted path, and step-8's
+    /// optional shift clause must be strictly additive.
+    #[test]
+    fn rigid_body_diagnostic_at_sigma_zero_is_unchanged() {
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, 0.0);
+        assert_eq!(
+            d.message, RIGID_BODY_MESSAGE_AT_SIGMA_ZERO,
+            "the σ = 0 rendering is today's, byte for byte",
+        );
+    }
+
+    /// δ (#7261): at σ ≠ 0, "add supports" must not be the standing remedy.
+    ///
+    /// MEASURED on the `shift_invert_modal_*` fixture geometry: with σ set to
+    /// that model's own λ₁ (13996484663.660404), `reify eval` returns
+    /// `f1 = 0 Hz` and emits the rigid-body warning above. The model's supports
+    /// are perfectly fine — the zero mode is a spurious artifact of a
+    /// near-singular `K − σM` — so the σ-blind loop hands the author a remedy
+    /// that is wrong for a fault entirely about WHERE σ was put. That is the
+    /// confidently-wrong-diagnosis class this leaf is forbidden to create, and
+    /// it is reachable only because β + δ made σ live.
+    ///
+    /// The `W_ModalRigidBodyMode:` prefix and the leading clause are KEPT — β's
+    /// negative assertions and consumer grouping keys depend on them — and the
+    /// shift note is APPENDED. The appended prose itself is not asserted, only
+    /// that σ is named in it: the remedy's wording is free to improve.
+    #[test]
+    fn rigid_body_diagnostic_at_a_shifted_solve_names_the_shift() {
+        let sigma = 13996484663.660404_f64;
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+
+        assert!(
+            d.message.starts_with("W_ModalRigidBodyMode:"),
+            "the prefix is a consumer grouping key and must survive; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.starts_with(RIGID_BODY_MESSAGE_AT_SIGMA_ZERO),
+            "the shift note must EXTEND the one template, not replace it — two \
+             templates for one condition drift; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.contains(&sigma.to_string()),
+            "the appended clause must NAME σ = {sigma}, or the author cannot tell \
+             which shift to move; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.len() > RIGID_BODY_MESSAGE_AT_SIGMA_ZERO.len(),
+            "σ ≠ 0 must say strictly MORE than σ = 0; got {:?}",
+            d.message,
+        );
+    }
+
+    /// δ (#7261): severity and code are unchanged at both shifts.
+    ///
+    /// This stays the advisory it is, and α minted exactly THREE codes for this
+    /// PRD — `ShiftSkippedModes`, `ShiftAtEigenvalue` and
+    /// `FirstModeNotInShiftedResult`. This is none of them; do not invent a
+    /// fourth.
+    #[test]
+    fn rigid_body_diagnostic_stays_an_uncoded_warning_at_every_shift() {
+        for sigma in [0.0, 13996484663.660404_f64] {
+            let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "σ = {sigma}: this stays advisory",
+            );
+            assert_eq!(d.code, None, "σ = {sigma}: no fourth code is minted here");
+        }
     }
 
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
@@ -6155,6 +6879,28 @@ mod tests {
         fn on_y_min(&self, n: usize) -> bool {
             self.mesh.nodes[n][1] <= BC_FIXTURE_EPS
         }
+
+        fn on_y_max(&self, n: usize) -> bool {
+            self.mesh.nodes[n][1] >= self.width - BC_FIXTURE_EPS
+        }
+
+        /// The UNIQUE node at `xyz`, every coordinate matched within
+        /// [`BC_FIXTURE_EPS`]. Locates an anchor by coordinate, independently of
+        /// the production `nearest_node`, so an anchor that moved is caught
+        /// rather than followed.
+        fn node_at(&self, xyz: [f64; 3]) -> usize {
+            let matches: Vec<usize> = (0..self.n_nodes())
+                .filter(|&n| {
+                    (0..3).all(|a| (self.mesh.nodes[n][a] - xyz[a]).abs() <= BC_FIXTURE_EPS)
+                })
+                .collect();
+            match matches.as_slice() {
+                [n] => *n,
+                _ => panic!(
+                    "BcFixture::node_at({xyz:?}) must match exactly one mesh node; matched {matches:?}",
+                ),
+            }
+        }
     }
 
     /// Coordinate tolerance for the face predicates above — the same `1e-9` the
@@ -6170,6 +6916,41 @@ mod tests {
     /// full clamp, so this is the discriminator between the two realizations.
     fn z_only(set: &HashSet<usize>, n: usize) -> bool {
         set.contains(&(3 * n + 2)) && !set.contains(&(3 * n)) && !set.contains(&(3 * n + 1))
+    }
+
+    /// Assert that the nodes `on_face` selects carry the simple-support shape
+    /// of a pinned beam end: Z on every node, X on none, and Y on exactly
+    /// `{anchor}` — the face's neutral-axis node.
+    fn assert_simple_support(
+        set: &HashSet<usize>,
+        face_nodes: &[usize],
+        anchor: usize,
+        what: &str,
+    ) {
+        assert!(
+            face_nodes.contains(&anchor),
+            "{what}: the lateral anchor node {anchor} must lie on the face being checked",
+        );
+        assert!(
+            face_nodes.iter().all(|&n| set.contains(&(3 * n + 2))),
+            "{what}: every node of a pinned beam end must carry its transverse (Z) DOF",
+        );
+        assert!(
+            !face_nodes.iter().any(|&n| set.contains(&(3 * n))),
+            "{what}: no node of a pinned beam end may carry its axial (X) DOF — that would \
+             clamp the bending rotation",
+        );
+        let lateral: HashSet<usize> = face_nodes
+            .iter()
+            .copied()
+            .filter(|&n| set.contains(&(3 * n + 1)))
+            .collect();
+        assert_eq!(
+            lateral,
+            HashSet::from([anchor]),
+            "{what}: a pinned beam end must restrain its lateral (Y) DOF at exactly ONE node, \
+             the face's neutral-axis node — a laterally free pinned end is a lateral cantilever",
+        );
     }
 
     /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
@@ -6211,6 +6992,90 @@ mod tests {
 
         // Non-StructureInstance → all defaults.
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
+    }
+
+    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
+    /// shape a user actually writes.
+    ///
+    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
+    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
+    /// through the dimensional machinery arrives as a DIMENSIONLESS
+    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
+    /// [`extract_loss_factor`] exists for, one knob up in this same file.
+    /// Reading only [`Value::Real`] drops both to the default, which is the
+    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
+    /// handles exactly this trap for the sibling knob, and β's own rustdoc
+    /// records it by name).
+    ///
+    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
+    /// case below.
+    ///
+    /// Every row also asserts the other three knobs, so the widening is provably
+    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
+    /// `max_iters` held at fixed non-default values that must come back
+    /// unchanged.
+    #[test]
+    fn extract_eigen_knobs_sigma_value_shapes() {
+        /// The three non-σ knobs, held at non-default values so a regression in
+        /// their handling cannot hide behind a default.
+        fn with_sigma(sigma: Option<Value>) -> Value {
+            let mut fields = vec![
+                ("n_modes".to_string(), Value::Int(7)),
+                ("tol".to_string(), Value::Real(1e-7)),
+                ("max_iters".to_string(), Value::Int(50)),
+            ];
+            if let Some(sigma) = sigma {
+                fields.push(("sigma".to_string(), sigma));
+            }
+            modal_options(fields)
+        }
+        let dimensionless = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+
+        let cases: Vec<(&str, Option<Value>, f64)> = vec![
+            // The regression floor: the shape that already worked.
+            ("Real", Some(Value::Real(2.5)), 2.5),
+            // A `.ri` integer literal `sigma: 2`. RED before the widening.
+            ("Int", Some(Value::Int(2)), 2.0),
+            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
+            // "explicitly NOT constrained" because a negative shift targets the
+            // negative side of the spectrum, so the sign must round-trip rather
+            // than being clamped away. RED before the widening.
+            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
+            // REFUSED, and the default is the right answer. That shape is
+            // #6097's future `shift_frequency : Frequency` surface; reading
+            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
+            // strictly WORSE than dropping the value, because a wrong shift
+            // returns a plausible-looking spectrum from the wrong band.
+            // Converting it here would also duplicate #6097's scope and
+            // manufacture the INV-AD-4 angle crossing this branch deliberately
+            // does not have.
+            (
+                "Scalar<frequency>",
+                Some(Value::Scalar {
+                    si_value: 300.0,
+                    dimension: DimensionVector::FREQUENCY,
+                }),
+                0.0,
+            ),
+            // The finite guard survives the widening: an infinite or NaN σ
+            // would poison `K − σM`.
+            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
+            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
+            // Existing fallbacks, unchanged.
+            ("absent", None, 0.0),
+        ];
+
+        for (label, sigma, expected) in cases {
+            assert_eq!(
+                extract_eigen_knobs(&with_sigma(sigma)),
+                (7, 1e-7, 50, expected),
+                "sigma shape {label}: expected σ = {expected} with the other three \
+                 knobs untouched",
+            );
+        }
     }
 
     /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
@@ -6594,7 +7459,8 @@ mod tests {
     ///         the bit-identical pin-pin set;
     ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
     ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
-    ///         propped cantilever (x_min fully clamped, x_max Z-only).
+    ///         propped cantilever (x_min fully clamped, x_max a simple support:
+    ///         Z on every node, no X, and Y only at its neutral-axis node).
     ///
     /// Supersedes `build_dirichlet_bcs_selects_pin_pin_vs_clamp`, which fed two
     /// `fixed_support(...)` and asserted the pin-pin set — i.e. PINNED THE DEFECT.
@@ -6651,7 +7517,9 @@ mod tests {
         );
 
         // (iv) Mixed [Fixed(x_min), Pinned(x_max)] → a genuine propped
-        //      cantilever: x_min fully clamped, x_max Z-only (X/Y free).
+        //      cantilever: x_min fully clamped, x_max a simple support that
+        //      restrains Y at its neutral-axis node (a laterally free x_max
+        //      would make the fundamental a lateral clamped-free cantilever).
         let propped = dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
         assert!(
             (0..f.n_nodes())
@@ -6659,11 +7527,14 @@ mod tests {
                 .all(|n| clamped(&propped, n)),
             "propped cantilever must fully clamp every x_min node",
         );
-        assert!(
-            (0..f.n_nodes())
-                .filter(|&n| on_x_max(n) && !on_x_min(n))
-                .all(|n| z_only(&propped, n)),
-            "propped cantilever must constrain Z ONLY on the pinned x_max face",
+        let x_max_nodes: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| on_x_max(n) && !on_x_min(n))
+            .collect();
+        assert_simple_support(
+            &propped,
+            &x_max_nodes,
+            f.node_at([f.length, 0.0, f.height / 2.0]),
+            "propped cantilever, pinned x_max",
         );
     }
 
@@ -6679,8 +7550,9 @@ mod tests {
     /// silent-wrong-answer class as the original defect, only reached through
     /// the `PinnedSupport` spelling instead of the `FixedSupport` one.
     ///
-    /// The fix realizes the two END FACES by the special case and UNIONs the
-    /// per-face realization of every other support on top. Asserted as: the
+    /// Every face, the two ends included, is realized per-face and the special
+    /// case only ADDS one axial anchor, so no branch can discard anything.
+    /// Asserted as: the
     /// three-support set is a strict SUPERSET of the plain pin-pin set (so the
     /// simply-supported realization is bit-preserved — no anchor moved, nothing
     /// dropped) that additionally clamps all three DOFs on every `y_min` node.
@@ -6739,14 +7611,16 @@ mod tests {
         );
     }
 
-    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a
-    /// transverse-only pin ONLY where the simply-supported BEAM idealization
-    /// applies — a beam-axis end face of a model that carries another support.
-    /// Everywhere else it clamps, matching `PinnedOnTetEquivalentToFixed`
+    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a simple
+    /// support — a transverse (Z) pin across the face plus one lateral (Y)
+    /// anchor at its neutral-axis node — ONLY where the
+    /// simply-supported BEAM idealization applies: a beam-axis end face of a
+    /// model that carries another support. Everywhere else it clamps, matching
+    /// `PinnedOnTetEquivalentToFixed`
     /// (`reify-solver-elastic/src/shell_boundary.rs`) and the static path.
     ///
     /// Two configurations regress into ≈ 0 Hz mechanisms under an
-    /// unconditional Z-only rule, and both are pinned here:
+    /// unconditional simple-support rule, and both are pinned here:
     ///
     ///   (i)  `[Pinned("x_min")]` — a LONE support, whose Z-only realization
     ///        leaves four rigid-body modes. Pre-6663 this returned the
@@ -6757,15 +7631,18 @@ mod tests {
     ///        faces clamp instead.
     ///
     /// Case (iii), added by review suggestion 4, is the other side: the beam-end
-    /// pin that DOES realize as transverse-only, in the one shape the
+    /// pin that DOES realize as a simple support, in the one shape the
     /// no-mechanism argument depends on rather than merely illustrates —
     /// `[Pinned("x_min"), Fixed("y_min")]`, where the second face is a non-end
     /// face and must therefore be a FULL clamp for the model to be well posed.
+    /// Case (iv), `[Pinned("x_min"), Fixed("y_max")]`, is the same shape with
+    /// the lateral anchor OFF the clamped side face, so the anchor itself is
+    /// visible in the x_min set.
     ///
     /// The propped case `[Fixed("x_min"), Pinned("x_max")]` (covered by
     /// `build_dirichlet_bcs_discriminates_support_kind` case (iv)) is the
     /// counterexample that keeps this scoping from collapsing into "Pinned
-    /// always clamps": there, x_max IS transverse-only.
+    /// always clamps": there, x_max IS a simple support.
     #[test]
     fn build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end() {
         let f = BcFixture::new();
@@ -6778,7 +7655,7 @@ mod tests {
             dof_set(vec![pinned_support("x_min")]),
             dof_set(vec![fixed_support("x_min")]),
             "a LONE PinnedSupport must clamp its face (PinnedOnTetEquivalentToFixed), \
-             not degrade the model to a transverse-only mechanism",
+             not degrade the model to a lone simple-support mechanism",
         );
 
         // (ii) Non-beam-axis pinned faces clamp too: Z-pinning y_min + y_max
@@ -6799,18 +7676,19 @@ mod tests {
         // (iii) Amendment (review suggestion 4): `[Pinned("x_min"),
         //       Fixed("y_min")]` — the third and last shape that can reach
         //       `PinTransverse`, and the ONE the no-mechanism argument rests
-        //       entirely on. `build_dirichlet_bcs`'s count-site comment
-        //       enumerates three: the pin-pin special case (covered by
+        //       entirely on. `build_dirichlet_bcs`'s body comment enumerates
+        //       three: the pin-pin special case (covered by
         //       `build_dirichlet_bcs_discriminates_support_kind` case (i)), the
         //       propped cantilever (case (iv)) and "an end pin plus a non-end
         //       face, which always clamps" — this one, previously untested.
         //
-        //       Both halves must hold TOGETHER. x_min being a bare Z pin is only
-        //       well posed because y_min removes the remaining rigid-body modes;
-        //       an edit to `face_realization` that made a non-end `Fixed` face
-        //       anything less than a full clamp would leave the model a
-        //       mechanism whose ≈ 0 Hz modes come back under a mere Warning,
-        //       with nothing else in this module red.
+        //       Both halves must hold TOGETHER. x_min being a simple support
+        //       (transverse pin plus one lateral anchor) is only well posed
+        //       because y_min removes the remaining rigid-body modes; an edit to
+        //       `face_realization` that made a non-end `Fixed` face anything
+        //       less than a full clamp would leave the model a mechanism whose
+        //       ≈ 0 Hz modes come back under a mere Warning, with nothing else
+        //       in this module red.
         let end_pin_plus_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
         let off_y_min_x_min: Vec<usize> = (0..f.n_nodes())
             .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
@@ -6818,6 +7696,15 @@ mod tests {
         assert!(
             !off_y_min_x_min.is_empty(),
             "the fixture must have x_min nodes off the y_min edge for this case to say anything",
+        );
+        // The x_min lateral anchor (0, 0, h/2) lies ON the y_min edge, which is
+        // fully clamped — that, not an absent anchor, is why every x_min node
+        // OFF y_min reads Z-only below.
+        let x_min_anchor = f.node_at([0.0, 0.0, f.height / 2.0]);
+        assert!(
+            f.on_y_min(x_min_anchor),
+            "the x_min neutral-axis anchor must sit on the clamped y_min edge for the \
+             Z-only assertion below to hold",
         );
         assert!(
             off_y_min_x_min
@@ -6831,26 +7718,104 @@ mod tests {
                 .filter(|&n| f.on_y_min(n))
                 .all(|n| clamped(&end_pin_plus_side, n)),
             "every y_min node must be FULLY clamped — that is the only thing removing the \
-             rigid-body modes the transverse-only x_min pin leaves behind",
+             rigid-body modes the simply-supported x_min end leaves behind",
+        );
+
+        // (iv) The same shape with the lateral anchor OFF the named
+        //      side face, so the anchor is visible in the x_min set itself.
+        let end_pin_plus_far_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_max")]);
+        let off_y_max_x_min: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_x_min(n) && !f.on_y_max(n))
+            .collect();
+        assert_simple_support(
+            &end_pin_plus_far_side,
+            &off_y_max_x_min,
+            x_min_anchor,
+            "[Pinned(x_min), Fixed(y_max)], x_min off y_max",
         );
     }
 
-    /// Amendment (review suggestion 1): the count-dependent `PinnedSupport`
+    /// `PinnedSupport` means ONE thing on a beam end, whatever the other end
+    /// carries, and the pin-pin special case adds ONLY the axial anchor on top
+    /// of it. A pinned end laterally restrained in one configuration but FREE
+    /// in another would be two different supports under one name.
+    ///
+    ///   (a) The pinned x_max face realizes identically in pin-pin and propped.
+    ///   (b) The pinned x_min face realizes identically in pin-pin and in the
+    ///       mirrored propped cantilever, except for EXACTLY one DOF: the axial
+    ///       (X) anchor at its neutral-axis node.
+    ///   (c) The Dirichlet sets form a strict chain pin_pin ⊊ propped ⊊ fix_fix.
+    ///       K and M are identical across the three solves (only the BCs
+    ///       differ), so by Courant–Fischer every raw eigenvalue is ordered
+    ///       λ_k(pin_pin) ≤ λ_k(propped) ≤ λ_k(fix_fix) — the basis of the e2e
+    ///       raw-frequency ordering signal in `modal_analysis_e2e.rs`.
+    #[test]
+    fn build_dirichlet_bcs_realizes_a_pinned_beam_end_identically_in_every_configuration() {
+        let f = BcFixture::new();
+        let restrict = |set: &HashSet<usize>, on_face: &dyn Fn(usize) -> bool| -> HashSet<usize> {
+            set.iter().copied().filter(|&d| on_face(d / 3)).collect()
+        };
+        let on_x_min = |n: usize| f.on_x_min(n);
+        let on_x_max = |n: usize| f.on_x_max(n);
+
+        let pin_pin = f.dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        let propped = f.dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
+        let mirrored = f.dof_set(vec![pinned_support("x_min"), fixed_support("x_max")]);
+        let fix_fix = f.dof_set(vec![fixed_support("x_min"), fixed_support("x_max")]);
+
+        // (a) The pinned x_max end: pin-pin and propped agree exactly.
+        assert_eq!(
+            restrict(&pin_pin, &on_x_max),
+            restrict(&propped, &on_x_max),
+            "a pinned x_max must realize identically whether x_min is pinned or fixed",
+        );
+
+        // (b) The pinned x_min end: pin-pin adds exactly the axial anchor.
+        let axial_anchor = 3 * f.node_at([0.0, 0.0, f.height / 2.0]);
+        let mut mirrored_plus_axial = restrict(&mirrored, &on_x_min);
+        assert!(
+            mirrored_plus_axial.insert(axial_anchor),
+            "the mirrored propped cantilever must not already carry the pin-pin axial anchor",
+        );
+        assert_eq!(
+            restrict(&pin_pin, &on_x_min),
+            mirrored_plus_axial,
+            "a pinned x_min must realize identically in pin-pin and the mirrored propped \
+             cantilever, except for the ONE axial (X) anchor the pin-pin special case adds",
+        );
+
+        // (c) Strict superset chain.
+        assert!(
+            pin_pin.is_subset(&propped) && pin_pin.len() < propped.len(),
+            "pin_pin must be a STRICT subset of propped; pin-pin DOFs missing from propped: {:?}",
+            pin_pin.difference(&propped).collect::<Vec<_>>(),
+        );
+        assert!(
+            propped.is_subset(&fix_fix) && propped.len() < fix_fix.len(),
+            "propped must be a STRICT subset of fix_fix; propped DOFs missing from fix_fix: {:?}",
+            propped.difference(&fix_fix).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Amendment (review suggestion 1): the context-dependent `PinnedSupport`
     /// realization must be VISIBLE, in both directions.
     ///
-    /// [`face_realization`] decides what a pinned beam end constrains from a
-    /// non-local count of distinct named faces, so adding or removing an
-    /// unrelated support elsewhere on the body re-realizes a face the author
-    /// never edited. The DOF sets asserted throughout this module pin that the
-    /// decision is CORRECT; this pins that it is REPORTED, so the author's only
-    /// observable is not a frequency that moved.
+    /// [`face_realization`] decides what a pinned beam end constrains from
+    /// whether the model's supports name another distinct recognized face, so
+    /// naming or un-naming an unrelated support elsewhere on the body
+    /// re-realizes a face the author never edited. The DOF sets asserted
+    /// throughout this module pin that the decision is CORRECT; this pins that
+    /// it is REPORTED, so the author's only observable is not a frequency that
+    /// moved.
     ///
     /// Three realizations, three messages, and the pairing is what matters: the
     /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
-    /// translational DOFs" alone and "transverse (Z) pin" once a second face is
-    /// named. `FixedSupport` stays silent (its realization is unconditional).
+    /// translational DOFs" alone and a "transverse (Z) pin" plus a "lateral (Y)"
+    /// anchor once a second face is named — and all three notes name that same
+    /// simple-support realization. `FixedSupport` stays silent (its
+    /// realization is unconditional).
     #[test]
-    fn build_dirichlet_bcs_reports_count_dependent_pinned_realization() {
+    fn build_dirichlet_bcs_reports_context_dependent_pinned_realization() {
         let f = BcFixture::new();
         let notes = |supports: Vec<Value>| f.realization_notes(supports);
 
@@ -6868,6 +7833,12 @@ mod tests {
             "the lone-face note must say the pin CLAMPED, and name the face: {:?}",
             lone[0],
         );
+        assert!(
+            lone[0].contains("lateral (Y)"),
+            "the lone-face note's forward clause must name the FULL realization a second face \
+             would produce — the same simple support (b) reports, lateral anchor included: {:?}",
+            lone[0],
+        );
 
         // (b) The flip's PIN side — the same declaration, one unrelated support
         //     added on a face that is never mentioned again. This is the
@@ -6880,8 +7851,18 @@ mod tests {
              no note. got {flipped:?}",
         );
         assert!(
-            flipped[0].contains("x_min") && flipped[0].contains("transverse (Z) pin"),
-            "adding an unrelated support must report x_min as a transverse pin: {:?}",
+            flipped[0].contains("x_min")
+                && flipped[0].contains("transverse (Z) pin")
+                && flipped[0].contains("lateral (Y)"),
+            "adding an unrelated support must report x_min as a simple support — a transverse \
+             (Z) pin AND its lateral (Y) anchor, the DOFs actually realized: {:?}",
+            flipped[0],
+        );
+        assert!(
+            flipped[0].contains("y_min"),
+            "the transverse-pin note must name the SPECIFIC other face that triggered the \
+             realization (review suggestion 4) — not merely assert one exists, leaving the \
+             author to map that back onto their own declaration: {:?}",
             flipped[0],
         );
         assert_ne!(
@@ -6890,8 +7871,22 @@ mod tests {
              is the whole point of the note",
         );
 
-        // (c) The pin-pin special case names both ends, and says the anchors are
-        //     what keeps it well posed.
+        // Amendment (review suggestion 1, optional cross-check): the note and
+        // the DOFs it describes must agree, because both are now read off the
+        // SAME `FaceCompany` rather than two separate derivations.
+        let flipped_dofs = f.dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
+                .all(|n| z_only(&flipped_dofs, n)),
+            "the model whose note says 'transverse (Z) pin' must be the model whose x_min \
+             DOF set is actually Z-only off the clamped y_min edge (where its lateral anchor \
+             sits)",
+        );
+
+        // (c) The pin-pin special case names both ends, and says the ONE axial
+        //     anchor it adds is what keeps it well posed; each end's lateral
+        //     anchor belongs to the per-face realization.
         let pin_pin = notes(vec![pinned_support("x_min"), pinned_support("x_max")]);
         assert_eq!(
             pin_pin.len(),
@@ -6901,8 +7896,8 @@ mod tests {
         assert!(
             pin_pin.iter().any(|m| m.contains("x_min"))
                 && pin_pin.iter().any(|m| m.contains("x_max"))
-                && pin_pin.iter().all(|m| m.contains("neutral-axis anchors")),
-            "the simply-supported notes must name both faces and the anchors: {pin_pin:?}",
+                && pin_pin.iter().all(|m| m.contains("axial (X) anchor")),
+            "the simply-supported notes must name both faces and the axial anchor: {pin_pin:?}",
         );
 
         // (d) Silence where there is nothing context-dependent to explain: an
@@ -6913,13 +7908,13 @@ mod tests {
         );
         assert!(
             notes(vec![pinned_support("y_min"), pinned_support("y_max")]).is_empty(),
-            "a PinnedSupport on a non-beam-axis face always clamps — no count-dependence, so \
-             no note",
+            "a PinnedSupport on a non-beam-axis face always clamps — no company-dependence, \
+             so no note",
         );
 
         // (e) One note per distinct FACE, not per support — the same `face_bound`
-        //     set the realization decision itself counts over, so the message can
-        //     never disagree with the decision it describes.
+        //     predicate the realization decision itself reads, so the message
+        //     can never disagree with the decision it describes.
         let duplicated = notes(vec![pinned_support("x_min"), pinned_support("x_min")]);
         assert_eq!(
             duplicated.len(),
@@ -6943,15 +7938,15 @@ mod tests {
     /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
     /// TWO-support model and flipped x_min from a full clamp (a well-posed
     /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
-    /// surviving rigid-body modes, reported under a mere Warning. The count now
-    /// runs through [`face_bound`], the same predicate `per_face_bcs` selects
-    /// nodes with, so a support that can contribute no DOF cannot reinterpret
-    /// one either.
+    /// surviving rigid-body modes, reported under a mere Warning. That vote
+    /// now runs through [`face_company`]/[`face_bound`], the same predicate
+    /// `per_face_bcs` selects nodes with, so a support that can contribute no
+    /// DOF cannot reinterpret one either.
     ///
-    /// Sibling exclusion, added later by review suggestion 1: that count is now a
-    /// SET over `face_bound`, not merely a filter through it, so a support
-    /// DUPLICATING a face already named is excluded on the same principle — it
-    /// contributes no NEW face to vote with. See
+    /// Sibling exclusion, added later by review suggestion 1: face identity is
+    /// resolved by [`face_bound`], not by spelling, so a support DUPLICATING a
+    /// face already named is excluded on the same principle — it contributes
+    /// no NEW face to vote with. See
     /// [`build_dirichlet_bcs_ignores_duplicate_face_targets`]. Between the two,
     /// `PinTransverse` is unreachable for any singly-supported model.
     ///
@@ -6975,7 +7970,7 @@ mod tests {
             dof_set(vec![pinned_support("x_min"), fixed_support("")]),
             cantilever,
             "a support with the stdlib's empty default target selects no node, so it must \
-             not flip Pinned(x_min) from a clamp to a transverse-only pin",
+             not flip Pinned(x_min) from a clamp to a simple support",
         );
 
         // A typo / a static-path selector name that means nothing to the modal
@@ -7015,9 +8010,9 @@ mod tests {
     /// a two-support model and flipped x_min from a full clamp to a Z-only pin —
     /// a well-posed cantilever silently becoming a 4-rigid-body-mode mechanism
     /// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
-    /// Counting DISTINCT faces (via [`face_bound`], which identifies a face by
-    /// the coordinate bound it selects rather than by its spelling) collapses the
-    /// duplicate back to one face and restores the pre-6663 clamp.
+    /// Resolving faces by their bound (via [`face_bound`], which identifies a
+    /// face by the coordinate bound it selects rather than by its spelling)
+    /// collapses the duplicate back to one face and restores the pre-6663 clamp.
     ///
     /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` cantilever, the
     /// same shape [`build_dirichlet_bcs_ignores_supports_that_name_no_face`] uses
@@ -7045,13 +8040,13 @@ mod tests {
             dof_set(vec![pinned_support("x_min"), pinned_support("x_min")]),
             cantilever,
             "two PinnedSupports naming the SAME face name one face, so the model is \
-             still singly supported and must CLAMP — not degrade to a transverse-only \
-             mechanism",
+             still singly supported and must CLAMP — not degrade to a lone \
+             simple-support mechanism",
         );
 
         // Same face, mixed spellings: `Fixed` clamps unconditionally, so this
-        // pins that the collapse is about the FACE count and not about the pair
-        // of supports happening to be identical.
+        // pins that the collapse is about face IDENTITY (via `face_bound`) and
+        // not about the pair of supports happening to be identical.
         assert_eq!(
             dof_set(vec![pinned_support("x_min"), fixed_support("x_min")]),
             cantilever,
@@ -7070,6 +8065,95 @@ mod tests {
         assert!(
             !(0..f.n_nodes()).any(|n| f.on_x_min(n) && z_only(&dup, n)),
             "no x_min node may be Z-only — that is the mechanism this closes",
+        );
+    }
+
+    /// Task 6980 (concern 1): the realization decision is face-LOCAL — it
+    /// reads only whether THIS face has company, never a model-wide tally.
+    /// This is invisible through `build_dirichlet_bcs` (see
+    /// `face_company_identifies_faces_by_bound` for why), so it is pinned
+    /// directly against [`face_realization`]'s full decision table.
+    ///
+    /// The `WithAnotherFace` payload (review suggestion 4) is irrelevant to
+    /// this decision — `face_realization` only matches the variant, never the
+    /// face it names — so every case below reuses the same placeholder value.
+    #[test]
+    fn face_realization_decides_from_its_own_faces_company() {
+        let with_another = FaceCompany::WithAnotherFace("y_min".to_string());
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "x_min", &FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "a lone pinned beam end must clamp — a simple support alone is a mechanism",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "x_min", &with_another),
+            FaceRealization::PinTransverse,
+            "a pinned beam end WITH another recognized face must pin transversely",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "y_min", &with_another),
+            FaceRealization::ClampAllDofs,
+            "a non-beam-axis face clamps regardless of company — only a beam-axis end face \
+             is ever eligible for a simple support",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Fixed, "x_min", &FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally when alone",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Fixed, "x_min", &with_another),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally WithAnotherFace too — the kind, not the \
+             company, decides for Fixed",
+        );
+    }
+
+    /// Task 6980 (concern 1), narrowed by review suggestion 3: pins
+    /// `face_company` directly against every input shape its two call sites
+    /// can actually produce — `target` is always one of `targets` there (see
+    /// the precondition on [`face_company`]'s own doc).
+    ///
+    /// An earlier version of this test also asserted
+    /// `face_company("x_min", &[fixed_target("y_min")])` — i.e. asked about a
+    /// target that names no support of its own — as "the" proof that the
+    /// decision is face-local rather than a model-wide tally. Review
+    /// suggestion 3 pointed out that input violates the precondition above:
+    /// neither call site can construct it, so it discriminated between two
+    /// IMPLEMENTATIONS no caller can tell apart, not between two BEHAVIORS.
+    /// Dropped rather than kept as a documented precondition violation — the
+    /// cases below already cover everything a real `targets` list can put in
+    /// front of this function.
+    #[test]
+    fn face_company_identifies_faces_by_bound() {
+        let pinned_target = |t: &str| (DeclaredSupport::Pinned, t.to_string());
+        let fixed_target = |t: &str| (DeclaredSupport::Fixed, t.to_string());
+
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a lone support names no face OTHER than its own",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a duplicate names no face OTHER than the target's own — the ordinary \
+             copy-paste error must not flip a cantilever into a mechanism",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("")]),
+            FaceCompany::Alone,
+            "an unrecognized/empty target names no face at all and cannot vote",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace("y_min".to_string()),
+            "y_min is a distinct recognized face from x_min's own, and the company names it",
+        );
+        assert_eq!(
+            face_company("y_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace("x_min".to_string()),
+            "the same list, decided for the OTHER target: x_min is company for y_min too",
         );
     }
 
@@ -7111,37 +8195,31 @@ mod tests {
         );
     }
 
-    /// Amendment (suggestion 2): `simply_supported_pin_pin_bcs` pins Z on every
-    /// end-face node and adds exactly the three minimal anchors (1 axial X +
-    /// 2 lateral Y) at the end-face neutral-axis nodes — the configuration that
-    /// yields the simply-supported `(nπ)²` family rather than fixed-fixed.
+    /// Characterization guard: `[Pinned(x_min), Pinned(x_max)]` realizes Z on
+    /// every end-face node plus exactly three neutral-axis anchors — X and Y at
+    /// the x_min node, Y at the x_max node — the set that yields the
+    /// simply-supported `(nπ)²` family rather than fixed-fixed. Asserted as
+    /// EXACT set equality, so the pin-pin Dirichlet set every simply-supported
+    /// consumer relies on — composed from the per-face realization plus
+    /// [`pin_pin_axial_anchor`] — is pinned bit-for-bit.
     #[test]
-    fn simply_supported_pin_pin_bcs_places_minimal_anchors() {
-        let length = 0.02_f64;
-        let width = 0.05_f64;
-        let height = 0.1_f64;
-        let mesh = build_beam_mesh(length, width, height);
-        let eps = 1e-9_f64;
+    fn build_dirichlet_bcs_pin_pin_places_minimal_anchors() {
+        let f = BcFixture::new();
+        let root = f.node_at([0.0, 0.0, f.height / 2.0]);
+        let tip = f.node_at([f.length, 0.0, f.height / 2.0]);
 
-        let bcs = simply_supported_pin_pin_bcs(&mesh.nodes, length, height);
+        let mut expected: HashSet<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_end(n))
+            .map(|n| 3 * n + 2)
+            .collect();
+        expected.extend([3 * root, 3 * root + 1, 3 * tip + 1]);
 
-        // Count constraints per axis (dof % 3): X = axial anchor, Y = lateral
-        // anchors, Z = simple supports.
-        let (mut nx, mut ny, mut nz) = (0usize, 0usize, 0usize);
-        for b in &bcs {
-            match b.dof % 3 {
-                0 => nx += 1,
-                1 => ny += 1,
-                _ => nz += 1,
-            }
-        }
-        assert_eq!(nx, 1, "expected exactly one X (axial) anchor");
-        assert_eq!(ny, 2, "expected exactly two Y (lateral) anchors");
-
-        let n_end_nodes = (0..mesh.nodes.len())
-            .filter(|&n| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps)
-            .count();
-        assert_eq!(nz, n_end_nodes, "Z must be pinned on every end-face node");
+        assert_eq!(
+            f.dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]),
+            expected,
+            "pin-pin must be Z on every end-face node plus X@root, Y@root and Y@tip at the \
+             end-face neutral-axis nodes — nothing more, nothing less",
+        );
     }
 
     /// step-1 (RED → GREEN in step-2): a NaN node coordinate must not win the
@@ -7192,10 +8270,6 @@ mod tests {
     #[test]
     fn nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
 
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
@@ -11393,10 +12467,6 @@ mod tests {
     #[test]
     fn frequency_ascending_order_skips_resort_and_warns_on_non_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
 
         let (subscriber, capture) = warn_capturing_subscriber();
 

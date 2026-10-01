@@ -1,0 +1,17 @@
+// datum_units_delta_reachability.ri — CLI eval fixture: task δ's CONSUMER-side
+// plane-origin gate is still reachable from real `.ri` source, through `frame3`.
+// Read only by `eval_deltas_consumer_gate_stays_reachable_through_frame3` in
+// crates/reify-cli/tests/harness_cli/cli_eval_datum_units.rs, whose doc carries
+// the rationale.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails, and
+// declares its module explicitly so no W_MODULE_DECL_MISSING warning re-supplies
+// anchor substrings for free (the trap task 6155 documented).
+
+module datum_units_delta_reachability
+
+structure def DatumUnitsDeltaReachability {
+    let bp = frame3(point3(0, 0, 0), orient_identity()).xy_plane
+
+    let d = mirror(box(10mm, 10mm, 10mm), bp)
+}

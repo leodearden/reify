@@ -1,0 +1,23 @@
+module getar_fallback_type_mismatch_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf γ RED
+// before-image (soundness hole S-1). MEASURED 2026-09-29 with
+// target/debug/reify built 2026-09-25 (compiler paths unchanged through main
+// 300910857b):
+//   `reify check` EXIT 0, "All constraints satisfied.", zero diagnostics;
+//   `reify eval`  EXIT 0, prints `W.v = 0.005 m`.
+// The let is ANNOTATED `String` and the value is a Length. Under D1 erasure
+// the constructed `Ok { value: 5mm }` has static type `Enum("Result")` with no
+// argument slot, so `fallback<T,E>(Result<T,E>, T) -> T` binds T only from the
+// default argument "y" (String); the subject contributes nothing, the
+// annotation agrees with the String result type, and the evaluator returns the
+// Ok payload. Static type String, runtime Length, no diagnostic at any stage.
+// Compare `let v : Length = fallback(...)` on the same expression: it is
+// REJECTED today with "declared `Scalar[m]` but its initializer evaluates to
+// `String`" — the compiler believes the wrong side.
+// EXPECTED after γ+δ: `reify check` EXIT 1 with a type-arg conflict / fallback
+// type diagnostic naming T bound to both Length and String.
+
+structure def W {
+    let v : String = fallback(Ok { value: 5mm }, "y")
+}

@@ -196,30 +196,29 @@ ModulePath {
 }
 
 // ── Imports ──────────────────────────────────────────────
-// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
-// retained for the legacy `import "foo.ri"` form.
+// Mirrors tree-sitter-reify/grammar.js's `import_declaration` rule. The
+// `String` alternative is retained for the legacy `import "foo.ri"` form.
 //
-// UNSETTLED — the destructured form's separator. This port follows the
-// tree-sitter RULE, which sequences import_path then import_items with NO
-// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
-// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
-// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
-// therefore disagree, and nothing settles it: `import_items` has no
-// tree-sitter corpus test, no committed `.ri` uses it (every import under
-// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
-// `import x as y`), and no Rust code matches on the node name. The corpus test
-// deliberately does NOT pin either spelling — asserting one would cement an
-// unverified shape as an intentional GUI contract. Filed as #5931, which
-// decides the canonical form against the authoritative surface first; until it
-// lands, `ImportItems` is live grammar surface with no test coverage by
-// design, and that is the one thing here a reader should not mistake for an
-// intentional contract.
+// The destructured form is DOTTED, `import a.b.{C, D}`, per the `import_path`
+// production in docs/reify-language-spec.md §15 "Grammar Summary" (#5931).
+//
+// DELIBERATE DIVERGENCE from grammar.js. The dot is folded into the opener
+// token `ImportItemsOpen` (`.{`) instead of being written
+// `ModulePath ("." ImportItems | ...)`, because that faithful spelling is a
+// shift/reduce conflict between `("." Identifier)+` and
+// `ModulePath -> Identifier`, and Lezer has no `conflicts` hatch to resolve it
+// the way grammar.js's `[$.import_path]` entry does; one token moves the
+// decision into the lexer. The token is NAMED, not an inline `".{"` literal,
+// because an anonymous literal produces no tree node, and the fold
+// (reifyLanguage.ts), the brace style (highlight.ts) and bracket matching all
+// need one. The cost: whitespace between the `.` and the `{`
+// (`import a . { B }`), which tree-sitter accepts, is rejected here.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
 
 ImportItems {
-  "{" (Identifier ("," Identifier)* ","?)? "}"
+  ImportItemsOpen (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
@@ -1645,7 +1644,7 @@ IndexAccess {
 // The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
 // (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
 // (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
-// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31) all call one.
+// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri) all call one.
 //
 // WHY THE CALLEE AND NOT THE RESERVATION. `some` and `none` appear NOWHERE in
 // tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary call
@@ -2155,6 +2154,9 @@ ReservedWord {
   // Without this, `..` lexes as two member-access `.` and every range becomes
   // an error node — the same trap `->`/`::` fell into above.
   @precedence { "..<", "..", "." }
+
+  // The destructured import's opener; see the ImportDeclaration comment.
+  ImportItemsOpen { ".{" }
 
   // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
   // else in the language.

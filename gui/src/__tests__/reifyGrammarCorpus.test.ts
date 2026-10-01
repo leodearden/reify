@@ -353,17 +353,44 @@ describe('reify.grammar snippets — module and import', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
   });
 
-  // NOTE — the destructured import form (`import a.b {C, D}` vs
-  // `import a.b.{C, D}`) is deliberately NOT asserted here. The tree-sitter
-  // RULE at grammar.js:258-282 sequences the path and the items with no
-  // separator, but grammar.js's own doc comment on that rule (:263) and the
-  // lowering at crates/reify-syntax/src/ts_parser.rs:538 both spell it with a
-  // dot. Nothing settles the disagreement: `import_items` has no tree-sitter
-  // corpus test, no committed `.ri` uses the form, and no Rust code matches on
-  // the node name. Asserting either spelling here would cement an unverified
-  // shape as an intentional GUI contract, so the production stays (faithful to
-  // the rule) and the test does not pin it. See the ImportDeclaration comment
-  // in reify.grammar; #5931 resolves the canonical form.
+  /**
+   * The destructured import is DOTTED, `import a.b.{C, D}`, per
+   * docs/reify-language-spec.md §15's `import_path` (#5931) — a normative
+   * claim, so pinned by assertion per docs/legibility/design-invariants.md.
+   * See the ImportDeclaration comment in reify.grammar.
+   */
+  it('parses the canonical destructured import `import std.mech.{Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech.{Bolt, Nut}')).toBe(0);
+  });
+
+  it('parses a single-item destructured import `import a.{Foo}`', () => {
+    expect(countErrorNodes('import a.{Foo}')).toBe(0);
+  });
+
+  it('rejects the spaced destructured form `import std.mech {Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech {Bolt, Nut}')).toBeGreaterThan(0);
+  });
+
+  /**
+   * This port's one deliberate divergence from tree-sitter, explained at the
+   * ImportDeclaration comment in reify.grammar. The accepting half is pinned by
+   * `interior_whitespace_before_the_brace_list_is_accepted` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs.
+   */
+  it('rejects interior whitespace in the opener `import a . { B }`', () => {
+    expect(countErrorNodes('import a . { B }')).toBeGreaterThan(0);
+  });
+
+  /**
+   * Deliberate latitude beyond §15's EBNF, kept for the reasons recorded at
+   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs, which pins the
+   * authoritative side identically.
+   */
+  it('accepts the empty and trailing-comma item lists §15 does not describe', () => {
+    expect(countErrorNodes('import a.{}')).toBe(0);
+    expect(countErrorNodes('import a.{Foo,}')).toBe(0);
+  });
 
   /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
@@ -3310,7 +3337,7 @@ describe('reify.grammar snippets — a ReservedWord in call position', () => {
     expect(nodeNames(src)).toContain('LambdaExpression');
   });
 
-  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31
+  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
   // (`Steel_AISI_1045(yield_stress: some(310mm))`) — a reserved-word call nested
   // inside a NamedArgument VALUE, a third distinct position.
   it('parses a reserved-word call as a named-argument value', () => {
@@ -4287,15 +4314,29 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
 /**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
- * source text of every span that received `t.keyword`.
+ * source text of every span that received the class `cls`. A styleTags
+ * selector names a NODE, so a token with no node in the tree yields no span.
  */
-function keywordSpans(src: string): string[] {
+function spansWithClass(src: string, cls: string): string[] {
   const tree = reifyLRLanguage.parser.parse(src);
   const spans: string[] = [];
   highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes('tok-keyword')) spans.push(src.slice(from, to));
+    if (classes.split(' ').includes(cls)) spans.push(src.slice(from, to));
   });
   return spans;
+}
+
+/** Source text of every span the highlighter styled as a keyword. */
+function keywordSpans(src: string): string[] {
+  return spansWithClass(src, 'tok-keyword');
+}
+
+/**
+ * The same measurement for punctuation — `t.brace`, `t.paren` and friends all
+ * land in `tok-punctuation` under `classHighlighter`.
+ */
+function punctuationSpans(src: string): string[] {
+  return spansWithClass(src, 'tok-punctuation');
 }
 
 /**
@@ -4427,21 +4468,83 @@ describe('reifyLanguage — fold and indent coverage', () => {
   const EXCLUDED_BRACE_NODES = ['Interpolation'];
 
   /**
+   * `line` with its `//` comment removed, so prose about braces never counts
+   * as grammar. Quote-aware: a `//` inside a string literal
+   * (`LineComment { "//" … }`) is content, and a backslash escapes the next
+   * character both inside a literal and in a char set (`![\\\"{}]`).
+   */
+  function stripLineComment(line: string): string {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '\\') i++;
+      else if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (line.startsWith('//', i)) return line.slice(0, i);
+    }
+    return line;
+  }
+
+  /**
+   * reify.grammar's comment-stripped lines, split at the `@tokens` header:
+   * `productions` before it, `tokens` after it. The same text means different
+   * things on each side — inside `@tokens` a braced literal DECLARES a token
+   * rather than opening a production body — so every scan below reads exactly
+   * one side.
+   */
+  function grammarSections(grammarSrc: string): { productions: string[]; tokens: string[] } {
+    const lines = grammarSrc.split('\n');
+    const header = lines.findIndex((line) => /^@tokens\b/.test(line));
+    const split = header === -1 ? lines.length : header;
+    return {
+      productions: lines.slice(0, split).map(stripLineComment),
+      tokens: lines.slice(split + 1).map(stripLineComment),
+    };
+  }
+
+  /**
+   * Names declared INSIDE the `@tokens` block whose entire body is one string
+   * literal containing a `{` — a brace opener that has been folded into a
+   * single NAMED token, such as `ImportItemsOpen { ".{" }` (#5931).
+   *
+   * THE SINGLE-LITERAL SHAPE IS LOAD-BEARING, not incidental tightening. The
+   * looser reading — "any token declaration mentioning a braced literal" —
+   * also matches `StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }`, whose
+   * `"{{"` is a string ESCAPE and not a body opener at all, and would inject a
+   * phantom into the ledger below. Only a token that IS a brace, whole,
+   * qualifies.
+   */
+  function braceOpenerTokens(grammarSrc: string): string[] {
+    const names: string[] = [];
+    for (const line of grammarSections(grammarSrc).tokens) {
+      const decl = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/);
+      if (decl && decl[2].includes('{')) names.push(decl[1]);
+    }
+    return names;
+  }
+
+  /**
    * Every capitalised production in reify.grammar whose own body contains a
-   * literal `"{"` token. Scans line by line, tracking the most recent
-   * production header, and stops at `@tokens` — inside that block `"{"` is a
-   * token declaration, not a body.
+   * brace opener, tracking the most recent production header line by line.
+   *
+   * Two spellings count as an opener: the anonymous literal `"{"`, and a
+   * reference to a NAMED opener token from `braceOpenerTokens` (today
+   * `ImportItemsOpen`). A combined anonymous literal such as an inline `".{"`
+   * deliberately does not — it produces no node to fold — and is rejected
+   * outright by `admits no production that opens with an anonymous combined
+   * brace literal` below rather than silently skipped here.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
+    const openers = braceOpenerTokens(grammarSrc);
     const found = new Set<string>();
     let current: string | null = null;
-    for (const rawLine of grammarSrc.split('\n')) {
-      if (/^@tokens\b/.test(rawLine)) break;
-      // Strip line comments so prose about braces never counts as a body.
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(grammarSrc).productions) {
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
-      if (current && line.includes('"{"')) found.add(current);
+      const opensWithBrace =
+        line.includes('"{"') || openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+      if (current && opensWithBrace) found.add(current);
     }
     return [...found].sort();
   }
@@ -4476,6 +4579,35 @@ describe('reifyLanguage — fold and indent coverage', () => {
   });
 
   /**
+   * The ledger's omission of a third opener spelling — a combined anonymous
+   * literal such as an inline `".{"` — is a decision, so it is asserted rather
+   * than left to the extractor to swallow. Such a literal produces no node;
+   * see the ImportDeclaration comment in reify.grammar.
+   */
+  it('admits no production that opens with an anonymous combined brace literal', () => {
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const line of grammarSections(readFixture('gui/src/editor/reify.grammar')).productions) {
+      for (const [literal] of line.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
+        scanned += 1;
+        const body = literal.slice(1, -1);
+        if (/[{}]/.test(body) && body !== '{' && body !== '}') offenders.push(line.trim());
+      }
+    }
+    // Sanity: the literal scan found something, so an empty match set cannot
+    // make the check below pass vacuously.
+    expect(scanned).toBeGreaterThan(50);
+    expect(
+      offenders,
+      `These production bodies in reify.grammar open with an anonymous literal ` +
+        `that is more than a bare brace. The lexer consumes such a literal ` +
+        `without emitting a node, so the body's fold returns null and its ` +
+        `opener cannot be styled or bracket-matched. Declare the opener as a ` +
+        `NAMED token in @tokens instead, as ImportItemsOpen is.`,
+    ).toEqual([]);
+  });
+
+  /**
    * And the props actually RESOLVE on the configured parser. The list check
    * above compares two string arrays; it would stay green if `parser.configure`
    * silently dropped the props (a rename of `foldNodeProp`, a node type that
@@ -4503,7 +4635,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * quoted `"}"`.
    */
   function productionBody(grammarSrc: string, name: string): string {
-    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const src = grammarSrc.split('\n').map(stripLineComment).join('\n');
     const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
     if (!header) throw new Error(`production ${name} not found in reify.grammar`);
     let depth = 1;
@@ -4564,16 +4696,36 @@ describe('reifyLanguage — fold and indent coverage', () => {
   describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
     const grammarSrc = readFixture('gui/src/editor/reify.grammar');
 
+    /**
+     * The spellings that count as a brace OPENER at the head of an arm: the
+     * anonymous literal `"{"`, plus every named opener token from
+     * `braceOpenerTokens` — the same definition `braceDelimitedNodeTypes` uses
+     * for list membership, so the two halves of this ledger cannot disagree on
+     * what an opener is.
+     *
+     * The sibling KEYWORD_LED_BODIES assertion below stays literal-only: no
+     * keyword-led body opens an arm with a named token.
+     */
+    const armOpeners = ['"{"', ...braceOpenerTokens(grammarSrc)];
+    /** `opener` appears ANYWHERE in `arm` — the "has a brace at all" reading. */
+    const armHasOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.includes('"{"') : new RegExp(`\\b${opener}\\b`).test(arm);
+    /** `arm` STARTS with `opener` — the positional reading this test is about. */
+    const armStartsWithOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.startsWith('"{"') : new RegExp(`^${opener}\\b`).test(arm);
+
     it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
       const arms = splitTopLevelArms(productionBody(grammarSrc, name));
-      const braceArms = arms.filter((arm) => arm.includes('"{"'));
-      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
-        0,
-      );
+      const braceArms = arms.filter((arm) => armOpeners.some((op) => armHasOpener(arm, op)));
       expect(
-        braceArms.every((arm) => arm.startsWith('"{"')),
+        braceArms.length,
+        `${name} has no brace opener in its reify.grammar production at all — neither a "{" ` +
+          `token nor any named opener (${JSON.stringify(braceOpenerTokens(grammarSrc))})`,
+      ).toBeGreaterThan(0);
+      expect(
+        braceArms.every((arm) => armOpeners.some((op) => armStartsWithOpener(arm, op))),
         `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
-          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+          `content before its brace opener — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
       ).toBe(true);
     });
 
@@ -4669,9 +4821,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    // `import a.b {C, D}` — no separator, matching the RULE this port follows
-    // (see the long note on `ImportDeclaration` in reify.grammar).
-    ImportItems: 'import std.mech {Bolt, Nut}',
+    // The `.` is part of the opener token `ImportItemsOpen` (`.{`), so
+    // `ownBraceInterior`'s literal-`{` scan lands one past the dot — the same
+    // `from` the fold assertion for this node expects.
+    ImportItems: 'import std.mech.{Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
     KeyedMemberBlock:
       'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
@@ -4832,6 +4985,41 @@ describe('reifyLanguage — fold and indent coverage', () => {
       expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
     });
   });
+
+  /**
+   * Behavioural pins for the destructured import's opener: they call the fold
+   * and read its range, and drive the real highlighter and read its spans. The
+   * structural `resolves fold and indent props on %s` guard only checks that
+   * the prop is DEFINED, so it cannot see a fold that returns null because the
+   * opener has no node — see the ImportDeclaration comment in reify.grammar.
+   */
+  it('folds the canonical destructured import to exactly its item list', () => {
+    const src = 'import std.mech.{Bolt, Nut}';
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    let items: SyntaxNode | null = null;
+    do {
+      if (cursor.type.name === 'ImportItems') items = cursor.node;
+    } while (!items && cursor.next());
+    expect(items, 'no ImportItems in the parse').not.toBeNull();
+
+    const fold = items!.type.prop(foldNodeProp)!;
+    const range = fold(items!, EditorState.create({ doc: src }));
+    // NOT null — `ImportItems` is listed in BRACE_FIRST_BODIES, and that
+    // membership is a claim that it folds, not merely that it has a prop.
+    expect(range, 'ImportItems resolves a fold prop that folds nothing').not.toBeNull();
+    // The range is the item list itself: `Bolt, Nut`. It starts after the
+    // WHOLE opener (`.{`, two characters), not after the `.`.
+    expect(range).toEqual({ from: src.indexOf('.{') + 2, to: src.lastIndexOf('}') });
+  });
+
+  it('styles the destructured import opener, symmetrically with its closer', () => {
+    const src = 'import a.{Foo}';
+    const spans = punctuationSpans(src);
+    // Sanity: the closer has always been styled, so a helper that collected
+    // nothing at all cannot make the real assertion pass vacuously.
+    expect(spans).toContain('}');
+    expect(spans).toContain('.{');
+  });
 });
 
 // ── Corpus drift ledger ──────────────────────────────────────────────────
@@ -4942,16 +5130,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //   - "arrow (function) types in a param annotation" was already reachable —
 //     `FunctionType` has been in the grammar all along.
 //
-// WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
-// corpus" is not a finding and "which three, and whose" is:
+// WHY THE LAST THREE FILES REMAIN — one line each, because a bare count is
+// not a finding and "which three, and why" is. Named in KNOWN_NOT_CLEAN
+// below, which the ledger checks rather than trusts:
 //
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
-//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
-//     the only inheritable work IT HAD IDENTIFIED. Both are now in the ledger
-//     below. The node shapes the two new productions must produce — and the
-//     controls they must not disturb — are pinned in
-//     reifyGrammarQualifiedRef.test.ts, the file that task owns; this ledger
-//     records only that the two fixtures parse clean.
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
 //     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
@@ -4960,29 +5142,25 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     fixture's own header declares it a deliberate FAIL probe. Both halves are
 //     pinned above: the member-position arrow type IS clean, and the top-level
 //     `param` MUST error.
+//   - shear_angles_vec3_angle_param_pre.ri and shear_angles_vec3_wrongq_ctrl.ri
+//     — both error solely on the local binding name `out`: `let out =
+//     f(axis)`. Measured: `let out = 1` inside a `structure def` block yields
+//     2 error nodes where `let q = 1` yields 0, and `param out : Length =
+//     1mm` also yields 2 — the Vector3<Angle> parameter beside it is not
+//     implicated (`fn f(v : Vector3<Angle>) -> Real { 1.0 }` parses clean).
+//     `out` is a hard `kw<>`, reserved for the `port out` direction form —
+//     the same self-inflicted class as round 4's `chain`/`meta` demotions to
+//     `ekw<>`. Grammar CAPABILITY, owned by the #5907 series, not coverage;
+//     both stay unpinned here.
 //
-// THE ARITHMETIC ABOVE IS INHERITED AND ITS DENOMINATOR IS STALE. Every "of
-// 330" in this block dates from an earlier round's corpus inventory; #5495 μ
-// re-measured it through this test's own walk and `countErrorNodes`, and the
-// corpus is bigger than the block assumes:
-//
-//     361 committed .ri under CORPUS_ROOTS · 358 parse clean · 329 pinned below
-//
-// So arrow_type.ri is NOT the only un-pinned file: 29 currently-clean files sit
-// outside the ratchet — examples/best_practices/angle_crossings.ri, the ten
-// tests/prd-gate/fixtures/pnrg_envelope_*.ri, compose_fn_field_resolves.ri and
-// the rest. That gap is real inheritable work and is the reason this comment no
-// longer claims completeness: a grammar change could regress any of those 29
-// and the ledger — the artifact whose whole purpose is catching exactly that —
-// would stay green.
-//
-// DO NOT RE-STATE THOSE THREE NUMBERS AS THE NEW TRUTH. They were measured on
-// 2026-08-23 and go stale the next time anyone adds a `.ri`, which is how the
-// "330" above rotted in the first place. The LIVE arithmetic is printed by this
-// test's own failure message (`measured N clean of M …; K clean files are not
-// pinned`); to see it on demand, read those three counts off a run rather than
-// off this comment. A future round adding a family should shrink the 29 and
-// leave the counting to the test.
+// THE ARITHMETIC ABOVE IS INHERITED, AND EVERY DENOMINATOR IN IT IS STALE BY
+// CONSTRUCTION — each was a snapshot of the corpus on the day its round ran,
+// and the corpus keeps growing every round after. #6605 re-measured through
+// the ledger's own walk and closed the gap those stale snapshots kept
+// finding: the pinned set below IS the full measured-clean set as of this
+// commit. The LIVE arithmetic is printed by this test's own failure message
+// (`measured N clean of M …; K clean files are not pinned`) — read it off a
+// run, never off this or any other comment.
 //
 // AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
 // reasoning for every change above — why `ekw<>` and not `kw<>`, why the
@@ -5018,9 +5196,17 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 entries; #5495 μ added its two
-// fixtures. The entries below are a SUBSET of the clean set, not the whole of
-// it — see the re-measured arithmetic above and the 29-file gap it names.
+// addition here. Whether every clean file is pinned is measured and reported
+// in the failure message below (`unpinnedClean`) but deliberately not gated —
+// gating it would force every future clean prd-gate fixture into a matching
+// _GUI_COUPLED_RI_FIXTURES edit with no grammar change behind it. The three
+// files named above ARE gated: KNOWN_NOT_CLEAN below asserts each still fails
+// to parse, so a capability gain reads as a failure instead of a stale
+// exclusion.
+//
+// #6605: coverage, not capability. No production in reify.grammar changed;
+// every path pinned by this round already parsed clean and was simply
+// unlisted.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
@@ -5036,8 +5222,10 @@ const EXPECTED_CLEAN = [
   'examples/auto/bounded_fallback_unsound.ri',
   'examples/auto_binding_sites.ri',
   'examples/bearing_auto_seal.ri',
+  'examples/best_practices/angle_crossings.ri',
   'examples/best_practices/bolt_circle.ri',
   'examples/best_practices/clearance_oracle.ri',
+  'examples/best_practices/dimensioned_arguments.ri',
   'examples/best_practices/discrete_choice.ri',
   'examples/best_practices/hollow_primitives.ri',
   'examples/best_practices/negation.ri',
@@ -5074,6 +5262,7 @@ const EXPECTED_CLEAN = [
   'examples/extrude_infinite.ri',
   'examples/fdm_bracket.ri',
   'examples/fea_bracket_member_access.ri',
+  'examples/fea_bracket_minimize_mass.ri',
   'examples/fea_cantilever_smoke.ri',
   'examples/fea_multi_case_bracket.ri',
   'examples/fea_multi_case_smoke.ri',
@@ -5108,6 +5297,7 @@ const EXPECTED_CLEAN = [
   'examples/geometric_relations/construction_datum.ri',
   'examples/geometric_relations/feature_datum_axis.ri',
   'examples/geometric_relations/global_float.ri',
+  'examples/geometric_relations/tangent_roller.ri',
   'examples/half_space.ri',
   'examples/imported_field/openvdb_stress.ri',
   'examples/integration_corner_cases.ri',
@@ -5263,6 +5453,7 @@ const EXPECTED_CLEAN = [
   'examples/tolerancing/vc_boundary_solid.ri',
   'examples/topology_selectors/all_topology_selectors_wiring.ri',
   'examples/topology_selectors/block_inertia.ri',
+  'examples/topology_selectors/bottom_deck_selectors.ri',
   'examples/topology_selectors/fillet_top_edges.ri',
   'examples/trait_assoc_fn_cylinder.ri',
   'examples/trait_assoc_fn_overload.ri',
@@ -5282,6 +5473,13 @@ const EXPECTED_CLEAN = [
   'examples/whole_model_cost_min.ri',
   'examples/whole_model_joint_drive.ri',
   'tests/prd-gate/fixtures/adt_mirror_of_arm.ri',
+  'tests/prd-gate/fixtures/adt_relation_verbs.ri',
+  'tests/prd-gate/fixtures/adv_beta_undef_arith_control.ri',
+  'tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri',
+  'tests/prd-gate/fixtures/adv_beta_v7_pm_is_real_zero.ri',
+  'tests/prd-gate/fixtures/adv_ivf_undef_ctor_arg_check_silent.ri',
+  'tests/prd-gate/fixtures/adv_ivf_undef_flow_constraint_indeterminate_exit0.ri',
+  'tests/prd-gate/fixtures/angle_crossing_idiom.ri',
   'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
   'tests/prd-gate/fixtures/collection_expr_index_resolves.ri',
   'tests/prd-gate/fixtures/collection_sub_at_placement_rejected.ri',
@@ -5292,9 +5490,16 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri',
   'tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri',
   'tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri',
+  'tests/prd-gate/fixtures/compose_fn_field_resolves.ri',
+  'tests/prd-gate/fixtures/compose_middle_type_mismatch_rejected.ri',
+  'tests/prd-gate/fixtures/compose_one_arg_rejected.ri',
   'tests/prd-gate/fixtures/cost_min_money_objective.ri',
   'tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri',
   'tests/prd-gate/fixtures/cross_sub_geometry_ref.ri',
+  'tests/prd-gate/fixtures/curvature_rad_literal.ri',
+  'tests/prd-gate/fixtures/damped_material_mixin_conformance.ri',
+  'tests/prd-gate/fixtures/damped_material_preset_conformance.ri',
+  'tests/prd-gate/fixtures/dce_runtime_payload.ri',
   'tests/prd-gate/fixtures/dcr_dimension_rejection_channel_fires.ri',
   'tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri',
   'tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri',
@@ -5307,14 +5512,32 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/dcr_solver_load_dropped_bare.ri',
   'tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri',
   'tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri',
+  'tests/prd-gate/fixtures/driver_contract_allow_indeterminate.ri',
+  'tests/prd-gate/fixtures/driver_contract_dfm_measurement_arm.ri',
+  'tests/prd-gate/fixtures/driver_contract_eval_blind_to_violation.ri',
+  'tests/prd-gate/fixtures/driver_contract_geometry_test_indeterminate.ri',
+  'tests/prd-gate/fixtures/driver_contract_header_mismatch.ri',
+  'tests/prd-gate/fixtures/driver_contract_report_blind_to_violation.ri',
+  'tests/prd-gate/fixtures/driver_parity_auto_ctl.ri',
+  'tests/prd-gate/fixtures/driver_parity_eq_plus_ineq.ri',
+  'tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri',
+  'tests/prd-gate/fixtures/driver_parity_relate_conflict.ri',
+  'tests/prd-gate/fixtures/driver_parity_two_sided_auto.ri',
+  'tests/prd-gate/fixtures/dwr_cantilever_energy.ri',
+  'tests/prd-gate/fixtures/dwr_cantilever_qoi.ri',
+  'tests/prd-gate/fixtures/dwr_qoi_readback.ri',
+  'tests/prd-gate/fixtures/dwr_qoi_without_adaptive.ri',
   'tests/prd-gate/fixtures/engine_build_hardening_kappa_mixed_kernel_selector.ri',
   'tests/prd-gate/fixtures/expected_type_pushdown_arg.ri',
   'tests/prd-gate/fixtures/expected_type_pushdown_let.ri',
   'tests/prd-gate/fixtures/faces_by_normal_symbolic_eval_silent.ri',
   'tests/prd-gate/fixtures/forall_collection_resolves.ri',
   'tests/prd-gate/fixtures/forall_range_domain_rejected.ri',
+  'tests/prd-gate/fixtures/frame_to_frame_resolves.ri',
+  'tests/prd-gate/fixtures/frame_to_frame_transform3_nomatch.ri',
   'tests/prd-gate/fixtures/geometry_let_selector_consumer.ri',
   'tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri',
+  'tests/prd-gate/fixtures/gui_purpose_surface.ri',
   'tests/prd-gate/fixtures/hand_placed_twin_two_subs_eval.ri',
   'tests/prd-gate/fixtures/indexed_sub_bare_member_resolves.ri',
   'tests/prd-gate/fixtures/indexed_sub_coll_arm_baseline.ri',
@@ -5326,18 +5549,54 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/indexed_sub_self_member_nogeom_unsupported.ri',
   'tests/prd-gate/fixtures/indexed_sub_silent_undef_baseline.ri',
   'tests/prd-gate/fixtures/indexed_sub_spec_arm_baseline.ri',
+  'tests/prd-gate/fixtures/instantiation_value_flow_probe.ri',
   'tests/prd-gate/fixtures/ir_clean_eval.ri',
+  'tests/prd-gate/fixtures/ivf_override_violates_constraint.ri',
+  'tests/prd-gate/fixtures/jacobian_column_members.ri',
+  'tests/prd-gate/fixtures/numeric_floor_bare_baseline.ri',
+  'tests/prd-gate/fixtures/numeric_floor_dimensioned_silent_accept.ri',
+  'tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri',
+  'tests/prd-gate/fixtures/numeric_sinh_bare_baseline.ri',
+  'tests/prd-gate/fixtures/numeric_sinh_dimensioned_silent_accept.ri',
   'tests/prd-gate/fixtures/objective_inherit_ambiguous.ri',
+  'tests/prd-gate/fixtures/orient_axis_angle_member_parses.ri',
+  'tests/prd-gate/fixtures/orient_to_axis_angle_call_resolves.ri',
+  'tests/prd-gate/fixtures/parse_length_match_resolves.ri',
+  'tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_cone.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_loft.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_pipe.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_sphere.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_spline.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_sweep.ri',
+  'tests/prd-gate/fixtures/pnrg_envelope_torus.ri',
   'tests/prd-gate/fixtures/posed_subs_distance_query_unresolvable.ri',
   'tests/prd-gate/fixtures/purpose_nested_structure.ri',
   'tests/prd-gate/fixtures/quantifier_expr_int_domain_resolves.ri',
   'tests/prd-gate/fixtures/quantifier_expr_member_access_rejected.ri',
   'tests/prd-gate/fixtures/quantifier_expr_range_domain_rejected.ri',
   'tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri',
+  'tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri',
   'tests/prd-gate/fixtures/revolute_silent_accept.ri',
+  'tests/prd-gate/fixtures/rotational_closure_prestate.ri',
   'tests/prd-gate/fixtures/scalar_codomain_mismatch.ri',
   'tests/prd-gate/fixtures/self_collection_count_redirect_rejected.ri',
+  'tests/prd-gate/fixtures/shear_angles_component_deg_compare_pre.ri',
+  'tests/prd-gate/fixtures/shear_angles_field_decl_pre.ri',
+  'tests/prd-gate/fixtures/shift_invert_modal_shifted.ri',
+  'tests/prd-gate/fixtures/shift_invert_modal_unshifted.ri',
   'tests/prd-gate/fixtures/single_sub_pose_resolves.ri',
+  'tests/prd-gate/fixtures/solver_unification_ineq_eq_penalty_offset.ri',
+  'tests/prd-gate/fixtures/solver_unification_ineq_eq_two_sided_control.ri',
+  'tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri',
+  'tests/prd-gate/fixtures/spec_conformance_directive_block.ri',
+  'tests/prd-gate/fixtures/ssc_ineq_bracketed_strict.ri',
+  'tests/prd-gate/fixtures/ssc_refuted_pair.ri',
+  'tests/prd-gate/fixtures/ssc_single_root_free.ri',
+  'tests/prd-gate/fixtures/ssc_two_roots_free.ri',
+  'tests/prd-gate/fixtures/ssc_two_roots_strict.ri',
   'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
@@ -5352,6 +5611,8 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/unit_curated_labels_ascii.ri',
   'tests/prd-gate/fixtures/unit_middot_mul.ri',
   'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
+  'tests/prd-gate/fixtures/unknown_fn_silent_accept_baseline.ri',
+  'tests/prd-gate/fixtures/value_clean_eval_cells.ri',
 ];
 
 // pg-drift-dir:allow — reviewed directory walk (task 6435). This ledger is the
@@ -5372,6 +5633,16 @@ function collectRiFiles(relDir: string): string[] {
   }
   return out;
 }
+
+// The three files named in "WHY THE LAST THREE FILES REMAIN" above — checked
+// below against the live not-clean set instead of only asserted in prose, so
+// a grammar change that starts parsing one of them clean fails loudly rather
+// than leaving a stale exclusion.
+const KNOWN_NOT_CLEAN = [
+  'tests/prd-gate/fixtures/arrow_type.ri',
+  'tests/prd-gate/fixtures/shear_angles_vec3_angle_param_pre.ri',
+  'tests/prd-gate/fixtures/shear_angles_vec3_wrongq_ctrl.ri',
+];
 
 // Wall-clock for the ledger below. The walk itself is fast — 329 files parse
 // in ~0.75 s when this file runs alone — but under the full suite (159 test
@@ -5418,6 +5689,21 @@ describe('reify.grammar — corpus drift ledger', () => {
         `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
         `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
         `${unpinnedClean.length} clean files are not pinned by this ledger)`,
+    ).toEqual([]);
+
+    // The converse of `regressed`: KNOWN_NOT_CLEAN names files this ledger
+    // currently expects to fail, so if the grammar gains the capability to
+    // parse one of them, that must fail loudly here rather than leave "WHY
+    // THE LAST THREE FILES REMAIN" above silently wrong.
+    const knownNotCleanPresent = KNOWN_NOT_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
+    const capabilityGained = knownNotCleanPresent.filter((p) => cleanSet.has(p));
+
+    expect(
+      capabilityGained,
+      `These files are listed in KNOWN_NOT_CLEAN ("WHY THE LAST THREE FILES ` +
+        `REMAIN" above) but now parse with zero error nodes — move each into ` +
+        `EXPECTED_CLEAN and drop it from KNOWN_NOT_CLEAN:\n` +
+        `${capabilityGained.map((p) => `  ${p}`).join('\n')}`,
     ).toEqual([]);
   }, LEDGER_TIMEOUT_MS);
 });

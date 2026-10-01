@@ -19,8 +19,7 @@
 //!   * NOT guarded — the booleans (the ruling, and the gate above);
 //!     `volume`/`area`/mass-property queries (an empty shape's 0.0 IS the GD&T
 //!     oracle's answer channel); tessellation (an empty mesh is an honest
-//!     rendering, and `zone_profile_realize_smoke` relies on it); the
-//!     transforms (empty in, empty out — the emptiness survives to a real
+//!     rendering); the transforms (empty in, empty out — the emptiness survives to a real
 //!     consumer); `fillet`/`chamfer` (already refused by task 7054's
 //!     `BRepKind::Solid` gate, since an empty result classifies as `Compound`);
 //!     and `fuse_shape_list` (a pure union over a non-empty list, on the hot

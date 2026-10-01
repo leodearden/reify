@@ -42,7 +42,7 @@ impl StubProblem {
 impl AdaptiveProblem for StubProblem {
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         let est = self
             .estimates
             .get(self.next)
@@ -56,7 +56,7 @@ impl AdaptiveProblem for StubProblem {
             })
             .clone();
         self.next += 1;
-        est
+        Ok(est)
     }
 
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
@@ -67,11 +67,12 @@ impl AdaptiveProblem for StubProblem {
 
 /// Build an `AdaptiveEstimate` with a fixed non-trivial per-element vector
 /// (so [`mark_dorfler`] marks a real subset) for the budget-gate scripts.
-fn est(global_indicator: f64, n_dofs: usize) -> AdaptiveEstimate {
+fn est(relative_error: f64, n_dofs: usize) -> AdaptiveEstimate {
     AdaptiveEstimate {
-        global_indicator,
+        relative_error,
         per_element: vec![1.0, 2.0, 3.0, 4.0],
         n_dofs,
+        qoi: None,
     }
 }
 
@@ -85,15 +86,17 @@ fn happy_path_converges_after_one_refine() {
     let mut stub = StubProblem::new(vec![
         // iter 0: above target ⇒ mark + refine.
         AdaptiveEstimate {
-            global_indicator: 0.5,
+            relative_error: 0.5,
             per_element: iter0_per_element.clone(),
             n_dofs: 100,
+            qoi: None,
         },
         // iter 1: re-solve is at/below target ⇒ Converged.
         AdaptiveEstimate {
-            global_indicator: 0.04,
+            relative_error: 0.04,
             per_element: vec![0.01, 0.01],
             n_dofs: 200,
+            qoi: None,
         },
     ]);
     let budget = RefinementBudget {

@@ -61,6 +61,8 @@ mod cli_check_cfg;
 mod cli_check_cfg_example;
 #[path = "harness_cli/cli_check_connect_direction.rs"]
 mod cli_check_connect_direction;
+#[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
+mod cli_check_connect_undeclared_member;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
@@ -87,6 +89,8 @@ mod cli_doc;
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
 mod cli_eval_data_carrying_enum;
+#[path = "harness_cli/cli_eval_datum_units.rs"]
+mod cli_eval_datum_units;
 #[path = "harness_cli/cli_eval_fallback_recovery.rs"]
 mod cli_eval_fallback_recovery;
 #[path = "harness_cli/cli_eval_generic_enum.rs"]
@@ -185,3 +189,7 @@ mod cli_undef_self_describing;
 mod cli_vc_clearance;
 #[path = "harness_cli/corpus_no_bare_scalar.rs"]
 mod corpus_no_bare_scalar;
+#[path = "harness_cli/units_length_boundary_gate.rs"]
+mod units_length_boundary_gate;
+#[path = "harness_cli/units_length_boundary_ledger.rs"]
+mod units_length_boundary_ledger;

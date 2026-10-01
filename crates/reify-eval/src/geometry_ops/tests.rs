@@ -25245,8 +25245,14 @@
     }
 
     /// A `Value::Vector` of three bare dimensionless `Real` components — the
-    /// shape a BARE `plane_yz(10)` / `point3(10, 0, 0)` origin has, and the one
-    /// δ exists to reject.
+    /// shape a BARE `point3(10, 0, 0)` origin has, and the one δ exists to
+    /// reject.
+    ///
+    /// `plane_yz(10)` no longer mints it: units-length ε (task 5746, R11) gates
+    /// the producer, which is exactly why the rows below build their input BY
+    /// HAND. δ's consumer-side gate stays reachable through the five
+    /// construction-datum producers ε leaves dimension-polymorphic, so the rows
+    /// still cover live behaviour rather than a dead path.
     fn bare_real_vector3(x: f64, y: f64, z: f64) -> reify_ir::Value {
         reify_ir::Value::Vector(vec![
             reify_ir::Value::Real(x),
@@ -25624,10 +25630,15 @@
 
     /// The headline δ behaviour for `decode_plane`: a BARE origin is rejected at
     /// every component, with the same `ox`/`oy`/`oz` names and the same wording
-    /// the SCALAR form of the same builtin already used since task 5214. That
-    /// name choice is deliberate — `mirror(b, plane_yz(10))` and
-    /// `mirror(b, 10, 0, 0, 1, 0, 0)` are the same author mistake and now read
-    /// identically.
+    /// the SCALAR form of the same builtin already used since task 5214.
+    ///
+    /// That name choice was argued from `mirror(b, plane_yz(10))` reading
+    /// identically to `mirror(b, 10, 0, 0, 1, 0, 0)`. Units-length ε (task 5746,
+    /// R11) has since rejected `plane_yz(10)` at the PRODUCER, so that
+    /// particular pairing no longer reaches here and now reads
+    /// `plane_yz: offset argument expects Length`. The names stay `ox`/`oy`/`oz`
+    /// for the route that DOES still reach here — a hand-built Plane, and the
+    /// five construction-datum producers ε leaves dimension-polymorphic.
     #[test]
     fn decode_plane_rejects_a_bare_origin_at_every_component() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -27360,9 +27371,13 @@
                 kernel_handle: Some(parent_handle),
             },
         );
-        // args[1]: a well-formed Plane whose ORIGIN is bare — the exact shape
-        // `plane_xy(10)` produces, and the 1000× hazard δ exists to catch. The
-        // NORMAL beside it stays bare on purpose (D3, BINDING) and must
+        // args[1]: a well-formed Plane whose ORIGIN is bare — the 1000× hazard δ
+        // exists to catch. It is built BY HAND precisely because `plane_xy(10)`
+        // can no longer mint it: units-length ε (task 5746, R11) gates that
+        // producer. Building it here is what keeps δ's consumer-side gate
+        // covered, and the gate is still live — the five construction-datum
+        // producers ε leaves dimension-polymorphic reach it from real source.
+        // The NORMAL beside it stays bare on purpose (D3, BINDING) and must
         // contribute no diagnostic of its own.
         values.insert(
             ValueCellId::new("MySolid", "plane"),
@@ -33854,21 +33869,22 @@
     //
     // Every degenerate case above has a signed area of EXACTLY 0.0 (collinear,
     // identical, 2-point), and the smallest accepted ring above has area 5e-5.
-    // That leaves the whole open interval (0, 1e-4) passing the suite unchanged
-    // — so an accidental widening of the constant to, say, 1e-6, which would
-    // start silently rejecting legitimately small profiles, would ship green.
+    // So without the two tests below, the gate's behaviour on every area
+    // strictly between those two is unconstrained — including whether it
+    // consults the threshold at all.
     //
-    // Two DIFFERENT guards close that, and it is worth being precise about
-    // which does what, because the obvious reading is wrong. The two boundary
-    // tests below derive their rings FROM the constant (0.5x and 2x), so they
-    // MOVE WITH IT: they do NOT catch a retune on their own. What they pin is
-    // that the gate honours whatever value the constant holds, with the right
-    // sense and scale — verified by mutation: widening the comparison to
-    // `< TOLERANCE * 4.0` fails the 2x test, and halving the shoelace result
-    // fails the 0.5x test. The ABSOLUTE magnitude is pinned separately, by
-    // `degenerate_ring_area_tolerance_matches_mesher_gate`, which compares
-    // against the mesher's own literal — also verified by mutation: setting the
-    // constant to 1e-6 fails exactly that test and no other.
+    // They derive their rings FROM the constant (0.5x and 2x), so they MOVE
+    // WITH IT. What they pin is that the gate honours the constant's value with
+    // the right sense and scale — verified by mutation: widening the comparison
+    // to `< TOLERANCE * 4.0` fails the 2x test, and narrowing it to
+    // `< TOLERANCE * 0.25` fails the 0.5x test.
+    //
+    // The constant is not this crate's. It is `reify_solver_elastic`'s
+    // `pub const`, the binding `validate_boundary` compares against, so parity
+    // with the mesher is structural, and the mesher's own
+    // `validate_boundary_*_area_tolerance` tests pin both of its call sites.
+    // Its numeric value is deliberately pinned nowhere: a retune is an edit to
+    // that one declaration and moves both gates together.
 
     /// Helper: coordinate args for a right triangle with the requested shoelace
     /// signed area, in SI m².
@@ -33887,9 +33903,9 @@
     }
 
     /// A ring with |signed area| BELOW the tolerance is degenerate and rejected.
-    /// Half the tolerance, not one ulp below it: the point is to pin the
-    /// constant's magnitude, and a 2x margin keeps the test itself immune to
-    /// float noise in the shoelace sum.
+    /// Half the tolerance, not one ulp below it: the 2x margin keeps the test
+    /// immune to float noise in the shoelace sum while still pinning that the
+    /// gate rejects rings below the shared constant.
     #[test]
     fn compile_geometry_op_polygon_profile_area_just_below_tolerance_returns_err() {
         let target = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
@@ -33935,97 +33951,161 @@
         );
     }
 
-    /// Resolve this crate's manifest dir, preferring the RUNTIME
-    /// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake.
+    // ── Self-intersection: a ring that encloses area, but not ONCE ─────────
+    //
+    // Appended AFTER the tolerance sub-block rather than beside the
+    // clockwise-triangle test, because that block's opening comment claims
+    // "every degenerate case above has a signed area of EXACTLY 0.0" — and the
+    // bow-tie below is a REJECTED ring with an area of 5e-5. Splicing these in
+    // there would quietly falsify it.
+    //
+    // The area gate and this one are complementary, not redundant: the area
+    // gate asks whether the ring encloses area at all, this one whether it
+    // encloses it exactly once. The tolerance policy behind the accept cases
+    // is stated once, on `ring_self_intersects_2d` in
+    // `reify-solver-elastic/src/mesher.rs`, and is deliberately not restated
+    // here.
+
+    /// A bow-tie ring has non-zero enclosed area but crosses itself, so it
+    /// describes no well-defined region and must be rejected at build time.
     ///
-    /// The bake goes stale when a seeded warm-lane `target/` is reused from a
-    /// since-deleted worktree — `CARGO_MANIFEST_DIR` is not part of cargo's
-    /// fingerprint, so a content-identical rebuild is never triggered. Same
-    /// hazard and same fix as `resolve_manifest_dir` in
-    /// `crates/reify-ast/tests/dag_invariant.rs` (esc-4906-57).
-    fn eval_crate_manifest_dir() -> String {
-        std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+    /// The fixture is the ASYMMETRIC bow-tie, and that choice is load-bearing:
+    /// its shoelace area is 5e-5 m², nine orders of magnitude above
+    /// `DEGENERATE_RING_AREA_TOLERANCE`, so it CLEARS task 5664's gate. An
+    /// `Err` here can therefore only have come from the self-intersection
+    /// check. (The symmetric bow-tie has an area of exactly 0.0 and is already
+    /// rejected as degenerate — see
+    /// `..._zero_area_bowtie_reports_degeneracy`, which pins that precedence.)
+    ///
+    /// The edge-index needles matter as much as the "self-intersect" one: a
+    /// diagnostic that merely says the polygon is bad leaves the designer to
+    /// find the offending pair by eye.
+    #[test]
+    fn compile_geometry_op_polygon_profile_self_intersecting_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.02, 0.0, 0.0, 0.01, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a self-intersecting (bow-tie) polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(
+            &diagnostics,
+            &["polygon", "self-intersect", "edge 1", "edge 3"],
+        );
     }
 
-    /// STRUCTURAL PARITY GUARD — the local tolerance must equal the mesher's.
-    ///
-    /// `DEGENERATE_RING_AREA_TOLERANCE` is documented as a strict pre-image of
-    /// the threshold `validate_boundary` (`reify-solver-elastic/src/mesher.rs`)
-    /// applies to a sampled ring, and that relationship only holds while the two
-    /// values are equal.
-    ///
-    /// HALF of the original duplication is now gone: task 5218 promoted
-    /// `ring_signed_area_2d` to `pub` and re-exported it at that crate's root,
-    /// so `profile_polygon` calls the SHARED formula rather than a copy. The
-    /// THRESHOLD did not come with it — over there it is still an inline
-    /// `1e-14` literal inside the private `validate_boundary`, so there is
-    /// nothing to import and the local `const` remains.
-    ///
-    /// So that half of the parity is asserted from the outside: read the
-    /// mesher's source and compare the literals. That makes drift over there
-    /// fail HERE, loudly, instead of quietly dissolving the pre-image claim.
-    /// The proper fix is to promote the threshold to a `pub const` beside the
-    /// function and delete this one; that edits a crate this task holds no lock
-    /// on, and is filed as follow-up.
+    /// NEGATIVE CONTROL — a repeated vertex is a redundant vertex, not a
+    /// crossing, and the gate JUDGES rather than normalises: the duplicate
+    /// must survive into `points` untouched.
     #[test]
-    fn degenerate_ring_area_tolerance_matches_mesher_gate() {
-        let mesher_path = std::path::Path::new(&eval_crate_manifest_dir())
-            .join("../reify-solver-elastic/src/mesher.rs");
-        let src = std::fs::read_to_string(&mesher_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to read {} for the tolerance parity check: {}",
-                mesher_path.display(),
-                e
-            )
-        });
-
-        // `validate_boundary` gates both the outer ring and each hole with
-        // `ring_signed_area_2d(..).abs() < <literal>`. Collect every such
-        // literal; each must equal our copy. The `pub fn` DEFINITION line also
-        // contains `ring_signed_area_2d(` but no `.abs() < `, so `split_once`
-        // filters it out rather than mis-parsing it.
-        const NEEDLE: &str = ".abs() < ";
-        let thresholds: Vec<&str> = src
-            .lines()
-            .filter(|line| line.contains("ring_signed_area_2d("))
-            .filter_map(|line| line.split_once(NEEDLE))
-            .map(|(_, tail)| {
-                tail.trim_start()
-                    .split(|c: char| c.is_whitespace() || c == '{')
-                    .next()
-                    .unwrap_or("")
-            })
-            .collect();
-
-        assert!(
-            thresholds.len() >= 2,
-            "expected at least 2 `ring_signed_area_2d(..).abs() < <lit>` gates in {} (outer ring \
-             + holes), found {:?}. If `validate_boundary` was refactored — e.g. the threshold \
-             lifted to a named const, or the comparison reformatted across lines — this guard can \
-             no longer see it: re-point it, or better, make the const `pub` and import it here so \
-             the parity becomes structural.",
-            mesher_path.display(),
-            thresholds
+    fn compile_geometry_op_polygon_profile_repeated_vertex_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01]),
         );
-
-        for raw in &thresholds {
-            let parsed: f64 = raw.parse().unwrap_or_else(|e| {
-                panic!(
-                    "could not parse the mesher's degenerate-ring threshold {:?} as f64: {}",
-                    raw, e
-                )
-            });
-            assert_eq!(
-                parsed, DEGENERATE_RING_AREA_TOLERANCE,
-                "the mesher's degenerate-ring threshold ({:e}) no longer equals \
-                 DEGENERATE_RING_AREA_TOLERANCE ({:e}) in geometry_ops.rs. The build-time polygon \
-                 gate is only a strict PRE-IMAGE of `validate_boundary` while these are equal — \
-                 if they diverge, a ring this crate accepts can be rejected downstream (or vice \
-                 versa) with no diagnostic explaining why. Update both, together.",
-                parsed, DEGENERATE_RING_AREA_TOLERANCE
-            );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(
+                    points,
+                    vec![
+                        [0.0, 0.0],
+                        [0.01, 0.0],
+                        [0.01, 0.0],
+                        [0.01, 0.01],
+                        [0.0, 0.01]
+                    ],
+                    "the duplicate vertex must be PRESERVED — this gate judges, it does not \
+                     normalise"
+                );
+            }
+            other => panic!(
+                "a ring with a repeated vertex must still compile, got: {:?}",
+                other
+            ),
         }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// NEGATIVE CONTROL — touching is not crossing. Vertex 3 `(0.01, 0)` lies
+    /// exactly on edge 0, so the ring is a T-junction, not a bow-tie.
+    #[test]
+    fn compile_geometry_op_polygon_profile_touching_vertex_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.02, 0.0, 0.02, 0.01, 0.01, 0.0, 0.0, 0.01]),
+        );
+        assert!(
+            result.is_ok(),
+            "a vertex touching a non-adjacent edge is not a crossing and must still compile, \
+             got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// NEGATIVE CONTROL — the plainest possible simple ring. Guards the
+    /// over-rejection direction for the sweep, as
+    /// `..._area_just_above_tolerance_returns_ok` does for the area gate.
+    #[test]
+    fn compile_geometry_op_polygon_profile_convex_square_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01]),
+        );
+        assert!(
+            result.is_ok(),
+            "a convex square must compile, got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// PRECEDENCE GUARD — the area gate outranks the self-intersection sweep.
+    ///
+    /// The SYMMETRIC bow-tie trips both: its shoelace area is exactly 0.0, and
+    /// edges 1 and 3 cross. (The asymmetric variant above differs only in
+    /// stretching the first vertex pair to 0.02, which is what lifts its area
+    /// to 5e-5 and leaves the crossing intact — so the two fixtures isolate
+    /// the ordering question and nothing else.) It must be reported as
+    /// DEGENERATE, the more fundamental defect, rather than by the crossing
+    /// that is downstream of it. Ordering is also what keeps task 5664's
+    /// existing single-warning assertions passing unchanged, and it puts the
+    /// O(n) scalar test ahead of the O(n²) sweep.
+    ///
+    /// The absence assertion is not redundant with
+    /// `assert_exactly_one_warning`: that helper's `len() == 1` is equally
+    /// satisfied by the WRONG arm firing alone, so only checking for the
+    /// self-intersection wording's absence actually pins which gate spoke.
+    ///
+    /// Same shape as this module's revolve precedence guard
+    /// `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`, and
+    /// like that guard it is GREEN ON ARRIVAL — it was therefore verified by
+    /// mutation rather than trusted on a green run: swapping the two checks in
+    /// `profile_polygon` fails this test and this test only, with
+    /// `..._collinear_points_returns_err` still passing. That asymmetry is the
+    /// point — a mutation the rest of the suite cannot see is exactly what
+    /// this test exists to catch.
+    #[test]
+    fn compile_geometry_op_polygon_profile_zero_area_bowtie_reports_degeneracy() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.0, 0.01, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a bow-tie that is ALSO zero-area must be rejected, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+        assert!(
+            !diagnostics[0].message.contains("self-intersect"),
+            "the zero-area gate must report first: a ring that encloses no area at all is \
+             diagnosed by that, not by the crossing downstream of it. Got: {:?}",
+            diagnostics[0]
+        );
     }
 
     // ── Non-finite dimensions: owned by the LENGTH gate, pinned from here ───
