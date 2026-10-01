@@ -44,44 +44,64 @@ Verdict = aml.Verdict
 
 LIVE_STATES = ("queued", "verifying", "gate", "finalizing")
 EPISTEMIC_STATES = ("unknown", "no_record", "stale_record", "journaled")
+TERMINAL_STATES = ("done", "conflict", "blocked", "abandoned", "superseded")
 
 
 class ClassifyMergeStatusTests(unittest.TestCase):
     def test_done_is_landed(self):
-        self.assertIs(aml.classify_merge_status({"state": "done"}), Verdict.LANDED)
+        self.assertIs(aml.classify_merge_status({"state": "done"}, attributed=True), Verdict.LANDED)
 
     def test_conflict_and_blocked_are_blocked(self):
         for state in ("conflict", "blocked"):
             with self.subTest(state=state):
-                self.assertIs(aml.classify_merge_status({"state": state}),
+                self.assertIs(aml.classify_merge_status({"state": state}, attributed=True),
                               Verdict.BLOCKED)
 
     def test_abandoned_and_superseded_are_failed(self):
         for state in ("abandoned", "superseded"):
             with self.subTest(state=state):
-                self.assertIs(aml.classify_merge_status({"state": state}),
+                self.assertIs(aml.classify_merge_status({"state": state}, attributed=True),
                               Verdict.FAILED)
 
     def test_live_states_keep_waiting(self):
         for state in LIVE_STATES:
-            with self.subTest(state=state):
-                self.assertIsNone(aml.classify_merge_status({"state": state}))
+            for attributed in (True, False):
+                with self.subTest(state=state, attributed=attributed):
+                    self.assertIsNone(aml.classify_merge_status(
+                        {"state": state}, attributed=attributed))
 
     def test_epistemic_states_keep_waiting(self):
         for state in EPISTEMIC_STATES:
-            with self.subTest(state=state):
-                self.assertIsNone(aml.classify_merge_status({"state": state}))
+            for attributed in (True, False):
+                with self.subTest(state=state, attributed=attributed):
+                    self.assertIsNone(aml.classify_merge_status(
+                        {"state": state}, attributed=attributed))
 
     def test_unrecognised_state_fails_open(self):
-        self.assertIsNone(aml.classify_merge_status({"state": "brand_new_state"}))
+        self.assertIsNone(aml.classify_merge_status({"state": "brand_new_state"},
+                                                    attributed=True))
 
     def test_missing_state_keeps_waiting(self):
-        self.assertIsNone(aml.classify_merge_status({"request_id": "mr-1"}))
+        self.assertIsNone(aml.classify_merge_status({"request_id": "mr-1"},
+                                                    attributed=True))
+
+    def test_unattributed_terminal_states_are_unattributed(self):
+        for state in TERMINAL_STATES:
+            with self.subTest(state=state):
+                self.assertIs(aml.classify_merge_status({"state": state},
+                                                        attributed=False),
+                              Verdict.UNATTRIBUTED)
+
+    def test_only_a_request_id_names_one_request(self):
+        self.assertTrue(aml.SelectorKind.REQUEST_ID.names_one_request)
+        self.assertFalse(aml.SelectorKind.TASK_ID.names_one_request)
+        self.assertFalse(aml.SelectorKind.BRANCH.names_one_request)
 
     def test_verdict_values_are_the_exit_code_contract(self):
         self.assertEqual(Verdict.LANDED, 0)
         self.assertEqual(Verdict.BLOCKED, 3)
         self.assertEqual(Verdict.FAILED, 4)
+        self.assertEqual(Verdict.UNATTRIBUTED, 5)
         self.assertEqual(Verdict.PENDING, 75)
 
     def test_no_verdict_shares_a_crash_or_usage_exit_code(self):
@@ -123,11 +143,13 @@ class ScriptedProbe:
 
 
 class AwaitLandingLoopTests(unittest.TestCase):
-    def _await(self, is_landed, merge_status, *, budget=540, interval=30):
+    def _await(self, is_landed, merge_status, *, budget=540, interval=30,
+               attributed=True):
         clock = FakeClock()
         outcome = aml.await_landing(
-            is_landed, merge_status, budget_seconds=budget,
-            interval_seconds=interval, clock=clock.now, sleep=clock.sleep,
+            is_landed, merge_status, merge_status_attributed=attributed,
+            budget_seconds=budget, interval_seconds=interval,
+            clock=clock.now, sleep=clock.sleep,
         )
         return outcome, clock
 
@@ -165,6 +187,25 @@ class AwaitLandingLoopTests(unittest.TestCase):
         self.assertIs(outcome.verdict, Verdict.LANDED)
         self.assertEqual(outcome.source, "merge_status")
         self.assertEqual(outcome.merge_status, reply)
+
+    def test_unattributed_terminal_state_never_reads_as_its_own_verdict(self):
+        for state in TERMINAL_STATES:
+            with self.subTest(state=state):
+                reply = {"state": state, "request_id": "mr-earlier"}
+                outcome, _ = self._await(ScriptedProbe(False), ScriptedProbe(reply),
+                                         attributed=False)
+                self.assertIs(outcome.verdict, Verdict.UNATTRIBUTED)
+                self.assertEqual(outcome.source, "merge_status")
+                self.assertEqual(outcome.merge_status, reply)
+                self.assertEqual(outcome.polls, 1)
+
+    def test_git_ancestry_lands_an_unattributed_wait(self):
+        outcome, _ = self._await(ScriptedProbe(False, True),
+                                 ScriptedProbe({"state": "verifying"}),
+                                 attributed=False)
+        self.assertIs(outcome.verdict, Verdict.LANDED)
+        self.assertEqual(outcome.source, "git_ancestry")
+        self.assertEqual(outcome.polls, 2)
 
     def test_ends_exactly_at_the_budget_and_never_starts_a_round_after_it(self):
         outcome, clock = self._await(ScriptedProbe(False),
@@ -600,15 +641,25 @@ class EndToEndTests(unittest.TestCase):
         again = self.event(self._spawn(shlex.split(first["rearm_command"])), 75)
         self.assertEqual(again["commit"], self.sha_b)
 
-    def test_terminal_merge_status_sets_the_exit_code(self):
-        for state, verdict, exit_code in (("blocked", "BLOCKED", 3),
+    def test_request_id_terminal_merge_status_sets_the_exit_code(self):
+        for state, verdict, exit_code in (("done", "LANDED", 0),
+                                          ("blocked", "BLOCKED", 3),
                                           ("abandoned", "FAILED", 4)):
             with self.subTest(state=state):
                 self.stub.reply = {"state": state}
                 event = self.event(
-                    self.run_tool("--commit", self.sha_b, *self.SELECTOR), exit_code)
+                    self.run_tool("--commit", self.sha_b, "--request-id", "mr-1"),
+                    exit_code)
                 self.assertEqual(event["verdict"], verdict)
                 self.assertEqual(event["source"], "merge_status")
+
+    def test_task_id_done_for_an_unlanded_commit_is_unattributed(self):
+        self.stub.reply = {"state": "done", "request_id": "mr-earlier"}
+        event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 5)
+        self.assertEqual(event["verdict"], "UNATTRIBUTED")
+        self.assertEqual(event["source"], "merge_status")
+        self.assertEqual(event["merge_status"]["request_id"], "mr-earlier")
+        self.assertNotIn("rearm_command", event)
 
     def test_malformed_merge_status_reply_is_pending_not_a_crash(self):
         self.stub.raw_tool_result = {"content": [{"type": "text", "text": None}]}

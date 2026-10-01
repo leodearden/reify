@@ -4,10 +4,14 @@ await-merge-landing.py — wait for a merge request to land, ending itself
 before its host's kill deadline (task #7960).
 
 Each poll round checks two things: whether --commit is an ancestor of --ref
-(git, the authority), and the merge queue's own `merge_status` for the
-request. The waiter stops at the first terminal answer, or when its host's
-deadline is about to arrive, and prints exactly ONE JSON verdict line on
-stdout. Diagnostics go to stderr only.
+(git, the authority), and the merge queue's own `merge_status`. The waiter
+stops at the first terminal answer, or when its host's deadline is about to
+arrive, and prints exactly ONE JSON verdict line on stdout. Diagnostics go to
+stderr only.
+
+Only --request-id names one request. --task-id and --branch name the most
+recent request for that key, which may not carry --commit, so their terminal
+merge_status is reported as UNATTRIBUTED unless git confirms the landing.
 
 Two hosts, one command:
 
@@ -64,13 +68,20 @@ class Verdict(IntEnum):
     LANDED = 0
     BLOCKED = 3
     FAILED = 4
+    UNATTRIBUTED = 5
     PENDING = 75
 
 
 _VERDICT_MEANINGS = {
-    Verdict.LANDED: "commit is an ancestor of --ref, or merge_status reported done",
-    Verdict.FAILED: "merge_status abandoned/superseded — the request will not land",
-    Verdict.BLOCKED: "merge_status conflict/blocked — needs action before it can land",
+    Verdict.LANDED: "commit is an ancestor of --ref, or the --request-id "
+                    "merge_status is done",
+    Verdict.BLOCKED: "the --request-id merge_status is conflict/blocked — needs "
+                     "action before it can land",
+    Verdict.FAILED: "the --request-id merge_status is abandoned/superseded — it "
+                    "will not land",
+    Verdict.UNATTRIBUTED: "a --task-id/--branch merge_status is terminal but git "
+                          "does not confirm: it is the most recent request's, "
+                          "maybe not this commit's",
     Verdict.PENDING: "host budget spent with no terminal state; re-run rearm_command",
 }
 _INTERNAL_ERROR_EXIT = 1
@@ -86,13 +97,15 @@ TERMINAL_MERGE_STATES: Mapping[str, Verdict] = MappingProxyType({
 })
 
 
-def classify_merge_status(merge_status: Mapping[str, Any]) -> Verdict | None:
+def classify_merge_status(merge_status: Mapping[str, Any], *,
+                          attributed: bool) -> Verdict | None:
     """The terminal verdict a merge_status reply carries, or None to keep
-    waiting. Unrecognised states are non-terminal (fail-open)."""
+    waiting. Unrecognised states are non-terminal (fail-open). A terminal
+    reply not `attributed` to --commit's own request is UNATTRIBUTED."""
     state = merge_status.get("state")
-    if not isinstance(state, str):
+    if not isinstance(state, str) or state not in TERMINAL_MERGE_STATES:
         return None
-    return TERMINAL_MERGE_STATES.get(state)
+    return TERMINAL_MERGE_STATES[state] if attributed else Verdict.UNATTRIBUTED
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +135,7 @@ class Outcome:
 
 def _probe_round(
     is_landed: Callable[[], bool], merge_status: Callable[[], Mapping[str, Any]],
+    merge_status_attributed: bool,
 ) -> tuple[Verdict | None, LandingSource | None, Mapping[str, Any] | None, str | None]:
     """One round: git ancestry first (the authority), then merge_status.
     Returns (verdict, source, merge_status reply, probe error)."""
@@ -135,7 +149,7 @@ def _probe_round(
         status = merge_status()
     except ProbeUnavailable as exc:
         return None, None, None, str(exc)
-    verdict = classify_merge_status(status)
+    verdict = classify_merge_status(status, attributed=merge_status_attributed)
     return verdict, (LandingSource.MERGE_STATUS if verdict is not None else None), status, error
 
 
@@ -143,6 +157,7 @@ def await_landing(
     is_landed: Callable[[], bool],
     merge_status: Callable[[], Mapping[str, Any]],
     *,
+    merge_status_attributed: bool,
     budget_seconds: float,
     interval_seconds: float,
     clock: Callable[[], float] = time.monotonic,
@@ -155,7 +170,8 @@ def await_landing(
     polls, last_status, last_error = 0, None, None
     while True:
         polls += 1
-        verdict, source, status, error = _probe_round(is_landed, merge_status)
+        verdict, source, status, error = _probe_round(is_landed, merge_status,
+                                                      merge_status_attributed)
         last_status = status if status is not None else last_status
         last_error = error if error is not None else last_error
         remaining = deadline - clock()
@@ -180,6 +196,12 @@ class SelectorKind(StrEnum):
     @property
     def flag(self) -> str:
         return "--" + self.value.replace("_", "-")
+
+    @property
+    def names_one_request(self) -> bool:
+        """task_id and branch name the most recent request, which may
+        predate --commit."""
+        return self is SelectorKind.REQUEST_ID
 
 
 @dataclass(frozen=True)
@@ -352,7 +374,9 @@ def _exit_code_table() -> str:
                                               "no verdict line"))
     entries.append((_USAGE_EXIT, "", "bad arguments, unresolvable --commit/--ref, "
                                      "or no escalation URL"))
-    rows = [f"  {code:>2}  {name:<8}  {meaning}" for code, name, meaning in sorted(entries)]
+    width = max(len(v.name) for v in Verdict)
+    rows = [f"  {code:>2}  {name:<{width}}  {meaning}"
+            for code, name, meaning in sorted(entries)]
     return "exit codes (the verdict):\n" + "\n".join(rows)
 
 
@@ -397,7 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
     for kind in SelectorKind:
         selectors.add_argument(kind.flag, dest="selector", metavar=kind.name,
                                type=functools.partial(MergeSelector, kind),
-                               help=f"merge_status selector ({kind.value}).")
+                               help=f"merge_status selector ({kind.value})"
+                                    + ("." if kind.names_one_request else
+                                       ": the most recent request (see "
+                                       "UNATTRIBUTED)."))
     parser.add_argument("--host-timeout-ms", type=_non_negative_ms,
                         default=MONITOR_TIMEOUT_CAP_MS, metavar="MS",
                         help="The host's kill deadline: Monitor timeout_ms or Bash "
@@ -520,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
         _logged(GitAncestryProbe(options.repo, options.commit, options.ref,
                                  options.fetch_remote)),
         _logged(MergeStatusClient(url, options.selector).status),
+        merge_status_attributed=options.selector.kind.names_one_request,
         budget_seconds=max(0.0, invocation_budget_seconds(options.host_timeout_ms)
                            - start_up_seconds),
         interval_seconds=options.interval_seconds,
