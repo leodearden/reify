@@ -382,3 +382,17 @@ fn with_boolean_parallelism_restores_the_previous_mode() {
         "leaving the outermost scope must restore the thread's original mode"
     );
 }
+
+#[test]
+fn production_policy_runs_booleans_in_parallel() {
+    // A fresh thread carries the untouched default, exactly as
+    // OcctKernelHandle's dedicated worker does.
+    let production = std::thread::spawn(boolean_parallelism)
+        .join()
+        .expect("reader thread must not panic");
+    assert_eq!(
+        production,
+        BooleanParallelism::Parallel,
+        "production must build OCCT booleans in parallel"
+    );
+}
