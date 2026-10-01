@@ -30,9 +30,13 @@ from __future__ import annotations
 
 import argparse
 import functools
+import http.client
+import itertools
+import json
 import shlex
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -159,16 +163,8 @@ def await_landing(
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# merge_status over the escalation server's MCP streamable-HTTP endpoint
 # ---------------------------------------------------------------------------
-
-def _exit_code_table() -> str:
-    entries = [(int(v), v.name, _VERDICT_MEANINGS[v]) for v in Verdict]
-    entries.append((_USAGE_EXIT, "", "bad arguments, unresolvable --commit/--ref, "
-                                     "or no escalation URL"))
-    rows = [f"  {code:>2}  {name:<8}  {meaning}" for code, name, meaning in sorted(entries)]
-    return "exit codes (the verdict):\n" + "\n".join(rows)
-
 
 class SelectorKind(StrEnum):
     """Each value IS merge_status's argument name."""
@@ -188,6 +184,107 @@ class MergeSelector:
 
     def arguments(self) -> dict[str, str]:
         return {self.kind.value: self.value}
+
+
+_MCP_HEADERS = MappingProxyType({
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+})
+_TRANSPORT_ERRORS = (OSError, ValueError, http.client.HTTPException)
+
+
+def _jsonrpc_result(headers: http.client.HTTPMessage, body: bytes) -> dict[str, Any]:
+    """The `result` object of a JSON or SSE (last `data:` line) reply."""
+    text = body.decode("utf-8")
+    if "text/event-stream" in headers.get("Content-Type", ""):
+        data = [line[len("data:"):] for line in text.splitlines()
+                if line.startswith("data:")]
+        if not data:
+            raise ValueError("SSE reply carried no data line")
+        text = data[-1]
+    reply = json.loads(text)
+    result = reply.get("result") if isinstance(reply, dict) else None
+    if not isinstance(result, dict):
+        raise ValueError(f"no JSON-RPC result: {text[:200]}")
+    return result
+
+
+def _tool_payload(result: Mapping[str, Any]) -> Mapping[str, Any]:
+    """structuredContent when present, else the JSON in content[0].text."""
+    if result.get("isError"):
+        raise ValueError(f"tool error: {result.get('content')}")
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    content = result.get("content") or [{}]
+    payload = json.loads(content[0].get("text", ""))
+    if not isinstance(payload, dict):
+        raise ValueError(f"tool result is not an object: {payload!r}")
+    return payload
+
+
+class MergeStatusClient:
+    """Calls merge_status for one selector. The session id is the only state;
+    any failure drops it, so the next poll re-initializes (a restarted server
+    forgets its sessions)."""
+
+    def __init__(self, url: str, selector: MergeSelector,
+                 timeout_seconds: float = PROBE_TIMEOUT_SECONDS):
+        self._url = url
+        self._selector = selector
+        self._timeout_seconds = timeout_seconds
+        self._session_id: str | None = None
+        self._ids = itertools.count(1)
+
+    def status(self) -> Mapping[str, Any]:
+        try:
+            self._ensure_session()
+            headers, body = self._post(self._request("tools/call", {
+                "name": "merge_status", "arguments": self._selector.arguments(),
+            }))
+            return _tool_payload(_jsonrpc_result(headers, body))
+        except _TRANSPORT_ERRORS as exc:
+            self._session_id = None
+            raise ProbeUnavailable(f"merge_status: {exc}") from exc
+
+    def _ensure_session(self) -> None:
+        if self._session_id is not None:
+            return
+        headers, body = self._post(self._request("initialize", {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "await-merge-landing", "version": "1"},
+        }))
+        _jsonrpc_result(headers, body)
+        session_id = headers.get("mcp-session-id")
+        if not session_id:
+            raise ValueError("initialize returned no mcp-session-id")
+        self._session_id = session_id
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def _request(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": next(self._ids), "method": method,
+                "params": params}
+
+    def _post(self, payload: Mapping[str, Any]) -> tuple[http.client.HTTPMessage, bytes]:
+        headers = dict(_MCP_HEADERS)
+        if self._session_id is not None:
+            headers["Mcp-Session-Id"] = self._session_id
+        request = urllib.request.Request(self._url, data=json.dumps(payload).encode(),
+                                         headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+            return response.headers, response.read()
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _exit_code_table() -> str:
+    entries = [(int(v), v.name, _VERDICT_MEANINGS[v]) for v in Verdict]
+    entries.append((_USAGE_EXIT, "", "bad arguments, unresolvable --commit/--ref, "
+                                     "or no escalation URL"))
+    rows = [f"  {code:>2}  {name:<8}  {meaning}" for code, name, meaning in sorted(entries)]
+    return "exit codes (the verdict):\n" + "\n".join(rows)
 
 
 @dataclass(frozen=True)

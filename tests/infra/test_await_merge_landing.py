@@ -300,7 +300,8 @@ class StubEscalationServer:
 
     def __enter__(self):
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever,
+                                        kwargs={"poll_interval": 0.05}, daemon=True)
         self._thread.start()
         return self
 
