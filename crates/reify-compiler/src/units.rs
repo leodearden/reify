@@ -3775,6 +3775,28 @@ mod tests {
         assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
     }
 
+    #[test]
+    fn algebra_affine_apply_claims_only_point3_length() {
+        for (label, quantity) in [
+            ("Angle", reify_core::Type::angle()),
+            ("dimensionless", reify_core::Type::dimensionless_scalar()),
+            (
+                "Mass",
+                reify_core::Type::Scalar {
+                    dimension: reify_core::DimensionVector::MASS,
+                },
+            ),
+        ] {
+            let point = reify_core::Type::point3(quantity);
+            assert_eq!(
+                affine_map_algebra_result_type("affine_apply", Some(&point)),
+                None,
+                "Point3<{label}>: RULING #6089 — an AffineMap's translation is Length, so \
+                 `linear·Q + Length` is ill-dimensioned unless Q is Length and must not be claimed"
+            );
+        }
+    }
+
     // --- 2-D profile face producers (task-4160) ---
     // RED until step-6 adds "rectangle" and "circle" to GEOMETRY_FUNCTION_NAMES.
 
