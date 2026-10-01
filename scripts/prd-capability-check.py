@@ -697,9 +697,11 @@ class ProbeRun:
 _HARNESS_ERROR = "HARNESS_ERROR"
 
 
-# Substrings tree-sitter uses to report an errno-13 denial.  Either spelling may
-# appear depending on which layer surfaces the error, so both are accepted.
-_PERMISSION_DENIAL_MARKERS = ("Permission denied", "os error 13")
+# tree-sitter's two spellings of an errno-13 denial; either may appear depending
+# on which layer surfaces the error, so both are accepted.  The errno is anchored
+# with a negative lookahead rather than a required ")" so a bare end-of-string
+# `os error 13` still matches while EOWNERDEAD(130)..EHWPOISON(133) do not.
+_PERMISSION_DENIAL_RE = re.compile(r"Permission denied|os error 13(?![0-9])")
 
 # Substring marking a grammar *load* failure, as opposed to a parse failure.
 _GRAMMAR_LOAD_FAILURE_MARKER = "Failed to load language"
@@ -750,7 +752,7 @@ def grammar_cache_denied(run: ProbeRun) -> bool:
     stderr = run.stderr
     if _GRAMMAR_LOAD_FAILURE_MARKER not in stderr:
         return False
-    return any(marker in stderr for marker in _PERMISSION_DENIAL_MARKERS)
+    return _PERMISSION_DENIAL_RE.search(stderr) is not None
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
