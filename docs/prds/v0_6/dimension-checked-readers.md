@@ -82,7 +82,8 @@ shape:
 The **correct** reader already exists — `reify-stdlib/src/helpers.rs:229`
 `validate_dimensioned_scalar` (Scalar + exact dimension + finite) — and is used at exactly
 **6 production sites in 3 files** (`loads.rs:161`, `stackup.rs:32`, `tolerancing.rs:88/:89/:148/:160`).
-`arg_acceptance::accept_arg` (`reify-eval/src/arg_acceptance.rs:117`) is the eval-side twin and
+`arg_acceptance::accept_arg` (`reify-eval/src/arg_acceptance.rs:117`) *(pre-relocation;
+#5791 moved the module to `crates/reify-ir/src/arg_acceptance.rs`)* is the eval-side twin and
 is imported by **zero** files under `compute_targets/**`.
 
 ### 2.2 The solver inversions
@@ -173,11 +174,12 @@ Six legs. Legs A–D are the soundness work; E is the guard; F is the documented
 ### Leg A — one shared acceptance family, reachable from both crates
 
 `arg_acceptance` today lives at `reify-eval/src/arg_acceptance.rs` and is `pub(crate)`
-(`reify-eval/src/lib.rs:93`). **`reify-stdlib` does not and cannot depend on `reify-eval`**
-(the edge runs the other way — `reify-eval/Cargo.toml` normal-deps `reify-stdlib`), so the
-flexure / joint / trajectory / loop-closure / fea readers cannot reach it. Symmetrically,
-`reify-stdlib`'s `helpers.rs:229` `validate_dimensioned_scalar` is `pub(crate)` and unreachable
-from `reify-eval`.
+(`reify-eval/src/lib.rs:93`). *(pre-relocation; #5791 moved the module to
+`crates/reify-ir/src/arg_acceptance.rs`)* **`reify-stdlib` does not and cannot depend on
+`reify-eval`** (the edge runs the other way — `reify-eval/Cargo.toml` normal-deps
+`reify-stdlib`), so the flexure / joint / trajectory / loop-closure / fea readers cannot reach
+it. Symmetrically, `reify-stdlib`'s `helpers.rs:229` `validate_dimensioned_scalar` is
+`pub(crate)` and unreachable from `reify-eval`.
 
 Resolution: **relocate the module verbatim to `reify-ir`** (`reify_ir::arg_acceptance` — the
 lowest crate that owns `Value`, and it already depends on `reify-core` for `DimensionVector`),
