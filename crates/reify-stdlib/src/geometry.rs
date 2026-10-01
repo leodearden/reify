@@ -8119,7 +8119,8 @@ mod tests {
     /// `Real`, `Int` and `Scalar` ever arrive; a LENGTH `Scalar` is accepted rather
     /// than rejected, leaving the dimensionless and dimensioned `Scalar` forms. R11's
     /// plane offset is gated by `as_f64` directly, so the same four shapes exhaust it
-    /// too.
+    /// too, as they do the RULING #6089 Transform-translation rows (decoded by the
+    /// same `decompose_xyz3`).
     #[test]
     fn length_rejection_wording_is_the_shared_arg_rejection_template() {
         use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
@@ -8155,6 +8156,10 @@ mod tests {
             };
 
             let triple = vec![offender.clone(), zero.clone(), zero];
+            let transform = Value::Transform {
+                rotation: Box::new(make_identity_orientation()),
+                translation: Box::new(Value::Vector(triple.clone())),
+            };
             for (builtin, arg_name, args) in [
                 ("affine_translate", "dx/dy/dz", triple.clone()),
                 (
@@ -8164,6 +8169,12 @@ mod tests {
                 ),
                 ("plane_yz", "offset", vec![offender]),
                 ("axis_x", "ox/oy/oz", vec![Value::Point(triple.clone())]),
+                (
+                    "affine_from_transform",
+                    "t.translation",
+                    vec![transform.clone()],
+                ),
+                ("transform_inverse", "t.translation", vec![transform]),
             ] {
                 let diag = super::diagnose(builtin, &args)
                     .unwrap_or_else(|| panic!("{builtin} / {shape}: must be diagnosed"));
@@ -8286,6 +8297,88 @@ mod tests {
         assert!(
             super::diagnose("transform_log", &[Value::Real(1.0)]).is_none(),
             "a non-Transform argument is a shape failure, not a dimension failure"
+        );
+    }
+
+    // ── diagnose: Transform-consumer translation arm (RULING #6089) ───────────
+    // affine_from_transform and transform_inverse reject a non-LENGTH translation;
+    // the rejection must be an explained Error, and every NON-dimension Undef cause
+    // must stay silent so it is never blamed on the translation.
+
+    const TRANSFORM_CONSUMERS: [&str; 2] = ["affine_from_transform", "transform_inverse"];
+
+    #[test]
+    fn diagnose_transform_consumer_non_length_is_error_with_dimensioned_arg_code() {
+        let t =
+            make_transform_with_translation([Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        for name in TRANSFORM_CONSUMERS {
+            let diag = super::diagnose(name, std::slice::from_ref(&t))
+                .unwrap_or_else(|| panic!("{name}: a bare Real translation must be diagnosed"));
+            assert_eq!(
+                diag.severity,
+                reify_core::Severity::Error,
+                "{name}: {diag:?}"
+            );
+            assert_eq!(
+                diag.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{name}: {diag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_consumers_silent_on_non_dimension_causes() {
+        let length_t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let mixed_t = make_transform_with_translation([
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::length(0.0),
+        ]);
+        for name in TRANSFORM_CONSUMERS {
+            assert!(
+                super::diagnose(name, std::slice::from_ref(&length_t)).is_none(),
+                "{name}: a valid Vector3<Length> translation must not be diagnosed"
+            );
+            for (label, args) in [
+                ("zero args", vec![]),
+                ("two args", vec![length_t.clone(), length_t.clone()]),
+                ("a Real", vec![Value::Real(1.0)]),
+                ("an Orientation", vec![make_identity_orientation()]),
+                ("a MIXED-dimension translation", vec![mixed_t.clone()]),
+            ] {
+                assert!(
+                    eval_builtin(name, &args).is_undef(),
+                    "{name} / {label}: precondition — eval must reject this shape fault"
+                );
+                assert!(
+                    super::diagnose(name, &args).is_none(),
+                    "{name} / {label}: a shape fault must not be blamed on a dimension"
+                );
+            }
+        }
+
+        let overflow_t = make_transform(
+            Value::Orientation {
+                w: 1e200,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            2.0,
+            3.0,
+        );
+        assert!(
+            eval_builtin("transform_inverse", std::slice::from_ref(&overflow_t)).is_undef(),
+            "precondition: the overflow quaternion must make transform_inverse Undef"
+        );
+        assert!(
+            super::diagnose("transform_inverse", &[overflow_t]).is_none(),
+            "a rotation fault on a LENGTH Transform must not be blamed on the translation"
         );
     }
 

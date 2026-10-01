@@ -1,0 +1,29 @@
+// affine_from_transform_dimensionless.ri — CLI eval fixture: a dimensionless
+// Transform translation is rejected when widened to an AffineMap.
+//
+// RULING #6089: a Transform's translation is a displacement and carries LENGTH,
+// and an AffineMap stores its translation in SI metres. vec3(1.0, 2.0, 3.0) is
+// dimensionless, so affine_from_transform returns Value::Undef and the post-Undef
+// geometry diagnose hook must emit on stderr:
+//   error: affine_from_transform: t.translation argument expects Length, got Real;
+//          pass a dimensioned length such as `5mm`
+// `reify eval` exits 1. Before the ruling the same source exited 0 and built a
+// map that read each bare unit as one METRE.
+//
+// The bare Transform is constructible here ONLY because `transform3` is not yet
+// gated. Task #7625 gates it and must rework this fixture; the test's
+// `affine_from_transform:` needle makes that rework loud (a `transform3:`
+// diagnostic would fail it) rather than silently re-routed.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Error diagnostic.
+//
+// Declares its module explicitly: without it, W_MODULE_DECL_MISSING quotes the
+// file stem on stderr and supplies the builtin-name needle for free (the trap
+// task 6155 documented in affine_scale_dim.ri's header).
+
+module affine_from_transform_dimensionless
+
+structure def AffineFromTransformDimensionless {
+    let m = affine_from_transform(transform3(orient_identity(), vec3(1.0, 2.0, 3.0)))
+}

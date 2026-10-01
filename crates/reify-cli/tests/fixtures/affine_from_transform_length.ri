@@ -1,0 +1,14 @@
+// affine_from_transform_length.ri — the INSEPARABLE control for
+// affine_from_transform_dimensionless.ri.
+//
+// Without it, the sibling's "exits 1" assertion could pass for the wrong reason
+// (the builtin broken outright rather than gated). A LENGTH translation must
+// still exit 0 and print the AffineMap with an SI-metre translation.
+//
+// Declares its module explicitly, for the sibling's reason.
+
+module affine_from_transform_length
+
+structure def AffineFromTransformLength {
+    let m = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+}

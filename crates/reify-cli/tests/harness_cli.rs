@@ -179,6 +179,8 @@ mod cli_tensegrity_t0a_golden;
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
 mod cli_trait_assoc_fn_overload;
+#[path = "harness_cli/cli_transform_consumer_length_diag.rs"]
+mod cli_transform_consumer_length_diag;
 #[path = "harness_cli/cli_transform_twist_dimension_diag.rs"]
 mod cli_transform_twist_dimension_diag;
 #[path = "harness_cli/cli_type_hygiene_strict.rs"]
