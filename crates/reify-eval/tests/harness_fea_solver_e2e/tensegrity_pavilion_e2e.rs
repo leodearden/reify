@@ -42,13 +42,13 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use reify_core::{ComputeNodeId, DimensionVector, Severity, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, Severity, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, PersistentMap, StructureInstanceData,
                StructureTypeId, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine, point3};
 
 // ── pavilion source ───────────────────────────────────────────────────────────
 
@@ -63,16 +63,8 @@ fn pavilion_source() -> &'static str {
 
 // ── value-construction helpers ────────────────────────────────────────────────
 
-fn length(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
-}
-
 fn real(r: f64) -> Value {
     Value::Real(r)
-}
-
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
 }
 
 fn idx(i: i64) -> Value {
@@ -96,12 +88,12 @@ fn triple(a: i64, b: i64, c: i64) -> Value {
 /// the full eval pipeline.
 fn prism_with_membrane_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 1.0),          // 0: top A
-        node(-0.5, 0.866, 1.0),       // 1: top B
-        node(-0.5, -0.866, 1.0),      // 2: top C
-        node(0.866, 0.5, -1.0),       // 3: bot A'
-        node(-0.866, 0.5, -1.0),      // 4: bot B'
-        node(0.0, -1.0, -1.0),        // 5: bot C'
+        point3(1.0, 0.0, 1.0),          // 0: top A
+        point3(-0.5, 0.866, 1.0),       // 1: top B
+        point3(-0.5, -0.866, 1.0),      // 2: top C
+        point3(0.866, 0.5, -1.0),       // 3: bot A'
+        point3(-0.866, 0.5, -1.0),      // 4: bot B'
+        point3(0.0, -1.0, -1.0),        // 5: bot C'
     ]);
     let struts = Value::List(vec![pair(0, 4), pair(1, 5), pair(2, 3)]);
     let cables = Value::List(vec![
