@@ -4156,6 +4156,52 @@ class TestBuildCommandValueKind(unittest.TestCase):
         self.assertEqual(run.stdout.strip(), f"XDG_CACHE_HOME={sentinel}")
 
 
+class TestFixtureArgument(unittest.TestCase):
+    """fixture_argument() reads back the fixture build_command() put in argv."""
+
+    _FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
+
+    def setUp(self):
+        self._root = tempfile.mkdtemp(prefix="prd_gate_fixture_arg_")
+
+    def tearDown(self):
+        shutil.rmtree(self._root, ignore_errors=True)
+
+    @staticmethod
+    def _probe(kind, fixture):
+        return pcc.Probe(
+            capability="c",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def test_fixture_argument_reads_back_every_kinds_fixture(self):
+        for kind in sorted(pcc._VALID_PROBE_KINDS):
+            with self.subTest(kind=kind):
+                cmd = pcc.build_command(
+                    self._probe(kind, self._FIXTURE), repo_root=self._root
+                )
+                self.assertEqual(
+                    pcc.fixture_argument(cmd),
+                    os.path.join(self._root, self._FIXTURE),
+                )
+
+    def test_absolute_fixture_is_read_back_verbatim(self):
+        cmd = pcc.build_command(self._probe("check", "/abs/x.ri"), repo_root=self._root)
+        self.assertEqual(pcc.fixture_argument(cmd), "/abs/x.ri")
+
+    def test_argv_with_no_argument_has_no_fixture(self):
+        """argv[0] is the program, never a probe target."""
+        self.assertIsNone(pcc.fixture_argument([]))
+        self.assertIsNone(pcc.fixture_argument(["reify"]))
+
+    def test_recorded_relative_argv_is_read_back(self):
+        """A relayed record may carry a repo-relative path; reify echoes it verbatim."""
+        cmd = ["target/release/reify", "eval", "tests/prd-gate/fixtures/x.ri"]
+        self.assertEqual(pcc.fixture_argument(cmd), "tests/prd-gate/fixtures/x.ri")
+
+
 # ---------------------------------------------------------------------------
 # TREE_SITTER_BIN stub factories (module-level so both the grammar_substrate_usable()
 # unit tests and the --grammar-substrate-status CLI tests in TestMain share one
