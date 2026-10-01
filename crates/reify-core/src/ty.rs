@@ -492,13 +492,22 @@ pub enum Type {
     /// `Frame` / `Transform` / `AffineMap`.
     Orientation(usize),
     /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
+    ///
+    /// The origin is a `Point3<Length>` (RULING #6089, below).
     Frame(usize),
     /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
+    ///
+    /// The translation is a `Vector3<Length>` — a displacement (RULING #6089, below).
     Transform(usize),
     /// General (non-rigid) affine map in N-dimensional space: a linear part + translation.
     ///
     /// Unlike `Transform(usize)` (rigid: rotation+translation), the linear part may scale/shear.
     /// Stored as inline arrays `linear: [[f64;3];3]` + `translation: [f64;3]` in `Value::AffineMap`.
+    ///
+    /// RULING #6089 (Leo, 2026-08-07): `Frame` origin, `Transform` translation and
+    /// this translation (stored in SI metres) all carry Length. The three types are
+    /// deliberately monomorphic at Length, as task-6081 ruled for `BoundingBox`;
+    /// parameterizing them later is a widening, not a correction.
     AffineMap(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),

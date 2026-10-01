@@ -1,0 +1,17 @@
+// affine_from_transform_dimensionless.ri — CLI eval fixture: widening a Transform
+// whose translation is dimensionless to an AffineMap is rejected (RULING #6089: a
+// Transform's translation carries LENGTH). `reify eval` exits 1 with, on stderr:
+//   error: affine_from_transform: t.translation argument expects Length, got Real;
+//          pass a dimensioned length such as `5mm`
+//
+// The bare Transform constructs only because `transform3` is not yet gated; task
+// #7625 gates it and must rework this fixture.
+//
+// Declares its module explicitly: without it, W_MODULE_DECL_MISSING quotes the
+// file stem on stderr, which would supply the builtin-name needle by itself.
+
+module affine_from_transform_dimensionless
+
+structure def AffineFromTransformDimensionless {
+    let m = affine_from_transform(transform3(orient_identity(), vec3(1.0, 2.0, 3.0)))
+}
