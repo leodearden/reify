@@ -190,6 +190,10 @@ split-debuginfo = "unpacked"
 #     disabling them gives dev builds release semantics for that code.
 #     Regression test: dense_solve_completes_on_the_indefinite_136dof_pencil in
 #     crates/reify-solver-elastic/tests/eigensolve_synthetic.rs.
+#     The cost: overflow detection is off for ALL of this crate's own code in
+#     dev/test builds, not just faer's QZ.  Exit condition, owned by #8120:
+#     isolate the gevd_real call in a leaf crate that alone carries this flag,
+#     and restore overflow-checks here.
 #
 # Measured (task 4055):
 #   before fix        — release: 0.64 s, debug (ignored): 300–540 s
