@@ -869,8 +869,8 @@ const PHANTOM_PHRASES: &[&str] = &[
 ];
 
 /// §8.3 phantom-tracking detection: `true` when the line contains any of the
-/// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
-/// is applied by the caller ([`scan_file`]).
+/// [`PHANTOM_PHRASES`] (case-insensitive). The caller ([`scan_file`]) splits
+/// on the canonical-cite precondition.
 fn phantom_phrase(line: &str) -> bool {
     let lower = line.to_lowercase();
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
@@ -1168,7 +1168,8 @@ enum LineClass {
 /// 5. lane δ-A (`.rs`): an `#[allow(…dead_code…)]` attribute whose trailing
 ///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
 ///    else `Structural(Untracked)`.
-/// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 6. phantom phrase: no canonical cite → `Structural(PhantomTracking)`;
+///    canonical cite, not a `// G-allow:` line → `Cited(on-line cites)`.
 /// 7. lane δ-B (`.rs`): an ordinary comment line (trimmed, starts `//` — so
 ///    `//`, `///` and `//!` alike) that carries BOTH a canonical `#NNNN` cite
 ///    and deferral prose, and is not a `// G-allow:` marker →
@@ -1290,9 +1291,16 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
-        } else if phantom_phrase(line) && !has_canon {
+        } else if !has_canon && phantom_phrase(line) {
             // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
+        } else if has_canon && phantom_phrase(line) && g_allow_marker_body(line).is_none() {
+            // (6′) discharged phantom tracking: the cite backs the claim, so β
+            // re-checks it as arm (3) does (PRD §19(d)). A `// G-allow:` line
+            // stays with its own lane, as in arm (7) choice (iii).
+            let mut ids = extract_cites(line);
+            dedup_in_place(&mut ids);
+            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
         } else if is_rust
             && line.trim_start().starts_with("//")
             && has_canon
