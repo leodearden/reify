@@ -36,6 +36,8 @@ use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
+use super::fixture_scaffolding::{build_source_with_occt, compile_and_build_with_occt};
+
 const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/kernel_queries/moment_of_inertia_box.ri"
@@ -49,34 +51,15 @@ const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn moment_of_inertia_box_evals_to_analytic_tensor() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(MOMENT_OF_INERTIA_BOX_PATH)
-        .expect("examples/kernel_queries/moment_of_inertia_box.ri should exist (task 3620 step-4)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // (e.g. moment_of_inertia signature change) should fail on every runner,
-    // not just those with OCCT.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/moment_of_inertia_box.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/tensor assertions if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    // The fixture is read and compiled unconditionally (a missing file or a
+    // grammar/compile regression fails on every runner); the OCCT build is
+    // skipped cleanly when OCCT is not built.
+    let Some(result) = compile_and_build_with_occt(
+        MOMENT_OF_INERTIA_BOX_PATH,
+        "examples/kernel_queries/moment_of_inertia_box.ri (task 3620 step-4)",
+    ) else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
+    };
 
     let cell = ValueCellId::new("MomentOfInertiaBox", "i");
     let actual = result.values.get(&cell);
@@ -203,23 +186,9 @@ structure def MoiViaMaterial {
 }
 "#;
 
-    let compiled = parse_and_compile_with_stdlib(SOURCE);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "MoiViaMaterial should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) = build_source_with_occt(SOURCE, "MoiViaMaterial") else {
         return;
-    }
-
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+    };
 
     let cell = ValueCellId::new("MoiViaMaterial", "i");
     let actual = result.values.get(&cell);
