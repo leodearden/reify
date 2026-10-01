@@ -3499,8 +3499,8 @@ fn both_corpus_halves_classify_a_member_identically() {
             s.expected.clone(),
             s.found.clone(),
             s.def.clone(),
-            s.def_origin.clone(),
-            s.owner.clone(),
+            s.def_origin,
+            s.owner,
             s.message.clone(),
         )
     };
