@@ -26,9 +26,12 @@ pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use reify_core::dimension::DimensionVector;
-    use reify_ir::Value;
+    use reify_core::identity::RealizationNodeId;
+    use reify_core::ty::SelectorKind;
+    use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+    use reify_ir::{GeometryHandleId, Value};
 
-    use super::{decompose_point3, read_f64};
+    use super::{assert_selector_leaf, assert_selector_leaf_targeting, decompose_point3, read_f64};
 
     // ── read_f64 tests ────────────────────────────────────────────────────────
 
@@ -103,5 +106,117 @@ mod tests {
     fn decompose_point3_panics_on_non_numeric_component() {
         let v = Value::Point(vec![Value::Bool(true), Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "pt");
+    }
+
+    // ── assert_selector_leaf tests ────────────────────────────────────────────
+
+    fn selector_leaf_cell(
+        kind: SelectorKind,
+        query: LeafQuery,
+        kernel_handle: Option<GeometryHandleId>,
+    ) -> Value {
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("body", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle,
+        };
+        Value::Selector(SelectorValue::leaf(kind, target, query).expect("leaf construction"))
+    }
+
+    #[test]
+    fn assert_selector_leaf_runs_check_query_on_matching_leaf() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, Some(GeometryHandleId(1)));
+        let mut seen = None;
+        assert_selector_leaf(Some(&cell), "lbl", SelectorKind::Edge, |q| {
+            seen = Some(q.clone());
+        });
+        assert_eq!(seen, Some(LeafQuery::All));
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Value::Selector")]
+    fn assert_selector_leaf_panics_on_absent_cell() {
+        assert_selector_leaf(None, "lbl", SelectorKind::Edge, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Value::Selector")]
+    fn assert_selector_leaf_panics_on_non_selector_value() {
+        assert_selector_leaf(Some(&Value::Undef), "lbl", SelectorKind::Edge, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: selector kind")]
+    fn assert_selector_leaf_panics_on_kind_mismatch() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, Some(GeometryHandleId(1)));
+        assert_selector_leaf(Some(&cell), "lbl", SelectorKind::Face, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Leaf selector node")]
+    fn assert_selector_leaf_panics_on_non_leaf_node() {
+        let Value::Selector(leaf) =
+            selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, Some(GeometryHandleId(1)))
+        else {
+            unreachable!("selector_leaf_cell always builds a Value::Selector");
+        };
+        let cell = Value::Selector(SelectorValue::union(vec![leaf]).expect("union construction"));
+        assert_selector_leaf(Some(&cell), "lbl", SelectorKind::Edge, |_| {});
+    }
+
+    #[test]
+    fn assert_selector_leaf_targeting_accepts_matching_kernel_handle() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, Some(GeometryHandleId(1)));
+        let mut seen = None;
+        assert_selector_leaf_targeting(
+            Some(&cell),
+            "lbl",
+            SelectorKind::Edge,
+            Some(GeometryHandleId(1)),
+            |q| seen = Some(q.clone()),
+        );
+        assert_eq!(seen, Some(LeafQuery::All));
+    }
+
+    #[test]
+    fn assert_selector_leaf_targeting_accepts_symbolic_target() {
+        let cell = selector_leaf_cell(SelectorKind::Face, LeafQuery::All, None);
+        let mut seen = None;
+        assert_selector_leaf_targeting(Some(&cell), "lbl", SelectorKind::Face, None, |q| {
+            seen = Some(q.clone())
+        });
+        assert_eq!(seen, Some(LeafQuery::All));
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: leaf target kernel_handle")]
+    fn assert_selector_leaf_targeting_panics_on_wrong_kernel_handle() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, Some(GeometryHandleId(1)));
+        assert_selector_leaf_targeting(
+            Some(&cell),
+            "lbl",
+            SelectorKind::Edge,
+            Some(GeometryHandleId(2)),
+            |_| {},
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: leaf target kernel_handle")]
+    fn assert_selector_leaf_targeting_panics_on_symbolic_vs_realized() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, None);
+        assert_selector_leaf_targeting(
+            Some(&cell),
+            "lbl",
+            SelectorKind::Edge,
+            Some(GeometryHandleId(1)),
+            |_| {},
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Value::Selector")]
+    fn assert_selector_leaf_targeting_still_checks_shape() {
+        assert_selector_leaf_targeting(Some(&Value::Undef), "lbl", SelectorKind::Edge, None, |_| {});
     }
 }
