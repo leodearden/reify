@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::fn_return_check::reconcile_fn_return;
 use crate::types::TopologyTemplate;
 
 /// Push the appropriate unresolved-type diagnostic for a fn signature position.
@@ -298,7 +299,10 @@ pub(crate) fn compile_function(
                     }
                 }
             }
-            None => Type::dimensionless_scalar(), // default return type
+            // An un-annotated return type defaults to `Real`; `reconcile_fn_return`
+            // reports a body that contradicts that default. Inferring the return
+            // type from the body instead was considered and deferred.
+            None => Type::dimensionless_scalar(),
         }
     };
 
@@ -398,7 +402,7 @@ pub(crate) fn compile_function(
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: fn_def.name.clone(),
         doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
@@ -413,7 +417,9 @@ pub(crate) fn compile_function(
         annotations,
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
-    })
+    };
+    reconcile_fn_return(fn_def, &compiled, diagnostics);
+    Some(compiled)
 }
 
 /// Rewrite bare `Identifier(x)` references to conformer members into `self.x`
