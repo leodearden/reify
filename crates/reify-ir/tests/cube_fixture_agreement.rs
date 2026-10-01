@@ -78,16 +78,9 @@ fn strip_line_comments(src: &str) -> String {
         .join("\n")
 }
 
-/// Extracts the `u32` literals from the `vec![…]` that initialises
-/// `fn <fn_name>`'s `indices` binding in `src` — a `let indices: … = vec![…]`
-/// or an `indices: vec![…]` field.
-///
-/// Pure and policy-free: it knows how to read an index block and nothing about
-/// which blocks ought to agree. Whatever it cannot read unambiguously is an
-/// `Err`, never a guess, and is returned rather than panicked so the negative
-/// controls can observe it without unwinding.
-fn extract_indices(src: &str, fn_name: &str) -> Result<Vec<u32>, String> {
-    let code = strip_line_comments(src);
+/// The source of the one `fn <fn_name>` in `code`, from its header to the brace
+/// that closes its body, so nothing after the fn can be read as part of it.
+fn fn_source<'a>(code: &'a str, fn_name: &str) -> Result<&'a str, String> {
     let header = format!("fn {fn_name}(");
     let headers: Vec<usize> = code.match_indices(&header).map(|(at, _)| at).collect();
     let [fn_at] = headers[..] else {
@@ -96,7 +89,33 @@ fn extract_indices(src: &str, fn_name: &str) -> Result<Vec<u32>, String> {
             headers.len()
         ));
     };
-    let body = &code[fn_at..];
+    let mut depth = 0_usize;
+    for (offset, ch) in code[fn_at..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Ok(&code[fn_at..=fn_at + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(format!("`fn {fn_name}` has no closed body"))
+}
+
+/// Extracts the `u32` literals from the `vec![…]` that initialises
+/// `fn <fn_name>`'s own `indices` binding in `src` — a
+/// `let indices: … = vec![…]` or an `indices: vec![…]` field.
+///
+/// Pure and policy-free: it knows how to read an index block and nothing about
+/// which blocks ought to agree. Whatever it cannot read unambiguously is an
+/// `Err`, never a guess, and is returned rather than panicked so the negative
+/// controls can observe it without unwinding.
+fn extract_indices(src: &str, fn_name: &str) -> Result<Vec<u32>, String> {
+    let code = strip_line_comments(src);
+    let body = fn_source(&code, fn_name)?;
 
     // The leading space keeps this a whole word: `n_indices:` is not the binding.
     const BINDING: &str = " indices:";
@@ -234,6 +253,14 @@ fn extractor_reads_only_the_indices_initialiser_of_a_unique_fn() {
         )
         .is_err(),
         "a repeated `fn f(` is ambiguous and must be reported, not resolved to the first"
+    );
+    assert!(
+        extract_indices(
+            "fn f() { 1 } fn g() { let indices: Vec<u32> = vec![0]; }",
+            "f"
+        )
+        .is_err(),
+        "`fn f` has no `indices` binding of its own; a later fn's must not be read in its place"
     );
     assert!(
         extract_indices(
