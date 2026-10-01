@@ -13,21 +13,8 @@ Only --request-id names one request. --task-id and --branch name the most
 recent request for that key, which may not carry --commit, so their terminal
 merge_status is reported as UNATTRIBUTED unless git confirms the landing.
 
-Two hosts, one command:
-
-  Monitor     arm it with `timeout_ms: 600000`. That is the hard cap: there is
-              no `persistent` parameter, and the default is 300000. The waiter
-              ends itself first with a PENDING line whose `rearm_command` you
-              re-run verbatim in the next Monitor call.
-
-  Bash        `run_in_background` with `timeout` <= 7200000, passing the same
-              number as --host-timeout-ms, for one call that waits the whole
-              time and notifies once.
-
-Never wait with a hand-rolled `sleep` loop.
-
-The exit code is the verdict, tabled at the end of --help (generated from the
-Verdict enum).
+Never wait with a hand-rolled `sleep` loop. The two hosts this runs under,
+and the exit code that is its verdict, are tabled at the end of --help.
 """
 
 from __future__ import annotations
@@ -50,9 +37,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-# The Monitor tool schema: "Deadlines above 600000ms are capped" (measured
-# 2026-09-27 and 2026-10-01).
+# The host tool schemas, measured 2026-09-27 and 2026-10-01.
 MONITOR_TIMEOUT_CAP_MS = 600_000
+MONITOR_DEFAULT_TIMEOUT_MS = 300_000
+BASH_BACKGROUND_TIMEOUT_CAP_MS = 7_200_000
 GIT_TIMEOUT_SECONDS = 10
 FETCH_TIMEOUT_SECONDS = 60
 MERGE_STATUS_TIMEOUT_SECONDS = 10  # the whole call: a cold session's 3 POSTs too
@@ -422,6 +410,19 @@ class GitAncestryProbe:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _host_table() -> str:
+    return (
+        "hosts (each passes its kill deadline as --host-timeout-ms):\n"
+        f"  Monitor  timeout_ms: {MONITOR_TIMEOUT_CAP_MS}, the hard cap. The default is\n"
+        f"           {MONITOR_DEFAULT_TIMEOUT_MS} and there is no `persistent` parameter. "
+        "The waiter\n"
+        "           ends itself first with a PENDING line; re-run its\n"
+        "           `rearm_command` verbatim in the next Monitor call.\n"
+        f"  Bash     run_in_background, timeout <= {BASH_BACKGROUND_TIMEOUT_CAP_MS}, "
+        "for one call that\n"
+        "           waits the whole time and notifies once.")
+
+
 def _exit_code_table() -> str:
     entries = [(int(v), v.name, _VERDICT_MEANINGS[v]) for v in Verdict]
     entries.append((_INTERNAL_ERROR_EXIT, "", "internal error: an uncaught exception, "
@@ -466,7 +467,7 @@ def _resolved_path(text: str) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=__doc__, epilog=_exit_code_table(),
+        description=__doc__, epilog=f"{_host_table()}\n\n{_exit_code_table()}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--commit", required=True, metavar="REV",
