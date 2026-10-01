@@ -1729,31 +1729,31 @@ fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
 /// Every [`decompose_transform`] failure — a rotation fault included — is judged
 /// BEFORE the dimension and is a `Shape` fault, so it is never blamed on the
 /// translation.
+///
+/// NOT the owner for `transform_log`, which admits the same set but gates through
+/// [`TWIST_LINEAR_DIM`] and words its rejection per RULING #6126, a wording its
+/// CLI test pins. Converging it onto this predicate is #7625's, which owns that
+/// test.
 fn classify_transform_operand_args(
     args: &[Value],
 ) -> Result<(QuatComponents, [f64; 3]), DatumFault> {
-    let [operand] = args else {
+    let [operand @ Value::Transform { translation, .. }] = args else {
         return Err(DatumFault::Shape);
     };
-    let (q, translation, dim) = decompose_transform(operand).ok_or(DatumFault::Shape)?;
+    let Value::Vector(translation_items) = translation.as_ref() else {
+        return Err(DatumFault::Shape);
+    };
+    let (q, xyz, dim) = decompose_transform(operand).ok_or(DatumFault::Shape)?;
     if dim == DimensionVector::LENGTH {
-        return Ok((q, translation));
+        return Ok((q, xyz));
     }
-    let Value::Transform { translation, .. } = operand else {
-        return Err(DatumFault::Shape);
-    };
-    let Value::Vector(items) = translation.as_ref() else {
-        return Err(DatumFault::Shape);
-    };
-    match length_group_rejection(items) {
-        Some(rejection) => Err(DatumFault::NotLength {
-            arg_name: "t.translation",
-            rejection,
-        }),
-        // Unreachable once `decompose_transform` accepted a non-LENGTH group;
-        // fail CLOSED, exactly as `classify_affine_map_args` does.
-        None => Err(DatumFault::Shape),
-    }
+    // `decompose_transform` accepted a well-formed non-LENGTH group, so the
+    // `Shape` fallback is unreachable; it fails CLOSED, as `classify_affine_map_args` does.
+    let rejection = length_group_rejection(translation_items).ok_or(DatumFault::Shape)?;
+    Err(DatumFault::NotLength {
+        arg_name: "t.translation",
+        rejection,
+    })
 }
 
 /// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
@@ -5479,7 +5479,7 @@ mod tests {
 
     /// transform_inverse((R=90Z, t=[1,0,0])) has R = -90Z (conjugate of 90Z) and t = -R^-1 * (1,0,0) = (0,1,0).
     /// Computation: R^-1 = conj(R) = (s, 0, 0, -s). R^-1 * (1,0,0) = quat_rotate(R^-1, (1,0,0)) = (0,-1,0).
-    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0).
+    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0), each component a LENGTH Scalar.
     #[test]
     fn transform_inverse_90z_with_translation() {
         let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
@@ -5493,6 +5493,13 @@ mod tests {
                 assert_orientation_approx!(*rotation, s, 0.0, 0.0, -s, sign_insensitive = 1e-12);
                 match *translation {
                     Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            assert!(
+                                matches!(item, Value::Scalar { .. })
+                                    && item.dimension() == DimensionVector::LENGTH,
+                                "translation[{i}] must be a LENGTH Scalar, got {item:?}"
+                            );
+                        }
                         let tx = items[0].as_f64().unwrap();
                         let ty = items[1].as_f64().unwrap();
                         let tz = items[2].as_f64().unwrap();
@@ -5675,24 +5682,6 @@ mod tests {
                 "{shape}: RULING #6089 — a Transform translation carries LENGTH, so \
                  transform_inverse must reject a non-LENGTH translation as Undef rather \
                  than propagate its dimension"
-            );
-        }
-    }
-
-    #[test]
-    fn transform_inverse_emits_length_translation_components() {
-        let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
-        let Value::Transform { translation, .. } = eval_builtin("transform_inverse", &[t]) else {
-            panic!("a LENGTH Transform must invert to a Transform");
-        };
-        let Value::Vector(items) = *translation else {
-            panic!("the inverse translation must be a Vector");
-        };
-        assert_eq!(items.len(), 3);
-        for (i, item) in items.iter().enumerate() {
-            assert!(
-                matches!(item, Value::Scalar { .. }) && item.dimension() == DimensionVector::LENGTH,
-                "translation[{i}] must be a LENGTH Scalar, got {item:?}"
             );
         }
     }
