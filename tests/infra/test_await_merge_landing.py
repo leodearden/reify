@@ -241,9 +241,40 @@ class AwaitLandingLoopTests(unittest.TestCase):
         down = aml.ProbeUnavailable("merge_status: connection refused")
         outcome, _ = self._await(ScriptedProbe(False), ScriptedProbe(down), budget=60)
         self.assertIs(outcome.verdict, Verdict.PENDING)
-        self.assertIn("connection refused", outcome.probe_error)
+        self.assertEqual(dict(outcome.probe_errors),
+                         {"merge_status": "merge_status: connection refused"})
         self.assertIsNone(outcome.merge_status)
         self.assertEqual(outcome.polls, 3)
+
+    def test_both_probes_failing_in_one_round_keeps_both_errors(self):
+        outcome, _ = self._await(
+            ScriptedProbe(aml.ProbeUnavailable("git merge-base: exit 128: bad repo")),
+            ScriptedProbe(aml.ProbeUnavailable("merge_status: connection refused")),
+            budget=0)
+        self.assertIs(outcome.verdict, Verdict.PENDING)
+        self.assertEqual(dict(outcome.probe_errors), {
+            "git_ancestry": "git merge-base: exit 128: bad repo",
+            "merge_status": "merge_status: connection refused",
+        })
+
+    def test_each_probe_keeps_its_own_last_error_across_rounds(self):
+        outcome, _ = self._await(
+            ScriptedProbe(aml.ProbeUnavailable("git: index.lock"), False),
+            ScriptedProbe({"state": "queued"},
+                          aml.ProbeUnavailable("merge_status: timed out")),
+            budget=30)
+        self.assertIs(outcome.verdict, Verdict.PENDING)
+        self.assertEqual(outcome.polls, 2)
+        self.assertEqual(dict(outcome.probe_errors), {
+            "git_ancestry": "git: index.lock",
+            "merge_status": "merge_status: timed out",
+        })
+        self.assertEqual(outcome.merge_status, {"state": "queued"})
+
+    def test_a_clean_wait_has_no_probe_errors(self):
+        outcome, _ = self._await(ScriptedProbe(False),
+                                 ScriptedProbe({"state": "queued"}), budget=0)
+        self.assertEqual(dict(outcome.probe_errors), {})
 
     def test_transient_probe_error_does_not_end_the_wait(self):
         flaky = ScriptedProbe(aml.ProbeUnavailable("git: index.lock"), True)
@@ -614,6 +645,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(event["commit"], self.sha_b)
         self.assertEqual(event["ref"], "main")
         self.assertEqual(event["merge_status"]["state"], "queued")
+        self.assertEqual(event["probe_errors"], {})
         self.assertIn("rearm_command", event)
         self.assertEqual(self.stub.tool_calls(), [
             {"name": "merge_status", "arguments": {"task_id": "7960"}},
@@ -665,7 +697,7 @@ class EndToEndTests(unittest.TestCase):
         self.stub.raw_tool_result = {"content": [{"type": "text", "text": None}]}
         event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR), 75)
         self.assertEqual(event["verdict"], "PENDING")
-        self.assertIsNotNone(event["probe_error"])
+        self.assertEqual(list(event["probe_errors"]), ["merge_status"])
 
     def test_escalation_server_down_degrades_to_git_only(self):
         with StubEscalationServer() as stopped:
@@ -673,7 +705,7 @@ class EndToEndTests(unittest.TestCase):
         event = self.event(self.run_tool("--commit", self.sha_b, *self.SELECTOR,
                                          "--escalation-url", closed_url), 75)
         self.assertEqual(event["verdict"], "PENDING")
-        self.assertIsNotNone(event["probe_error"])
+        self.assertEqual(list(event["probe_errors"]), ["merge_status"])
 
     def test_fetch_sees_a_landing_the_local_remote_ref_has_not(self):
         origin, work = self.tmp / "origin.git", self.tmp / "work"

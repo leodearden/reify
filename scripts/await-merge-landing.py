@@ -117,40 +117,50 @@ class ProbeUnavailable(Exception):
     error). Never terminal: the next round asks again."""
 
 
-class LandingSource(StrEnum):
+class Probe(StrEnum):
     GIT_ANCESTRY = "git_ancestry"
     MERGE_STATUS = "merge_status"
 
 
 @dataclass(frozen=True)
 class Outcome:
-    """`merge_status` and `probe_error` are the LAST raw reply and error seen."""
+    """`source` is the probe whose answer ended the wait. `merge_status` is
+    the LAST raw reply seen; `probe_errors` holds each probe's LAST error."""
     verdict: Verdict
-    source: LandingSource | None
+    source: Probe | None
     merge_status: Mapping[str, Any] | None
-    probe_error: str | None
+    probe_errors: Mapping[Probe, str]
     polls: int
     elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class _Round:
+    verdict: Verdict | None
+    source: Probe | None
+    merge_status: Mapping[str, Any] | None
+    errors: Mapping[Probe, str]
 
 
 def _probe_round(
     is_landed: Callable[[], bool], merge_status: Callable[[], Mapping[str, Any]],
     merge_status_attributed: bool,
-) -> tuple[Verdict | None, LandingSource | None, Mapping[str, Any] | None, str | None]:
-    """One round: git ancestry first (the authority), then merge_status.
-    Returns (verdict, source, merge_status reply, probe error)."""
-    error = None
+) -> _Round:
+    """One round: git ancestry first (the authority), then merge_status."""
+    errors: dict[Probe, str] = {}
     try:
         if is_landed():
-            return Verdict.LANDED, LandingSource.GIT_ANCESTRY, None, None
+            return _Round(Verdict.LANDED, Probe.GIT_ANCESTRY, None, errors)
     except ProbeUnavailable as exc:
-        error = str(exc)
+        errors[Probe.GIT_ANCESTRY] = str(exc)
     try:
         status = merge_status()
     except ProbeUnavailable as exc:
-        return None, None, None, str(exc)
+        errors[Probe.MERGE_STATUS] = str(exc)
+        return _Round(None, None, None, errors)
     verdict = classify_merge_status(status, attributed=merge_status_attributed)
-    return verdict, (LandingSource.MERGE_STATUS if verdict is not None else None), status, error
+    return _Round(verdict, Probe.MERGE_STATUS if verdict is not None else None,
+                  status, errors)
 
 
 def await_landing(
@@ -167,19 +177,20 @@ def await_landing(
     starts after `budget_seconds`; the last sleep is truncated to land on it."""
     start = clock()
     deadline = start + budget_seconds
-    polls, last_status, last_error = 0, None, None
+    polls, last_status, last_errors = 0, None, {}
     while True:
         polls += 1
-        verdict, source, status, error = _probe_round(is_landed, merge_status,
-                                                      merge_status_attributed)
-        last_status = status if status is not None else last_status
-        last_error = error if error is not None else last_error
+        probed = _probe_round(is_landed, merge_status, merge_status_attributed)
+        last_status = probed.merge_status if probed.merge_status is not None \
+            else last_status
+        last_errors.update(probed.errors)
         remaining = deadline - clock()
+        verdict = probed.verdict
         if verdict is None and remaining <= 0:
             verdict = Verdict.PENDING
         if verdict is not None:
-            return Outcome(verdict, source, last_status, last_error, polls,
-                           clock() - start)
+            return Outcome(verdict, probed.source, last_status,
+                           MappingProxyType(last_errors), polls, clock() - start)
         sleep(min(interval_seconds, remaining))
 
 
@@ -495,7 +506,7 @@ def format_event(outcome: Outcome, options: Options) -> str:
         "ref": options.ref,
         "source": outcome.source,
         "merge_status": None if outcome.merge_status is None else dict(outcome.merge_status),
-        "probe_error": outcome.probe_error,
+        "probe_errors": dict(outcome.probe_errors),
         "polls": outcome.polls,
         "elapsed_seconds": round(outcome.elapsed_seconds, 1),
     }
