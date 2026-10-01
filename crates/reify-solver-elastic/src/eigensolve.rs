@@ -210,9 +210,12 @@ use faer::sparse::linalg::LltError as SparseLltError;
 use faer::sparse::linalg::LuError as SparseLuError;
 use faer::sparse::{SparseColMat, SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::{Llt, Lu};
-use faer::reborrow::{Reborrow, ReborrowMut};
+use faer::reborrow::ReborrowMut;
 
 use crate::split_cholesky::SplitCholesky;
+
+mod symmetrized;
+pub use symmetrized::{LanczosMetric, lanczos_shift_invert_in_metric};
 
 /// Options controlling the eigensolver kernel.
 ///
@@ -1087,176 +1090,6 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     finish_lanczos_result(&op, ritz, &opts, |_| {})
 }
 
-/// The SPD metric `W = G·Gᵀ` a Cholesky-symmetrized Lanczos runs in.
-///
-/// For a pencil `(K, B)` with symmetric `B ≠ cI`, `A = (K − σB)⁻¹B` is not
-/// Euclidean-symmetric, but `W·A` is for any `W = K − τB`:
-///
-/// ```text
-/// W·(K − σB)⁻¹B = B + (σ − τ)·B(K − σB)⁻¹B
-/// ```
-///
-/// So `S = G⁻¹(W·A)G⁻ᵀ` is Euclidean-symmetric with the same eigenvalues
-/// `μ = 1/(λ − σ)`, and `φ = G⁻ᵀy` recovers the pencil's eigenvectors.  Each arm
-/// is one choice of τ.  Normative source: `docs/prds/v0_6/shift-invert-eigensolve.md`
-/// §6 (2026-09-29 amendment).
-#[derive(Clone, Copy)]
-pub enum LanczosMetric<'a> {
-    /// τ = σ: G factors `K − σB` itself (σ=0 ⇒ `K`), which must be SPD;
-    /// `S = G⁻¹BG⁻ᵀ`.  `K` alone need NOT be SPD.
-    ShiftedPencil(&'a SplitCholesky),
-    /// τ = 0: G factors `K`, which must be SPD; `K − σB` is indefinite and is
-    /// applied through `shifted_inverse`; `S = G⁻¹[B + σ·B(K − σB)⁻¹B]G⁻ᵀ`.
-    Stiffness {
-        k_factor: &'a SplitCholesky,
-        shifted_inverse: &'a dyn StiffnessOp,
-    },
-}
-
-impl LanczosMetric<'_> {
-    fn factor(&self) -> &SplitCholesky {
-        match *self {
-            LanczosMetric::ShiftedPencil(factor) => factor,
-            LanczosMetric::Stiffness { k_factor, .. } => k_factor,
-        }
-    }
-}
-
-/// Internal symmetrized operator `S = G⁻¹[B + (σ − τ)·B(K − σB)⁻¹B]G⁻ᵀ`; see
-/// [`LanczosMetric`].
-struct SymmetrizedShiftInvertOp<'a, M: MetricOp> {
-    metric: LanczosMetric<'a>,
-    b_op: &'a M,
-    sigma: f64,
-    n: usize,
-}
-
-impl<M: MetricOp> core::fmt::Debug for SymmetrizedShiftInvertOp<'_, M> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "SymmetrizedShiftInvertOp(n={})", self.n)
-    }
-}
-
-impl<M: MetricOp> LinOp<f64> for SymmetrizedShiftInvertOp<'_, M> {
-    #[inline]
-    fn nrows(&self) -> usize {
-        self.n
-    }
-
-    #[inline]
-    fn ncols(&self) -> usize {
-        self.n
-    }
-
-    #[inline]
-    fn apply_scratch(&self, rhs_ncols: usize, par: Par) -> StackReq {
-        // Temporaries are heap-allocated per apply; only B's matvec draws on
-        // the stack.
-        self.b_op.apply_scratch(rhs_ncols, par)
-    }
-
-    fn apply(
-        &self,
-        mut out: MatMut<'_, f64>,
-        rhs: MatRef<'_, f64>,
-        par: Par,
-        stack: &mut MemStack,
-    ) {
-        let factor = self.metric.factor();
-        let mut x = rhs.to_owned();
-        factor.solve_factor_transpose_in_place(x.as_mut());
-        self.b_op.apply(out.rb_mut(), x.as_ref(), par, stack);
-        if let LanczosMetric::Stiffness { shifted_inverse, .. } = self.metric {
-            let mut w = out.to_owned();
-            shifted_inverse.solve_in_place(w.as_mut());
-            self.b_op.apply(x.as_mut(), w.as_ref(), par, stack);
-            for j in 0..out.ncols() {
-                for i in 0..out.nrows() {
-                    out[(i, j)] += self.sigma * x[(i, j)];
-                }
-            }
-        }
-        factor.solve_factor_in_place(out.rb_mut());
-    }
-
-    fn conj_apply(
-        &self,
-        out: MatMut<'_, f64>,
-        rhs: MatRef<'_, f64>,
-        par: Par,
-        stack: &mut MemStack,
-    ) {
-        // Real symmetric: conj_apply ≡ apply.
-        self.apply(out, rhs, par, stack);
-    }
-}
-
-/// Cholesky-symmetrized shift-invert Lanczos for `K φ = λ B φ` with any
-/// symmetric `B` — the core [`lanczos_shift_invert`] cannot serve unless
-/// `B = cI`.
-///
-/// Runs faer's Lanczos on the Euclidean-symmetric `S` of [`LanczosMetric`], then
-/// recovers `φ = G⁻ᵀy` and scales each column to unit Euclidean norm.  Like the
-/// Euclidean core, `opts.sigma` DESCRIBES the factorizations in `metric` (and
-/// the core cannot verify it), there is no dense fallback, and C5 is reported
-/// conservatively — the caller that built the factorizations owns C6 and the
-/// established provenance.
-///
-/// # Panics
-///
-/// The option guards of [`lanczos_shift_invert`], and a dimension mismatch
-/// between `b_op` and the metric factor (or, in the `Stiffness` arm,
-/// `shifted_inverse`).
-pub fn lanczos_shift_invert_in_metric<M: MetricOp>(
-    metric: LanczosMetric<'_>,
-    b_op: &M,
-    opts: EigenSolverOptions,
-) -> EigenSolverResult {
-    check_lanczos_options(&opts);
-    let n = b_op.n();
-    let factor = metric.factor();
-    assert_eq!(
-        factor.n(),
-        n,
-        "lanczos_shift_invert_in_metric: dimension mismatch — metric factor n() = {} \
-         but b_op.n() = {}",
-        factor.n(),
-        n,
-    );
-    if let LanczosMetric::Stiffness { shifted_inverse, .. } = metric {
-        assert_eq!(
-            shifted_inverse.n(),
-            n,
-            "lanczos_shift_invert_in_metric: dimension mismatch — shifted_inverse.n() = {} \
-             but b_op.n() = {}",
-            shifted_inverse.n(),
-            n,
-        );
-    }
-
-    let op = SymmetrizedShiftInvertOp {
-        metric,
-        b_op,
-        sigma: opts.sigma,
-        n,
-    };
-    let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
-    finish_lanczos_result(&op, ritz, &opts, |vectors| {
-        recover_pencil_eigenvectors(factor, vectors)
-    })
-}
-
-/// `φ = G⁻ᵀy`, each column then scaled to unit Euclidean norm.
-fn recover_pencil_eigenvectors(factor: &SplitCholesky, mut vectors: MatMut<'_, f64>) {
-    factor.solve_factor_transpose_in_place(vectors.rb_mut());
-    for j in 0..vectors.ncols() {
-        let norm = vectors.rb().col(j).norm_l2();
-        for i in 0..vectors.nrows() {
-            vectors[(i, j)] /= norm;
-        }
-    }
-}
-
 /// The `κ` in `‖S·y − μ·y‖ ≤ max(κ·tol·μ_max, δ·|μ|)·‖y‖`: a pair meeting the
 /// caller's tolerance RELATIVE TO THE OPERATOR is never rejected (PRD
 /// `docs/prds/v0_6/shift-invert-eigensolve.md` §11 Q1).
@@ -1652,9 +1485,9 @@ pub fn try_solve_eigen_shift_invert(
 ) -> Result<EigenSolverResult, ShiftInvertFailure> {
     check_eigen_options_and_shapes(k, b, &opts);
     if is_scalar_multiple_of_identity(b) {
-        solve_with_euclidean_operator(k, b, opts)
+        solve_with_operator::<EuclideanOperator>(k, b, opts)
     } else {
-        solve_with_symmetrized_operator(k, b, opts)
+        solve_with_operator::<SymmetrizedOperator>(k, b, opts)
     }
 }
 
@@ -1681,15 +1514,145 @@ fn is_scalar_multiple_of_identity(b: &SparseRowMat<usize, f64>) -> bool {
     diagonal.windows(2).all(|pair| pair[0] == pair[1])
 }
 
-/// The B = cI arm of [`try_solve_eigen_shift_invert`]: today's Euclidean
-/// operator, unchanged, so C1 stands for every such pencil.
-fn solve_with_euclidean_operator(
+/// What differs between the two Lanczos operators, as [`solve_with_operator`]
+/// sees it: how an SPD matrix is factored for the operator, and how the
+/// operator runs on that factor or on an LU of an indefinite `K − σB`.
+///
+/// Everything else is the dispatch's own and is written once: σ=0 routing,
+/// the dense fallback, the Cholesky-first dispatch, the C6 guard and the C5
+/// evidence.
+trait PencilOperator {
+    /// The Cholesky factor of an SPD `K` or `K − σB`.
+    type SpdFactor;
+
+    /// The σ=0 factorization: a Cholesky of `K` itself, read verbatim.
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError>;
+
+    /// A Cholesky of the assembled `K − σB`.
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError>;
+
+    /// The Lanczos on the SPD matrix `factor` factors.
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult;
+
+    /// The Lanczos when `K − σB` is indefinite and was factored as `lu`.
+    fn lanczos_on_indefinite_pencil(
+        k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure>;
+}
+
+/// The `B = cI` operator: `(K − σB)⁻¹B` itself, unchanged, so C1 stands for
+/// every such pencil.
+struct EuclideanOperator;
+
+impl PencilOperator for EuclideanOperator {
+    type SpdFactor = Llt<usize, f64>;
+
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError> {
+        k.sp_cholesky(Side::Lower)
+    }
+
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError> {
+        shifted.sp_cholesky(Side::Lower)
+    }
+
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult {
+        // The chained matvec+backsolve through the adapters is byte-equivalent
+        // to the former ShiftInvertOp composition (same faer calls in the same
+        // order), so the B = cI goldens pass bit-for-bit.
+        let k_op = SparseStiffnessOp {
+            factor: SparseFactorRef::Cholesky(factor),
+            n: b_op.n(),
+        };
+        lanczos_shift_invert(&k_op, b_op, opts)
+    }
+
+    fn lanczos_on_indefinite_pencil(
+        _k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure> {
+        let k_op = SparseStiffnessOp {
+            factor: SparseFactorRef::Lu(lu),
+            n: b_op.n(),
+        };
+        Ok(lanczos_shift_invert(&k_op, b_op, opts))
+    }
+}
+
+/// The `B ≠ cI` operator: the Cholesky-symmetrized `S` of [`LanczosMetric`]
+/// (PRD §6, 2026-09-29 amendment).
+///
+/// An SPD `K − σB` (σ=0 ⇒ `K`) is the metric itself.  When `K − σB` is
+/// indefinite it is applied through LU and the metric is `K`, which must then
+/// be SPD (`Err(KNotSpd)` if not).
+struct SymmetrizedOperator;
+
+impl PencilOperator for SymmetrizedOperator {
+    type SpdFactor = SplitCholesky;
+
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError> {
+        SplitCholesky::try_new(k)
+    }
+
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError> {
+        SplitCholesky::try_new_col_major(shifted.as_ref())
+    }
+
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult {
+        lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(factor), b_op, opts)
+    }
+
+    fn lanczos_on_indefinite_pencil(
+        k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure> {
+        let k_factor = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
+        let shifted_inverse = SparseStiffnessOp {
+            factor: SparseFactorRef::Lu(lu),
+            n: b_op.n(),
+        };
+        let metric = LanczosMetric::Stiffness {
+            k_factor: &k_factor,
+            shifted_inverse: &shifted_inverse,
+        };
+        Ok(lanczos_shift_invert_in_metric(metric, b_op, opts))
+    }
+}
+
+/// The dispatch of [`try_solve_eigen_shift_invert`], for either operator: σ=0
+/// routing, the dense fallback, the Cholesky-first factorization of `K − σB`,
+/// the C6 guard and the C5 evidence, each placed exactly once.
+fn solve_with_operator<O: PencilOperator>(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
 ) -> Result<EigenSolverResult, ShiftInvertFailure> {
     let n = k.nrows();
-    let m_op = SparseMetricOp { m: b.as_ref() };
+    let b_op = SparseMetricOp { m: b.as_ref() };
 
     // ---- σ=0: TODAY'S EXACT PATH, and deliberately not one line more. -------
     //
@@ -1701,27 +1664,17 @@ fn solve_with_euclidean_operator(
     // carries the full argument; `sigma_zero_factors_k_itself_not_k_minus_zero_b`
     // is the executable form.
     if opts.sigma == 0.0 {
-        // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD
-        // — the one condition this entry point reports rather than panics on.
-        let llt = stiffness_factor_or_k_not_spd(k.sp_cholesky(Side::Lower))?;
+        // A NUMERIC failure here means K is not SPD — the one condition this
+        // entry point reports rather than panics on.
+        let factor = stiffness_factor_or_k_not_spd(O::factor_stiffness(k))?;
 
         if routes_to_dense_fallback(n, opts.n_modes) {
             // Problem too small for Lanczos; delegate to the direct dense solver.
-            // The dense result already satisfies the EigenSolverResult contract
-            // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
             return Ok(solve_eigen_dense(k, b, opts));
         }
 
-        // Delegate to the generic Lanczos core via zero-cost adapter pair.
-        // The chained matvec+backsolve through the adapters is byte-equivalent to
-        // the former ShiftInvertOp composition (same faer calls in same order),
-        // so buckling goldens pass bit-for-bit.
-        let k_op = SparseStiffnessOp {
-            factor: SparseFactorRef::Cholesky(&llt),
-            n,
-        };
         return Ok(with_provenance(
-            lanczos_shift_invert(&k_op, &m_op, opts),
+            O::lanczos_on_spd_factor(&factor, &b_op, opts),
             0.0,
             true,
         ));
@@ -1753,100 +1706,25 @@ fn solve_with_euclidean_operator(
     //
     // PRD §5.3 PART A — the one singular-shift case faer reports directly —
     // lives in `lu_of_indefinite_shifted_pencil`.
-    let (result, cholesky_succeeded) = match shifted.sp_cholesky(Side::Lower) {
-        Ok(llt) => {
-            let k_op = SparseStiffnessOp {
-                factor: SparseFactorRef::Cholesky(&llt),
-                n,
-            };
-            (lanczos_shift_invert(&k_op, &m_op, opts), true)
-        }
+    let (result, cholesky_succeeded) = match O::factor_shifted_pencil(&shifted) {
+        Ok(factor) => (O::lanczos_on_spd_factor(&factor, &b_op, opts), true),
         // `K − σB` is indefinite — the expected case for a σ above some mode,
         // not an error. LU handles it.
         Err(SparseLltError::Numeric(_)) => {
             let lu = lu_of_indefinite_shifted_pencil(&shifted, sigma)?;
-            let k_op = SparseStiffnessOp {
-                factor: SparseFactorRef::Lu(&lu),
-                n,
-            };
-            (lanczos_shift_invert(&k_op, &m_op, opts), false)
+            (O::lanczos_on_indefinite_pencil(k, &lu, &b_op, opts)?, false)
         }
-        Err(e @ SparseLltError::Generic(_)) => shifted_cholesky_resource_failure(e),
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT a property of the pencil; do not report it as a \
+             singular shift"
+        ),
     };
 
     // PRD §5.3 PART B, on the WHOLE σ≠0 branch — including the arm where the
     // Cholesky succeeded, so a σ numerically on a mode is caught whichever
     // factorization won.
-    if shift_is_numerically_singular(
-        &result.eigenvalues,
-        sigma,
-        pencil_lambda_resolution_floor(&shifted, b),
-    ) {
-        return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
-    }
-
-    Ok(with_provenance(result, sigma, cholesky_succeeded))
-}
-
-/// The B ≠ cI arm of [`try_solve_eigen_shift_invert`]: the Cholesky-symmetrized
-/// operator of [`LanczosMetric`] (PRD §6, 2026-09-29 amendment).
-///
-/// σ=0 factors `K` itself — never a `K − 0·B` assembly — and runs in it.  At
-/// σ≠0 the shifted pencil is the metric when its Cholesky succeeds; otherwise
-/// `K − σB` is indefinite, it is applied through LU, and the metric is `K`,
-/// which must then be SPD (`Err(KNotSpd)` if not).  Dense fallback, the C6
-/// guard and the C5 evidence are placed exactly as on the Euclidean arm.
-fn solve_with_symmetrized_operator(
-    k: &SparseRowMat<usize, f64>,
-    b: &SparseRowMat<usize, f64>,
-    opts: EigenSolverOptions,
-) -> Result<EigenSolverResult, ShiftInvertFailure> {
-    let n = k.nrows();
-    let m_op = SparseMetricOp { m: b.as_ref() };
-
-    if opts.sigma == 0.0 {
-        let g = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
-        if routes_to_dense_fallback(n, opts.n_modes) {
-            return Ok(solve_eigen_dense(k, b, opts));
-        }
-        return Ok(with_provenance(
-            lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&g), &m_op, opts),
-            0.0,
-            true,
-        ));
-    }
-
-    if routes_to_dense_fallback(n, opts.n_modes) {
-        return Ok(solve_eigen_dense(k, b, opts));
-    }
-
-    let shifted = shifted_pencil(k, b, opts.sigma);
-    let sigma = opts.sigma;
-
-    // PRD §5.1 dispatch, Cholesky FIRST: its success is both the metric and the
-    // Sylvester evidence C5 reads off this dispatch.
-    let (result, cholesky_succeeded) = match SplitCholesky::try_new_col_major(shifted.as_ref()) {
-        Ok(h) => (
-            lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&h), &m_op, opts),
-            true,
-        ),
-        Err(SparseLltError::Numeric(_)) => {
-            let lu = lu_of_indefinite_shifted_pencil(&shifted, sigma)?;
-            let g_k = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
-            let shifted_inverse = SparseStiffnessOp {
-                factor: SparseFactorRef::Lu(&lu),
-                n,
-            };
-            let metric = LanczosMetric::Stiffness {
-                k_factor: &g_k,
-                shifted_inverse: &shifted_inverse,
-            };
-            (lanczos_shift_invert_in_metric(metric, &m_op, opts), false)
-        }
-        Err(e @ SparseLltError::Generic(_)) => shifted_cholesky_resource_failure(e),
-    };
-
-    // PRD §5.3 PART B, on the whole σ≠0 branch, exactly as on the Euclidean arm.
     if shift_is_numerically_singular(
         &result.eigenvalues,
         sigma,
@@ -1910,16 +1788,6 @@ fn lu_of_indefinite_shifted_pencil(
              overflow), NOT a singular shift; do not report it as one"
         ),
     }
-}
-
-/// The panic for a `Generic` failure of the Cholesky of `K − σB`.
-fn shifted_cholesky_resource_failure(e: SparseLltError) -> ! {
-    panic!(
-        "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
-         ({e:?}) — this is a resource/index failure (allocation or index \
-         overflow), NOT a property of the pencil; do not report it as a \
-         singular shift"
-    )
 }
 
 /// The pencil's own λ-space resolution floor: the distance below which two
