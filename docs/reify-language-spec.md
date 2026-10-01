@@ -1143,6 +1143,107 @@ Semantics:
 
 `meta` blocks can appear in any entity body and at the module level.
 
+### 4.9 Constructor Argument Conformance
+
+Every argument of a structure construction is checked at compile time against the declared type of the `param` it binds to. Positional arguments are checked exactly like named ones. Every user path (`reify check`, eval, the GUI, the LSP) compiles first, so the check runs on all of them. The covered construction forms are:
+
+- `T(field: v)` and `T(v1, v2)` in any expression position: a `let`, a `constraint`, a `forall` body, a free `fn` body, or a nested argument;
+- `sub x = T(...)`;
+- `sub x : T { field = v }`.
+
+Parameter defaults obey the same rule (`param label : String = 42` is an error). A non-conforming argument is an Error, so `reify check` exits non-zero. Evaluation does not re-check: compilation is the single enforcement point.
+
+```reify
+structure def Clamp {
+    param face : FaceSelector = undef
+    param preload : Force = 0N
+    param label : Option<String> = none
+}
+
+structure def Fixture {
+    let body = box(100mm, 50mm, 5mm)
+
+    let ok    = Clamp(face: face(body, "z_max"), preload: 2kN)   // legal
+    let named = Clamp(face: face(body, "z_max"), label: "A")     // legal: implicit-Some
+    let bad1  = Clamp(face: edges(body))       // error: selector kind 'EdgeSelector', requires 'FaceSelector'
+    let bad2  = Clamp(face: "z_max")           // error: a String is not a selector
+    let bad3  = Clamp(face: face(body, "z_max"), preload: 5)   // error: pass a dimensioned Force literal
+}
+```
+
+**Legality.**
+
+| Field declares | Argument supplies | Verdict |
+|---|---|---|
+| `T` | a value of `T` | legal |
+| `Real` (dimensionless scalar) | `Int` | legal |
+| dimensioned scalar, e.g. `Length` | a quantity of the same dimension (`5mm`) | legal |
+| dimensioned scalar | a bare `Int`/`Real`, or a quantity of another dimension | illegal; the message adds a hint such as "pass a dimensioned Length literal such as `1m`" |
+| `VectorN<Q>` | a vector of arity `N`, or a rank-1 tensor | legal. A dimensionless vector is accepted at any `Q` (`vec3(1, 2, 3)` at `Vector3<Length>`); a dimensioned vector must match `Q` (`vec3(1kg, 2kg, 3kg)` at `Vector3<Length>` is illegal) |
+| `VectorN<Q>` | another arity, or a non-vector | illegal |
+| `PointN<Q>` | a point | same arity and quantity rule as `VectorN<Q>`: a `point2(...)` at `Point3<Length>` is illegal |
+| `Matrix`/`Tensor` | a matrix, a tensor, a vector, a scalar, or a numeric nested list literal (`[[1, 0], [0, 1]]`) | legal; element counts are not checked |
+| `Field<D, C>` | a field value or a lambda | legal; anything else is illegal |
+| enum `E` | a value of `E` (generic arguments are not compared) | legal |
+| enum `E` | a value of another enum, or a non-enum | illegal |
+| `Selector` (kind-agnostic, §8.12) | a `FaceSelector`, `EdgeSelector`, `VertexSelector` or `BodySelector` | legal (one-way) |
+| `FaceSelector` (or any single-kind selector) | a selector of another kind, or a kind-agnostic `Selector` value | illegal |
+| selector-typed (bare or inside `Option`) | a pose: a `Frame`, `Transform3` or `Point` value such as `frame3(...)` | illegal, with the pose hint |
+| selector-typed (bare or inside `Option`) | a `String` (the legacy `"x_max"` form) | illegal; write `face(body, "x_max")` instead |
+| `Option<T>` | `none` | legal |
+| `Option<T>` | a bare argument that is legal for `T` | legal: the implicit-Some rule. An illegal bare argument is reported against `T` |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a collection of the same kind | checked element by element |
+| `List<T>` / `Set<T>` / `Map<K, V>` | an empty `[]` | legal: its element type is unresolved and skipped. Typed enforcement belongs to [the expected-type pushdown stub](prds/expected-type-pushdown-return-field.md) |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a non-collection value | illegal (wrapper shape) |
+| `List<Geometry>` | a single selector such as `face(body, "y_max")` | **illegal at construction sites** today, though legal as a `fn` argument (see Known limitations) |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a structure conforming to `Tr`, directly or through refinement | legal |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a non-conforming structure | illegal |
+| bare trait `Tr` | anything | **not checked** in expression-position constructors (`let`, `fn` body, ...), a deliberate escape hatch; **checked** in both `sub` forms |
+| structure `S` | another structure, or a primitive | illegal |
+| `String` / `Int` / `Bool` | any type not compatible with it | illegal |
+| any field | an argument whose type is unknown at compile time: the result of an earlier error, an unresolved generic `T`, a geometry value, or a trait-typed value | **skipped**, never rejected. The collection-shape check still applies: such a value at a `List`/`Set`/`Map` field is illegal |
+
+The bare-trait row in practice:
+
+```reify
+trait Law { param stiffness : Pressure }
+structure def Linear : Law { param stiffness : Pressure = 200GPa }
+structure def Rubber { param shore : Real = 60 }
+structure def Mount { param law : Law = undef }
+
+structure def Assembly {
+    let loose = Mount(law: Rubber())   // not checked: bare trait field, expression position
+    sub tight = Mount(law: Rubber())   // error: type 'Rubber' does not conform to trait 'Law' required by param 'law'
+    sub fine  = Mount(law: Linear())   // legal
+}
+```
+
+**Diagnostics.** All are Error severity.
+
+| LSP code | Mnemonic | Raised when | Message shape |
+|---|---|---|---|
+| `ArgTypeMismatch` | `E_ARG_TYPE_MISMATCH` | a concrete type mismatch | `argument 'f' has type 'A' but param 'f' requires type 'B'`. A selector field reads `requires selector type 'B'`; a pose adds `; a coordinate pose is not a region target; select a face/edge/vertex instead`; a dimensioned scalar adds the literal hint; a vector whose quantity alone disagrees reads `argument 'f' has quantity 'A' but param 'f' requires quantity 'B' (...)` |
+| `SelectorKindMismatch` | `E_SELECTOR_KIND_MISMATCH` | a wrong-kind selector | `argument 'f' has selector kind 'EdgeSelector' but param 'f' requires selector kind 'FaceSelector'` |
+| `TypeNotConformingToTrait` | — | trait non-conformance, or a collection-shape mismatch | `type 'X' does not conform to trait 'Tr' required by param 'f'`, or `type 'X' does not match wrapper shape required by param 'f' (expected 'List<T>')` |
+| `TypeNotConformingToStructureRef` | — | a structure-typed field given another type | `argument 'f' has type 'A' but param 'f' requires structure type 'S'` |
+| `TypeNotConformingToVector` | — | a vector field given another arity or a non-vector | `argument 'f' has type 'A' but param 'f' requires vector type 'B'` |
+| `CtorUnknownField` | `E_CTOR_UNKNOWN_FIELD` | a named argument that matches no `param` | `E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'K'; 'K' has no parameter with that name` |
+| `CtorArity` | `E_CTOR_ARITY` | more positional arguments than `param`s (one per call) | `E_CTOR_ARITY: K() expects at most N arguments, got M` |
+
+`reify check` prints `error: <message>`. The LSP `code` field carries the first column. Only the two `E_CTOR_*` mnemonics appear inside the message text. Each offending argument yields one diagnostic, and so does each offending element of a collection argument. A named argument supplied twice is a separate error that carries no code.
+
+**Known limitations.** Each of these is a gap, not a rule:
+
+- **Known limitation (#7956).** A single selector given to a `List<Geometry>` field is rejected at construction sites, though the same argument to a `fn` parameter is accepted.
+- **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Frame`, `Transform3`, `Direction`, `Axis`, `Plane`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
+- **Known limitation (#8101).** A `Geometry`-typed field accepts any argument, though a `Geometry` parameter default is checked.
+- A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
+- **Known limitation (#8100).** Constructors inside associated-function bodies (structure-body and trait default `fn`s) are not checked.
+- **Known limitation (#7874).** Omitting a field that has no default is not diagnosed; the field is simply absent.
+- **Known limitation (#6191).** An unknown named field in the `sub x = T(...)` form is not diagnosed. The block form `sub x : T { ... }` reports it.
+
+Design record and rationale: [struct-ctor-field-type-conformance.md](prds/struct-ctor-field-type-conformance.md).
+
 ---
 
 ## 5. Expressions and Operators
