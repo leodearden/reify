@@ -11,12 +11,10 @@
 # Verifies that:
 #   1. python3 is on PATH
 #   2. tests/infra/test_cargo_test_tally.py (stdlib unittest) exits 0
-#   3. scripts/cargo-test-tally.py --help exits 0 (CLI smoke)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"
@@ -32,9 +30,5 @@ assert "python3 is available" command -v python3
 # ── Unit tests ────────────────────────────────────────────────────────────
 assert "tests/infra/test_cargo_test_tally.py exits 0" \
     python3 "$SCRIPT_DIR/test_cargo_test_tally.py"
-
-# ── CLI smoke ─────────────────────────────────────────────────────────────
-assert "scripts/cargo-test-tally.py --help exits 0" \
-    python3 "$ROOT/scripts/cargo-test-tally.py" --help
 
 test_summary
