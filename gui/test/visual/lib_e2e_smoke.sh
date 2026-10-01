@@ -24,7 +24,8 @@
 #   1. Resolve REIFY_DEBUG_PORT (env if valid 1..65535, else allocate a free port).
 #   2. Set DISPLAY="${DISPLAY:-:0}" so the Tauri webview can instantiate.
 #  2a. Prepend /opt/reify-deps/lib to LD_LIBRARY_PATH when present.
-#  2b. Disable the WebKit GBM/DMABuf renderer unless the caller overrode it.
+#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): disable the WebKit
+#      GBM/DMABuf renderer unless the caller overrode it, and pin oneTBB first.
 #   3. Install an EXIT/INT/TERM cleanup trap so the GUI is reaped even on early failure.
 #   4. (Unless REIFY_SMOKE_SKIP_PREBUILD=1) run synchronous pre-build steps —
 #      sidecar npm install, sidecar build, gui npm install, cargo build reify-gui —
@@ -58,6 +59,12 @@
 # ---------------------------------------------------------------------------
 E2E_SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_SMOKE_REPO_ROOT="$(cd "$E2E_SMOKE_LIB_DIR/../../.." && pwd)"
+
+# Sourced at load time, not inside e2e_smoke_run: lib_gui_launch.sh snapshots
+# the inherited LD_LIBRARY_PATH when sourced, so it must run before step 2a
+# edits that variable.
+# shellcheck source=../../../scripts/lib_gui_launch.sh
+source "$E2E_SMOKE_REPO_ROOT/scripts/lib_gui_launch.sh"
 
 # ---------------------------------------------------------------------------
 # 1. Resolve REIFY_DEBUG_PORT
@@ -177,13 +184,11 @@ e2e_smoke_run() {
     fi
 
     # -----------------------------------------------------------------------
-    # 2b. Disable WebKit GBM/DMABuf renderer on headless or DRI-unavailable hosts.
-    #     On systems where the Nvidia driver exposes DRI fds but the mesa EGL
-    #     GBM backend cannot create a screen, WebKit crashes with
-    #     "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
-    #     WEBKIT_DISABLE_DMABUF_RENDERER=1 forces fallback to the GLX/xlib path.
+    # 2b. Shared launch-env defaults (WebKit DMABuf disable + oneTBB pin) from
+    #     scripts/lib_gui_launch.sh.  Called AFTER 2a on purpose: the helper
+    #     prepends the tbb-pin dir, which must land ahead of the deps lib.
     # -----------------------------------------------------------------------
-    export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+    gui_launch_env_pin
 
     # -----------------------------------------------------------------------
     # 3. Trap for cleanup — SIGTERM the launcher on exit.
