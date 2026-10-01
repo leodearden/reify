@@ -312,6 +312,36 @@ pub(crate) fn assemble_modal_km(
     }
 }
 
+/// The `W_ModalConvergence` warning for a solve that returned `n_returned` of
+/// `n_requested` modes, `residual_check_failures` of which failed the
+/// eigensolver's post-solve residual check — or `None` when every requested
+/// mode came back verified.
+///
+/// ONE template with two optional clauses (a count shortfall, unverified
+/// pairs), so the two facts cannot drift into two templates.  Uncoded, like
+/// every convergence warning before it.
+fn modal_convergence_warning(
+    n_returned: usize,
+    n_requested: usize,
+    residual_check_failures: usize,
+) -> Option<Diagnostic> {
+    let shortfall = (n_returned < n_requested).then(|| {
+        format!(
+            "eigensolver returned {n_returned} of {n_requested} requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes)."
+        )
+    });
+    let unverified = (residual_check_failures > 0).then(|| {
+        format!(
+            "{residual_check_failures} of the {n_returned} returned modes failed the \
+             eigensolver's post-solve residual check and are not verified eigenpairs."
+        )
+    });
+    let clauses: Vec<String> = shortfall.into_iter().chain(unverified).collect();
+    (!clauses.is_empty())
+        .then(|| Diagnostic::warning(format!("W_ModalConvergence: {}", clauses.join(" "))))
+}
+
 /// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
 /// subspace, solve `K_free φ = λ M_free φ`, and scatter the mode shapes back to
 /// the full DOF space.
@@ -545,19 +575,19 @@ pub(crate) fn eigensolve_modal(
         }
     }
 
-    // Convergence shortfall: `eig.converged` is false iff fewer modes were
-    // returned than requested (holds for both the dense and shift-invert paths).
+    // Convergence: a shortfall in the returned count, unverified returned pairs
+    // (#7602), or both — `eig.converged` is false iff either holds.
     //
     // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
     // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
     // wrong remedy for both faults above — it would stand beside the right one
     // and contradict it.
-    if !eig.converged && fault == ModalSolveFault::None {
-        diagnostics.push(Diagnostic::warning(format!(
-            "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
-             the result is partial (raise max_iters/tol or lower n_modes).",
-            n_modes_out, eigen_opts.n_modes,
-        )));
+    if fault == ModalSolveFault::None {
+        diagnostics.extend(modal_convergence_warning(
+            n_modes_out,
+            eigen_opts.n_modes,
+            eig.residual_check_failures,
+        ));
     }
 
     // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
