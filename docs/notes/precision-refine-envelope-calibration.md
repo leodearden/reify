@@ -131,7 +131,7 @@ and the same method: §4's `probe()` recipe on scratch copies, at P=3 with `time
 binary, HEAD, kernel and session all differ from §0's. Probe points were chosen with the
 two-ladder branch index `k = m − nV` (PRD §4.1 alt C):
 
-- `k` = 0 predicts a tooth, −1 a tread, −2 the third branch.
+- `k` = 0 predicts a tooth, −1 a tread, −2 the third branch, −3 the `k` = −3 state below.
 - `k` is a **derived** probe-selection aid. It depends on OCCT internal constants and is
   never a datum.
 - Each point is either a window midpoint or a bracket just outside a window, so every probe
@@ -147,7 +147,7 @@ identity table:
 | HEAD | `89170727ca` (branch `task/7266`) |
 | kernel | OCCT 7.8: 26 `libTK*.so.7.8` ldd lines, 26 distinct sonames, and `has_occt` live. This was confirmed functionally: every probe below realized and passed the §0 Caveat-2 datum gate. 27 `libTK*.so.7.9` lines are also linked via gmsh, as in the #7128 block (§1.5) |
 | machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-31 |
-| load | 108.67 – 222.93 1-min loadavg across the four batches. Per §0 Caveat 1 this affects wall clocks only: 11–49 s per probe |
+| load | 58.90 – 222.93 1-min loadavg across the six batches. Per §0 Caveat 1 this affects wall clocks only: 8–75 s per probe |
 
 **Reproduction gate.** Before any new datum was trusted, three published readings and two
 planning-time probes were re-measured:
@@ -199,6 +199,47 @@ probes below `d/R` = 2.52e-4 read 2.0659–2.0861, two of them 0.05 µm either s
 readings leave the tread. Two of those treads (0.245 mm at 2.0804, 0.24682 mm at 2.0861)
 exceed §1.1's sphere sup K of 2.079. §1.1 is the supremum over this section's own walk
 (`d` ≥ 0.3 mm) and §3's cap decision was made against it, so §1.1 is left as is.
+
+**Scale invariance, `R` = 500 mm.** Same harness, with a second `sed` expression rewriting
+`sphere(1000mm)` to `sphere(500mm)`, asserted applied before each probe. Every `d` repeats
+the `d/R` of an `R` = 1000 mm row above, so exact invariance in `d/R` predicts exactly half
+that row's `a`:
+
+| d | d/R | a (m) | a/d | model `k` | measured branch | twin's `a`, halved |
+|---|---|---|---|---|---|---|
+| 0.05 mm | 1.0000e-4 | 1.039e-4 | 2.0780 | −1 | tread | 1.039e-4 |
+| 0.10024 mm | 2.0048e-4 | 1.483e-4 | 1.4794 | −2 | third | 1.483e-4 |
+| 0.123385 mm | 2.4677e-4 | 1.855e-4 | 1.5034 | −2 | third | 1.855e-4 |
+| 0.14885 mm | 2.9770e-4 | 1.134e-4 | 0.7618 | 0 | tooth | 1.1335e-4 |
+
+The branch matches its twin at all four points. Three of the four are exactly half their
+twin at the printed 4 significant figures. The tooth cannot be checked at that precision:
+its twin's printed 2.267e-4 halves to a fifth figure the print does not carry. Both prints
+are consistent with exact halving, since any twin value in [2.2670e-4, 2.2675e-4) satisfies
+both.
+
+**The `k` = −3 state**, `R` = 1000 mm. These probes cost ~74 s each at P=3, against
+11–49 s for the walk above:
+
+| d | d/R | a (m) | a/d | model `k` | measured branch |
+|---|---|---|---|---|---|
+| 0.048 mm | 4.8000e-5 | 1.011e-4 | 2.1063 | −3 | above the tread envelope |
+| 0.04816 mm | 4.8160e-5 | 7.224e-5 | 1.5000 | −2 | third |
+| 0.04837 mm | 4.8370e-5 | 1.021e-4 | **2.1108** | −3 | above the tread envelope |
+
+- 0.048 mm reproduces PRD §4.1's published 2.106. It lies in the model's `k` = −3 window
+  [0.0478835, 0.0480108) mm.
+- 0.04837 mm is the midpoint of the next `k` = −3 window, [0.0483082, 0.0484329) mm.
+- 0.04816 mm is the midpoint of the `k` = −2 window between those two, and reads as the
+  third branch.
+- The two `k` = −3 readings agree at ~2.11 ×, above every tread reading in this block
+  (max 2.0861). They are labelled a `k` = −3 *state*, not a characterized branch: two
+  adjacent windows near one `d/R` do not establish its range elsewhere.
+- Where the state starts is **derived**, not walked. The model's highest `k` = −3 window is
+  at `d/R` ≈ 6.294e-5 (0.0629372 mm on this sphere, 0.006 µm wide).
+
+Model agreement across the whole block is **26/26**: 19 at `R` = 1000 mm, 4 at `R` = 500 mm
+and 3 in the `k` = −3 batch.
 
 ### 1.3 Cone, torus, fillet blend — walking the regime, not sampling it
 
