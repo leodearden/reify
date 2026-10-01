@@ -3155,8 +3155,8 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Detection predicate: `!converged && iterations < max_iter`
     //
-    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
-    // predicate as follows:
+    // `reify_solver_elastic::solver::cg_loop`'s exit-condition contract maps to
+    // this predicate as follows:
     //   - Convergence                          → converged = true       (predicate false)
     //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
     //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
@@ -3168,8 +3168,8 @@ pub(crate) fn solve_cantilever_fea(
     // The predicate is true for the overwhelmingly common cancel case.  A cancel
     // firing on the exact final iteration (iter + 1 == max_iter) makes
     // iterations == max_iter so the predicate is false — stress recovery runs
-    // on partial displacements, but the §6b post-solve cancel check
-    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // on partial displacements, but the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` still returns ComputeOutcome::Cancelled so
     // correctness is preserved.  The wasted stress-recovery work is accepted for
     // this rare edge case; it does not affect the common-case latency improvement.
     //
@@ -3177,9 +3177,9 @@ pub(crate) fn solve_cantilever_fea(
     // so it only reaches non-converged at iterations == max_iter — predicate
     // stays false there too, leaving the existing callers completely unaffected.
     //
-    // On the cancelled path the trampoline's §6b post-solve cancel check
-    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
-    // stress fields, so a stress-less struct is correct.
+    // On the cancelled path the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` returns ComputeOutcome::Cancelled and
+    // never reads stress fields, so a stress-less struct is correct.
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
@@ -6101,14 +6101,14 @@ mod tests {
     /// A gmsh-realized tet mesh can carry a surface vertex with no incident
     /// tet. On the realized solve path, node sets are chosen by COORDINATE
     /// (the x_min face → clamp, x_max face → tip —
-    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// `solve_cantilever_fea`'s realized arm), so an orphan
     /// sitting on the x_min face gets coordinate-selected into the Dirichlet
     /// clamp set even though it belongs to no element. `assemble_global_stiffness`
     /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
     /// zero. The CG solver's Jacobi preconditioner
     /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
     /// asserts a stored, non-zero diagonal at EVERY K row and panics
-    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// otherwise (documented in `solve_cg`'s `# Panics` section) — so restricting
     /// only BC *selection* to tet-referenced nodes is not enough; the orphan
     /// must never reach the solve mesh at all.
     ///
