@@ -370,8 +370,8 @@ WARN_PCT=90
 # expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
 # rather than in a manifest file.
 _KLOC_WARN_KNOWN=(
-    # 18775/20000 = 93% after #7543's back-merge (root 51 + 18724 across 11
-    # module files); the remedy is rule (a)'s split, #7709.
+    # 18958/20000 = 94% at #7543 (root 51 + 18907 across 11 module files);
+    # the remedy is rule (a)'s split, #7709.
     "crates/reify-compiler/tests/harness_compilation_surface.rs"
 )
 
