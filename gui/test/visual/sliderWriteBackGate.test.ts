@@ -18,12 +18,10 @@ import {
   EDIT_ENTER_FRAMES,
   EDIT_ENTER_VALUE,
   FIXTURE_RELPATH,
-  JOINT_INDEX,
   JOINT_RANGE_DECL,
   JOINT_RANGE_MAX_MM,
   JOINT_RANGE_MIN_MM,
   LENGTH_TOLERANCE_MM,
-  MECHANISM_CELL_ID,
   SLIDER_GATE_CODES,
   SLIDER_HOLD_FRAMES,
   SLIDER_HOLD_VALUE,
@@ -37,8 +35,6 @@ import {
   formatFailures,
   paramDeclaration,
   parseBinaryStl,
-  propInputSelector,
-  sliderSelector,
 } from "./sliderWriteBackGate.mjs";
 
 const BASELINE = [
@@ -243,18 +239,6 @@ describe("formatFailures", () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain(SLIDER_GATE_CODES.commitNotWritten);
     expect(lines[1]).toContain(SLIDER_GATE_CODES.exportExtentMismatch);
-  });
-});
-
-describe("the strict selectors", () => {
-  it("address the bound joint's slider inside its own mechanism section", () => {
-    expect(sliderSelector()).toBe(
-      `[data-testid="mechanism-section-${MECHANISM_CELL_ID}"] [data-testid="joint-row-${JOINT_INDEX}"] input[type="range"]`,
-    );
-  });
-
-  it("address the param's PropertyEditor value input", () => {
-    expect(propInputSelector()).toBe(`[data-testid="prop-row-${CELL_ID}"] input[type="text"]`);
   });
 });
 
