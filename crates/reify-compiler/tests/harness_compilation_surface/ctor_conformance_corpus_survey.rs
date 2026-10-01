@@ -2650,13 +2650,9 @@ struct SurveyRun {
 /// make a row's owner depend on the order members were handed in — the exact
 /// non-determinism the artifact's byte-reproducibility rules out.
 fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
-    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
-    use reify_core::{ModulePath, Severity};
-
-    let fea = fea_owned_defs();
     // Seeded with the stdlib so a site constructing a stdlib def resolves even
     // when the declaring stdlib file is not part of the corpus handed in; every
-    // swept member then contributes its own declarations below.
+    // swept member then contributes its own declarations.
     let mut structure_defs = stdlib_structure_defs().clone();
     let mut run = SurveyRun {
         total: rel_paths.len(),
@@ -2675,56 +2671,105 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-
-        // Declarations are harvested from the raw text BEFORE the parse gate:
-        // a member that fails to parse can still legitimately declare a def that
-        // another member constructs, and dropping it would demote that other
-        // member's rows to `UnresolvedDef` for no reason.
-        collect_structure_defs_into(&source, &mut structure_defs);
-
-        let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
-        if !parsed.errors.is_empty() {
-            run.not_surveyed
-                .push((rel.clone(), "parse-error".to_owned()));
-            continue;
-        }
-
-        let compiled = compile_with_stdlib(&parsed);
-        run.surveyed += 1;
-        if compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && !is_ctor_conformance_code(d.code))
-        {
-            run.partial.push((rel.clone(), "compile-error".to_owned()));
-        }
-        for d in compiled
-            .diagnostics
-            .iter()
-            .filter(|d| is_ctor_conformance_code(d.code))
-        {
-            let Some(site) = survey_site_from_diagnostic(rel, &source, d) else {
-                continue;
-            };
-            run.sites.push(site);
-        }
+        let sweep = sweep_member(rel, &source, &stem, &mut structure_defs);
+        run.record(rel.clone(), sweep);
     }
 
-    // Second pass: every declaration in the corpus is now known.
+    finish_run(&mut run, &structure_defs);
+    run
+}
+
+/// What sweeping ONE corpus member yields, whichever half it came from.
+enum MemberSweep {
+    /// The member did not parse, so it contributes no sites.
+    ParseError,
+    /// The member compiled. `partial` is set when an Error-severity diagnostic
+    /// OTHER than the sweep's own ctor-conformance signal fired — see
+    /// [`SurveyRun::partial`] for why that signal is excluded.
+    Compiled {
+        sites: Vec<SurveySite>,
+        partial: bool,
+    },
+}
+
+/// The per-member pipeline BOTH corpus halves run, stated once so the halves
+/// cannot drift: harvest `structure def`s → `parse_with_stdlib` →
+/// `compile_with_stdlib` → the partial rule → [`survey_site_from_diagnostic`]
+/// over every [`is_ctor_conformance_code`] diagnostic.
+///
+/// Declarations are harvested from the raw text BEFORE the parse gate: a member
+/// that fails to parse can still legitimately declare a def that another member
+/// constructs, and dropping it would demote that other member's rows to
+/// `UnresolvedDef` for no reason.
+///
+/// A site's `line` is relative to `source`; a caller whose member is embedded
+/// in a larger file maps it.
+fn sweep_member(
+    file: &str,
+    source: &str,
+    stem: &str,
+    structure_defs: &mut std::collections::BTreeSet<String>,
+) -> MemberSweep {
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::{ModulePath, Severity};
+
+    collect_structure_defs_into(source, structure_defs);
+
+    let parsed = parse_with_stdlib(source, ModulePath::single(stem));
+    if !parsed.errors.is_empty() {
+        return MemberSweep::ParseError;
+    }
+
+    let compiled = compile_with_stdlib(&parsed);
+    let partial = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && !is_ctor_conformance_code(d.code));
+    let sites = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .filter_map(|d| survey_site_from_diagnostic(file, source, d))
+        .collect();
+    MemberSweep::Compiled { sites, partial }
+}
+
+impl SurveyRun {
+    /// Account for one swept member under `member`, its coverage key.
+    fn record(&mut self, member: String, sweep: MemberSweep) {
+        match sweep {
+            MemberSweep::ParseError => {
+                self.not_surveyed.push((member, "parse-error".to_owned()));
+            }
+            MemberSweep::Compiled { sites, partial } => {
+                self.surveyed += 1;
+                if partial {
+                    self.partial.push((member, "compile-error".to_owned()));
+                }
+                self.sites.extend(sites);
+            }
+        }
+    }
+}
+
+/// The tail BOTH corpus halves run once every member is swept.
+///
+/// D9 owner assignment is a second pass because a site in the first swept
+/// member may construct a def declared in the last one. The total order makes
+/// the artifact byte-reproducible regardless of the order members were handed
+/// in; `code` and `message` break the remaining ties so two sites at the same
+/// `(file, line, field)` still sort deterministically.
+fn finish_run(run: &mut SurveyRun, structure_defs: &std::collections::BTreeSet<String>) {
+    let fea = fea_owned_defs();
     for site in &mut run.sites {
-        site.owner = d9_owner(site.def.as_deref(), fea, &structure_defs);
+        site.owner = d9_owner(site.def.as_deref(), fea, structure_defs);
     }
-
-    // Total order, so the artifact is byte-reproducible regardless of the order
-    // members were handed in. `code` and `message` break the remaining ties so
-    // two sites at the same (file, line, field) still sort deterministically.
     run.sites.sort_by(|a, b| {
         (&a.file, a.line, &a.field, &a.code, &a.message)
             .cmp(&(&b.file, b.line, &b.field, &b.code, &b.message))
     });
     run.not_surveyed.sort();
     run.partial.sort();
-    run
 }
 
 /// The known-SITE member: PRD §7 boundary-test row 2, reused verbatim from
@@ -3123,13 +3168,10 @@ fn survey_corpus_orders_sites_deterministically() {
 /// Sweep the Reify snippets embedded in `host_rel_paths` (resolved against
 /// `root`) and collect every ctor-conformance site.
 ///
-/// Runs the SAME pipeline [`survey_corpus`] runs — `collect_structure_defs_into`
-/// → `parse_with_stdlib` → `compile_with_stdlib` → [`is_ctor_conformance_code`]
-/// → [`survey_site_from_diagnostic`] → the second-pass [`d9_owner`]
-/// classification → the `(file, line, field, code, message)` total order — so
-/// the two corpus halves cannot disagree about what a ctor-conformance site IS.
-/// Exactly two things differ: what a MEMBER is, and how a diagnostic's line is
-/// mapped.
+/// Calls the SAME [`sweep_member`] per member and the same [`finish_run`] tail
+/// that [`survey_corpus`] calls, so the two corpus halves cannot disagree about
+/// what a ctor-conformance site IS or about which member is partial. Exactly
+/// two things differ: what a MEMBER is, and how a diagnostic's line is mapped.
 ///
 /// # A member is a snippet, not a host file
 ///
@@ -3162,10 +3204,6 @@ fn survey_corpus_orders_sites_deterministically() {
 /// `ModulePath::single(<host stem>)` and emits `W_MODULE_DECL_MISSING`, a
 /// non-ctor code the shared [`is_ctor_conformance_code`] filter already drops.
 fn survey_inline_corpus(root: &std::path::Path, host_rel_paths: &[String]) -> SurveyRun {
-    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
-    use reify_core::{ModulePath, Severity};
-
-    let fea = fea_owned_defs();
     let mut structure_defs = stdlib_structure_defs().clone();
     let mut run = SurveyRun::default();
 
@@ -3193,53 +3231,19 @@ fn survey_inline_corpus(root: &std::path::Path, host_rel_paths: &[String]) -> Su
         }
 
         for snippet in &scan.snippets {
-            let member = format!("{rel}:{}", snippet.host_line);
-            // Harvested BEFORE the parse gate, for the same reason the `.ri`
-            // half does it: a snippet that fails to parse can still declare a
-            // def another member constructs.
-            collect_structure_defs_into(&snippet.text, &mut structure_defs);
-
-            let parsed = parse_with_stdlib(&snippet.text, ModulePath::single(&stem));
-            if !parsed.errors.is_empty() {
-                run.not_surveyed.push((member, "parse-error".to_owned()));
-                continue;
+            let mut sweep = sweep_member(rel, &snippet.text, &stem, &mut structure_defs);
+            if let MemberSweep::Compiled { sites, .. } = &mut sweep {
+                for site in sites {
+                    let snippet_line = site.line;
+                    site.snippet_line = Some(snippet_line);
+                    site.line = snippet.host_line + snippet_line - 1;
+                }
             }
-
-            let compiled = compile_with_stdlib(&parsed);
-            run.surveyed += 1;
-            if compiled
-                .diagnostics
-                .iter()
-                .any(|d| d.severity == Severity::Error)
-            {
-                run.partial.push((member, "compile-error".to_owned()));
-            }
-            for d in compiled
-                .diagnostics
-                .iter()
-                .filter(|d| is_ctor_conformance_code(d.code))
-            {
-                let Some(mut site) = survey_site_from_diagnostic(rel, &snippet.text, d) else {
-                    continue;
-                };
-                let snippet_line = site.line;
-                site.snippet_line = Some(snippet_line);
-                site.line = snippet.host_line + snippet_line - 1;
-                run.sites.push(site);
-            }
+            run.record(format!("{rel}:{}", snippet.host_line), sweep);
         }
     }
 
-    for site in &mut run.sites {
-        site.owner = d9_owner(site.def.as_deref(), fea, &structure_defs);
-    }
-
-    run.sites.sort_by(|a, b| {
-        (&a.file, a.line, &a.field, &a.code, &a.message)
-            .cmp(&(&b.file, b.line, &b.field, &b.code, &b.message))
-    });
-    run.not_surveyed.sort();
-    run.partial.sort();
+    finish_run(&mut run, &structure_defs);
     run
 }
 
