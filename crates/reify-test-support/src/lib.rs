@@ -16,6 +16,7 @@ pub mod lsp_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
 pub mod prd_gate_probe_set;
+pub mod rust_fixture_scan;
 pub mod skip_sets;
 pub mod specialization_fixtures;
 pub mod temp_dirs;
@@ -49,6 +50,12 @@ pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
 pub use orphan_audit::*;
+// Deliberately NOT `pub use rust_fixture_scan::*;`, for the same reason as
+// `git_env` above: `is_inline_fixture_host`, `raw_string_literals` and
+// `looks_like_reify_source` are generic enough names that hoisting them into a
+// crate root which many test files glob-import would turn a future same-named
+// item in any other glob-exported module into an E0659 ambiguity at every such
+// use site. Its readers all spell the module path.
 pub use skip_sets::*;
 pub use temp_dirs::*;
 pub use tolerance_fixtures::*;
