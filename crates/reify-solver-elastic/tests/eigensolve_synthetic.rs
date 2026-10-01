@@ -22,7 +22,9 @@
 
 use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
-use reify_solver_elastic::eigensolve::test_support::{laplacian_lambdas, laplacian_pencil};
+use reify_solver_elastic::eigensolve::test_support::{
+    indefinite_b_pencil, laplacian_lambdas, laplacian_pencil,
+};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
 use reify_solver_elastic::{
     lanczos_shift_invert, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
@@ -752,4 +754,42 @@ fn lanczos_shift_invert_panics_on_zero_max_iters() {
     // Must panic: "EigenSolverOptions.max_iters = 0 is invalid; must be >= 1"
     let opts = EigenSolverOptions { n_modes: 5, tol: 1e-10, max_iters: 0, sigma: 0.0 };
     let _ = lanczos_shift_invert(&k_op, &m_op, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Dense QZ on an indefinite-B pencil (#7602 concern 4)
+// ---------------------------------------------------------------------------
+
+/// The dense QZ path completes on the 136-DOF indefinite-B pencil.
+///
+/// A regression tripwire for a BUILD-PROFILE fault, not an algorithmic one:
+/// faer's generic QZ (`gevd_real`) is monomorphised in this crate, and its
+/// aggressive-early-deflation step relies on `usize` wrapping arithmetic that
+/// is correct in release but panics "attempt to subtract with overflow" under
+/// overflow-checks. This pencil reaches that step; the root `Cargo.toml` dev
+/// profile for `reify-solver-elastic` is what keeps it green.
+///
+/// The same pencil is the dense reference for the indefinite-B Lanczos tests,
+/// so a dense path that cannot solve it leaves those tests without a baseline.
+#[test]
+fn dense_solve_completes_on_the_indefinite_136dof_pencil() {
+    let (k, b) = indefinite_b_pencil(136);
+    let opts = EigenSolverOptions {
+        n_modes: 3,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_dense(&k, &b, opts);
+
+    assert!(result.converged, "dense QZ must return all 3 requested modes");
+    assert_eq!(result.eigenvalues.len(), 3, "must return exactly 3 eigenvalues");
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &result.eigenvalues,
+        &result.eigenvectors,
+        1e-10,
+        "dense 136 indefinite",
+    );
 }
