@@ -12,10 +12,15 @@
 //! each on a fixture that faer factors SIMPLICIALLY and one it factors
 //! SUPERNODALLY. Which arm a fixture takes is asserted through faer's public
 //! symbolic API, so neither fixture can silently drift onto the other arm.
+//! The same API pins that faer reorders each fixture by a permutation that is
+//! not an involution. Otherwise a swap of the forward and inverse arrays
+//! would leave both identities green.
 
 use faer::linalg::solvers::SolveCore;
 use faer::sparse::linalg::LltError;
-use faer::sparse::linalg::cholesky::{SymbolicCholeskyRaw, factorize_symbolic_cholesky};
+use faer::sparse::linalg::cholesky::{
+    SymbolicCholesky, SymbolicCholeskyRaw, factorize_symbolic_cholesky,
+};
 use faer::sparse::{SparseRowMat, Triplet};
 use faer::{Conj, Mat, Side};
 use reify_solver_elastic::split_cholesky::SplitCholesky;
@@ -61,17 +66,41 @@ fn supernodal_banded() -> SparseRowMat<usize, f64> {
     SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
 }
 
-/// Whether faer's PUBLIC symbolic analysis picks the supernodal arm for `a`.
-fn faer_factors_supernodally(a: &SparseRowMat<usize, f64>) -> bool {
+/// faer's PUBLIC symbolic Cholesky analysis of `a`.
+fn faer_symbolic_cholesky(a: &SparseRowMat<usize, f64>) -> SymbolicCholesky<usize> {
     let a_csc = a.to_col_major().unwrap();
-    let symbolic = factorize_symbolic_cholesky(
+    factorize_symbolic_cholesky(
         a_csc.as_ref().symbolic(),
         Side::Lower,
         Default::default(),
         Default::default(),
     )
-    .unwrap();
-    matches!(symbolic.raw(), SymbolicCholeskyRaw::Supernodal(_))
+    .unwrap()
+}
+
+/// Whether faer's PUBLIC symbolic analysis picks the supernodal arm for `a`.
+fn faer_factors_supernodally(a: &SparseRowMat<usize, f64>) -> bool {
+    matches!(
+        faer_symbolic_cholesky(a).raw(),
+        SymbolicCholeskyRaw::Supernodal(_)
+    )
+}
+
+/// Whether faer's fill-reducing permutation for `a` is something other than an
+/// involution (the identity included).
+///
+/// Most of [`SplitCholesky`]'s logic is the permutation convention: which of
+/// the forward and inverse arrays each half applies. Under an involution the
+/// two arrays are EQUAL, so swapping them would leave both composition
+/// identities green. A fixture only pins that convention if this holds.
+fn faer_permutation_is_not_an_involution(a: &SparseRowMat<usize, f64>) -> bool {
+    match faer_symbolic_cholesky(a).perm() {
+        Some(perm) => {
+            let (forward, inverse) = perm.arrays();
+            forward != inverse
+        }
+        None => false,
+    }
 }
 
 /// A deterministic two-column right-hand side with no structure a triangular
@@ -152,6 +181,24 @@ fn supernodal_fixture_takes_the_supernodal_arm() {
     assert!(
         faer_factors_supernodally(&supernodal_banded()),
         "the banded fixture must pin faer's SUPERNODAL arm",
+    );
+}
+
+#[test]
+fn simplicial_fixture_is_permuted_by_a_non_involution() {
+    assert!(
+        faer_permutation_is_not_an_involution(&tridiagonal(80)),
+        "the tridiagonal fixture must be reordered by a permutation whose forward \
+         and inverse arrays differ",
+    );
+}
+
+#[test]
+fn supernodal_fixture_is_permuted_by_a_non_involution() {
+    assert!(
+        faer_permutation_is_not_an_involution(&supernodal_banded()),
+        "the banded fixture must be reordered by a permutation whose forward and \
+         inverse arrays differ",
     );
 }
 
