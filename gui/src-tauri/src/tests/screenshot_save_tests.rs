@@ -40,7 +40,8 @@ fn without_save_path_the_params_are_forwarded_unchanged() {
 
 #[test]
 fn an_absolute_save_path_is_taken_and_every_other_param_forwarded() {
-    let target = std::env::temp_dir().join("shot.png");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("shot.png");
     let params = json!({
         "save_path": path_string(&target),
         "viewportId": "design-main",

@@ -80,7 +80,8 @@ fn engine_state_advertises_the_view_params_engine_state_view_reads() {
 
 #[test]
 fn every_image_tool_advertises_the_save_path_take_save_path_reads() {
-    let target = std::env::temp_dir().join("advertised-params.png");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("advertised-params.png");
     for tool in ["screenshot", "screenshot_window", "element_screenshot"] {
         let props = advertised_properties(tool);
         let save_path = advertised_name(&props, tool, "save_path", "string");
