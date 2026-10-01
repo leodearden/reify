@@ -2063,6 +2063,60 @@ mod singular_shift_predicate_tests {
     }
 }
 
+/// Unit tests for the private post-solve residual predicate.
+///
+/// In-crate for the same reason as `singular_shift_predicate_tests`: the
+/// predicate is private, and its PUBLIC consequence —
+/// [`EigenSolverResult::residual_check_failures`] — is pinned from
+/// `tests/eigensolve_synthetic.rs`. What these add is the boundary between its
+/// two arms, which no solve can place exactly.
+#[cfg(test)]
+mod ritz_verification_predicate_tests {
+    use super::ritz_pair_is_verified;
+
+    /// A pair meeting the caller's own tolerance is never rejected, however
+    /// large its RELATIVE residual: μ = 1e-6 makes ρ = 5e-4 here.
+    #[test]
+    fn a_residual_within_ten_tol_is_verified_even_when_relatively_large() {
+        assert!(ritz_pair_is_verified(5e-10, 1e-6, 1.0, 1e-10));
+        assert!(
+            ritz_pair_is_verified(10.0 * 1e-10, 1e-6, 1.0, 1e-10),
+            "the tol arm is inclusive at exactly 10·tol",
+        );
+    }
+
+    /// A pair accurate to 1e-6 relative is never rejected, even when the
+    /// caller's tol is below the operator's rounding floor.
+    #[test]
+    fn a_relatively_small_residual_is_verified_even_above_ten_tol() {
+        assert!(ritz_pair_is_verified(1e-8, 1e3, 1.0, 1e-14));
+        assert!(
+            ritz_pair_is_verified(1e-6 * 1e3 * 2.0, 1e3, 2.0, 1e-14),
+            "the relative arm is inclusive at exactly 1e-6·|μ|·‖y‖",
+        );
+    }
+
+    #[test]
+    fn a_residual_exceeding_both_arms_is_not_verified() {
+        assert!(!ritz_pair_is_verified(1.0, 1.0, 1.0, 1e-10));
+        assert!(!ritz_pair_is_verified(2e-6, 1.0, 1.0, 1e-10));
+    }
+
+    /// The relative arm scales with |μ|, so a negative μ (λ below σ) is judged
+    /// exactly as its positive mirror.
+    #[test]
+    fn a_negative_mu_is_judged_by_its_magnitude() {
+        assert!(ritz_pair_is_verified(1e-8, -1e3, 1.0, 1e-14));
+        assert!(!ritz_pair_is_verified(1e-2, -1e3, 1.0, 1e-14));
+    }
+
+    #[test]
+    fn a_non_finite_residual_is_not_verified() {
+        assert!(!ritz_pair_is_verified(f64::NAN, 1.0, 1.0, 1e-10));
+        assert!(!ritz_pair_is_verified(f64::INFINITY, 1.0, 1.0, 1e-10));
+    }
+}
+
 #[cfg(test)]
 mod shifted_pencil_tests {
     use super::*;

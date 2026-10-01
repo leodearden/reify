@@ -341,6 +341,10 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
         result.eigenvalues.len(),
         "eigenvectors width must equal the number of returned eigenvalues",
     );
+    assert_eq!(
+        result.residual_check_failures, 0,
+        "non-convergence is a shortfall, not a residual-check failure",
+    );
     // Must not panic — absence of panic IS the no-panic assertion.
 }
 
@@ -870,25 +874,103 @@ fn mixed_near_shift(sigma: f64) -> impl Fn(f64, f64) -> f64 {
     move |g, w| 1e-9 * g.abs().max(w.abs()).max((g - sigma).abs()).max(1e-12)
 }
 
-/// Every contract a metric-Lanczos result owes, measured against dense QZ.
-fn assert_metric_lanczos_matches_dense(
-    k: &SparseRowMat<usize, f64>,
-    b: &SparseRowMat<usize, f64>,
-    result: &EigenSolverResult,
+/// A direct solve through the metric core: the pencil, the options, and what
+/// came back.
+struct MetricCoreSolve {
+    label: &'static str,
+    k: SparseRowMat<usize, f64>,
+    b: SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
-    label: &str,
-) {
+    result: EigenSolverResult,
+}
+
+/// Drive the metric core's `ShiftedPencil` arm with `w = K − σB` (σ = 0 ⇒ K).
+fn shifted_pencil_metric_solve(
+    label: &'static str,
+    (k, b): (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>),
+    w: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> MetricCoreSolve {
+    let g = SplitCholesky::try_new(w).expect("the metric must be SPD");
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::ShiftedPencil(&g),
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    MetricCoreSolve { label, k, b, opts, result }
+}
+
+/// Drive the metric core's `Stiffness` arm: `W = K`, and the indefinite
+/// `K − σB` applied through LU.
+fn stiffness_metric_solve(
+    label: &'static str,
+    (k, b): (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>),
+    opts: EigenSolverOptions,
+) -> MetricCoreSolve {
+    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
+    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
+    let shifted_inverse = SparseStiffnessOp {
+        factor: SparseFactorRef::Lu(&lu),
+        n: k.nrows(),
+    };
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::Stiffness {
+            k_factor: &g_k,
+            shifted_inverse: &shifted_inverse,
+        },
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    MetricCoreSolve { label, k, b, opts, result }
+}
+
+/// σ = 0: `W = K` itself, `S = G⁻¹BG⁻ᵀ`.
+fn graded_metric_at_sigma_zero() -> MetricCoreSolve {
+    let pencil = graded_diagonal_b_pencil(80);
+    let k = pencil.0.clone();
+    shifted_pencil_metric_solve("graded σ=0 ShiftedPencil", pencil, &k, metric_opts(2, 0.0))
+}
+
+/// σ = 5e-4, below λ₁ ≈ 1.002e-3: `K − σB` is SPD and is the metric.
+fn graded_metric_below_lambda_one() -> MetricCoreSolve {
+    let pencil = graded_diagonal_b_pencil(80);
+    let opts = metric_opts(2, 5e-4);
+    let w = shifted_tridiagonal_pencil(&pencil.0, &pencil.1, opts.sigma);
+    shifted_pencil_metric_solve("graded σ=5e-4 ShiftedPencil", pencil, &w, opts)
+}
+
+/// σ = 0.5, above many modes: `K − σB` is indefinite, so `W = K`.
+fn graded_metric_above_a_mode() -> MetricCoreSolve {
+    stiffness_metric_solve(
+        "graded σ=0.5 Stiffness",
+        graded_diagonal_b_pencil(80),
+        metric_opts(2, 0.5),
+    )
+}
+
+/// The indefinite-B pencil at σ = 0.02, above its smallest positive mode
+/// (≈ 6.46e-4), through the `Stiffness` arm.
+fn indefinite_metric_above_a_mode() -> MetricCoreSolve {
+    stiffness_metric_solve(
+        "indefinite σ=0.02 Stiffness",
+        indefinite_b_pencil(136),
+        metric_opts(3, 0.02),
+    )
+}
+
+/// Every contract a metric-Lanczos result owes, measured against dense QZ.
+fn assert_metric_lanczos_matches_dense(solve: &MetricCoreSolve) {
+    let MetricCoreSolve { label, k, b, opts, result } = solve;
     let n_modes = opts.n_modes;
-    let sigma = opts.sigma;
     assert!(
         result.n_converged >= n_modes,
         "{label}: n_converged = {} < {n_modes} — the Lanczos did not genuinely run",
         result.n_converged,
     );
     assert!(result.converged, "{label}: must converge");
-    assert_eq!(result.shift, sigma, "{label}: the shift used must be σ");
+    assert_eq!(result.shift, opts.sigma, "{label}: the shift used must be σ");
 
-    let dense = solve_eigen_dense(k, b, opts);
+    let dense = solve_eigen_dense(k, b, opts.clone());
     assert_same_eigenvalue_multiset(&result.eigenvalues, &dense.eigenvalues, relative(1e-9), label);
     assert_eigen_residuals(k, b, &result.eigenvalues, &result.eigenvectors, 1e-10, label);
 
@@ -901,75 +983,53 @@ fn assert_metric_lanczos_matches_dense(
     }
 }
 
-/// σ = 0: `W = K` itself, `S = G⁻¹BG⁻ᵀ`.
 #[test]
 fn metric_lanczos_shifted_pencil_at_sigma_zero_matches_dense_on_graded_b() {
-    let (k, b) = graded_diagonal_b_pencil(80);
-    let opts = metric_opts(2, 0.0);
-    let g = SplitCholesky::try_new(&k).expect("K is SPD");
-    let result = lanczos_shift_invert_in_metric(
-        LanczosMetric::ShiftedPencil(&g),
-        &SparseMetricOp { m: b.as_ref() },
-        opts.clone(),
-    );
-    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=0 ShiftedPencil");
+    assert_metric_lanczos_matches_dense(&graded_metric_at_sigma_zero());
 }
 
-/// σ = 5e-4, below λ₁ ≈ 1.002e-3: `K − σB` is SPD and is the metric.
 #[test]
 fn metric_lanczos_shifted_pencil_below_lambda_one_matches_dense_on_graded_b() {
-    let (k, b) = graded_diagonal_b_pencil(80);
-    let opts = metric_opts(2, 5e-4);
-    let shifted = shifted_tridiagonal_pencil(&k, &b, opts.sigma);
-    let g = SplitCholesky::try_new(&shifted).expect("K − σB is SPD below λ₁");
-    let result = lanczos_shift_invert_in_metric(
-        LanczosMetric::ShiftedPencil(&g),
-        &SparseMetricOp { m: b.as_ref() },
-        opts.clone(),
-    );
-    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=5e-4 ShiftedPencil");
+    assert_metric_lanczos_matches_dense(&graded_metric_below_lambda_one());
 }
 
-/// σ = 0.5, above many modes: `K − σB` is indefinite, so `W = K` and the
-/// shifted inverse is applied through LU.
 #[test]
 fn metric_lanczos_stiffness_arm_above_a_mode_matches_dense_on_graded_b() {
-    let (k, b) = graded_diagonal_b_pencil(80);
-    let opts = metric_opts(2, 0.5);
-    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
-    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
-    let shifted_inverse = SparseStiffnessOp { factor: SparseFactorRef::Lu(&lu), n: 80 };
-    let result = lanczos_shift_invert_in_metric(
-        LanczosMetric::Stiffness { k_factor: &g_k, shifted_inverse: &shifted_inverse },
-        &SparseMetricOp { m: b.as_ref() },
-        opts.clone(),
-    );
-    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=0.5 Stiffness");
+    assert_metric_lanczos_matches_dense(&graded_metric_above_a_mode());
 }
 
-/// The indefinite-B pencil at σ = 0.02, above its smallest positive mode
-/// (≈ 6.46e-4), through the `Stiffness` arm.
 #[test]
 fn metric_lanczos_stiffness_arm_matches_dense_on_indefinite_b() {
-    let (k, b) = indefinite_b_pencil(136);
-    let opts = metric_opts(3, 0.02);
-    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
-    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
-    let shifted_inverse = SparseStiffnessOp { factor: SparseFactorRef::Lu(&lu), n: 136 };
-    let result = lanczos_shift_invert_in_metric(
-        LanczosMetric::Stiffness { k_factor: &g_k, shifted_inverse: &shifted_inverse },
-        &SparseMetricOp { m: b.as_ref() },
-        opts.clone(),
-    );
-    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "indefinite σ=0.02 Stiffness");
+    assert_metric_lanczos_matches_dense(&indefinite_metric_above_a_mode());
 }
 
 // ---------------------------------------------------------------------------
 // The sparse entry point dispatches B ≠ cI to the symmetrized operator (#7602)
 // ---------------------------------------------------------------------------
 
-/// Run `solve_eigen_shift_invert` across `sigmas` and hold every solve to the
-/// dense reference at the same σ.
+/// SPD, non-identity B: σ from 0 to well inside the spectrum (n_modes = 2).
+const GRADED_SIGMA_LADDER: [f64; 6] = [0.0, 5e-4, 0.05, 0.5, 1.5, 2.5];
+/// Indefinite B (the buckling stand-in): shifts of both signs (n_modes = 3).
+const INDEFINITE_SIGMA_LADDER: [f64; 6] = [0.0, 1e-3, 0.02, -0.02, 0.2, -0.3];
+
+/// `solve_eigen_shift_invert` at each σ of `sigmas`, with the options used.
+fn ladder_solves(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    n_modes: usize,
+    sigmas: &[f64],
+) -> Vec<(EigenSolverOptions, EigenSolverResult)> {
+    sigmas
+        .iter()
+        .map(|&sigma| {
+            let opts = metric_opts(n_modes, sigma);
+            let result = solve_eigen_shift_invert(k, b, opts.clone());
+            (opts, result)
+        })
+        .collect()
+}
+
+/// Hold every solve of a σ ladder to the dense reference at the same σ.
 fn assert_shift_invert_matches_dense_across(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -977,10 +1037,9 @@ fn assert_shift_invert_matches_dense_across(
     sigmas: &[f64],
     label: &str,
 ) {
-    for &sigma in sigmas {
-        let opts = metric_opts(n_modes, sigma);
+    for (opts, lanczos) in ladder_solves(k, b, n_modes, sigmas) {
+        let sigma = opts.sigma;
         let ctx = format!("{label} σ={sigma}");
-        let lanczos = solve_eigen_shift_invert(k, b, opts.clone());
         assert!(
             lanczos.n_converged > 0,
             "{ctx}: must exercise Lanczos (n_converged > 0)",
@@ -997,28 +1056,102 @@ fn assert_shift_invert_matches_dense_across(
     }
 }
 
-/// SPD, non-identity B, across a σ ladder from 0 to well inside the spectrum.
 #[test]
 fn shift_invert_matches_dense_on_graded_spd_b_across_a_sigma_ladder() {
     let (k, b) = graded_diagonal_b_pencil(80);
-    assert_shift_invert_matches_dense_across(
-        &k,
-        &b,
-        2,
-        &[0.0, 5e-4, 0.05, 0.5, 1.5, 2.5],
-        "graded",
-    );
+    assert_shift_invert_matches_dense_across(&k, &b, 2, &GRADED_SIGMA_LADDER, "graded");
 }
 
-/// Indefinite B (the buckling stand-in), across shifts of both signs.
 #[test]
 fn shift_invert_matches_dense_on_indefinite_b_across_a_sigma_ladder() {
     let (k, b) = indefinite_b_pencil(136);
-    assert_shift_invert_matches_dense_across(
-        &k,
-        &b,
-        3,
-        &[0.0, 1e-3, 0.02, -0.02, 0.2, -0.3],
-        "indefinite",
+    assert_shift_invert_matches_dense_across(&k, &b, 3, &INDEFINITE_SIGMA_LADDER, "indefinite");
+}
+
+// ---------------------------------------------------------------------------
+// Post-solve residual verification (#7602): a non-eigenpair never reports
+// `converged = true`
+// ---------------------------------------------------------------------------
+
+/// The Euclidean core driven with a Cholesky of the row-major K.
+fn euclidean_core_solve(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> EigenSolverResult {
+    let llt = k.sp_cholesky(Side::Lower).expect("K is SPD");
+    lanczos_shift_invert(
+        &SparseStiffnessOp {
+            factor: SparseFactorRef::Cholesky(&llt),
+            n: k.nrows(),
+        },
+        &SparseMetricOp { m: b.as_ref() },
+        opts,
+    )
+}
+
+/// The DEFECT CLASS itself: the Euclidean core handed a B ≠ cI returns Ritz
+/// pairs that are not eigenpairs (measured ‖Sy − μy‖ = 9.1e1, relative 0.36),
+/// and must say so rather than label them converged. The pairs are still
+/// RETURNED, so C2 selection is not silently changed.
+#[test]
+fn euclidean_core_misused_on_a_non_identity_b_reports_unverified_pairs() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let misused = euclidean_core_solve(&k, &b, metric_opts(2, 0.0));
+    assert_eq!(misused.eigenvalues.len(), 2, "the pairs must still be returned");
+    assert_eq!(
+        misused.residual_check_failures, 2,
+        "both returned pairs fail the post-solve residual check",
     );
+    assert!(!misused.converged, "unverified pairs must not report converged");
+
+    let (k_c, b_c) = fixture_c();
+    let control = euclidean_core_solve(&k_c, &b_c, metric_opts(2, 0.0));
+    assert!(control.converged, "B = I: the Euclidean core is valid and converges");
+    assert_eq!(control.residual_check_failures, 0, "B = I: every pair verifies");
+}
+
+/// Every Lanczos path this file drives verifies its pairs: both σ ladders
+/// through the sparse entry point, and every direct metric-core solve.
+#[test]
+fn every_lanczos_path_verifies_its_pairs() {
+    let graded = graded_diagonal_b_pencil(80);
+    let indefinite = indefinite_b_pencil(136);
+    let ladders = ladder_solves(&graded.0, &graded.1, 2, &GRADED_SIGMA_LADDER)
+        .into_iter()
+        .map(|solve| ("graded", solve))
+        .chain(
+            ladder_solves(&indefinite.0, &indefinite.1, 3, &INDEFINITE_SIGMA_LADDER)
+                .into_iter()
+                .map(|solve| ("indefinite", solve)),
+        );
+    for (label, (opts, result)) in ladders {
+        assert!(result.n_converged > 0, "{label} σ={}: must run Lanczos", opts.sigma);
+        assert_eq!(
+            result.residual_check_failures, 0,
+            "{label} σ={}: every returned pair must verify",
+            opts.sigma,
+        );
+    }
+    for solve in [
+        graded_metric_at_sigma_zero(),
+        graded_metric_below_lambda_one(),
+        graded_metric_above_a_mode(),
+        indefinite_metric_above_a_mode(),
+    ] {
+        assert_eq!(
+            solve.result.residual_check_failures, 0,
+            "{}: every returned pair must verify",
+            solve.label,
+        );
+    }
+}
+
+/// QZ computes the spectrum directly, so the dense path has no Ritz pairs to
+/// verify.
+#[test]
+fn dense_path_reports_no_residual_check_failures() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let result = solve_eigen_dense(&k, &b, metric_opts(2, 0.0));
+    assert_eq!(result.residual_check_failures, 0);
 }
