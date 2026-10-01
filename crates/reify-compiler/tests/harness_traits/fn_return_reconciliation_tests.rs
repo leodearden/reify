@@ -324,3 +324,44 @@ structure def Pin : Cylindrical {
         module.diagnostics
     );
 }
+
+// ── Bodyless required trait fns ─────────────────────────────────────────────
+
+/// A bodyless required fn has no body that could ever reconcile its defaulted
+/// `Real`, so it must carry an annotation.
+#[test]
+fn bodyless_required_fn_without_return_annotation_warns() {
+    let source = "trait Measured { fn measure(self) }\n";
+    let module = compile_source(source);
+
+    let unannotated = with_code(&module, DiagnosticCode::FnReturnTypeUnannotated);
+    assert_eq!(
+        unannotated.len(),
+        1,
+        "expected exactly one FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(unannotated[0].severity, Severity::Warning);
+    assert_no_errors(&module);
+
+    let decl_start = source.find("fn measure").unwrap() as u32;
+    assert!(
+        unannotated[0]
+            .labels
+            .iter()
+            .any(|l| l.span.start >= decl_start),
+        "expected a label within the fn declaration, got: {:?}",
+        unannotated[0].labels
+    );
+}
+
+#[test]
+fn bodyless_required_fn_with_return_annotation_is_silent() {
+    let module = compile_source("trait Measured { fn measure(self) -> Length }\n");
+
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
+        "expected no FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+}
