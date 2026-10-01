@@ -344,11 +344,12 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use reify_eval::CorrespondenceMap;
+    use reify_eval::{CorrespondenceMap, stage_b_eligible};
     use reify_ir::{
-        ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-        GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-        VolumeConnectivity, VolumeMesh,
+        AxisSign, ElementOrderTag, ExportError, ExportFormat, FeatureId, GeometryError,
+        GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle,
+        KernelId, Mesh, QueryError, Role, TessError, TopologyAttribute, TopologyAttributeTable,
+        Value, VolumeConnectivity, VolumeMesh,
     };
 
     use super::*;
@@ -693,32 +694,99 @@ mod tests {
         assert_eq!(calls[0], ProjectorCall::Vertex { vertex: h(60) });
     }
 
-    // ── Step-21: vertex-attached with v0.2 empty vertex_to_vertex ────────────
+    // ── Step-21: vertex-attached with missing correspondence ──────────────────
 
-    /// Pins the v0.2 behaviour: [`CorrespondenceMap::vertex_to_vertex`] is
-    /// always empty because Stage B never populates it. Any future task that
-    /// populates `vertex_to_vertex` will see this test fail and must update
-    /// both the test and the doc-comment in lockstep.
     #[test]
-    fn compute_dirichlet_bcs_vertex_attached_with_v0_2_empty_vertex_correspondence_returns_missing_correspondence_vertex()
+    fn compute_dirichlet_bcs_vertex_attached_with_missing_correspondence_returns_missing_correspondence_vertex()
      {
         let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
         let mut ba = BoundaryAssociation::default();
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
 
-        // Default CorrespondenceMap: vertex_to_vertex is always empty in v0.2.
-        let result = compute_dirichlet_bcs(
-            &mesh,
-            &ba,
-            &CorrespondenceMap::default(),
-            &RecordingProjector::new(),
-        );
+        let proj = RecordingProjector::new();
+        let result = compute_dirichlet_bcs(&mesh, &ba, &CorrespondenceMap::default(), &proj);
         assert_eq!(
             result,
             Err(ProjectionFailure::MissingCorrespondence {
                 kind: SubShapeKind::Vertex,
                 old_handle: h(50),
             })
+        );
+        assert_eq!(
+            proj.captured_calls().len(),
+            0,
+            "projector must not be called"
+        );
+    }
+
+    // ── Task 7276: Stage B → compute_dirichlet_bcs vertex seam ────────────────
+
+    /// Pins the Stage B → boundary seam for vertex-attached nodes: the map is
+    /// produced by the real `reify_eval::stage_b_eligible` (`morph_stage_b`,
+    /// which fills `vertex_to_vertex` since task 3590), not hand-built. If Stage
+    /// B stops populating it, `OnVertex` nodes regress to `MissingCorrespondence`.
+    #[test]
+    fn compute_dirichlet_bcs_snaps_vertex_attached_node_through_stage_b_vertex_correspondence() {
+        let corner = TopologyAttribute {
+            feature_id: FeatureId::realization("Feature", 0),
+            role: Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos,
+            },
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(50),
+            },
+            corner.clone(),
+        );
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(60),
+            },
+            corner,
+        );
+
+        let map = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(50)],
+            &[h(60)],
+        )
+        .expect("a single attribute-matched vertex pair must pass Stage B");
+        assert_eq!(
+            map,
+            CorrespondenceMap {
+                vertex_to_vertex: HashMap::from([(h(50), h(60))]),
+                ..CorrespondenceMap::default()
+            },
+            "Stage B must map old vertex h(50) to new vertex h(60), faces/edges empty"
+        );
+
+        let mesh = mesh_with_vertices(vec![2.0_f32, 0.0, 0.0]);
+        let mut ba = BoundaryAssociation::default();
+        ba.associate(0, NodeAttachment::OnVertex(h(50)));
+
+        let mut proj = RecordingProjector::new();
+        proj.add_vertex_response(h(60), Ok([2.1, 0.0, 0.0]));
+
+        let result = compute_dirichlet_bcs(&mesh, &ba, &map, &proj);
+        assert_eq!(result, Ok(vec![(0, [2.1, 0.0, 0.0])]));
+        assert_eq!(
+            proj.captured_calls(),
+            vec![ProjectorCall::Vertex { vertex: h(60) }]
         );
     }
 
