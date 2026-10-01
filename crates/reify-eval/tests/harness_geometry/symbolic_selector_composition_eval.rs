@@ -37,7 +37,7 @@ fn fixture_path(name: &str) -> String {
 
 /// Assert `cell_value` holds `Value::Selector(kind)` and return a clone of
 /// it, panicking with a RED-until-wired message otherwise. Mirrors
-/// `symbolic_selector_eval.rs::assert_selector_leaf`, generalized to any
+/// `reify_test_support::assert_selector_leaf`, generalized to any
 /// `SelectorNode` shape (not just `Leaf`) since composition cells mint
 /// `Union`/`Intersect`/`Difference` nodes.
 fn assert_selector(
