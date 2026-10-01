@@ -11260,11 +11260,9 @@ mod tests {
     // offending support's `.ri` construction-site span to
     // `fea_diagnostic_to_core`. Fails to COMPILE until step-8 adds the helper.
 
-    fn fixed_support_with_span(target: &str, span: Option<SourceSpan>) -> Value {
+    fn fixed_support_with_span(target: Value, span: Option<SourceSpan>) -> Value {
         let fields: PersistentMap<String, Value> =
-            [("target".to_string(), Value::String(target.to_string()))]
-                .into_iter()
-                .collect();
+            [("target".to_string(), target)].into_iter().collect();
         Value::StructureInstance(Box::new(
             StructureInstanceData {
                 type_name: "FixedSupport".to_string(),
@@ -11276,10 +11274,46 @@ mod tests {
         ))
     }
 
+    fn named_face(name: &str) -> Value {
+        crate::compute_targets::bc_resolve::named_leaf_selector(
+            reify_core::ty::SelectorKind::Face,
+            name,
+        )
+    }
+
+    // ── task 5312 (Bmig2): the synthetic-clamp advisory reads the typed target
+
+    #[test]
+    fn any_support_targets_reads_a_typed_named_target() {
+        use crate::compute_targets::bc_resolve::named_leaf_selector;
+        use reify_core::ty::SelectorKind;
+        let naming = |kind, name| vec![fixed_support_with_span(named_leaf_selector(kind, name), None)];
+
+        for kind in [SelectorKind::Face, SelectorKind::Edge, SelectorKind::Vertex] {
+            assert!(
+                any_support_targets(&naming(kind, "root"), "root"),
+                "a {kind:?} Named(\"root\") target must count as targeting the clamp face"
+            );
+        }
+        assert!(
+            !any_support_targets(&naming(SelectorKind::Face, "tip"), "root"),
+            "a Named(\"tip\") target does not target the root clamp face"
+        );
+    }
+
+    #[test]
+    fn any_support_targets_ignores_a_bare_string_target() {
+        let supports = vec![fixed_support_with_span(Value::String("root".into()), None)];
+        assert!(
+            !any_support_targets(&supports, "root"),
+            "a bare String target is the retired form and must not be read (D8)"
+        );
+    }
+
     #[test]
     fn first_instance_source_span_returns_first_elements_span() {
         let span = SourceSpan::new(40, 68);
-        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), Some(span))]);
         assert_eq!(
             first_instance_source_span(&list),
             Some(span),
@@ -11307,7 +11341,7 @@ mod tests {
 
     #[test]
     fn first_instance_source_span_none_when_first_instance_has_no_span() {
-        let list = Value::List(vec![fixed_support_with_span("tip", None)]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), None)]);
         assert_eq!(
             first_instance_source_span(&list),
             None,
@@ -11320,7 +11354,7 @@ mod tests {
         let span = SourceSpan::new(5, 9);
         let list = Value::List(vec![
             Value::Int(7),
-            fixed_support_with_span("tip", Some(span)),
+            fixed_support_with_span(named_face("tip"), Some(span)),
         ]);
         assert_eq!(
             first_instance_source_span(&list),
@@ -11333,7 +11367,7 @@ mod tests {
     #[test]
     fn first_instance_source_span_threads_into_fea_diagnostic_label() {
         let span = SourceSpan::new(12, 40);
-        let list = Value::List(vec![fixed_support_with_span("tip", Some(span))]);
+        let list = Value::List(vec![fixed_support_with_span(named_face("tip"), Some(span))]);
 
         let failure = FeaFailure::UnderConstrained { support_count: 1 };
         let diag = fea_diagnostic_to_core(&failure, first_instance_source_span(&list));

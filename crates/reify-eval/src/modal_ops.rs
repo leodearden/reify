@@ -4582,6 +4582,7 @@ mod tests {
         solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        support_targets,
     };
     use crate::{CancellationHandle, ComputeOutcome};
     /// The 1-D Laplacian pencil and its closed form come from the solver crate's
@@ -6857,23 +6858,54 @@ mod tests {
         }))
     }
 
+    /// The `target` a support authored as `face(beam, "<target>")` evaluates
+    /// to: a Face selector whose single Named leaf is `target`.
+    fn face_target(target: &str) -> Value {
+        crate::compute_targets::bc_resolve::named_leaf_selector(
+            reify_core::ty::SelectorKind::Face,
+            target,
+        )
+    }
+
     /// A `FixedSupport { target }` instance — the runtime support shape
     /// `support_targets` reads to discriminate the BC realization.
     fn fixed_support(target: &str) -> Value {
-        struct_instance(
-            "FixedSupport",
-            vec![("target".to_string(), Value::String(target.to_string()))],
-        )
+        struct_instance("FixedSupport", vec![("target".to_string(), face_target(target))])
     }
 
     /// A `PinnedSupport { target }` instance — same field shape as
     /// [`fixed_support`], differing ONLY in `type_name`, which is exactly why
     /// `support_targets` has to read the kind off `type_name` (task 6663).
     fn pinned_support(target: &str) -> Value {
+        struct_instance("PinnedSupport", vec![("target".to_string(), face_target(target))])
+    }
+
+    /// `ModalOptions { boundary_conditions: supports }`, the only field
+    /// `support_targets` reads.
+    fn modal_options_with_supports(supports: Vec<Value>) -> Value {
         struct_instance(
-            "PinnedSupport",
-            vec![("target".to_string(), Value::String(target.to_string()))],
+            "ModalOptions",
+            vec![("boundary_conditions".to_string(), Value::List(supports))],
         )
+    }
+
+    /// Task 5312 (D8): the retired `target: "x_min"` String form is never read;
+    /// only the typed Named-leaf target names a face.
+    #[test]
+    fn support_targets_ignores_a_bare_string_target() {
+        let string_target = struct_instance(
+            "FixedSupport",
+            vec![("target".to_string(), Value::String("x_min".to_string()))],
+        );
+        assert!(
+            support_targets(&modal_options_with_supports(vec![string_target])).is_empty(),
+            "a bare String target must contribute no support target"
+        );
+        assert_eq!(
+            support_targets(&modal_options_with_supports(vec![fixed_support("x_min")])),
+            vec![(DeclaredSupport::Fixed, "x_min".to_string())],
+            "the typed Named-leaf target names its face"
+        );
     }
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
@@ -8126,13 +8158,13 @@ mod tests {
             "the reference cantilever clamp must constrain something",
         );
 
-        // The stdlib default `target : String = ""` — the spelling an author
-        // gets by writing a bare `FixedSupport()`.
+        // A support carrying no `target` at all — what a bare `FixedSupport()`
+        // evaluates to until #7874 makes the required field a compile error.
         assert_eq!(
-            dof_set(vec![pinned_support("x_min"), fixed_support("")]),
+            dof_set(vec![pinned_support("x_min"), struct_instance("FixedSupport", vec![])]),
             cantilever,
-            "a support with the stdlib's empty default target selects no node, so it must \
-             not flip Pinned(x_min) from a clamp to a simple support",
+            "a support with no target selects no node, so it must not flip Pinned(x_min) \
+             from a clamp to a simple support",
         );
 
         // A typo / a static-path selector name that means nothing to the modal

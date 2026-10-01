@@ -681,3 +681,29 @@ fn body_force_body_is_a_body_selector() {
         &["BodySelector", "FaceSelector"],
     );
 }
+
+/// FixedSupport/PinnedSupport.target is the kind-agnostic `Selector` (D3/A2,
+/// `Type::AnySelector`): every selector kind is accepted, a non-selector is not.
+#[test]
+fn fixed_and_pinned_support_target_is_kind_agnostic() {
+    for support in ["FixedSupport", "PinnedSupport"] {
+        for target in [
+            r#"face(body, "root")"#,
+            r#"edge(body, "e")"#,
+            r#"vertex(body, "v")"#,
+            r#"solid_body(body, "all")"#,
+        ] {
+            assert_no_errors(&format!("{support}(target: {target})"));
+        }
+        assert_single_error(
+            &format!(r#"{support}(target: "root")"#),
+            DiagnosticCode::ArgTypeMismatch,
+            &["target", "Selector", "String"],
+        );
+        assert_single_error(
+            &format!("{support}(target: 1.0)"),
+            DiagnosticCode::ArgTypeMismatch,
+            &["target", "Real"],
+        );
+    }
+}
