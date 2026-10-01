@@ -3424,6 +3424,182 @@ fn survey_inline_corpus_orders_sites_deterministically() {
     assert_eq!(forward.not_surveyed, backward.not_surveyed);
 }
 
+/// The SAME member text, swept once as a tracked `.ri` file and once as an
+/// inline snippet, classifies identically in both halves: the same coverage
+/// bucket and the same site columns.
+///
+/// This pins the property rather than one predicate. δ's step 7 (f16a387d06)
+/// changed the `.ri` sweep's partial rule so that the sweep's own
+/// ctor-conformance Error no longer marks a member partial, and the inline sweep,
+/// a copy of that loop, silently kept the old rule. Any future drift in either
+/// half reds here.
+#[test]
+fn both_corpus_halves_classify_a_member_identically() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut host = String::new();
+    for (name, text) in [
+        ("site", SYNTH_CONFORMANCE_SITE),
+        ("err", SYNTH_COMPILE_ERROR),
+    ] {
+        std::fs::write(dir.path().join(format!("{name}.ri")), text).expect("write .ri member");
+        host.push_str(&format!(
+            "fn {name}_member() {{\n    let source = r#\"\n{text}\"#;\n    let _ = source;\n}}\n\n"
+        ));
+    }
+    std::fs::write(dir.path().join("host.rs"), &host).expect("write synthetic host");
+    assert_eq!(
+        rust_fixture_scan::inline_ri_snippets(&host).snippets.len(),
+        2,
+        "both members must be admitted as inline snippets, or the inline half of \
+         this comparison is vacuous:\n{host}"
+    );
+
+    let ri = survey_corpus(dir.path(), &["err.ri".to_owned(), "site.ri".to_owned()]);
+    let inline = survey_inline_corpus(dir.path(), &["host.rs".to_owned()]);
+
+    assert_eq!(
+        ri.partial,
+        vec![("err.ri".to_owned(), "compile-error".to_owned())],
+        "the `.ri` half marks only the compile-error member partial; the site \
+         member's only Error is the sweep's own signal"
+    );
+    let err_key = format!(
+        "host.rs:{}",
+        host_line_of(&host, "module test.compile_error")
+    );
+    assert_eq!(
+        inline.partial,
+        vec![(err_key, "compile-error".to_owned())],
+        "the inline half must mark the SAME member partial and not the site \
+         member, exactly as the `.ri` half does"
+    );
+
+    let [ri_site] = ri.sites.as_slice() else {
+        panic!(
+            "the `.ri` half must find exactly one site, got {:#?}",
+            ri.sites
+        );
+    };
+    let [inline_site] = inline.sites.as_slice() else {
+        panic!(
+            "the inline half must find exactly one site, got {:#?}",
+            inline.sites
+        );
+    };
+    let columns = |s: &SurveySite| {
+        (
+            s.code.clone(),
+            s.severity.clone(),
+            s.field.clone(),
+            s.expected.clone(),
+            s.found.clone(),
+            s.def.clone(),
+            s.def_origin.clone(),
+            s.owner.clone(),
+            s.message.clone(),
+        )
+    };
+    assert_eq!(
+        columns(inline_site),
+        columns(ri_site),
+        "one member text must yield one site shape, whichever half swept it"
+    );
+    assert_eq!(
+        inline_site.snippet_line,
+        Some(ri_site.line),
+        "the inline site's snippet-relative line is the `.ri` site's line"
+    );
+}
+
+/// A verbatim copy of the two PRE-δ `purpose_compile_tests.rs` fixtures that
+/// task #7543's VERIFY names (`git show a8d7f5fb24:crates/reify-compiler/tests/
+/// harness_compilation_surface/purpose_compile_tests.rs`, lines 1441-1576),
+/// trimmed to each fixture's `let source` binding with nesting and indentation
+/// kept.
+///
+/// Synthetic because δ fixed the live sites in f247bade44, retyping them to
+/// `Real`, so post-δ main no longer carries them. The artifact committed at
+/// 2f7cafa18a, generated at the pre-δ base, lists them as
+/// `purpose_compile_tests.rs:1453/1454/1567`.
+#[cfg(test)]
+const PRE_DELTA_PURPOSE_FIXTURES_HOST: &str = r##"mod guarded {
+    use super::*;
+
+    #[test]
+    fn guarded_where_arm_lowers_to_implies() {
+        let source = r#"
+structure Frame {
+    param material : Length = 1.0
+    param youngs_modulus : Length = 200.0
+}
+
+purpose p(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+    }
+}
+"#;
+    }
+
+    #[test]
+    fn guarded_else_arm_lowers_to_not_implies() {
+        let source = r#"
+structure Frame {
+    param z : Length = 5.0
+}
+
+purpose p(subject : Structure) {
+    where 0.0 > 1.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+"#;
+    }
+}
+"##;
+
+/// The inline sweep still sees the purpose_compile_tests sites that task
+/// #7543's VERIFY names, at their host lines, and resolves each to the census.
+///
+/// A characterization witness that is independent of the live corpus. See
+/// [`PRE_DELTA_PURPOSE_FIXTURES_HOST`] for why it is synthetic.
+#[test]
+fn survey_inline_corpus_still_sees_the_sites_task_7543_verify_names() {
+    let host = PRE_DELTA_PURPOSE_FIXTURES_HOST;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("purpose_compile_tests.rs"), host)
+        .expect("write synthetic host");
+    let run = survey_inline_corpus(dir.path(), &["purpose_compile_tests.rs".to_owned()]);
+
+    let mut found: Vec<(&str, u32)> = run
+        .sites
+        .iter()
+        .map(|s| (s.field.as_deref().unwrap_or("—"), s.line))
+        .collect();
+    found.sort();
+    let mut expected = vec![
+        ("material", host_line_of(host, "param material : Length")),
+        (
+            "youngs_modulus",
+            host_line_of(host, "param youngs_modulus : Length"),
+        ),
+        ("z", host_line_of(host, "param z : Length")),
+    ];
+    expected.sort();
+    assert_eq!(found, expected, "sites: {:#?}", run.sites);
+
+    for site in &run.sites {
+        assert_eq!(
+            (site.expected.as_deref(), site.found.as_deref()),
+            (Some("Scalar[m]"), Some("Real")),
+            "a bare number at a `Length` param: {}",
+            site.message
+        );
+        assert_eq!(disposition_of(site), Disposition::InlineCensus);
+    }
+}
+
 // ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
 
 /// Repo-relative `.ri` files that task #5305 (γ) migrated to ctor-conformance
