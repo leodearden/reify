@@ -56,6 +56,8 @@ pub(crate) mod task_rows;
 /// Crate-internal: shared text-scanning primitives for the structural
 /// detectors. Not part of the detector API surface — the detectors are.
 pub(crate) mod scan_util;
+/// Not a detector: public only so the live-serve test harnesses decode MCP
+/// response bodies with the same function both clients use.
 pub mod mcp_wire;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
