@@ -23,11 +23,14 @@
 use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::test_support::{
-    indefinite_b_pencil, laplacian_lambdas, laplacian_pencil,
+    graded_diagonal_b_pencil, indefinite_b_pencil, laplacian_lambdas, laplacian_pencil,
 };
-use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
+use reify_solver_elastic::eigensolve::{
+    EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
+};
 use reify_solver_elastic::{
-    lanczos_shift_invert, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
+    LanczosMetric, SparseFactorRef, SparseMetricOp, SparseStiffnessOp, SplitCholesky,
+    lanczos_shift_invert, lanczos_shift_invert_in_metric,
 };
 
 // ---------------------------------------------------------------------------
@@ -792,4 +795,152 @@ fn dense_solve_completes_on_the_indefinite_136dof_pencil() {
         1e-10,
         "dense 136 indefinite",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cholesky-symmetrized Lanczos core, driven directly (#7602)
+//
+// For a B that is not a multiple of the identity, `(K − σB)⁻¹B` is not
+// Euclidean-symmetric, so the core runs on S = G⁻¹[B + (σ − τ)B(K − σB)⁻¹B]G⁻ᵀ
+// for an SPD W = K − τB = G·Gᵀ instead. These drive both metric arms against
+// the dense QZ reference at the same σ.
+// ---------------------------------------------------------------------------
+
+/// `K − σB` for two TRIDIAGONAL operands, as a sparse row matrix over the
+/// tridiagonal pattern.
+fn shifted_tridiagonal_pencil(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    sigma: f64,
+) -> SparseRowMat<usize, f64> {
+    let n = k.nrows();
+    let (k_dense, b_dense) = (k.to_dense(), b.to_dense());
+    let mut trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        for j in i.saturating_sub(1)..(i + 2).min(n) {
+            trips.push(Triplet::new(i, j, k_dense[(i, j)] - sigma * b_dense[(i, j)]));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
+}
+
+fn metric_opts(n_modes: usize, sigma: f64) -> EigenSolverOptions {
+    EigenSolverOptions {
+        n_modes,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    }
+}
+
+/// The eigenvalues of `got` and `want` agree as MULTISETS to relative `rel_tol`.
+fn assert_same_eigenvalue_multiset(got: &[f64], want: &[f64], rel_tol: f64, label: &str) {
+    assert_eq!(got.len(), want.len(), "{label}: eigenvalue count {got:?} vs {want:?}");
+    let sorted = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    for (g, w) in sorted(got).into_iter().zip(sorted(want)) {
+        assert!(
+            (g - w).abs() <= rel_tol * g.abs().max(w.abs()),
+            "{label}: λ = {g} vs dense {w} (relative gap {:.3e} > {rel_tol:.0e}); \
+             got {got:?}, dense {want:?}",
+            (g - w).abs() / g.abs().max(w.abs()),
+        );
+    }
+}
+
+/// Every contract a metric-Lanczos result owes, measured against dense QZ.
+fn assert_metric_lanczos_matches_dense(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    result: &EigenSolverResult,
+    opts: EigenSolverOptions,
+    label: &str,
+) {
+    let n_modes = opts.n_modes;
+    let sigma = opts.sigma;
+    assert!(
+        result.n_converged >= n_modes,
+        "{label}: n_converged = {} < {n_modes} — the Lanczos did not genuinely run",
+        result.n_converged,
+    );
+    assert!(result.converged, "{label}: must converge");
+    assert_eq!(result.shift, sigma, "{label}: the shift used must be σ");
+
+    let dense = solve_eigen_dense(k, b, opts);
+    assert_same_eigenvalue_multiset(&result.eigenvalues, &dense.eigenvalues, 1e-9, label);
+    assert_eigen_residuals(k, b, &result.eigenvalues, &result.eigenvectors, 1e-10, label);
+
+    for col in 0..result.eigenvectors.ncols() {
+        let norm = result.eigenvectors.col(col).norm_l2();
+        assert!(
+            (norm - 1.0).abs() <= 1e-12,
+            "{label}: eigenvector column {col} has Euclidean norm {norm}, not 1",
+        );
+    }
+}
+
+/// σ = 0: `W = K` itself, `S = G⁻¹BG⁻ᵀ`.
+#[test]
+fn metric_lanczos_shifted_pencil_at_sigma_zero_matches_dense_on_graded_b() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let opts = metric_opts(2, 0.0);
+    let g = SplitCholesky::try_new(&k).expect("K is SPD");
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::ShiftedPencil(&g),
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=0 ShiftedPencil");
+}
+
+/// σ = 5e-4, below λ₁ ≈ 1.002e-3: `K − σB` is SPD and is the metric.
+#[test]
+fn metric_lanczos_shifted_pencil_below_lambda_one_matches_dense_on_graded_b() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let opts = metric_opts(2, 5e-4);
+    let shifted = shifted_tridiagonal_pencil(&k, &b, opts.sigma);
+    let g = SplitCholesky::try_new(&shifted).expect("K − σB is SPD below λ₁");
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::ShiftedPencil(&g),
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=5e-4 ShiftedPencil");
+}
+
+/// σ = 0.5, above many modes: `K − σB` is indefinite, so `W = K` and the
+/// shifted inverse is applied through LU.
+#[test]
+fn metric_lanczos_stiffness_arm_above_a_mode_matches_dense_on_graded_b() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let opts = metric_opts(2, 0.5);
+    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
+    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
+    let shifted_inverse = SparseStiffnessOp { factor: SparseFactorRef::Lu(&lu), n: 80 };
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::Stiffness { k_factor: &g_k, shifted_inverse: &shifted_inverse },
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "graded σ=0.5 Stiffness");
+}
+
+/// The indefinite-B pencil at σ = 0.02, above its smallest positive mode
+/// (≈ 6.46e-4), through the `Stiffness` arm.
+#[test]
+fn metric_lanczos_stiffness_arm_matches_dense_on_indefinite_b() {
+    let (k, b) = indefinite_b_pencil(136);
+    let opts = metric_opts(3, 0.02);
+    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
+    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
+    let shifted_inverse = SparseStiffnessOp { factor: SparseFactorRef::Lu(&lu), n: 136 };
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::Stiffness { k_factor: &g_k, shifted_inverse: &shifted_inverse },
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    assert_metric_lanczos_matches_dense(&k, &b, &result, opts, "indefinite σ=0.02 Stiffness");
 }
