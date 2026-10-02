@@ -66,8 +66,13 @@ pub fn retarget_to_vite_port(
     Ok(())
 }
 
-/// [`retarget_to_vite_port`] with the value read from `REIFY_VITE_PORT`.
+/// [`retarget_to_vite_port`] with the value read from `REIFY_VITE_PORT`. Only a
+/// tauri dev build loads devUrl, so a production (`custom-protocol`) build
+/// ignores the variable instead of refusing to start over it.
 pub fn retarget_to_vite_port_from_env(build: &mut BuildConfig) -> Result<(), DevUrlError> {
+    if !tauri::is_dev() {
+        return Ok(());
+    }
     match std::env::var_os(VITE_PORT_ENV) {
         None => retarget_to_vite_port(build, None),
         Some(os) => {

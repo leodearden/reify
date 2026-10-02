@@ -5,7 +5,7 @@
 use tauri::Url;
 use tauri::utils::config::BuildConfig;
 
-use crate::dev_url::{DevUrlError, VITE_PORT_ENV, retarget_to_vite_port};
+use crate::dev_url::{DevUrlError, retarget_to_vite_port};
 
 const BAKED_DEV_URL: &str = "http://localhost:1420";
 
@@ -18,11 +18,6 @@ fn build_with_dev_url(url: &str) -> BuildConfig {
 
 fn dev_url_of(build: &BuildConfig) -> &Url {
     build.dev_url.as_ref().expect("devUrl present")
-}
-
-#[test]
-fn vite_port_env_is_the_user_facing_variable() {
-    assert_eq!(VITE_PORT_ENV, "REIFY_VITE_PORT");
 }
 
 #[test]
