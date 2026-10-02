@@ -444,20 +444,35 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
 // persistent_cache.rs `#[cfg(test)]`, but not from the non-test library build.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse the `[[package]]` stanzas of a Cargo.lock file into `(name, version)`
-/// pairs, in file order.
+/// One `[[package]]` stanza of a Cargo.lock file.
+///
+/// `source` is the stanza's `source = "..."` value — `registry+…` for a
+/// crates.io dependency, `git+…` for a git dependency — and `None` for a
+/// workspace path crate, which Cargo.lock records without a source line.
+// build.rs (via include!) never reads `source`, and the non-test lib build
+// never constructs a LockPackage at all.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockPackage {
+    pub name: String,
+    pub version: String,
+    pub source: Option<String>,
+}
+
+/// Parse the `[[package]]` stanzas of a Cargo.lock file, in file order.
 ///
 /// Hand-rolled, std-only line scanner (deliberately NOT the `toml` crate — see
 /// the section header above). State machine: a `[[package]]` header opens a
-/// fresh stanza; the first `name = "..."` and first `version = "..."` lines
-/// within it are captured; the pair is emitted when the next `[`-prefixed table
-/// header is reached (or at EOF). Anything outside a `[[package]]` stanza — the
-/// top-level lockfile `version = N`, `[metadata]`, `[[patch.unused]]`, comments,
-/// blank lines — never yields a package. Inside a stanza, `source` / `checksum`
-/// / multi-line `dependencies = [...]` lines are ignored (only name+version are
-/// captured); array elements like `"memchr",` carry no `=` and are skipped.
+/// fresh stanza; the first `name = "..."`, first `version = "..."` and first
+/// `source = "..."` lines within it are captured; the stanza is emitted when
+/// the next `[`-prefixed table header is reached (or at EOF), and only if both
+/// a name and a version were captured. Anything outside a `[[package]]` stanza
+/// — the top-level lockfile `version = N`, `[metadata]`, `[[patch.unused]]`,
+/// comments, blank lines — never yields a package. Inside a stanza,
+/// `checksum` / multi-line `dependencies = [...]` lines are ignored; array
+/// elements like `"memchr",` carry no `=` and are skipped.
 #[allow(dead_code)]
-pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
+pub fn parse_cargo_lock_stanzas(lock_text: &str) -> Vec<LockPackage> {
     // Content of the first `"..."` in `s`, if any (values here never contain an
     // embedded quote, so first-open .. next-close is sufficient and exact).
     fn first_quoted(s: &str) -> Option<String> {
@@ -466,51 +481,76 @@ pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
         let end = rest.find('"')?;
         Some(rest[..end].to_string())
     }
+    #[derive(Default)]
+    struct PendingStanza {
+        name: Option<String>,
+        version: Option<String>,
+        source: Option<String>,
+    }
     // Emit the pending stanza iff BOTH name and version were captured. `take()`
-    // empties both Options regardless of the match, resetting for the next
-    // stanza; harmless to call when nothing is pending (both already None).
-    fn flush(
-        cur_name: &mut Option<String>,
-        cur_version: &mut Option<String>,
-        packages: &mut Vec<(String, String)>,
-    ) {
-        if let (Some(n), Some(v)) = (cur_name.take(), cur_version.take()) {
-            packages.push((n, v));
+    // resets the pending stanza regardless of the match; harmless to call when
+    // nothing is pending.
+    fn flush(pending: &mut PendingStanza, packages: &mut Vec<LockPackage>) {
+        let PendingStanza {
+            name,
+            version,
+            source,
+        } = std::mem::take(pending);
+        if let (Some(name), Some(version)) = (name, version) {
+            packages.push(LockPackage {
+                name,
+                version,
+                source,
+            });
         }
     }
 
-    let mut packages: Vec<(String, String)> = Vec::new();
+    let mut packages: Vec<LockPackage> = Vec::new();
     let mut in_package = false;
-    let mut cur_name: Option<String> = None;
-    let mut cur_version: Option<String> = None;
+    let mut pending = PendingStanza::default();
 
     for line in lock_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             // Any table header closes the current stanza; only `[[package]]`
             // opens a new capturing one.
-            flush(&mut cur_name, &mut cur_version, &mut packages);
+            flush(&mut pending, &mut packages);
             in_package = trimmed == "[[package]]";
             continue;
         }
         if !in_package {
             continue;
         }
-        // Inside a [[package]] stanza: capture the first name/version. Split on
-        // the first `=`; array elements ("memchr",) and bare `]` carry no `=`.
+        // Inside a [[package]] stanza: capture the first name/version/source.
+        // Split on the first `=`; array elements ("memchr",) and bare `]`
+        // carry no `=`.
         if let Some(eq) = trimmed.find('=') {
             let key = trimmed[..eq].trim();
             let val = &trimmed[eq + 1..];
-            if key == "name" && cur_name.is_none() {
-                cur_name = first_quoted(val);
-            } else if key == "version" && cur_version.is_none() {
-                cur_version = first_quoted(val);
+            let slot = match key {
+                "name" => &mut pending.name,
+                "version" => &mut pending.version,
+                "source" => &mut pending.source,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = first_quoted(val);
             }
         }
     }
     // EOF: flush a trailing package stanza (no closing header follows it).
-    flush(&mut cur_name, &mut cur_version, &mut packages);
+    flush(&mut pending, &mut packages);
     packages
+}
+
+/// The `(name, version)` projection of [`parse_cargo_lock_stanzas`], in file
+/// order.
+#[allow(dead_code)]
+pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
+    parse_cargo_lock_stanzas(lock_text)
+        .into_iter()
+        .map(|package| (package.name, package.version))
+        .collect()
 }
 
 /// Parse a closure manifest (`crates/reify-eval/engine_hash_closure.txt`) into
