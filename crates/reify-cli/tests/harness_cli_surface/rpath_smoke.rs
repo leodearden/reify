@@ -110,6 +110,14 @@ fn tbb_pin_present() -> bool {
     std::path::Path::new(TBB_PIN_DIR).join("libtbb.so.12").exists()
 }
 
+/// Dynamic-linker failure messages: a launch whose stderr carries one died in
+/// the loader, not in reify.
+const LINKER_ERROR_SUBSTRINGS: &[&str] = &[
+    "symbol lookup error",
+    "undefined symbol",
+    "error while loading shared libraries",
+];
+
 /// Run `env -u LD_LIBRARY_PATH ldd <path>` and return its stdout. `None`
 /// (skip) when `env`/`ldd` is unavailable or the invocation itself fails —
 /// mirrors `readelf_d`'s skip posture. Any spawn error (not just
@@ -215,8 +223,6 @@ fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
         .output()
         .expect("failed to spawn bare `reify eval`");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    const LINKER_ERROR_SUBSTRINGS: &[&str] =
-        &["undefined symbol", "error while loading shared libraries"];
     let linker_error = LINKER_ERROR_SUBSTRINGS.iter().find(|s| stderr.contains(**s));
     assert!(
         linker_error.is_none(),
@@ -328,5 +334,43 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
         Some(TBB_PIN_DIR),
         "{TBB_PIN_DIR} must be FIRST in {exe}'s RUNPATH so its direct NEEDED \
          libtbb.so.12 resolves there ahead of any transitive edge, got: {dirs:?}"
+    );
+}
+
+/// (e) EAGER BINDING (task 7439). Parallel OCCT booleans are the first code
+/// path that calls OCCT 7.8's TBB entry points, and lazy binding would defer a
+/// missing symbol to the first parallel boolean. `LD_BIND_NOW=1` makes the
+/// loader resolve every libTKernel->libtbb reference against the single pinned
+/// libtbb.so.12 before `main` runs.
+#[test]
+fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
+    let exe = env!("CARGO_BIN_EXE_reify");
+    if !tbb_pin_present() {
+        eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping eager-binding guard");
+        return;
+    }
+    let output = match Command::new("env")
+        .args(["-u", "LD_LIBRARY_PATH", "LD_BIND_NOW=1", exe, "--version"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("env invocation failed ({e}); skipping");
+            return;
+        }
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let linker_error = LINKER_ERROR_SUBSTRINGS
+        .iter()
+        .find(|s| stderr.contains(**s));
+    assert!(
+        linker_error.is_none(),
+        "eagerly bound bare launch of {exe} --version failed in the dynamic linker \
+         ({linker_error:?}):\n{stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "eagerly bound bare launch of {exe} --version exited {:?}:\n{stderr}",
+        output.status
     );
 }

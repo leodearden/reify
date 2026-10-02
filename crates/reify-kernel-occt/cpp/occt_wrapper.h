@@ -194,6 +194,18 @@ void reset_boolean_pass_count();
 /// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
+/// Set whether the CALLING THREAD's BOP algorithms Build() in OCCT's parallel
+/// mode (task 7439).  Per-thread, like the pass counter; other threads' modes
+/// are untouched.
+void set_boolean_run_parallel(bool parallel);
+
+/// Read the calling thread's BOP parallelism mode.
+bool boolean_run_parallel();
+
+/// Read the calling thread's count of completed BOP Builds whose algorithm
+/// reported RunParallel() afterwards: what OCCT ran, not what was requested.
+uint64_t parallel_bop_build_count();
+
 /// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
 /// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
 /// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
