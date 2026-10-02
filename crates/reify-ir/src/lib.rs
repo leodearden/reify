@@ -98,6 +98,9 @@ pub use kernel_validation::{
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
+pub use product_tree::{
+    Component, Placement, ProductKind, ProductNode, ProductRef, ProductTree, ProductTreeError,
+};
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use completeness::{Completeness, PartialReason, SolutionSet};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};

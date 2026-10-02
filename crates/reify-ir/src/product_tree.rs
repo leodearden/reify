@@ -1,3 +1,233 @@
+//! The kernel-neutral product structure of an imported CAD assembly (STEP via
+//! OCCT XDE today; `docs/prds/v0_6/step-assembly-import.md` §5 C1).
+//!
+//! Products are addressed by name plus a 1-based dedupe index assigned in reader
+//! traversal order, never by a kernel label. A [`Placement`] maps product-local
+//! coordinates into the PARENT product's frame,
+//! `p_parent = rotation · p_local + translation`, in metres with a row-major
+//! rotation carried exactly as read: not orthonormalised and possibly improper.
+//! Validating it is the generator's job (C2.4).
+
+use std::collections::HashSet;
+use std::fmt;
+
+/// Name + 1-based dedupe index: the stable address of one product.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProductRef {
+    pub name: String,
+    pub dedupe_index: u32,
+}
+
+impl fmt::Display for ProductRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.name, self.dedupe_index)
+    }
+}
+
+/// A component's pose in its parent product's frame (metres, row-major rotation).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub translation: [f64; 3],
+    pub rotation: [[f64; 3]; 3],
+}
+
+impl Placement {
+    pub const IDENTITY: Placement = Placement {
+        translation: [0.0; 3],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+}
+
+/// One occurrence of `product` inside an assembly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Component {
+    pub product: ProductRef,
+    pub instance_name: String,
+    pub location: Placement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductKind {
+    Assembly,
+    Part { solid_count: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProductNode {
+    pub name: String,
+    pub dedupe_index: u32,
+    pub kind: ProductKind,
+    /// Empty for a [`ProductKind::Part`].
+    pub components: Vec<Component>,
+}
+
+impl ProductNode {
+    pub fn product_ref(&self) -> ProductRef {
+        ProductRef {
+            name: self.name.clone(),
+            dedupe_index: self.dedupe_index,
+        }
+    }
+}
+
+/// A validated product DAG: every reference resolves, refs are unique and
+/// 1-based, parts have no components, and no product contains itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProductTree {
+    products: Vec<ProductNode>,
+    roots: Vec<ProductRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProductTreeError {
+    NoRoots,
+    ZeroDedupeIndex(ProductRef),
+    DuplicateProduct(ProductRef),
+    PartWithComponents(ProductRef),
+    DanglingComponent {
+        parent: ProductRef,
+        target: ProductRef,
+    },
+    DanglingRoot(ProductRef),
+    Cycle(ProductRef),
+}
+
+impl fmt::Display for ProductTreeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRoots => write!(f, "product tree has no root product"),
+            Self::ZeroDedupeIndex(product) => {
+                write!(
+                    f,
+                    "product {product} has dedupe index 0 (indices are 1-based)"
+                )
+            }
+            Self::DuplicateProduct(product) => write!(f, "product {product} appears twice"),
+            Self::PartWithComponents(product) => {
+                write!(f, "part {product} has components (only assemblies may)")
+            }
+            Self::DanglingComponent { parent, target } => write!(
+                f,
+                "assembly {parent} has a component referencing absent product {target}"
+            ),
+            Self::DanglingRoot(product) => write!(f, "root {product} is not a product of the tree"),
+            Self::Cycle(product) => write!(f, "product {product} contains itself"),
+        }
+    }
+}
+
+impl std::error::Error for ProductTreeError {}
+
+impl ProductTree {
+    /// Validates and builds a tree, returning the first violated invariant.
+    pub fn new(
+        products: Vec<ProductNode>,
+        roots: Vec<ProductRef>,
+    ) -> Result<ProductTree, ProductTreeError> {
+        if roots.is_empty() {
+            return Err(ProductTreeError::NoRoots);
+        }
+        let mut seen = HashSet::with_capacity(products.len());
+        for node in &products {
+            let product = node.product_ref();
+            if node.dedupe_index == 0 {
+                return Err(ProductTreeError::ZeroDedupeIndex(product));
+            }
+            if !seen.insert(product.clone()) {
+                return Err(ProductTreeError::DuplicateProduct(product));
+            }
+            if node.kind != ProductKind::Assembly && !node.components.is_empty() {
+                return Err(ProductTreeError::PartWithComponents(product));
+            }
+        }
+        let tree = ProductTree { products, roots };
+        for node in &tree.products {
+            if let Some(component) = node
+                .components
+                .iter()
+                .find(|component| tree.position(&component.product).is_none())
+            {
+                return Err(ProductTreeError::DanglingComponent {
+                    parent: node.product_ref(),
+                    target: component.product.clone(),
+                });
+            }
+        }
+        if let Some(root) = tree.roots.iter().find(|root| tree.position(root).is_none()) {
+            return Err(ProductTreeError::DanglingRoot(root.clone()));
+        }
+        tree.check_acyclic()?;
+        Ok(tree)
+    }
+
+    pub fn products(&self) -> &[ProductNode] {
+        &self.products
+    }
+
+    pub fn roots(&self) -> &[ProductRef] {
+        &self.roots
+    }
+
+    pub fn product(&self, product: &ProductRef) -> Option<&ProductNode> {
+        self.position(product).map(|index| &self.products[index])
+    }
+
+    /// Index of `product` in [`Self::products`].
+    pub fn position(&self, product: &ProductRef) -> Option<usize> {
+        self.products
+            .iter()
+            .position(|node| node.dedupe_index == product.dedupe_index && node.name == product.name)
+    }
+
+    /// Iterative white/grey/black DFS over the component graph from every
+    /// product; a component reaching a grey product closes a cycle.
+    /// Precondition: every component target resolves.
+    fn check_acyclic(&self) -> Result<(), ProductTreeError> {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Colour {
+            White,
+            Grey,
+            Black,
+        }
+        let target_index = |component: &Component| {
+            self.position(&component.product)
+                .expect("component targets were resolved before the cycle check")
+        };
+        let mut colour = vec![Colour::White; self.products.len()];
+        for start in 0..self.products.len() {
+            if colour[start] != Colour::White {
+                continue;
+            }
+            colour[start] = Colour::Grey;
+            let mut stack = vec![(start, 0usize)];
+            while let Some(frame) = stack.last_mut() {
+                let (node, next_component) = *frame;
+                match self.products[node].components.get(next_component) {
+                    Some(component) => {
+                        frame.1 += 1;
+                        let target = target_index(component);
+                        match colour[target] {
+                            Colour::Grey => {
+                                return Err(ProductTreeError::Cycle(component.product.clone()));
+                            }
+                            Colour::White => {
+                                colour[target] = Colour::Grey;
+                                stack.push((target, 0));
+                            }
+                            Colour::Black => {}
+                        }
+                    }
+                    None => {
+                        colour[node] = Colour::Black;
+                        stack.pop();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
