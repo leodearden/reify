@@ -22,7 +22,7 @@ import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
-import { resolveDebugPort, debugUrlForPort, allocateFreePort, resolveVitePort } from "./endpoint.js";
+import { resolveDebugPort, debugUrlForPort, resolvePerRunPort } from "./endpoint.js";
 import { runScenarioSteps } from "./orchestrate.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -353,19 +353,16 @@ function shutdown(exitCode: number): void {
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
-// Resolve the debug endpoint once before either harness runs.
-// If REIFY_DEBUG_PORT is set, use it; otherwise allocate a free ephemeral port so
-// concurrent runs (or a long-lived interactive GUI on 3939) do not collide.
+// Resolve the debug and vite ports once before either harness runs, so
+// concurrent runs (or a long-lived interactive GUI on 3939 / 1420) do not
+// collide. Both are propagated through process.env, which spawnGui hands to
+// scripts/run-gui-dev.sh, so the child GUI binds the debug port we target and
+// vite and the page it loads follow the vite port.
 const MODE = process.argv[2] === "value" ? "value" : "visual";
-const _resolvedDebugPort = process.env["REIFY_DEBUG_PORT"]
-  ? resolveDebugPort(process.env)
-  : await allocateFreePort();
+const _resolvedDebugPort = await resolvePerRunPort("REIFY_DEBUG_PORT");
 DEBUG_URL = debugUrlForPort(_resolvedDebugPort);
-// Propagate the chosen port so the child GUI binds the same port we target.
 process.env["REIFY_DEBUG_PORT"] = String(_resolvedDebugPort);
-// Likewise a per-run vite port, carried to scripts/run-gui-dev.sh by spawnGui's
-// `...process.env`, so concurrent runs never contend for :1420.
-const _resolvedVitePort = await resolveVitePort(process.env);
+const _resolvedVitePort = await resolvePerRunPort("REIFY_VITE_PORT");
 process.env["REIFY_VITE_PORT"] = String(_resolvedVitePort);
 console.log(`[harness] vite port ${_resolvedVitePort}`);
 

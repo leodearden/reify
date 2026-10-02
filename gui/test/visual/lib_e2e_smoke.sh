@@ -72,9 +72,9 @@ source "$E2E_SMOKE_REPO_ROOT/scripts/lib_gui_launch.sh"
 # ---------------------------------------------------------------------------
 # 1. resolve_port <VAR> — the port named by env var <VAR> (REIFY_DEBUG_PORT or
 #    REIFY_VITE_PORT), else a freshly allocated free port.
-#    Mirrors endpoint.ts parsePort / allocateFreePort semantics and the
-#    setup-worktree-debug-port.sh contract: strict ^[0-9]+$ pattern,
-#    value 1..65535, no whitespace.
+#    Same rule as endpoint.ts resolvePerRunPort (parsePort, else
+#    allocateFreePort) and the setup-worktree-debug-port.sh contract:
+#    strict ^[0-9]+$ pattern, value 1..65535, no whitespace.
 # ---------------------------------------------------------------------------
 resolve_port() {
     local raw="${!1:-}"

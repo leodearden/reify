@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveDebugPort, debugUrlForPort, resolveVitePort } from './endpoint.js';
+import { resolveDebugPort, debugUrlForPort, resolvePerRunPort } from './endpoint.js';
 
 describe('resolveDebugPort', () => {
   it('returns the port from REIFY_DEBUG_PORT when valid', () => {
@@ -43,28 +43,34 @@ describe('debugUrlForPort', () => {
   });
 });
 
-describe('resolveVitePort', () => {
+describe.each(['REIFY_DEBUG_PORT', 'REIFY_VITE_PORT'] as const)('resolvePerRunPort(%s)', (name) => {
   const ALLOCATED = 40123;
   const allocator = () => vi.fn(async () => ALLOCATED);
 
-  it('honours a valid REIFY_VITE_PORT without allocating', async () => {
+  it('honours a valid value without allocating', async () => {
     const allocate = allocator();
-    await expect(resolveVitePort({ REIFY_VITE_PORT: '5173' }, allocate)).resolves.toBe(5173);
+    await expect(resolvePerRunPort(name, { [name]: '5173' }, allocate)).resolves.toBe(5173);
     expect(allocate).not.toHaveBeenCalled();
   });
 
-  it('allocates a free port when REIFY_VITE_PORT is unset', async () => {
+  it('allocates a free port when unset', async () => {
     const allocate = allocator();
-    await expect(resolveVitePort({}, allocate)).resolves.toBe(ALLOCATED);
+    await expect(resolvePerRunPort(name, {}, allocate)).resolves.toBe(ALLOCATED);
     expect(allocate).toHaveBeenCalledTimes(1);
   });
 
   it.each(['abc', '0', '65536', ' 5173', '5173x', ''])(
-    'replaces invalid REIFY_VITE_PORT %j with an allocated port',
+    'replaces invalid value %j with an allocated port',
     async (raw) => {
       const allocate = allocator();
-      await expect(resolveVitePort({ REIFY_VITE_PORT: raw }, allocate)).resolves.toBe(ALLOCATED);
+      await expect(resolvePerRunPort(name, { [name]: raw }, allocate)).resolves.toBe(ALLOCATED);
       expect(allocate).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('reads only its own variable', async () => {
+    const other = name === 'REIFY_DEBUG_PORT' ? 'REIFY_VITE_PORT' : 'REIFY_DEBUG_PORT';
+    const allocate = allocator();
+    await expect(resolvePerRunPort(name, { [other]: '5173' }, allocate)).resolves.toBe(ALLOCATED);
+  });
 });
