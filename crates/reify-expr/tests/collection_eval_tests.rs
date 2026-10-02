@@ -637,26 +637,6 @@ fn eval_list_undef_index() {
     assert!(result.is_undef(), "[1,2,3][undef] should be Undef");
 }
 
-#[test]
-fn eval_undef_map_method() {
-    // undef.map(lambda) -> Undef
-    let x_id = ValueCellId::new("$lambda_undef.S", "x");
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Int);
-    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
-
-    let id = ValueCellId::new("S", "missing_for_map");
-    let obj = CompiledExpr::value_ref(id, Type::List(Box::new(Type::Int)));
-    let expr = CompiledExpr::method_call(
-        obj,
-        "map".to_string(),
-        vec![lambda_arg],
-        Type::List(Box::new(Type::Int)),
-    );
-    let values = ValueMap::new();
-    let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "undef.map(lambda) should be Undef");
-}
-
 // ─── MethodCall is a zero-argument member projection (task #6406, GR-040) ───
 
 /// Reify has no method-call syntax (GR-040), so the compiler only ever emits a
@@ -716,7 +696,10 @@ fn argument_bearing_method_call_evaluates_to_undef() {
         ("contains_key", vec![string("a")], Type::Bool),
         ("keys", vec![int(1)], Type::List(Box::new(Type::String))),
     ];
-    let range_calls = vec![("contains", vec![int(5)], Type::Bool)];
+    let range_calls = vec![
+        ("contains", vec![int(5)], Type::Bool),
+        ("span", vec![int(1)], Type::Int),
+    ];
 
     let a_to_1 = CompiledExpr::map_literal(
         vec![(string("a"), int(1))],

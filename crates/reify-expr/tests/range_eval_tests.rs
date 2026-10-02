@@ -277,16 +277,3 @@ fn span_on_non_range_is_undef() {
     let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
     assert_eq!(result, Value::Undef);
 }
-
-/// `.span` called with args (should be 0) → `Undef`
-#[test]
-fn span_with_args_undef() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    // Build span call with an extra argument (invalid)
-    let range_expr = CompiledExpr::literal(range, Type::Range(Box::new(Type::Int)));
-    let extra_arg = CompiledExpr::literal(Value::Int(1), Type::Int);
-    let expr =
-        CompiledExpr::method_call(range_expr, "span".to_string(), vec![extra_arg], Type::Int);
-    let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
-    assert_eq!(result, Value::Undef);
-}

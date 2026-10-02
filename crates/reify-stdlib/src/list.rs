@@ -1,7 +1,7 @@
 //! Generic list helpers exposed via function-call form: `single`, etc.
 //!
-//! These helpers complement the method-call helpers (`count`, `sum`, …)
-//! dispatched by `reify-expr::eval_method_call`. The PRD §worked-examples
+//! These helpers complement the zero-argument member projections (`count`,
+//! `sum`, …) dispatched by `reify-expr::eval_method_call`. The PRD §worked-examples
 //! fixture (`examples/topology_selectors/fillet_top_edges.ri`) uses the
 //! function-call form, so they must be reachable through `eval_builtin`.
 //!
