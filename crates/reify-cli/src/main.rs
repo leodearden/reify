@@ -611,7 +611,7 @@ fn merge_post_build_verdicts(
         if new_sat == reify_ir::Satisfaction::Indeterminate {
             continue;
         }
-        entry.satisfaction = new_sat;
+        entry.set_verdict(new_sat, None);
         upgraded.insert(indeterminacy_subject(entry).into_owned());
     }
     if upgraded.is_empty() {
@@ -3099,7 +3099,7 @@ fn check_gating_error(
 enum ConstraintOutcome {
     /// Every constraint evaluated to `Satisfied`.
     AllSatisfied,
-    /// No constraints violated, but some were `Indeterminate` (undef inputs).
+    /// No constraints violated, but some were `Indeterminate`.
     SomeIndeterminate(usize),
     /// At least one constraint evaluated to `Violated`.
     SomeViolated,
@@ -3117,12 +3117,23 @@ fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String 
     }
 }
 
+/// The line naming an `Indeterminate` entry: its display label, followed by
+/// `: {reason}` when its producer recorded one. Nothing stands in for an
+/// absent reason. Shared by both reports so the two renderings cannot drift.
+fn indeterminate_subject_line(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    let label = constraint_display_label(entry);
+    match &entry.indeterminate_reason {
+        Some(reason) => format!("{label}: {reason}"),
+        None => label,
+    }
+}
+
 /// Write the strict-failure detail block for indeterminate constraints.
 ///
-/// Emits a header naming the count of `Indeterminate` entries and a generic
-/// "why" (inputs undefined), then one indented line per `Indeterminate` entry
-/// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
-/// `Satisfied` and `Violated` entries are silently skipped.
+/// Emits a header naming the count of `Indeterminate` entries, then one
+/// indented [`indeterminate_subject_line`] per `Indeterminate` entry, so each
+/// shows the reason recorded for it rather than a guessed one. `Satisfied` and
+/// `Violated` entries are silently skipped.
 ///
 /// `n` is the already-computed indeterminate count from
 /// [`ConstraintOutcome::SomeIndeterminate`]; it is used directly in the header
@@ -3132,16 +3143,12 @@ fn report_indeterminate_detail(
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
 ) {
-    let _ = writeln!(
-        out,
-        "Strict check failed: {n} constraint(s) INDETERMINATE \
-         \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
-    );
+    let _ = writeln!(out, "Strict check failed: {n} constraint(s) INDETERMINATE:");
     for entry in results
         .iter()
         .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
     {
-        let _ = writeln!(out, "  {}", constraint_display_label(entry));
+        let _ = writeln!(out, "  {}", indeterminate_subject_line(entry));
     }
 }
 
@@ -3149,11 +3156,13 @@ fn report_indeterminate_detail(
 ///
 /// Returns a [`ConstraintOutcome`] indicating the overall result.
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
-/// constraint id's Display representation when `entry.label` is `None`.
+/// constraint id's Display representation when `entry.label` is `None`; an
+/// `Indeterminate` entry is printed as `  INDETERMINATE {line}` with its
+/// [`indeterminate_subject_line`], which shows the recorded reason.
 ///
 /// **Indeterminate constraints are intentionally treated as non-violating.**
-/// `Indeterminate` arises when a constraint's inputs are undefined — typically
-/// from `auto` parameters not yet resolved by the solver. Treating these as
+/// `Indeterminate` means the constraint could not be decided on this run — for
+/// example an `auto` parameter not yet resolved by the solver. Treating these as
 /// violations would block evaluations that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
 /// a `SomeViolated` outcome.
@@ -3164,21 +3173,21 @@ fn report_constraint_results(
     let mut violated = false;
     let mut indeterminate_count: usize = 0;
     for entry in results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "OK",
+        let (status, subject) = match entry.satisfaction {
+            Satisfaction::Satisfied => ("OK", constraint_display_label(entry)),
             Satisfaction::Violated => {
                 violated = true;
-                "VIOLATED"
+                ("VIOLATED", constraint_display_label(entry))
             }
             // Indeterminate does not count as violated — undef inputs
             // (auto params, partial evaluation) are not violations.
             // Undef propagates as quiet-NaN semantics.
             Satisfaction::Indeterminate => {
                 indeterminate_count += 1;
-                "INDETERMINATE"
+                ("INDETERMINATE", indeterminate_subject_line(entry))
             }
         };
-        let _ = writeln!(out, "  {} {}", status, constraint_display_label(entry));
+        let _ = writeln!(out, "  {} {}", status, subject);
     }
     if violated {
         ConstraintOutcome::SomeViolated
@@ -3810,7 +3819,7 @@ mod tests {
     use super::*;
     use reify_core::ConstraintNodeId;
     use reify_eval::ConstraintCheckEntry;
-    use reify_ir::Satisfaction;
+    use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
 
     /// A parse error the CLI prints must be one a user can JUMP TO.
     ///
@@ -3924,7 +3933,46 @@ mod tests {
             id: ConstraintNodeId::new(entity, index),
             label: label.map(|s| s.to_string()),
             satisfaction,
+            indeterminate_reason: None,
         }
+    }
+
+    fn make_indeterminate_entry(
+        entity: &str,
+        index: u32,
+        label: Option<&str>,
+        reason: TransientReason,
+    ) -> ConstraintCheckEntry {
+        ConstraintCheckEntry {
+            indeterminate_reason: Some(IndeterminateReason::Transient(reason)),
+            ..make_entry(entity, index, label, Satisfaction::Indeterminate)
+        }
+    }
+
+    fn operator_undefined_without_kinds() -> TransientReason {
+        TransientReason::OperatorUndefinedForKinds { kinds: vec![] }
+    }
+
+    #[test]
+    fn indeterminate_line_renders_the_recorded_reason() {
+        let entries = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_indeterminate_entry(
+                "Beam",
+                0,
+                Some("load"),
+                operator_undefined_without_kinds(),
+            ),
+        ];
+        let (_, output) = run_report(&entries);
+
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec![
+                "  OK stress_limit",
+                "  INDETERMINATE load: operator undefined for these operand kinds",
+            ]
+        );
     }
 
     #[test]
@@ -4381,42 +4429,45 @@ mod tests {
         // (no label — must fall back to id Display "Foo#constraint[3]").
         let entries = vec![
             make_entry("Bracket", 0, Some("c_ok"), Satisfaction::Satisfied),
-            make_entry("Bracket", 1, Some("c_bad"), Satisfaction::Indeterminate),
+            make_indeterminate_entry(
+                "Bracket",
+                1,
+                Some("c_bad"),
+                TransientReason::UndefInputs {
+                    cells: vec![reify_core::ValueCellId::new("Bracket", "tolerance")],
+                },
+            ),
             make_entry("Bracket", 2, Some("c_v"), Satisfaction::Violated),
-            make_entry("Foo", 3, None, Satisfaction::Indeterminate),
+            make_indeterminate_entry("Foo", 3, None, operator_undefined_without_kinds()),
         ];
         let mut buf = Vec::new();
         report_indeterminate_detail(2, &entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        // (a) Header names the count (2) and mentions undefined inputs.
-        assert!(
-            output.contains("2"),
-            "header should name the indeterminate count (2), got: {output}"
+        // Each listed constraint names the reason its producer recorded, and
+        // the header guesses none.
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec![
+                "Strict check failed: 2 constraint(s) INDETERMINATE:",
+                "  c_bad: undefined inputs: Bracket.tolerance",
+                "  Foo#constraint[3]: operator undefined for these operand kinds",
+            ]
         );
-        assert!(
-            output.contains("undefined"),
-            "header should mention undefined inputs, got: {output}"
-        );
+    }
 
-        // (b) Lists "c_bad" and id-Display fallback "Foo#constraint[3]".
-        assert!(
-            output.contains("c_bad"),
-            "output should list 'c_bad', got: {output}"
-        );
-        assert!(
-            output.contains("Foo#constraint[3]"),
-            "output should list id fallback 'Foo#constraint[3]', got: {output}"
-        );
+    /// An Indeterminate with no recorded reason is listed bare: nothing is
+    /// fabricated in its place.
+    #[test]
+    fn report_indeterminate_detail_without_a_reason_lists_the_bare_label() {
+        let entries = vec![make_entry("Part", 0, Some("load"), Satisfaction::Indeterminate)];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(1, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
 
-        // (c) Does NOT list "c_ok" or "c_v" (only Indeterminate entries).
-        assert!(
-            !output.contains("c_ok"),
-            "output must NOT list satisfied constraint 'c_ok', got: {output}"
-        );
-        assert!(
-            !output.contains("c_v"),
-            "output must NOT list violated constraint 'c_v', got: {output}"
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            vec!["Strict check failed: 1 constraint(s) INDETERMINATE:", "  load"]
         );
     }
 
@@ -5850,6 +5901,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
             id: ConstraintNodeId::new(entity, index),
             label: None,
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -5863,6 +5915,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
             id: ConstraintNodeId::new(entity, index),
             label: Some(label.to_string()),
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -6145,9 +6198,9 @@ mod drop_falsified_indeterminate_diagnostics_tests {
 #[cfg(test)]
 mod merge_post_build_verdicts_tests {
     use super::merge_post_build_verdicts;
-    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity};
+    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity, ValueCellId};
     use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
-    use reify_ir::Satisfaction;
+    use reify_ir::{IndeterminateReason, Satisfaction, TransientReason};
 
     fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
         (d.severity, d.code, d.message.clone())
@@ -6167,6 +6220,7 @@ mod merge_post_build_verdicts_tests {
             id: ConstraintNodeId::new(entity, index),
             label: label.map(str::to_string),
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
@@ -6200,6 +6254,43 @@ mod merge_post_build_verdicts_tests {
             diagnostics: Vec::new(),
             resolved_params: Default::default(),
         }
+    }
+
+    fn undefined_input_reason() -> IndeterminateReason {
+        IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![ValueCellId::new("BoltFlange", "moi_principal")],
+        })
+    }
+
+    /// An adopted definite verdict takes no stale reason with it.
+    #[test]
+    fn upgrade_clears_the_recorded_indeterminate_reason() {
+        let mut indeterminate = entry("BoltFlange", 1, None, Satisfaction::Indeterminate);
+        indeterminate.indeterminate_reason = Some(undefined_input_reason());
+        let mut result = check_result(vec![indeterminate], Vec::new());
+        let build = build_result(vec![entry("BoltFlange", 1, None, Satisfaction::Satisfied)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+        assert_eq!(result.constraint_results[0].indeterminate_reason, None);
+    }
+
+    /// An Indeterminate build verdict overwrites nothing, reason included.
+    #[test]
+    fn indeterminate_build_verdict_keeps_the_recorded_reason() {
+        let mut indeterminate = entry("BoltFlange", 1, None, Satisfaction::Indeterminate);
+        indeterminate.indeterminate_reason = Some(undefined_input_reason());
+        let mut result = check_result(vec![indeterminate], Vec::new());
+        let build = build_result(vec![entry("BoltFlange", 1, None, Satisfaction::Indeterminate)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.constraint_results[0].indeterminate_reason,
+            Some(undefined_input_reason())
+        );
     }
 
     /// Baseline: the upgraded constraint's own now-false warning IS dropped.
@@ -6549,6 +6640,7 @@ mod d2_pass_ordering_tests {
             id: ConstraintNodeId::new("BoltFlange", index),
             label: None,
             satisfaction,
+            indeterminate_reason: None,
         }
     }
 
