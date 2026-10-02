@@ -2094,6 +2094,33 @@ The parametric spelling `Coupling<P>` and the projected associated type `P::Moti
 
 `Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
 
+**Joint compliance — free vs constrained DOFs.** Each joint kind splits its six relative DOFs into *free* DOFs, which are its motion, and *constrained* DOFs. A free DOF may carry a spring. Each group of constrained DOFs has one optional compliance field:
+
+| Kind | Free DOFs (spring field) | Constrained-DOF compliance fields (DOF content) |
+|---|---|---|
+| `Prismatic` | 1 translation along `axis` (`spring_rate`) | `radial_stiffness` (2 translations ⊥ `axis`), `tilt_stiffness` (2 rotations about axes ⊥ `axis`), `torsional_stiffness` (1 rotation about `axis`) |
+| `Revolute` | 1 rotation about `axis` (`spring_rate`) | `axial_stiffness` (1 translation along `axis`), `radial_stiffness` (2 translations ⊥ `axis`), `tilt_stiffness` (2 rotations about axes ⊥ `axis`) |
+| `Cylindrical` | 1 translation along and 1 rotation about `axis` (—) | `radial_stiffness` (2 translations ⊥ `axis`), `tilt_stiffness` (2 rotations about axes ⊥ `axis`) |
+| `Planar` | 2 in-plane translations and 1 rotation about the normal (—) | `normal_stiffness` (1 translation along `axis_x × axis_y`), `tilt_stiffness` (2 rotations about `axis_x` and `axis_y`) |
+| `Spherical` | 3 rotations (—) | `translational_stiffness` (3 translations, isotropic) |
+| `Fixed` | none | `translational_stiffness` (3 translations) and `rotational_stiffness` (3 rotations), both isotropic |
+
+Translational groups are `Option<TranslationalStiffness>` and rotational groups are `Option<RotationalStiffness>`.
+
+- `none`, the default, is an ideal-rigid constraint.
+- `some(k)` puts a spring of stiffness `k` on each direction of the group, isotropic within the group, acting between the two port frames.
+- A free-DOF `spring_rate` of `none` means the DOF is genuinely free, not rigid. A free DOF has no compliance field, so `Prismatic(…, axial_stiffness: …)` is rejected with `E_CTOR_UNKNOWN_FIELD`.
+- Only assembly modal analysis reads these fields. Kinematics (`transform_at`, `snapshot`, `sweep`, `joint_jacobian`) ignores them.
+- Joints built by the lowercase constructors below (`prismatic()`, `revolute()`, …, and the `prb_*` flexure constructors) carry no compliance, so they are ideal-rigid on every constrained DOF.
+
+Declare compliance with the structure-constructor form:
+
+```
+let bearing = Prismatic(axis: vec3(1.0, 0.0, 0.0), radial_stiffness: some(200N/um), tilt_stiffness: some(5000N*m/rad^2))
+```
+
+The normative statement of this partition is the "Constrained-DOF compliance" ruling block in `crates/reify-compiler/stdlib/kinematic.ri`.
+
 **Constructors:**
 
 ```
