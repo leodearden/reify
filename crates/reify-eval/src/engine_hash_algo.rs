@@ -574,9 +574,9 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
 // ─────────────────────────────────────────────────────────────────────────────
 // Narrowed Cargo.lock contribution (task 5272)
 //
-// ENGINE_VERSION_HASH used to walk the WHOLE workspace Cargo.lock (category 5),
-// so any dep bump anywhere in the 716-package lockfile invalidated the
-// persistent FEA cache. The helpers below narrow that contribution to only the
+// ENGINE_VERSION_HASH used to walk the WHOLE workspace Cargo.lock, so any dep
+// bump anywhere in the 716-package lockfile invalidated the persistent FEA
+// cache. The helpers below narrow that contribution to only the
 // resolved (name, version) pins of reify-eval's build+normal (exclude-dev)
 // transitive closure — the crate NAMES checked in at
 // `crates/reify-eval/engine_hash_closure.txt`. engine_version_hash_for reads

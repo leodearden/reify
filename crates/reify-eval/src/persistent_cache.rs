@@ -325,9 +325,8 @@ impl CacheEntryHeader {
 }
 
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
-/// build time by `build.rs` over the contributor source files listed in
-/// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
-/// FEA helpers, per-purpose tolerance impls in this crate) plus the resolved
+/// build time by `build.rs` over the sources classified `Hashed` in
+/// `engine_hash_algo::WORKSPACE_CRATE_COVERAGE` plus the resolved
 /// `(name, version)` pins of reify-eval's build+normal (dev-excluded)
 /// dependency closure — the crate names in `engine_hash_closure.txt`
 /// intersected with the workspace `Cargo.lock` (task 5272; narrowed from the
@@ -785,12 +784,12 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// # Why `code` is persisted as a NAME
 ///
 /// bincode encodes an enum as its positional variant index. `DiagnosticCode`
-/// is grouped by category, so new codes are inserted mid-enum, and nothing
-/// invalidates cached entries when that happens: [`ENTRY_FORMAT_VERSION`] does
-/// not move, and reify-core is not in `CONTRIBUTORS_RELATIVE`, so neither does
-/// [`ENGINE_VERSION_HASH`]. An index would silently re-read every entry as its
-/// neighbouring code; a name makes an insertion a non-event and degrades a
-/// rename or removal to `None`.
+/// is grouped by category, so new codes are inserted mid-enum.
+/// [`ENTRY_FORMAT_VERSION`] does not move when that happens; [`ENGINE_VERSION_HASH`]
+/// now does, because reify-core is hashed, but a name keeps the wire format
+/// independent of variant order instead of relying on that. An index would
+/// silently re-read every entry as its neighbouring code; a name makes an
+/// insertion a non-event and degrades a rename or removal to `None`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
     /// Encoded by [`severity_to_u8`]; an unknown byte is rejected loudly by

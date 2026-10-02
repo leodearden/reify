@@ -21,27 +21,19 @@
 //   Directory-level directives cause cargo to re-run whenever the directory's
 //   child set changes (file added / renamed / removed).
 //
-// # Contributor categories (per PRD docs/prds/v0_3/persistent-fea-cache.md
-//   §"Cache invalidation on engine version")
-//
-//   1. FEA solver implementation   — crates/reify-solver-elastic (src/ + Cargo.toml)
-//   2. Meshing pipeline            — crates/reify-kernel-gmsh (src/ + Cargo.toml + build.rs)
-//   3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
-//   4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
-//                                    engine_tolerance.rs, engine_purposes.rs
-//   5. Transitive-dep version pin  — NARROWED (task 5272): only the resolved
-//                                    (name, version) pins of reify-eval's
-//                                    build+normal (dev-excluded) closure, read
-//                                    from ../../Cargo.lock + engine_hash_closure.txt
-//                                    (NOT a whole-lockfile walk). See
-//                                    engine_version_hash_for.
+// # Contributors
+//   What is hashed, and why each workspace crate is or is not: the
+//   WORKSPACE_CRATE_COVERAGE table and engine_version_hash_for in
+//   src/engine_hash_algo.rs (PRD docs/prds/v0_3/persistent-fea-cache.md
+//   §"Cache invalidation on engine version").
 //
 // # Deferred contributor
 //   Materials database: PRD line 59 makes this conditional on materials living
 //   in a versioned source file. No such file exists in the repo yet; when one
 //   is introduced (e.g. `crates/reify-stdlib/data/materials.toml`), add it to
-//   CONTRIBUTORS_RELATIVE below. Adding it will naturally invalidate all existing
-//   cache entries (new hash ⇒ miss ⇒ recompute), which is the desired policy.
+//   the owning crate's row of WORKSPACE_CRATE_COVERAGE. Adding it will naturally
+//   invalidate all existing cache entries (new hash ⇒ miss ⇒ recompute), which
+//   is the desired policy.
 //
 // # Safety
 //   Missing contributor ⇒ hard panic. A silent skip would silently shrink the
