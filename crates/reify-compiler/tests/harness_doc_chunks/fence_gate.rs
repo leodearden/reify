@@ -624,7 +624,7 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 // reify-mcp does NOT depend on reify-compiler, so these files cannot be
 // `include_str!`-ed from here — they are read by path via the
 // `CARGO_MANIFEST_DIR` idiom that
-// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` (:15) and
+// `reify_test_support::examples_corpus::examples_dir()` and
 // `geometry_chunk_smoke.rs`'s `CHUNK_PATH` (:351) already use. A wrong path
 // fails loudly at read time rather than silently scanning nothing.
 // ---------------------------------------------------------------------------

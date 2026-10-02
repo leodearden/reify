@@ -13,16 +13,20 @@
 //!
 //! It covers the suites that walk and skip-filter the corpus. Two suites that
 //! only ever `join` onto the corpus root still spell the manifest-relative path
-//! themselves — reify-compiler's `tests/tolerancing_tests.rs` and
+//! themselves — reify-compiler's
+//! `tests/harness_statement_semantics/tolerancing_tests.rs` and
 //! `tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs`.
 //! Neither ever calls `strip_prefix`, so they are the latent form of the hazard
-//! [`examples_dir`] describes rather than a live instance of it. Migrating them
-//! — along with the two surviving private `collect_ri_files` copies under
-//! `reify-eval`'s test tree — is tracked as task #7216, deliberately not swept
-//! into the hoist: doing so would have widened its file lock across two more
-//! crates.
+//! [`examples_dir`] describes rather than a live instance of it. Two private
+//! `collect_ri_files` walks also survive: reify-eval's single shared copy in
+//! `tests/common/eval_gate_support.rs` (consolidated by #7431) and
+//! reify-compiler's in
+//! `tests/harness_compilation_surface/unresolved_function_corpus_sweep.rs`.
+//! Migrating all four is tracked as task #7216, deliberately not swept into
+//! the hoist: doing so would have widened its file lock beyond the two suites
+//! it migrated.
 //!
-//! It is the corpus-discovery sibling of [`crate::helpers::missing_paths_under`],
+//! It is the corpus-discovery sibling of [`crate::skip_sets::missing_paths_under`],
 //! which single-sources the skip lists' dead-key check; the two together are
 //! the whole shared surface of a skip-list-guarded corpus walk.
 //!
@@ -82,7 +86,7 @@ pub fn examples_dir() -> &'static Path {
 ///
 /// This is the canonical form used as skip-list keys and in failure reports, so
 /// that same-basename files in different subdirectories stay unambiguous. It is
-/// also the key form [`crate::helpers::missing_paths_under`] expects, which is
+/// also the key form [`crate::skip_sets::missing_paths_under`] expects, which is
 /// what lets a suite check its skip list for dead keys with a plain
 /// `dir.join(rel)`.
 ///
@@ -137,7 +141,7 @@ pub fn relative_to_examples_dir(path: &Path) -> String {
 /// Call sites walking the workspace corpus pass [`examples_dir`]; the root is a
 /// parameter rather than baked in so this is unit-testable against a fixture
 /// tree instead of only against the live corpus (and to match
-/// [`crate::helpers::missing_paths_under`], which likewise takes its directory
+/// [`crate::skip_sets::missing_paths_under`], which likewise takes its directory
 /// explicitly).
 ///
 /// # Contracts callers may rely on
@@ -228,7 +232,7 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
 ///   handed back, so callers need not recompute it (and cannot compute it
 ///   differently).
 /// - **A skip key naming no path in `paths` is silently inert.** Detecting such
-///   a dead key is [`crate::helpers::missing_paths_under`]'s job; this function
+///   a dead key is [`crate::skip_sets::missing_paths_under`]'s job; this function
 ///   deliberately does not duplicate it.
 ///
 /// The two lifetimes are independent on purpose: `skip_keys` are typically
@@ -246,7 +250,7 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
 ///
 /// # Arity is the caller's problem
 ///
-/// Exactly as for [`crate::helpers::missing_paths_under`]: skip lists carry
+/// Exactly as for [`crate::skip_sets::missing_paths_under`]: skip lists carry
 /// per-file metadata of differing shape, so this takes a plain iterator of
 /// relative keys and callers project their own tuple away at the call boundary
 /// — `SKIP_SET.iter().map(|(name, _)| *name)`. That is what lets skip lists of
@@ -490,7 +494,7 @@ mod tests {
     ///
     /// Also pins that a skip key naming a path NOT in `paths` is silently inert:
     /// it filters nothing and is not an error. Detecting such a dead key is
-    /// [`crate::helpers::missing_paths_under`]'s job, not this one — duplicating
+    /// [`crate::skip_sets::missing_paths_under`]'s job, not this one — duplicating
     /// it here would give two guards one contract.
     #[test]
     fn filter_skipped_drops_exactly_the_skipped_keys_and_preserves_order() {
@@ -529,9 +533,8 @@ mod tests {
     /// This is the behaviour that lets ONE implementation serve skip lists of
     /// differing arity in different crates — reify-compiler's
     /// `&[(&str, &str)]` and reify-eval's `&[(&str, SkipKind, &str)]` — while
-    /// each stays private to its own crate. It mirrors
-    /// `missing_paths_under`'s "# Arity is the caller's problem" contract
-    /// (helpers.rs:62-69) and its arity-projection test.
+    /// each stays private to its own crate. It mirrors the "# Arity is the
+    /// caller's problem" contract of `skip_sets.rs`'s `missing_paths_under`.
     #[test]
     fn filter_skipped_is_agnostic_to_the_callers_skip_set_arity() {
         let paths = vec![
