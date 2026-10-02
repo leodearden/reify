@@ -92,9 +92,9 @@
 //! recursive walks below are still walks.
 //!
 //! `heads_unifiable` is deliberately left without it — a large recursive match
-//! reached only on the head tier's generic branch, so instantiating it in every
-//! consumer codegen unit is a code-size cost with no cheap-leaf case to repay
-//! it.
+//! reached only on the head tier's generic branch and on tier 3's headed
+//! type-param-carrying-arg case, so instantiating it in every consumer codegen
+//! unit is a code-size cost with no cheap-leaf case to repay it.
 //!
 //! # Consumers
 //!
@@ -368,7 +368,8 @@ pub fn type_carries_dim_param(t: &Type) -> bool {
 ///
 /// DELIBERATELY `pub(crate)`, not `pub`. This is the *implementation* of the
 /// head tier, not a rung of the ladder: both consumers reach it only through
-/// [`slot_matches_head_tier`], and this module's own tests are in-crate. Its
+/// [`slot_matches_head_tier`] and [`slot_matches_wildcard_tier`]'s headed-arg
+/// case, and this module's own tests are in-crate. Its
 /// eval-side predecessor was `#[doc(hidden)] pub` purely for cross-crate test
 /// reachability — a concession #5689 was meant to retire, so do not re-widen
 /// it to `pub` (that would advertise it as `reify-core` API and pull it into
@@ -499,6 +500,23 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     }
 }
 
+/// D4's subject: a BARE user-declared type parameter — never an R1 placeholder.
+#[inline]
+fn is_bare_user_type_param(t: &Type) -> bool {
+    matches!(t, Type::TypeParam(_)) && !t.is_unbound_placeholder()
+}
+
+/// Tier 3's ARG-side admission (PRD C-4) — one arm per arg shape; see
+/// [`slot_matches_wildcard_tier`].
+#[inline]
+fn arg_side_admits(param_ty: &Type, arg_ty: &Type) -> bool {
+    match arg_ty {
+        bare if is_bare_user_type_param(bare) => true,
+        Type::TypeParam(_) => false,
+        headed => type_carries_type_param(headed) && heads_unifiable(param_ty, headed),
+    }
+}
+
 /// Tier 3 of the ladder — the broadest per-slot gate (WILDCARD).
 ///
 /// `is_generic` is the CANDIDATE's genericity, computed caller-side — for a
@@ -512,22 +530,34 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// so the call site can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic
 /// no-match.
 ///
-/// D4 (task-4232 γ): A type-param-carrying ARG also acts as a resolution
-/// wildcard (matches any param). This lets a generic fn body pass a
-/// `TypeParam`-typed value to a concrete-param function without a spurious
-/// NoMatch. It is self-scoping: `TypeParam` args only arise inside generic fn
-/// bodies, so concrete-arg calls (non-generic callers) are bit-for-bit
-/// unchanged — `type_carries_type_param(concrete) == false`. Note it is NOT
-/// gated on `is_generic`: the genericity in question belongs to the CALLER
-/// whose body produced the `T`-typed value, not to the candidate being
-/// matched.
+/// The ARG side (PRD docs/prds/v0_6/generic-enum-type-arg-retention.md §7
+/// C-4; the S-4 witness is tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri)
+/// has three cases, none gated on `is_generic` — the genericity in question
+/// belongs to the CALLER whose body produced a type-param-carrying value, not
+/// to the candidate being matched:
+///
+/// 1. A BARE user `TypeParam` arg matches any param (D4, task-4232 γ), so a
+///    generic fn body can pass a `T`-typed value to a concrete-param function
+///    without a spurious NoMatch.
+/// 2. A HEADED arg carrying a type param admits the param only where
+///    `heads_unifiable(param, arg)` holds: a leaky `Result<T, E>` is not a
+///    `Length`. The `type_carries_type_param(arg)` guard is load-bearing:
+///    without it `heads_unifiable`'s erased-subject arm would admit a concrete
+///    `Applied` param vs an `Enum` arg (see
+///    `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`).
+/// 3. A BARE R1 placeholder arg (`Type::is_unbound_placeholder`) gets no
+///    arg-side admission. It matches only where the PARAM is itself a
+///    wildcard (a generic candidate's type/dim-param slot, or a trait-object
+///    slot).
+///
+/// A concrete arg takes none of these, so concrete-arg calls are unaffected.
 ///
 /// DISJUNCT ORDER IS A COST HEURISTIC, NOT SEMANTICS. Every disjunct is pure
 /// and side-effect-free, so `||` short-circuiting can only change how much
-/// work is done, never the answer. `param_ty == arg_ty` is placed ahead of
-/// [`type_carries_type_param`]`(arg_ty)` because the equality bails on the
-/// first differing discriminant, whereas the arg-side walk descends the whole
-/// argument type — and on the eval hot path this predicate runs for every
+/// work is done, never the answer. `param_ty == arg_ty` is placed ahead of the
+/// arg-side disjunct because the equality bails on the first differing
+/// discriminant, whereas the arg side walks a headed argument type (and then
+/// `heads_unifiable`) — and on the eval hot path this predicate runs for every
 /// arity-matching non-exact candidate in the merged prelude table. Reordering
 /// (or adding) disjuncts is therefore free; do not read meaning into it.
 #[inline]
@@ -535,7 +565,7 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
     type_carries_trait_object(param_ty)
         || (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
         || param_ty == arg_ty
-        || type_carries_type_param(arg_ty)
+        || arg_side_admits(param_ty, arg_ty)
 }
 
 /// Tier 2 of the ladder — the middle tie-break gate (HEAD).
@@ -554,7 +584,8 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 /// disambiguation.
 ///
 /// D4 (task-4232 γ) in this tier: a type-param ARG is a wildcard ONLY when it
-/// is a BARE `Type::TypeParam` (a generic fn body passing a `T`-typed value) —
+/// is a BARE user `Type::TypeParam` (a generic fn body passing a `T`-typed
+/// value; R1 placeholders excluded, as in tier 3) —
 /// that slot carries no constructor head to disagree on, so `heads_unifiable`
 /// cannot discriminate it. A HEADED arg carrying a NESTED type-param (e.g. an
 /// `Applied{"Result", [T, E]}` produced by composing two generic stdlib fns
@@ -583,14 +614,14 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 ///
 /// The disjuncts are listed in a DIFFERENT order from
 /// [`slot_matches_wildcard_tier`]'s, and that difference carries no meaning:
-/// this tier's arg-side disjunct is an O(1) `matches!` rather than a recursive
-/// walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
+/// this tier's arg-side disjunct is an O(1) bare-param check rather than a
+/// recursive walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
 /// function's cost-heuristic note.
 #[inline]
 pub fn slot_matches_head_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (heads_unifiable(param_ty, arg_ty) || type_carries_dim_param(param_ty)))
-        || matches!(arg_ty, Type::TypeParam(_))
+        || is_bare_user_type_param(arg_ty)
         || param_ty == arg_ty
 }
 
@@ -1702,12 +1733,12 @@ mod tests {
 
         // The non-subset relation is CONFINED to generic candidates, and that
         // is worth pinning too: with `is_generic == false` the head tier
-        // collapses to `tcto(param) || matches!(arg, TypeParam(_)) || param ==
-        // arg`, and since a bare `TypeParam` arg also satisfies the wildcard
-        // tier's `type_carries_type_param(arg)` disjunct, head genuinely IS a
-        // subset there. So the screening requirement is not merely defensive
-        // hygiene — it is load-bearing exactly for the generic overloads the
-        // head tier was introduced to disambiguate.
+        // collapses to `tcto(param) || is_bare_user_type_param(arg) || param ==
+        // arg`, and since a bare user `TypeParam` arg also satisfies the
+        // wildcard tier's D4 arm, head genuinely IS a subset there. So the
+        // screening requirement is not merely defensive hygiene — it is
+        // load-bearing exactly for the generic overloads the head tier was
+        // introduced to disambiguate.
         assert!(!super::slot_matches_head_tier(&param, &arg, false));
         assert!(!super::slot_matches_wildcard_tier(&param, &arg, false));
 
