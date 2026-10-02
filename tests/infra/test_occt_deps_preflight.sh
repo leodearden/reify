@@ -96,6 +96,12 @@
 #      is the contract, arm order is not. This is the assert that would have
 #      caught task 6493's own finding, and the one that stops a FOURTH native
 #      dep shipping ungated.
+#  13. OCCT XDE TOOLKITS (step-assembly-import α): an OCCT lib dir lacking
+#      lib<TK>.so.<soname> for TKXCAF or TKLCAF => non-zero, output names the
+#      missing file and the dir; a complete install => exit 0 with both
+#      resolved toolkit files RECORDED. The OCCT lib fixture builders model a
+#      complete install (they materialise both toolkits), so every other OCCT
+#      positive control stays about what it tests.
 #
 # The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
 # a legitimate future pin bump stays a one-line diff in one file. Every derived
@@ -157,6 +163,11 @@ echo "=== native-dep preflight tests (OCCT + Gmsh + OpenVDB) ==="
 # Fixture + invocation helpers
 # ---------------------------------------------------------------------------
 
+# The OCCT toolkits crates/reify-kernel-occt/build.rs links for the STEP
+# assembly reader, beyond the TKernel sentinel. Section 13 pins that the guard
+# requires each of them.
+_OCCT_XDE_TOOLKITS=(TKXCAF TKLCAF)
+
 # _mk_include_fixture <name> [<sentinel>] — dir under $_TMPDIR containing the
 # named include sentinel (default: OCCT's Standard_Failure.hxx). Prints the
 # path.
@@ -184,12 +195,32 @@ _mk_include_fixture() {
 # <leaf> exists so a fixture can reproduce OpenVDB's LIVE chain at
 # /opt/reify-deps/lib byte-for-byte — libopenvdb.so -> libopenvdb.so.13.0 ->
 # libopenvdb.so.13.0.0 — rather than a near-miss ending in .1. Prints the path.
+#
+# An OCCT fixture (sentinel libTKernel.so) models a COMPLETE install: it also
+# carries each _OCCT_XDE_TOOLKITS member as `lib<TK>.so.<v> ->
+# lib<TK>.so.<v>.<leaf>`, the verbatim name build.rs links.
 _mk_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}" leaf="${4:-1}"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}" leaf="${4:-1}" tk
     mkdir -p "$d"
     : > "$d/$sentinel.$v.$leaf"
     ln -sfn "$sentinel.$v.$leaf" "$d/$sentinel.$v"
     ln -sfn "$sentinel.$v" "$d/$sentinel"
+    if [ "$sentinel" = libTKernel.so ]; then
+        for tk in "${_OCCT_XDE_TOOLKITS[@]}"; do
+            : > "$d/lib$tk.so.$v.$leaf"
+            ln -sfn "lib$tk.so.$v.$leaf" "$d/lib$tk.so.$v"
+        done
+    fi
+    printf '%s' "$d"
+}
+
+# _mk_occt_lib_fixture_without <name> <version> <toolkit> — a healthy OCCT lib
+# fixture at <version> with that one XDE toolkit's files removed. Prints the
+# path.
+_mk_occt_lib_fixture_without() {
+    local d v="$2" tk="$3"
+    d="$(_mk_lib_fixture "$1" "$v")"
+    rm -f "$d/lib$tk.so.$v" "$d/lib$tk.so.$v.1"
     printf '%s' "$d"
 }
 
@@ -197,12 +228,16 @@ _mk_lib_fixture() {
 # dev symlink ONE HOP FURTHER than Debian's, `libTKernel.so ->
 # libTKernel.so.<majmin>.1`, so the first-level target's suffix is
 # `<majmin>.1` on a functionally identical OCCT. The pin is on major.minor
-# exactly so this shape stays green.
+# exactly so this shape stays green. The XDE toolkits carry the same
+# `<majmin>.1` suffix, which is what build.rs would link verbatim.
 _mk_patchlink_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2"
+    local d="$_TMPDIR/$1" v="$2" tk
     mkdir -p "$d"
     : > "$d/libTKernel.so.$v.1"
     ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so"
+    for tk in "${_OCCT_XDE_TOOLKITS[@]}"; do
+        : > "$d/lib$tk.so.$v.1"
+    done
     printf '%s' "$d"
 }
 
@@ -1470,5 +1505,37 @@ while IFS= read -r _dep; do
             _guard_env_output_names "${_GATE_ENVS[@]}" -- "$_SENT" "$_COMPLETENESS_EMPTY"
     done
 done <<< "$_BASH_GATED"
+
+# ---------------------------------------------------------------------------
+# 13. OCCT XDE TOOLKITS — presence fatal, resolved files recorded.
+#
+# build.rs links each toolkit VERBATIM as lib<TK>.so.<soname>, so a missing one
+# is otherwise a cryptic link failure deep in every OCCT-touching crate. Every
+# fixture is at the accepted SONAME with healthy headers, so the toolkit rule is
+# the only thing under test, and each red names the toolkit file it is about.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 13: XDE toolkits — presence fatal, recorded ---"
+
+_XDE_INC="$(_mk_include_fixture xde-include)"
+
+for _tk in "${_OCCT_XDE_TOOLKITS[@]}"; do
+    _XDE_LIB_MISSING="$(_mk_occt_lib_fixture_without "xde-lib-without-$_tk" "$_ACCEPTED_FIRST" "$_tk")"
+
+    assert "guard exits NON-zero when the OCCT lib dir lacks lib$_tk.so.$_ACCEPTED_FIRST" \
+        _guard_exits_nonzero "$_XDE_LIB_MISSING" "$_XDE_INC"
+
+    assert "guard output NAMES lib$_tk.so.$_ACCEPTED_FIRST and the offending OCCT lib dir" \
+        _guard_output_names "$_XDE_LIB_MISSING" "$_XDE_INC" "lib$_tk.so.$_ACCEPTED_FIRST" "$_XDE_LIB_MISSING"
+done
+
+_XDE_LIB_OK="$(_mk_lib_fixture xde-lib-complete "$_ACCEPTED_FIRST")"
+
+assert "guard exits 0 when the OCCT lib dir carries every XDE toolkit (positive control)" \
+    _guard_exits_zero "$_XDE_LIB_OK" "$_XDE_INC"
+
+assert "guard RECORDS both resolved XDE toolkit files on the green path" \
+    _guard_output_names "$_XDE_LIB_OK" "$_XDE_INC" \
+    "libTKXCAF.so.$_ACCEPTED_FIRST" "libTKLCAF.so.$_ACCEPTED_FIRST"
 
 test_summary
