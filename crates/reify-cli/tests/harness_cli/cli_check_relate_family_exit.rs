@@ -80,3 +80,38 @@ fn check_exits_nonzero_on_compile_phase_relate_metric_unit_error() {
         Phase::Compile,
     );
 }
+
+/// The Real operand reaches `concentric` through a generic `fn … -> Relation`
+/// wrapper, so compile-time gradualism (`check_relation_arg_types` skips
+/// `Type::TypeParam` operands) accepts it and the relate solve rejects the
+/// member. The needle is the message, not the code, so a dedicated code (#7494)
+/// does not break the pin.
+#[test]
+fn check_exits_nonzero_on_engine_phase_relate_operand_type_error_hidden_by_gradualism() {
+    assert_check_rejects(
+        "relate_wrapped_operand_type_engine.ri",
+        "is not a direct call to a geometric relation",
+        Phase::Engine,
+    );
+}
+
+#[test]
+fn check_exits_nonzero_on_engine_phase_static_relate_violation() {
+    assert_check_rejects(
+        "relate_static_violated_engine.ri",
+        "not satisfied by the subs' fixed placements",
+        Phase::Engine,
+    );
+}
+
+/// This Error is CODE-LESS — the only relate shape a `MessageContains`
+/// allowlist entry could swallow — so this end-to-end pin is the allowlist
+/// guard for code-less relate Errors.
+#[test]
+fn check_exits_nonzero_on_engine_phase_relate_conflict() {
+    assert_check_rejects(
+        "relate_conflict_engine.ri",
+        "conflicting relations on `pin`",
+        Phase::Engine,
+    );
+}
