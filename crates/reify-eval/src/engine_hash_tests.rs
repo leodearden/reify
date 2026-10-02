@@ -3,11 +3,52 @@
 //! reify-eval's closure must be explicitly classified. PRD
 //! `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine version".
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::engine_hash_algo::{
     EngineVersionHash, LockPackage, engine_version_hash_for, parse_cargo_lock_stanzas,
 };
+
+/// Which files implement each persisted target: its trampoline and the code
+/// that trampoline calls. Paths are files relative to `crates/reify-eval`.
+/// A byte change in any of them must move `ENGINE_VERSION_HASH`, or a stale
+/// persisted result would be served.
+const PERSISTED_TARGET_SOURCES: &[(&str, &[&str])] = &[
+    (
+        "solver::elastic_static",
+        &[
+            "src/compute_targets/elastic_static.rs",
+            "src/compute_targets/bc_resolve.rs",
+            "src/compute_targets/shell_solve.rs",
+            "src/compute_targets/fea_diagnostics.rs",
+            "src/compute_targets/mod.rs",
+            "src/topology_selectors.rs",
+            "../reify-solver-elastic/src/lib.rs",
+            "../reify-kernel-gmsh/src/lib.rs",
+            "../reify-fdm/src/as_printed.rs",
+            "../reify-ir/src/lib.rs",
+            "../reify-core/src/lib.rs",
+            "../reify-compute-contract/src/lib.rs",
+        ],
+    ),
+    (
+        "solver::buckling",
+        &[
+            "src/compute_targets/buckling.rs",
+            "src/compute_targets/elastic_static.rs",
+            "src/compute_targets/mod.rs",
+            "../reify-solver-elastic/src/lib.rs",
+        ],
+    ),
+    (
+        "shell-extract::extract",
+        &[
+            "src/shell_extract_compute.rs",
+            "../reify-shell-extract/src/lib.rs",
+        ],
+    ),
+];
 
 fn real_manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -150,5 +191,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
                 Some("git+https://example.invalid/x?rev=abc#abc"),
             ),
         ],
+    );
+}
+
+#[test]
+fn persisted_target_sources_cover_exactly_the_persistable_targets() {
+    let declared: BTreeSet<&str> = PERSISTED_TARGET_SOURCES
+        .iter()
+        .map(|(target, _)| *target)
+        .collect();
+    let persistable: BTreeSet<&str> = crate::compute_persist::PERSISTABLE_TARGETS
+        .iter()
+        .copied()
+        .collect();
+    let undeclared: Vec<&str> = persistable.difference(&declared).copied().collect();
+    let stale: Vec<&str> = declared.difference(&persistable).copied().collect();
+    assert!(
+        undeclared.is_empty() && stale.is_empty(),
+        "PERSISTED_TARGET_SOURCES must name exactly PERSISTABLE_TARGETS.\n\
+         Persisted but undeclared: {undeclared:?} — list each target's trampoline and \
+         implementing-crate files in PERSISTED_TARGET_SOURCES, and make them hashed via \
+         src/engine_hash_algo.rs.\n\
+         Declared but not persisted: {stale:?} — remove those rows."
+    );
+}
+
+#[test]
+fn every_persisted_target_source_changes_engine_version_hash_when_one_byte_flips() {
+    let real = engine_version_hash_for(real_manifest_dir());
+    let mirror_root = tempfile::TempDir::new().expect("create temp dir");
+    let mirror_manifest = mirror_hash_inputs(real_manifest_dir(), &real, mirror_root.path());
+    let baseline = engine_version_hash_for(&mirror_manifest).hex;
+
+    let mut targets_by_file: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (target, files) in PERSISTED_TARGET_SOURCES {
+        for file in *files {
+            targets_by_file.entry(*file).or_default().push(*target);
+        }
+    }
+
+    let mut uncovered: Vec<String> = Vec::new();
+    for (file, targets) in &targets_by_file {
+        let mirrored = mirror_root.path().join(repo_relative(Path::new(file)));
+        if !mirrored.exists() {
+            std::fs::create_dir_all(mirrored.parent().expect("mirrored file has a parent"))
+                .expect("create mirror parent");
+            std::fs::copy(real_manifest_dir().join(file), &mirrored)
+                .unwrap_or_else(|e| panic!("copy {file} into the mirror: {e}"));
+        }
+        let original = std::fs::read(&mirrored).expect("read mirrored source");
+        let mut flipped = original.clone();
+        match flipped.first_mut() {
+            Some(first) => *first ^= 0xFF,
+            None => flipped.push(0),
+        }
+        std::fs::write(&mirrored, &flipped).expect("write flipped source");
+        let moved = engine_version_hash_for(&mirror_manifest).hex != baseline;
+        std::fs::write(&mirrored, &original).expect("restore mirrored source");
+        if !moved {
+            uncovered.extend(targets.iter().map(|target| format!("{target}: {file}")));
+        }
+    }
+    assert!(
+        uncovered.is_empty(),
+        "flipping one byte of these persisted-target sources left ENGINE_VERSION_HASH \
+         unchanged, so a change to them would serve stale persisted results:\n{}",
+        uncovered.join("\n")
     );
 }
