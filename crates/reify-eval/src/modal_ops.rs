@@ -312,6 +312,36 @@ pub(crate) fn assemble_modal_km(
     }
 }
 
+/// The `W_ModalConvergence` warning for a solve that returned `n_returned` of
+/// `n_requested` modes, `residual_check_failures` of which failed the
+/// eigensolver's post-solve residual check — or `None` when every requested
+/// mode came back verified.
+///
+/// ONE template with two optional clauses (a count shortfall, unverified
+/// pairs), so the two facts cannot drift into two templates.  Uncoded, like
+/// every convergence warning before it.
+fn modal_convergence_warning(
+    n_returned: usize,
+    n_requested: usize,
+    residual_check_failures: usize,
+) -> Option<Diagnostic> {
+    let shortfall = (n_returned < n_requested).then(|| {
+        format!(
+            "eigensolver returned {n_returned} of {n_requested} requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes)."
+        )
+    });
+    let unverified = (residual_check_failures > 0).then(|| {
+        format!(
+            "{residual_check_failures} of the {n_returned} returned modes failed the \
+             eigensolver's post-solve residual check and are not verified eigenpairs."
+        )
+    });
+    let clauses: Vec<String> = shortfall.into_iter().chain(unverified).collect();
+    (!clauses.is_empty())
+        .then(|| Diagnostic::warning(format!("W_ModalConvergence: {}", clauses.join(" "))))
+}
+
 /// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
 /// subspace, solve `K_free φ = λ M_free φ`, and scatter the mode shapes back to
 /// the full DOF space.
@@ -545,19 +575,19 @@ pub(crate) fn eigensolve_modal(
         }
     }
 
-    // Convergence shortfall: `eig.converged` is false iff fewer modes were
-    // returned than requested (holds for both the dense and shift-invert paths).
+    // Convergence: a shortfall in the returned count, unverified returned pairs
+    // (#7602), or both — `eig.converged` is false iff either holds.
     //
     // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
     // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
     // wrong remedy for both faults above — it would stand beside the right one
     // and contradict it.
-    if !eig.converged && fault == ModalSolveFault::None {
-        diagnostics.push(Diagnostic::warning(format!(
-            "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
-             the result is partial (raise max_iters/tol or lower n_modes).",
-            n_modes_out, eigen_opts.n_modes,
-        )));
+    if fault == ModalSolveFault::None {
+        diagnostics.extend(modal_convergence_warning(
+            n_modes_out,
+            eigen_opts.n_modes,
+            eig.residual_check_failures,
+        ));
     }
 
     // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
@@ -997,6 +1027,11 @@ enum ModalSolveFault {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
+/// `Err(KNotSpd)` is not confined to σ = 0: with a non-identity mass and σ above a
+/// mode, `K_free − σM_free` is indefinite and the solver runs in the `K` inner
+/// product, so it measures `K_free` there too — a singular `K_free` with σ above
+/// its rigid-body modes arrives here the same way.
+///
 /// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
@@ -1045,8 +1080,9 @@ fn solve_generalized_eigen(
                     fault: ModalSolveFault::None,
                 };
             }
-            // K is not SPD: fall through to the under-constrained branch below,
-            // exactly as the former `None` did.
+            // K is not SPD — measured at σ = 0, or at σ ≠ 0 when M ≠ cI and σ
+            // lies above a mode: fall through to the under-constrained branch
+            // below, exactly as the former `None` did.
             Err(ShiftInvertFailure::KNotSpd) => {}
             // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
             // `param sigma : Real = 0.0` unconstrained and nothing on the path
@@ -1066,6 +1102,7 @@ fn solve_generalized_eigen(
                         eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                         n_converged: 0,
                         converged: false,
+                        residual_check_failures: 0,
                         shift: sigma,
                         // Nothing was factored and no spectrum was computed, so
                         // C5 forbids ESTABLISHING `false` here — the same
@@ -1093,6 +1130,7 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                residual_check_failures: 0,
                 shift: opts.sigma,
                 // No spectrum was computed at all here, so `false` cannot be
                 // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
@@ -4493,6 +4531,7 @@ mod tests {
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
         extract_loss_factor, extract_reference_direction, face_company, face_realization,
         frobenius_norm,
+        modal_convergence_warning,
         mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
@@ -5379,6 +5418,64 @@ mod tests {
             "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
             result.diagnostics,
         );
+    }
+
+    /// #7602: `converged` can now be false with every requested mode returned
+    /// — a pair failed the eigensolver's post-solve residual check — and the
+    /// warning must say THAT, not "returned 2 of 2 … partial".
+    ///
+    /// (a) A shortfall alone keeps today's text verbatim.
+    #[test]
+    fn modal_convergence_warning_keeps_the_shortfall_text_verbatim() {
+        let d = modal_convergence_warning(1, 2, 0).expect("a shortfall warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert_eq!(
+            d.message,
+            "W_ModalConvergence: eigensolver returned 1 of 2 requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes).",
+        );
+    }
+
+    /// (b) Every mode returned, some unverified: name the residual-check
+    /// failure, and never call the result partial.
+    #[test]
+    fn modal_convergence_warning_names_unverified_modes_without_calling_them_partial() {
+        let d = modal_convergence_warning(2, 2, 1).expect("an unverified mode warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+        assert!(d.message.contains("not verified eigenpairs"), "{}", d.message);
+        assert!(!d.message.contains("partial"), "{}", d.message);
+        assert!(!d.message.contains("returned 2 of 2"), "{}", d.message);
+    }
+
+    /// (c) Both at once: one diagnostic carrying both facts.
+    #[test]
+    fn modal_convergence_warning_carries_both_facts_in_one_diagnostic() {
+        let d = modal_convergence_warning(2, 3, 1).expect("both conditions warn");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(d.message.contains("returned 2 of 3 requested modes"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+    }
+
+    /// (d) Neither: no warning.
+    #[test]
+    fn modal_convergence_warning_is_silent_on_a_verified_full_result() {
+        assert!(modal_convergence_warning(2, 2, 0).is_none());
     }
 
     /// Amendment (suggestion 1 / robustness): an under-constrained model must NOT
