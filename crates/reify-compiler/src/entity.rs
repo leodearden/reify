@@ -6098,7 +6098,7 @@ fn build_arm_guard_expr(
     for variant in patterns {
         let variant_literal = CompiledExpr::literal(
             Value::enum_unit(enum_type_name.to_string(), variant.clone()),
-            Type::Enum(enum_type_name.to_string()),
+            discriminant_ref.result_type.clone(),
         );
         let eq = CompiledExpr::binop(
             BinOp::Eq,

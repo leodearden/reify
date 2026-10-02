@@ -17,7 +17,10 @@ use reify_ast::{
 };
 use reify_compiler::{CompiledModule, GuardedDeclGroup};
 use reify_core::{ContentHash, ModulePath, Severity, SourceSpan, Type};
-use reify_test_support::compile_source_with_stdlib;
+use reify_ir::Value;
+use reify_test_support::{
+    cell_value, compile_source_with_stdlib, make_engine, parse_and_compile_with_stdlib,
+};
 
 // ─── AST construction helpers ────────────────────────────────────────────────
 
@@ -631,6 +634,14 @@ fn bolt_match_arm_groups(compiled: &CompiledModule) -> &[GuardedDeclGroup] {
         .match_arm_groups
 }
 
+/// The `head` cluster `Bolt` registered.
+fn head_cluster(compiled: &CompiledModule) -> &GuardedDeclGroup {
+    bolt_match_arm_groups(compiled)
+        .iter()
+        .find(|g| g.name == "head")
+        .expect("match_arm_groups should contain a group named 'head'")
+}
+
 /// The messages of `compiled`'s Error-severity diagnostics.
 fn error_messages(compiled: &CompiledModule) -> Vec<&str> {
     compiled
@@ -650,11 +661,11 @@ fn assert_head_cluster_registered(compiled: &CompiledModule) {
         "expected no error diagnostics, got: {errors:#?}"
     );
 
-    let head = bolt_match_arm_groups(compiled)
+    let arm_types: Vec<&Type> = head_cluster(compiled)
+        .arms
         .iter()
-        .find(|g| g.name == "head")
-        .expect("match_arm_groups should contain a group named 'head'");
-    let arm_types: Vec<&Type> = head.arms.iter().map(|arm| &arm.arm_type).collect();
+        .map(|arm| &arm.arm_type)
+        .collect();
     assert_eq!(
         arm_types,
         [
@@ -663,6 +674,39 @@ fn assert_head_cluster_registered(compiled: &CompiledModule) {
         ],
         "'head' arms must be typed HexHead then SocketHead, in arm order"
     );
+}
+
+/// `Bolt` dispatching a `head` cluster on an annotated `Result<Length, String>`
+/// param whose default is `default`.
+fn bolt_over_result_param(default: &str) -> String {
+    format!(
+        r#"
+        structure def HexHead {{}}
+        structure def SocketHead {{}}
+        structure def Bolt {{
+            param r : Result<Length, String> = {default}
+            match r {{
+                Ok => sub head : HexHead,
+                Err => sub head : SocketHead
+            }}
+        }}
+        "#
+    )
+}
+
+/// What each `head` arm guard of `Bolt` evaluates to under the engine, in arm
+/// order.
+fn evaluated_head_arm_guards(source: &str) -> Vec<Value> {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let result = make_engine().eval(&compiled);
+    head_cluster(&compiled)
+        .arms
+        .iter()
+        .map(|arm| {
+            let guard_cell = &arm.guard_value_cell;
+            cell_value(&result, &guard_cell.entity, &guard_cell.member)
+        })
+        .collect()
 }
 
 /// An annotated generic-enum param — a `Type::Applied` discriminant — lowers to
@@ -770,6 +814,32 @@ fn match_arm_decl_group_applied_generic_structure_discriminant_emits_diagnostic(
         "no cluster should be registered for a generic-structure discriminant, got: {:?}",
         bolt_match_arm_groups(&compiled)
     );
+}
+
+/// The synthesised guards of an `Applied`-typed discriminant pick the arm the
+/// param's default variant names — `Ok` activates `HexHead`, `Err` activates
+/// `SocketHead` — when the engine evaluates them.
+///
+/// The compiled-shape tests above cannot see this: an enum equality that became
+/// payload- or type-arg-aware would leave every arm inactive and still register
+/// the same cluster.
+#[test]
+fn match_arm_decl_group_applied_generic_enum_param_guards_select_the_default_variants_arm() {
+    let cases = [
+        ("Ok { value: 5mm }", [Value::Bool(true), Value::Bool(false)]),
+        (
+            r#"Err { error: "too long" }"#,
+            [Value::Bool(false), Value::Bool(true)],
+        ),
+    ];
+
+    for (default, expected_guards) in cases {
+        assert_eq!(
+            evaluated_head_arm_guards(&bolt_over_result_param(default)),
+            expected_guards,
+            "param r = {default}: guards of [HexHead arm, SocketHead arm]"
+        );
+    }
 }
 
 // ─── Diagnostic-coverage tests, continued ────────────────────────────────────
