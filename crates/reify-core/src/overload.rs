@@ -347,10 +347,16 @@ pub fn type_carries_dim_param(t: &Type) -> bool {
 /// disambiguator between two generic overloads whose type-param-carrying
 /// params would otherwise both wildcard-match the same subject.
 ///
-/// Differences from `unify`, both deliberate:
+/// Differences from `unify`, all deliberate:
 /// - A bare `Type::TypeParam` / `Type::ScalarParam` (matched against a
 ///   concrete `Scalar`) leaf is a wildcard slot (`true`) — the slot itself
 ///   carries no constructor head to disagree on.
+/// - An R1 placeholder ARG (`Type::is_unbound_placeholder`) is a wildcard
+///   slot too: it records an unknown, not a disagreement (PRD
+///   `generic-enum-type-arg-retention.md` §4 step 5). A USER type param on
+///   the ARG side deliberately is NOT one — it falls to the `param == arg`
+///   catch-all, which is what keeps tier 3's headed-arg case (PRD C-4) from
+///   re-opening S-4.
 /// - `Applied{name, ..}` vs `Enum(name)` (same name) is a head match:
 ///   variant construction (`Ok { .. }` / `Err { .. }`) type-erases its
 ///   result to `Type::Enum(name)` (`variant_construct.rs`), so a declared
@@ -372,6 +378,7 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
         (Type::TypeParam(_), _) => true,
+        (_, arg) if arg.is_unbound_placeholder() => true,
         (Type::ScalarParam(_), Type::Scalar { .. }) => true,
 
         // Single-inner-Type constructors: same head → recurse on the child.
