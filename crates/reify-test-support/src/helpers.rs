@@ -6,7 +6,7 @@
 //! inspects an already-compiled expression.
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
@@ -260,23 +260,14 @@ pub fn prelude_backed_functions(
     merged
 }
 
-/// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
-/// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
-/// `diagnostics` list. Each parse error's span is attached as a label.
-fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnostic> {
-    parsed
-        .errors
-        .iter()
-        .map(|e| {
-            Diagnostic::error(e.message.clone())
-                .with_label(DiagnosticLabel::new(e.span, e.message.clone()))
-        })
-        .collect()
-}
-
-/// Parse and compile `source` WITHOUT asserting absence of parse errors,
-/// forwarding any parse-layer diagnostics into the returned module's
-/// `diagnostics` list (prepended ahead of compile-layer diagnostics).
+/// Parse and compile `source` WITHOUT asserting absence of parse errors.
+///
+/// The compiler itself forwards each parse error as one `Severity::Error`
+/// diagnostic ahead of the compile-layer diagnostics (`forward_parse_errors`,
+/// reify-compiler `compile_builder/pre_pass.rs`). This helper adds nothing, so
+/// the returned `diagnostics` are exactly what a production caller of
+/// `reify_compiler::compile` sees, and a test may COUNT them. Pinned by
+/// `crates/reify-test-support/tests/allow_parse_errors_helpers.rs`.
 ///
 /// Use this for tests that exercise rejection now emitted at the *parse*
 /// layer — e.g. out-of-range numeric literals, which task #4681 moved from a
@@ -289,26 +280,23 @@ fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnost
 /// produced, so downstream invariants like "the offending unit is NOT
 /// registered" remain observable.
 pub fn compile_source_allow_parse_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile(&reify_syntax::parse(source, ModulePath::single("test")))
 }
 
 /// Like [`compile_source_allow_parse_errors`] but parses with the stdlib
 /// prelude enum names pre-seeded and compiles with the full stdlib context
 /// (mirrors [`compile_source_with_stdlib`]).
+///
+/// Same contract: the returned `diagnostics` are exactly what a production
+/// caller of `reify_compiler::compile_with_stdlib` sees, each parse error
+/// forwarded once by the compiler as a `Severity::Error`.
 pub fn compile_source_with_stdlib_allow_parse_errors(
     source: &str,
 ) -> reify_compiler::CompiledModule {
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
+        source,
+        ModulePath::single("test"),
+    ))
 }
 
 /// Parse and compile `source`, then extract the first template.
