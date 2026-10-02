@@ -1,0 +1,27 @@
+module relate_wrapped_operand_type_engine
+
+// Engine-phase relate operand error: the generic wrapper hides a Real operand
+// from compile-time gradualism; the relate solve rejects the member instead.
+
+fn mate<A, B>(a: A, b: B) -> Relation { concentric(a, b) }
+
+structure Pin {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+    let length = 20.0
+}
+
+structure Bore {
+    let hole = cylinder(3.2mm, 10mm)
+    let hole_axis : Axis = hole.axis
+}
+
+structure PinInBore {
+    sub pin : Pin at auto
+    sub bore : Bore
+
+    relate {
+        concentric(pin.shank_axis, bore.hole_axis)
+        mate(pin.length, bore.hole_axis)
+    }
+}
