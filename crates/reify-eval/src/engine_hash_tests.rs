@@ -3,7 +3,101 @@
 //! reify-eval's closure must be explicitly classified. PRD
 //! `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine version".
 
-use crate::engine_hash_algo::{LockPackage, parse_cargo_lock_stanzas};
+use std::path::{Component, Path, PathBuf};
+
+use crate::engine_hash_algo::{
+    EngineVersionHash, LockPackage, engine_version_hash_for, parse_cargo_lock_stanzas,
+};
+
+fn real_manifest_dir() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Recreate, under `mirror_root`, exactly the files and directories `real`
+/// reports having read, at their repo-relative positions. Returns the mirror's
+/// `crates/reify-eval` manifest dir.
+fn mirror_hash_inputs(
+    real_manifest: &Path,
+    real: &EngineVersionHash,
+    mirror_root: &Path,
+) -> PathBuf {
+    for path in &real.rerun_paths {
+        let rel = path
+            .strip_prefix(real_manifest)
+            .expect("every reported path is manifest_dir.join(..)");
+        let mirrored = mirror_root.join(repo_relative(rel));
+        if path.is_dir() {
+            std::fs::create_dir_all(&mirrored).expect("create mirror dir");
+        } else {
+            std::fs::create_dir_all(mirrored.parent().expect("mirrored file has a parent"))
+                .expect("create mirror parent");
+            std::fs::copy(path, &mirrored).expect("copy into mirror");
+        }
+    }
+    mirror_root.join("crates/reify-eval")
+}
+
+/// `crates/reify-eval/<manifest_relative>`, with each `..` popping a component
+/// lexically — the mirror paths do not exist yet, so the OS cannot resolve them.
+fn repo_relative(manifest_relative: &Path) -> PathBuf {
+    let mut normalised = PathBuf::new();
+    for component in Path::new("crates/reify-eval")
+        .join(manifest_relative)
+        .components()
+    {
+        match component {
+            Component::ParentDir => {
+                normalised.pop();
+            }
+            Component::CurDir => {}
+            other => normalised.push(other),
+        }
+    }
+    normalised
+}
+
+fn regular_file_count(hash: &EngineVersionHash) -> usize {
+    hash.rerun_paths.iter().filter(|p| p.is_file()).count()
+}
+
+#[test]
+#[should_panic(expected = "ENGINE_VERSION_HASH contributor not found")]
+fn engine_version_hash_for_panics_naming_the_first_missing_contributor() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    engine_version_hash_for(tmp.path());
+}
+
+#[test]
+fn engine_version_hash_over_a_mirror_of_exactly_the_files_it_read_reproduces_the_real_hash() {
+    let real = engine_version_hash_for(real_manifest_dir());
+    assert!(
+        real.hex.len() == 32
+            && real
+                .hex
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "hex must be 32 lowercase hex chars, got {:?}",
+        real.hex
+    );
+    for closure_pin_input in ["Cargo.lock", "engine_hash_closure.txt"] {
+        assert!(
+            real.rerun_paths
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == closure_pin_input)),
+            "the closure-pin input {closure_pin_input} must be among the reported paths"
+        );
+    }
+
+    let mirror_root = tempfile::TempDir::new().expect("create temp dir");
+    let mirror_manifest = mirror_hash_inputs(real_manifest_dir(), &real, mirror_root.path());
+    let mirrored = engine_version_hash_for(&mirror_manifest);
+
+    assert_eq!(
+        mirrored.hex, real.hex,
+        "a mirror of exactly the reported files must reproduce the real hash"
+    );
+    assert_eq!(regular_file_count(&mirrored), regular_file_count(&real));
+}
 
 #[test]
 fn parse_cargo_lock_stanzas_reports_each_stanzas_source_and_none_for_path_crates() {
