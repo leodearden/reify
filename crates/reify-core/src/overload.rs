@@ -606,6 +606,7 @@ mod tests {
     fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
         let t = || Type::TypeParam("T".to_string());
         let q = || Type::ScalarParam("Q".to_string());
+        let ph = |n: &str| Type::unbound_placeholder(n);
         let result_of = |args: Vec<Type>| Type::Applied {
             name: "Result".to_string(),
             args,
@@ -639,6 +640,43 @@ mod tests {
                 Type::Int,
                 false,
                 "ScalarParam vs non-Scalar (catch-all)",
+            ),
+            // R1 placeholder ARG wildcard (PRD §4 step 5) vs a USER param arg.
+            (
+                Type::Int,
+                ph("E"),
+                true,
+                "placeholder ARG vs concrete leaf (R1 unknown)",
+            ),
+            (
+                Type::Int,
+                t(),
+                false,
+                "USER TypeParam ARG is not an arg-side wildcard (catch-all)",
+            ),
+            (
+                Type::Option(Box::new(Type::Int)),
+                ph("T"),
+                true,
+                "bare placeholder ARG vs constructor param",
+            ),
+            (
+                result_of(vec![Type::length(), Type::String]),
+                result_of(vec![Type::length(), ph("E")]),
+                true,
+                "Applied recurse through a placeholder arg slot (U-1 after δ)",
+            ),
+            (
+                result_of(vec![Type::length(), Type::String]),
+                result_of(vec![Type::length(), t()]),
+                false,
+                "Applied recurse: a USER param arg slot does not unify with a concrete param slot",
+            ),
+            (
+                result_of(vec![Type::Int, Type::String]),
+                result_of(vec![Type::String, ph("E")]),
+                false,
+                "a placeholder slot never excuses a concrete mismatch elsewhere",
             ),
             // Single-inner-Type constructors, match + near-miss.
             (
