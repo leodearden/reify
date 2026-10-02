@@ -48,7 +48,7 @@ use xxhash_rust::xxh3::xxh3_128;
 /// 4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
 ///    engine_tolerance.rs, engine_purposes.rs
 /// 5. Transitive-dep version pin  — NOT in this list. Narrowed to reify-eval's
-///    closure pins and handled by `build.rs` directly (see below).
+///    closure pins and handled by [`engine_version_hash_for`] directly (see below).
 ///
 /// # Transitive-dep version pin (formerly category 5 — narrowed, task 5272)
 ///
@@ -61,12 +61,13 @@ use xxhash_rust::xxh3::xxh3_128;
 /// This used to be captured by listing the WHOLE workspace `Cargo.lock` in this
 /// array (walked byte-for-byte), which over-invalidated the cache on ANY dep
 /// bump anywhere in the ~716-package lockfile — including GUI-only deps like
-/// `tauri` that never affect FEA. That contribution is now NARROWED: `build.rs`
-/// hashes only the resolved `(name, version)` pins of reify-eval's build+normal
+/// `tauri` that never affect FEA. That contribution is now NARROWED:
+/// [`engine_version_hash_for`] hashes only the resolved `(name, version)` pins of reify-eval's build+normal
 /// (dev-EXCLUDED) transitive closure — the crate NAMES checked in at
 /// `crates/reify-eval/engine_hash_closure.txt` — via [`parse_closure_manifest`]
 /// and [`cargo_lock_closure_parts`].  So `../../Cargo.lock` is deliberately NOT in
-/// `CONTRIBUTORS_RELATIVE`; `build.rs` reads it directly alongside the manifest.
+/// `CONTRIBUTORS_RELATIVE`; [`engine_version_hash_for`] reads it directly
+/// alongside the manifest.
 /// The drift guard `tests/infra/test_engine_hash_closure.sh` keeps the manifest
 /// a superset (⊇) of the freshly-recomputed closure.
 ///
@@ -122,10 +123,11 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
     "src/engine_tolerance.rs",
     "src/engine_purposes.rs",
     // 5. Transitive-dep version pin — NOT here (task 5272). Narrowed to
-    //    reify-eval's build+normal (dev-excluded) closure pins: build.rs reads
-    //    ../../Cargo.lock + engine_hash_closure.txt directly and hashes only the
-    //    matching (name, version) pins via cargo_lock_closure_parts. See the
-    //    CONTRIBUTORS_RELATIVE doc-comment above for the full rationale.
+    //    reify-eval's build+normal (dev-excluded) closure pins:
+    //    engine_version_hash_for reads ../../Cargo.lock + engine_hash_closure.txt
+    //    directly and hashes only the matching (name, version) pins via
+    //    cargo_lock_closure_parts. See the CONTRIBUTORS_RELATIVE doc-comment
+    //    above for the full rationale.
 ];
 
 /// Suffix set shared by the bare dot-prefix branch and the extension branch of
@@ -229,8 +231,8 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
 ///
 /// Returns a 32-character lowercase hexadecimal string.
 ///
-/// **Production caller**: `build.rs` calls this after accumulating all
-/// contributor walk parts (via [`walk_contributor`]). The function is `pub`
+/// **Production caller**: [`engine_version_hash_for`] calls this after
+/// accumulating all contributor walk parts (via [`walk_contributor`]). The function is `pub`
 /// so `persistent_cache::ENGINE_VERSION_HASH`'s doc comment can reference it
 /// by name, and so the algorithm-drift sentinel test
 /// (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
@@ -432,10 +434,11 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
 // persistent FEA cache. The helpers below narrow that contribution to only the
 // resolved (name, version) pins of reify-eval's build+normal (exclude-dev)
 // transitive closure — the crate NAMES checked in at
-// `crates/reify-eval/engine_hash_closure.txt`. build.rs reads that static
-// manifest plus Cargo.lock and hashes just the matching pins; the drift guard
-// `tests/infra/test_engine_hash_closure.sh` keeps the manifest honest against
-// the live closure. PRD: docs/prds/merge-gate-compile-cost.md §3 W4 / §5 C4.
+// `crates/reify-eval/engine_hash_closure.txt`. engine_version_hash_for reads
+// that static manifest plus Cargo.lock and hashes just the matching pins; the
+// drift guard `tests/infra/test_engine_hash_closure.sh` keeps the manifest
+// honest against the live closure. PRD: docs/prds/merge-gate-compile-cost.md
+// §3 W4 / §5 C4.
 //
 // These are pure, std-only functions (NO `toml` crate — this file is include!'d
 // into build.rs, which is constrained to std + xxhash per the module header).
@@ -597,8 +600,8 @@ pub fn cargo_lock_closure_pins(lock_text: &str, closure: &[&str]) -> Vec<(String
 /// Two parts per pin leverages the existing u64-LE length-prefix framing in
 /// [`compose_engine_version_hash`], which already prevents the concat-collision
 /// class — so no custom separator between the name and version is needed.
-/// `build.rs` extends its `all_parts` with the result, replacing the removed
-/// whole-file Cargo.lock walk.
+/// [`engine_version_hash_for`] extends its parts with the result, replacing the
+/// removed whole-file Cargo.lock walk.
 #[allow(dead_code)]
 pub fn cargo_lock_closure_parts(lock_text: &str, closure: &[&str]) -> Vec<Vec<u8>> {
     let mut parts: Vec<Vec<u8>> = Vec::new();
@@ -607,4 +610,89 @@ pub fn cargo_lock_closure_parts(lock_text: &str, closure: &[&str]) -> Vec<Vec<u8
         parts.push(version.into_bytes());
     }
     parts
+}
+
+/// The canonical `ENGINE_VERSION_HASH` of the reify-eval checkout rooted at
+/// `manifest_dir`, together with every path it read.
+// build.rs (via include!) reads both fields; the non-test lib build never
+// constructs one.
+#[allow(dead_code)]
+pub struct EngineVersionHash {
+    /// 32 lowercase hex chars, as returned by [`compose_engine_version_hash`].
+    pub hex: String,
+    /// Every file and directory read, for `cargo:rerun-if-changed`.
+    pub rerun_paths: Vec<PathBuf>,
+}
+
+/// Compute `ENGINE_VERSION_HASH` over `manifest_dir` (reify-eval's
+/// `CARGO_MANIFEST_DIR`): every [`CONTRIBUTORS_RELATIVE`] entry walked by
+/// [`walk_contributor`], then reify-eval's closure pins
+/// ([`cargo_lock_closure_parts`] over `../../Cargo.lock`, filtered to the
+/// names in `engine_hash_closure.txt`), composed by
+/// [`compose_engine_version_hash`]. `build.rs` bakes the result into the
+/// library; tests run this same function over a mirror of its inputs.
+///
+/// No cargo metadata is invoked (fragile, offline-hostile, and it can deadlock
+/// on the package-cache lock): the closure is the static checked-in manifest,
+/// kept a superset (⊇) of the live closure by
+/// `tests/infra/test_engine_hash_closure.sh`.
+///
+/// # Panics
+///
+/// On a missing contributor or closure-pin input, naming it. A silent skip
+/// would shrink the hash input and bake a stale hash unnoticed
+/// (`docs/prds/merge-gate-compile-cost.md`).
+#[allow(dead_code)]
+pub fn engine_version_hash_for(manifest_dir: &Path) -> EngineVersionHash {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut rerun_paths: Vec<PathBuf> = Vec::new();
+
+    for rel in CONTRIBUTORS_RELATIVE {
+        let path = manifest_dir.join(rel);
+        if !path.exists() {
+            panic!(
+                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update \
+                 CONTRIBUTORS_RELATIVE in crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
+                rel,
+                path.display()
+            );
+        }
+        let walk = walk_contributor(rel, &path);
+        rerun_paths.extend(walk.rerun_paths);
+        parts.extend(walk.parts);
+    }
+
+    let lock_path = manifest_dir.join("../../Cargo.lock");
+    let closure_path = manifest_dir.join("engine_hash_closure.txt");
+    for (path, rel) in [
+        (&lock_path, "../../Cargo.lock"),
+        (&closure_path, "engine_hash_closure.txt"),
+    ] {
+        if !path.exists() {
+            panic!(
+                "ENGINE_VERSION_HASH closure-pin input not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update the closure-pin \
+                 wiring in engine_version_hash_for \
+                 (crates/reify-eval/src/engine_hash_algo.rs) in the same commit.",
+                rel,
+                path.display()
+            );
+        }
+        rerun_paths.push(path.clone());
+    }
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", path.display()))
+    };
+    let lock_text = read(&lock_path);
+    let closure = parse_closure_manifest(&read(&closure_path));
+    let closure_refs: Vec<&str> = closure.iter().map(|s| s.as_str()).collect();
+    parts.extend(cargo_lock_closure_parts(&lock_text, &closure_refs));
+
+    let part_refs: Vec<&[u8]> = parts.iter().map(|v| v.as_slice()).collect();
+    EngineVersionHash {
+        hex: compose_engine_version_hash(&part_refs),
+        rerun_paths,
+    }
 }

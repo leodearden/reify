@@ -7,11 +7,11 @@
 //
 // # Algorithm and contributor-walk logic
 //
-//   The `compose_engine_version_hash` and `walk_contributor` functions are NOT
-//   duplicated here. They live in `src/engine_hash_algo.rs`, which is the single
-//   source of truth shared between the library crate (via
-//   `pub(crate) mod engine_hash_algo;` in `lib.rs`) and this build script (via
-//   `include!()` below). Any algorithm change automatically affects both callers.
+//   The whole computation is `engine_version_hash_for` in
+//   `src/engine_hash_algo.rs`, the single source of truth shared between the
+//   library crate (via `pub(crate) mod engine_hash_algo;` in `lib.rs`) and this
+//   build script (via `include!()` below). This script only prints its result,
+//   so the library's tests exercise exactly what is baked here.
 //
 //   `walk_contributor` emits `rerun_paths` entries for BOTH file paths AND
 //   directory paths (every directory visited, including the root and all
@@ -33,8 +33,8 @@
 //                                    (name, version) pins of reify-eval's
 //                                    build+normal (dev-excluded) closure, read
 //                                    from ../../Cargo.lock + engine_hash_closure.txt
-//                                    (NOT a whole-lockfile walk). See the block
-//                                    after the CONTRIBUTORS_RELATIVE loop below.
+//                                    (NOT a whole-lockfile walk). See
+//                                    engine_version_hash_for.
 //
 // # Deferred contributor
 //   Materials database: PRD line 59 makes this conditional on materials living
@@ -47,10 +47,9 @@
 //   Missing contributor ⇒ hard panic. A silent skip would silently shrink the
 //   contributor set and produce a stale hash without anyone noticing.
 
-// Pull in compose_engine_version_hash, walk_contributor, ContributorWalk,
-// and their transitive use statements (std::path::{Path, PathBuf},
-// xxhash_rust::xxh3::xxh3_128) from the single shared source file.
-// There is NO duplicate algorithm here.
+// Pull in engine_version_hash_for and everything it calls, with their use
+// statements (std::path::{Path, PathBuf}, xxhash_rust::xxh3::xxh3_128), from
+// the single shared source file. There is NO duplicate algorithm here.
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/engine_hash_algo.rs"
@@ -90,73 +89,9 @@ fn main() {
     // Re-run when the shared algorithm source changes.
     println!("cargo:rerun-if-changed=src/engine_hash_algo.rs");
 
-    let mut all_parts: Vec<Vec<u8>> = Vec::new();
-
-    for rel in CONTRIBUTORS_RELATIVE {
-        let path = manifest_path.join(rel);
-        if !path.exists() {
-            panic!(
-                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
-                 If this file was renamed, moved, or deleted, update \
-                 CONTRIBUTORS_RELATIVE in crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
-                rel,
-                path.display()
-            );
-        }
-        let walk = walk_contributor(rel, &path);
-        for p in &walk.rerun_paths {
-            println!("cargo:rerun-if-changed={}", p.display());
-        }
-        all_parts.extend(walk.parts);
-    }
-
-    // 5. Transitive-dep version pin — NARROWED to reify-eval's closure pins
-    //    (task 5272). Instead of walking the WHOLE workspace Cargo.lock (which
-    //    over-invalidated the persistent FEA cache on ANY dep bump anywhere in
-    //    the ~716-package lockfile), hash only the resolved (name, version) pins
-    //    of reify-eval's build+normal (dev-excluded) transitive closure — the
-    //    crate NAMES checked in at engine_hash_closure.txt. NO cargo metadata is
-    //    invoked at build time (fragile / offline-hostile / can deadlock on the
-    //    package-cache lock); build.rs only fs-reads the static manifest. The
-    //    drift guard tests/infra/test_engine_hash_closure.sh keeps the manifest
-    //    a superset (⊇) of the live closure. Rationale + narrowing details:
-    //    engine_hash_algo.rs::CONTRIBUTORS_RELATIVE doc-comment.
-    //
-    //    Panic-on-missing is preserved for BOTH inputs (same rename-panic safety
-    //    net as the contributor loop): a silent skip would shrink the hash input
-    //    and bake a stale ENGINE_VERSION_HASH unnoticed.
-    let lock_path = manifest_path.join("../../Cargo.lock");
-    let closure_path = manifest_path.join("engine_hash_closure.txt");
-    for (path, rel) in [
-        (&lock_path, "../../Cargo.lock"),
-        (&closure_path, "engine_hash_closure.txt"),
-    ] {
-        if !path.exists() {
-            panic!(
-                "ENGINE_VERSION_HASH closure-pin input not found: {} (resolved to {}). \
-                 If this file was renamed, moved, or deleted, update the closure-pin \
-                 wiring in crates/reify-eval/build.rs and \
-                 crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
-                rel,
-                path.display()
-            );
-        }
+    let hash = engine_version_hash_for(manifest_path);
+    for path in &hash.rerun_paths {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_else(|e| {
-        panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", lock_path.display())
-    });
-    let manifest_text = std::fs::read_to_string(&closure_path).unwrap_or_else(|e| {
-        panic!(
-            "ENGINE_VERSION_HASH: cannot read {}: {e}",
-            closure_path.display()
-        )
-    });
-    let closure = parse_closure_manifest(&manifest_text);
-    let closure_refs: Vec<&str> = closure.iter().map(|s| s.as_str()).collect();
-    all_parts.extend(cargo_lock_closure_parts(&lock_text, &closure_refs));
-
-    let all_refs: Vec<&[u8]> = all_parts.iter().map(|v| v.as_slice()).collect();
-    let hash = compose_engine_version_hash(&all_refs);
-    println!("cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={hash}");
+    println!("cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={}", hash.hex);
 }
