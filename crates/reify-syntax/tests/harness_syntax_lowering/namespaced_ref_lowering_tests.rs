@@ -705,23 +705,22 @@ fn a_pub_import_binds_its_qualifier_like_a_plain_import() {
     );
 }
 
-/// Executable record of #6495's won't-fix: a qualifier is the importing file's
-/// OWN binding name (stdlib-namespace NS-Q1 / D-7), and a `pub import`
-/// re-exports its target's pub defs, not a namespace binding
-/// (resolution-unification D-7). A module a facade re-exports is therefore
-/// never a qualifier in the importer, so the lowering takes no external
-/// namespace-binding seed, unlike `known_enums` (enum names are pub defs).
+/// A single-file parse binds only an import's OWN name (alias, else final path
+/// segment), never one its target might re-export: a qualifier is the importing
+/// file's own binding (stdlib-namespace NS-Q1 / D-7), and `pub import`
+/// re-exports defs, not bindings (resolution-unification D-7). The target is
+/// never loaded, so `units` and `parts` only stand in for re-exported modules.
 #[test]
-fn a_facade_import_does_not_bind_the_namespaces_it_re_exports() {
-    // Positive control: the facade import binds its own name, so the
-    // rejections below are not just "this import bound nothing".
+fn an_import_binds_only_its_own_name_not_its_targets_reexports() {
+    // Positive control: the import binds its own name, so the rejections
+    // below are not just "this import bound nothing".
     assert_qualified_call_accepted(
         "import std.prelude\nstructure def S { let f = prelude.Thing() }",
         "prelude.Thing",
     );
 
     for (source, callee, qualifier) in [
-        // `units` is in the stdlib facade's curated core (stdlib-namespace NS-V1).
+        // `std.prelude` re-exports `units` (stdlib-namespace NS-V1).
         (
             "import std.prelude\nstructure def S { let f = units.Thing() }",
             "units.Thing",

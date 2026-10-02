@@ -857,8 +857,7 @@ impl<'a> Lowering<'a> {
     /// NS-Q1 / D-7), and a `pub import` re-exports its target's pub defs, not
     /// its binding (docs/prds/v0_6/resolution-unification.md D-7). So `import
     /// std.prelude` binds `prelude` alone: what the facade re-exports is reached
-    /// as `prelude.Name` or unqualified, never as `units.Name`. Pinned by
-    /// `a_facade_import_does_not_bind_the_namespaces_it_re_exports`.
+    /// as `prelude.Name` or unqualified, never as `units.Name`.
     fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
         let Some(import) = self.lower_import(node) else {
             return;
