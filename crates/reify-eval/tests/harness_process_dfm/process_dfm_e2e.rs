@@ -27,7 +27,7 @@
 //!   (regression from the unified-DAG edge-centroid path, fixed in #4734).
 //!
 //! The example is also covered for compile-cleanliness by
-//! `crates/reify-compiler/tests/examples_smoke.rs` (directory walk).
+//! `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (directory walk).
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity};

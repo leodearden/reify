@@ -23,7 +23,7 @@
 //! Covered by crates/reify-eval/tests/result_recovery_e2e.rs (numeric eval
 //! signal), crates/reify-cli/tests/cli_eval_result_recovery.rs (rendered CLI
 //! stdout signal), and the examples compile-clean smoke sweep
-//! (crates/reify-compiler/tests/examples_smoke.rs).
+//! (crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs).
 
 module m6_result_recovery
 

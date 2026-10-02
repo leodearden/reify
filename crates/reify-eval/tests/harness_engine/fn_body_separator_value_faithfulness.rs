@@ -304,7 +304,7 @@ fn separated_twins_are_all_clean() {
 /// warning into a broken build.
 ///
 /// Scope is deliberately one fixture, and deliberately at the EVAL layer.
-/// `crates/reify-compiler/tests/examples_smoke.rs` already walks all of `examples/`
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` already walks all of `examples/`
 /// recursively — asserting `parsed.errors.is_empty()` and zero `Severity::Error` diagnostics
 /// from `compile_with_stdlib`, behind an auditable `SKIP_SET` — so it is the corpus-wide guard
 /// against the severity flip and a second hand-picked list here would be strictly weaker.
