@@ -64,8 +64,7 @@ pub struct MorphRequest<'a> {
     /// task-4092 `boundary` association when produced via the attributed path.
     pub source: &'a VolumeMesh,
     /// Per-node attachment of the source mesh's surface nodes to old-BRep
-    /// entities (from the task-4092 attributed VolumeMesh producer). Never empty
-    /// when built by `decide_morph_or_remesh`.
+    /// entities (from the task-4092 attributed VolumeMesh producer).
     pub boundary: &'a BoundaryAssociation,
     /// Snapshot of the old BRep (the shape the source mesh was meshed from).
     pub old_brep: BRepSnapshot<'a>,
@@ -214,8 +213,8 @@ pub(crate) enum MorphDecision {
 /// Returns [`MorphDecision::Remesh`] whenever a precondition is missing — no
 /// `producer`, no prior `source`, or a `source` mesh that carries no, or an
 /// empty, boundary attribution (only the task-4092 attributed producer threads
-/// one, and without attached nodes `compute_dirichlet_bcs` has no anchors to
-/// project) — or when `try_morph` returns a non-`Ok` outcome.
+/// one, and with no attached nodes there is nothing to project) — or when
+/// `try_morph` returns a non-`Ok` outcome.
 ///
 /// ## Diagnostics (engine layer)
 ///
@@ -241,8 +240,9 @@ pub(crate) fn decide_morph_or_remesh(
         (Some(p), Some(s)) => (p, s),
         _ => return MorphDecision::Remesh,
     };
-    // The source must carry a NON-EMPTY task-4092 boundary association: with no nodes to
-    // project, compose_morph would return the unchanged source as a passing "morph".
+    // The source must carry a NON-EMPTY task-4092 boundary association: with no
+    // attached nodes there is nothing to project onto the new BRep, so any
+    // producer `Ok` would be vacuous.
     let Some(boundary) = source
         .source_mesh
         .boundary
