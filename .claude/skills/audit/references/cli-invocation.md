@@ -91,7 +91,7 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index

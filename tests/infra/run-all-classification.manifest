@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (6) ----------------------------------------------------
+# --- intra-run-serial (7) ----------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -48,6 +48,9 @@
 # `pool` it would race other pool members over that shared build state.
 test_reify_audit_pdiag.sh intra-run-serial
 test_reify_audit_ptodo.sh intra-run-serial
+# test_reify_audit_pdoccover.sh (task #6931): same reason — reify_audit_guard
+# rebuild-budget-safe may fork cargo build and mutate the lane-shared CoW target/.
+test_reify_audit_pdoccover.sh intra-run-serial
 test_tree_sitter_pipeline.sh intra-run-serial
 # test_verify_nextest_absent_suites.sh nests test_verify_semaphore_e2e.sh (the
 # row directly below), so it inherits that file's intra-run-serial bucket —

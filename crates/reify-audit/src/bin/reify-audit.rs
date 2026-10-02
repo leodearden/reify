@@ -63,8 +63,8 @@ use std::process::ExitCode;
 use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
     TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
-    jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, ptodo, puntested,
+    jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite,
+    pdcheck, pdead_dead_code, pdiag, pdoccover, pdssentinel, player, ptodo, puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -615,6 +615,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, check: pdiag::check },
     Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, check: pdoccover::check },
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, check: pdcheck::check },
+    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, queries_jcodemunch: false, check: pcite::check },
 ];
 
 /// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in
@@ -1578,13 +1579,11 @@ mod tests {
     //
     // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
     // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
-    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
-    // (like PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
-    // known backlog of undocumented names, so until #5480 seeds
-    // pdoccover-baseline.txt the detector would add ~80 High findings to every
-    // default sweep. High severity feeds the exit code, so joining the default
-    // sweep now would turn every audit run non-zero. It joins the sweep when
-    // the baseline lands, not before.
+    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN,
+    // for PDIAG's reason: its verdicts are High and feed the exit code, and
+    // they ratchet against a committed ledger (pdoccover-baseline.txt), so in
+    // the default sweep a drifting ledger would turn every bare audit run
+    // non-zero. The hard gate is tests/infra/test_reify_audit_pdoccover.sh.
     // -------------------------------------------------------------------
 
     /// `--pattern PDOCCOVER` must be accepted and stored.
@@ -1619,9 +1618,8 @@ mod tests {
         assert!(
             !selects(pattern_flag::PDOCCOVER, None),
             "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
-             findings are High severity and the corpus has a known backlog, so \
-             joining the sweep before #5480 seeds the baseline would make every \
-             audit run exit non-zero"
+             findings are High severity and ratchet against a committed ledger, \
+             so a drifting ledger would make every bare audit run exit non-zero"
         );
         assert!(
             selects(pattern_flag::PDOCCOVER, Some("PDOCCOVER")),
@@ -1817,6 +1815,88 @@ mod tests {
         assert!(
             !jcodemunch_only_run_set(&make_args(false, Some("PDCHECK"))),
             "a PDCHECK-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PCITE (task #6931) — capability-manifest cite lane
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_pcite_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PCITE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PCITE must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PCITE"),
+            "parsed pattern must be Some(\"PCITE\")"
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_pcite_in_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,PCITE".to_string()])
+            .expect("--pattern P1,PCITE must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"PCITE"), "tokens must contain PCITE; got: {tokens:?}");
+        assert!(
+            selects(pattern_flag::PCITE, Some("P1,PCITE")),
+            "P1,PCITE must enable PCITE"
+        );
+    }
+
+    #[test]
+    fn parse_args_unknown_pattern_lists_pcite() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PCITE"),
+            "error must list PCITE as a valid pattern; got: {err}"
+        );
+    }
+
+    #[test]
+    fn usage_text_lists_pcite() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PCITE"),
+            "--help must list PCITE on the --pattern line; got:\n{usage}"
+        );
+    }
+
+    /// PCITE is OPT-IN although it cannot move the exit code (Medium only):
+    /// it reads every tracked non-prose file to build its oracle, and its
+    /// residual is legitimately non-zero, so a pattern-less sweep must not
+    /// pay for it or route its follow-ups unasked.
+    #[test]
+    fn pcite_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PCITE, None),
+            "PCITE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PCITE, Some("PCITE")),
+            "PCITE must activate when --pattern PCITE is given"
+        );
+        assert!(
+            !selects(pattern_flag::PCITE, Some("P2")),
+            "PCITE must be excluded when a named non-PCITE pattern is given"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_pcite_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PCITE"))),
+            "PCITE reads the tracked tree only; it must not open a jcodemunch \
+             connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PCITE"))),
+            "a PCITE-only run must not reach jcodemunch_only_run_set's \
              stale-index refusal (exit 125)"
         );
     }
