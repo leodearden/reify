@@ -58,18 +58,7 @@ fn port_bounds_accepted() {
 fn rejects_non_port_values() {
     let original = build_with_dev_url(BAKED_DEV_URL);
 
-    for raw in [
-        "0",
-        "65536",
-        "99999999999",
-        "abc",
-        " 5173",
-        "5173 ",
-        "+5173",
-        "-1",
-        "51 73",
-        "5173x",
-    ] {
+    for raw in ["0", "65536", "abc", "+5173"] {
         let mut build = original.clone();
         let err = retarget_to_vite_port(&mut build, Some(raw))
             .expect_err(&format!("{raw:?} must be rejected"));

@@ -8,6 +8,8 @@ use std::fmt;
 
 use tauri::utils::config::BuildConfig;
 
+use crate::tcp_port::parse_tcp_port;
+
 pub const VITE_PORT_ENV: &str = "REIFY_VITE_PORT";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,13 +36,6 @@ impl fmt::Display for DevUrlError {
 
 impl std::error::Error for DevUrlError {}
 
-fn parse_vite_port(raw: &str) -> Option<u16> {
-    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    raw.parse::<u16>().ok().filter(|&port| port != 0)
-}
-
 /// Point `build.dev_url` at `vite_port`, keeping its scheme and host. `None`
 /// or an empty value means "no override"; anything else must be a port, and
 /// no error path mutates `build`.
@@ -52,7 +47,7 @@ pub fn retarget_to_vite_port(
         None | Some("") => return Ok(()),
         Some(raw) => raw,
     };
-    let port = parse_vite_port(raw).ok_or_else(|| DevUrlError::InvalidVitePort {
+    let port = parse_tcp_port(raw).ok_or_else(|| DevUrlError::InvalidVitePort {
         raw: raw.to_string(),
     })?;
     let mut retargeted = build

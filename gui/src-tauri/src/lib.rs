@@ -28,6 +28,7 @@ pub mod kernel_status;
 pub mod large_stack;
 pub mod lsp_bridge;
 pub mod mcp_context;
+pub mod tcp_port;
 pub mod types;
 pub mod watcher;
 
