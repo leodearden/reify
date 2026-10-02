@@ -14,16 +14,23 @@
 //   - structure def Prismatic          : DrivingJoint (axis : Vec3,
 //                                        spring_rate : Option<TranslationalStiffness> = none,
 //                                        damping     : Option<TranslationalDamping>  = none,
-//                                        neutral     : Option<Length>                = none)
+//                                        neutral     : Option<Length>                = none,
+//                                        radial / tilt / torsional compliance)
 //   - structure def Revolute           : DrivingJoint (axis : Vec3,
 //                                        spring_rate : Option<RotationalStiffness>   = none,
 //                                        damping     : Option<RotationalDamping>     = none,
-//                                        neutral     : Option<Angle>                 = none)
-//   - structure def Cylindrical        : DrivingJoint (axis : Vec3)
-//   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3)
-//   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
+//                                        neutral     : Option<Angle>                 = none,
+//                                        axial / radial / tilt compliance)
+//   - structure def Cylindrical        : DrivingJoint (axis : Vec3, radial / tilt compliance)
+//   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3,
+//                                        normal / tilt compliance)
+//   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field;
+//                                        translational compliance)
 //   - structure def Coupling  : Joint  (derived motion — no independent motion var)
-//   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
+//   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping; translational +
+//                                        rotational compliance)
+//   (each "… compliance" is one `Option<…Stiffness> = none` field per group; see
+//    the constrained-DOF compliance ruling above the joint structures, task 7163)
 //   - structure def JointBinding       (element type of snapshot()'s `bindings` arg)
 //   - structure def Twist              (spatial velocity — transform_log/exp element)
 //   - structure def JacobianColumn     (dpose/dq column of joint_jacobian)
@@ -131,23 +138,65 @@ trait HasMotion {
 // the stored raw axis) and that function's `"planar"` arm (`unit_normalize` for
 // the Planar pair) — so the retype is behaviour-preserving.
 
+// Constrained-DOF compliance (task 7163 ruling) ───────────────────────────────
+// PRD: docs/prds/v0_6/assembly-modal-connection-graph.md §7 C2. This block is the
+// normative statement; each field's trailing comment only names its DOFs.
+//
+// Each joint kind partitions its six relative DOFs into FREE DOFs (its motion)
+// and CONSTRAINED DOFs, and every constrained DOF lies in exactly ONE compliance
+// group: a named `Option<TranslationalStiffness>` (T) or
+// `Option<RotationalStiffness>` (R) field.
+//   none (the default) ⇒ IDEAL-RIGID constraint — today's kinematic semantics.
+//   some(k)            ⇒ a spring of stiffness k on EVERY direction of the group,
+//                        isotropic within the group, acting between the two port
+//                        frames; directions are relative to the joint's own axes.
+//
+//   group                    DOFs                         kinds
+//   radial_stiffness         2T ⊥ axis                    Prismatic, Revolute, Cylindrical
+//   axial_stiffness          1T along axis                Revolute
+//   normal_stiffness         1T along axis_x × axis_y     Planar
+//   translational_stiffness  3T                           Spherical, Fixed
+//   tilt_stiffness           2R about the axes ⊥ axis     Prismatic, Revolute, Cylindrical
+//                            (Planar: about axis_x and axis_y)
+//   torsional_stiffness      1R about axis                Prismatic
+//   rotational_stiffness     3R                           Fixed
+//
+// Only constrained groups are named, so compliance on a FREE DOF cannot be
+// written (E_CTOR_UNKNOWN_FIELD). A free DOF's own spring, where a kind has one,
+// is `spring_rate`; its absence means genuinely free (zero stiffness), not rigid.
+// Isotropy is forced: no kind carries a second reference direction to hang an
+// anisotropic split on.
+//
+// Modal-consumer-only: kinematics (transform_at / snapshot / sweep /
+// joint_jacobian) never reads these fields; the consumer is assembly modal
+// analysis (assembly-modal δ, #7165). Joints built by the lowercase builtins —
+// prismatic() / revolute() / cylindrical() / planar() / spherical() / fixed()
+// and the prb_* flexures — are `Value::Map` values with NO compliance key, and a
+// consumer reads an absent key exactly as `none`. Value validation (positive,
+// finite, dimension) belongs to the consumer, as it does for `spring_rate`.
+
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
 //
 // Conforms to HasMotion (task #4605 ε): MotionValue = Length (the translational
 // generalized coordinate has dimension Length).
 //
-// Compliant-joint fields (task 3849 / Phase-1, §8.2):
-//   spring_rate : N/m    — linear spring coefficient; None = rigid (no spring).
-//   damping     : N·s/m  — linear damping coefficient; None = rigid (no damper).
+// Compliant-joint fields on the FREE DOF (task 3849 / Phase-1, §8.2):
+//   spring_rate : N/m    — linear spring coefficient; none = no spring: a free DOF
+//                          (zero stiffness), NOT rigid.
+//   damping     : N·s/m  — linear damping coefficient; none = undamped.
 //   neutral     : m      — rest position; None = consumer-applied (task ι/RBD default:
 //                          range midpoint). Cannot be a literal default because the
 //                          KCC-ζ Prismatic has no `range` field.
+// Constrained-DOF compliance (task 7163 ruling above): radial, tilt, torsional.
 structure def Prismatic : DrivingJoint + HasMotion {
     param axis : Vec3<Dimensionless> // the joint translation direction in parent body frame
-    param spring_rate : Option<TranslationalStiffness> = none // N/m; None = rigid
-    param damping     : Option<TranslationalDamping>   = none // N·s/m; None = rigid
+    param spring_rate : Option<TranslationalStiffness> = none // N/m; none = free, not rigid
+    param damping     : Option<TranslationalDamping>   = none // N·s/m; none = undamped
     param neutral     : Option<Length>                 = none // m; None → task ι default
+    param radial_stiffness    : Option<TranslationalStiffness> = none // 2T ⊥ axis
+    param tilt_stiffness      : Option<RotationalStiffness>    = none // 2R about the axes ⊥ axis
+    param torsional_stiffness : Option<RotationalStiffness>    = none // 1R about axis
     type MotionValue = Length // translational generalized coordinate is a Length
 }
 
@@ -157,36 +206,51 @@ structure def Prismatic : DrivingJoint + HasMotion {
 // Conforms to HasMotion (task #4605 ε): MotionValue = Angle (the rotational
 // generalized coordinate has dimension Angle).
 //
-// Compliant-joint fields (task 3849 / Phase-1, §8.2):
-//   spring_rate : N·m/rad²   — rotational spring coefficient; None = rigid (no spring).
-//   damping     : N·m·s/rad² — rotational damping coefficient; None = rigid (no damper).
+// Compliant-joint fields on the FREE DOF (task 3849 / Phase-1, §8.2):
+//   spring_rate : N·m/rad²   — rotational spring coefficient; none = no spring: a free
+//                              DOF (zero stiffness), NOT rigid.
+//   damping     : N·m·s/rad² — rotational damping coefficient; none = undamped.
 //   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
+// Constrained-DOF compliance (task 7163 ruling above): axial, radial, tilt.
 structure def Revolute : DrivingJoint + HasMotion {
     param axis : Vec3<Dimensionless> // the joint rotation axis in parent body frame
-    param spring_rate : Option<RotationalStiffness> = none // N·m/rad²; None = rigid
-    param damping     : Option<RotationalDamping>   = none // N·m·s/rad²; None = rigid
+    param spring_rate : Option<RotationalStiffness> = none // N·m/rad²; none = free, not rigid
+    param damping     : Option<RotationalDamping>   = none // N·m·s/rad²; none = undamped
     param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
+    param axial_stiffness  : Option<TranslationalStiffness> = none // 1T along axis
+    param radial_stiffness : Option<TranslationalStiffness> = none // 2T ⊥ axis
+    param tilt_stiffness   : Option<RotationalStiffness>    = none // 2R about the axes ⊥ axis
     type MotionValue = Angle // rotational generalized coordinate is an Angle
 }
 
 // Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
 // Both DOF share the same `axis` direction in the parent body frame.
+// Constrained-DOF compliance (task 7163 ruling above): radial, tilt.
 structure def Cylindrical : DrivingJoint {
     param axis : Vec3<Dimensionless> // shared translation+rotation direction in parent body frame
+    param radial_stiffness : Option<TranslationalStiffness> = none // 2T ⊥ axis
+    param tilt_stiffness   : Option<RotationalStiffness>    = none // 2R about the axes ⊥ axis
 }
 
 // Planar — joint constrained to a plane (3 DOF: 2 translational + 1 rotational).
 // `axis_x` and `axis_y` span the plane in the parent body frame; the normal is
 // their cross-product.
+// Constrained-DOF compliance (task 7163 ruling above): normal, tilt.
 structure def Planar : DrivingJoint {
     param axis_x : Vec3<Dimensionless> // first spanning axis of the constraint plane
     param axis_y : Vec3<Dimensionless> // second spanning axis of the constraint plane
+    param normal_stiffness : Option<TranslationalStiffness> = none // 1T along axis_x × axis_y
+    param tilt_stiffness   : Option<RotationalStiffness>    = none // 2R about axis_x and axis_y
 }
 
 // Spherical — ball-and-socket joint (3 rotational DOF).
 // Axis-isotropic — no preferred axis field. The full SO(3) rotation set is
 // parameterised by the solver via quaternion/Euler internally.
-structure def Spherical : DrivingJoint { }
+// Its constrained-DOF compliance (task 7163 ruling above) is isotropic too: one
+// translational group over all three translations.
+structure def Spherical : DrivingJoint {
+    param translational_stiffness : Option<TranslationalStiffness> = none // 3T
+}
 
 // ── Non-conforming joint kinds ────────────────────────────────────────────────
 
@@ -221,10 +285,17 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {
 // variable; used to group sub-assemblies for bookkeeping without affecting
 // the mechanism's DOF count.
 //
+// Rigid by default. Declaring `translational_stiffness` / `rotational_stiffness`
+// (task 7163 ruling above; each isotropic, no axis) makes it a 6-DOF bushing for
+// the MODAL consumer only — kinematics still treats a Fixed joint as rigid.
+//
 // Conforms to Joint (root hierarchy tag) but NOT DrivingJoint.
 // The compile-time guard (task γ / phase_fn_arg_conformance) rejects
 // `bind(fixed(...), v)` with E_MECHANISM_NONDRIVING_JOINT naming "Fixed".
-structure def Fixed : Joint { }
+structure def Fixed : Joint {
+    param translational_stiffness : Option<TranslationalStiffness> = none // 3T
+    param rotational_stiffness    : Option<RotationalStiffness>    = none // 3R
+}
 
 // ── Binding / Jacobian element types ─────────────────────────────────────────
 
