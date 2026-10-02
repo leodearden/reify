@@ -80,16 +80,15 @@ fn check_exits_nonzero_on_compile_phase_relate_metric_unit_error() {
     );
 }
 
-/// The Real operand reaches `concentric` through a generic `fn … -> Relation`
-/// wrapper, so compile-time gradualism (`check_relation_arg_types` skips
-/// `Type::TypeParam` operands) accepts it and the relate solve rejects the
-/// member. The needle is the message, not the code, so a dedicated code (#7494)
-/// does not break the pin.
+/// A `fn … -> Relation` wrapper type-checks as a Relation, so the compiler
+/// accepts it as a relate member, but the relate solve can only consume a
+/// direct geometric-relation call and rejects it. The needle is the message,
+/// not the code, so a dedicated code (#7494) does not break the pin.
 #[test]
-fn check_exits_nonzero_on_engine_phase_relate_operand_type_error_hidden_by_gradualism() {
+fn check_exits_nonzero_on_engine_phase_unconsumable_relate_member() {
     assert_check_rejects(
-        "relate_wrapped_operand_type_engine.ri",
-        "is not a direct call to a geometric relation",
+        "relate_wrapper_member_engine.ri",
+        "relate-block member 2 is not a direct call to a geometric relation",
         Phase::Engine,
     );
 }
