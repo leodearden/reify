@@ -721,7 +721,7 @@ fn a_facade_import_does_not_bind_the_namespaces_it_re_exports() {
     );
 
     for (source, callee, qualifier) in [
-        // The stdlib facade re-exports `units` (stdlib-namespace D-4).
+        // `units` is in the stdlib facade's curated core (stdlib-namespace NS-V1).
         (
             "import std.prelude\nstructure def S { let f = units.Thing() }",
             "units.Thing",
