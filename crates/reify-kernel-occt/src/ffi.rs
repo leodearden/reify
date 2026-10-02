@@ -295,6 +295,54 @@ pub mod ffi {
         kind: u8,
     }
 
+    /// Outcome of `read_step_document`. Expected failures are values of this
+    /// enum, never exception text, so the Rust side never parses a message to
+    /// decide which error it has.
+    #[derive(Debug)]
+    #[repr(u8)]
+    enum StepReadStatus {
+        /// Read, transferred and walked: the tree records are populated.
+        Read,
+        /// OCCT could not parse the file (missing, unreadable, or not STEP).
+        Unreadable,
+        /// The file parsed but declares no product to transfer.
+        NoRoots,
+        /// The file parsed and has roots, but the XDE transfer failed.
+        TransferFailed,
+    }
+
+    /// One product of a read STEP document, in DFS pre-order first-visit order
+    /// over the free roots.
+    struct StepProductRecord {
+        name: String,
+        is_assembly: bool,
+        solid_count: u32,
+        /// This product's components are `components[first_component ..
+        /// first_component + component_count]`.
+        first_component: u32,
+        component_count: u32,
+    }
+
+    /// One occurrence of a product inside an assembly product.
+    struct StepComponentRecord {
+        /// Index into `StepTreeRecords::products`.
+        product_index: u32,
+        instance_name: String,
+        /// Row-major linear part of the placement in the parent's frame, raw.
+        rotation: [f64; 9],
+        /// Metres, in the parent's frame.
+        translation: [f64; 3],
+    }
+
+    /// The flat product-tree records of a read STEP document.
+    struct StepTreeRecords {
+        status: StepReadStatus,
+        products: Vec<StepProductRecord>,
+        components: Vec<StepComponentRecord>,
+        /// Free roots, as indices into `products`.
+        roots: Vec<u32>,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -303,6 +351,10 @@ pub mod ffi {
 
         /// Opaque vector of shapes for passing N shapes across FFI.
         type OcctShapeVec;
+
+        /// Opaque XCAF document read from a STEP file, plus its flattened
+        /// product walk. Owns every product's shapes.
+        type OcctStepDocument;
 
         /// Opaque container holding the BRepAlgoAPI history records
         /// (Modified/Generated/Deleted for faces and edges) plus the
@@ -1581,6 +1633,15 @@ pub mod ffi {
         /// for AP242, falls back to AP214 if the build rejects it (signalled
         /// via `ExportStepResult::ap242_fell_back`).
         fn export_step(shape: &OcctShape, schema: &str) -> Result<ExportStepResult>;
+
+        // --- STEP import (XDE) ---
+        /// Read a STEP file into an XCAF document with lengths in metres.
+        /// Expected failures come back in the document's status; `Err` carries
+        /// only an exception's text.
+        fn read_step_document(path: &str) -> Result<UniquePtr<OcctStepDocument>>;
+        fn step_document_tree(doc: &OcctStepDocument) -> StepTreeRecords;
+        /// The process-global `xstep.cascade.unit` static (test observability).
+        fn xstep_cascade_unit_for_test() -> Result<String>;
 
         // --- BRep serialization ---
         fn serialize_brep(shape: &OcctShape) -> Result<String>;

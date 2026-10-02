@@ -1,9 +1,13 @@
 #pragma once
 #include "rust/cxx.h"
 #include <Precision.hxx>
+#include <TCollection_ExtendedString.hxx>
+#include <TDF_Label.hxx>
+#include <TDocStd_Document.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -88,6 +92,11 @@ struct StepGuardProbeResult;
 /// (underlying type spelled as cxx generates it) because the generated header
 /// includes THIS one before it defines the enum.
 enum class StepGuardFault : ::std::uint8_t;
+/// Outcome of `read_step_document`; defined by the cxx bridge (ffi.rs).
+/// Declared opaquely for the same reason as `StepGuardFault`.
+enum class StepReadStatus : ::std::uint8_t;
+/// Returned by `step_document_tree`; defined by the cxx bridge (ffi.rs).
+struct StepTreeRecords;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 struct VolumeMeasurement;
@@ -1706,6 +1715,57 @@ StepGuardProbeResult step_guard_probe_for_test(
 /// exports. For AP242, falls back to AP214DIS if the linked build rejects
 /// the token, reporting it via `ExportStepResult::ap242_fell_back`.
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema);
+
+// --- STEP import (XDE) ---
+
+/// One product of a read STEP document. Products are stored in DFS pre-order
+/// first-visit order over the free roots, which is the dedupe-index contract.
+struct OcctStepProduct {
+    TDF_Label label;
+    TCollection_ExtendedString name;
+    bool is_assembly = false;
+    std::uint32_t solid_count = 0;
+    /// This product's components are `components[first_component ..
+    /// first_component + component_count]` of the owning document.
+    std::uint32_t first_component = 0;
+    std::uint32_t component_count = 0;
+};
+
+/// One occurrence of a product inside an assembly product. `rotation`
+/// (row-major, raw gp_Trsf linear part) and `translation` (metres) place the
+/// referenced product in its PARENT's frame.
+struct OcctStepComponent {
+    std::uint32_t product_index = 0;
+    TCollection_ExtendedString instance_name;
+    std::array<double, 9> rotation{};
+    std::array<double, 3> translation{};
+};
+
+/// An XCAF document read from a STEP file plus its flattened product walk.
+/// Holding the document keeps every product label's shape alive for body
+/// access. `status` is meaningful on every instance; the walk vectors are
+/// populated only when it is `StepReadStatus::Read`.
+struct OcctStepDocument {
+    Handle(TDocStd_Document) document;
+    StepReadStatus status;
+    std::vector<OcctStepProduct> products;
+    std::vector<OcctStepComponent> components;
+    /// Free roots, as indices into `products`, in `GetFreeShapes` order.
+    std::vector<std::uint32_t> roots;
+};
+
+/// Read a STEP file through OCCT XDE, converting lengths to metres. Expected
+/// failures (unreadable file, no product roots, failed transfer) are reported
+/// in `status`, never thrown. Serialized on the process-global XSTEP state; the
+/// `xstep.cascade.unit` static is restored before returning.
+std::unique_ptr<OcctStepDocument> read_step_document(rust::Str path);
+
+/// The document's status and flat walk records, names converted to UTF-8.
+StepTreeRecords step_document_tree(const OcctStepDocument& doc);
+
+/// Current value of the process-global `xstep.cascade.unit` static, read under
+/// the XSTEP mutex after registering the STEP statics. Test-only observability.
+rust::String xstep_cascade_unit_for_test();
 
 // --- BRep serialization ---
 

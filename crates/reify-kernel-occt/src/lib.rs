@@ -105,6 +105,13 @@ mod boolean_parallelism;
 pub use boolean_parallelism::{
     BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
 };
+#[cfg(has_occt)]
+mod step_document;
+#[cfg(has_occt)]
+pub use step_document::{StepDocument, StepReadError};
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use step_document::xstep_cascade_unit_for_test;
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]

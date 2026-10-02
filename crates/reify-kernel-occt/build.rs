@@ -120,6 +120,8 @@ fn main() {
         "TKShHealing",
         "TKBool",
         "TKOffset",
+        "TKXCAF",
+        "TKLCAF",
     ];
 
     // Pin OCCT linkage to the exact SONAME filename in `lib_dir` instead of
