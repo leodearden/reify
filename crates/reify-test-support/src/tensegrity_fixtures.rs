@@ -776,14 +776,12 @@ mod tests {
         );
 
         for tri in TENT_TRIS {
-            assert_eq!(
-                tri.iter().filter(|&&n| n == free).count(),
-                1,
-                "triangle {tri:?} must be hinged on free node {free} exactly once"
-            );
             let corners: Vec<i64> = tri.into_iter().filter(|&n| n != free).collect();
+            let [c0, c1] = corners[..] else {
+                panic!("triangle {tri:?} must be hinged on free node {free} exactly once");
+            };
             assert!(
-                corners.iter().all(|c| TENT_ANCHORS.contains(c)) && corners[0] != corners[1],
+                TENT_ANCHORS.contains(&c0) && TENT_ANCHORS.contains(&c1) && c0 != c1,
                 "triangle {tri:?} must span two distinct anchors besides the free node"
             );
         }
