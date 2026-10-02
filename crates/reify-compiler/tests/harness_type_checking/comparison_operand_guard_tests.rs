@@ -41,7 +41,10 @@
 //! - `0kg < mass < 5kg` (same-dimension chained) → no error
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{assert_no_error_diagnostics, compile_source, compile_source_with_stdlib};
+use reify_test_support::{
+    assert_error_code_present, assert_no_error_diagnostics, compile_source,
+    compile_source_with_stdlib,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,15 +68,6 @@ fn errors(source: &str) -> Vec<reify_core::Diagnostic> {
         .collect()
 }
 
-/// Assert any error has the given code; return the matched diagnostics.
-fn assert_has_code(errors: &[reify_core::Diagnostic], code: DiagnosticCode, context: &str) {
-    let found = errors.iter().any(|d| d.code == Some(code));
-    assert!(
-        found,
-        "{context}: expected DiagnosticCode::{code:?}; got errors: {errors:?}"
-    );
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // KIND-ERROR TESTS (RED until step-4)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -93,7 +87,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Matrix > 0");
+    assert_error_code_present(&errs, DiagnosticCode::CmpOperandKind, "Matrix > 0");
     // The fixit must name both canonical reductions.
     let has_eigenvalues = errs.iter().any(|d| {
         d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues")
@@ -125,7 +119,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Tensor > 0");
+    assert_error_code_present(&errs, DiagnosticCode::CmpOperandKind, "Tensor > 0");
     let has_eigenvalues = errs.iter().any(|d| {
         d.code == Some(DiagnosticCode::CmpOperandKind) && d.message.contains("eigenvalues")
     });
@@ -157,7 +151,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Vector3 < 0");
+    assert_error_code_present(&errs, DiagnosticCode::CmpOperandKind, "Vector3 < 0");
 }
 
 /// `param pt : Point3<Length>` with `constraint pt == 0` must produce
@@ -174,7 +168,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "Point3 == 0");
+    assert_error_code_present(&errs, DiagnosticCode::CmpOperandKind, "Point3 == 0");
 }
 
 /// A List literal on the left of `==` must produce `DiagnosticCode::CmpOperandKind`.
@@ -190,7 +184,7 @@ structure def S {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(&errs, DiagnosticCode::CmpOperandKind, "[1,2] == 0");
+    assert_error_code_present(&errs, DiagnosticCode::CmpOperandKind, "[1,2] == 0");
 }
 
 /// ORDER op on an Enum-typed param must produce `DiagnosticCode::CmpOperandKind`.
@@ -211,7 +205,7 @@ structure def S {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "Enum < Enum (order op)",
@@ -234,7 +228,7 @@ structure def S {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "String < String (order op)",
@@ -438,7 +432,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::DimensionMismatch,
         "Length < Mass (different dimensions)",
@@ -452,7 +446,7 @@ structure def S {
 #[test]
 fn literal_dimension_mismatch_equality_emits_dimension_mismatch() {
     let errs = errors_stdlib("structure def S { let ok : Bool = 1m == 1s }");
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::DimensionMismatch,
         "1m == 1s (Length == Time literal)",
@@ -551,7 +545,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "single-comparison Matrix (0 < m, single-comparison path)",
@@ -579,7 +573,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "truly-chained `0 < m < 5` — chained path must emit CmpOperandKind for Matrix operand",
@@ -851,7 +845,7 @@ structure def FieldCmpTest {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "raw Field<Real,Real> < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
@@ -881,7 +875,7 @@ structure def StructRefCmpTest {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "StructureRef(StressInvariants) < 1.0 must emit CmpOperandKind (W3 RED until step-6)",
@@ -919,7 +913,7 @@ structure def FieldEqTest {
 }
 "#;
     let errs = errors(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "Field<Real,Real> == Field<Real,Real> must emit CmpOperandKind (W3 equality-op path)",
@@ -948,7 +942,7 @@ structure def StructRefEqTest {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::CmpOperandKind,
         "StructureRef(StressInvariants) == StructureRef(StressInvariants) must emit \
@@ -994,7 +988,7 @@ structure def S {
 }
 "#;
     let errs = errors_stdlib(src);
-    assert_has_code(
+    assert_error_code_present(
         &errs,
         DiagnosticCode::DimensionMismatch,
         "Real > Scalar<Length> must emit DimensionMismatch (W5 RED until step-8)",
