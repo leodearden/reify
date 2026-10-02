@@ -9,6 +9,9 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
+use crate::eval_queue::{
+    EditIdentity, EditOrder, EvalOutcome, EvalQueue, EvalRequest, EvalTicket, PublishedState,
+};
 use crate::types::{
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
     PersistentViewState,
@@ -18,14 +21,6 @@ use crate::watcher::FileWatcher;
 /// Application state shared across all Tauri commands.
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
-    /// Last emitted state for computing minimal diffs.
-    ///
-    /// Shared (via `Arc`) with `DebugServerState::last_state` so a
-    /// debug-driven mutation and a normal Tauri command diff against the
-    /// SAME baseline (INV-GUI-2, task 5035 L6) — without this, the debug
-    /// server (spawned outside Tauri's managed-state world) would advance
-    /// the engine without the normal command path ever finding out.
-    pub last_state: Arc<Mutex<Option<GuiState>>>,
     /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
     pub watcher: Mutex<Option<FileWatcher>>,
     /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).
@@ -74,14 +69,150 @@ pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState,
         .and_then(std::convert::identity)
 }
 
-/// Set a parameter value and return updated state.
+/// [`get_initial_state_impl`] as a queued snapshot.
+pub fn initial_state_evaluation(engine: Arc<Mutex<EngineSession>>) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || get_initial_state_impl(&engine))
+}
+
+/// Publish the state a request produced; its reply reports only success.
+fn publish_only(produced: Result<GuiState, String>) -> EvalOutcome<()> {
+    produced.map_or_else(EvalOutcome::failed, |state| {
+        EvalOutcome::succeeded(Some(state), ())
+    })
+}
+
+/// A REFUSED durable parameter write, and the state the frontend must render
+/// now that the refusal has happened.
+///
+/// The second field is the whole reason this is a struct rather than the
+/// `String` a Tauri command error ultimately becomes.
+/// [`EngineSession::commit_parameter`] does not merely decline on the error
+/// path — it DISCARDS any live [`preview_parameter_impl`] override by
+/// recompiling the canonical source, so a refusal is itself a state mutation.
+/// Returning only a message would leave the frontend rendering the preview's
+/// geometry and values while the engine and the disk both hold the source
+/// value: esc-7281-4's divergence relocated from the engine to the frontend,
+/// and with no later event to correct it. Carrying the restored state in the
+/// error makes the emit the caller's obligation rather than its option — the
+/// compiler will not let [`commit_parameter_edit`] destructure this and forget.
+#[derive(Debug, Clone)]
+pub struct RefusedParameterWrite {
+    /// The refusal, verbatim from [`EngineSession::commit_parameter`] — this is
+    /// what reaches the user as a toast.
+    pub message: String,
+    /// State AFTER the discard: what the engine and the canonical `.ri` now
+    /// agree on. `None` only when no state could be read back at all (a
+    /// panicking or poisoned engine), where there is nothing truthful to emit.
+    ///
+    /// Boxed to keep this struct — and therefore the `Err` variant of every
+    /// `Result<_, RefusedParameterWrite>` below — under the
+    /// `clippy::result_large_err` threshold. A `GuiState` is ~360 bytes
+    /// inline, which every `Ok` return would otherwise pay for on the far
+    /// commoner success path. The indirection is storage only: carrying the
+    /// state remains the caller's compiler-enforced obligation.
+    pub restored: Option<Box<GuiState>>,
+}
+
+/// Set a parameter value DURABLY — write it back into the canonical `.ri` — and
+/// return updated state.
+///
+/// This is the INV-GUI-3 user-path command (task 5099 η): the property panel's
+/// edit box on Enter/blur, and the mechanism slider on release. It is the same
+/// mechanism the reify-debug MCP write tool uses, so what a user does and what
+/// the AI does mean the same thing. See [`EngineSession::commit_parameter`].
+///
+/// Pair it with [`preview_parameter_impl`], which is what the frames of a drag
+/// call.
 pub fn set_parameter_impl(
     engine: &Mutex<EngineSession>,
     cell_id: &str,
     value: &str,
+) -> Result<GuiState, RefusedParameterWrite> {
+    // The rebuild happens INSIDE the same lock the commit ran under, so no
+    // other command can interleave between the discard and the snapshot the
+    // frontend will be told to render.
+    //
+    // It is NOT the discard's own `GuiState` reused, and the difference is not
+    // cosmetic. `commit_parameter`'s discard runs through `update_source`,
+    // whose `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally — including banners that PREDATE this call — and builds
+    // its state in that cleared window. `commit_parameter` restores the two
+    // surfaces afterwards, so that state is already out of date about them by
+    // the time the refusal surfaces here: it carries no `hot-reload-error`
+    // diagnostic, because `build_compile_diagnostics` synthesizes that entry
+    // FROM `last_reload_error`.
+    //
+    // Handing it to the frontend to save this rebuild would therefore clear a
+    // staleness banner the engine still holds — the defect the engine-level
+    // restore closes, moved one layer out and made invisible, since the
+    // frontend has no later event to correct it. Pinned by
+    // `set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner`.
+    match crate::engine_lock::with_engine_lock(engine, |s| {
+        s.commit_parameter(cell_id, value)
+            .map_err(|message| RefusedParameterWrite {
+                message,
+                restored: s.build_gui_state().ok().map(Box::new),
+            })
+    }) {
+        Ok(committed_or_refused) => committed_or_refused,
+        // A poisoned lock or a panic inside the engine: nothing is known to
+        // have been discarded, and there is no trustworthy state to hand back.
+        Err(lock_failure) => Err(RefusedParameterWrite {
+            message: lock_failure,
+            restored: None,
+        }),
+    }
+}
+
+/// [`set_parameter_impl`] as a queued durable edit.
+///
+/// A refusal is itself a state mutation — it discards any live preview — so
+/// both arms publish: otherwise the viewport would stay on geometry neither
+/// the engine nor the disk holds, with no later event to correct it.
+pub fn commit_parameter_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    cell_id: String,
+    value: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::commit(cell_id.as_str(), order), move || {
+        match set_parameter_impl(&engine, &cell_id, &value) {
+            Ok(state) => EvalOutcome::succeeded(Some(state), ()),
+            Err(RefusedParameterWrite { message, restored }) => EvalOutcome {
+                publish: restored.map(|state| *state),
+                reply: Err(message),
+            },
+        }
+    })
+}
+
+/// Show a parameter value TRANSIENTLY and return updated state, without making
+/// it durable.
+///
+/// The per-frame cadence of a slider drag: it keeps the viewport tracking the
+/// pointer at RAF rate, where running `set_parameter_impl`'s full recompile and
+/// disk write per frame would be the task-1861 regression. The value it shows
+/// is an engine-state override and expires — [`set_parameter_impl`] is what
+/// makes it durable, or discards it. See [`EngineSession::preview_parameter`].
+pub fn preview_parameter_impl(
+    engine: &Mutex<EngineSession>,
+    cell_id: &str,
+    value: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.set_parameter(cell_id, value))
+    crate::engine_lock::with_engine_lock(engine, |s| s.preview_parameter(cell_id, value))
         .and_then(std::convert::identity)
+}
+
+/// [`preview_parameter_impl`] as a queued transient edit.
+pub fn preview_parameter_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    cell_id: String,
+    value: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::preview(cell_id.as_str(), order), move || {
+        publish_only(preview_parameter_impl(&engine, &cell_id, &value))
+    })
 }
 
 /// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
@@ -95,7 +226,7 @@ pub fn set_parameter_impl(
 /// OBSERVATIONAL ONLY — this never touches the production `demand` registry and
 /// cannot perturb evaluation. There is no meaningful state to return: the
 /// passive would-prune [`crate::types::DemandPruneMeasurementDto`] is recorded
-/// by the NEXT edit and rides back on that `set_parameter` response's
+/// by the NEXT edit onto the state it builds, as
 /// [`crate::types::GuiState::demand_prune_measurement`], so this command returns
 /// `Ok(())` on success.
 pub fn sync_observed_demand_impl(
@@ -118,9 +249,9 @@ pub fn sync_observed_demand_impl(
 ///
 /// Unlike [`sync_observed_demand_impl`] — the task-4532 PASSIVE measurement
 /// channel — this drives the registry `compute_eval_set` reads, so the next warm
-/// `edit_param` prunes hidden bodies' exclusive cells. The pruning effect rides
-/// back on the next `set_parameter` response, so this command returns `Ok(())`
-/// on success.
+/// `edit_param` prunes hidden bodies' exclusive cells. The pruning effect
+/// reaches the frontend with that edit's published state, so this command
+/// returns `Ok(())` on success.
 pub fn sync_demand_impl(
     engine: &Mutex<EngineSession>,
     visible_realizations: &[String],
@@ -134,41 +265,38 @@ pub fn sync_demand_impl(
 /// cleared `last_reload_error`).
 ///
 /// On failure: returns `Err(message)` (covering both compile-error and check()-panic
-/// paths) **and** records the error as the session's staleness signal via a second
-/// `with_engine_lock` call.  The second lock is panic-safe because the first call's
-/// panic was already caught and converted to `Err` by `with_engine_lock`; the second
-/// call cannot panic on a just-caught-panic session.
+/// paths) **and** records the error as the session's staleness signal — inside the
+/// failing reload's own lock, so no concurrent writer's success can land between the
+/// failure and its recording and be masked by it. Only a panicking reload records in
+/// a second acquisition, after `with_engine_lock` has converted the panic to `Err`.
 ///
-/// **Single-writer assumption:** recording staleness uses two separate lock
-/// acquisitions, so a concurrent writer (e.g. a second Tauri `update_source`
-/// command) that succeeds and clears `last_reload_error` between the two locks
-/// would have its success masked by this function re-setting the error flag.
-/// In practice both callers (the Tauri `update_source` command and the file
-/// watcher via `reload_for_watch_impl`) are single-event-driven and do not
-/// fire concurrently on the same engine instance — the Tauri command queue is
-/// single-threaded per app window and the watcher fires sequential debounced
-/// events — so this interleaving cannot occur in production.  If the calling
-/// model ever changes to allow concurrent writes, recording should be moved
-/// inside the first lock (e.g. by threading an error-recording callback into
-/// `update_source` itself).
+/// Every GUI writer is serialized by the `EvalQueue`'s single drainer; the
+/// REIFY_DEBUG debug server is still a concurrent writer
+/// (tkt_0RV0J0HK8TK4WRS6YJVYEFP93C), which the in-lock recording covers too.
 pub fn update_source_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    let result =
-        crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
-            .and_then(std::convert::identity);
-    if let Err(ref msg) = result {
-        // Record the reload error so is_stale() / build_gui_state() reflect the failure.
-        // Ignore the Result of this second lock: it can only fail if the mutex was
-        // re-poisoned between the two calls, which is not possible here.
-        let msg_clone = msg.clone();
-        let _ = crate::engine_lock::with_engine_lock(engine, |s| {
-            s.record_reload_error(msg_clone);
-        });
+    let reloaded = crate::engine_lock::with_engine_lock(engine, |s| {
+        let reloaded = s.update_source(path, content);
+        if let Err(message) = &reloaded {
+            s.record_reload_error(message.clone());
+        }
+        reloaded
+    });
+    match reloaded {
+        Ok(reloaded) => reloaded,
+        Err(panic) => {
+            // The reload panicked before anything was recorded. A failure to
+            // record is ignored: it could only be a second panic, and the reload
+            // error is reported either way.
+            let _ = crate::engine_lock::with_engine_lock(engine, |s| {
+                s.record_reload_error(panic.clone());
+            });
+            Err(panic)
+        }
     }
-    result
 }
 
 /// Build a debug-API JSON snapshot of the engine state.
@@ -462,13 +590,109 @@ pub fn reload_for_watch_impl(
     }
 }
 
+/// [`reload_for_watch_impl`] as a queued sync of the editor's buffer for
+/// `path`.
+pub fn editor_source_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    path: String,
+    content: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(
+        EditIdentity::editor_source(path.as_str(), order),
+        move || publish_only(reload_for_watch_impl(&engine, &path, &content)),
+    )
+}
+
+/// [`reload_for_watch_impl`], skipped entirely when the session already holds
+/// `content` — `Ok(None)` meaning nothing was recompiled and there is nothing
+/// to emit.
+///
+/// The FS-watcher's entry point, and the reason it is not
+/// `reload_for_watch_impl` itself: the OTHER caller of that function is the
+/// editor's `update_source` command, which owes the frontend a `GuiState`
+/// whatever it finds and so has no use for a skip.
+///
+/// The watcher, by contrast, sees its own tail. Every durable parameter write
+/// (`EngineSession::apply_param_to_source`) rewrites the `.ri`, the watcher
+/// observes that write and hands the same bytes back here, and recompiling
+/// them re-derives exactly the state the write already committed and emitted.
+/// That doubles what a user gesture costs — the one recompile per gesture this
+/// task's preview/commit split exists to budget for, paid twice — so the echo
+/// is dropped here rather than at the watcher, where a caller would have to
+/// remember to ask.
+///
+/// The predicate is [`EngineSession::reload_would_be_a_no_op`], which owns
+/// what "already holds" has to mean (identical text AND no failure banner a
+/// recompile would lift) and documents the one case it does not cover.
+pub fn reload_for_watch_if_changed_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+    content: &str,
+) -> Result<Option<GuiState>, String> {
+    // Asked under the SAME lock the reload runs under, so nothing can change
+    // the session's source between the question and the answer.
+    if crate::engine_lock::with_engine_lock(engine, |s| s.reload_would_be_a_no_op(content))? {
+        return Ok(None);
+    }
+    reload_for_watch_impl(engine, path, content).map(Some)
+}
+
+/// [`reload_for_watch_if_changed_impl`] as a queued watcher reload of `path`.
+///
+/// The file is read when the reload RUNS, so a reload queued behind a long
+/// evaluation compiles the latest disk content rather than what was there when
+/// the watcher fired.
+pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::disk_source(path.clone()), move || {
+        let reloaded = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Error reading {}: {}", path.display(), e))
+            .and_then(|content| {
+                reload_for_watch_if_changed_impl(&engine, &path.to_string_lossy(), &content)
+            });
+        match reloaded {
+            Ok(publish) => EvalOutcome::succeeded(publish, ()),
+            Err(message) => {
+                // The watcher does not await its ticket, so this is the only
+                // place a failed reload becomes observable.
+                tracing::warn!(
+                    path = %path.display(),
+                    %message,
+                    "disk reload failed; the engine keeps its previous source"
+                );
+                EvalOutcome::failed(message)
+            }
+        }
+    })
+}
+
+/// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
+///
+/// Extracted from [`export_impl`] so the Tauri command and the reify-debug
+/// `reify_export` write tool (task 5097 δ) consult ONE map: which spellings
+/// are accepted is a contract an AI client and the GUI must agree on, and two
+/// hand-copied `match`es have nothing structural stopping one from gaining a
+/// format the other lacks.
+///
+/// `mcp_context.rs`'s `TauriToolContext::export` calls this too, so all three
+/// export surfaces read ONE map. Re-homing that context is η's Phase 3, but
+/// the format map is not waiting on it: leaving a third hand-copied `match`
+/// there is exactly the drift this extraction exists to prevent.
+///
+/// The `Err` text is the message every caller surfaces verbatim —
+/// `TauriToolContext::export` wraps it in `ToolError::InvalidParams`
+/// unchanged.
+pub fn parse_export_format(format: &str) -> Result<reify_ir::ExportFormat, String> {
+    match format {
+        "step" | "stp" => Ok(reify_ir::ExportFormat::Step),
+        "stl" => Ok(reify_ir::ExportFormat::Stl),
+        _ => Err(format!("Unknown export format: {}", format)),
+    }
+}
+
 /// Export geometry to a file.
 pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> Result<(), String> {
-    let export_format = match format {
-        "step" | "stp" => reify_ir::ExportFormat::Step,
-        "stl" => reify_ir::ExportFormat::Stl,
-        _ => return Err(format!("Unknown export format: {}", format)),
-    };
+    let export_format = parse_export_format(format)?;
     crate::engine_lock::with_engine_lock(engine, |s| s.export(export_format, Path::new(path)))
         .and_then(std::convert::identity)
 }
@@ -611,8 +835,16 @@ pub fn open_file_engine_impl(
     load_initial_file_impl(engine, Path::new(&canonical))
 }
 
+/// [`open_file_engine_impl`] as a queued snapshot.
+pub fn open_file_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    path: String,
+) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || open_file_engine_impl(&engine, &path))
+}
+
 /// The ONE load-and-resolve body behind both file-open entry points: the
-/// startup **argv** launch (`main()` → here directly) and File-Open
+/// startup **argv** launch ([`begin_initial_file_load`] → here) and File-Open
 /// ([`open_file_engine_impl`], which canonicalises and delegates), alongside
 /// `debug_server::open_source_into_engine_and_refresh_baseline` on the shared
 /// [`load_file_into_engine`] choke-point (#5193).
@@ -624,8 +856,9 @@ pub fn open_file_engine_impl(
 /// returns, and makes the startup state observable to tests (#5338).
 ///
 /// SCOPE OF THAT CLAIM — [`UnresolvedGuiState::resolve`] mutates only the returned
-/// `GuiState`, never engine state, and `main()` uses the return value for its `Err`
-/// arm only. The frontend's startup path (`initApp` → `get_initial_state` →
+/// `GuiState`, never engine state, and the argv launch uses the return value for
+/// its `Err` arm only (it is also published, but deltas never carry `files[]`).
+/// The frontend's startup path (`initApp` → `get_initial_state` →
 /// [`crate::engine::EngineSession::build_gui_state`]) rebuilds `files[]` from the
 /// stem-only `source_map()` keys, so an argv-LAUNCHED GUI still paints stem-only
 /// `files[].path` — the #5193 identity split is closed at THIS boundary (which is
@@ -653,6 +886,14 @@ pub fn load_initial_file_impl(
     let state = crate::engine_lock::with_engine_lock(engine, |s| load_file_into_engine(s, path))
         .and_then(std::convert::identity)?;
     Ok(state.resolve(path))
+}
+
+/// [`load_initial_file_impl`] as a queued snapshot of the argv file.
+pub fn initial_file_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    canonical: PathBuf,
+) -> EvalRequest<PublishedState> {
+    EvalRequest::snapshot(move || load_initial_file_impl(&engine, &canonical))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
@@ -683,6 +924,18 @@ pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
     }
     let canonical = crate::path_key::canonicalize_document_key(path_str);
     Some(PathBuf::from(canonical))
+}
+
+/// Queue the load of the argv file: its canonical path and the ticket the
+/// load's reply arrives on, or `None` when `argv_path` names no `.ri` file.
+pub fn begin_initial_file_load(
+    queue: &Arc<EvalQueue>,
+    engine: Arc<Mutex<EngineSession>>,
+    argv_path: &str,
+) -> Option<(PathBuf, EvalTicket<PublishedState>)> {
+    let canonical = resolve_initial_file_path(argv_path)?;
+    let load = queue.submit(initial_file_evaluation(engine, canonical.clone()));
+    Some((canonical, load))
 }
 
 /// Return the hierarchical entity tree for the currently loaded module.
@@ -904,4 +1157,12 @@ pub fn set_active_fea_case_impl(
 ) -> Result<GuiState, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.set_active_fea_case(name))
         .and_then(std::convert::identity)
+}
+
+/// [`set_active_fea_case_impl`] as a queued evaluation.
+pub fn active_fea_case_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    case: String,
+) -> EvalRequest<()> {
+    EvalRequest::evaluation(move || publish_only(set_active_fea_case_impl(&engine, &case)))
 }

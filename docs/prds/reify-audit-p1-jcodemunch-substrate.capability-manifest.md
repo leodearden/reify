@@ -23,7 +23,7 @@ Verified against on-disk v1.108.27 source `~/.cache/uv/git-v0/checkouts/222e86de
 
 | Leaf | Capability asserted by its signal | Evidence form | Binding |
 |---|---|---|---|
-| **L-SERVE** | A live streamable-HTTP serve answers reify queries | wired-on-main: committed `jcodemunch-serve.service` + `scripts/smoke-jcodemunch-serve.sh` exits 0 against the live endpoint (not a mock) | **PASS** |
+| **L-SERVE** | A live streamable-HTTP serve answers reify queries | wired-on-main: committed `jcodemunch-serve.service` + `scripts/smoke-jcodemunch-serve.sh` exits 0 against the live endpoint (not a mock) | **PASS (evidence artifact since retired)** — the verdict stood when recorded. The `jcodemunch-serve.service` unit it cites was deleted by task **#6920** (commit `fcca8207f9`); `scripts/smoke-jcodemunch-serve.sh` still exists, repurposed for the transient `with-jcodemunch-serve.sh` flow. See `docs/prds/jcodemunch-substrate-restoration.md`. |
 | **L-TRAIT** | `get_changed_symbols` is **commit-range**, not `(branch, since_epoch)` | anti-inversion: the redesigned trait + `tests/p1.rs` assert the `(since_sha, until_sha)` signature; a grep confirms **no** surviving reference to the old `since_epoch` arg. Premise-fix per G6 §4. | **PASS** |
 | **L-TRAIT** | P1 maps done→range via `done_provenance.commit` | field-population: `DoneProvenance.commit` exists (`lib.rs:174`) and is read on the production path; reuses task 4074's P2 mapping mechanism | **PASS** |
 | **L-CLIENT** | `RealJCodemunchOps` decodes the **real** wire shapes | field-population + anti-synthetic: decode test runs against fixtures **captured from the live serve** (L-SERVE), not hand-written synthetic JSON | **PASS** |

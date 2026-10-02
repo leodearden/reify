@@ -15,6 +15,12 @@
 //!     joint bodies against regression. GREEN from the moment the β self-check
 //!     machinery is wired (pre-landed).
 //!
+//! (b′) Non-vacuity companions (task 6384) — (a) and (b) both assert a
+//!     diagnostic is ABSENT, an oracle a SKIPPED verdict satisfies as readily as
+//!     a clean one. These use a positive/mutation oracle instead, over an inline
+//!     body and over the shipped joints.ri text respectively, so the silence
+//!     above is known to be a computed verdict. See the (b′) header below.
+//!
 //! DOF derivation — nominal rigid-body freedom = (3 rot, 3 trans):
 //!   revolute:    concentric(Axis,Axis)(2,2) + on(Point,Plane)(0,1) → Σ=(2,3) → residual(1,0) ✓
 //!   prismatic:   concentric(Axis,Axis)(2,2) + perpendicular(Axis,Axis)(1,0) → Σ=(3,2) → residual(0,1) ✓
@@ -171,6 +177,17 @@ fn planar_joint_definition_is_self_check_clean() {
 
 /// spherical: coincident(c,d) where c,d:Point3<Length> → (0rot,3trans)
 /// → Σ=(0,3) → residual(3rot,0trans) = orientation:Orientation ✓
+///
+/// NON-VACUITY: a *clean* verdict here is indistinguishable, from diagnostics
+/// alone, from a *skipped* verdict — if `Orientation` failed to resolve, the
+/// DOF type would become `Type::Error`, which suppresses the §7.1 count/kind
+/// verdict entirely (anti-cascade, `compile_builder/entities_phase.rs`) and
+/// emits nothing at all. This test would then pass for the wrong reason. Its
+/// companion — the `coincident_body` row of
+/// `orientation_dof_is_classified_not_skipped` (section (b′) below) — closes
+/// that hole: it over-declares this same body and asserts the mismatch
+/// actually fires naming "declared 4 rotational free DOF", a phrase only
+/// reachable once `dof_kind_of` has classified `Type::Orientation(3)`.
 #[test]
 fn spherical_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -189,6 +206,15 @@ fn spherical_joint_definition_is_self_check_clean() {
 /// → Σ=(0,3) → residual(3rot,0trans) = orientation:Orientation ✓
 /// (design §7 canonical name; kinematic synonym of spherical — both defined to
 /// preserve both vocabularies)
+///
+/// NON-VACUITY: same masking hazard as
+/// `spherical_joint_definition_is_self_check_clean` above — a clean verdict and
+/// a skipped verdict are both silent. The SAME companion closes it: the
+/// `coincident_body` row of `orientation_dof_is_classified_not_skipped`
+/// (section (b′) below) over-declares this exact body, and one row suffices
+/// for both joints because the joint NAME is not an input to DOF
+/// classification — this definition and `spherical`'s are byte-identical apart
+/// from it.
 #[test]
 fn ball_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -200,6 +226,213 @@ fn ball_joint_definition_is_self_check_clean() {
         errs.is_empty(),
         "ball: residual(3rot,0trans) must match declared `orientation: Orientation` = (3,0) \
          → zero E_JOINT_DOF_MISMATCH, got: {errs:#?}",
+    );
+}
+
+// ── (b′) Orientation-DOF non-vacuity companions (task 6384) ─────────────────
+//
+// The (b) `spherical` / `ball` tests above assert the ABSENCE of a diagnostic.
+// That oracle is satisfiable two ways: the verdict was computed and matched, or
+// the verdict was never computed at all. The second way is a live failure mode —
+// an unresolvable DOF type name degrades to `Type::Error` and the §7.1 verdict
+// gate then sets `skip_verdict` and emits NOTHING (anti-cascade), so a joint
+// written `with orientation: Orientation` produced BYTE-IDENTICAL silence to one
+// written `with orientation: Blorp`. The full chain, and why the resolver arm
+// closing it is the fix, is stated once in the "Orientation type-name
+// resolution" header of `type_resolution.rs`'s `mod tests`.
+//
+// ORACLE CHOICE — the consequence for THIS file. "Zero diagnostics of any code"
+// is not a usable non-vacuity oracle here: it is satisfied *by* the defect.
+// These companions use a positive/mutation oracle instead — declare an
+// orientation-bearing DOF the body cannot satisfy and require the mismatch to
+// fire naming `declared N rotational free DOF` with N ≥ 3. That phrase is
+// produced only by `describe_declared` inside `check_joint_dof`, which the skip
+// path never reaches, and N ≥ 3 requires `dof_kind_of` to have classified
+// `Type::Orientation(3)` as (3 rot, 0 trans). It is therefore unsatisfiable
+// unless the surface name `Orientation` really resolves and really flows into
+// the classifier.
+
+/// Assert that `source` draws EXACTLY ONE `E_JOINT_DOF_MISMATCH` whose message
+/// names both `declared_phrase` (from `describe_declared`) and
+/// `residual_phrase` (the body's computed residual).
+///
+/// Both halves matter and neither is redundant:
+///   * exactly-one — zero would mean the DOF type never resolved and the
+///     verdict was SKIPPED (the `Type::Error` → `skip_verdict` path), which is
+///     byte-identically silent to a clean verdict;
+///   * `declared_phrase` — produced only by `describe_declared` inside
+///     `check_joint_dof`, code the skip path never reaches, and its rotational
+///     count is unreachable at N ≥ 3 unless `dof_kind_of` really classified
+///     `Type::Orientation(3)` as (3 rot, 0 trans);
+///   * `residual_phrase` — pins the value the (b) clean tests above claim
+///     `orientation: Orientation` matches.
+///
+/// `label` names the row so a failure in the table below is attributable
+/// without re-running each case by hand. The exact diagnostic prose lives HERE
+/// and in the table rows only, so a rewording of `describe_declared` /
+/// `check_joint_dof` is a one-place fix rather than one per case.
+fn assert_single_dof_mismatch(
+    label: &str,
+    source: &str,
+    declared_phrase: &str,
+    residual_phrase: &str,
+) {
+    let module = compile_source_with_stdlib(source);
+    let errs = joint_dof_errors(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "{label}: exactly one E_JOINT_DOF_MISMATCH must fire. Zero here means the \
+         declared DOF type never resolved and the §7.1 verdict was SKIPPED, not \
+         clean — which would make the matching (b) test above vacuous.\n\
+         source: {source}\n\
+         All diagnostics: {:#?}",
+        module.diagnostics
+    );
+    let msg = &errs[0].message;
+    assert!(
+        msg.contains(declared_phrase),
+        "{label}: the mismatch must report the declared side as {declared_phrase:?} \
+         (i.e. `dof_kind_of` actually classified the Orientation DOF as \
+         (3 rot, 0 trans)), got: {msg}",
+    );
+    assert!(
+        msg.contains(residual_phrase),
+        "{label}: the mismatch must report the body residual as {residual_phrase:?}, \
+         got: {msg}",
+    );
+}
+
+/// The `Orientation` DOF type must be CLASSIFIED, never silently skipped —
+/// proven over two rows, one per body shape:
+///
+///  1. `orient_probe` — a bare `with orientation: Orientation` over
+///     `concentric(a, b)`, whose residual (3,3) − (2,2) = (1 rot, 1 trans)
+///     cannot match (3, 0). The narrowest possible probe of the arm: it pins
+///     the classifier independently of any joint definition.
+///  2. `coincident_body` — the mutation companion for BOTH (b) clean tests
+///     above: the same `coincident(c, d)` body they use, but over-declaring
+///     `{ orientation: Orientation, extra: Angle }` = (3,0) + (1,0)
+///     = (4 rot, 0 trans) against the residual (3 rot, 0 trans). It is
+///     declared under the unused name `spherical_probe`, deliberately NOT
+///     `spherical`: the prelude already defines that joint, and whether a user
+///     may redefine a prelude joint name is a variable this row does not mean
+///     to test — if that ever starts being diagnosed (or silently skipped),
+///     this row must fail for an Orientation reason or not at all. Only the
+///     BODY has to stay byte-identical to `stdlib/joints.ri`'s
+///     `spherical`/`ball`, and it does.
+///
+/// Row 2 is what makes both `spherical_joint_definition_is_self_check_clean`
+/// and `ball_joint_definition_is_self_check_clean` non-vacuous, and one row
+/// covers both: `spherical` and `ball` are kinematic synonyms with
+/// byte-identical bodies, and the joint NAME is not an input to DOF
+/// classification — it reaches only `describe_declared`'s message prefix. A
+/// second row differing only in that name would add cost, not coverage.
+///
+/// Scope note: like the (b) tests, these rows compile INLINE joint definitions
+/// rather than reading `stdlib/joints.ri`, so they pin the classifier and the
+/// verdict machinery, NOT the stdlib bodies. The shipped file's own bytes are
+/// covered by `stdlib_spherical_over_declared_dof_is_diagnosed` below, which is
+/// also what makes section (a)'s diagnostic-absence oracle mean anything.
+#[test]
+fn orientation_dof_is_classified_not_skipped() {
+    for (label, source, declared_phrase, residual_phrase) in [
+        (
+            "orient_probe: declared Orientation (3rot,0trans) vs concentric residual (1rot,1trans)",
+            "joint orient_probe(a: Axis, b: Axis) \
+             with orientation: Orientation = concentric(a, b)",
+            "declared 3 rotational free DOF",
+            "1 rot + 1 trans",
+        ),
+        (
+            "coincident_body (the shared spherical/ball shape): over-declared \
+             {orientation: Orientation, extra: Angle} (4rot,0trans) \
+             vs coincident residual (3rot,0trans)",
+            "joint spherical_probe(c: Point3<Length>, d: Point3<Length>) \
+             with { orientation: Orientation, extra: Angle } = coincident(c, d)",
+            "declared 4 rotational free DOF",
+            "3 rot + 0 trans",
+        ),
+    ] {
+        assert_single_dof_mismatch(label, source, declared_phrase, residual_phrase);
+    }
+}
+
+/// The SHIPPED `stdlib/joints.ri` text must itself reach the verdict — proven
+/// by mutating that text and requiring the mismatch to fire.
+///
+/// `standard_joint_library_compiles_clean` (section (a)) is the only test in
+/// this file that reads the shipped file, and its oracle is diagnostic-ABSENCE
+/// — the one oracle a SKIPPED verdict satisfies exactly as well as a clean one
+/// (ORACLE CHOICE above). The rows in `orientation_dof_is_classified_not_skipped`
+/// fix that for the classifier, but they compile INLINE text. So without this
+/// test, editing joints.ri's `with orientation: Orientation` to any
+/// unresolvable name — or reverting the resolver arm — would leave every test
+/// here green: (a) because the verdict silently skips, (b)/(b′) because they
+/// never read the file.
+///
+/// The mutation over-declares `spherical`'s DOF record in place:
+/// `orientation: Orientation` → `{ orientation: Orientation, extra: Angle }` =
+/// (4 rot, 0 trans), against the untouched `coincident(c, d)` residual
+/// (3 rot, 0 trans). Everything else in the file — including `ball`, which
+/// keeps the other of the two `with orientation: Orientation` occurrences and
+/// stays clean — is byte-for-byte the shipped text, which is why exactly one
+/// mismatch is expected. Section (a)'s silence is thereby attributable to a
+/// COMPUTED verdict over the real bytes rather than to a skip.
+///
+/// The mutation site is located STRUCTURALLY — the `joint spherical(`
+/// declaration, then that declaration's own window up to the next `joint` — so
+/// renaming the parameters, wrapping the signature or changing the indent does
+/// not break this test. What it still couples to is exactly the property under
+/// test: that `spherical`'s DOF record is spelled `with orientation:
+/// Orientation`. Both window asserts are load-bearing rather than defensive
+/// noise: a silently-zero-substitution mutation would compile the UNMODIFIED
+/// file and leave this test vacuous in precisely the way it exists to prevent.
+#[test]
+fn stdlib_spherical_over_declared_dof_is_diagnosed() {
+    const SPHERICAL_DECL: &str = "joint spherical(";
+    const DECLARED_DOF: &str = "with orientation: Orientation";
+    const OVER_DECLARED_DOF: &str = "with { orientation: Orientation, extra: Angle }";
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/joints.ri");
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{path}`: {e}"));
+
+    let decl_start = source.find(SPHERICAL_DECL).unwrap_or_else(|| {
+        panic!("stdlib/joints.ri no longer declares `{SPHERICAL_DECL}…`; this test \
+                mutates that declaration and cannot proceed without it")
+    });
+    // The declaration's own window: everything up to the next joint declaration,
+    // so `ball`'s identical DOF record cannot be the one selected.
+    let window_end = source[decl_start + SPHERICAL_DECL.len()..]
+        .find("\njoint ")
+        .map_or(source.len(), |offset| {
+            decl_start + SPHERICAL_DECL.len() + offset
+        });
+    let window = &source[decl_start..window_end];
+
+    assert_eq!(
+        window.matches(DECLARED_DOF).count(),
+        1,
+        "`{DECLARED_DOF}` must occur EXACTLY once inside the `spherical` \
+         declaration, or the mutation below is not the mutation this test claims \
+         to make. Zero occurrences means `spherical`'s DOF record is no longer \
+         spelled that way and this test silently stopped mutating anything.\n\
+         window:\n{window}"
+    );
+    let dof_start = decl_start + window.find(DECLARED_DOF).expect("asserted above");
+    let mutated = format!(
+        "{}{OVER_DECLARED_DOF}{}",
+        &source[..dof_start],
+        &source[dof_start + DECLARED_DOF.len()..]
+    );
+
+    assert_single_dof_mismatch(
+        "stdlib/joints.ri with `spherical` over-declared to (4rot,0trans) \
+         vs its own unmodified coincident residual (3rot,0trans)",
+        &mutated,
+        "declared 4 rotational free DOF",
+        "3 rot + 0 trans",
     );
 }
 

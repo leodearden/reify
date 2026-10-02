@@ -177,7 +177,135 @@ pub(crate) fn compile_boolean_op(
             Some(all_ops)
         }
         "union_all" | "intersection_all" => {
-            if !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics) {
+            // Task #5385: a SINGLE `List<Geometry>` argument expands to its
+            // element expressions here, BEFORE the arity gate, and then runs
+            // the existing left-fold verbatim — no new fold logic, no IR
+            // change. Each element compiles inline exactly as it does today
+            // for `union(a, b)` over geometry lets.
+            //
+            // That inline re-compilation means an element's geometry is built
+            // twice: once for its own `<list>#k` realization and once inside
+            // the fold. Reviewed (esc-5385-3) and kept deliberately, because
+            // it is NOT a deviation this task introduced — `compile_geometry_call`'s
+            // `Ident` arm (geometry.rs) recursively compiles a geometry let's
+            // INITIALIZER, so `union(a, b)` over two geometry lets already
+            // duplicates both operands the same way. The zero-op `GeomRef::Sub`
+            // fast path in `resolve_boolean_arg` matches only the cross-sub
+            // `self.<sub>.<member>` shape, never a sibling let. Referencing the
+            // already-emitted `<list>#k` realizations instead is a worthwhile
+            // change to the whole boolean-arg path — and only worthwhile there,
+            // since scoping it to geometry lists alone would leave the identical
+            // duplication in place for every other operand shape.
+            let expanded: std::rc::Rc<Vec<reify_ast::Expr>>;
+            let mut args = args;
+            let mut expanded_from_list = false;
+            if args.len() == 1 {
+                match resolve_geometry_list_arg(&args[0], scope, functions) {
+                    GeometryListArg::Elements(elements) => {
+                        if elements.is_empty() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{name}() over an empty geometry list has nothing \
+                                     to fold; it needs at least one element"
+                                ))
+                                .with_code(DiagnosticCode::GeometryListFoldEmpty)
+                                .with_label(DiagnosticLabel::new(
+                                    args[0].span,
+                                    "this geometry list is empty",
+                                )),
+                            );
+                            return None;
+                        }
+                        expanded = elements;
+                        args = &expanded;
+                        expanded_from_list = true;
+                    }
+                    GeometryListArg::NotGeometry => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "{name}()'s single argument must be a geometry list \
+                                 (a list literal of geometry, or generate(<literal>, \
+                                 |i| <geometry>))"
+                            ))
+                            .with_code(DiagnosticCode::GeometryListFoldArgNotGeometry)
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "this collection's elements are not geometry",
+                            )),
+                        );
+                        return None;
+                    }
+                    // An INLINE list over the element cap (review esc-5385-6).
+                    // It has no declaring let to own the cap Error, so report it
+                    // here — and as a cap problem: its elements ARE geometry, so
+                    // the `NotGeometry` label above would send the user looking
+                    // for a type error that does not exist.
+                    GeometryListArg::OverCap { subject, count } => {
+                        push_element_cap_error(subject, count, args[0].span, diagnostics);
+                        return None;
+                    }
+                    // The declaring let already reported its own Error; a
+                    // second one here would point at the fold rather than at
+                    // the real defect (review esc-5385-3).
+                    GeometryListArg::AlreadyDiagnosed => return None,
+                    // Not a collection at all (e.g. `union_all(box(…))`) — fall
+                    // through to the unchanged arity diagnostic below.
+                    GeometryListArg::NotAList => {}
+                }
+            }
+            // A geometry list MIXED INTO a multi-argument fold (review
+            // esc-5385-7): `union_all(holes, box(1mm,1mm,1mm))` clears the >= 2
+            // arity gate, then `resolve_boolean_arg` reaches
+            // `compile_geometry_call`'s `Ident` arm, which returns `None` with NO
+            // diagnostic for a name absent from `geometry_lets`. The enclosing
+            // let then emits no realization and no error whatsoever. The
+            // behaviour predates this task, but this task is what makes `holes` a
+            // plausible thing to write there, so say so rather than lower nothing
+            // silently.
+            //
+            // Diagnose rather than flatten: splicing a list into a
+            // partially-written fold guesses at an ordering the user did not
+            // write, and the fold is not commutative for `difference`-shaped
+            // future operators. `NotGeometry` / `NotAList` are deliberately NOT
+            // caught — a non-geometry collection here keeps its existing
+            // behaviour, so this arm can only fire on an argument the
+            // single-argument form would have accepted.
+            //
+            // Cost is bounded: `resolve_geometry_list_arg` returns `NotAList`
+            // immediately for anything that is not an `Ident`, a `ListLiteral` or
+            // a `generate(…)` call, so an ordinary `union_all(a, b, c)` pays one
+            // cheap scope lookup per argument and expands nothing.
+            if !expanded_from_list && args.len() > 1 {
+                for arg in args {
+                    match resolve_geometry_list_arg(arg, scope, functions) {
+                        GeometryListArg::Elements(_) | GeometryListArg::OverCap { .. } => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{name}() takes a geometry list only as its SOLE \
+                                     argument; fold this list on its own, or write out \
+                                     its elements alongside the other arguments"
+                                ))
+                                .with_code(DiagnosticCode::GeometryListFoldMixedArgs)
+                                .with_label(DiagnosticLabel::new(
+                                    arg.span,
+                                    "this geometry list is mixed with other arguments",
+                                )),
+                            );
+                            return None;
+                        }
+                        // The declaring let already reported its own Error.
+                        GeometryListArg::AlreadyDiagnosed => return None,
+                        GeometryListArg::NotGeometry | GeometryListArg::NotAList => {}
+                    }
+                }
+            }
+            // A list that expanded to exactly ONE element folds to that element
+            // with zero Boolean ops, which is well-defined — so the >= 2 gate
+            // applies only to a literally-written argument list. The empty case
+            // was already rejected above with its own specific message.
+            if !expanded_from_list
+                && !check_arg_count_at_least(name, args.len(), 2, expr_span, diagnostics)
+            {
                 return None;
             }
             let bool_op = match name {

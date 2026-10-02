@@ -256,6 +256,13 @@ structure Parent {
 /// A structure using `aux let`, a plain `sub … at <pose>`, and an `aux sub … at <pose>`
 /// together must compile with ZERO Error-severity diagnostics — this pins the
 /// "diagnostics accept at/aux cleanly" acceptance criterion.
+///
+/// The `_allow_parse_errors` helper is deliberate: the plain one panics inside
+/// `parse_with_stdlib_or_panic`, so a parse failure aborts with a raw
+/// `parse errors: [...]` dump instead of reaching the assertion below.
+/// reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is the
+/// attributable signal for a stale parser.c (`#6992`); this test only needs to
+/// stay legible when that is red.
 #[test]
 fn valid_at_and_aux_compile_clean() {
     let source = r#"structure Child {
@@ -267,7 +274,7 @@ structure Parent {
     sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
     aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
 }"#;
-    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -276,7 +283,9 @@ structure Parent {
         .collect();
     assert!(
         errors.is_empty(),
-        "valid at/aux usage must produce zero Error diagnostics; got: {:?}",
+        "valid at/aux usage must produce zero Error diagnostics; got: {:?}\n\
+         (if reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is \
+         also red, a stale tree-sitter parser.c is the cause, not this crate)",
         errors
     );
 }
@@ -354,6 +363,7 @@ fn match_arm_sub_pose_is_lowered() {
             index_binder: None,
             index_domain: None,
             relate_relations: vec![],
+            derivation: None,
             span: zero_span(),
             content_hash: ContentHash(0),
         })
@@ -468,12 +478,10 @@ fn indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instanc
 structure Rig {
     sub legs[k in 0..3] = Leg()
 }"#;
-    // `compile_source_with_stdlib` cannot be used here: it routes through
-    // `parse_with_stdlib_or_panic`, which PANICS on any parse error, so it
-    // would abort rather than fail informatively now that α rejects at parse
-    // time. The `_allow_parse_errors` variant forwards the parse diagnostics
-    // and still compiles the (here complete) AST, so the rejection and the
-    // elaboration shape can both be asserted in one test.
+    // The plain `compile_source_with_stdlib` panics on any parse error, and α
+    // rejects at parse time. The `_allow_parse_errors` helper IS the production
+    // single-module path and reports each parse error once, so the count below
+    // is what a real caller sees.
     let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
     // Filter on the `#5482` cite, not on `Severity::Error` alone — an unrelated
@@ -481,12 +489,8 @@ structure Rig {
     // blames β. Filtering on the cite rather than the full wording also keeps
     // the wording contract in ONE crate (reify-syntax), where it is pinned.
     //
-    // Severity is still required, because the same parse error appears TWICE by
-    // design: `compile_source_with_stdlib_allow_parse_errors` prepends it as
-    // `Diagnostic::error` (reify-test-support helpers.rs), while
-    // `compile_builder::pre_pass::forward_parse_errors` independently pushes it
-    // as `Diagnostic::warning("parse error: …")`. That duplication is the
-    // helper's contract, not a bug to "fix".
+    // Severity is still required to keep an unrelated future WARNING on this
+    // snippet from counting as a rejection.
     let rejections: Vec<String> = compiled
         .diagnostics
         .iter()

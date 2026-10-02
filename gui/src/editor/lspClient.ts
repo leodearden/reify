@@ -74,9 +74,34 @@ export interface TextEdit {
   newText: string;
 }
 
-/** An LSP WorkspaceEdit. Reify's rename only ever populates `changes`. */
+/**
+ * Edits to ONE document, stamped with the version they were computed against.
+ *
+ * `version` is `null` when the document is not open on the server — the LSP
+ * signal that the content on disk is master, so there is no version to compare.
+ * It is optional because a third-party server may spell that same "no version"
+ * by omitting the key; reify's own server always sends an explicit `null`.
+ */
+export interface TextDocumentEdit {
+  textDocument: { uri: string; version?: number | null };
+  edits: TextEdit[];
+}
+
+/**
+ * An LSP WorkspaceEdit in either of its two representations.
+ *
+ * Reify's rename emits exactly ONE of them, chosen by the capability this
+ * client declares at `initialize`: the versioned `documentChanges` when
+ * `workspace.workspaceEdit.documentChanges` is declared, the unversioned
+ * `changes` map otherwise. Both fields are optional because a third-party
+ * server may answer either way; per the LSP spec `documentChanges` wins when
+ * both are present. rename.ts flattens both shapes through one normalizer
+ * rather than reading these fields directly, so that precedence rule lives in
+ * a single place.
+ */
 export interface WorkspaceEdit {
   changes?: { [uri: string]: TextEdit[] };
+  documentChanges?: TextDocumentEdit[];
 }
 
 /** Result of a successful prepareRename: the token range + its current name. */
@@ -179,11 +204,14 @@ async function lspRequest(method: string, params: unknown): Promise<string> {
 export function createLspClient(): LspClient {
   return {
     async initialize(rootUri?: string): Promise<InitializeResult> {
+      // Declaring documentChanges is what makes the server answer rename with
+      // the VERSIONED representation; without it every edit arrives unversioned
+      // and the client's skew guard has nothing to compare against.
+      const capabilities = { workspace: { workspaceEdit: { documentChanges: true } } };
       // κ (task 4210): forward rootUri so the backend sets workspace_root, which
       // activates cross-file references/rename. Omit the key entirely when no root
-      // is given so the params stay { capabilities: {} } (single-file fallback).
-      const params =
-        rootUri === undefined ? { capabilities: {} } : { rootUri, capabilities: {} };
+      // is given (single-file fallback).
+      const params = rootUri === undefined ? { capabilities } : { rootUri, capabilities };
       const response = await lspRequest('initialize', params);
       return JSON.parse(response) as InitializeResult;
     },

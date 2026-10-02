@@ -19,6 +19,26 @@
 //! Gated on `OCCT_AVAILABLE`: the test bails out early in builds without OCCT,
 //! mirroring the pattern used by the other `crates/reify-kernel-occt/tests/*`
 //! integration files.
+//!
+//! ## Result indices are in the POST-UNIFICATION domain (task 7054)
+//!
+//! `extract_boolean_history` normalizes its result before building the
+//! `face_map()` / `edge_map()` the records index into: the bare `TopoDS_COMPOUND`
+//! BRepAlgoAPI returns is unwrapped to the tightest topology-preserving type and
+//! its same-domain faces/edges are merged. Every `result_subshape_index` here is
+//! therefore an index into that NORMALIZED shape, and the counts it is bounded
+//! against are correspondingly smaller than the raw BOP output's.
+//!
+//! No assertion in this file changed. That is not luck — the bounds are all
+//! computed from the live `extract_faces` / `extract_edges` of the result rather
+//! than hard-coded, so they follow the normalization automatically. The
+//! `silent_drop_count == 0` guarantee is upheld by composing the boolean history
+//! with `ShapeUpgrade_UnifySameDomain::History()` inside
+//! `extract_boolean_history`: unification RE-IDENTIFIES faces, so a merged
+//! survivor is a new TShape `BRepAlgoAPI::Modified()` never reported, and
+//! without that composition every merged face would miss its `FindIndex` lookup
+//! and be counted as a drop. See
+//! `boolean_result_normalization_integration.rs` for the tests that pin it.
 
 #![cfg(has_occt)]
 

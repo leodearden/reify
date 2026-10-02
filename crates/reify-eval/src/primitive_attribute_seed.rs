@@ -9,7 +9,8 @@
 //!   This module covers the *seeding* phase — originating attributes for the
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
-//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158 (Wedge):
+//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158
+//! (Wedge), task #6550 (Tube):
 //! - `GeometryOp::Box` / `GeometryOp::Sphere` / `GeometryOp::Wedge` — every
 //!   face seeded `Role::Side`; every edge seeded `Role::NewEdge`. `local_index`
 //!   is the construction-order (TopExp) position within `(feature_id, role)`.
@@ -20,6 +21,47 @@
 //!   z-component; every edge seeded `Role::NewEdge`. A pointed cone
 //!   (top_radius == 0) emits only 2 faces (no top cap), so `Cap(Top)` count
 //!   is 0 in that case.
+//! - `GeometryOp::Tube` (task #6550) — four analytic faces. The two annuli
+//!   are classified `Cap(Top)` / `Cap(Bottom)` by the same
+//!   `GeometryQuery::FaceNormal` z-component test the Cylinder/Cone arm uses
+//!   (no new threshold). The outer wall and the bore are BOTH `Role::Side`,
+//!   disambiguated by DESCENDING `GeometryQuery::BoundingBox` radial extent —
+//!   outer wall `local_index` 0, bore 1. Every edge is `Role::NewEdge`; no
+//!   vertex seeding. See `classify_revolved_face_roles` below for why `FaceNormal`
+//!   structurally cannot separate the two walls and why the wall ordering is
+//!   a relative comparison rather than an absolute threshold.
+//!
+//!   The bore did NOT get its own `Role` variant. A new variant is a
+//!   cross-crate change (the `reify-ir` enum plus its wildcard-free frozen
+//!   `content_hash_bytes` discriminant table, `role_is_face` / `role_sort_key`
+//!   here, and `reify-shell-extract`'s frozen `ROLE_TAG_*` wire tags), and it
+//!   buys no resolution power today: `resolve_unique_by_attribute` matches on
+//!   BOTH `role` and `local_index`, so `Side/0` and `Side/1` are already
+//!   unambiguously addressable. `record_solid_attribute`'s doc records the
+//!   same trade-off being resolved the same way. Consequence worth knowing:
+//!   `cap_kind_translation("side")` yields `(Role::Side, 0)`, so `@face("side")`
+//!   on a tube resolves to the OUTER WALL — the intuitive default. There is no
+//!   `"bore"` surface label yet; `@face("bore")` would need a
+//!   `cap_kind_translation` entry mapping to `(Role::Side, 1)`.
+//!
+//!   ACCEPTED DIAGNOSTIC FALSE POSITIVE — a tube trips the post-realization
+//!   tie scan. Both `Role::Side` faces are full 360° revolutions about the z
+//!   axis, so `BRepGProp::SurfaceProperties` puts their area centroids at the
+//!   SAME point; the two circles of each annulus likewise share a centroid
+//!   while carrying distinct `NewEdge` indices.
+//!   [`crate::topology_attribute_propagation::detect_local_index_reassignment_diagnostics`]
+//!   groups by `(feature_id, role)` and reports any distinct-`local_index`
+//!   pair within 1 nm, so a module that both binds a selector (opening the
+//!   task #5196 L2 gate) and contains a tube collects one Info
+//!   `TopologyAttributeLocalIndexReassigned` line per tied group, saying
+//!   "selector resolution may shuffle after edits". For a tube that reading is
+//!   WRONG: the wall ordering is derived from bbox radial extent, not from
+//!   centroid position or TopExp enumeration order, so it is exactly as stable
+//!   as the message claims it is not. Teaching the tie scan to fall back to a
+//!   non-centroid discriminator is the real fix and lives in that sibling
+//!   module, outside this task; until then the behaviour is PINNED by
+//!   `topology_attribute_primitives_e2e::engine_build_tube_trips_the_centroid_tie_scan_false_positive`
+//!   so it is a documented fact rather than a surprise.
 //! - All other variants are intentional no-ops; the dispatch is widened in
 //!   subsequent tasks.
 //!
@@ -37,9 +79,12 @@
 //! later refinement tasks if/when selector vocabulary requires it.
 //!
 //! Variants intentionally deferred:
-//! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
-//!   per-result attribute attachment lands with task 8 (booleans) or a Tube-
-//!   specific follow-up.
+//! - `GeometryOp::Tube` was wired by task #6550 — it is composed via
+//!   `boolean_cut` at the kernel layer, but it is a `GeometryOp`-level
+//!   PRIMITIVE with zero parents (`parent_handles_for_op` returns empty), so
+//!   it needed ORIGINATING seeding here rather than the boolean history
+//!   propagation this bullet once deferred it to. Its arm lives below; the
+//!   semantics are in "Scope of this task" above.
 //! - `GeometryOp::Torus` was wired end-to-end by task 4157 — its seeding arm
 //!   now lives below, sharing the Sphere semantics: all faces `Role::Side`,
 //!   all edges `Role::NewEdge`. (`Cone`/`Wedge` likewise have generic arms.)
@@ -99,13 +144,25 @@ use reify_ir::{
 /// `topology_selectors` filters.
 const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 
+/// Placeholder radial extent for faces whose extent is never consulted.
+///
+/// [`classify_revolved_face_roles`] reads the extent only to rank a primitive's
+/// LATERAL (`Role::Side`) faces against each other. A cylinder or cone has
+/// exactly one, so there is nothing to rank and no reason to spend a
+/// `GeometryQuery::BoundingBox` round trip per face; a tube's two annuli are
+/// likewise ranked by their own `Cap` counters, never by extent. Handing those
+/// faces one shared constant makes the sort a no-op (equal keys under a stable
+/// sort keep construction order) and keeps the "unused" intent on the page
+/// instead of leaving a bare `0.0` for a later reader to reverse-engineer.
+const EXTENT_UNUSED: f64 = 0.0;
+
 /// Extract the primitive's faces/edges/vertices from `kernel` and seed
 /// `TopologyAttribute` records for each, in one call.
 ///
 /// Convenience wrapper for callers (e.g. `Engine::execute_realization_ops`)
 /// that don't already have pre-extracted face/edge/vertex handle vectors and
-/// don't need to reuse them downstream. For seedable primitive variants
-/// (`Box`, `Cylinder`, `Sphere`), this calls `kernel.extract_faces` /
+/// don't need to reuse them downstream. For every variant
+/// [`is_seedable_primitive`] accepts, this calls `kernel.extract_faces` /
 /// `kernel.extract_edges` and delegates to [`seed_primitive_attributes`].
 /// For `GeometryOp::Box` specifically, it also calls
 /// `kernel.extract_vertices` and passes the resulting handles through so
@@ -191,6 +248,7 @@ pub(crate) fn is_seedable_primitive(op: &GeometryOp) -> bool {
             | GeometryOp::Wedge { .. }
             | GeometryOp::Torus { .. }
             | GeometryOp::HalfSpace { .. }
+            | GeometryOp::Tube { .. }
     )
 }
 
@@ -200,10 +258,12 @@ pub(crate) fn is_seedable_primitive(op: &GeometryOp) -> bool {
 /// Inputs:
 /// - `table`: the table to write entries into.
 /// - `kernel`: kept on the signature for arms that need geometric queries
-///   (Cylinder uses `GeometryQuery::FaceNormal` to classify caps; Box uses
+///   (Cylinder/Cone use `GeometryQuery::FaceNormal` to classify caps; Tube
+///   uses `FaceNormal` too, plus `GeometryQuery::BoundingBox` on its LATERAL
+///   faces to order the outer wall ahead of the bore; Box uses
 ///   `GeometryQuery::BoundingBox` on each vertex to classify corners).
-///   Sphere arms touch only `face_handles` / `edge_handles` and never call
-///   into the kernel.
+///   Sphere/Wedge/Torus/HalfSpace arms touch only `face_handles` /
+///   `edge_handles` and never call into the kernel.
 /// - `face_handles`, `edge_handles`, `vertex_handles`: TopExp-ordered handle
 ///   vectors the caller has pre-extracted (typically via
 ///   `kernel.extract_faces(...)` / `extract_edges(...)` /
@@ -226,11 +286,13 @@ pub(crate) fn is_seedable_primitive(op: &GeometryOp) -> bool {
 /// - `GeometryOp::Cylinder` / `GeometryOp::Sphere`: `vertex_handles` is
 ///   ignored (no analytic vertices per PRD §2 Q-MM2-1).
 ///
-/// Returns `Err(QueryError)` only when a primitive arm needs a kernel
-/// query (Cylinder's `FaceNormal`, or Box's vertex `BoundingBox`) and the
-/// kernel reports an error.
-/// Callers should treat this as auxiliary-metadata failure (warn and
-/// continue) rather than a primary geometry failure.
+/// Returns `Err(QueryError)` only when a primitive arm needs a kernel query
+/// and the kernel reports an error. The three sources are Cylinder/Cone's
+/// `FaceNormal`, Tube's `FaceNormal` plus its lateral-face `BoundingBox`, and
+/// Box's vertex `BoundingBox`. Every arm issues all of its queries before
+/// writing anything, so an `Err` leaves `table` untouched rather than
+/// half-populated. Callers should treat this as auxiliary-metadata failure
+/// (warn and continue) rather than a primary geometry failure.
 #[allow(clippy::too_many_arguments)]
 pub fn seed_primitive_attributes(
     table: &mut TopologyAttributeTable,
@@ -309,43 +371,79 @@ pub fn seed_primitive_attributes(
             // surface type (BRep surface type query) rather than an absolute
             // nz threshold to handle the degenerate regime correctly.
             //
-            // For the canonical 3-face case each role appears exactly
-            // once and `local_index` is 0 for every entry. Per-role
-            // counters preserve that invariant while remaining safe
-            // against degenerate kernel outputs (e.g. an unusual face
-            // split or a future OCCT version that emits more than one
-            // face with the same classification): each subsequent face
-            // of the same role gets the next sequential `local_index`,
-            // mirroring the construction-order discipline used for
-            // Box/Sphere `Role::Side`. This guarantees the seeder never
-            // writes two rows with identical `(feature_id, role,
-            // local_index)`, keeping reverse lookups unambiguous.
-            let mut role_counts: HashMap<Role, u32> = HashMap::new();
+            // For the canonical 3-face case each role appears exactly once and
+            // `local_index` is 0 for every entry; the per-role independent
+            // counters that keep that true for degenerate kernel outputs live
+            // in the shared `classify_revolved_face_roles` (see its rustdoc).
+            // A cylinder/cone has exactly ONE lateral face, so the classifier's
+            // descending-extent ordering has nothing to rank and every extent
+            // here is `EXTENT_UNUSED` — no `BoundingBox` round trip is issued.
+            let mut face_metrics: Vec<(f64, f64)> = Vec::with_capacity(face_handles.len());
             for &face_id in face_handles.iter() {
-                let normal_value = kernel.query(&GeometryQuery::FaceNormal(face_id))?;
-                let nz = parse_normal_z(&normal_value)?;
-                let role = classify_cylinder_face_role(nz);
-                let local_index = {
-                    let counter = role_counts.entry(role).or_insert(0);
-                    let assigned = *counter;
-                    *counter += 1;
-                    assigned
-                };
-                table.record(
-                    KernelHandle {
-                        kernel: kernel_id,
-                        id: face_id,
-                    },
-                    TopologyAttribute {
-                        feature_id: feature_id.clone(),
-                        role,
-                        local_index,
-                        user_label: None,
-                        mod_history: Vec::new(),
-                    },
-                );
+                face_metrics.push((query_face_normal_z(kernel, face_id)?, EXTENT_UNUSED));
             }
+            record_faces_with_roles(
+                table,
+                kernel_id,
+                face_handles,
+                &classify_revolved_face_roles(&face_metrics),
+                feature_id,
+            );
             record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
+            Ok(())
+        }
+        GeometryOp::Tube { .. } => {
+            // A tube is `boolean_cut(cylinder(outer_r), cylinder(inner_r))` at
+            // the kernel layer, but it is a GeometryOp-level PRIMITIVE with
+            // zero parents (`parent_handles_for_op` returns empty for it), so
+            // it needs ORIGINATING seeding here rather than boolean history
+            // propagation. OCCT 7.8 emits exactly 4 analytic faces: the outer
+            // wall, the top annulus, the bottom annulus, and the bore.
+            //
+            // Queries per face:
+            //  - FaceNormal, always. Its z-component splits the annuli
+            //    (|nz| == 1) from the lateral walls (nz == 0) through the
+            //    SHARED `classify_cylinder_face_role`. No new threshold: the
+            //    measured margin is 1.0 against NORMAL_Z_EPSILON's 1e-6.
+            //  - BoundingBox, for the LATERAL walls only. Its radial extent
+            //    separates the outer wall from the bore, which FaceNormal
+            //    structurally cannot do — see `classify_revolved_face_roles`'
+            //    rustdoc for why. The classifier ignores the extent of every
+            //    other role (an annulus's bbox spans the FULL outer radius, so
+            //    consulting it there would be actively wrong), so querying the
+            //    caps would buy nothing and would hand a cap face a way to
+            //    abort the whole seed through the `?` below.
+            //
+            // Errors propagate with `?`, same contract as the Cylinder arm:
+            // the engine call site downgrades a seeding error to a Warning
+            // diagnostic and continues (engine_build.rs:8690-8694). Nothing is
+            // written to `table` until every query has succeeded, so a failed
+            // seed leaves the table untouched rather than half-populated.
+            //
+            // One pass over `face_handles` collects the query results; the
+            // pure classifier is then the ONLY place that reasons about
+            // ordering, which is what keeps that logic unit-testable without
+            // a kernel.
+            let mut face_metrics: Vec<(f64, f64)> = Vec::with_capacity(face_handles.len());
+            for &face_id in face_handles.iter() {
+                let nz = query_face_normal_z(kernel, face_id)?;
+                let radial_extent = if classify_cylinder_face_role(nz) == Role::Side {
+                    parse_bbox_radial_extent(&kernel.query(&GeometryQuery::BoundingBox(face_id))?)?
+                } else {
+                    EXTENT_UNUSED
+                };
+                face_metrics.push((nz, radial_extent));
+            }
+            record_faces_with_roles(
+                table,
+                kernel_id,
+                face_handles,
+                &classify_revolved_face_roles(&face_metrics),
+                feature_id,
+            );
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
+            // `vertex_handles` is intentionally ignored: a tube has no analytic
+            // corner vertices, and only the Box arm seeds vertices at all.
             Ok(())
         }
         // All other variants are intentional no-ops. Per-op auto-population
@@ -387,6 +485,48 @@ fn record_all_faces_as_side(
             },
         );
     }
+}
+
+/// Record one `TopologyAttribute` per face from a positionally-aligned
+/// `(Role, local_index)` assignment list, with the task-1 default metadata
+/// (`user_label = None`, `mod_history = Vec::new()`).
+///
+/// Shared by the arms whose faces carry a PER-FACE role — `Cylinder | Cone`
+/// and `Tube` — the way [`record_all_faces_as_side`] is shared by the arms
+/// whose faces are uniformly `Role::Side`. `assignments` comes from
+/// [`classify_revolved_face_roles`], which returns exactly one entry per input
+/// face, so the zip below never truncates in practice.
+fn record_faces_with_roles(
+    table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
+    face_handles: &[GeometryHandleId],
+    assignments: &[(Role, u32)],
+    feature_id: &FeatureId,
+) {
+    for (&face_id, &(role, local_index)) in face_handles.iter().zip(assignments) {
+        table.record(
+            KernelHandle {
+                kernel: kernel_id,
+                id: face_id,
+            },
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+}
+
+/// Query a face's normal and return its z-component — the input
+/// [`classify_cylinder_face_role`] classifies on.
+fn query_face_normal_z(
+    kernel: &dyn GeometryKernel,
+    face_id: GeometryHandleId,
+) -> Result<f64, QueryError> {
+    parse_normal_z(&kernel.query(&GeometryQuery::FaceNormal(face_id))?)
 }
 
 /// Record every supplied edge handle as `Role::NewEdge` with construction-
@@ -433,6 +573,98 @@ fn classify_cylinder_face_role(nz: f64) -> Role {
     } else {
         Role::Side
     }
+}
+
+/// Classify the faces of a z-axis surface of revolution (cylinder, cone, tube)
+/// into `(Role, local_index)` assignments, given one `(nz, radial_extent)` pair
+/// per face in TopExp order.
+///
+/// Returns one assignment per input face, POSITIONALLY ALIGNED with the input
+/// slice, so the caller can zip it straight back onto its face handles via
+/// [`record_faces_with_roles`].
+///
+/// Roles come from the shared [`classify_cylinder_face_role`] normal-z test, so
+/// this function introduces no threshold of its own. What it adds on top is the
+/// `local_index` assignment, in two independent regimes:
+///
+/// - LATERAL (`Role::Side`) faces are ranked by DESCENDING radial extent.
+/// - Every other role draws from its own counter, in construction order.
+///
+/// A cylinder or cone has exactly ONE lateral face, so the ranking degenerates
+/// to construction order and its caller passes [`EXTENT_UNUSED`] for every
+/// face. A tube (`boolean_cut(cylinder(outer), cylinder(inner))`) has four
+/// analytic faces — two annular caps and two lateral walls, the outer wall and
+/// the bore — and the ranking is what separates them: the outer wall takes
+/// `local_index` 0, the bore 1. (Measured `|nz|` is exactly 1.0 for both annuli
+/// and exactly 0.0 for both walls, a margin of 1.0 against `NORMAL_Z_EPSILON`'s
+/// 1e-6.)
+///
+/// ## Why the extent is needed at all — `FaceNormal` cannot do this
+///
+/// `query_face_normal` evaluates the normal at the face's AREA CENTROID
+/// (`BRepGProp::SurfaceProperties` → `CentreOfMass`), which for a full
+/// 360° lateral wall lies ON THE AXIS and therefore not on the surface;
+/// `ShapeAnalysis_Surface::ValueOfUV` back-projects that point to an azimuth
+/// this repo documents as implementation-defined (see
+/// `kernel-occt/tests/harness_occt/surface_angle_integration.rs:277-282`).
+/// Both walls consequently return a radial unit vector with `nz == 0`. The
+/// bore IS oriented `TopAbs_REVERSED`, so its outward normal points toward the
+/// axis — but that sign flip cancels against the arbitrary azimuth, leaving
+/// nothing stable to test. The probe measured outer `{x:-1.8e-16, y:-1, z:0}`
+/// against bore `{x:+1.8e-16, y:+1, z:0}`; that opposition is COINCIDENTAL and
+/// must not be encoded.
+///
+/// ## Why a relative comparison and not an absolute threshold
+///
+/// The kernel REJECTS `inner_r >= outer_r` before building anything
+/// (`kernel-occt/src/lib.rs:2632-2636`), so any tube reaching the seeder has
+/// two strictly distinct wall radii. `Bnd_Box`'s tolerance inflation (~1e-7)
+/// is symmetric across both faces, so it cancels in a wall-vs-wall comparison
+/// rather than needing a budgeted epsilon. The sort is STABLE, so an exact tie
+/// falls back to TopExp construction order — the tiebreak convention the module
+/// rustdoc already documents for primitive `local_index` (PRD line 66) — and
+/// uses [`f64::total_cmp`] so the comparator is total and a NaN extent from a
+/// degenerate kernel response cannot panic.
+///
+/// Per-role counters are independent, so the seeder can never emit two rows
+/// with an identical `(feature_id, role, local_index)` key. That invariant is
+/// what makes this the single place either arm reasons about `local_index`:
+/// for the canonical 3-face cylinder each role appears once and every entry
+/// lands on 0, and a degenerate kernel output (an unusual face split, or a
+/// future OCCT version emitting two faces with the same classification) still
+/// gets sequential indices rather than a collision.
+fn classify_revolved_face_roles(faces: &[(f64, f64)]) -> Vec<(Role, u32)> {
+    // Pass 1: role only. The extent is irrelevant for caps — an annulus's
+    // bounding box spans the full OUTER radius, so consulting it outside the
+    // Side bucket would be actively wrong.
+    let roles: Vec<Role> = faces
+        .iter()
+        .map(|&(nz, _extent)| classify_cylinder_face_role(nz))
+        .collect();
+
+    // Pass 2: order the Side faces by descending radial extent. `sort_by` is
+    // stable, so equal extents keep their relative input (TopExp) order.
+    let mut side_positions: Vec<usize> = (0..faces.len())
+        .filter(|&i| roles[i] == Role::Side)
+        .collect();
+    side_positions.sort_by(|&a, &b| faces[b].1.total_cmp(&faces[a].1));
+
+    // Pass 3: assign local_index. Side faces get their rank in the sorted
+    // order; every other role gets the next value from its own counter.
+    let mut assigned: Vec<(Role, u32)> = roles.iter().map(|&role| (role, 0u32)).collect();
+    for (rank, &pos) in side_positions.iter().enumerate() {
+        assigned[pos].1 = rank as u32;
+    }
+    let mut role_counts: HashMap<Role, u32> = HashMap::new();
+    for (pos, role) in roles.iter().enumerate() {
+        if *role == Role::Side {
+            continue;
+        }
+        let counter = role_counts.entry(*role).or_insert(0);
+        assigned[pos].1 = *counter;
+        *counter += 1;
+    }
+    assigned
 }
 
 /// Extract the z-component of the JSON-encoded `{"x":..,"y":..,"z":..}`
@@ -803,6 +1035,26 @@ pub(crate) fn parse_bbox_xyz_min(value: &Value) -> Result<(f64, f64, f64), Query
     Ok((xmin, ymin, zmin))
 }
 
+/// Radial extent of a `GeometryQuery::BoundingBox` payload about the z axis:
+/// `max(|xmin|, |ymin|)`.
+///
+/// This is the discriminator [`classify_revolved_face_roles`] ranks a tube's
+/// two lateral walls by. Reading the MIN corner alone is sound for them because
+/// both are full 360° revolutions centred on the z axis, so
+/// `|xmin| == |ymin| == r` up to `Bnd_Box`'s symmetric ~1e-7 tolerance gap —
+/// which is also why no `parse_bbox_xyz_max` exists.
+///
+/// Visibility: `pub` — widened so the integration test
+/// `topology_attribute_primitives_direct::seed_primitive_attributes_tube_classifies_annuli_and_orders_walls_by_radius`
+/// can DERIVE its wall-ordering expectation by re-querying `BoundingBox` and
+/// computing the extent exactly the way the seeder does, instead of keeping a
+/// fourth hand-rolled copy of this payload's parser. Same precedent as
+/// [`seed_primitive_attributes_for_handle`], widened for a test in task 3633.
+pub fn parse_bbox_radial_extent(value: &Value) -> Result<f64, QueryError> {
+    let (xmin, ymin, _zmin) = parse_bbox_xyz_min(value)?;
+    Ok(xmin.abs().max(ymin.abs()))
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure no-OCCT unit tests for the seeder dispatch.
@@ -823,7 +1075,10 @@ mod tests {
     //! single `_ => Ok(())` catch-all. A pin per variant kind protects
     //! against a future refactor that introduces an unintended catch-all
     //! that branches based on op shape (e.g. accidentally treating
-    //! `Tube` as a primitive because it has a `radius` field).
+    //! `Pipe` as a primitive because it has a `radius` field — it is a
+    //! sweep along a path wire and remains a genuine no-op). `Tube` used
+    //! to be this illustration; task #6550 made it a seeded primitive, so
+    //! the example was retargeted onto a variant that is still deferred.
     use super::*;
     use reify_ir::{
         ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryQuery,
@@ -1101,19 +1356,397 @@ mod tests {
         });
     }
 
+    // ─── task-6550 step-1: Tube IS seedable ─────────────────────────────────
+    //
+    // This positive pin REPLACES the former `seed_returns_ok_for_tube_kind`
+    // no-op pin, which asserted the exact opposite contract. Deleting that
+    // test was required rather than optional: it called `assert_seeds_nothing`,
+    // which passes EMPTY face/edge slices, so a Tube arm iterating zero faces
+    // writes nothing and the old assertion would have kept passing — leaving a
+    // silently vacuous test whose name and comment contradicted the landed
+    // behaviour.
     #[test]
-    fn seed_returns_ok_for_tube_kind() {
-        // Tube is composed via boolean_cut at the kernel layer; its
-        // attribute attachment depends on task 8's boolean propagation
-        // (or a Tube-specific compound classifier). Defer to task 8.
-        // This pin guarantees Tube is not accidentally swept into the
-        // primitive seeding arm just because it shares fields like
-        // `outer_r` / `inner_r` with the cylinder family.
-        assert_seeds_nothing(&GeometryOp::Tube {
-            outer_r: Value::Real(0.005),
-            inner_r: Value::Real(0.003),
-            height: Value::Real(0.010),
-        });
+    fn tube_is_seedable_primitive() {
+        assert!(
+            is_seedable_primitive(&GeometryOp::Tube {
+                outer_r: Value::Real(0.010),
+                inner_r: Value::Real(0.005),
+                height: Value::Real(0.020),
+            }),
+            "GeometryOp::Tube must be a seedable primitive (task #6550): it is a \
+             GeometryOp-level PRIMITIVE with zero parents, so it needs ORIGINATING \
+             seeding, not boolean history propagation"
+        );
+    }
+
+    // ─── task-6550 step-3: the pure `classify_revolved_face_roles` ──────────
+    //
+    // These tests are deliberately KERNEL-FREE, and need no mock at all: the
+    // in-module `MockKernel` errors from every method by construction — that is
+    // precisely what makes the closed-extension no-op pins above meaningful —
+    // so it cannot serve staged `FaceNormal` / `BoundingBox` responses.
+    // Extracting the ordering + role assignment into a pure function over
+    // `(nz, radial_extent)` pairs lets the interesting logic be exercised with
+    // plain literals, with no fixture staging to get wrong.
+    //
+    // The kernel-querying HALF of the Tube arm is a separate matter and is NOT
+    // OCCT-only: `reify_test_support::mocks::MockGeometryKernel` serves staged
+    // per-(handle, query-kind) responses, and the `tube_arm_*` tests further
+    // down use it to pin the query/zip/error-propagation behaviour on every
+    // host. (An earlier revision of this comment claimed that logic was
+    // "testable only behind the `OCCT_AVAILABLE` runtime guard" — true of
+    // `MockKernel`, false of the crate's shared mock.)
+    //
+    // The literal values below are MEASURED from a real OCCT 7.8 tube
+    // (outer_r = 10mm, inner_r = 5mm, height = 20mm): 4 faces — outer wall
+    // (nz = 0, bbox |xmin| = 0.0100001), top annulus (nz = +1), bottom annulus
+    // (nz = -1), bore (nz = 0, bbox |xmin| = 0.0050001). The `…0001` tails are
+    // `Bnd_Box`'s ~1e-7 tolerance inflation, kept verbatim so the fixture
+    // matches what the kernel actually returns.
+
+    /// Measured radial extent of the tube's OUTER wall (outer_r = 10mm plus
+    /// `Bnd_Box`'s symmetric ~1e-7 gap).
+    const PROBE_OUTER_EXTENT: f64 = 0.0100001;
+    /// Measured radial extent of the tube's BORE (inner_r = 5mm plus the gap).
+    const PROBE_BORE_EXTENT: f64 = 0.0050001;
+
+    /// Assert no two entries share a `(role, local_index)` pair.
+    ///
+    /// This is the invariant that keeps reverse lookups keyed on
+    /// `(feature_id, role, local_index)` unambiguous — `record` would happily
+    /// write two rows with an identical key, so the classifier must never
+    /// produce one. Applied to every case below.
+    fn assert_role_index_pairs_unique(assigned: &[(Role, u32)], case: &str) {
+        let mut seen: Vec<(Role, u32)> = Vec::new();
+        for pair in assigned {
+            assert!(
+                !seen.contains(pair),
+                "{case}: duplicate (role, local_index) pair {pair:?} in {assigned:?} — \
+                 per-role counters must be independent so no two seeded rows collide"
+            );
+            seen.push(*pair);
+        }
+    }
+
+    /// (a) Canonical measured TopExp order.
+    ///
+    /// Also pins that the extent field is consulted for `Side` faces ONLY: an
+    /// annulus's bbox spans the FULL outer radius, so both caps carry the
+    /// outer wall's extent here and must still land on `local_index` 0.
+    #[test]
+    fn classify_revolved_face_roles_canonical_topexp_order() {
+        let assigned = classify_revolved_face_roles(&[
+            (0.0, PROBE_OUTER_EXTENT),  // outer wall
+            (1.0, PROBE_OUTER_EXTENT),  // top annulus (spans the full outer radius)
+            (-1.0, PROBE_OUTER_EXTENT), // bottom annulus (likewise)
+            (0.0, PROBE_BORE_EXTENT),   // bore
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Side, 0),
+                (Role::Cap(CapKind::Top), 0),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Side, 1),
+            ],
+            "the larger-radius wall must take local_index 0 and the bore 1; caps are \
+             unaffected by their (irrelevant) extent"
+        );
+        assert_role_index_pairs_unique(&assigned, "canonical order");
+    }
+
+    /// (b) Permuted input — the wall ordering must be driven by RADIUS, not by
+    /// TopExp position. This is the property that makes `local_index` stable
+    /// across OCCT versions (which are free to reorder `TopExp_Explorer`).
+    #[test]
+    fn classify_revolved_face_roles_orders_walls_by_radius_not_input_position() {
+        let assigned = classify_revolved_face_roles(&[
+            (0.0, PROBE_BORE_EXTENT),   // bore FIRST this time
+            (-1.0, PROBE_OUTER_EXTENT), // bottom annulus
+            (0.0, PROBE_OUTER_EXTENT),  // outer wall
+            (1.0, PROBE_OUTER_EXTENT),  // top annulus
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Side, 1),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Side, 0),
+                (Role::Cap(CapKind::Top), 0),
+            ],
+            "the bore must keep local_index 1 even when it comes FIRST in TopExp order — \
+             the ordering is by descending radial extent, not input position"
+        );
+        assert_role_index_pairs_unique(&assigned, "permuted order");
+    }
+
+    /// (c1) Degenerate robustness: more than two `Side` faces still get
+    /// sequential `local_index` values in descending-extent order.
+    #[test]
+    fn classify_revolved_face_roles_assigns_sequential_indices_to_three_sides() {
+        let assigned = classify_revolved_face_roles(&[
+            (0.0, 0.005), // smallest
+            (0.0, 0.020), // largest
+            (0.0, 0.010), // middle
+        ]);
+        assert_eq!(
+            assigned,
+            vec![(Role::Side, 2), (Role::Side, 0), (Role::Side, 1)],
+            "N side faces must take local_index 0..N-1 in DESCENDING extent order"
+        );
+        assert_role_index_pairs_unique(&assigned, "three sides");
+    }
+
+    /// (c2) An exact extent tie falls back to input (TopExp construction)
+    /// order, matching the construction-order tiebreak convention the module
+    /// rustdoc documents for primitive `local_index` (PRD line 66).
+    #[test]
+    fn classify_revolved_face_roles_breaks_extent_ties_by_construction_order() {
+        let assigned = classify_revolved_face_roles(&[
+            (0.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_OUTER_EXTENT),
+        ]);
+        assert_eq!(
+            assigned,
+            vec![(Role::Side, 0), (Role::Side, 1)],
+            "on an exact extent tie the EARLIER input position must win (stable sort)"
+        );
+        assert_role_index_pairs_unique(&assigned, "extent tie");
+    }
+
+    /// (d) Per-role counters are independent, and the empty input is a no-op.
+    #[test]
+    fn classify_revolved_face_roles_counters_are_per_role_and_empty_is_empty() {
+        assert!(
+            classify_revolved_face_roles(&[]).is_empty(),
+            "an empty face slice must produce no assignments"
+        );
+
+        // Two of every role: each role's counter runs 0,1 independently, so
+        // Cap(Top)/Cap(Bottom)/Side never borrow each other's indices.
+        let assigned = classify_revolved_face_roles(&[
+            (1.0, PROBE_OUTER_EXTENT),
+            (1.0, PROBE_OUTER_EXTENT),
+            (-1.0, PROBE_OUTER_EXTENT),
+            (-1.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_OUTER_EXTENT),
+            (0.0, PROBE_BORE_EXTENT),
+        ]);
+        assert_eq!(
+            assigned,
+            vec![
+                (Role::Cap(CapKind::Top), 0),
+                (Role::Cap(CapKind::Top), 1),
+                (Role::Cap(CapKind::Bottom), 0),
+                (Role::Cap(CapKind::Bottom), 1),
+                (Role::Side, 0),
+                (Role::Side, 1),
+            ],
+            "each role's local_index counter must start at 0 and advance independently"
+        );
+        assert_role_index_pairs_unique(&assigned, "two of every role");
+    }
+
+    // ─── task-6550 amendment: the Tube arm's KERNEL-FACING half ─────────────
+    //
+    // The pure classifier above deliberately covers only the ordering logic.
+    // The rest of the arm — two query kinds, `?` propagation, the extent
+    // derivation, and the zip that re-aligns classifier output onto
+    // `face_handles` — is exercised here with
+    // `reify_test_support::mocks::MockGeometryKernel`, which serves staged
+    // per-(handle, query-kind) responses and errors on an UNSTAGED query.
+    // That error-on-miss behaviour is load-bearing twice over: it is how the
+    // negative case below is provoked, and it is what lets the positive case
+    // prove a cap's `BoundingBox` is never asked for (staging none, and still
+    // succeeding). Running on every host also means the arm stays verified
+    // when OCCT degrades to stubs on a SONAME move (#6343), which would
+    // silently skip the `OCCT_AVAILABLE`-gated integration test.
+
+    /// The four faces OCCT 7.8 emits for a tube, in measured TopExp order.
+    /// Ids are arbitrary — the mock keys on them, nothing derives from them.
+    const MOCK_OUTER_WALL: GeometryHandleId = GeometryHandleId(11);
+    const MOCK_TOP_ANNULUS: GeometryHandleId = GeometryHandleId(12);
+    const MOCK_BOTTOM_ANNULUS: GeometryHandleId = GeometryHandleId(13);
+    const MOCK_BORE: GeometryHandleId = GeometryHandleId(14);
+
+    fn tube_op() -> GeometryOp {
+        GeometryOp::Tube {
+            outer_r: Value::Real(0.010),
+            inner_r: Value::Real(0.005),
+            height: Value::Real(0.020),
+        }
+    }
+
+    /// A `GeometryQuery::FaceNormal` payload with the given z-component. The
+    /// x/y components are never read by the seeder — see the classifier's
+    /// rustdoc for why the azimuth carries no information for a lateral wall.
+    fn mock_normal_payload(nz: f64) -> Value {
+        Value::String(format!("{{\"x\":0.0,\"y\":1.0,\"z\":{nz}}}"))
+    }
+
+    /// A `GeometryQuery::BoundingBox` payload for a lateral wall of the given
+    /// radius, centred on the z axis (so `|xmin| == |ymin| == radius`).
+    fn mock_wall_bbox_payload(radius: f64) -> Value {
+        Value::String(format!(
+            "{{\"xmin\":{lo},\"ymin\":{lo},\"zmin\":0.0,\
+             \"xmax\":{radius},\"ymax\":{radius},\"zmax\":0.020}}",
+            lo = -radius
+        ))
+    }
+
+    /// `MockGeometryKernel` staged with a normal for every tube face and a
+    /// bounding box for the lateral walls named in `walls_with_bbox`.
+    fn mock_tube_kernel(
+        walls_with_bbox: &[(GeometryHandleId, f64)],
+    ) -> reify_test_support::mocks::MockGeometryKernel {
+        let mut kernel = reify_test_support::mocks::MockGeometryKernel::new()
+            .with_face_normal_result(MOCK_OUTER_WALL, mock_normal_payload(0.0))
+            .with_face_normal_result(MOCK_TOP_ANNULUS, mock_normal_payload(1.0))
+            .with_face_normal_result(MOCK_BOTTOM_ANNULUS, mock_normal_payload(-1.0))
+            .with_face_normal_result(MOCK_BORE, mock_normal_payload(0.0));
+        for &(handle, radius) in walls_with_bbox {
+            kernel = kernel.with_bbox_result(handle, mock_wall_bbox_payload(radius));
+        }
+        kernel
+    }
+
+    /// The four measured faces, in the order the outer wall / top annulus /
+    /// bottom annulus / bore are yielded by TopExp.
+    fn mock_tube_face_handles() -> Vec<GeometryHandleId> {
+        vec![
+            MOCK_OUTER_WALL,
+            MOCK_TOP_ANNULUS,
+            MOCK_BOTTOM_ANNULUS,
+            MOCK_BORE,
+        ]
+    }
+
+    #[track_caller]
+    fn assert_attribute(
+        table: &TopologyAttributeTable,
+        handle: GeometryHandleId,
+        expected: (Role, u32),
+        what: &str,
+    ) {
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: handle,
+            })
+            .unwrap_or_else(|| panic!("{what} ({handle:?}) must have a TopologyAttribute entry"));
+        assert_eq!(
+            (attr.role, attr.local_index),
+            expected,
+            "{what} must be seeded {expected:?}"
+        );
+        assert_eq!(attr.feature_id, feature_id(), "{what} feature_id");
+        assert_eq!(attr.user_label, None, "{what} user_label (task-1 invariant)");
+        assert!(
+            attr.mod_history.is_empty(),
+            "{what} mod_history (task-1 invariant)"
+        );
+    }
+
+    /// The whole Tube arm, kernel-side included, on a staged mock.
+    ///
+    /// No `BoundingBox` is staged for either annulus, so the seed completing
+    /// at all is the assertion that the arm queries the caps' bboxes NEVER —
+    /// the mock errors on an unstaged query, which `?` would propagate.
+    #[test]
+    fn tube_arm_seeds_from_staged_queries_without_touching_cap_bounding_boxes() {
+        let face_handles = mock_tube_face_handles();
+        let edge_handles = vec![GeometryHandleId(21), GeometryHandleId(22)];
+        let vertex_handles = vec![GeometryHandleId(31), GeometryHandleId(32)];
+        let mut kernel = mock_tube_kernel(&[
+            (MOCK_OUTER_WALL, PROBE_OUTER_EXTENT),
+            (MOCK_BORE, PROBE_BORE_EXTENT),
+        ]);
+        let mut table = TopologyAttributeTable::default();
+
+        seed_primitive_attributes(
+            &mut table,
+            KernelId::Occt,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &vertex_handles,
+            &feature_id(),
+            &tube_op(),
+        )
+        .expect(
+            "the Tube arm must seed from FaceNormal on every face plus BoundingBox on the \
+             LATERAL faces only — an error here means it also queried a cap's bounding box, \
+             which is deliberately unstaged",
+        );
+
+        assert_attribute(&table, MOCK_OUTER_WALL, (Role::Side, 0), "the outer wall");
+        assert_attribute(&table, MOCK_BORE, (Role::Side, 1), "the bore");
+        assert_attribute(
+            &table,
+            MOCK_TOP_ANNULUS,
+            (Role::Cap(CapKind::Top), 0),
+            "the top annulus",
+        );
+        assert_attribute(
+            &table,
+            MOCK_BOTTOM_ANNULUS,
+            (Role::Cap(CapKind::Bottom), 0),
+            "the bottom annulus",
+        );
+        for (idx, &edge_id) in edge_handles.iter().enumerate() {
+            assert_attribute(&table, edge_id, (Role::NewEdge, idx as u32), "a tube edge");
+        }
+        for &vertex_id in vertex_handles.iter() {
+            assert!(
+                table
+                    .lookup(KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: vertex_id,
+                    })
+                    .is_none(),
+                "the Tube arm must ignore vertex_handles outright — only Box seeds vertices"
+            );
+        }
+        assert_eq!(
+            table.len(),
+            face_handles.len() + edge_handles.len(),
+            "the Tube arm must write exactly one entry per face and per edge, nothing else"
+        );
+    }
+
+    /// A `BoundingBox` failure on a LATERAL face aborts the whole seed through
+    /// `?`, and leaves the table untouched rather than half-populated: every
+    /// query is issued before the first `table.record`.
+    #[test]
+    fn tube_arm_propagates_a_wall_bounding_box_error_and_writes_nothing() {
+        let face_handles = mock_tube_face_handles();
+        let edge_handles = vec![GeometryHandleId(21)];
+        // The BORE's bbox is left unstaged, so its query errors. It is the
+        // LAST face in TopExp order, so the outer wall and both annuli have
+        // already been measured by then — proving the arm defers writing.
+        let mut kernel = mock_tube_kernel(&[(MOCK_OUTER_WALL, PROBE_OUTER_EXTENT)]);
+        let mut table = TopologyAttributeTable::default();
+
+        let err = seed_primitive_attributes(
+            &mut table,
+            KernelId::Occt,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &[],
+            &feature_id(),
+            &tube_op(),
+        )
+        .expect_err("an unstaged lateral-face BoundingBox must surface as Err, not be swallowed");
+        assert!(
+            matches!(err, QueryError::QueryFailed(_)),
+            "expected a QueryFailed, got {err:?}"
+        );
+        assert!(
+            table.is_empty(),
+            "a failed seed must leave the table untouched, not half-populated; got {} entries",
+            table.len()
+        );
     }
 
     // ─── step-9 — Wedge generic seeding (task-4158) ──────────────────────────
@@ -1218,10 +1851,10 @@ mod tests {
 
     // ─── task-4157 step-13: Torus IS seedable ────────────────────────────────
     //
-    // Positive pin — the inverse of the no-op pins above. Unlike Tube (composed
-    // via boolean_cut), the torus is a direct BRepPrimAPI primitive, so its
-    // faces/edges are seeded like the Sphere arm. RED until step-14 adds
-    // `| GeometryOp::Torus { .. }` to the `is_seedable_primitive` matches!.
+    // Positive pin — the inverse of the no-op pins above. The torus is a direct
+    // BRepPrimAPI primitive with no caps, so its faces/edges are seeded like
+    // the Sphere arm. RED until step-14 adds `| GeometryOp::Torus { .. }` to
+    // the `is_seedable_primitive` matches!.
     #[test]
     fn torus_is_seedable_primitive() {
         assert!(

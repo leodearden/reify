@@ -74,7 +74,9 @@ pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
-pub use engine_constraints::GdtCallout;
+pub use engine_constraints::{
+    ConstraintUpgrade, GdtCallout, replace_superseded_constraint_diagnostics,
+};
 // Task β (#5039): required-args cell_eval_ctx free-function constructor
 // (INV-EVAL-2; PRD eval-cell-commit-substrate.md §2.5, §8).
 mod cell_eval_ctx;
@@ -96,13 +98,26 @@ pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
-pub(crate) mod arg_acceptance;
+// Task 5791 (PRD docs/prds/v0_6/dimension-checked-readers.md §3 Leg A):
+// `arg_acceptance` was RELOCATED to `crates/reify-ir/src/arg_acceptance.rs`
+// so `reify-stdlib` — which cannot depend on `reify-eval` — shares the same
+// dimension-acceptance rule. This crate-private re-export keeps every
+// pre-existing `crate::arg_acceptance::…` spelling in this crate compiling
+// unchanged, at exactly the former visibility (a `pub use` would widen
+// reify-eval's public API for no reason).
+pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 #[cfg(test)]
 mod registry_drift_tests;
+// Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
+// builtin-signature registry. In-crate for the same reason as the sibling above
+// — it asserts against the private `value_type_kind_matches`, unreachable from
+// an integration test. See that module's header for PRD open question 5.
+#[cfg(test)]
+mod registry_parity_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.
@@ -334,7 +349,12 @@ fn value_type_kind_matches(
         Value::Point(_) => matches!(ty, Type::Point { .. }),
         Value::Vector(_) => matches!(ty, Type::Vector { .. }),
         Value::Complex { .. } => matches!(ty, Type::Complex(_)),
-        Value::Orientation { .. } => matches!(ty, Type::Orientation(_)),
+        // Only N=3 is inhabited — see `reify_core::Type::Orientation`'s
+        // variant doc; mirrors `joint_self_check::dof_kind_of`. The sibling
+        // Frame/Transform/AffineMap arms stay permissive under the same
+        // #6336 deferral — that asymmetry is intentional, not an oversight.
+        // #6336 owns widening this arm.
+        Value::Orientation { .. } => matches!(ty, Type::Orientation(3)),
         Value::Frame { .. } => matches!(ty, Type::Frame(_)),
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
@@ -1159,6 +1179,33 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    /// Per-build static-relate consumption ledger — one row per ZERO-AUTO relate
+    /// scope processed by this build, in `solve_scopes` order (DIC α, task 5415).
+    ///
+    /// `build_with_geometry_output` drops `relate_solutions` after its consumption
+    /// loop, so without this field the `StaticRelateFacts` that
+    /// [`crate::relate_solve::verify_static_scope`] computes would exist only
+    /// inside that function and be unreachable from a completed
+    /// [`Engine::build`] — the surface ζ (#5420)'s `finish_check` ledger reads.
+    /// This task PRODUCES the rows; rendering them into the check summary is
+    /// #5420's leaf.
+    ///
+    /// A SATISFIED zero-auto scope raises no diagnostic, so its row here is the
+    /// ONLY evidence that its relate block was consumed. Dropping it would make
+    /// `verified: 2` and "there was no relate block" indistinguishable downstream —
+    /// the same conflation, one layer up, that the static-verification arm exists
+    /// to remove (`docs/legibility/design-invariants.md` INV-SF-3;
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    ///
+    /// AUTO-FUL scopes never appear: their `RelateSolution::static_facts` is `None`,
+    /// and a solved scope is a different ledger row from a statically-verified one.
+    ///
+    /// Reset on EVERY surface by `reset_per_build_state` (#5069, INV-BUILD-1) and
+    /// repopulated by `build_with_geometry_output`'s relate consumption loop, which
+    /// runs after that reset. Only that one build surface writes it: the other
+    /// surfaces do not run a relate-solve, so for them the field is clearing-only
+    /// and an empty ledger is the honest answer rather than a stale one.
+    relate_static_facts: Vec<(String, crate::relate_solve::StaticRelateFacts)>,
     // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
     /// On-disk persistent cache root. `None` (the default) disables the
     /// feature entirely — every existing test that does not call
@@ -1279,11 +1326,65 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
+///
+/// # Verdict invariant
+///
+/// A definite verdict never carries a reason: a MUST NOT of
+/// [`reify_ir::ConstraintChecker::check`], asserted wherever a checker result
+/// becomes an entry. The converse, that every Indeterminate carries one, is
+/// only a SHOULD for a checker, so it is asserted on the engine's own verdicts
+/// alone: [`Self::new`] and [`Self::set_verdict`] assert both directions.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
+    /// decided it. Reports render it verbatim and never substitute a guess.
+    pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+}
+
+impl ConstraintCheckEntry {
+    /// An entry for a verdict the engine itself decided.
+    pub fn new(
+        id: reify_core::ConstraintNodeId,
+        label: Option<String>,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) -> Self {
+        debug_assert_reason_matches_verdict(&id, satisfaction, indeterminate_reason.as_ref());
+        Self {
+            id,
+            label,
+            satisfaction,
+            indeterminate_reason,
+        }
+    }
+
+    /// The only sanctioned way to overwrite a verdict after construction: the
+    /// reason moves with the satisfaction, so a re-check can never leave a
+    /// stale reason on a definite verdict or a reasonless Indeterminate.
+    pub fn set_verdict(
+        &mut self,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) {
+        debug_assert_reason_matches_verdict(&self.id, satisfaction, indeterminate_reason.as_ref());
+        self.satisfaction = satisfaction;
+        self.indeterminate_reason = indeterminate_reason;
+    }
+}
+
+fn debug_assert_reason_matches_verdict(
+    id: &reify_core::ConstraintNodeId,
+    satisfaction: Satisfaction,
+    indeterminate_reason: Option<&reify_ir::IndeterminateReason>,
+) {
+    debug_assert_eq!(
+        indeterminate_reason.is_some(),
+        satisfaction == Satisfaction::Indeterminate,
+        "constraint {id}: a reason accompanies exactly an Indeterminate verdict",
+    );
 }
 
 /// Result of a full build (eval + geometry).
@@ -1505,12 +1606,17 @@ fn guard_state_fingerprint(
 ///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
 ///   to the `Value::String` declared for `<entity>.<key>` in the source module's
 ///   `meta {}` blocks (or `Value::Undef` if no such entry exists).
+///
+/// Every engine eval ctx therefore resolves kernel-free selector ctors at ANY
+/// expression depth (#7875), not only as a whole cell default.
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
 ) -> reify_expr::EvalContext<'a> {
-    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+    reify_expr::EvalContext::new(values, functions)
+        .with_meta(meta_map)
+        .with_symbolic_selector_ctor(crate::geometry_ops::try_eval_symbolic_topology_selector)
 }
 
 /// Build the per-template meta-map consumed by `eval_ctx_with_meta`.
@@ -2019,6 +2125,65 @@ mod tests {
         assert!(
             value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Bool must return true"
+        );
+    }
+
+    // ── value_type_kind_matches: Orientation arity narrowing (task 6546) ───
+
+    /// Locks `Value::Orientation` to `Type::Orientation(3)` only — see
+    /// `reify_core::Type::Orientation`'s variant doc for why N=3 is the only
+    /// inhabited arity.
+    ///
+    /// (a) the sole inhabited arity; (b)/(c) rejected arities (mirrors the
+    /// witnesses `joint_self_check::dof_kind_of` already pins to `None`);
+    /// (d) the `Value::Undef` wildcard sits upstream of this match and is
+    /// unaffected; (e) the sibling `Value::Frame` arm is unaffected.
+    #[test]
+    fn value_type_kind_matches_orientation_value_rejects_non_three_arity() {
+        use reify_core::Type;
+        use reify_ir::Value;
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+
+        // (a) The only inhabited arity; also guards against an
+        // over-narrowing that would reject everything.
+        assert!(
+            value_type_kind_matches(&q, &Type::Orientation(3), None),
+            "Value::Orientation must satisfy Type::Orientation(3), the only inhabited arity (a)"
+        );
+
+        // (b) No value can carry N=2, so Type::Orientation(2) is rejected.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(2), None),
+            "Value::Orientation must be rejected by Type::Orientation(2) — no value can carry N=2 (b)"
+        );
+
+        // (c) Mirrors the arities joint_self_check::dof_kind_of already
+        // pins to None, so the value layer and the classifier agree.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(0), None),
+            "Value::Orientation must be rejected by Type::Orientation(0) (c)"
+        );
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(4), None),
+            "Value::Orientation must be rejected by Type::Orientation(4) (c)"
+        );
+
+        // (d) Value::Undef is the universal wildcard and sits upstream of
+        // this match — unaffected by the narrowing.
+        assert!(
+            value_type_kind_matches(&Value::Undef, &Type::Orientation(2), None),
+            "Value::Undef against Type::Orientation(2) must stay true (universal wildcard) (d)"
+        );
+
+        // (e) The narrowing must not leak into the sibling Value::Frame arm.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Frame(3), None),
+            "Value::Orientation must be rejected by Type::Frame(3) (different outer variant) (e)"
         );
     }
 

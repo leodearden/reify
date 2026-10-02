@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
+use crate::indeterminate::IndeterminateReason;
 use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
@@ -42,6 +43,9 @@ pub struct ConstraintResult {
     pub id: ConstraintNodeId,
     pub satisfaction: Satisfaction,
     pub diagnostics: ConstraintDiagnostics,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer
+    /// that decided it. `None` for a definite verdict.
+    pub indeterminate_reason: Option<IndeterminateReason>,
 }
 
 /// Diagnostic information from constraint checking.
@@ -81,6 +85,13 @@ pub struct ObjectiveTerm {
     pub sense: ObjectiveSense,
     pub expr: CompiledExpr,
     /// > 0; default 1.0 (PRD §6.1, invariant I3 — the WeightedSum cost contribution).
+    ///
+    /// That bound is NOT runtime-validated (task #6377): no construction site
+    /// checks positivity or even finiteness, so a NaN/±Inf weight can reach
+    /// every fold site listed at [`objective_terms_coherent`]. Of those, only
+    /// `reify-constraints/src/solver.rs::eval_objective_set` is known to fail
+    /// closed on one; what the others do is theirs to state, not this field's
+    /// to vouch for.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,
@@ -423,6 +434,12 @@ pub trait ConstraintChecker: Send + Sync {
     /// use domain-specific text can safely ignore it — the debug level is off
     /// by default and will not appear in production logs unless explicitly
     /// enabled (e.g. `RUST_LOG=reify_eval=debug`).
+    ///
+    /// # Indeterminate reasons
+    ///
+    /// Implementations **SHOULD** set [`ConstraintResult::indeterminate_reason`]
+    /// on every `Indeterminate` result (R1: the reported outcome renders it in
+    /// place of any guess) and **MUST NOT** set it on a definite one.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 
     /// Returns `true` if this checker is the compile-time indeterminate stub

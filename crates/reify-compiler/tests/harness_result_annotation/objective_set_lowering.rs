@@ -90,9 +90,13 @@ fn single_minimize_lowers_to_one_term_weighted_sum() {
 /// `ObjectiveSet` with `sense == Maximize`, `weight == 1.0`, `priority == 0`.
 #[test]
 fn single_maximize_lowers_to_one_term_weighted_sum() {
+    // `w` is `auto` so the objective reaches a solver variable through the
+    // `let`; with two literal params it would be structurally inert
+    // (E_OBJECTIVE_INERT, #5417) and `compile_ok`'s zero-diagnostics assertion
+    // would fail. The I2 lowering shape under test is unchanged.
     let module = compile_ok(
         r#"structure S {
-    param w: Length = 10mm
+    param w: Length = auto
     param h: Length = 20mm
     let area = w * h
     maximize area

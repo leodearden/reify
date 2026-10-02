@@ -24,6 +24,36 @@ fn make_tauri_context() -> TauriToolContext {
     TauriToolContext::builder(make_engine()).build()
 }
 
+/// [`make_engine`] with a canonical `.ri` ON DISK: writes `bracket_source()` to
+/// `<tmp>/bracket.ri` and `load_file`s it, so the source-canonical write path
+/// has a file to write back to (INV-GUI-3, task 5099 η).
+///
+/// The shared in-memory pair above is deliberately left alone — only the
+/// parameter-write tests need a file. Return shape and the bind-don't-discard
+/// rule for the `TempDir` are `engine_tests.rs`'s `writeback_session`'s.
+fn make_engine_on_disk() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<Mutex<EngineSession>>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, Arc::new(Mutex::new(session)))
+}
+
+fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, TauriToolContext) {
+    let (dir, path, engine) = make_engine_on_disk();
+    (dir, path, TauriToolContext::builder(engine).build())
+}
+
 #[test]
 fn dispatch_get_eval_status_returns_idle() {
     let ctx = make_tauri_context();
@@ -48,7 +78,7 @@ fn dispatch_get_source_returns_bracket_content() {
 
 #[test]
 fn dispatch_set_parameter_returns_success() {
-    let ctx = make_tauri_context();
+    let (_dir, _path, ctx) = make_tauri_context_on_disk();
     let result = mcp_tool_call_impl(
         "reify_set_parameter",
         serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
@@ -87,7 +117,7 @@ fn dispatch_get_parameters_returns_entries() {
 
 #[test]
 fn mcp_write_tool_produces_state_delta() {
-    let engine = make_engine();
+    let (_dir, path, engine) = make_engine_on_disk();
 
     // 1. Build initial GuiState and store in simulated last_state
     let initial_gui_state = engine
@@ -131,6 +161,15 @@ fn mcp_write_tool_produces_state_delta() {
         "Bracket.width should appear in changed_values"
     );
     assert_eq!(changed_width.unwrap().value, "100");
+
+    // The delta and the file are two views of the SAME write, not two writes:
+    // an MCP edit that moved the frontend without moving the source would be
+    // the ephemeral divergence INV-GUI-3 forbids.
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source().replace("80mm", "100mm"),
+        "the write must have reached the canonical .ri too"
+    );
 
     // 6. Verify last_state was updated by compute_delta
     let stored = last_state.lock().unwrap();
@@ -619,4 +658,182 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         !meshes_c.is_empty(),
         "meshes must be non-empty after successful fix"
     );
+}
+
+// ── Reading a `reify_get_parameters` result ──────────────────────────────────
+
+/// The sorted set of `cell_id`s in a `reify_get_parameters` result.
+///
+/// Panics rather than returning an error: a malformed result here means the
+/// dispatch under test is broken, which is a test failure and not a case any
+/// caller should handle.
+fn sorted_cell_ids(result: &serde_json::Value) -> Vec<String> {
+    let entries = result.as_array().unwrap_or_else(|| {
+        panic!("a reify_get_parameters result must be a JSON array; got: {result}")
+    });
+    let mut ids: Vec<String> = entries
+        .iter()
+        .map(|entry| {
+            entry["cell_id"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("every parameter entry must carry a string cell_id; got: {entry}")
+                })
+                .to_owned()
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The `value` string a `reify_get_parameters` result reports for `cell_id`.
+///
+/// Panics rather than returning an error, for the reason [`sorted_cell_ids`]
+/// gives: a missing or malformed entry means the dispatch under test is broken.
+fn parameter_value(result: &serde_json::Value, cell_id: &str) -> String {
+    let entries = result.as_array().unwrap_or_else(|| {
+        panic!("a reify_get_parameters result must be a JSON array; got: {result}")
+    });
+    let entry = entries
+        .iter()
+        .find(|entry| entry["cell_id"] == cell_id)
+        .unwrap_or_else(|| panic!("no parameter entry for {cell_id}; got: {result}"));
+    entry["value"]
+        .as_str()
+        .unwrap_or_else(|| panic!("every parameter entry must carry a string value; got: {entry}"))
+        .to_owned()
+}
+
+// ── The MCP tool call as a queued evaluation (task 7442) ──────────────────────
+
+mod queued_tool_call {
+    use std::sync::{Arc, Mutex};
+
+    use super::{
+        make_engine, make_engine_on_disk, make_tauri_context, parameter_value, sorted_cell_ids,
+    };
+    use crate::eval_queue::{EvalActivity, EvalQueue};
+    use crate::mcp_context::{TauriToolContext, mcp_tool_call_evaluation, mcp_tool_call_impl};
+    use crate::tests::test_helpers::{ManualQueue, RecordingObserver, settled};
+
+    fn queued_call(
+        rig: &ManualQueue,
+        engine: &Arc<Mutex<crate::engine::EngineSession>>,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let ctx = TauriToolContext::builder(Arc::clone(engine)).build();
+        let ticket = rig.queue.submit(mcp_tool_call_evaluation(
+            ctx,
+            Arc::clone(engine),
+            name.to_string(),
+            params,
+        ));
+        rig.executor.run_pending();
+        settled(ticket)
+    }
+
+    #[test]
+    fn a_queued_read_tool_reports_what_a_direct_dispatch_does() {
+        let rig = ManualQueue::new();
+
+        let queued = queued_call(
+            &rig,
+            &make_engine(),
+            "reify_get_parameters",
+            serde_json::json!({}),
+        )
+        .expect("the queued dispatch should succeed");
+        let direct = mcp_tool_call_impl(
+            "reify_get_parameters",
+            serde_json::json!({}),
+            &make_tauri_context(),
+        )
+        .expect("the direct dispatch should succeed");
+
+        let queued_ids = sorted_cell_ids(&queued);
+        assert!(queued_ids.iter().any(|id| id == "Bracket.width"));
+        assert_eq!(queued_ids, sorted_cell_ids(&direct));
+    }
+
+    /// Parameter writes need the ON-DISK fixture: they write back to the .ri
+    /// (INV-GUI-3).
+    #[test]
+    fn a_queued_write_lands_in_the_callers_engine_and_publishes_it() {
+        let (_dir, _path, engine) = make_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let written = queued_call(
+            &rig,
+            &engine,
+            "reify_set_parameter",
+            serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
+        )
+        .expect("the queued write should succeed");
+
+        assert_eq!(written["success"], true, "got: {written}");
+        let after = mcp_tool_call_impl(
+            "reify_get_parameters",
+            serde_json::json!({}),
+            &TauriToolContext::builder(Arc::clone(&engine)).build(),
+        )
+        .expect("read-back dispatch should succeed");
+        assert_eq!(parameter_value(&after, "Bracket.width"), "100");
+        let published = rig
+            .observer
+            .published_value("Bracket.width")
+            .expect("the post-dispatch state must be published");
+        assert_eq!(published.value, "100");
+    }
+
+    /// The post-dispatch sync runs even when the tool fails.
+    #[test]
+    fn a_failed_tool_replies_err_and_still_publishes_the_synced_state() {
+        let rig = ManualQueue::new();
+
+        let error = queued_call(
+            &rig,
+            &make_engine(),
+            "reify_no_such_tool",
+            serde_json::json!({}),
+        )
+        .expect_err("an unknown tool must fail");
+
+        assert!(!error.is_empty());
+        assert_eq!(rig.observer.deltas().len(), 1);
+        assert_eq!(
+            rig.observer.activities(),
+            [EvalActivity::Evaluating, EvalActivity::Idle]
+        );
+    }
+
+    /// `sync_channel`, because the event emitter must be `Sync`.
+    #[tokio::test]
+    async fn a_queued_tool_call_fires_its_events_from_the_engine_lane() {
+        use crate::large_stack::WORKER_THREAD_NAME;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
+        let engine = make_engine();
+        let ctx = TauriToolContext::builder(Arc::clone(&engine))
+            .with_event_emitter(move |_name, _payload| {
+                let _ = tx.send(std::thread::current().name().map(str::to_owned));
+            })
+            .build();
+        let queue = EvalQueue::on_engine_lane(
+            Arc::new(Mutex::new(None)),
+            Arc::new(RecordingObserver::default()),
+        );
+
+        queue
+            .submit(mcp_tool_call_evaluation(
+                ctx,
+                engine,
+                "reify_focus_entity".to_string(),
+                serde_json::json!({"entity_path": "Bracket"}),
+            ))
+            .await
+            .expect("reify_focus_entity should dispatch");
+
+        assert_eq!(rx.try_recv(), Ok(Some(WORKER_THREAD_NAME.to_string())));
+    }
 }

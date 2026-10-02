@@ -80,7 +80,7 @@ negation of the PRD decision, added deliberately*. **Four** such tests exist (al
 
 | Test | Anchor |
 |---|---|
-| `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:172` |
+| `param_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs:172` |
 | `param_negative_literal_on_dimensioned_scalar_does_not_error` | `param_default_type_mismatch_tests.rs:203` |
 | `let_annotation_int_and_real_literal_on_dimensioned_scalar_do_not_error` | `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:173` |
 | `port_member_let_annotation_numeric_literal_on_dimensioned_scalar_do_not_error` | `let_annotation_type_mismatch_tests.rs:578` |
@@ -333,7 +333,8 @@ task 5465 promoted.
    (tasks 4234/4235). A concrete `Scalar<Length>` param receiving a `ScalarParam("Q")` arg
    would newly false-reject. See D4-5.
 4. **`arg_acceptance` is not reusable *today*.** The house rejection-wording template with
-   `migration_hint` lives at `crates/reify-eval/src/arg_acceptance.rs` — in **reify-eval**,
+   `migration_hint` lives at `crates/reify-eval/src/arg_acceptance.rs` *(pre-relocation;
+   #5791 moved the module to `crates/reify-ir/src/arg_acceptance.rs`)* — in **reify-eval**,
    which *depends on* reify-compiler (`reify-eval/Cargo.toml`), not the reverse
    (`reify-compiler/Cargo.toml` deps: ast, core, ir, syntax, config). Importing it today
    inverts the dependency graph. Adopt the **wording shape**, not the type — **but note that
@@ -345,7 +346,7 @@ task 5465 promoted.
 **Migrate the corpus first, then land the gate; workspace green at every commit.** This is
 the template `real-dimensionless-unification.md:64` established and the reason candidate 4
 was chosen over candidates 1–3. The measurement instrument and the migration's own proof are
-the same object: `crates/reify-compiler/tests/examples_smoke.rs:198`
+the same object: `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:198`
 `no_example_emits_ctor_field_conformance_diagnostics` — a corpus-wide, severity-blind,
 zero-tolerance gate over every `.ri` under `examples/` (≥40 files, `:215-220`), which
 accumulates and reports **all** violations in one panic rather than failing fast.
@@ -537,12 +538,28 @@ by the registry alone **under-counts**; α must reproduce the alias extension.
 | — prose blocks stating the tolerance as intent | 23 |
 | **Total real work** | **27 hard breaks + 10 inversions** |
 
+*(As-measured figures — re-derive, do not match. This row and the §11 scope note below both
+record **27 hard breaks + 10 inversions**; the α ledger
+`docs/notes/dimensioned-construction-blast-radius-2026-07-29.md:2327` §10.3 independently records
+**39** breaks + 10 + 2 unclassified. The two were measured at different HEADs and have BOTH since
+rotted; neither is rewritten here. Re-run the sweep against HEAD rather than copying either figure.
+Recorded 2026-09-08 from the orphaned premise-drift audit on task #5646, surfaced as esc-5646-4.)*
+
 The two `.ri` sites:
 
 ```
 examples/bearing_auto_seal.ri:46                      param durometer : Length = 70.0
 tree-sitter-reify/test/fixtures/mv-2-priv-param.ri:4  priv param rated_torque : Torque = 5
 ```
+
+*(Site status as of 2026-09-08 — the listing above is the as-measured record and is not rewritten.
+`examples/bearing_auto_seal.ri:46` is **DISCHARGED**: it now reads `param durometer : Real = 70.0`,
+corrected by commit `c9efb91a4c` (2026-08-07, "fix(5627): correct bearing_auto_seal durometer
+annotation to Real"), so it is no longer a category-A site. A live sweep at 2026-09-08 finds ZERO
+bare-numeric-at-dimensioned-annotation **`param`** sites under `examples/**` or
+`crates/reify-compiler/stdlib/**`; the 19 bare-numeric hits that remain there are all `unit`
+declarations (e.g. `pub unit cm : Length = 0.01`), where a unitless magnitude is required by
+construction and is not a defect. Recorded from the premise-drift audit surfaced as esc-5646-4.)*
 
 Only the first is type-checked; it breaks `examples_smoke.rs` **and**
 `crates/reify-eval/tests/auto_type_param_determinism_tests.rs:391`
@@ -568,7 +585,7 @@ gate 1.
 Two findings that reshape δ₁'s scope:
 
 - **Trait-lets are already strict.** `let score : Mass = 1.5` inside a trait already errors
-  via the `TypeMismatchForTraitMember` path (`crates/reify-compiler/tests/m9_error_cases.rs:276`).
+  via the `TypeMismatchForTraitMember` path (`crates/reify-compiler/tests/harness_diagnostics_robustness/m9_error_cases.rs:276`).
   So structure params/lets are permissive while trait lets are strict — δ₁ **removes an
   existing inconsistency** rather than introducing strictness.
 - **One fixture's doc comment is a rationale that dies with the tolerance.**
@@ -1104,7 +1121,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 - **Modules:** `crates/reify-compiler/src/conformance/mod.rs`,
   `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
-  `crates/reify-compiler/tests/examples_smoke.rs`.
+  `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`.
 - **Work:** the §4.1 predicate arm; the D4-5 `ScalarParam` fence via
   `is_numeric_placeholder_leaf`; the D4-6 migration hint; rewrite the `examples_smoke` panic
   message (§4.3 trap); add the I1–I8 value floors (§7.1).
@@ -1138,7 +1155,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 ### δ₁ — Remove the literal `param`/`let` default tolerance; reinstate D5 in code *(§2.1 gates 3+4; task 5646's "gate 1")*
 
 - **Modules:** `crates/reify-compiler/src/entity.rs`,
-  `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs`,
+  `crates/reify-compiler/tests/harness_diagnostics_robustness/param_default_type_mismatch_tests.rs`,
   `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs`,
   `crates/reify-compiler/src/conformance/mod.rs` (D4-4 de-dup), plus the 27 measured sites.
 - **Work:** delete the literal early-returns at `entity.rs:479-485` (params) and `:563-569`
@@ -1154,7 +1171,8 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
   (`= 0` → `= 0USD`). Migrate the **27** measured break sites (§6.2); reuse
   `corpus_no_bare_scalar.rs`'s tree walk and parse-only exclusion list rather than
   re-deriving one.
-- **Scope note (measured, §6.2):** 27 hard breaks + 10 assertion inversions. 11 of the
+- **Scope note (measured, §6.2):** 27 hard breaks + 10 assertion inversions — *as-measured, now
+  rotted; see the re-derive annotation under §6.2 and do not match this figure (2026-09-08).* 11 of the
   no-break sites are `reify-syntax` parse-only fixtures that need **no change at all**.
   `examples/bearing_auto_seal.ri:46` is fixed by correcting the *annotation*
   (`durometer : Length` → dimensionless), not by adding a unit — Shore durometer is

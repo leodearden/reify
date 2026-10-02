@@ -79,6 +79,7 @@ indexmap
 instant
 interpol
 inventory
+itoa
 jobserver
 libc
 libm
@@ -126,6 +127,7 @@ regex-automata
 regex-syntax
 reify-ast
 reify-build-utils
+reify-builtins
 reify-compiler
 reify-compute-contract
 reify-config
@@ -151,6 +153,7 @@ seq-macro
 serde
 serde_core
 serde_derive
+serde_json
 serde_spanned
 shlex
 simba
@@ -182,6 +185,7 @@ winnow
 xxhash-rust
 zerocopy
 zip
+zmij
 zstd
 zstd-safe
 zstd-sys

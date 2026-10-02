@@ -359,8 +359,8 @@ pub structure C {
 }
 
 /// Stage has `body = box(...)`; Assy has `sub stage_left = Stage()` and
-/// `mirrored = mirror(self.stage_left.body, 0, 0, 0, 1, 0, 0)` — origin at
-/// the world origin, normal along +X.
+/// `mirrored = mirror(self.stage_left.body, 0mm, 0mm, 0mm, 1, 0, 0)` — origin
+/// at the world origin, normal along +X.
 ///
 /// Asserts (a) recorded ops contain a Mirror op whose target == Stage's box
 /// handle, (b) build succeeds with `geometry_output.is_some()`, (c) no

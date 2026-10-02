@@ -286,6 +286,21 @@ fn collect_body_frame_into(members: &[reify_ast::MemberDecl], frame: &mut Frame,
         match member {
             // A relate block introduces no bindable names (task δ 4384).
             MemberDecl::Relate(_) => {}
+            // A sketch block contributes NO binder to the enclosing frame
+            // (constrained-2d-sketch α, task 5506). Its body's `let`s are
+            // sketch-local — "not visible outside the block in v1" (PRD
+            // docs/prds/v0_6/constrained-2d-sketch.md §7 C1) — so they must not
+            // be folded in here, exactly as `walk_members`' non-descent in
+            // reify-ast decides.
+            //
+            // Whether the sketch's OWN name binds in the enclosing scope (the
+            // fixture's `extrude(profile, length)` reads as if it does) is a
+            // SEMANTIC question α deliberately leaves to γ: α rejects sketch
+            // blocks at compile time, so `profile` never becomes a value cell,
+            // and binding it here would let the shadow lint warn about a name
+            // that does not yet exist. Not binding it can only miss a lint;
+            // binding it can emit a wrong one.
+            MemberDecl::Sketch(_) => {}
             MemberDecl::Param(p) => {
                 frame.entry(p.name.clone()).or_insert(p.span);
             }
@@ -372,6 +387,16 @@ fn walk_members_depth(
     }
     for member in members {
         match member {
+            // Walk the sketch body so shadow lints see its `let` values and
+            // bare relation expressions (constrained-2d-sketch α, task 5506).
+            // No frame is pushed: `collect_body_frame_into` deliberately
+            // contributes no binders for a sketch, so there is no sketch-local
+            // frame to push — a lambda param inside a sketch member is still
+            // checked against the ENCLOSING scopes, which is the conservative
+            // reading until γ defines sketch-local scoping.
+            MemberDecl::Sketch(s) => {
+                walk_members_depth(&s.members, frames, diagnostics, depth + 1);
+            }
             // Walk relate-block relations so shadow lints see them (task δ 4384).
             MemberDecl::Relate(r) => {
                 for rel in &r.relations {

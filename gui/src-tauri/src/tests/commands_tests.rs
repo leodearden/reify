@@ -4,7 +4,7 @@ use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
     assert_rigid_mass_props_not_final, cwd_lock, find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session,
-    rigid_mass_props_session_seeded_with_ops, visible_realization_keys,
+    rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
 };
 
 use reify_constraints::SimpleConstraintChecker;
@@ -13,6 +13,9 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
+// The ONE η bounded fixture, shared with the engine-level tests rather than twinned
+// here — see its doc comment for why a second copy is a hazard.
+use crate::tests::engine_tests::bounded_bracket_source;
 
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -20,12 +23,20 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
-fn make_loaded_session() -> EngineSession {
+/// [`make_session`] with `source` loaded under the module name `bracket`.
+///
+/// The `&str`-parameterized form of [`make_loaded_session`], which is what the ~20
+/// neighbouring tests call; both bodies are this one.
+fn make_loaded_session_from(source: &str) -> EngineSession {
     let mut session = make_session();
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(source, "bracket")
         .expect("initial load");
     session
+}
+
+fn make_loaded_session() -> EngineSession {
+    make_loaded_session_from(bracket_source())
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -65,7 +76,6 @@ fn app_state_constructible() {
     let session = make_loaded_session();
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -79,7 +89,6 @@ fn app_state_selection_is_accessible() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -99,7 +108,6 @@ fn app_state_selection_multi() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -142,12 +150,12 @@ fn constraint_violation_set_thickness_1mm() {
     let state = {
         let mut session = engine.lock().unwrap();
         session
-            .set_parameter("Bracket.thickness", "1mm")
+            .preview_parameter("Bracket.thickness", "1mm")
             .expect("set thickness should succeed")
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -416,13 +424,13 @@ fn constraint_violation_and_recovery() {
 
     // Set thickness=1mm → violates "thickness > 2mm"
     let state = session
-        .set_parameter("Bracket.thickness", "1mm")
+        .preview_parameter("Bracket.thickness", "1mm")
         .expect("set thickness=1mm");
 
     let violated_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .count();
     assert!(
         violated_count >= 1,
@@ -433,7 +441,7 @@ fn constraint_violation_and_recovery() {
     let satisfied_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Satisfied")
+        .filter(|c| c.status == "satisfied")
         .count();
     assert!(
         satisfied_count >= 1,
@@ -442,12 +450,12 @@ fn constraint_violation_and_recovery() {
 
     // Set back to 5mm → all satisfied again
     let state = session
-        .set_parameter("Bracket.thickness", "5mm")
+        .preview_parameter("Bracket.thickness", "5mm")
         .expect("set thickness=5mm");
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "all constraints should be satisfied after restoring thickness=5mm, but {} is {}",
             c.node_id, c.status
         );
@@ -486,6 +494,125 @@ fn end_to_end_export_via_impl() {
 
     export_impl(&engine, "step", path.to_str().unwrap()).expect("export should succeed");
     assert!(path.exists(), "exported file should exist");
+}
+
+// --- η export refusal: the three callers of the `EngineSession::export` chokepoint
+// (task 6190) ---
+//
+// The gate lives in `EngineSession::export`; these tests PROVE — rather than assert —
+// that every GUI export caller reaches it, so a refactor giving one its own build path
+// goes red instead of silently reopening the bypass. The shared rationale for the
+// `starts_with` assertions, and the enumeration of the three callers, is argued once in
+// the η cluster header in `engine_tests.rs`.
+
+/// Caller 1 of 3 — `commands::export_impl`, the Tauri command the frontend calls.
+#[test]
+fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::commands::export_impl;
+
+    let engine = Mutex::new(make_loaded_session_from(&bounded_bracket_source()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_bounded.step");
+
+    let err = export_impl(&engine, "step", path.to_str().unwrap()).expect_err(
+        "export_impl must surface the η refusal for a design declaring a \
+         RepresentationWithin bound",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the message reaching the frontend must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 2 of 3 — `mcp_context::TauriToolContext::export`, the MCP tool context.
+///
+/// Load-bearing for a reason caller 1 cannot cover: this one returns
+/// `Result<bool, ToolError>`, so folding the refusal into `Ok(false)` would report a
+/// REFUSED export to the MCP client as a completed one with the diagnostic dropped.
+/// The `match` pins that mapping, not just the message text.
+///
+/// Sited here rather than in its topical home `mcp_context_tests.rs`, which is outside
+/// task 6190's lock footprint; co-locating all three proofs also lets a reader diff the
+/// surfaces' contracts side by side.
+#[test]
+fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::mcp_context::TauriToolContext;
+    use reify_mcp::{ReifyToolContext, ToolError};
+
+    let session = make_loaded_session_from(&bounded_bracket_source());
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_bounded.step");
+
+    let err = ctx
+        .export("step", path.to_str().unwrap())
+        .expect_err("the MCP export tool must surface the η refusal, not report success");
+    match err {
+        ToolError::EngineError(msg) => assert!(
+            msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError LEADING with the \
+             stable E_* token; got: {msg}"
+        ),
+        other => panic!(
+            "a refused export must map to ToolError::EngineError (the engine's own \
+             refusal), not {other:?}"
+        ),
+    }
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 3 of 3 — `debug_server::reify_export_on_engine_and_refresh_baseline`, the
+/// engine-routing core of the `reify_export` AI write tool.
+///
+/// Its own test (`debug_server::tests::write_tools::reify_export_writes_a_non_empty_file`)
+/// covers success only, so without this the third caller's delegation would be the one
+/// unpinned leg of the chokepoint claim. `#[cfg(feature = "gui")]` because
+/// `crate::debug_server` is gated on that feature.
+///
+/// The refusal must also leave the delta baseline untouched: the seam's
+/// `compute_delta` sits after the `?`, so a refused write commits no new state.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
+
+    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+        std::sync::Mutex::new(None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ai_bounded.step");
+
+    let err = reify_export_on_engine_and_refresh_baseline(
+        &engine,
+        &last_state,
+        "step",
+        path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("the reify_export write tool must surface the η refusal, not report success");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must reach the AI client LEADING with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+    assert!(
+        last_state.lock().unwrap().is_none(),
+        "a refused export must not refresh the delta baseline — the seam's compute_delta \
+         runs only after a successful write"
+    );
 }
 
 #[test]
@@ -745,11 +872,11 @@ fn get_initial_state_impl_recovers_from_poisoned_mutex() {
 }
 
 #[test]
-fn set_parameter_impl_recovers_from_poisoned_mutex() {
-    use crate::commands::set_parameter_impl;
+fn preview_parameter_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::preview_parameter_impl;
 
     let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
-    let result = set_parameter_impl(&engine, "Bracket.thickness", "5mm");
+    let result = preview_parameter_impl(&engine, "Bracket.thickness", "5mm");
     assert!(
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
@@ -761,7 +888,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
             .values
             .iter()
             .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5" && v.unit == "mm"),
-        "set_parameter should have applied thickness=5mm after poison recovery"
+        "preview_parameter_impl should have applied thickness=5mm after poison recovery"
     );
 }
 
@@ -769,18 +896,18 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
 /// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
 /// through the same `&Mutex<EngineSession>` session shim the other command
 /// tests use, leaves production evaluation unchanged, and the NEXT
-/// `set_parameter` surfaces the passive would-prune measurement on the returned
+/// `preview_parameter_impl` surfaces the passive would-prune measurement on the returned
 /// `GuiState.demand_prune_measurement`.
 ///
 /// RED until `sync_observed_demand_impl` exists (step-9).
 #[test]
 fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() {
-    use crate::commands::{set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{preview_parameter_impl, sync_observed_demand_impl};
 
     // ── Control: drive the edit through the command shim with NO sync. ────────
     let control = Mutex::new(make_loaded_session());
     let control_state =
-        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
+        preview_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control preview_parameter_impl");
 
     // ── Synced: register the visible realization R0 + the displayed thickness
     //    cell through the COMMAND shim before the edit. No panel constraints, so
@@ -794,7 +921,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     )
     .expect("sync_observed_demand_impl should succeed");
     let synced_state =
-        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+        preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // (a) Zero behavior change through the command path: parameter values are
     //     byte-identical to the no-sync control.
@@ -868,7 +995,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
 /// absent from the projection today, so the `get(..).expect(..)` lookups panic.
 #[test]
 fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_post_refresh() {
-    use crate::commands::{engine_state_json, set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{engine_state_json, preview_parameter_impl, sync_observed_demand_impl};
 
     // Drive an observed-demand slider edit through the command shim (mirrors the
     // pattern at commands_tests.rs:740): register the visible realization R0 + the
@@ -884,7 +1011,7 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
         &[],
     )
     .expect("sync_observed_demand_impl should succeed");
-    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+    preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // Project the engine state through the debug-MCP helper.
     let mut session = synced
@@ -1177,7 +1304,7 @@ const SELECTIVE_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
 /// binary fails to compile until step-8 adds it.
 #[test]
 fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
-    use crate::commands::{demand_dispatch_json, set_parameter_impl, sync_demand_impl};
+    use crate::commands::{demand_dispatch_json, preview_parameter_impl, sync_demand_impl};
 
     let body_a_key = "SelectiveMultiBody#realization[0]";
     let body_b_key = "SelectiveMultiBody#realization[1]";
@@ -1191,7 +1318,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
     // Hide body_b (R1): only body_a (R0) is visible/demanded.
     sync_demand_impl(&synced, &[body_a_key.to_string()]).expect("sync_demand_impl should succeed");
     // Slider edit drives the warm selective tessellate (body_b stays pruned).
-    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter");
+    preview_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider preview_parameter_impl");
 
     let mut session = synced
         .into_inner()
@@ -1294,7 +1421,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
 #[test]
 fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     use crate::commands::{
-        demand_dispatch_json, engine_state_json, set_parameter_impl, sync_demand_impl,
+        demand_dispatch_json, engine_state_json, preview_parameter_impl, sync_demand_impl,
         sync_observed_demand_impl,
     };
 
@@ -1320,10 +1447,10 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //    0 ops EACH tick and is absent from the eval-set. ───────────────────────
     let ticks = ["12mm", "16mm", "20mm"];
     for (i, w) in ticks.iter().enumerate() {
-        set_parameter_impl(&session, w_cell, w)
-            .unwrap_or_else(|e| panic!("tick {i}: set_parameter({w}) must succeed: {e}"));
+        preview_parameter_impl(&session, w_cell, w)
+            .unwrap_or_else(|e| panic!("tick {i}: preview_parameter_impl({w}) must succeed: {e}"));
 
-        // `demand_dispatch_json` is a PURE engine read reflecting set_parameter's
+        // `demand_dispatch_json` is a PURE engine read reflecting the edit's
         // internal tessellate — read it BEFORE any re-tessellating projection so
         // body_a's freshly-dirtied dispatch is still visible (a later
         // `engine_state_json` re-tessellate would find body_a cached → 0).
@@ -1405,7 +1532,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
         &[],
     )
     .expect("sync_observed_demand_impl");
-    set_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
+    preview_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
     let obs_es = {
         let mut guard = obs.lock().expect("session lock");
         engine_state_json(&mut guard).expect("engine_state_json")
@@ -1433,7 +1560,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     )
     .expect("un-hide sync_demand");
     // A fresh edit under the now-full cone re-realizes body_b and recomputes sb.
-    set_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
+    preview_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
 
     // (a) body_b re-realizes (dispatch >= 1) and re-enters the eval-set.
     let dd = {
@@ -1466,7 +1593,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //     fresh cold full-scope build at the same param (no stale value).
     let oracle = load_session();
     let oracle_state =
-        set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
+        preview_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
     let oracle_sb = oracle_state
         .values
         .iter()
@@ -1724,203 +1851,27 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
-// ── Task 5357 step-5: run_on_large_stack composition guard ───────────────────
+// ── Queued engine-call payloads (task 7442) ──────────────────────────────────
 
-/// Sorted key projection of a keyed `GuiState` collection.
-fn sorted_keys<T>(items: &[T], key: impl Fn(&T) -> &str) -> Vec<String> {
-    let mut keys: Vec<String> = items.iter().map(|i| key(i).to_owned()).collect();
-    keys.sort();
-    keys
-}
-
-/// Assert that two `GuiState`s agree on everything a large-stack relocation
-/// could plausibly change: the identity (and hence cardinality) of every keyed
-/// collection, plus both diagnostics streams.
+/// Compile-time proof that `T` satisfies the bound a queued request's reply
+/// needs.
 ///
-/// Deliberately NOT a whole-`GuiState` `assert_eq!`. The two states here come
-/// from two independently constructed `EngineSession`s, so a full comparison
-/// would also assert run-to-run determinism of every float, every vertex buffer
-/// and every collection's ORDER — none of which is the property under test. If
-/// any `GuiState` field ever became ordering-dependent (e.g. built from a
-/// `HashMap`/`HashSet` walk) or gained a timing/counter field, a full comparison
-/// would go flaky for a reason with nothing to do with `large_stack`, and the
-/// failure would point at the wrong subsystem. These order-insensitive
-/// projections are what actually distinguish "ran on the large-stack thread"
-/// from "ran inline".
-fn assert_same_salient_state(
-    wrapped: &crate::types::GuiState,
-    direct: &crate::types::GuiState,
-    what: &str,
-) {
-    assert_eq!(
-        sorted_keys(&wrapped.files, |f| &f.path),
-        sorted_keys(&direct.files, |f| &f.path),
-        "{what}: the set of loaded file paths must not depend on which thread the compile ran on"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.meshes, |m| &m.entity_path),
-        sorted_keys(&direct.meshes, |m| &m.entity_path),
-        "{what}: the set of realized mesh entity_paths must be identical"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.values, |v| &v.cell_id),
-        sorted_keys(&direct.values, |v| &v.cell_id),
-        "{what}: the set of value cell_ids must be identical"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped.constraints, |c| &c.node_id),
-        sorted_keys(&direct.constraints, |c| &c.node_id),
-        "{what}: the set of constraint node_ids must be identical"
-    );
-    assert_eq!(
-        wrapped.compile_diagnostics.len(),
-        direct.compile_diagnostics.len(),
-        "{what}: compile diagnostics count must be identical; wrapped={:?} direct={:?}",
-        wrapped.compile_diagnostics,
-        direct.compile_diagnostics
-    );
-    assert_eq!(
-        wrapped.tessellation_diagnostics.len(),
-        direct.tessellation_diagnostics.len(),
-        "{what}: tessellation diagnostics count must be identical; wrapped={:?} direct={:?}",
-        wrapped.tessellation_diagnostics,
-        direct.tessellation_diagnostics
-    );
-}
-
-/// `open_file_engine_impl` invoked THROUGH `run_on_large_stack` returns the same
-/// `Ok(GuiState)` as a direct (un-wrapped) call.
-///
-/// This proves the large-stack helper composes safely with the real engine /
-/// `with_engine_lock` / compile path when the compile runs on a plain `std`
-/// thread (no tokio-context `blocking_send` issue; identical result). It is the
-/// headless proxy for the un-headless-testable `open_file_engine` / `update_source`
-/// Tauri command wiring (step-6): those commands cannot be built headlessly, so
-/// this exercises the exact `run_on_large_stack(|| open_file_engine_impl(..))`
-/// composition they perform.
-#[test]
-fn open_file_engine_impl_runs_correctly_through_large_stack() {
-    use crate::commands::open_file_engine_impl;
-
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bracket.ri");
-    std::fs::write(&file, bracket_source()).unwrap();
-    // Absolute path → canonicalization needs no cwd change (unlike the relative
-    // sibling test above), so no `cwd_lock` is required.
-    let path = file.to_str().unwrap();
-
-    // Direct (un-wrapped) call on a fresh engine.
-    let engine_direct = Mutex::new(EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    ));
-    let direct = open_file_engine_impl(&engine_direct, path)
-        .expect("direct open_file_engine_impl should succeed");
-
-    // The same call routed through the large-stack helper on an identically
-    // initialized fresh engine. The scoped closure borrows `&engine_wrapped` /
-    // `path` directly — no `Arc` clone, no `'static` bound.
-    let engine_wrapped = Mutex::new(EngineSession::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    ));
-    let wrapped =
-        crate::large_stack::run_on_large_stack(|| open_file_engine_impl(&engine_wrapped, path))
-            .expect("open_file_engine_impl through run_on_large_stack should succeed");
-
-    // Concrete expected shape (independent of the direct half).
-    assert!(
-        !wrapped.files.is_empty(),
-        "GuiState.files should be non-empty after loading a file on the large stack"
-    );
-    assert!(
-        !wrapped.meshes.is_empty(),
-        "GuiState.meshes should be non-empty after a clean compile on the large stack"
-    );
-    assert!(
-        wrapped.compile_diagnostics.is_empty(),
-        "a clean bracket_source compile on the large stack must emit no compile diagnostics; \
-         got: {:?}",
-        wrapped.compile_diagnostics
-    );
-
-    assert_same_salient_state(&wrapped, &direct, "open_file_engine_impl");
-}
-
-/// `reload_for_watch_impl` invoked THROUGH `run_on_large_stack` returns the same
-/// salient state as a direct (un-wrapped) call.
-///
-/// The sibling of the guard above, for the OTHER half of the step-6 wiring.
-/// TWO distinct call sites perform exactly this composition, and both are
-/// un-headless-testable (they take `tauri::AppHandle` / `tauri::State`):
-/// the frontend-invoked `main.rs::update_source` command, and
-/// `main.rs::create_watcher`'s `FileEvent::Changed` callback — the latter being
-/// the recompile reached on EVERY watch-triggered on-disk reload, i.e. the
-/// highest-frequency of the wrapped compile paths.
-#[test]
-fn reload_for_watch_impl_runs_correctly_through_large_stack() {
-    use crate::commands::reload_for_watch_impl;
-
-    // Direct (un-wrapped) call on a freshly loaded engine.
-    let engine_direct = make_test_engine_for_commands();
-    let direct = reload_for_watch_impl(&engine_direct, "bracket.ri", bracket_source())
-        .expect("direct reload_for_watch_impl should succeed");
-
-    // The same call routed through the large-stack helper on an identically
-    // initialized engine. The scoped closure borrows `&engine_wrapped` directly.
-    let engine_wrapped = make_test_engine_for_commands();
-    let wrapped = crate::large_stack::run_on_large_stack(|| {
-        reload_for_watch_impl(&engine_wrapped, "bracket.ri", bracket_source())
-    })
-    .expect("reload_for_watch_impl through run_on_large_stack should succeed");
-
-    assert!(
-        !wrapped.meshes.is_empty(),
-        "GuiState.meshes should be non-empty after a successful reload on the large stack"
-    );
-    assert!(
-        wrapped.compile_diagnostics.is_empty(),
-        "a successful reload on the large stack must emit no compile diagnostics; got: {:?}",
-        wrapped.compile_diagnostics
-    );
-
-    assert_same_salient_state(&wrapped, &direct, "reload_for_watch_impl");
-}
-
-// ── Task 5772: run_on_worker composition guards ──────────────────────────────
-//
-// These stand in for the 14 un-headless-testable `main.rs` command wrappers that
-// step-8 routes through the persistent worker, exactly as the task-5357 guards
-// above stand in for its three. Those wrappers take `tauri::State` / `AppHandle`
-// and cannot be constructed headlessly, so what is testable — and what actually
-// matters — is the COMPOSITION they perform:
-// `run_on_worker(move || commands::x_impl(&engine, ..))`, with the
-// `Arc<Mutex<EngineSession>>` MOVED into a `'static` closure rather than
-// borrowed as the scoped `run_on_large_stack` tier permits.
-//
-// The wrappers proxied here: `get_initial_state`, `set_parameter`,
-// `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
-// `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
-// `get_def_preview`, `get_containing_definition`,
-// `get_entity_at_source_location`, `get_active_fea_case`, `set_active_fea_case`.
-
-/// Compile-time proof that `T` satisfies the bound the whole migration rests on.
-///
-/// `run_on_worker` requires `T: Send + 'static` because the result crosses a
-/// channel from a thread that outlives the submitting frame. Every migrated
-/// command's payload must therefore qualify — as must the `Arc<Mutex<…>>` moved
-/// in. This never runs; naming the types is the assertion.
+/// `EvalQueue::submit` requires `T: Send + 'static` because the reply crosses
+/// from the ENGINE lane to the awaiting command. This never runs; naming the
+/// types is the assertion.
 fn assert_send_static<T: Send + 'static>() {}
 
-/// Pins `T: Send + 'static` for every type the migration moves across the
-/// worker's queue: each migrated command's return payload, plus the engine
-/// handle itself.
+/// Pins `T: Send + 'static` for the payloads the `main.rs` commands submit to
+/// the evaluation queue as engine calls, plus the engine handle each job
+/// captures.
 ///
 /// `Result<T, String>` follows from `T` (and `String` is `Send + 'static`), so
 /// the payloads are what need naming. If a future command returns something
-/// non-`Send` — an `Rc`, a raw pointer, a borrow — it cannot join this tier, and
-/// this list is where that shows up as a compile error rather than as a puzzling
-/// error at the call site in `main.rs` (which only builds under `--features gui`).
+/// non-`Send` — an `Rc`, a raw pointer, a borrow — it cannot go through the
+/// queue, and this list is where that shows up as a compile error rather than
+/// as a puzzling error at the call site in `main.rs` (which only builds under
+/// `--features gui`). The request constructors in `commands.rs` and
+/// `mcp_context.rs` need no entry: the lib compiling pins their payloads.
 #[test]
 fn migrated_command_payloads_are_send_and_static() {
     use crate::engine::EngineSession;
@@ -1928,176 +1879,17 @@ fn migrated_command_payloads_are_send_and_static() {
     use reify_mcp::SourceLocationInfo;
     use std::collections::HashMap;
 
-    assert_send_static::<GuiState>(); // get_initial_state, set_parameter, get_def_preview
+    assert_send_static::<GuiState>(); // get_def_preview
     assert_send_static::<Vec<EntityTreeNode>>(); // get_entity_tree
     assert_send_static::<HashMap<String, EntityIdentity>>(); // get_entity_identity_map
     assert_send_static::<Vec<MechanismDescriptor>>(); // get_mechanism_descriptors
     assert_send_static::<SourceLocationInfo>(); // get_source_location
     assert_send_static::<Option<DefInfo>>(); // get_containing_definition
     assert_send_static::<Option<String>>(); // get_entity_at_source_location, get_active_fea_case
-    assert_send_static::<()>(); // export, sync_demand, sync_observed_demand, set_active_fea_case
+    assert_send_static::<()>(); // export, sync_demand, sync_observed_demand
 
-    // The handle every migrated closure captures. Already proven in practice by
-    // `debug_server::run_on_engine`, which clones it into a `'static`
-    // `spawn_on_large_stack` closure — pinned here so the migration does not
-    // depend on that remaining true elsewhere.
+    // The handle every queued job captures.
     assert_send_static::<Arc<Mutex<EngineSession>>>();
-}
-
-/// `get_initial_state_impl` through `run_on_worker` returns the same salient
-/// state as a direct call — the projection command every session starts with.
-#[test]
-fn get_initial_state_impl_runs_correctly_through_worker() {
-    use crate::commands::get_initial_state_impl;
-
-    let engine_direct = make_test_engine_for_commands();
-    let direct =
-        get_initial_state_impl(&engine_direct).expect("direct get_initial_state_impl should succeed");
-
-    let engine_wrapped = make_test_engine_for_commands();
-    // The `Arc` is CLONED and MOVED — the `'static` bound is the API price of a
-    // persistent worker, and this is what paying it looks like at a call site.
-    let engine = Arc::clone(&engine_wrapped);
-    let wrapped = crate::large_stack::run_on_worker(move || get_initial_state_impl(&engine))
-        .expect("get_initial_state_impl through run_on_worker should succeed");
-
-    assert!(
-        !wrapped.values.is_empty(),
-        "GuiState.values should be non-empty for the bracket fixture on the worker"
-    );
-    assert_same_salient_state(&wrapped, &direct, "get_initial_state_impl");
-}
-
-/// `set_parameter_impl` through `run_on_worker` returns the same salient state
-/// as a direct call.
-///
-/// This is the command the whole tier exists for: it fires per slider-drag
-/// frame, which is why a fresh 256 MiB mapping per call was the wrong mechanism.
-/// The cell id is DISCOVERED from the engine's own initial state rather than
-/// hardcoded, so the guard cannot rot into a no-op if the fixture's parameter
-/// names change; setting a cell to its OWN current value keeps the edit a
-/// genuine round-trip through `set_parameter` without changing the model.
-///
-/// The round trip has to REJOIN `ValueData`'s two halves to be a round trip at
-/// all — see the comment on `value` below.
-#[test]
-fn set_parameter_impl_runs_correctly_through_worker() {
-    use crate::commands::{get_initial_state_impl, set_parameter_impl};
-
-    let engine_direct = make_test_engine_for_commands();
-    let probe =
-        get_initial_state_impl(&engine_direct).expect("initial state should expose a settable cell");
-    // `ValueData.kind` uses the CAPITALIZED convention (`engine::cell_kind_gui_str`);
-    // the lowercase `"param"` form belongs to the entity-tree / identity-map
-    // APIs (`cell_kind_tree_str`). The split is deliberate, and picking the
-    // wrong one here matches nothing and fails the `expect` below.
-    let param = probe
-        .values
-        .iter()
-        .find(|v| v.kind == "Param")
-        .expect("the bracket fixture must expose at least one Param cell");
-    // `ValueData` splits a displayed quantity across TWO fields: `value` is the
-    // display NUMBER with its unit stripped off into the sibling `unit`
-    // (`format_value` -> `Value::format_display_pair`). So `param.value` alone
-    // is the bare `"80"`, and feeding that back to a dimensioned cell is not a
-    // round trip — the engine rejects it outright ("expects Length, got the
-    // bare number '80'; pass a dimensioned Length literal such as '80mm'").
-    // Rejoining the halves reconstructs the literal a user would have typed,
-    // which is what every other `set_parameter_impl` call site in this file
-    // passes by hand (`"5mm"`, `"250mm"`) — recovered here by DISCOVERY rather
-    // than hardcoded, so the guard still cannot rot into a no-op. A
-    // dimensionless param carries `unit == ""`, so the concatenation degrades
-    // to the bare number exactly where the bare number is what the engine wants.
-    let (cell_id, value) = (
-        param.cell_id.clone(),
-        format!("{}{}", param.value, param.unit),
-    );
-
-    let direct = set_parameter_impl(&engine_direct, &cell_id, &value)
-        .unwrap_or_else(|e| panic!("direct set_parameter_impl({cell_id}, {value}) failed: {e}"));
-
-    let engine_wrapped = make_test_engine_for_commands();
-    let engine = Arc::clone(&engine_wrapped);
-    let (wrapped_cell, wrapped_value) = (cell_id.clone(), value.clone());
-    let wrapped = crate::large_stack::run_on_worker(move || {
-        set_parameter_impl(&engine, &wrapped_cell, &wrapped_value)
-    })
-    .unwrap_or_else(|e| panic!("set_parameter_impl through run_on_worker failed: {e}"));
-
-    assert_same_salient_state(&wrapped, &direct, "set_parameter_impl");
-}
-
-/// `get_entity_tree_impl` through `run_on_worker` returns the same tree as a
-/// direct call.
-///
-/// A traversal of an already-compiled structure — the recursion-bearing shape
-/// that motivated giving these commands a large stack at all, even though they
-/// are not the full-compile hazard task 5337 diagnosed.
-#[test]
-fn get_entity_tree_impl_runs_correctly_through_worker() {
-    use crate::commands::get_entity_tree_impl;
-
-    let engine_direct = make_test_engine_for_commands();
-    let direct =
-        get_entity_tree_impl(&engine_direct).expect("direct get_entity_tree_impl should succeed");
-
-    let engine_wrapped = make_test_engine_for_commands();
-    let engine = Arc::clone(&engine_wrapped);
-    let wrapped = crate::large_stack::run_on_worker(move || get_entity_tree_impl(&engine))
-        .expect("get_entity_tree_impl through run_on_worker should succeed");
-
-    assert!(
-        !wrapped.is_empty(),
-        "the bracket fixture must yield a non-empty entity tree on the worker"
-    );
-    assert_eq!(
-        sorted_keys(&wrapped, |n| &n.entity_path),
-        sorted_keys(&direct, |n| &n.entity_path),
-        "the set of entity-tree node paths must not depend on which thread the walk ran on"
-    );
-}
-
-/// `export_impl` through `run_on_worker` agrees with a direct call and actually
-/// writes the file.
-///
-/// The kernel-touching migrated command: `export` reaches the geometry kernel,
-/// so this is the guard that the relocation composes with kernel work and not
-/// just with in-memory projection. Writing a non-empty file is the load-bearing
-/// half — an `Ok` alone would also be returned by an export that silently did
-/// nothing on the worker thread.
-#[test]
-fn export_impl_runs_correctly_through_worker() {
-    use crate::commands::export_impl;
-
-    let dir = tempfile::tempdir().unwrap();
-
-    let engine_direct = make_test_engine_for_commands();
-    let direct_path = dir.path().join("direct.step");
-    let direct = export_impl(&engine_direct, "step", direct_path.to_str().unwrap());
-
-    let engine_wrapped = make_test_engine_for_commands();
-    let wrapped_path = dir.path().join("wrapped.step");
-    let engine = Arc::clone(&engine_wrapped);
-    // Already-owned `String`, so it simply MOVES into the `'static` closure —
-    // the shape every migrated `main.rs` wrapper's arguments have.
-    let path_arg = wrapped_path.to_str().unwrap().to_owned();
-    let wrapped =
-        crate::large_stack::run_on_worker(move || export_impl(&engine, "step", &path_arg));
-
-    assert_eq!(
-        wrapped.is_ok(),
-        direct.is_ok(),
-        "export must succeed or fail identically on the worker and inline; \
-         wrapped={wrapped:?} direct={direct:?}"
-    );
-    wrapped.expect("export_impl through run_on_worker should succeed");
-
-    let written = std::fs::metadata(&wrapped_path)
-        .unwrap_or_else(|e| panic!("the worker's export must write {wrapped_path:?}: {e}"));
-    assert!(
-        written.len() > 0,
-        "the worker's export must write a NON-EMPTY file, not just return Ok"
-    );
 }
 
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
@@ -2119,7 +1911,6 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
 
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -2144,7 +1935,6 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -2230,7 +2020,6 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -2265,6 +2054,184 @@ fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
     Arc::new(Mutex::new(session))
+}
+
+/// [`make_test_engine_for_commands`] with a canonical `.ri` ON DISK: writes
+/// `bracket_source()` to `<tmp>/bracket.ri` and `load_file`s it, so the durable
+/// command has a file to write back to (INV-GUI-3, task 5099 η).
+///
+/// Only the parameter-write tests need one — the in-memory sibling stays the
+/// cheap default for everything else. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the engine is used; the shape is
+/// copied from `engine_tests.rs`'s `writeback_session`.
+fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mutex<EngineSession>>) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, Arc::new(Mutex::new(session)))
+}
+
+#[test]
+fn set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner() {
+    // Why the refusal path builds a SECOND `GuiState` rather than reusing the
+    // one the discard already built. That one was built inside `update_source`,
+    // in the window where `commit_state` had just cleared `compile_failure` and
+    // `last_reload_error` — banners that PREDATE the commit entirely — and
+    // `commit_parameter` restores them only after it returns. Reusing it would
+    // hand the frontend a state carrying no `hot-reload-error` diagnostic while
+    // the engine still holds the error: the defect the engine-level restore
+    // closes, moved one layer out, where no later event corrects it.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, _path, engine) = make_test_engine_on_disk();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let refused = set_parameter_impl(&engine, "Bracket.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        refused.message.contains("Unknown parameter"),
+        "precondition: the refusal must be the unknown-cell rejection, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .as_deref()
+        .expect("a refusal must carry the state the frontend has to render");
+    assert!(
+        restored
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("hot-reload-error")),
+        "the state handed to the frontend must still show the staleness banner \
+         the engine still holds; got: {:?}",
+        restored.compile_diagnostics
+    );
+    assert!(
+        crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the engine must still be stale, so the two agree"
+    );
+}
+
+#[test]
+fn set_parameter_impl_writes_the_value_back_to_the_ri_file() {
+    // The wire name `set_parameter` keeps its spelling and acquires the meaning
+    // it always claimed: setting a parameter is the DURABLE operation. This is
+    // the command the property panel's edit box already calls on Enter/blur, so
+    // re-homing it is what makes typed entry durable with no component change.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = set_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("set_parameter_impl should succeed on a literal-defaulted cell");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_text,
+        bracket_source().replace("80mm", "120mm"),
+        "the durable command must splice exactly the default span, got: {disk_text}"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "the returned GuiState must already report the committed value"
+    );
+}
+
+#[test]
+fn a_refused_set_parameter_hands_back_the_state_that_replaces_the_discarded_preview() {
+    // The emit half of the discard, which the session-level tests cannot reach.
+    // `commit_parameter` discarding a live preview is only half a fix: the
+    // frontend renders from the delta the Tauri layer emits, and that delta is
+    // computed from what THIS function returns. A refusal that returned only a
+    // message would leave the viewport on the preview's geometry and the
+    // property panel on the preview's number while the engine and the disk had
+    // both gone back to 80mm — with no later event to correct it.
+    //
+    // So the assertion is specifically that the restored GuiState RIDES THE
+    // ERROR, not merely that the session discarded internally.
+    use crate::commands::{preview_parameter_impl, set_parameter_impl};
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let previewed = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+    assert!(
+        previewed
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "precondition: the preview must have taken, or this test exercises no discard"
+    );
+
+    // γ's disk-divergence refusal — the most ordinary one a user meets, and the
+    // one an unsaved editor buffer or a watcher that has not re-fired produces.
+    let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let refused = set_parameter_impl(&engine, "Bracket.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        refused
+            .message
+            .contains("no longer matches the source this session compiled"),
+        "precondition: the failure must be the divergence refusal, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .expect("a refusal that discarded a preview must hand back the state that replaced it");
+    let width = restored
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.width")
+        .expect("the restored state must still describe the cell that was refused");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "the state riding the refusal must be the SOURCE value, so the delta the \
+         command layer emits returns the frontend to what the engine now holds — \
+         not the stranded 120mm preview"
+    );
+}
+
+#[test]
+fn preview_parameter_impl_leaves_the_ri_file_untouched() {
+    // Its counterpart, and the reason the split exists: the per-frame command a
+    // slider drag drives must move the viewport without recompiling and
+    // rewriting the design 60 times a second.
+    use crate::commands::preview_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source(),
+        "a preview must leave the canonical .ri byte-identical"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "a preview must still move the eval state so the viewport tracks the drag"
+    );
 }
 
 /// (step-4 GREEN-a) update_source_impl must record staleness when update_source
@@ -2454,6 +2421,72 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
     assert!(
         is_stale,
         "session must be stale after reload_for_watch_impl returns a failure state"
+    );
+}
+
+#[test]
+fn reload_for_watch_if_changed_impl_skips_the_sessions_own_source() {
+    // Every durable parameter write rewrites the `.ri` itself, and the
+    // FS-watcher observes that write and hands the same bytes back. Recompiling
+    // them re-derives the state the write already committed and emitted, so a
+    // single user gesture pays for two full recompiles — the cost the
+    // preview/commit split exists to keep to one.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+
+    assert!(
+        reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+            .expect("the echo must not be an error")
+            .is_none(),
+        "content the session already holds must be recognised as its own echo"
+    );
+
+    // The negative control: text that differs is the case the watcher exists
+    // for, and must still recompile.
+    let changed = bracket_source().replace("80mm", "120mm");
+    assert_ne!(changed, bracket_source(), "fixture must actually differ");
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", &changed)
+        .expect("a real external edit must not be an error")
+        .expect("a real external edit must be recompiled, not skipped");
+    assert!(
+        reloaded
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "the recompiled state must carry the external edit"
+    );
+}
+
+#[test]
+fn reload_for_watch_if_changed_impl_still_reloads_identical_text_for_a_stale_session() {
+    // Identical text is a necessary condition for skipping, not a sufficient
+    // one. A recompile also LIFTS the failure banners, so a stale session has
+    // real work to do on byte-identical input — which is precisely what
+    // reverting a broken file back to the last text that compiled looks like
+    // from here. A guard that compared only the text would leave that banner
+    // standing with no later event to clear it.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+        .expect("a stale session's reload must not be an error")
+        .expect("a stale session must recompile even byte-identical text");
+    assert!(
+        reloaded
+            .compile_diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("hot-reload-error")),
+        "the recompile must have lifted the staleness banner; got: {:?}",
+        reloaded.compile_diagnostics
+    );
+    assert!(
+        !crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the session must no longer report itself stale"
     );
 }
 
@@ -2899,7 +2932,7 @@ fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_ar
 /// | `argv`           | `load_initial_file_impl`                          |
 /// | `open_file`      | `open_file_engine_impl`                           |
 /// | `watcher`        | open, then `reload_for_watch_impl`                |
-/// | `warm edit_param`| open, then `set_parameter_impl(depth, 250mm)`     |
+/// | `warm edit_param`| open, then `preview_parameter_impl(depth, 250mm)`     |
 ///
 /// The last row covers the path task 5194's own details flagged as unverified.
 ///
@@ -2920,7 +2953,7 @@ fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_ar
 fn rigid_mass_props_determined_across_all_gui_load_paths() {
     use crate::commands::{
         get_initial_state_impl, load_initial_file_impl, open_file_engine_impl,
-        reload_for_watch_impl, set_parameter_impl, sync_demand_impl,
+        reload_for_watch_impl, preview_parameter_impl, sync_demand_impl,
     };
 
     /// How a row gets its first `GuiState`. Each variant is a real production
@@ -2960,8 +2993,8 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
             Entry::WarmEditParam => {
                 open_file_engine_impl(&engine, &path)
                     .unwrap_or_else(|e| panic!("[{row}] open before edit: {e}"));
-                let edited = set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
-                    .unwrap_or_else(|e| panic!("[{row}] set_parameter_impl: {e}"));
+                let edited = preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+                    .unwrap_or_else(|e| panic!("[{row}] preview_parameter_impl: {e}"));
                 let depth = edited
                     .values
                     .iter()
@@ -3022,13 +3055,13 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
 /// docs), and the granularity a `: Rigid` body's entity-level mass-prop cells
 /// actually live at.
 ///
-/// Body A's `depth` is hoisted into a defaulted `param` so a warm `set_parameter`
+/// Body A's `depth` is hoisted into a defaulted `param` so a warm `preview_parameter`
 /// can re-dispatch body A while body B stays hash-exempt
 /// (`warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props`). It
 /// is INERT for the consumers that never edit: at load `depth = 300mm`, so the box
 /// receives the same scalar args a literal would give it, and
 /// `compute_realization_upstream_values_hash_from_ops` folds the op's arg VALUES —
-/// the input cone only moves once `set_parameter` is actually called. That is why
+/// the input cone only moves once `preview_parameter` is actually called. That is why
 /// one fixture serves all three consumers; an earlier round carried a second,
 /// literal-armed copy of this source on a constant-cone premise that hoisting does
 /// not in fact disturb.
@@ -3204,38 +3237,33 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 /// therefore keys on `result.meshes` — the delta's own dispatch record — and
 /// retains only when the cell's realization did NOT run this pass.
 ///
-/// The degeneration is induced without OCCT by NARROWING the
-/// `MockGeometryKernel` seed: the mock's `next_id` is monotonic and never reset,
-/// each dispatch of the box allocates the next id, and seeding `1..=2` leaves the
-/// warm `set_parameter` dispatch UNANSWERED. Its geometry queries then fail with
-/// an `OpContractViolation` — exactly the shape of a failing kernel query or
-/// degenerate geometry in production, and encoded in the delta exactly as a
-/// hash-exempt gap is.
+/// The degeneration is induced without OCCT via `MockGeometryKernel`'s
+/// explicit `fail_after_n_dispatches` knob (task #6471,
+/// `rigid_mass_props_session_seeded_then_failing`): handles 1 and 2 are
+/// seeded to succeed, and every query for a handle past id 2 — i.e. anything
+/// a later dispatch allocates — fails explicitly. That is exactly the shape
+/// of a failing kernel query or degenerate geometry in production, and is
+/// encoded in the delta exactly as a hash-exempt gap is.
 ///
-/// Reviewer suggestion 4: seed-range starvation couples this test to the number
-/// of kernel dispatches the production path happens to perform, which is a
-/// fragile way to say "the geometry query failed". The knob that would fix it
-/// properly (`with_volume_error(h, ..)` / `fail_after_n_dispatches` on
-/// `MockGeometryKernel`) lives in `crates/reify-test-support`, outside this task's
-/// locked scope, so the coupling is instead made EXPLICIT: step (3) asserts,
-/// against the mock's own operation log, that the post-edit rebuild really did
-/// dispatch an op whose handle is past the seeded ceiling. A drift in dispatch
-/// count now fails with a message naming the handles it saw, instead of failing
-/// downstream on a determinacy assertion. The injectable form is filed under
-/// ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
+/// Reviewer suggestion 4 on task #5338: seed-range STARVATION (leaving
+/// handles past a narrow range unseeded and relying on the generic "no mock
+/// result" fallback) coupled this test to the exact number of kernel
+/// dispatches the production path happens to perform. `MockGeometryKernel`
+/// now supports stating "queries for handles past N fail" directly
+/// (`fail_after_n_dispatches`, `crates/reify-test-support/src/mocks.rs`,
+/// task #6471), so the failure is guaranteed by construction and the test no
+/// longer needs a downstream precondition block inspecting the mock's
+/// operation log to confirm it took effect. Implemented under ticket
+/// `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
 ///
 /// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
 /// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
 /// `reason = None`, i.e. a stale value presented as fresh and authoritative.
 #[test]
 fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
-    /// The mock seed ceiling: a dispatched op that allocates a handle above this
-    /// has no volume / centroid / inertia reply, so its geometry queries fail.
-    const SEED_CEILING: u64 = 2;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let (path, _text) = rigid_mass_props_tempfile(dir.path());
-    let (session, ops) = rigid_mass_props_session_seeded_with_ops(1..=SEED_CEILING);
+    let (session, dispatch_log) = rigid_mass_props_session_seeded_then_failing(1..=2);
     let engine = Arc::new(Mutex::new(session));
 
     // (1) Cold load: the box realizes to seeded handle 1, so the mass props
@@ -3262,38 +3290,17 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
     }
 
     // (3) Warm edit: the realization's input-cone hash CHANGES, so it is
-    //     dispatched — and its geometry queries now hit an unseeded handle.
-    let ops_before = ops.lock().expect("mock op log").len();
-    let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
-        .expect("set_parameter_impl");
-    // State the precondition directly rather than trusting the dispatch count: the
-    // edit must have re-executed geometry, and at least one of those ops must have
-    // landed past the seeded ceiling, which is what makes its queries fail. Both
-    // halves matter — no new op at all would mean the realization stayed
-    // hash-exempt (a different scenario, covered by
-    // `warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`), and a
-    // new op INSIDE the seeded range would mean the queries were answered and
-    // nothing degenerated.
-    let new_handles: Vec<u64> = ops
-        .lock()
-        .expect("mock op log")
-        .iter()
-        .skip(ops_before)
-        .map(|rec| rec.result_handle.0)
-        .collect();
+    //     dispatched — and its geometry queries now hit a handle the mock was
+    //     explicitly configured to fail (`fail_after_n_dispatches(2)` above),
+    //     regardless of which exact handle number the dispatch allocates.
+    let ops_before = dispatch_log.lock().unwrap().len();
+    let state = crate::commands::preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+        .expect("preview_parameter_impl");
     assert!(
-        !new_handles.is_empty(),
-        "the edit must have re-DISPATCHED the realization — no new kernel op means \
-         it stayed hash-exempt, which is a different scenario than the one this \
-         test induces"
-    );
-    assert!(
-        new_handles.iter().any(|h| *h > SEED_CEILING),
-        "the post-edit dispatch must allocate a handle past the seeded ceiling \
-         ({SEED_CEILING}) so its volume / centroid / inertia queries go unanswered \
-         — that unanswered query IS the degeneration under test. Got new handles \
-         {new_handles:?}; if they are all seeded, the production path's dispatch \
-         count drifted and the seed range needs re-narrowing"
+        dispatch_log.lock().unwrap().len() > ops_before,
+        "the depth edit must have re-DISPATCHED the realization — with no new op the \
+         realization stayed hash-exempt, which is the sibling test's scenario and never \
+         reaches the degeneration guard this test exists to pin"
     );
     let depth = state
         .values
@@ -3345,7 +3352,7 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 /// `density_scale : Real` rather than a `Density`-typed param is deliberate, but
 /// the ORIGINAL reason has expired. It was that `parse_value_string` (engine.rs)
 /// knew only a five-entry `deg`/`rad`/`mm`/`cm`/`m` table, so a `Density`-typed
-/// param was not editable through `set_parameter` at all. Task #5757 retired that
+/// param was not editable through `preview_parameter` at all. Task #5757 retired that
 /// table for an index composed from the curated display ladders plus
 /// `reify_core::BUILTIN_UNITS`, and `kg/m^3` now resolves — so a `Density` param
 /// IS editable today.
@@ -3379,7 +3386,7 @@ const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid
 /// RED before the accompanying `engine.rs` change, and the chain is entirely
 /// measurable on this branch:
 ///
-///  * `set_parameter` (engine.rs) commits through `core.commit_check`, which
+///  * `preview_parameter` (engine.rs) commits through `core.commit_check`, which
 ///    touches only `last_check`. The `geometry_derived_cache.clear()` lives in
 ///    `commit_state`, which a warm edit NEVER reaches — so retention survives the
 ///    edit untouched.
@@ -3426,8 +3433,8 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     // (2) The warm edit. `density_scale` doubles the body's density, so every
     //     mass prop is now wrong by construction — but no geometry op arg moved.
     let state = session
-        .set_parameter("RigidDensityScale.density_scale", "2.0")
-        .expect("set_parameter should succeed for the Real density multiplier");
+        .preview_parameter("RigidDensityScale.density_scale", "2.0")
+        .expect("preview_parameter should succeed for the Real density multiplier");
     let scale = state
         .values
         .iter()
@@ -3452,7 +3459,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     );
     assert_ne!(
         find_moi_principal_constraint(&state).status,
-        "Satisfied",
+        "satisfied",
         "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
          Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
          value wearing a constraint badge"
@@ -3469,7 +3476,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
 ///
 /// Expected GREEN both before and after the accompanying `engine.rs` change: it
 /// exists to forbid the obvious over-correction. A blunt
-/// `geometry_derived_cache.clear()` on every `set_parameter` would drop every
+/// `geometry_derived_cache.clear()` on every `preview_parameter` would drop every
 /// UNAFFECTED entity's retention too, and those entities stay hash-exempt until
 /// the next recompile — so their mass-prop cells would read `Undef` indefinitely,
 /// which is #5338 itself, re-opened for every body the user did not touch. This
@@ -3497,8 +3504,8 @@ fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
 
     // (2) Edit ONE body's op arg.
     let state = session
-        .set_parameter("RigidBodyA.depth", "250mm")
-        .expect("set_parameter should succeed for body A's depth");
+        .preview_parameter("RigidBodyA.depth", "250mm")
+        .expect("preview_parameter should succeed for body A's depth");
     let depth = state
         .values
         .iter()
@@ -3794,4 +3801,411 @@ fn a_colliding_second_module_does_not_replay_the_first_modules_mass_props() {
         "module B's `Body.mass` must be stable across the next rebuild rather than \
          drifting back toward module A's retained value"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Queued request constructors (task 7442): each engine-touching command as an
+// EvalQueue request, driven through a ManualQueue so the drainer runs here.
+// ---------------------------------------------------------------------------
+
+mod queued_requests {
+    use std::sync::{Arc, Mutex};
+
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::{MockGeometryKernel, bracket_source};
+
+    use super::{make_test_engine_for_commands, make_test_engine_on_disk};
+    use crate::commands::{
+        active_fea_case_evaluation, commit_parameter_edit, disk_reload_edit, editor_source_edit,
+        initial_file_evaluation, initial_state_evaluation, open_file_evaluation,
+        preview_parameter_edit,
+    };
+    use crate::engine::EngineSession;
+    use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
+    use crate::tests::test_helpers::{ManualQueue, Observed, RecordingObserver, settled};
+
+    const WIDTH: &str = "Bracket.width";
+
+    fn order(seq: u64) -> EditOrder {
+        EditOrder { epoch: 1, seq }
+    }
+
+    /// The `(value, unit)` the newest published delta gave `Bracket.width`.
+    fn published_width(observer: &RecordingObserver) -> Option<(String, String)> {
+        observer
+            .published_value(WIDTH)
+            .map(|width| (width.value, width.unit))
+    }
+
+    fn mm(value: &str) -> Option<(String, String)> {
+        Some((value.to_string(), "mm".to_string()))
+    }
+
+    fn fresh_engine() -> Arc<Mutex<EngineSession>> {
+        Arc::new(Mutex::new(EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        )))
+    }
+
+    fn bracket_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("bracket.ri");
+        std::fs::write(&path, bracket_source()).expect("write bracket.ri");
+        path
+    }
+
+    fn read(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).expect("the .ri file should be readable")
+    }
+
+    #[test]
+    fn a_queued_preview_publishes_the_value_and_leaves_the_file_alone() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(preview_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+        assert_eq!(read(&path), bracket_source());
+    }
+
+    #[test]
+    fn a_queued_commit_writes_the_file_and_publishes_the_committed_value() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(read(&path), bracket_source().replace("80mm", "120mm"));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+    }
+
+    /// A refusal discards the preview, so the restored state must ride the
+    /// publish or the viewport stays stranded on the preview.
+    #[test]
+    fn a_refused_queued_commit_replies_err_and_publishes_the_restored_state() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+        let preview = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+        assert_eq!(settled(preview), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+
+        let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+        std::fs::write(&path, external_text).expect("external write should succeed");
+        let commit = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "150mm".into(),
+            order(2),
+        ));
+        rig.executor.run_pending();
+
+        let refusal = settled(commit).expect_err("a diverged file must be refused");
+        assert!(
+            refusal.contains("no longer matches the source this session compiled"),
+            "got: {refusal}"
+        );
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_editor_sync_publishes_the_recompiled_state() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            bracket_source().replace("80mm", "95mm"),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    #[test]
+    fn a_broken_editor_buffer_still_publishes_the_last_good_state_with_an_error() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            "invalid syntax $$$".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        let deltas = rig.observer.deltas();
+        let published = deltas
+            .last()
+            .expect("the last-good state must be published");
+        assert_eq!(published_width(&rig.observer), mm("80"));
+        let diagnostics = published
+            .changed_compile_diagnostics
+            .as_ref()
+            .expect("the delta must carry the compile diagnostics");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == "Error"),
+            "got: {diagnostics:?}"
+        );
+    }
+
+    /// The reload reads the file when it RUNS, so a reload queued behind a long
+    /// evaluation never recompiles stale disk content.
+    #[test]
+    fn a_queued_disk_reload_reads_the_file_when_it_runs() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path.clone()));
+        std::fs::write(&path, bracket_source().replace("80mm", "95mm"))
+            .expect("rewrite should succeed");
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    /// A reload that fails is not silent: the watcher never reads the ticket,
+    /// so the job itself must log.
+    #[test]
+    fn a_failed_disk_reload_is_logged_as_a_warning() {
+        let (dir, _path, engine) = make_test_engine_on_disk();
+        let missing = dir.path().join("does_not_exist.ri");
+        let rig = ManualQueue::new();
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_gui::commands")
+            .build();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, missing));
+        tracing::subscriber::with_default(subscriber, || rig.executor.run_pending());
+
+        assert!(settled(ticket).is_err());
+        assert_eq!(
+            counters[&tracing::Level::WARN].load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+    }
+
+    /// The echo of this session's own durable write recompiles nothing.
+    #[test]
+    fn a_queued_disk_reload_of_the_session_source_publishes_nothing() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert!(rig.observer.deltas().is_empty());
+    }
+
+    /// Slider frames arriving while an earlier request runs: only the newest
+    /// preview runs, and it is the one value the frontend is told about.
+    #[test]
+    fn a_rapid_drag_behind_a_running_request_runs_only_the_newest_preview() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+
+        let running = {
+            let (queue, engine, frames) = (
+                Arc::clone(&rig.queue),
+                Arc::clone(&engine),
+                Arc::clone(&frames),
+            );
+            rig.queue.submit(EvalRequest::engine_call(move || {
+                for seq in 1..=10 {
+                    let value = format!("{}mm", 80 + seq);
+                    let edit = preview_parameter_edit(
+                        Arc::clone(&engine),
+                        WIDTH.into(),
+                        value,
+                        order(seq),
+                    );
+                    frames.lock().expect("frames").push(queue.submit(edit));
+                }
+                Ok(())
+            }))
+        };
+        rig.executor.run_pending();
+
+        assert_eq!(settled(running), Ok(()));
+        for frame in std::mem::take(&mut *frames.lock().expect("frames")) {
+            assert_eq!(settled(frame), Ok(()));
+        }
+        assert_eq!(rig.observer.deltas().len(), 1, "only one preview ran");
+        assert_eq!(published_width(&rig.observer), mm("90"));
+        let engine_width = crate::commands::get_initial_state_impl(&engine)
+            .expect("state")
+            .values
+            .into_iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value);
+        assert_eq!(engine_width.as_deref(), Some("90"));
+    }
+
+    #[test]
+    fn a_queued_file_open_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(open_file_evaluation(
+            fresh_engine(),
+            path.to_string_lossy().into_owned(),
+        ));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the open should succeed");
+        assert_eq!(
+            rig.observer.started_generations(),
+            [published.generation()],
+            "the reply is stamped with the generation the open ran under"
+        );
+        let state = published.state();
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(rig.observer.deltas().len(), 1);
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the load should succeed");
+        let state = published.state();
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_state_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_state_evaluation(make_test_engine_for_commands()));
+        rig.executor.run_pending();
+
+        let published = settled(ticket).expect("the state should build");
+        assert!(published.state().values.iter().any(|v| v.cell_id == WIDTH));
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    /// The frontend drops a whole-state reply older than an announced
+    /// generation, so a reply queued behind an edit must be stamped later.
+    #[test]
+    fn a_whole_state_reply_queued_behind_an_edit_is_stamped_later_than_the_edit() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let edit = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        let whole = rig.queue.submit(initial_state_evaluation(engine));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(edit), Ok(()));
+        let published = settled(whole).expect("the state should build");
+        let generations = rig.observer.started_generations();
+        let [edit_generation, reply_generation] = generations[..] else {
+            panic!("expected the edit and the reply to be announced; got {generations:?}");
+        };
+        assert_eq!(published.generation(), reply_generation);
+        assert!(
+            published.generation() > edit_generation,
+            "got {generations:?}"
+        );
+        let width = published
+            .state()
+            .values
+            .iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value.as_str());
+        assert_eq!(width, Some("120"));
+    }
+
+    #[test]
+    fn a_queued_fea_case_switch_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(active_fea_case_evaluation(
+            make_test_engine_for_commands(),
+            "case-a".into(),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(rig.observer.deltas().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_queued_file_open_publishes_from_the_engine_lane() {
+        use crate::large_stack::WORKER_THREAD_NAME;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let observer = Arc::new(RecordingObserver::default());
+        let queue = EvalQueue::on_engine_lane(Arc::new(Mutex::new(None)), observer.clone());
+
+        let published = queue
+            .submit(open_file_evaluation(
+                fresh_engine(),
+                path.to_string_lossy().into_owned(),
+            ))
+            .await
+            .expect("the open should succeed");
+
+        assert!(!published.state().meshes.is_empty());
+        let delta_threads: Vec<_> = observer
+            .observations()
+            .into_iter()
+            .filter(|o| matches!(o.observed, Observed::Delta(_)))
+            .map(|o| o.thread)
+            .collect();
+        assert_eq!(delta_threads, [Some(WORKER_THREAD_NAME.to_string())]);
+    }
 }

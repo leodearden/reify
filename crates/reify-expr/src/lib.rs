@@ -5,8 +5,11 @@
 #![allow(clippy::mutable_key_type)]
 
 mod analysis;
+mod branch_signature;
 mod calculus;
 mod complex;
+mod dual;
+mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
@@ -15,12 +18,30 @@ pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// modules are PRIVATE and these flat re-exports are the only path to them, so
+// `reify_expr::Tangent` is not merely the preferred spelling over
+// `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
+// #6675, μ #6680, λ #6679) cannot drift into using both for the same type.
+// Same reasoning, and the same shape, as `reify_constraints`' private
+// `dual_jacobian`.
+pub use branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER,
+    RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
+};
+pub use dual::{DualValue, Tangent};
+pub use dual_eval::{
+    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
+    jacobian_row_with_env,
+};
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
+use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -41,6 +62,19 @@ const MAX_RECURSION_DEPTH: u32 = 256;
 pub trait ContainmentQuery {
     fn contains(&self, region: &Value, point: &Value) -> Option<bool>;
 }
+
+/// Kernel-free selector-constructor capability (task #7875).
+///
+/// Probed by the `FunctionCall` arm only after `reify_stdlib::eval_builtin` returned
+/// `Value::Undef`, with the call expression and the CURRENT scope's values:
+/// - `Some(v)` — the call is a selector ctor this hook builds; `v` replaces the Undef
+///   (`Some(Value::Undef)` is allowed and leaves the call Undef).
+/// - `None` — not a selector ctor the hook can build; the call stays Undef.
+///
+/// Diagnostics pushed into the `Vec` are forwarded to the runtime diagnostics sink.
+/// `reify-eval` attaches `try_eval_symbolic_topology_selector` in `eval_ctx_with_meta`.
+pub type SymbolicSelectorCtorFn =
+    fn(&CompiledExpr, &ValueMap, &mut Vec<Diagnostic>) -> Option<Value>;
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
@@ -104,6 +138,10 @@ pub struct EvalContext<'a> {
     /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
     /// call sites that invoke the constraint solver.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    /// Optional kernel-free selector-ctor capability (task #7875); see
+    /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
+    /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
+    pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -119,6 +157,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -134,6 +173,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -150,6 +190,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: None,
             containment: None,
             compute_dispatch: None,
+            symbolic_selector_ctor: None,
         }
     }
 
@@ -215,6 +256,15 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach the kernel-free selector-ctor capability (task #7875).
+    ///
+    /// See [`SymbolicSelectorCtorFn`] for the contract. Inherited by every child scope
+    /// (user-fn bodies, lambdas, let-blocks, quantifier predicates).
+    pub fn with_symbolic_selector_ctor(mut self, f: SymbolicSelectorCtorFn) -> Self {
+        self.symbolic_selector_ctor = Some(f);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -230,6 +280,7 @@ impl<'a> EvalContext<'a> {
             undef_causes: self.undef_causes,
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
+            symbolic_selector_ctor: self.symbolic_selector_ctor,
         }
     }
 }
@@ -520,8 +571,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // `list`, expect each call to return a list, and concatenate
                 // the per-element results into a single flat list. Intercepted
                 // here (rather than in `reify_stdlib::eval_builtin`) because
-                // applying the lambda requires `EvalContext` — the same reason
-                // map/filter/fold are dispatched from `eval_method_call`.
+                // applying the lambda requires `EvalContext`.
                 //
                 // Convention: silent `Value::Undef` on type errors (non-list
                 // input, non-lambda second arg, lambda result not a list,
@@ -589,9 +639,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // arm — inside `apply_lambda`, with captures already cloned
                     // into `ctx.values` — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
-                    // path. Builtins are matched in earlier arms, so they are
-                    // never shadowed; non-field names yield `Undef` from the
-                    // cell lookup and fall through to `eval_builtin` unchanged.
+                    // path. Builtins intercepted by the NAMED arms above (whole-
+                    // field `max`/`min`/`argmax`/`argmin`, `flat_map`,
+                    // `worst_case`, `generate`, `from_samples`, `restrict`,
+                    // `von_mises`, …) never reach this arm, so they are never
+                    // shadowed by a field cell. A stdlib builtin resolved by the
+                    // `eval_builtin` call below IS shadowable, because this
+                    // field-cell lookup runs first; non-field names yield
+                    // `Undef` from the cell lookup and fall through to
+                    // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
                     let candidate = ctx.values.get_or_undef(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
@@ -599,12 +655,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         return apply_lambda_with_point_unpacking(lambda, &evaluated_args[0], ctx);
                     }
-                    let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
+                    let result = resolve_symbolic_selector_on_undef(
+                        reify_stdlib::eval_builtin(&function.name, &evaluated_args),
+                        expr,
+                        ctx,
+                    );
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor / inverse-
-                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
-                    // classify and emit its specific diagnostic into the ctx sink.
-                    // The five name families are disjoint, so at most one diagnose
+                    // case (`linear_combine`) / AffineMap-constructor or
+                    // transform_exp / inverse-dynamics / iso_it_tolerance /
+                    // orient_exp builtin returns `Value::Undef`, classify and emit
+                    // its specific diagnostic into the ctx sink.
+                    // The six name families are disjoint, so at most one diagnose
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
@@ -858,12 +919,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             method,
             args,
         } => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
                 return Value::Undef;
             }
-            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
+            eval_method_call(&obj, method, &expr.result_type)
         }
 
         CompiledExprKind::OptionNone => Value::Option(None),
@@ -1308,407 +1371,6 @@ fn eval_ad_hoc_selector(
     }
 }
 
-/// Returns `true` when `t` is, or recursively wraps, a [`Type::TraitObject`].
-///
-/// Local mirror of `reify_compiler::type_compat::type_carries_trait_object`,
-/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
-/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
-/// imported here — the two MUST be kept in sync. If they drift, a call whose
-/// param is a trait object (e.g. `loads: List<Load>`) resolves at compile time
-/// (compile-side `resolve_function_overload` treats trait-carrying params as
-/// wildcards for ALL fns) but the eval-side resolver rejects it → the
-/// `@optimized` `ComputeNode` dispatch never fires and the call evals to
-/// `Value::Undef` / no targets (the esc-4093-152 divergence class — the FEA
-/// `solve_elastic_static(loads: List<Load>, supports: List<Support>)` signature
-/// tightening).
-///
-/// Covers bare `TraitObject(name)` and the `Option`/`List`/`Set`/`Map` wrappers,
-/// matching the compiler-side copy in `type_compat.rs`. Used by
-/// [`find_matching_compiled_function`] to make trait-carrying params act as
-/// eval-time resolution wildcards for non-generic fns too — unlike
-/// [`type_carries_type_param`], this is NOT gated on `!type_params.is_empty()`,
-/// because the compile-side `resolve_function_overload` applies the trait-object
-/// wildcard to every candidate regardless of genericity.
-fn type_carries_trait_object(t: &Type) -> bool {
-    match t {
-        Type::TraitObject(_) => true,
-        Type::Option(inner) => type_carries_trait_object(inner),
-        Type::List(inner) => type_carries_trait_object(inner),
-        Type::Set(inner) => type_carries_trait_object(inner),
-        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        // Added explicitly (not compiler-forced) to stay verbatim-synced with
-        // the reify-compiler copy (esc-4231-120/126) and for §5 substrate correctness.
-        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
-        Type::Projection { base, .. } => type_carries_trait_object(base),
-        _ => false,
-    }
-}
-
-/// Returns `true` when `t` is, or recursively wraps, a [`Type::TypeParam`].
-///
-/// Local mirror of `reify_compiler::type_compat::type_carries_type_param`,
-/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
-/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
-/// imported here — the two MUST be kept in sync. If they drift, a generic call
-/// whose param embeds a type-param in a constructor covered by only one copy
-/// resolves at compile time but the eval-side resolver rejects it → an
-/// `id(..)`-style call falls back to `Value::Undef` (the esc-4231-120 /
-/// esc-4231-126 divergence class).
-///
-/// Recurses through the same inner-`Type`-bearing constructor set as the
-/// compiler-side `unify` / `substitute_type_params` walks —
-/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
-/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
-/// `Function` (params + return), and `Union`. Used by
-/// [`find_matching_compiled_function`] to make a *generic* candidate's
-/// type-param-carrying params act as eval-time resolution wildcards, gated on
-/// `!f.type_params.is_empty()` so non-generic fns are bit-for-bit unchanged
-/// (INV-6, task 4231 β-eval).
-///
-/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
-/// variant forces a compile-time decision here, in lock-step with the canonical
-/// compiler-side copy.
-fn type_carries_type_param(t: &Type) -> bool {
-    match t {
-        // The type-parameter leaf itself.
-        Type::TypeParam(_) => true,
-
-        // Single-inner-Type wrappers: recurse on the child.
-        Type::List(inner)
-        | Type::Set(inner)
-        | Type::Keyed(inner)
-        | Type::Option(inner)
-        | Type::Complex(inner)
-        | Type::Range(inner) => type_carries_type_param(inner),
-
-        // Quantity-bearing aggregates: recurse into the quantity slot.
-        Type::Point { quantity, .. }
-        | Type::Vector { quantity, .. }
-        | Type::Tensor { quantity, .. }
-        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
-
-        // Two-inner-Type wrappers.
-        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
-        Type::Field { domain, codomain } => {
-            type_carries_type_param(domain) || type_carries_type_param(codomain)
-        }
-
-        // Function: any param, or the return type.
-        Type::Function {
-            params,
-            return_type,
-        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
-
-        // Union: any arm.
-        Type::Union(arms) => arms.iter().any(type_carries_type_param),
-
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        // MUST remain verbatim-synced with the canonical copy in
-        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
-        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
-        Type::Projection { base, .. } => type_carries_type_param(base),
-
-        // All remaining leaves carry no inner `Type`.
-        Type::Bool
-        | Type::Int
-        | Type::String
-        | Type::Scalar { .. }
-        | Type::Enum(_)
-        | Type::StructureRef(_)
-        | Type::TraitObject(_)
-        | Type::Geometry
-        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
-        | Type::Feature
-        | Type::Orientation(_)
-        | Type::Frame(_)
-        | Type::Transform(_)
-        | Type::AffineMap(_)
-        | Type::Plane
-        | Type::Axis
-        | Type::Direction
-        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
-        | Type::Relation
-        | Type::BoundingBox
-        | Type::Selector(_)
-        | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — carries no *type* param.
-        // MUST remain verbatim-synced with the canonical copy in
-        // reify-compiler/src/type_compat.rs (drift reproduces esc-4231-120/126).
-        // `type_carries_dim_param` (below) handles the ScalarParam wildcard case.
-        | Type::ScalarParam(_)
-        | Type::Error => false,
-    }
-}
-
-/// Returns `true` when `t` is, or recursively wraps, a [`Type::ScalarParam`].
-///
-/// Local mirror of `reify_compiler::type_compat::type_carries_dim_param`,
-/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
-/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
-/// imported here — the two MUST be kept in sync. If they drift, a generic call
-/// whose param is a dimension-kinded `Scalar<Q>` resolves at compile time but
-/// the eval-side resolver rejects it → the call evals to `Value::Undef`
-/// (the ζ/D8 divergence class — the same failure mode as esc-4231-120/126 for
-/// type-params).
-///
-/// Recurses through the same inner-`Type`-bearing constructor set as
-/// [`type_carries_type_param`]. Returns `true` at the `ScalarParam(_)` leaf,
-/// `false` at all other leaves. Used by [`find_matching_compiled_function`] to
-/// make a *generic* candidate's dimension-param-carrying params act as
-/// eval-time resolution wildcards, gated on `!f.type_params.is_empty()` (task ζ
-/// / D8).
-///
-/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
-/// variant forces a compile-time decision here, in lock-step with the canonical
-/// compiler-side copy.
-fn type_carries_dim_param(t: &Type) -> bool {
-    match t {
-        // The dimension-parameter leaf itself.
-        Type::ScalarParam(_) => true,
-
-        // Single-inner-Type wrappers: recurse on the child.
-        Type::List(inner)
-        | Type::Set(inner)
-        | Type::Keyed(inner)
-        | Type::Option(inner)
-        | Type::Complex(inner)
-        | Type::Range(inner) => type_carries_dim_param(inner),
-
-        // Quantity-bearing aggregates: recurse into the quantity slot.
-        Type::Point { quantity, .. }
-        | Type::Vector { quantity, .. }
-        | Type::Tensor { quantity, .. }
-        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
-
-        // Two-inner-Type wrappers.
-        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
-        Type::Field { domain, codomain } => {
-            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
-        }
-
-        // Function: any param, or the return type.
-        Type::Function {
-            params,
-            return_type,
-        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
-
-        // Union: any arm.
-        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
-
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        // MUST remain verbatim-synced with the canonical copy in
-        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
-        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
-        Type::Projection { base, .. } => type_carries_dim_param(base),
-
-        // All remaining leaves carry no inner ScalarParam.
-        Type::Bool
-        | Type::Int
-        | Type::String
-        | Type::Scalar { .. }
-        | Type::Enum(_)
-        | Type::StructureRef(_)
-        | Type::TraitObject(_)
-        | Type::TypeParam(_)
-        | Type::Geometry
-        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
-        | Type::Feature
-        | Type::Orientation(_)
-        | Type::Frame(_)
-        | Type::Transform(_)
-        | Type::AffineMap(_)
-        | Type::Plane
-        | Type::Axis
-        | Type::Direction
-        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
-        | Type::Relation
-        | Type::BoundingBox
-        | Type::Selector(_)
-        | Type::AnySelector
-        | Type::Error => false,
-    }
-}
-
-/// Strict constructor-head compatibility check between a declared param type
-/// and an argument type.
-///
-/// Local mirror of `reify_compiler::type_compat::heads_unifiable`, kept
-/// VERBATIM with it. reify-compiler is only a `[dev-dependencies]` entry of
-/// reify-expr, so the compiler helper cannot be imported from library code
-/// here — the two MUST be kept in sync. If they drift, compile-time and
-/// eval-time overload selection disagree on which of two same-named generic
-/// overloads a call resolves to, which is the esc-4231-120/126 / esc-4093-152
-/// divergence class (there: a call resolving at compile time but evaluating to
-/// `Value::Undef`; here: the eval side silently binding a DIFFERENT overload
-/// than the compiler typechecked).
-///
-/// Unlike a permissive unifier, a constructor-head MISMATCH here is `false`,
-/// not a conservative "binds nothing" pass. That is what lets this function
-/// discriminate `Option<T>` from `Applied { name: "Result", .. }` — two generic
-/// params that both wildcard-match any subject — and so serve as the middle
-/// tie-break tier of [`find_matching_compiled_function`].
-///
-/// Two arms carry more weight than their size suggests:
-/// - a bare `TypeParam` (and a `ScalarParam` against a concrete `Scalar`) is a
-///   wildcard slot: the slot itself carries no constructor head to disagree on;
-/// - `Applied { name }` vs `Enum(name)` is a head MATCH, because variant
-///   construction (`Ok { .. }` / `Err { .. }`) type-erases its result to
-///   `Type::Enum(name)`, so a declared `Result<T, E>` param must still
-///   recognise an erased `Result` subject.
-///
-/// Unlike the three `type_carries_*` mirrors above, this one keeps the
-/// canonical copy's `_` catch-all rather than an exhaustive match: byte-
-/// comparability with the canonical copy is worth more than compiler-forced
-/// review of new `Type` variants, and a new variant falling to `param == arg`
-/// can only narrow, never widen.
-///
-/// # Why this mirror is `pub` when its three `type_carries_*` siblings are not
-///
-/// The pair is pinned by a BEHAVIOURAL differential —
-/// `sync_drift_check_heads_unifiable_matches_eval_mirror` in
-/// `crates/reify-compiler/src/type_compat.rs` — which runs both
-/// implementations over a per-arm corpus and asserts each row's pinned verdict.
-/// The canonical copy is private to a private module (`mod type_compat`), so
-/// that test can only live compiler-side, which makes THIS copy the one that
-/// has to be reachable across the crate boundary.
-///
-/// The drift guard is the second-best fix; the best is deleting this mirror by
-/// hoisting it and the three `type_carries_*` helpers into `reify-core` — a
-/// real, non-dev dependency of both crates — which is outside this task's file
-/// locks. Filed as task #5689.
-///
-/// `#[doc(hidden)]` marks the export for what it is — test-only reachability,
-/// not reify-expr API. It keeps the symbol linkable from that separate-crate
-/// differential while removing it from rendered rustdoc and IDE autocomplete,
-/// so the widening is not ADVERTISED as public surface for the interval before
-/// #5689 reverts it. Same convention, same reason as
-/// `reify_audit::p5_phantom_done::PRODUCTION_QUERY`.
-#[doc(hidden)]
-pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
-    match (param, arg) {
-        // Type-param / dim-param leaves: wildcard slots, always compatible.
-        (Type::TypeParam(_), _) => true,
-        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
-
-        // Single-inner-Type constructors: same head → recurse on the child.
-        (Type::List(d), Type::List(a))
-        | (Type::Set(d), Type::Set(a))
-        | (Type::Keyed(d), Type::Keyed(a))
-        | (Type::Option(d), Type::Option(a))
-        | (Type::Complex(d), Type::Complex(a))
-        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
-
-        // Two-inner-Type constructors.
-        (Type::Map(dk, dv), Type::Map(ak, av)) => {
-            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
-        }
-        (
-            Type::Field {
-                domain: dd,
-                codomain: dc,
-            },
-            Type::Field {
-                domain: ad,
-                codomain: ac,
-            },
-        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
-
-        // Function: equal arity → recurse on each param + the return type.
-        (
-            Type::Function {
-                params: dp,
-                return_type: dr,
-            },
-            Type::Function {
-                params: ap,
-                return_type: ar,
-            },
-        ) if dp.len() == ap.len() => {
-            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
-        }
-
-        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
-        (
-            Type::Point {
-                n: dn,
-                quantity: dq,
-            },
-            Type::Point {
-                n: an,
-                quantity: aq,
-            },
-        ) if dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Vector {
-                n: dn,
-                quantity: dq,
-            },
-            Type::Vector {
-                n: an,
-                quantity: aq,
-            },
-        ) if dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Tensor {
-                rank: drk,
-                n: dn,
-                quantity: dq,
-            },
-            Type::Tensor {
-                rank: ark,
-                n: an,
-                quantity: aq,
-            },
-        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Matrix {
-                m: dm,
-                n: dn,
-                quantity: dq,
-            },
-            Type::Matrix {
-                m: am,
-                n: an,
-                quantity: aq,
-            },
-        ) if dm == am && dn == an => heads_unifiable(dq, aq),
-
-        // Union: equal length → recurse arm-by-arm.
-        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
-            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
-        }
-
-        // Applied: same name + same arity → recurse element-wise on args.
-        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
-            if dn == an && da.len() == aa.len() =>
-        {
-            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
-        }
-
-        // Erased-subject rule: a declared `Applied{name}` param head-matches
-        // an erased `Enum(name)` arg (same name) — see the doc comment above.
-        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
-
-        // Projection: same member → recurse on the bases.
-        (
-            Type::Projection {
-                base: db,
-                member: dm,
-            },
-            Type::Projection {
-                base: ab,
-                member: am,
-            },
-        ) if dm == am => heads_unifiable(db, ab),
-
-        // Catch-all: leaves and mismatched/differently-shaped constructors
-        // must agree by plain equality — unlike `unify`'s permissive
-        // `Ok(())` fallthrough, a head mismatch here is `false`.
-        _ => param == arg,
-    }
-}
-
 /// Find the compiled function matching `name`, arity, and per-parameter
 /// [`Type`] compatibility against the compiled arguments' result types.
 ///
@@ -1720,11 +1382,16 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// Mirrors the compile-time `reify_compiler::type_compat::resolve_function_overload`
 /// so eval re-selects the SAME overload the compiler chose (task 4231 β-eval):
 /// - For a non-generic candidate (`type_params` empty) every *concrete* param keeps
-///   **exact** type equality, but a **trait-object**-carrying param (e.g.
-///   `List<Load>`) acts as a wildcard — mirroring compile-side
+///   **exact** type equality against a concrete arg, but a **trait-object**-carrying
+///   param (e.g. `List<Load>`) acts as a wildcard — mirroring compile-side
 ///   `resolve_function_overload`, which applies the trait-object wildcard to ALL
-///   candidates regardless of genericity (esc-4093-152). Non-generic fns with no
-///   trait-object params are bit-for-bit unchanged (INV-6).
+///   candidates regardless of genericity (esc-4093-152). A type-param-carrying
+///   ARG is a wildcard too (D4 / task-4232 γ), so a concrete param DOES accept a
+///   `T`-typed value handed to it from inside a generic fn body — pinned by
+///   `bare_type_param_arg_resolves_a_non_generic_concrete_candidate`. That
+///   disjunct is self-scoping to generic fn bodies, which are the only place an
+///   arg type can carry a type param, so for CONCRETE-arg callers a non-generic
+///   fn with no trait-object params is bit-for-bit unchanged (INV-6).
 /// - For a *generic* candidate a type-param-carrying param acts as a **wildcard**
 ///   (matches any arg type) — eval is type-erased (INV-2), so the concrete arg
 ///   binds the param positionally with no runtime type check.
@@ -1734,17 +1401,26 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 ///
 /// # Three tie-break tiers
 ///
-/// Mirroring compile-side `resolve_function_overload`'s
-/// `exact_matches` → `head_matches` → `matches` ladder — tiers 1 and 2 arm for
-/// arm, tier 3 only approximately (see "# Known divergence" below) — each tier
-/// is a FILTER over the next-broader one and an empty tier falls through to it:
+/// The per-slot tier predicates live in [`reify_core::overload`], which is
+/// their normative home (#5689) — this function and compile-side
+/// `resolve_function_overload` call the SAME
+/// [`slot_matches_wildcard_tier`] / [`slot_matches_head_tier`], so the two
+/// cannot disagree about whether a param slot accepts an arg. See that
+/// module's doc for the disjunct lists, their `is_generic` gating and the
+/// caller contract; do not restate them here.
+///
+/// What is EVAL-SIDE policy, and therefore lives here:
 ///
 /// 1. **exact** — every param equal to its arg's `result_type`.
 /// 2. **head-narrowed** — among the wildcard-eligible candidates of tier 3,
-///    those whose params are also constructor-head-compatible with their args
-///    ([`heads_unifiable`]).
-/// 3. **wildcard** — type-param / dim-param / trait-object params act as
-///    wildcards, per the bullets above.
+///    those that also pass [`slot_matches_head_tier`].
+/// 3. **wildcard** — those that pass [`slot_matches_wildcard_tier`].
+///
+/// Each tier is a FILTER over the next-broader one and an empty tier falls
+/// through to it. Selection is FIRST-MATCH-WINS over the surviving set (the
+/// fused single scan below), where compile-side instead classifies by set size
+/// into Resolved / Ambiguous / NoMatch. That difference is legitimate: eval
+/// runs after the compiler has already accepted the program.
 ///
 /// Tier 2 exists to disambiguate two same-named GENERIC overloads whose params
 /// both wildcard-match the same subject and which tier 3 therefore cannot tell
@@ -1759,49 +1435,24 @@ pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// through to tier 3 unchanged — so a subject whose head matches nothing still
 /// resolves exactly as it did before tier 3 gained a predecessor.
 ///
-/// A useful corollary: for a NON-generic candidate the tier-2 predicate is a
-/// superset of the tier-3 one, so `wildcard AND head == wildcard` — tier 2 can
-/// never DROP a non-generic candidate. An overload set whose candidates are ALL
-/// non-generic therefore resolves bit-for-bit as it did before tier 2 existed
-/// (INV-6); `solve_elastic_static`, `solve_load_cases`, `displacement_at` and
-/// the esc-4093-152 trait-object path are all such sets.
+/// The DIRECTION of that narrowing is worth stating exactly, because #5689
+/// inverted it here: tier 2 is NOT a superset of tier 3 for a non-generic
+/// candidate. With `is_generic == false` the head tier's `heads_unifiable` arm
+/// is gated off and head genuinely IS a subset of wildcard — the same relation
+/// [`reify_core::overload`]'s module doc states. So tier 2 CAN drop a
+/// non-generic candidate: a concrete param facing an arg that CARRIES a type
+/// param without BEING a bare `Type::TypeParam` (e.g. `Option<T>`) passes tier
+/// 3's arg-side `type_carries_type_param` disjunct (D4) and fails tier 2's
+/// bare-`TypeParam` one. Being a filter over tier 3's survivors, tier 2 can
+/// still only ever narrow — never admit a candidate tier 3 rejected.
 ///
-/// That corollary is per-CANDIDATE, not per-set, and the distinction matters in
-/// a MIXED set: tier 2 may drop a head-mismatched GENERIC candidate and thereby
-/// promote a non-generic one that table order had kept behind it. That is the
-/// intended answer, not a side effect — it is what compile-side
-/// `resolve_function_overload` resolves to, its own `head_matches` tier
-/// narrowing the same set the same way. Pinned by
+/// The narrowing is per-CANDIDATE but its effect is per-SET, and the
+/// distinction matters in a MIXED set: tier 2 may drop a head-mismatched
+/// GENERIC candidate and thereby promote a non-generic one that table order
+/// had kept behind it. That is the intended answer, not a side effect — it is
+/// what compile-side `resolve_function_overload` resolves to, its own
+/// `head_matches` tier narrowing the same set the same way. Pinned by
 /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
-///
-/// # Known divergence: tier 3 APPROXIMATES compile-side `matches`
-///
-/// Tier 3 is not the mirror tiers 1 and 2 are. Compile-side `matches` carries a
-/// disjunct `wildcard` below has never had — `type_carries_type_param(arg_ty)`
-/// (D4 / task-4232 γ: a type-param-carrying ARG is itself a resolution
-/// wildcard, so a generic fn body can pass a `T`-typed value to a
-/// concrete-param function). The gap predates the head tier; tier 2 neither
-/// introduced nor widened it.
-///
-/// MEASURED consequence: non-generic `g(x: Scalar<dimensionless>)` called with
-/// a bare `TypeParam("U")` arg RESOLVES compile-side (pinned by
-/// `overload_bare_type_param_arg_still_resolves` in
-/// `crates/reify-compiler/src/type_compat.rs`) and returns `None` here — a
-/// compile/eval disagreement of exactly the class this ladder exists to close.
-/// Tier 2's own bare-`TypeParam`-arg disjunct cannot rescue it: `head` is
-/// screened through `wildcard`, so a candidate tier 3 rejects never reaches
-/// tier 2. That disjunct stays live only for candidates tier 3 admits on other
-/// grounds — e.g. a generic candidate whose param head does not unify with a
-/// bare-`TypeParam` arg, which tier 3 admits via `type_carries_type_param` on
-/// the PARAM side.
-///
-/// Deliberately not closed here: adding the disjunct WIDENS eval-side
-/// resolution, a behaviour change needing its own RED tests and outside this
-/// task's plan. Pinned meanwhile by
-/// `bare_type_param_arg_does_not_resolve_a_non_generic_concrete_candidate` in
-/// tests/find_matching_compiled_function_tests.rs, so the gap is characterized
-/// rather than merely described, and recorded on #5689 — the ladder hoist must
-/// decide this asymmetry deliberately rather than erase it.
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
@@ -1814,33 +1465,22 @@ pub fn find_matching_compiled_function<'a>(
     let arity_match = |f: &&CompiledFunction| f.name == name && f.params.len() == args.len();
     let exact = |((_, param_ty), arg): (&(String, Type), &CompiledExpr)| *param_ty == arg.result_type;
 
-    // Tier 3's predicate. Allows wildcard params to match:
-    //   * a *generic* candidate's type-param-carrying params (gated on
-    //     `!type_params.is_empty()` so this pass can never relax a non-generic
-    //     fn via type-params), and
-    //   * a *generic* candidate's dimension-param-carrying params (ScalarParam,
-    //     task ζ / D8 — gated on genericity, same as type-param wildcards), and
-    //   * ANY candidate's trait-object-carrying params (NOT gated on genericity),
-    //     mirroring compile-side `resolve_function_overload` which treats
-    //     trait-carrying params as wildcards for every candidate. Without this,
-    //     a non-generic fn like
-    //     `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
-    //     resolves at compile time but the eval-side resolver returns None →
-    //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
+    // Tier 3's predicate — the SAME function compile-side
+    // `resolve_function_overload` applies. Disjuncts and their `is_generic`
+    // gating: `reify_core::overload::slot_matches_wildcard_tier`.
     //
-    // NOT a full mirror of compile-side `matches`, which also treats a
-    // type-param-carrying ARG as a wildcard (D4). See "# Known divergence" in
-    // the doc comment above before assuming this list is complete; #5689.
+    // Why an eval/compile disagreement here is not cosmetic: a non-generic fn
+    // like `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
+    // that resolves at compile time but returns None here means the
+    // `@optimized` ComputeNode dispatch never fires (esc-4093-152), and the
+    // call silently evaluates to `Value::Undef`.
     let wildcard = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
         f.params
             .iter()
             .zip(args.iter())
             .all(|((_, param_ty), arg)| {
-                (is_generic
-                    && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
-                    || type_carries_trait_object(param_ty)
-                    || *param_ty == arg.result_type
+                slot_matches_wildcard_tier(param_ty, &arg.result_type, is_generic)
             })
     };
 
@@ -1849,42 +1489,36 @@ pub fn find_matching_compiled_function<'a>(
     // tells two same-named GENERIC overloads apart when both wildcard-match the
     // same subject — the stdlib `unwrap_or`/`or_else`/`fallback` pairs declared
     // over both `Option<T>` and `Result<T, E>`, where the wildcard pass alone
-    // degenerates to first-match-wins on table order.
-    //
-    // `type_carries_dim_param` stays a FULL wildcard here rather than being
-    // subjected to the head check: dimension-param resolution is orthogonal to
-    // enum-head disambiguation, the same carve-out the compile-side head tier
-    // makes. The `Type::TypeParam` arg disjunct likewise mirrors compile-side —
-    // an arg that is itself a bare type param has no head to check against.
+    // degenerates to first-match-wins on table order. Disjuncts, the dim-param
+    // carve-out and the bare-vs-headed-`TypeParam`-arg rule:
+    // `reify_core::overload::slot_matches_head_tier`.
     let head = |f: &&CompiledFunction| {
         let is_generic = !f.type_params.is_empty();
         f.params
             .iter()
             .zip(args.iter())
             .all(|((_, param_ty), arg)| {
-                type_carries_trait_object(param_ty)
-                    || (is_generic
-                        && (heads_unifiable(param_ty, &arg.result_type)
-                            || type_carries_dim_param(param_ty)))
-                    || matches!(arg.result_type, Type::TypeParam(_))
-                    || *param_ty == arg.result_type
+                slot_matches_head_tier(param_ty, &arg.result_type, is_generic)
             })
     };
 
     // Screening `head` through `wildcard` is LOAD-BEARING: `head` must only ever
     // be asked about candidates that ALREADY passed `wildcard`, never run
-    // standalone. `heads_unifiable` is NOT a subset of `wildcard` (e.g. param
-    // `Applied{"Result",[Int,String]}` vs arg `Enum("Result")` head-matches but
-    // carries no type param and is not equal), so a standalone head pass could
+    // standalone. Tier 2 is NOT a subset of tier 3 (e.g. generic candidate,
+    // param `Applied{"Result",[Int,String]}` vs arg `Enum("Result")`:
+    // head-matches via the erased-subject arm, but carries no type param and is
+    // not equal, so it is wildcard-INELIGIBLE), so a standalone head pass could
     // SELECT candidates the wildcard pass rejects — widening resolution rather
-    // than narrowing it. Pinned by
+    // than narrowing it.
+    //
+    // This is the caller contract stated normatively in
+    // `reify_core::overload`'s module doc, where it binds BOTH consumers of the
+    // shared ladder rather than just this one. The counterexample itself is
+    // pinned there by
+    // `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`; this
+    // function's own screening behaviour is pinned by
     // `head_match_alone_never_selects_a_wildcard_ineligible_candidate` in
     // tests/find_matching_compiled_function_tests.rs.
-    //
-    // The three tiers below are a hand-copy of compile-side
-    // `resolve_function_overload`'s `exact_matches` / `head_matches` / `matches`
-    // filters, and the drift guard on `heads_unifiable` covers the helper only,
-    // not the ladder. Hoisting both into reify-core is task #5689.
     //
     // ONE scan for all three tiers, not one per tier: each is an independent
     // per-candidate predicate applied in a fixed priority order, so recording
@@ -1990,6 +1624,29 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
     let target = func.optimized_target.as_ref()?;
     ctx.compute_dispatch?.dispatch(target, args)
+}
+
+/// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
+/// call the builtins left `Undef`. Any non-Undef `result`, or a context without the
+/// capability, passes through unchanged. See [`SymbolicSelectorCtorFn`] for the
+/// contract. The hook's diagnostics are forwarded to the runtime sink.
+///
+/// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn resolve_symbolic_selector_on_undef(
+    result: Value,
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+) -> Value {
+    let Some(mint) = ctx.symbolic_selector_ctor.filter(|_| result.is_undef()) else {
+        return result;
+    };
+    let mut diags = Vec::new();
+    let minted = mint(expr, ctx.values, &mut diags);
+    if let Some(sink) = ctx.diagnostics {
+        sink.borrow_mut().extend(diags);
+    }
+    minted.unwrap_or(result)
 }
 
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
@@ -2261,6 +1918,7 @@ fn eval_pred_for_value_elem<'a>(
                 undef_causes: ctx.undef_causes,
                 containment: ctx.containment,
                 compute_dispatch: ctx.compute_dispatch,
+                symbolic_selector_ctor: ctx.symbolic_selector_ctor,
             },
         )
     } else {
@@ -2307,9 +1965,10 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
-/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
-/// `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
+/// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
+/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
+/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2320,11 +1979,12 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The five name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
-/// disjoint, so at most one of the five classifiers returns `Some` for any
-/// single `Undef`; each returns `None` for every other name or for valid input,
-/// making this a cheap no-op for ordinary builtins.
+/// The six name families (stackup math builtins / `"linear_combine"` / the
+/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
+/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// for every other name or for valid input, making this a cheap no-op for
+/// ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -2341,8 +2001,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
-    // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
-    // dimensioned scale factor (the linear part of an affine map is dimensionless).
+    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
+    // severity split by fault class, disjoint from the sibling hooks here.
+    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
@@ -2355,6 +2016,14 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     // Severity::Error instead of a silent Undef. Post-Undef-only, same
     // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
     if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+    // spelling, so this Severity::Error is the migration mechanism for that
+    // breaking change rather than a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as the five above.
+    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -2847,27 +2516,6 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
-/// Shared positive-count core for BOTH `generate` forms — the free-function
-/// `eval_generate_dispatch` and the method-form `eval_method_call` `"generate"`
-/// arm (task 3994).  Applies `lambda` to the indices `0..count` (each passed as
-/// `Value::Int(idx)`) and collects the results into a `Value::List`
-/// (length-preserving — an `Undef` body result becomes an `Undef` element).
-///
-/// `(0..count)` is empty when `count <= 0`, so a non-positive `count` yields `[]`.
-/// The NEGATIVE-count POLICY therefore lives at each call site, NOT here: the
-/// free-function form rejects `count < 0` with `GenerateNegativeCount` BEFORE
-/// calling this, while the method form passes its count straight through and
-/// inherits the silent-`[]` empty-range semantics (a deliberate, documented
-/// divergence — see the two call sites).  Extracting the loop keeps the two forms
-/// from drifting apart on the shared apply-per-index behaviour.
-fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
-    Value::List(
-        (0..count)
-            .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
-            .collect(),
-    )
-}
-
 /// Evaluate the free-function `generate(n, |i| expr)` combinator (task 3994,
 /// structural-query ζ).  Applies the lambda to indices `0..n-1` in order and
 /// collects the results into a `Value::List`.
@@ -2887,14 +2535,9 @@ fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
 ///     `Undef` body result becomes an `Undef` element).  `n == 0` → `[]`.
 ///   - any other shape → `Value::Undef` (silent-Undef discipline, like `flat_map`).
 ///
-/// Models the positive-count loop on the existing method-form `generate` arm
-/// (`eval_method_call`, the `"generate"` case).
-///
 /// A negative count is a runtime contract failure (PRD §2.3): it emits the named
 /// `DiagnosticCode::GenerateNegativeCount` (a `Severity::Error` → CLI stderr +
-/// non-zero exit) and yields `Undef`.  This DIVERGES deliberately from the
-/// method-form arm, which silently yields `[]` for a negative count (`(0..neg)`
-/// is an empty range).
+/// non-zero exit) and yields `Undef`.
 #[inline(never)]
 fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
@@ -2918,9 +2561,12 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
                 );
                 return Value::Undef;
             }
-            // `(0..*n)` is empty for `n == 0` (→ `[]`). Shared with the method
-            // form via `generate_index_list` (the negative case is handled above).
-            generate_index_list(*n, lambda, ctx)
+            // `(0..*n)` is empty for `n == 0` (→ `[]`).
+            Value::List(
+                (0..*n)
+                    .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
+                    .collect(),
+            )
         }
         _ => Value::Undef,
     }
@@ -3101,7 +2747,7 @@ fn eval_from_samples(
     // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
     // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
     // and handles Value::Scalar { si_value, .. } consistently with how
-    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs).
     let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
@@ -3452,20 +3098,6 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
-/// Apply a lambda to a point or vector, handling multi-param unpacking.
-///
-/// Accept both `Value::Point` and `Value::Vector` — they share structural
-/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
-/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
-/// and `compute_numerical_curl_at_point`.
-///
-/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
-/// with matching length, unpacks the components into individual scalar arguments
-/// so the arity check in `apply_lambda` passes.  A single-param lambda
-/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
-/// unpacking), preserving the single-param binding contract.
-///
-/// See also: `calculus.rs::extract_point_coords`.
 /// Sample `field` at `at`, dispatching over the stored lambda form.
 ///
 /// This is the shared core of the `"sample"` builtin arm extracted from the
@@ -3477,8 +3109,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// | any + `Value::Lambda`                      | apply lambda directly (point unpacking if needed)   |
 /// | `Sampled`/`Imported` + `Value::SampledField` | grid interpolation via `sampled::sample_at_point`  |
 /// | `Gradient`/`Divergence`/`Curl`/`Laplacian` + inner `Value::Field` | numerical calculus helpers |
-/// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
-/// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
+/// | `VonMises`/`PrincipalStresses`/`MaxShear`/`SafetyFactor` (any lambda) | `analysis::sample_*_at_point` — callable or Sampled tensor backing |
 /// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
 /// | `Restricted` + `Value::List[inner, region]`| `ContainmentQuery` hook → inner value or `Value::Undef` |
 fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
@@ -3562,36 +3193,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                 codomain_type,
                 ctx,
             ),
-            // Analysis field wrappers: sample the inner field, then apply the
-            // analysis builtin pointwise.
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::VonMises,
-            ) => analysis::sample_von_mises_at_point(inner_lambda, at, codomain_type, ctx),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::PrincipalStresses,
-            ) => analysis::sample_principal_stresses_at_point(
-                inner_lambda,
-                at,
-                codomain_type,
-                ctx,
-            ),
-            (
-                Value::Field {
-                    lambda: inner_lambda,
-                    ..
-                },
-                FieldSourceKind::MaxShear,
-            ) => analysis::sample_max_shear_at_point(inner_lambda, at, codomain_type, ctx),
-            // SafetyFactor: lambda slot is List[field, yield_val],
-            // not a nested Field — match on the source kind directly.
+            // Analysis field wrappers: forward the WHOLE lambda slot — the
+            // original tensor field, or List[field, yield_val] for SafetyFactor
+            // — keyed on the source kind alone. `analysis` classifies the tensor
+            // field's backing (callable or Sampled grid) and samples it
+            // pointwise, so the Sampled backing's SampledField is not lost here.
+            (_, FieldSourceKind::VonMises) => {
+                analysis::sample_von_mises_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::PrincipalStresses) => {
+                analysis::sample_principal_stresses_at_point(lambda, at, codomain_type, ctx)
+            }
+            (_, FieldSourceKind::MaxShear) => {
+                analysis::sample_max_shear_at_point(lambda, at, codomain_type, ctx)
+            }
             (_, FieldSourceKind::SafetyFactor) => {
                 analysis::sample_safety_factor_at_point(lambda, at, codomain_type, ctx)
             }
@@ -3648,6 +3263,20 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
     }
 }
 
+/// Apply a lambda to a point or vector, handling multi-param unpacking.
+///
+/// Accept both `Value::Point` and `Value::Vector` — they share structural
+/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
+/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// and `compute_numerical_curl_at_point`.
+///
+/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
+/// with matching length, unpacks the components into individual scalar arguments
+/// so the arity check in `apply_lambda` passes.  A single-param lambda
+/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
+/// unpacking), preserving the single-param binding contract.
+///
+/// See also: `calculus.rs::extract_point_coords`.
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,
@@ -3860,16 +3489,11 @@ fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
     }
 }
 
-/// Evaluate a method call on a collection value, or a datum-projection member
-/// access on a datum receiver (Axis/Plane/Frame/Direction → see
-/// [`eval_datum_projection`]).
-fn eval_method_call(
-    obj: &Value,
-    method: &str,
-    args: &[Value],
-    result_type: &Type,
-    ctx: &EvalContext,
-) -> Value {
+/// Evaluate a zero-argument member projection (collection, range, complex,
+/// tensor, or datum — see [`eval_datum_projection`]). Reify has no method-call
+/// syntax (GR-040), so the compiler never emits an argument-bearing `MethodCall`,
+/// and the `eval_expr` site refuses one before calling this.
+fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
     // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
@@ -3897,109 +3521,27 @@ fn eval_method_call(
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
-        "contains" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let needle = &args[0];
-            match obj {
-                Value::List(items) => Value::Bool(items.contains(needle)),
-                Value::Set(items) => Value::Bool(items.contains(needle)),
-                Value::Range {
-                    lower,
-                    upper,
-                    lower_inclusive,
-                    upper_inclusive,
-                } => {
-                    // Undef needle propagates immediately.
-                    if needle.is_undef() {
-                        return Value::Undef;
-                    }
-                    // Check lower bound (if present).
-                    if let Some(lo) = lower {
-                        let cmp_result = if *lower_inclusive {
-                            eval_cmp(lo, needle, |a, b| a <= b)
-                        } else {
-                            eval_cmp(lo, needle, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    // Check upper bound (if present).
-                    if let Some(hi) = upper {
-                        let cmp_result = if *upper_inclusive {
-                            eval_cmp(needle, hi, |a, b| a <= b)
-                        } else {
-                            eval_cmp(needle, hi, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    Value::Bool(true)
-                }
+        "lower" => match obj {
+            Value::Range { lower, .. } => match lower {
+                Some(lo) => Value::Option(Some(lo.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "upper" => match obj {
+            Value::Range { upper, .. } => match upper {
+                Some(hi) => Value::Option(Some(hi.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "span" => match obj {
+            Value::Range { lower, upper, .. } => match (lower, upper) {
+                (Some(lo), Some(hi)) => eval_sub(hi, lo),
                 _ => Value::Undef,
-            }
-        }
-        "lower" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, .. } => match lower {
-                    Some(lo) => Value::Option(Some(lo.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "upper" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { upper, .. } => match upper {
-                    Some(hi) => Value::Option(Some(hi.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "span" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, upper, .. } => match (lower, upper) {
-                    (Some(lo), Some(hi)) => eval_sub(hi, lo),
-                    _ => Value::Undef,
-                },
-                _ => Value::Undef,
-            }
-        }
-        "union" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.union(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
-        "intersection" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.intersection(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
+            },
+            _ => Value::Undef,
+        },
         "keys" => match obj {
             Value::Map(entries) => Value::List(entries.keys().cloned().collect()),
             _ => Value::Undef,
@@ -4008,24 +3550,6 @@ fn eval_method_call(
             Value::Map(entries) => Value::List(entries.values().cloned().collect()),
             _ => Value::Undef,
         },
-        "contains_key" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
-                _ => Value::Undef,
-            }
-        }
-        "difference" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.difference(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
@@ -4056,161 +3580,9 @@ fn eval_method_call(
             }
             _ => Value::Undef,
         },
-        "map" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let results: Vec<Value> = items
-                        .iter()
-                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item), ctx))
-                        .collect();
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
-        "all" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(false) => return Value::Bool(false),
-                            Value::Bool(true) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(true)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "any" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(true) => return Value::Bool(true),
-                            Value::Bool(false) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(false)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "fold" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let init = &args[0];
-            let lambda = &args[1];
-            // Validate lambda arity upfront (fold requires exactly 2 params: acc, item)
-            if let Value::Lambda { params, .. } = lambda
-                && params.len() != 2
-            {
-                return Value::Undef;
-            }
-            match obj {
-                Value::List(items) => {
-                    let mut acc = init.clone();
-                    for item in items {
-                        acc = apply_lambda(lambda, &[acc, item.clone()], ctx);
-                        if acc.is_undef() {
-                            return Value::Undef;
-                        }
-                    }
-                    acc
-                }
-                _ => Value::Undef,
-            }
-        }
-        "concat" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::List(a), Value::List(b)) => {
-                    let mut result = a.clone();
-                    result.extend(b.iter().cloned());
-                    Value::List(result)
-                }
-                _ => Value::Undef,
-            }
-        }
-        // Method-form `xs.generate(count, |i| …)` (receiver must be a `List`;
-        // contents ignored). It SHARES the positive-count core
-        // (`generate_index_list`) with the free-function `generate(n, |i| …)` form
-        // (`eval_generate_dispatch`), but DELIBERATELY DIVERGES on a negative
-        // count: the method form yields `[]` silently (the `(0..count)`
-        // empty-range), whereas the free function emits the named
-        // `GenerateNegativeCount` diagnostic (task 3994 / PRD §2.3). Reconciling
-        // the two negative-count policies is intentionally out of scope (a flagged
-        // follow-up); the free-function form is the spec deliverable. A user moving
-        // between the forms gets `[]` here vs. a diagnostic there for the same
-        // invalid count — both individually correct and tested.
-        "generate" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let count = match &args[0] {
-                Value::Int(n) => *n,
-                _ => return Value::Undef,
-            };
-            let lambda = &args[1];
-            match obj {
-                Value::List(_) => generate_index_list(count, lambda, ctx),
-                _ => Value::Undef,
-            }
-        }
-        "filter" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut results = Vec::new();
-                    for item in items {
-                        let pred = apply_lambda(lambda, std::slice::from_ref(item), ctx);
-                        match pred {
-                            Value::Bool(true) => results.push(item.clone()),
-                            Value::Bool(false) => {} // skip
-                            Value::Undef => results.push(item.clone()), // conservative: retain when predicate is unknown
-                            _ => return Value::Undef, // type error: non-Bool predicate
-                        }
-                    }
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
         // Complex number methods are in complex.rs.
         "magnitude" | "phase" | "conjugate" | "re" | "im" => {
-            match complex::eval_complex_method(obj, method, args) {
+            match complex::eval_complex_method(obj, method) {
                 Some(v) => v,
                 None => Value::Undef,
             }
@@ -4471,7 +3843,7 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
 /// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
 /// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+pub(crate) fn negate_value(v: Value) -> Value {
     match v {
         Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
             neg_scalar(v)
@@ -4571,7 +3943,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
     }
 }
 
-fn eval_add(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
@@ -4675,7 +4047,7 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_sub(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
@@ -4857,7 +4229,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
     }
 }
 
-fn eval_mul(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
@@ -5134,7 +4506,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_div(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
         && (denom == 0.0 || denom.is_nan())
@@ -5285,7 +4657,7 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_mod(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => {
             if *b == 0 {
@@ -5305,7 +4677,7 @@ fn eval_mod(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_pow(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // Compute the raw result, then sanitize NaN/Inf → Undef.
     //
     // Rationale: the value-level `^` operator must satisfy the same
@@ -5356,7 +4728,7 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-fn eval_eq(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -5424,14 +4796,14 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_ne(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     match eval_eq(lv, rv) {
         Value::Bool(b) => Value::Bool(!b),
         other => other,
     }
 }
 
-fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     match (lv, rv) {
         // Scalar-vs-Scalar: compare dimensions first
         (
@@ -7383,12 +6755,13 @@ mod tests {
         // Parity guard (esc-4231-126): a generic candidate whose param embeds a
         // type-param inside a NON-collection constructor (`Field<T, Real>`) must
         // be selected by the eval-side resolver for a concrete `Field<Real, Real>`
-        // arg, mirroring compile-time `resolve_function_overload`. Before the
-        // local `type_carries_type_param` mirror was widened it only covered the
-        // `Option`/`List`/`Set`/`Map` wrappers, so `Field<T, _>` fell through to
-        // the old `_ => false` arm → the generic param was NOT a wildcard → the
-        // call resolved at compile time but evaled to `Undef`. This locks the two
-        // copies (compiler-side + eval-side) in parity for the `Field` walk.
+        // arg, exactly as compile-time `resolve_function_overload` does. When
+        // `type_carries_type_param` covered only the `Option`/`List`/`Set`/`Map`
+        // wrappers, `Field<T, _>` fell through to its `_ => false` arm → the
+        // generic param was NOT a wildcard → the call resolved at compile time
+        // but evaled to `Undef`. Both resolvers now share one predicate
+        // (`reify_core::overload`), so this pins the `Field` walk itself rather
+        // than agreement between two copies of it.
         let params = vec![(
             "x".to_string(),
             Type::Field {
@@ -7435,10 +6808,10 @@ mod tests {
         // Parity guard (esc-4093-152): a NON-generic candidate whose param is a
         // trait object inside a `List` (`List<Load>`) must be selected by the
         // eval-side resolver for a concrete `List<StructureRef("PointLoad")>` arg,
-        // mirroring compile-time `resolve_function_overload` which treats
-        // trait-carrying params as wildcards for EVERY candidate (not just generic
-        // ones). Before the local `type_carries_trait_object` mirror was added, the
-        // wildcard pass was gated on `!type_params.is_empty()`, so the FEA
+        // exactly as compile-time `resolve_function_overload` does — the
+        // trait-object disjunct is ungated, so it applies to EVERY candidate,
+        // not just generic ones. When the whole wildcard pass was gated on
+        // `!type_params.is_empty()`, the FEA
         // `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
         // signature resolved at compile time but the eval-side resolver returned
         // None → the `@optimized` ComputeNode dispatch never fired ("found
@@ -10326,6 +9699,188 @@ mod tests {
             "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
             result,
         );
+    }
+
+    // ── SymbolicSelectorCtorFn hook tests (step-1 RED / step-2 GREEN, task #7875) ─
+
+    /// Stand-in for reify-eval's `try_eval_symbolic_topology_selector`: builds only
+    /// calls named `stub_sel`. A `ValueRef` first arg is echoed from the `values`
+    /// the hook was handed, so a test can tell WHICH scope the hook saw.
+    fn stub_mint(
+        expr: &CompiledExpr,
+        values: &ValueMap,
+        _diags: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+            return None;
+        };
+        if function.name != "stub_sel" {
+            return None;
+        }
+        match args.first().map(|a| &a.kind) {
+            Some(CompiledExprKind::ValueRef(id)) => values.get(id).cloned(),
+            _ => Some(Value::Int(7)),
+        }
+    }
+
+    fn stub_sel_call(arg: CompiledExpr, tag: &[u8]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: ContentHash::of(tag),
+            result_type: Type::Int,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "stub_sel".to_string(),
+                    qualified_name: "std::stub_sel".to_string(),
+                },
+                args: vec![arg],
+            },
+        }
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_resolves_undef_call_nested_in_list() {
+        let list = CompiledExpr::list_literal(
+            vec![stub_sel_call(
+                lit(Value::Int(1), Type::Int),
+                b"stub_sel_in_list",
+            )],
+            Type::List(Box::new(Type::Int)),
+        );
+        let values = ValueMap::new();
+
+        let hooked = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        assert_eq!(eval_expr(&list, &hooked), Value::List(vec![Value::Int(7)]));
+
+        let unhooked = EvalContext::simple(&values);
+        assert_eq!(
+            eval_expr(&list, &unhooked),
+            Value::List(vec![Value::Undef]),
+            "without a hook the unknown call keeps its legacy Undef",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_user_fn_body_scope() {
+        let params = vec![("x".to_string(), Type::Int)];
+        let f = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Int,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: stub_sel_call(vref("f", "x", Type::Int), b"stub_sel_of_param"),
+            },
+            content_hash: ContentHash::of(b"f_stub_sel_body"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let call = CompiledExpr {
+            content_hash: ContentHash::of(b"call_f_stub_sel"),
+            result_type: Type::Int,
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "f".to_string(),
+                args: vec![lit(Value::Int(5), Type::Int)],
+            },
+        };
+        let values = ValueMap::new();
+        let functions = [f];
+        let ctx = EvalContext::new(&values, &functions).with_symbolic_selector_ctor(stub_mint);
+
+        assert_eq!(
+            eval_expr(&call, &ctx),
+            Value::Int(5),
+            "the hook must be inherited by the fn-body scope and see the param binding",
+        );
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_not_consulted_when_builtin_resolves() {
+        fn mint_anything(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            _diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            Some(Value::Int(99))
+        }
+        let abs_call = CompiledExpr {
+            content_hash: ContentHash::of(b"abs_with_hook"),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "abs".to_string(),
+                    qualified_name: "std::abs".to_string(),
+                },
+                args: vec![lit(Value::Real(-3.0), Type::dimensionless_scalar())],
+            },
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values).with_symbolic_selector_ctor(mint_anything);
+
+        assert_eq!(eval_expr(&abs_call, &ctx), Value::Real(3.0));
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_diagnostics_reach_runtime_sink() {
+        fn mint_nothing_but_warn(
+            _expr: &CompiledExpr,
+            _values: &ValueMap,
+            diags: &mut Vec<Diagnostic>,
+        ) -> Option<Value> {
+            diags.push(Diagnostic::warning("stub-mint"));
+            None
+        }
+        let call = stub_sel_call(lit(Value::Int(1), Type::Int), b"stub_sel_warns");
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values)
+            .with_runtime_diagnostics(&sink)
+            .with_symbolic_selector_ctor(mint_nothing_but_warn);
+
+        assert_eq!(eval_expr(&call, &ctx), Value::Undef);
+        let drained = sink.into_inner();
+        assert_eq!(
+            drained.len(),
+            1,
+            "exactly the hook's warning; got {:?}",
+            drained
+        );
+        assert_eq!(drained[0].message, "stub-mint");
+    }
+
+    #[test]
+    fn symbolic_selector_ctor_hook_reaches_quantifier_predicate_scope() {
+        let loop_var = ValueCellId::new("__quant_stub_sel", "m");
+        let quant = CompiledExpr::quantifier(
+            QuantifierKind::ForAll,
+            "m".to_owned(),
+            loop_var.clone(),
+            CompiledExpr::list_literal(
+                vec![lit(Value::Bool(true), Type::Bool); 2],
+                Type::List(Box::new(Type::Bool)),
+            ),
+            stub_sel_call(
+                CompiledExpr::value_ref(loop_var, Type::Bool),
+                b"stub_sel_of_loop_var",
+            ),
+        );
+        let values = ValueMap::new();
+        let det_map: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+
+        let plain = EvalContext::simple(&values).with_symbolic_selector_ctor(stub_mint);
+        let with_determinacy = EvalContext::simple(&values)
+            .with_determinacy(&det_map)
+            .with_symbolic_selector_ctor(stub_mint);
+        for (label, ctx) in [("plain", plain), ("with determinacy", with_determinacy)] {
+            assert_eq!(
+                eval_expr(&quant, &ctx),
+                Value::Bool(true),
+                "{label}: the predicate scope must inherit the hook and bind the loop var",
+            );
+        }
     }
 
     /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`

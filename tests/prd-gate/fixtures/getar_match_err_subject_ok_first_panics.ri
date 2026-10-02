@@ -1,0 +1,17 @@
+module getar_match_err_subject_ok_first_panics
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
+// before-image (R5 case, mirror: Err subject, Ok arm first). MEASURED
+// 2026-09-29:
+//   target/debug/reify:   check/eval EXIT 101, panic "unrepresentable
+//                         cell_type … TypeParam("T")"
+//   target/release/reify: check/eval EXIT 0, `W.v = 0.001 m`.
+// After δ alone: subject `Applied{Result,[<placeholder T>, String]}`, binder
+// `x` placeholder-typed, first arm wins → `v` placeholder-typed → panic
+// persists. R5 picks the concrete `1mm` arm.
+// EXPECTED after δ+ε (debug build): check EXIT 0, eval `W.v = 0.001 m`.
+
+structure def W {
+    let r = Err { error: "bad" }
+    let v = match r { Ok { value: x } => x, Err { error: e } => 1mm }
+}

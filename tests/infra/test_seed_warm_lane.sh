@@ -797,6 +797,92 @@ D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
 assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
     test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
 
+# DM1-DM5 — a --touch path that does not exist is warned and skipped, never
+# created (task #7231). ONE invocation carries every shape a stale or mistyped
+# --touch can take: a missing file under an existing dir, a missing parent, and a
+# DANGLING symlink (a plain `touch` follows the link and creates its target).
+# D_BASE is reused read-only as the clone source, exactly as D0 does.
+DM_LANE="$(make_isolated_lane D-touchmiss)"
+mkdir -p "$DM_LANE/src" "$DM_LANE/.git"
+echo '[core]' > "$DM_LANE/.git/config"
+DM_EXISTING="$DM_LANE/src/real.rs"
+echo 'pub fn real() {}' > "$DM_EXISTING"
+DM_MISSING="$DM_LANE/src/typo_missing.rs"           # parent exists, file absent
+DM_MISSING_PARENT="$DM_LANE/no_such_dir/stale.rs"   # parent absent
+DM_LINK="$DM_LANE/src/dangling.rs"
+ln -s ghost_target.rs "$DM_LINK"
+DM_LINK_TARGET="$DM_LANE/src/ghost_target.rs"       # what a following touch would create
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM_LANE" --fresh-checkout \
+        --touch "$DM_EXISTING" --touch "$DM_MISSING" \
+        --touch "$DM_MISSING_PARENT" --touch "$DM_LINK"
+
+assert "DM1: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
+    bash -c '[ "$1" -eq 0 ] && [ "$2" = "$3" ]' _ "$RC" "$OUT" "$DM_LANE/target"
+assert "DM2: a --touch path that does not exist is not created" \
+    bash -c '[ ! -e "$1" ]' _ "$DM_MISSING"
+assert "DM3: a dangling-symlink --touch path does not create the link's target" \
+    bash -c '[ ! -e "$1" ] && [ -L "$2" ]' _ "$DM_LINK_TARGET" "$DM_LINK"
+# Attributability, not wording: each skipped path is named on a [warn] line.
+for _dm_skipped in "$DM_MISSING" "$DM_MISSING_PARENT" "$DM_LINK"; do
+    assert "DM4: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF -- "$2"' _ "$ERR_OUT" "$_dm_skipped"
+done
+DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
+assert "DM5: the existing --touch path listed beside the misses is still touched to now" \
+    test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
+
+# DM6-DM7 — the counterpart of DM1-DM5: a `touch` that FAILS on a path that DOES
+# exist must still abort the seed (empty STDOUT, so the caller rebuilds cold); it
+# is never swallowed as a skip. Both delta sources (--touch and git diff) stamp
+# through one helper, and a helper called from an `if` runs with errexit
+# suspended, so that abort cannot be left to `set -e`. DM6 is the discriminating
+# case: a --touch path has no second net. On the git-diff route the inv.9
+# post-condition (_assert_no_stale_delta_stamp) would also refuse the unstamped
+# path, so DM7 pins the OUTCOME there, not which of the two caught it.
+# A PATH shim fails ONLY the plain single-operand `touch <path>` naming
+# REIFY_TEST_TOUCH_FAIL_PATH (the delta touch); the multi-operand `-h -d` bulk
+# stamp and every other touch reach the real /bin/touch.
+DM_SHIM_DIR="$(mktemp -d "$_REAL_STUB_ROOT/touch-shim-XXXXXX")"
+cat > "$DM_SHIM_DIR/touch" << 'DM_TOUCH_SHIM_EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "${REIFY_TEST_TOUCH_FAIL_PATH:-}" ]; then
+    echo "touch: cannot touch '$1': Permission denied" >&2
+    exit 1
+fi
+exec /bin/touch "$@"
+DM_TOUCH_SHIM_EOF
+chmod +x "$DM_SHIM_DIR/touch"
+
+DM6_LANE="$(make_isolated_lane D-touchfail)"
+mkdir -p "$DM6_LANE/src"
+DM6_PATH="$DM6_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM6_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM6_PATH" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM6_LANE" --fresh-checkout --touch "$DM6_PATH"
+assert "DM6: a failing touch on an existing --touch path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM6: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM6_PATH"
+
+DM7_LANE="$(make_isolated_lane D-gitdeltafail)"
+mkdir -p "$DM7_LANE/src"
+DM7_PATH="$DM7_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM7_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM7_PATH" \
+REIFY_TEST_GIT_DIFF_FILES="src/unstampable.rs" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM7_LANE" --fresh-checkout --base-commit shaX
+assert "DM7: a failing touch on an existing git-delta path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM7: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM7_PATH"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2720,6 +2806,7 @@ _BGPIDS+=("$Q_SEED8_PID")
 # call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
 # check below can only be a false failure (never a false pass), since the
 # holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
@@ -2975,6 +3062,7 @@ _BGPIDS+=("$Q_SEED11_PID")
 # Brief settle so the backgrounded job has reached the flock call. NOT a
 # wall-clock upper bound -- the "not done yet" check can only false-fail, never
 # false-pass, since the holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
@@ -3483,11 +3571,12 @@ assert "S2d: positive control: STDOUT is exactly <lane>/target" \
 # sub-second inversion holes cargo still mis-gates on (§9.5 inv.12).
 #
 # WHY the delta path here is itself a replay file: the seed stamps every delta
-# path to NOW (`touch "${TOUCH_PATHS[@]}"`, no -d), so a fixture CANNOT pre-arrange
-# a tie against a base-stamped `output` — the pre-stamp is overwritten during the
-# run. Passing the lane's own `output` via --touch makes the oldest delta and the
-# newest `output` the SAME inode, which is a tie by construction and needs no
-# wall-clock luck. Artificial as a delta path, exact as an operator pin.
+# path to NOW (`_touch_explicit_delta`'s plain `touch`, no -d), so a fixture
+# CANNOT pre-arrange a tie against a base-stamped `output` — the pre-stamp is
+# overwritten during the run. Passing the lane's own `output` via --touch makes
+# the oldest delta and the newest `output` the SAME inode, which is a tie by
+# construction and needs no wall-clock luck. Artificial as a delta path, exact as
+# an operator pin.
 IFS='|' read -r S2T_BASE S2T_LANE S2T_DELTA \
     <<< "$(_s_make_fixture S2t "2024-06-01 00:00:00.123456789")"
 S2T_OUTPUT="$S2T_LANE/target/debug/build/fakecc-1111/output"
@@ -4280,18 +4369,11 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # pool-bucket suite's C-P3 discipline requires load-independent verdicts). The
 # shim opens its own log file so the probe cannot perturb what it measures.
 #
-# fd-PROBING MECHANIC: reading a descriptor via `$(readlink /proc/self/fd/N)`
-# does NOT work here — command substitution itself runs in a subshell whose
-# OWN fd 1 is the internal pipe bash uses to capture $(...)'s output, so
-# `/proc/self/fd/1` inside that subshell always resolves to THAT capture
-# pipe, never to the shim's real, inherited fd 1 (verified empirically while
-# building this block: it read back `pipe:*` unconditionally, fix or no fix).
-# The shim instead captures `$BASHPID` — its own real PID, stable across the
-# fd redirects being probed — into a plain variable FIRST, then uses that
-# fixed value in `/proc/$BASHPID/fd/N` from inside the command substitution.
-# That decouples "what redirect does the probe's own output need" from "whose
-# fd table am I inspecting", which a self-referential `/proc/self` can never
-# do.
+# fd-PROBING MECHANIC: the shim captures its own PID (`$BASHPID`) into a
+# plain variable FIRST, outside any command substitution, and reads each
+# descriptor through that saved PID's /proc fd directory. A self-referential
+# probe spelled inside `$(...)` reads the capture pipe instead; mechanism and
+# guard: tests/infra/README.md "Self-referential fd-probe guard".
 #
 # The whole invocation deliberately mirrors the real blocking caller,
 # scripts/warm-lane-gc.sh:648-649 — `bash "$SCRIPT" ... 2>&1 | consumer` — so
@@ -5780,5 +5862,139 @@ assert "W10: seed still exits 0 on the guard-success branch" \
 
 assert "W10: ...and STDOUT is still exactly <lane_dir>/target on that branch" \
     bash -c '[ "$1" = "$2" ]' _ "$W10_OUT" "$W_LANE6/target"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block X — --fresh-checkout is source-tree CONTENT-INERT and DELETION-INERT
+#           (task 7227)
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS BLOCK EXISTS. warm-lane-gc.sh's Pass-1 reset delegates to this seed
+# and its header claims the reset never harms the lane's source tree. Nothing
+# pinned that claim, and esc-7106-5 — one tracked source file gone from a lane,
+# unattributed — stood as a live counter-hypothesis to it for exactly that
+# reason. The claim is TRUE (task 7227 re-measured the seed: no git
+# clean/checkout/reset/restore/rm/stash is executed anywhere, and every rm/mv
+# is scoped to $LANE_TARGET or the pool-level trash sibling), so this block is
+# a CHARACTERIZATION PIN and is expected green on its first run. It is not
+# hunting a bug; it is closing the hole that let the hypothesis survive.
+#
+# WHY IT LIVES HERE AND NOT IN tests/infra/test_warm_lane_gc.sh, where the
+# reset under investigation actually is: that suite drives every Pass-1 reset
+# through _seed_stub_body, a stub whose whole behaviour is removing a
+# target/DIVERGENT_MARKER. A source-survival assertion there would characterize
+# the stub and stay green no matter what the real primitive did. The pin has to
+# sit where the REAL seed runs against a real lane.
+#
+# The lane is a real git repo (Block M's recipe) so X5/X6 can pin the ref too.
+# No --base-commit is passed, so the seed makes zero git calls and the stub git
+# is never invoked. The pre-existing non-empty target/ forces the most
+# destructive path available — rename-to-trash, reflink-clone, rm trash.
+echo ""
+echo "--- Block X: fresh-checkout leaves the source tree intact (task 7227) ---"
+
+# ── block-local snapshot helpers ──────────────────────────────────────────────
+# Both prune target/ (legitimately replaced) and .git/ (git's own bookkeeping,
+# and pruned by the seed's own bulk stamp). What is left is exactly the lane's
+# source tree — the thing the gc header promises is never touched.
+_x_paths() {
+    ( cd "$1" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -print ) |
+        LC_ALL=C sort
+}
+_x_hashes() {
+    local lane="$1" p
+    ( cd "$lane" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -type f -print ) |
+        LC_ALL=C sort |
+        while IFS= read -r p; do
+            printf '%s  %s\n' "$(sha256sum < "$lane/$p" | cut -d' ' -f1)" "$p"
+        done
+}
+
+X_LANE="$(make_isolated_lane X-inert)"
+
+git -C "$X_LANE" init -q
+git -C "$X_LANE" config user.email "test@reify.test"
+git -C "$X_LANE" config user.name "Test"
+
+# Path set spans the walk's edges: a nested subdirectory, a name containing a
+# space, and a dotfile. A find/touch walk that mishandles any of those would
+# show up here as a vanished or altered path rather than as a silent survivor.
+mkdir -p "$X_LANE/src" "$X_LANE/nested/deep"
+printf 'target\n'          > "$X_LANE/.gitignore"
+printf 'fn main() {}\n'    > "$X_LANE/src/main.rs"
+printf 'pub fn lib() {}\n' > "$X_LANE/src/lib.rs"
+printf 'pub fn deep() {}\n' > "$X_LANE/nested/deep/buried.rs"
+printf 'spaced content\n'  > "$X_LANE/with space.txt"
+printf 'dotfile content\n' > "$X_LANE/.hidden-config"
+git -C "$X_LANE" add -A
+git -C "$X_LANE" commit -q -m "init"
+
+# Base: real artifact + sidecar so the cp stub has something to clone.
+X_BASE_PARENT="$(mktemp -d /tmp/test-seed-X-base-XXXXXX)"
+X_BASE="$X_BASE_PARENT/target"
+_TMPDIRS+=("$X_BASE_PARENT")
+mkdir -p "$X_BASE/debug"
+echo "base artifact" > "$X_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$X_BASE_PARENT/.warm-base-meta"
+
+# Non-empty pre-existing target/ → the replace path, not the create path.
+mkdir -p "$X_LANE/target/debug"
+echo "stale artifact" > "$X_LANE/target/debug/stale.a"
+
+X_PATHS_BEFORE="$(_x_paths "$X_LANE")"
+X_HASHES_BEFORE="$(_x_hashes "$X_LANE")"
+X_HEAD_BEFORE="$(git -C "$X_LANE" rev-parse HEAD)"
+X_REF_BEFORE="$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X4's positive control is only meaningful if the sources do NOT already carry
+# the 2020 stamp. They were written moments ago, but assert it rather than
+# assume it: a fixture that started at the epoch would make X4 vacuous.
+X_MTIME_BEFORE="$(stat -c '%Y' "$X_LANE/src/main.rs")"
+assert "X0: FIXTURE — sources start ABOVE the 2020 epoch (else X4 is vacuous)" \
+    test "$X_MTIME_BEFORE" -gt "$EPOCH_2020"
+assert "X0: FIXTURE — the lane really is a git repo with a resolvable HEAD" \
+    test -n "$X_HEAD_BEFORE"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$X_BASE" "$X_LANE" --fresh-checkout
+
+assert "X1: the seed run succeeded (exit 0)" test "$RC" -eq 0
+
+# X2 — DELETION-INERT. The assertion whose absence let "the reset may delete a
+# source file" stand unfalsified: the path SET is identical, so nothing
+# vanished and nothing appeared.
+assert "X2: the source-tree path set is IDENTICAL across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_PATHS_BEFORE" "$(_x_paths "$X_LANE")"
+
+# X3 — CONTENT-INERT. Set identity alone would still permit a rewrite in place.
+assert "X3: every source file is byte-identical across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HASHES_BEFORE" "$(_x_hashes "$X_LANE")"
+
+# X4 — POSITIVE CONTROL. Without it, a fixture where the seed never ran at all
+# would satisfy X2/X3 trivially. The 2020 stamp proves the seed's
+# `find "$LANE_DIR" ... -exec touch` walk really did traverse the very files
+# X3 just proved unchanged — which is also the precise, and only, effect the
+# reset has on a lane's source tree.
+assert "X4: src/main.rs was stamped to the 2020 epoch (the walk really ran)" \
+    test "$(stat -c '%Y' "$X_LANE/src/main.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the nested file" \
+    test "$(stat -c '%Y' "$X_LANE/nested/deep/buried.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the spaced filename" \
+    test "$(stat -c '%Y' "$X_LANE/with space.txt")" -eq "$EPOCH_2020"
+assert "X4: ...and so was the dotfile" \
+    test "$(stat -c '%Y' "$X_LANE/.hidden-config")" -eq "$EPOCH_2020"
+
+# X5/X6 — the branch half of the same header claim: committed work lives on the
+# lane's ref and the reset never moves it.
+assert "X5: HEAD still points at the same commit" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HEAD_BEFORE" "$(git -C "$X_LANE" rev-parse HEAD)"
+assert "X6: the lane is still on the same branch" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_REF_BEFORE" "$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X7 — git's own view agrees: no tracked file is modified or deleted. This is
+# the same question scripts/warm-lane-source-integrity.sh asks a live lane, so
+# a regression here would surface there as a `deleted=` sentinel.
+assert "X7: git reports no tracked source change after the reset" \
+    bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$X_LANE"
+
 
 test_summary

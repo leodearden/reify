@@ -51,8 +51,8 @@ use reify_solver_elastic::{
 };
 
 use super::tensegrity_crack::{
-    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_index_triples, crack_nodes,
-    crack_scalar_list,
+    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_index_triples, crack_loads,
+    crack_nodes, crack_scalar_list,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -124,7 +124,7 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
         CODE,
         UNIT_HINT,
     )?;
-    let loads = crack_loads(&value_inputs[4])?;
+    let loads = crack_loads(&value_inputs[4], CODE, UNIT_HINT)?;
     let supports = crack_supports(&value_inputs[5], nodes.len())?;
     let surface_prestress = crack_pressures(&value_inputs[6], "surface_prestress")?;
     let membrane_thickness = crack_dimensioned_scalar(
@@ -312,59 +312,6 @@ fn crack_real(v: &Value, what: &str) -> Result<f64, String> {
             "E_MembraneLoadInfeasible: {what} must be a real number, got {other:?}"
         )),
     }
-}
-
-/// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force vectors.
-/// The loads-vs-nodes length check is performed in [`run`]; this cracker only
-/// validates per-entry shape (3-component, FORCE-dimensioned).
-fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_MembraneLoadInfeasible: loads must be a list of 3-component force vectors, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        match item {
-            Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-                out.push([
-                    crack_dimensioned_scalar(
-                        &c[0],
-                        &format!("loads[{i}].x"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                    crack_dimensioned_scalar(
-                        &c[1],
-                        &format!("loads[{i}].y"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                    crack_dimensioned_scalar(
-                        &c[2],
-                        &format!("loads[{i}].z"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                ]);
-            }
-            other => {
-                return Err(format!(
-                    "E_MembraneLoadInfeasible: loads[{i}] must be a 3-component force vector, got {other:?}"
-                ));
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// Crack a `List<Int>` of support node indices, range-checking each against the

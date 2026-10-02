@@ -1,8 +1,20 @@
 // PRD evidence fixture: docs/prds/v0_6/assembly-derivation-toolbox.md (G3 grammar gate).
-// DELIBERATE-FAILURE evidence for leaf A-alpha (grammar producer): the fourth sub arm
-// does NOT parse today. Probe-verified 2026-08-26 @ main 96041f850b:
-//   tree-sitter parse --quiet -> ERROR [3,0]-[9,1], exit 1.
-// Post-A-alpha: parses with 0 ERROR nodes (the leaf's user-observable signal).
+// POSITIVE evidence for leaf A-alpha (grammar producer): the fourth sub arm parses.
+//
+// A-alpha (task #6615) HAS LANDED. This file now parses with 0 ERROR nodes under
+// both grammars, and both readings are CI-gated:
+//   tree-sitter -> derived_sub_fixture_parses_with_zero_error_nodes in
+//                  tree-sitter-reify/tests/derived_sub_grammar_tests.rs
+//   lezer (GUI) -> the `derived sub arm` block in
+//                  gui/src/__tests__/reifyGrammarCorpus.test.ts, plus this path
+//                  pinned in that file's EXPECTED_CLEAN drift ledger.
+// Before A-alpha it was DELIBERATE-FAILURE evidence. Measured pre-fix extent, on
+// this file as it stands, at base 6f0e434eb8:
+//   tree-sitter parse --quiet -> ERROR [8,0]-[14,1], exit 1.
+// (An older header recorded `ERROR [3,0]-[9,1]` from a 2026-08-26 probe at main
+// 96041f850b; that extent went stale when this header grew, and is superseded by
+// the measured one above. Neither extent is pinned by any test -- the assertion
+// is "zero ERROR nodes".)
 module adt_mirror_of_arm
 pub structure Unit { param z : Length = 80mm
     let body = box(10mm, 10mm, z) }

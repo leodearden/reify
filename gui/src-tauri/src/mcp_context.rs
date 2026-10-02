@@ -8,6 +8,7 @@ use reify_mcp::{
 };
 
 use crate::engine::EngineSession;
+use crate::eval_queue::{EvalOutcome, EvalRequest};
 
 /// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
 type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
@@ -217,13 +218,26 @@ impl ReifyToolContext for TauriToolContext {
             .map_err(ToolError::EngineError)
     }
 
+    /// DURABLE parameter mutation: rewrite the cell's default literal in the
+    /// user's canonical `.ri` source (INV-GUI-3, task 5099 η).
+    ///
+    /// One mechanism, three surfaces. This Tauri-invoke MCP context, the
+    /// reify-debug `reify_set_parameter` tool (`debug_server.rs`) and the GUI
+    /// property panel all end at [`EngineSession::commit_parameter`], so an
+    /// edit made through any of them means the same thing and lands in the same
+    /// place. The alternative — an AI edit the user's file does not carry — is
+    /// the ephemeral second source of truth the invariant exists to forbid.
+    ///
+    /// The value parse is shared too (#5757), so `value` is a UNIT-BEARING
+    /// literal (`"120mm"`) on any dimensioned cell, refused with the same
+    /// ladder-rung suggestion here as in the panel.
     fn set_parameter(&self, cell_id: &str, value: &str) -> Result<SetParamResult, ToolError> {
         let mut session = self
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
-            .set_parameter(cell_id, value)
+            .commit_parameter(cell_id, value)
             .map_err(ToolError::EngineError)?;
 
         // Find the updated parameter in the returned GuiState
@@ -278,16 +292,8 @@ impl ReifyToolContext for TauriToolContext {
     }
 
     fn export(&self, format: &str, output_path: &str) -> Result<bool, ToolError> {
-        let export_format = match format {
-            "step" | "stp" => reify_ir::ExportFormat::Step,
-            "stl" => reify_ir::ExportFormat::Stl,
-            _ => {
-                return Err(ToolError::InvalidParams(format!(
-                    "Unknown export format: {}",
-                    format
-                )));
-            }
-        };
+        let export_format =
+            crate::commands::parse_export_format(format).map_err(ToolError::InvalidParams)?;
         let mut session = self
             .engine
             .lock()
@@ -343,4 +349,49 @@ pub fn mcp_tool_call_impl(
     registry
         .call_tool(name, params, context)
         .map_err(|e| e.to_string())
+}
+
+/// [`mcp_tool_call_impl`] as a queued evaluation. The session's state is
+/// published after every tool, even a read-only or failed one: an unchanged
+/// state publishes an empty delta.
+///
+/// This one request covers `TauriToolContext`'s WHOLE engine surface: a tool
+/// touches the engine only through [`ReifyToolContext`] methods, including
+/// `open_file`, `update_source` and `set_parameter`, which drive full
+/// recursive compiles.
+///
+/// The cost of that granularity: `reify_focus_entity`,
+/// `reify_navigate_to_source`, `reify_get_selection` and
+/// `reify_get_eval_status` touch no engine, yet queue behind every evaluation
+/// ahead of them — worst for `reify_get_eval_status`, which a client polls to
+/// learn WHETHER an evaluation is in flight. They are not bypassed here,
+/// because a tool-name predicate would be a second copy of the registry's
+/// knowledge of which tool reaches the engine, and it would rot in the
+/// dangerous direction: a tool wrongly classed non-engine would leave the
+/// ENGINE lane's large stack. #7722 tracks the bypass without that copy — the
+/// registry classifying each tool where its handler is registered.
+///
+/// The context's event emitter fires from the ENGINE lane thread, which is
+/// sound because `tauri::AppHandle` is `Send + Sync`. The job dispatches
+/// directly because it already runs on that lane, whose single consumer cannot
+/// wait on a nested submission to itself.
+pub fn mcp_tool_call_evaluation(
+    ctx: TauriToolContext,
+    engine: Arc<Mutex<EngineSession>>,
+    name: String,
+    params: serde_json::Value,
+) -> EvalRequest<serde_json::Value> {
+    EvalRequest::evaluation(move || {
+        let reply = mcp_tool_call_impl(&name, params, &ctx);
+        let publish = match crate::commands::get_initial_state_impl(&engine) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    "mcp_tool_call: delta sync failed, frontend model may be stale: {e}"
+                );
+                None
+            }
+        };
+        EvalOutcome { publish, reply }
+    })
 }

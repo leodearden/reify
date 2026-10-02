@@ -595,6 +595,205 @@ mod tests {
         );
     }
 
+    /// §8.1 lane δ-B end-to-end through `check()` — the user-observable signal
+    /// this task exists to deliver, shaped after
+    /// `crates/reify-core/src/diagnostics.rs`'s `HexWedgeMeshOutcome` rustdoc
+    /// ("blocked on VolumeMesh realization (task #2947)", cite `cancelled`).
+    ///
+    /// An ordinary comment that both defers work and names the task routes
+    /// through the UNCHANGED β liveness lane: seeded terminal, it is a High
+    /// `orphaned:` finding. Seeded non-terminal, it is silent. A benign
+    /// explanatory comment — the dominant class in any real corpus — is silent
+    /// regardless. δ-B emits no structural kind, so unlike δ-A there is no
+    /// `untracked:` case to assert: an uncited deferral comment simply is not a
+    /// candidate.
+    #[test]
+    fn check_delta_b_cited_deferral_lane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(
+            root,
+            "cited.rs",
+            "/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring\nfn f() {}\n",
+        );
+        write_file(
+            root,
+            "live.rs",
+            "/// hydration is deferred to task #5235 landing first\nfn g() {}\n",
+        );
+        write_file(
+            root,
+            "benign.rs",
+            "/// Maps each wedge outcome onto its diagnostic code (task #2947).\nfn h() {}\n",
+        );
+
+        // #2947 terminal (cancelled) → orphaned; #5235 non-terminal → silent.
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 2947, "cancelled"), ("master", 5235, "pending")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec![
+            "cited.rs".to_string(),
+            "live.rs".to_string(),
+            "benign.rs".to_string(),
+        ]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let for_path = |p: &str| -> Option<&Finding> {
+            findings.iter().find(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path: q } if q == p))
+            })
+        };
+
+        let cited = for_path("cited.rs")
+            .unwrap_or_else(|| panic!("expected orphaned finding for cited.rs; got {findings:?}"));
+        assert_eq!(cited.pattern, Pattern::PTodo);
+        assert_eq!(cited.severity, Severity::High); // task η: orphaned → High
+        assert!(
+            cited.summary.starts_with("orphaned:"),
+            "summary must start with 'orphaned:': {}",
+            cited.summary
+        );
+        assert!(
+            cited.summary.contains("#2947"),
+            "summary must carry the cite id: {}",
+            cited.summary
+        );
+        assert!(
+            cited.summary.contains("cancelled"),
+            "summary must carry the terminal status: {}",
+            cited.summary
+        );
+
+        assert!(
+            for_path("live.rs").is_none(),
+            "a deferral citing a NON-terminal task must yield NO finding; got {findings:?}"
+        );
+        assert!(
+            for_path("benign.rs").is_none(),
+            "an explanatory comment with a cite but no deferral prose must yield NO finding; got {findings:?}"
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "exactly one δ-B finding expected (cited.rs only); got {findings:?}"
+        );
+    }
+
+    /// FP guard at the fixture level for δ-B, mirroring
+    /// `committed_allow_dead_code_fixture_contributes_zero_findings`: the
+    /// committed `scenario20_delta_b_cited_deferral.rs` fixture is entirely
+    /// NEGATIVE — every line must fail at least one of the lane's guards.
+    ///
+    /// This is the enforcement point that matters most for δ-B, because the
+    /// lane was rejected once already (task #6087) at a 48% false-positive
+    /// rate. The real class-(a) identifier sites and class-(b) PRD-relative
+    /// sites ARE live in-tree, and are pinned verbatim at unit level in
+    /// src/ptodo.rs; this fixture pins the same shapes through the whole
+    /// `check()` pipeline, where an over-fire would actually reach the merge
+    /// gate.
+    ///
+    /// It lives under the already-allowlisted `crates/reify-audit/` prefix, so
+    /// the live sweep never sees it and it cannot pollute the §6.6 baseline;
+    /// copied here into a temp root, its path is NOT allowlisted, so it IS
+    /// genuinely swept.
+    ///
+    /// `tests/cli.rs`'s whole-fixture-tree sweep gives this a second,
+    /// independent enforcement point: because the fixture contributes zero
+    /// findings, that test's exact finding-count and exit-code assertions stay
+    /// true and go red if δ-B ever over-fires.
+    #[test]
+    fn committed_delta_b_fixture_contributes_zero_findings() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ptodo/scenario20_delta_b_cited_deferral.rs");
+        let content = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", fixture.display()));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "scenario20_delta_b_cited_deferral.rs", &content);
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["scenario20_delta_b_cited_deferral.rs".to_string()]);
+
+        // Seed every id the fixture cites TERMINAL wherever a terminal status is
+        // safe. `done`/`cancelled` is the worst case for this lane — it is what
+        // turns a `Cited` entry into a High `orphaned` finding — so the
+        // fixture's silence is proof the GUARDS held, not an artefact of a
+        // missing or still-live task row.
+        //
+        // #7777 is the discriminating class-(d) cite: the G-allow lane exempts
+        // it under its own rule (c) (`PRD ` immediately left), so seeding it
+        // terminal isolates δ-B's `g_allow_marker_body` guard as the ONLY thing
+        // preventing a finding on that line.
+        //
+        // #4092 / #3429 are the OWNER-LESS class-(d) seam: the G-allow lane
+        // exempts both as provenance (rule (a) "(done)", rule (b) "re-homed
+        // from cancelled"), so it has no owner to resolve; seeding them
+        // terminal isolates δ-B's guard as the only thing keeping that line
+        // silent.
+        //
+        // #5235 is the exception, and deliberately non-terminal. It is the
+        // owner cite of the VERBATIM live G-allow shape, which rule (c) does NOT
+        // exempt — so a terminal #5235 would make the independent G-allow lane
+        // fire `g-allow-orphaned` on that line, breaking this fixture's
+        // zero-findings contract for a reason that has nothing to do with δ-B.
+        // Live today it is `pending`, and the fixture mirrors that.
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[
+                ("master", 2326, "done"),
+                ("master", 2330, "done"),
+                ("master", 2335, "done"),
+                ("master", 4739, "done"),
+                ("master", 7777, "done"),
+                ("master", 4092, "done"),
+                ("master", 3429, "cancelled"),
+                ("master", 5235, "pending"),
+            ],
+        );
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "the δ-B negative fixture must contribute ZERO findings; got {findings:?}"
+        );
+    }
+
     /// ζ inverse lane: end-to-end `check()` integration. Seeds an on-disk DB
     /// with a non-terminal (pending) task whose metadata.files lists:
     ///   - a DELETED path (mock: absent from tracked, git has history)
@@ -1264,7 +1463,7 @@ mod inverse {
         assert!(has_commit, "evidence must contain Commit ref with sha: {:?}", f.evidence);
     }
 
-    // Scenario 17 (PRD §9): non-terminal task whose metadata.files names a path
+    // Scenario 20 (PRD §9): non-terminal task whose metadata.files names a path
     // that was RENAMED (not deleted), to a target still tracked at HEAD → one
     // task-cites-renamed-path finding naming BOTH paths.
     //

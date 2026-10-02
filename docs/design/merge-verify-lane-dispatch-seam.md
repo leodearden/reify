@@ -29,8 +29,12 @@ described in prose after the table:
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
-The reset row's defer carries bounds of its own, stated once here rather than
-inside the cell above. Git faults *inside the method body* still raise plain
+The reset row's defer carries **two bounds** of its own — the git-fault
+escape to `blocked`, and the `MAX_CONTENDED_LEASE_DEFER_SECS` cap-out —
+stated once here rather than inside the cell above; two *further* bounds on
+the contended family as a whole are stated below (`LaneLockSelfOwnedLeak`,
+and the fail-CLOSED `MergeVerifyLeaseHeld` pre-check) — four in total. Git
+faults *inside the method body* still raise plain
 `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git
 fault still classifies as blocked"). Continuous contention past
 `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally
@@ -38,8 +42,11 @@ resolve `MergeOutcome('blocked')`, its reason carrying a strictly-increasing
 per-worker cap-out ordinal (`_contended_lease_cap_outs`, rendered `lane
 cap-out #N`) so consecutive cap-outs stay signature-DISTINCT and can never
 re-feed `consecutive_merge_thrash` — closing the false-positive story below.
-That cap is the *only* terminal bound on the defer itself: between attempts
-it is throttled to `CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s,
+That cap is the *only* terminal bound on the defer itself; the three items
+that close this paragraph — the inter-attempt throttle, the warn streak, and
+the PENDING `req.result` — resolve nothing on their own and are therefore
+**not** among the four. Between attempts the defer is throttled to
+`CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s,
 `merge_queue.py` — already paid by this row's own 30s wait, so free here —
 the floor exists for `MergeVerifyLeaseHeld`'s zero-wait pre-check, which
 refuses IMMEDIATELY with no wait of its own and would otherwise spin the
@@ -301,8 +308,14 @@ the seam; remediation, if any, is dark-factory's half.
 Speculative dispatch is **not** required to reproduce the failure, and
 provisioning more verify lanes does **not** fix it.
 
-`git.merge_spec_warm_lane_pool: true` has been live since task 4941
-(`dark-factory-orchestrator.yaml:627`). With it, `merge_liveness.py`'s
+`merge_spec_warm_lane_pool: true` — nested under the top-level `git:` block
+of `dark-factory-orchestrator.yaml`, hence the dotted shorthand
+`git.merge_spec_warm_lane_pool` used elsewhere — has been live since task
+4941. Cited by KEY, not by line: that file is tracked in reify, so grepping
+the leaf as written re-checks it from any worktree, whereas a line number
+into a 1100+ line actively-edited config only rots (this cite's had). With
+it,
+`merge_liveness.py`'s
 `lane_path, warm = await git_ops.acquire_spec_lane(merge_commit)` routes
 SPECULATIVE items to `_spec-N` lanes — **not** to `_merge-verify`. Only the
 serial-head path (`merge_liveness.py`, `await
@@ -355,7 +368,11 @@ reports IDLE forever, so it is pinned by exact string equality plus a decoy test
 
 **Invariants.** This is their single normative statement — the script header
 carries a one-line-each summary and points here for the reasoning, so this is
-the copy to amend when one of them changes.
+the copy to amend when one of them changes. A1 and A2 describe the
+**measurement**, and since task 5738 they are implemented once, in
+`scripts/lib_lane_lock.sh`, shared verbatim with `warm-lane-audit.sh`; A3 and
+A4 are this script's own, and A3 is where the two callers deliberately part
+company (see "Unified tri-state probe" below).
 
 - **A1 — non-mutating.** Never creates, truncates, or changes the lock file or
   the mount. Read-only open on an existing path; a missing lock file is IDLE and
@@ -377,13 +394,14 @@ the copy to amend when one of them changes.
 
 Telling *would-block* from *tool error* is the load-bearing implementation
 detail: `flock -n` returns a bare `1` on contention, indistinguishable from
-"flock itself failed". The guard therefore asks for a distinct conflict status
-via `-E 124`, and treats every other non-zero as a degradation.
+"flock itself failed". The shared probe therefore asks for a distinct conflict
+status via `-E 124`, and reports every other non-zero as unmeasurable.
 
 That 124 is chosen only to be *distinguishable from flock's bare 1*, and it is
-consumed exclusively by this script's own probe: the guard passes it to its own
-`flock -n -s -E "$FLOCK_CONFLICT_RC"` and compares the result against that same
-shell variable. It matches DF's current `_SEED_WARM_LANE_LOCK_TIMEOUT_RC` by
+consumed exclusively inside `scripts/lib_lane_lock.sh`, its single owner: the
+lib passes `LANE_LOCK_PROBE_CONFLICT_RC` to its own
+`flock -n -s -E "$LANE_LOCK_PROBE_CONFLICT_RC"` and compares the result against
+that same shell variable. It matches DF's current `_SEED_WARM_LANE_LOCK_TIMEOUT_RC` by
 **convention** — both echo `timeout(1)`'s 124 — and that is the whole of the
 relationship. There is no coupling in either direction: DF never observes this
 guard's exit codes (it is unwired — §4(a)), and the guard never observes DF's
@@ -403,22 +421,45 @@ test updated in lockstep. That is precisely the coupling this section warns
 reify not to create on its own side; noted here so the next reader sees the
 grep hit and does not mistake it for a production literal.
 
-**Known divergence from `warm-lane-audit.sh`.** Two scripts now probe the same
-`<mount>/<lane>.lock` inode with the same read-only shared-`flock` technique —
-audit's `_probe_live` and this guard's `_probe` — and they disagree on exactly
-one question. Audit uses a bare `flock -n -s` and reads *every* non-zero as LIVE,
-conflating a broken or missing `flock` with contention: it fails **closed**. The
-guard asks for `-E 124` and fails **open** on anything that is not that exact
-status. Both are right for their own consumer — audit's output is advisory prose
-a human reads, where over-reporting LIVE merely looks conservative; the guard's
-exit 3 gates dispatch, where a false BUSY would wedge the serial merge queue.
+**Unified tri-state probe.** Two scripts probe the same `<mount>/<lane>.lock`
+inode and answer the same would-block question — audit's `_probe_live` and this
+guard's `_probe` — and since task 5738 they share ONE measurement:
+`lane_lock_probe` in `scripts/lib_lane_lock.sh`, which returns `IDLE`, `BUSY`
+or `UNMEASURABLE`.
 
-The consequence worth knowing: on a host with a degraded `flock`, audit will
-report a lane LIVE while the guard reports it IDLE, and no shared code path keeps
-them honest. Unifying them behind a tri-state helper (`IDLE` / `BUSY` /
-`UNMEASURABLE`, each caller applying its own fail direction to the third) is the
-right end state; it needs to touch `scripts/warm-lane-audit.sh`, which is outside
-task 5608's lock set, so it is filed as follow-up rather than done here.
+The lib owns what the two callers have in common — A1 (non-mutating) and A2
+(shared, non-blocking, released at once), both properties of the measurement
+itself. It deliberately does **not** own A3. The fail direction on
+`UNMEASURABLE` stays with each caller, and that is the whole reason the third
+state exists: one measurement serving two opposite calculi, each a single
+`case` arm.
+
+| Caller | `UNMEASURABLE` maps to | Signal |
+|---|---|---|
+| `warm-lane-lock-guard.sh` | `IDLE` — fails **open** | stderr `FAIL-OPEN` warning, **no** sentinel, exit 0 |
+| `warm-lane-audit.sh` | `LIVE` — fails **closed** | stderr warning naming the lock, lane counted `live=` |
+
+Both are right for their own consumer: audit's output is advisory prose a human
+reads, where over-reporting LIVE is merely conservative; the guard's exit 3
+gates dispatch, where a false BUSY would wedge the serial merge queue. So on a
+host with a degraded `flock` the two still disagree about one inode — but that
+divergence is now a deliberate one-line-each mapping over a shared measurement
+rather than two independent implementations, and both directions are asserted:
+the lock-guard suite's Block D, the audit suite's Block T, and
+`tests/infra/test_lane_lock_probe.sh` for the lib itself.
+
+One behaviour changed in the unification. `warm-lane-audit.sh` used to be
+inconsistently fail-directed on a single axis: a broken or missing `flock` read
+LIVE, but an unreadable lock file made its `exec 7<` fail and fell through to
+IDLE — silently fail-**open** on the same question. Every unmeasurable cause now
+maps to LIVE uniformly. An ABSENT lock file remains IDLE on both sides and is
+not a degradation at all: it positively means no consumer ever took that lane,
+an answer that needs no `flock`, so the lib resolves it before the tool check.
+
+The audit's own test seam for that mapping is `REIFY_WARM_LANE_AUDIT_FLOCK`
+(default `flock`), the sibling of `REIFY_WARM_LANE_AUDIT_DF` and the
+counterpart of the guard's `REIFY_WARM_LANE_LOCK_GUARD_FLOCK` in the option
+table above. Like `_DF` it is env-only, with no CLI flag.
 
 There is deliberately **no** `--wait N` mode and **no** holder-PID attribution.
 Waiting policy is the contended half of the seam and belongs to DF, which
@@ -466,7 +507,9 @@ no-cap-burn `BlockDisposition` row, and `merge_queue.py` `_run_inflight_verify`
 requeues it in a defer arm ahead of the generic handler. Contention on this
 inode is therefore no longer classified `merge_error`. Kept here, struck rather
 than deleted, because §1's historical chain and esc-5363-5 both refer to it; see
-§1 for the four bounds that keep the fix from being unconditional.
+§1 for the four bounds that keep the fix from being unconditional — two in the
+prose immediately after §1's acquirer table, and two *further* in §1's
+`LaneLockSelfOwnedLeak` paragraph.
 
 Only **(a)** remains outstanding, and it is genuinely unlanded — at the same DF
 HEAD, zero hits for `lock_guard_enabled`, `warm-lane-lock-guard` or

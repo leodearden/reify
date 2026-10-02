@@ -194,6 +194,7 @@ mod tests {
             id: ConstraintNodeId::new("E", 0),
             label: None,
             satisfaction: sat,
+            indeterminate_reason: None,
         }
     }
 

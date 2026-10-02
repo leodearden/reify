@@ -1,0 +1,25 @@
+module adv_beta_v7_pm_is_real_zero
+
+// Fixture (β ADVERSARY, docs/prds/v0_6/result-field-vacuity-closure.md leaf β).
+//
+// DISCRIMINATING probe for V7.  β declares `Mode.participation_mass` DEGRADED
+// (citing #7012) and V7 asserts every degraded-declared field is `Value::Undef`
+// on the production path.  Measured on main, `run_mechanism_modal` writes
+// `Value::Real(0.0)` (crates/reify-eval/src/modal_ops.rs, step (5) Mode-record
+// construction).
+//
+// Dividing by the field discriminates the two worlds:
+//   participation_mass == Value::Real(0.0)  -> division-by-zero eval error
+//   participation_mass == Value::Undef      -> undef propagation, exit 0
+// So an eval ERROR here is PRE-state evidence that V7 does NOT hold on main.
+structure def AdvBetaV7PmIsRealZero {
+    let steel = Steel_AISI_1045()
+    let z_carriage_mass = 0.5kg
+    let z_flexure = prb_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let m0 = mechanism()
+    let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
+    let z_modal = mechanism_modal_analysis(carriage, ModalOptions())
+    let pm = z_modal.modes[0].participation_mass
+    let recip = 1.0 / pm
+}

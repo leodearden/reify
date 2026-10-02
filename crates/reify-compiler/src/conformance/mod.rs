@@ -12,24 +12,37 @@ use crate::geometry_traits_inference::{
 use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
 
-/// Severity knob for struct-constructor field-conformance diagnostics
-/// (task 5302, struct-ctor-conformance α).
+/// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
-/// α generalizes the 4584 struct-ctor conformance chokepoint from its original
-/// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
-/// `Selector`) to ALL concrete field types, at **Warning** severity behind this
-/// single const. The ctor field-conformance surface reads its severity from
-/// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
-/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+/// Task 5302 (α) generalized the 4584 struct-ctor conformance chokepoint from
+/// its original 4-family allowlist (`List<TraitObject>` / `StructureRef` /
+/// `Vector` / `Selector`) to ALL concrete field types; task 5303 (ε) added the
+/// two structural codes. Both landed at `Severity::Warning` behind this const —
+/// a landing convenience under PRD decision D4, so a large diagnostic surface
+/// could reach the corpus before it could reject. **Task 5306 (δ) closed that
+/// warn window.** A non-conforming ctor argument is now an Error, so
+/// `reify check` exits 1 on it (`crates/reify-cli/src/main.rs`,
+/// `.any(|d| d.severity == Severity::Error)`).
 ///
-/// **Two emit sites are deliberately outside this knob** and will NOT flip with
-/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
-/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
-/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
-/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
-/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
-/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
-/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
+/// The surface still reads its severity from HERE (threaded through
+/// `WalkCtx.severity`) rather than hard-coding `Severity::Error` at each emit
+/// site, because that is what made δ a one-const flip and what keeps every
+/// knob-governed site provably uniform. **There is no config flag and no
+/// environment variable behind this const, and none may be added**: a
+/// per-invocation severity would make `reify check`'s exit code depend on
+/// something other than the source, which is the failure mode the whole staged
+/// promotion existed to avoid.
+///
+/// **Two emit sites are deliberately outside this knob** and did NOT move with
+/// δ, because they were already Error: (1) the fn-call conformance entry
+/// (`check_fn_arg_conformance`) hard-codes `Severity::Error` (out of scope; see
+/// the `WalkCtx.severity` field doc); (2) the geometry-trait leaf (`Bounded` /
+/// `Connected` / `Convex`, reached via [`emit_geometry_unbounded`] /
+/// [`emit_geometry_trait_violation`]) hard-codes `Severity::Error` because those
+/// codes (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong
+/// to the geometry-primitive-constructors PRD, not to this ctor-field knob (see
+/// the `WalkCtx.severity` doc's carve-out note). Both carve-outs remain live: a
+/// future re-scoping of this const must not silently absorb them.
 ///
 /// **ε (task 5303) additionally reads this knob from outside this module.** The
 /// two structural emit sites in the `StructureInstanceCtor` by-name binder
@@ -37,12 +50,29 @@ use std::cell::RefCell;
 /// ([`DiagnosticCode::CtorUnknownField`]) and over-arity positional argument
 /// ([`DiagnosticCode::CtorArity`]) — build their diagnostics with
 /// [`diag_at`]`(CTOR_FIELD_CONFORMANCE_SEVERITY, …)` rather than a literal
-/// `Severity::Warning`, which is why both this const and [`diag_at`] are
-/// `pub(crate)`. Keeping every knob-governed site on this one const is what keeps
-/// δ a literal one-const flip; a duplicated `Severity::Warning` literal in
-/// expr.rs would silently survive that flip (the C2(iv) severity-invariance
-/// failure mode).
-pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+/// severity, which is why both this const and [`diag_at`] are `pub(crate)`. That
+/// is what made δ a literal one-const flip; a duplicated `Severity::Warning`
+/// literal in expr.rs would have silently survived it (the C2(iv)
+/// severity-invariance failure mode). The same reasoning applies to any emit site
+/// added here later: read the const, never a literal.
+///
+/// # Language contract and deferred variants
+///
+/// The user-facing statement of what this knob governs is
+/// `docs/reify-language-spec.md` §4.9. Around it:
+///
+/// * **No eval-time check, by ruling.** The eval-time ctor inserts args
+///   verbatim; this compile-time surface is the single enforcement point
+///   (`docs/prds/struct-ctor-field-type-conformance.md` D7).
+/// * **Empty-collection args are skipped, not rejected.** They compile with no
+///   expected type; typed enforcement belongs to
+///   `docs/prds/expected-type-pushdown-return-field.md` (stub).
+/// * **Bare `TraitObject` fields are exempt** on the expression-position path.
+///   The exemption, its scope and its revisit condition live at
+///   `check_expr_struct_ctor_args` in `compile_builder/entities_phase.rs` (PRD D6).
+/// * **Construction-site gaps this knob does not yet reach** are listed under
+///   spec §4.9 "Known limitations", each with its owner.
+pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
 ///
@@ -400,9 +430,65 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
-/// Check that each `Param`-kind value cell with a default expression in
-/// `template` has a default whose type is compatible with the declared
-/// `cell_type`, for nominal leaf types (task-4584):
+/// The value cells subject to param-default conformance: `value_cells` ∪ the
+/// members of every port body.
+///
+/// `TopologyTemplate.value_cells` is NOT the whole surface: port-body params are
+/// compiled separately (`entity.rs` port arm) under the composite member name
+/// `ValueCellId(entity, "<port>.<param>")` and stored on `CompiledPort.members`,
+/// a DISJOINT list that is deliberately never merged into `value_cells`
+/// (`reify_ast::decl`'s `collect_param_default_candidates` doc-comment records
+/// why: `set_parameter`, the GUI property panel, and
+/// `find_param_default_expr`/`find_param_default_span` cell_id resolution all
+/// key off `value_cells` and must not see port-internal names).
+///
+/// Walking only `value_cells` therefore left every port-member param default
+/// unchecked at EVERY arm below — a `Geometry`, `String` or `StructureRef`
+/// default inside a `port { }` block compiled with zero diagnostics (task 7174).
+/// Chaining here rather than adding a second call site keeps ONE loop body, so
+/// the two lists cannot drift apart again.
+///
+/// `CompiledGuardedGroup.members` / `.else_members` is deliberately OUT of this
+/// chain. A guarded param already carries its own separately-owned decision
+/// about default checking — `guards.rs` omits the sibling `check_param_default_type`
+/// at that site on purpose, pinned by
+/// `guarded_param_dimension_mismatched_default_does_not_check_param_default_type`
+/// — so extending conformance there is a change with its own acceptance
+/// criteria, not a ride-along on this one. Mechanically it would be one more
+/// `.chain(…)` here; structurally it still needs no second call site.
+///
+/// UNANNOTATED cells ARE judged here, against the `Type::dimensionless_scalar()`
+/// INFERENCE FALLBACK the compiler assigns when a `param` names no type — so
+/// `param c = Color.Red` reports `Enum(Color)` vs `Real`, naming a type the
+/// source never wrote. That is deliberate, and it is not something the port
+/// cells introduce: the walk is site-blind by construction (ONE loop body), and
+/// the top-level half has reported the fallback this way since α. The asymmetry
+/// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
+/// which IS gated on `param.type_expr.is_some()` at both its call sites and so
+/// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
+/// The two checks are complementary, not alike-gated; what holds both SITES to
+/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+///
+/// Whether an inference fallback should be judged AT ALL is a live question, and
+/// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
+/// hard error on source that named no type. It is recorded here rather than
+/// pre-empted because
+/// gating it is a behaviour change at BOTH sites — this chain cannot skip the
+/// fallback for port cells without also skipping it for top-level ones, which is
+/// exactly the parity this task established. The bit such a gate would need
+/// (`param.type_expr.is_some()`, already computed at both `check_param_default_type`
+/// call sites) is not carried on `ValueCellDecl` today.
+fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    template
+        .value_cells
+        .iter()
+        .chain(template.ports.iter().flat_map(|p| p.members.iter()))
+}
+
+/// Check that each `Param`-kind cell enumerated by [`param_default_cells`]
+/// (template value cells ∪ port-body members) with a default expression has a
+/// default whose type is compatible with the declared `cell_type`, for nominal
+/// leaf types (task-4584):
 ///
 /// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
 ///   comment below for rationale — concretely, a `StructureRef` default for a
@@ -423,7 +509,7 @@ pub(crate) fn check_param_default_conformance(
     registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for vc in &template.value_cells {
+    for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
@@ -617,14 +703,15 @@ struct WalkCtx<'a> {
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
     /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
-    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
+    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α, `Error` since
+    /// δ / task #5306); the fn-call
     /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
     /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
     /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
     /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
     /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
-    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
-    /// flips only the const.
+    /// exactly one place per walk (C2(iv) severity-invariance), which is what let
+    /// δ (task #5306) promote the whole family by flipping only the const.
     ///
     /// **Carve-out — geometry-trait conformance stays always-Error.** The
     /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
@@ -1305,10 +1392,25 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 /// arms use to accept the expression compiler's numeric-fallback placeholder
 /// (task 5465).
 ///
-/// `point3(…)` and friends are stdlib eval-builtins with no `.ri` return type,
-/// so their calls compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather
-/// than `Type::Point`. `Type::ScalarParam(_)` is the same shape with an
-/// unresolved dimension (see [`arg_type_is_unverifiable`]'s closing note).
+/// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
+/// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
+/// and `Type::ScalarParam(_)`, a scalar shape whose DIMENSION is unresolved
+/// rather than absent (see [`arg_type_is_unverifiable`]'s closing note). Read
+/// the membership off the predicate, never off an example.
+///
+/// This is a SHARED helper, and each call site states its own reason for wanting
+/// it: the `Point` arm (below), the `Matrix`/`Tensor` arm, and
+/// `list_bottoms_out_numeric`. Notably the `Matrix`/`Tensor` arm wants the
+/// `Type::Scalar { .. }` leg for rank-0 scalar equivalence (Rules 2a/2b), where
+/// the arg is a REAL dimensioned scalar and not a placeholder at all — so
+/// narrowing this predicate to `Int | ScalarParam` to suit the `Point` arm
+/// would break that accept. Any claim about which args "survive" belongs to a
+/// call site's own branch, not here.
+///
+/// `point3(…)` / `point2(…)` are NOT among the `Point` arm's placeholder inputs:
+/// they carry a real `Type::Point` and take that arm's OTHER branch. Ruled once,
+/// in the *Point / Vector quantity-slot convention* section of
+/// `crates/reify-core/src/ty.rs`.
 ///
 /// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
 /// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
@@ -1359,7 +1461,7 @@ fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
 ///
 /// All five behaviours above — the accept, the A2 post-state, and the three
 /// narrowness fences — are pinned by name in the γ D4-5 section of
-/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`.
+/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`.
 fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
     matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
 }
@@ -1543,9 +1645,11 @@ where
 /// error. The guard runs before the match, making the anti-cascade contract uniform
 /// across all arms (current and future). Note: this guard is top-level only — an `Error`
 /// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
-/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
-/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
-/// arg-shape pass is tracked as future work.
+/// secondary wrapper-shape diagnostic on top of the root-cause error. Since task 5302,
+/// non-wrapper, non-trait param types reach the general concrete-leaf arm, which checks
+/// the families [`general_leaf_param_family_is_validated`] admits; the dedicated
+/// shape arms (Vector, Point, Matrix/Tensor, Field, Selector) and the enum branch
+/// check theirs. Every remaining family falls through silently (owner #7958).
 fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     // Anti-cascade: skip when either type carries the poison sentinel so no
     // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
@@ -1678,7 +1782,13 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     "Point / Vector quantity-slot convention" section of
         //     `crates/reify-core/src/ty.rs`, deliberately not restated here).
         //   • Scalar-like numeric args, as the expression compiler's
-        //     numeric-fallback placeholder for point-producing builtins.
+        //     numeric-fallback placeholder. NOTE this does NOT cover
+        //     `point3(…)` / `point2(…)`, which carry a real `Type::Point` and
+        //     take the branch ABOVE (ruled in the ty.rs section named just
+        //     above). What arrives here is everything [`is_numeric_placeholder_leaf`]
+        //     matches: `Type::Int`, ANY `Type::Scalar { .. }` (dimensioned or
+        //     not — the match is dimension-blind, so a scalar-returning call
+        //     such as `abs(-5kg)` lands here too), and `Type::ScalarParam(_)`.
         //
         // The placeholder predicate is deliberately NARROW — see
         // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
@@ -1694,17 +1804,37 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // `Type::Point`, this arm structurally cannot be reached by a `String` /
         // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
         // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
-        // shape, which an arg-side skip would MISS: the placeholder type
-        // propagates through the value cell and only the type-level walker sees
-        // the resulting `ValueRef`.
+        // shape, which an arg-side skip would MISS: only the type-level walker
+        // sees the resulting `ValueRef`. That shape reaches this SAME arm by a
+        // second route — a persisted `Type::Point` on the value cell rather than
+        // a `FunctionCall`'s inferred `result_type` — and the rule below fires
+        // through it exactly as it does for a direct call. Pinned by
+        // `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`
+        // (`struct_ctor_field_conformance_tests.rs`); this claim is not carried
+        // by prose alone.
         //
-        // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
-        // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
-        // pre-existing `Type::Geometry` placeholder exclusion (geometry
-        // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
-        // The tolerance can be tightened to a FunctionCall-shaped check once
-        // `point3` carries a real return type — tracked by the family-5 /
-        // placeholder follow-up filed with this task.
+        // THE BOUNDED, DELIBERATE COST, at its true size: ANY scalar-family
+        // arg at a Point slot stays silent. That is a bare numeric literal
+        // (`Anchor(origin: 5)`), but ALSO a scalar carrying the WRONG dimension
+        // (`Anchor(origin: 5kg)` at `Point3<Length>`) and a scalar-returning
+        // call (`Anchor(origin: abs(-5kg))`) — all measured silent, and pinned
+        // respectively by `bare_numeric_literal_at_point_param_stays_clean`,
+        // `dimensioned_scalar_at_point_param_stays_clean` and
+        // `scalar_returning_call_at_point_param_stays_clean`. Note `5kg` at a
+        // `Scalar<Length>` slot IS rejected; the asymmetry is the cost.
+        //
+        // The placeholder EXCLUSION is a standing ruling, identical in kind to
+        // the pre-existing `Type::Geometry` one (geometry constructors compile
+        // to a dimensionless-scalar placeholder, GHR-γ).
+        //
+        // OPEN ITEM, still live: tightening the dimensioned legs — e.g. a
+        // `FunctionCall`-shaped check, or consulting the quantity slot for a
+        // concrete `Type::Scalar { .. }`. Task 5344 removed `point3(…)` from
+        // this branch but did NOT empty it of `FunctionCall`-shaped or
+        // dimensioned inputs, so that narrowing is as available and as
+        // motivated as it was before. It must be argued from the membership set
+        // above, and it cannot be done by narrowing the shared predicate, which
+        // the `Matrix`/`Tensor` rank-0 accept also depends on.
         //
         // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
         // `else` branch below for why.
@@ -1714,17 +1844,29 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                     Type::Point { n: param_n, .. } => param_n == arg_n,
                     _ => true, // unreachable: outer arm guards param_type as Type::Point
                 },
-                // Numeric-fallback placeholder for point-producing builtins.
+                // Numeric-fallback placeholder: `Int`, ANY `Scalar { .. }`
+                // (dimension-blind) or `ScalarParam(_)`. NOT `point3(…)` /
+                // `point2(…)`, which match the arm above. Pinned by
+                // `bare_numeric_literal_at_point_param_stays_clean` and
+                // `dimensioned_scalar_at_point_param_stays_clean`.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             } else {
                 // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the arity check. The
-                // `is_numeric_placeholder_leaf` branch carries no slot and so stays
-                // dimension-blind, which is the branch every real corpus
-                // `point3(…)` arg takes.
+                // `crates/reify-core/src/ty.rs`; applied after the arity check.
+                //
+                // A real corpus `point3(…)` arg reaches this check via the
+                // `Type::Point { .. }` branch above, carrying a genuine quantity
+                // slot, and IS compared here — measured in both directions by
+                // `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+                // (dimensions disagree ⇒ one `ArgTypeMismatch`) and
+                // `point3_dimensionless_at_dimensioned_point_param_stays_clean`
+                // (arg names no dimension ⇒ silent, the arg-side tolerance), both
+                // in `struct_ctor_field_conformance_tests.rs`. The placeholder
+                // branch above does carry no slot and stay dimension-blind, but
+                // it is not where those args go.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
@@ -1988,16 +2130,19 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// placeholder/erasure/missing-coercion rationale below is still why those arms
 /// are shape-based rather than `type_compatible`-based:
 ///
-/// * `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
-///   fallback `Scalar[m]`, never `Type::Point`;
 /// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
 ///   its declaration says;
 /// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
 ///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
 ///
+/// No erasure route runs through `point3(…)` / `point2(…)`; the `Point` arm stays
+/// shape-based for the reasons the arm itself states. What the arg-side tolerance
+/// rests on now is ruled once, in the *Point / Vector quantity-slot convention*
+/// section of `crates/reify-core/src/ty.rs`.
+///
 /// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. For the two placeholder families this is
-/// the same class the `Type::Geometry` exclusion below and
+/// families themselves are now checked. For the remaining placeholder families
+/// this is the same class the `Type::Geometry` exclusion below and
 /// [`promote_function_call_to_structure_ref`] already exist for.
 ///
 /// # Deliberately excluded, with evidence
@@ -2015,7 +2160,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
-///   inference.
+///   inference. Owner: #8101.
 /// * **`TypeParam`** — an unresolved generic param, whose real conformance is
 ///   decided when the type var is bound at instantiation (mirrors the arg-side
 ///   `TypeParam` skip inside [`reject_if_incompatible`]).
@@ -2034,7 +2179,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
 /// deliberate act the four families above went through: a per-family probe pair
 /// (clean fixture + value floor) plus a green corpus gate, with no new
-/// `SKIP_SET` entry.
+/// `SKIP_SET` entry. Owner: #7958 (INV-SF-5 `placeholders-owned-and-loud`).
 ///
 /// # Enum families (task 5465, family 4) — handled by the caller, not here
 ///
@@ -6768,11 +6913,12 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
-        // ctor-conformance entry, so its diagnostics are emitted at
-        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
-        // are unchanged; δ later flips the knob back to Error.
-        assert_eq!(d.severity, Severity::Warning);
+        // check_trait_arg_conformance is a ctor-conformance entry, so its diagnostics
+        // are emitted at CTOR_FIELD_CONFORMANCE_SEVERITY. Task 5302 α downgraded that
+        // knob to Warning (Option-A uniform downgrade); task 5306 δ flipped it back to
+        // Error. Code/count/message were unchanged by both moves. Written as a literal
+        // rather than a read of the const so a future re-flip cannot pass vacuously.
+        assert_eq!(d.severity, Severity::Error);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),
@@ -7359,6 +7505,81 @@ mod tests {
         );
     }
 
+    /// Task 7174: a port-body param default (`CompiledPort.members`) must reach
+    /// the SAME `check_param_default_conformance` walk as a top-level
+    /// `value_cells` param default.
+    ///
+    /// `template.value_cells` and `template.ports[].members` are disjoint lists
+    /// (deliberately — see `param_default_cells`'s doc comment). Before the fix,
+    /// `check_param_default_conformance` walked only `value_cells`, so pushing a
+    /// `Geometry` param cell onto `template.ports` instead of `template.value_cells`
+    /// made it invisible to the walk: RED (zero diagnostics) until
+    /// `param_default_cells` chains `template.ports[].members` in.
+    ///
+    /// Its integration twin `port_member_geometry_param_default_errors`
+    /// (`harness_structure_declarations`) proves the same diagnostic end-to-end from
+    /// real source, so this probe is not here for the diagnostic — it is here for
+    /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
+    /// the only way to distinguish "the chain reached the port list" from "the
+    /// producer merged port members into `value_cells` after all", and that second
+    /// shape is a regression of the disjointness the GUI / `set_parameter` /
+    /// `find_param_default_expr` consumers depend on, which the integration probe
+    /// would happily stay green through.
+    #[test]
+    fn port_member_param_default_reaches_conformance_walk() {
+        let region_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "mount.region"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::new(10, 20),
+        };
+        let mut template = minimal_template("Test", vec![]);
+        template.ports.push(CompiledPort {
+            name: "mount".to_string(),
+            direction: reify_core::PortDirection::Bidi,
+            type_name: "P".to_string(),
+            members: vec![region_cell],
+            constraints: vec![],
+            frame_expr: None,
+            is_priv: false,
+        });
+
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "port-member param default must reach the conformance walk and emit exactly \
+             one diagnostic, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert!(
+            diagnostics[0].message.contains("mount.region"),
+            "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
     // ── task-4622: walk_param_against_arg_type Vector leaf arm ───────────────
 
     /// (a) Bare scalar arg against `Vector3<Length>` param →
@@ -7438,6 +7659,14 @@ mod tests {
     /// Locks the arity-check added in the amendment pass: shape-based conformance now
     /// also requires matching `n` for `Type::Vector` args. `vec2` is a real mismatch
     /// for a `vec3`-typed param and must be rejected at compile time.
+    ///
+    /// This probe builds its `Type::Vector { n: 2, .. }` by hand, so it reaches the
+    /// walker without depending on `math_fn_result_type`'s name-suffix `n` inference.
+    /// The `.ri` twin that DOES depend on that inference, and so is the one that would
+    /// notice it ceasing to produce a `Type::Vector { n: 2, .. }` at all, is
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`
+    /// (`struct_ctor_field_conformance_tests.rs`). Sibling of
+    /// `point_param_rejects_wrong_arity_point_arg`.
     #[test]
     fn vector_param_rejects_wrong_arity_vector_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
@@ -7513,13 +7742,29 @@ mod tests {
     /// arg whose quantity slot names a CONCRETE dimension different from the
     /// param's is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not a `.ri` fixture.**
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only, and
-    /// `point3(…)` is an eval-builtin with no `.ri` return type — its calls
-    /// compile to a `Scalar[m]` / `Int` placeholder. No `.ri` source can
-    /// therefore produce a *dimensioned* `Type::Point` arg, so the `Type` is
-    /// constructed directly, exactly as the adjacent arity and dimensionless
-    /// probes do (see `struct_ctor_field_conformance_tests.rs`'s own note on this).
+    /// Constructed as a direct `Type` so the probe reaches the walker without
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    ///
+    /// The `.ri` twin of this exact cell is
+    /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306).
+    /// Pinning BOTH seams matters because they reach this arm by different
+    /// routes — a hand-built `Type` here, versus a `FunctionCall`'s inferred
+    /// `result_type` there — so this probe holds the walker's rule whatever the
+    /// inference chain does, while only the `.ri` fixture would notice that
+    /// chain ceasing to produce a dimensioned `Type::Point` at all. This is the
+    /// same two-seams shape `vector_param_rejects_cross_dimension_vector_arg`
+    /// states one arm over.
+    ///
+    /// The value-cell route (`let p = point3(…); Anchor(origin: p)`) is a THIRD
+    /// entry point and NOTHING here stands in for it — this probe builds no
+    /// `CompiledExpr` at all. It is pinned by its own fixture,
+    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`.
     ///
     /// The complement of `point_param_accepts_dimensionless_point_arg` directly
     /// above: that one pins the TOLERANT half (either side declines to name a
@@ -7549,11 +7794,11 @@ mod tests {
     /// (task 5766), sibling of `point_param_rejects_cross_dimension_point_arg`.
     ///
     /// The `.ri` seam for the same rule is
-    /// `vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`
+    /// `vec3_cross_dimension_at_dimensioned_vector_param_errors_arg_type_mismatch`
     /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
-    /// because they reach the arm by different routes — a `ValueRef` carrying a
-    /// persisted `Type::Vector` here, versus a `FunctionCall`'s inferred
-    /// `result_type` there — and only the type-level walker sees the former.
+    /// because they reach the arm by different routes — a hand-built `Type`
+    /// here, versus a `FunctionCall`'s inferred `result_type` there — so this
+    /// probe holds the walker's rule whatever the inference chain does.
     ///
     /// The code assertion is the load-bearing half: a quantity conflict must
     /// route to `ArgTypeMismatch`, NOT to this arm's bespoke
@@ -7650,11 +7895,11 @@ mod tests {
     /// For a probe whose types are WRAPPERS (the `List<Vector3<…>>` recursion
     /// probe), the quantities named are the INNER ones the rule fires on.
     ///
-    /// This is where the ERROR half of the rule's severity split is pinned: the
-    /// fn-call entry point this scaffold drives sets `Severity::Error`, while the
-    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α) and is
-    /// pinned by the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs`.
-    /// Both halves are recorded in `crates/reify-core/src/ty.rs`.
+    /// This pins the fn-call entry point this scaffold drives, which sets
+    /// `Severity::Error`. The ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`]
+    /// instead (Warning at α, `Error` since δ / task #5306, so the two entries no
+    /// longer split on severity) and is pinned by the `.ri` fixtures in
+    /// `struct_ctor_field_conformance_tests.rs`.
     fn assert_quantity_slot_conflict(
         param_type: Type,
         arg_ty: Type,
@@ -7681,7 +7926,7 @@ mod tests {
             diagnostics[0].severity,
             Severity::Error,
             "{why}\nthe fn-call entry point sets Severity::Error (the ctor entry sets the \
-             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Warning at α); the quantity rule inherits \
+             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Error since δ); the quantity rule inherits \
              whichever the walk was entered with. Got {:?}",
             diagnostics[0].severity,
         );
@@ -7789,10 +8034,11 @@ mod tests {
     /// a deliberate assertion of unit-lessness rather than a grammar workaround,
     /// so a `Vector3<Length>` arg there is a real error.
     ///
-    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The Warning half of
-    /// the severity split for this same cell is pinned by
+    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The ctor-path `.ri`
+    /// twin of this same cell is
     /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`).
+    /// (`struct_ctor_field_conformance_tests.rs`), at `Severity::Error` since
+    /// δ / task #5306 — so the two paths no longer split on severity.
     #[test]
     fn dimensionless_quantity_param_rejects_dimensioned_vector_arg() {
         let diagnostics = assert_quantity_slot_conflict(
@@ -7840,11 +8086,11 @@ mod tests {
     /// [`emit_if_quantity_conflict`] is shared by all three shape arms, but the
     /// ruling's new cell was pinned only at the `Vector` one, and
     /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
-    /// a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can
-    /// now be rejected on cell `[0][0]` alone, where before only a dimensioned
-    /// param slot could trip it. That claim is only true if this arm actually
-    /// reaches the STRICT param-side predicate — the arm's one other quantity
-    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_warns_…` in
+    /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
+    /// rejected, where before only a dimensioned param slot could trip it. That
+    /// claim is only true if this arm actually reaches the STRICT param-side
+    /// predicate — the arm's one other quantity fixture
+    /// (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
     /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
     /// already green under task 5766's symmetric rule, so it cannot tell the two
     /// predicates apart. Without this probe, routing the arm through the
@@ -7879,18 +8125,21 @@ mod tests {
     /// closing the third of the three arms [`emit_if_quantity_conflict`] serves.
     ///
     /// Constructed as a direct `Type` so the probe reaches the walker without
-    /// depending on `math_fn_result_type`'s first-argument quantity inference —
-    /// NOT because a `.ri` source cannot produce a dimensioned `Type::Point` arg.
-    /// That older premise expired when task 5344 (`3c4ee5e9ac`) claimed
-    /// `point3` / `point2` into the math construction family; it must not be
-    /// re-asserted. Rule, the measured `.ri`-level cells, and the surviving stale
-    /// sites task 6436 owns: the "Point / Vector quantity-slot convention"
-    /// section of `crates/reify-core/src/ty.rs`.
+    /// depending on `math_fn_result_type`'s agreeing-components quantity
+    /// inference — NOT because a `.ri` source cannot produce a dimensioned
+    /// `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    /// Rule and the measured `.ri`-level cells: the "Point / Vector
+    /// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. The
+    /// stale sites that section used to point at were corrected by task 6436;
+    /// there are none outstanding.
     ///
     /// The `.ri` twin of this exact cell is
-    /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`),
-    /// which pins the inference chain this direct-`Type` probe deliberately
+    /// `point3_dimensioned_at_dimensionless_point_param_errors_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306), which pins the inference chain this direct-`Type`
+    /// probe deliberately
     /// bypasses.
     #[test]
     fn dimensionless_quantity_point_param_rejects_dimensioned_point_arg() {
@@ -7957,7 +8206,12 @@ mod tests {
     /// `Type::Int` mapping applies to a BARE type position, `param n : Int`, not
     /// to a dimension slot.) `Type::Int` quantity slots arise on the ARG side
     /// only, via `math_fn_result_type`'s `vec3`/`point3` arm — which is what
-    /// fence (b) directly above covers.
+    /// fence (b) directly above covers. That survives task 5889's narrowing of
+    /// that arm because its heterogeneity check compares DIMENSIONS, not
+    /// `Type`s: `Int` and `Real` are both dimensionless, so they agree and the
+    /// `Type::Int` slot is kept rather than degraded away. Pinned by
+    /// `vec_result_type_int_and_real_elements_agree_and_keep_int_quantity`
+    /// (`math_signatures.rs`).
     ///
     /// Note what this does NOT say: the param-side strictness ruling is about a
     /// dimensionless `Type::Scalar` ONLY. `Int` is a different type, not a
@@ -8127,15 +8381,38 @@ mod tests {
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not an integration probe in
-    /// `struct_ctor_field_conformance_tests.rs` (where the other four Point
-    /// probes live).** The surface language has no `Point2` spelling —
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only
-    /// (`type_resolution.rs:3192`) — so no `.ri` source can produce a
-    /// `Type::Point { n: 2, .. }` arg and the arity rule is unreachable from
-    /// inline-source fixtures. Constructing the `Type` directly is the only way
-    /// to pin it. Sibling of `vector_param_rejects_wrong_arity_vector_arg`,
-    /// which exists for the same reason.
+    /// **The param-side asymmetry, and what does NOT follow from it.** The
+    /// surface language has no `Point2` PARAM spelling:
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only — its arms
+    /// are `"Point3" if type_args.len() == 1` (`type_resolution.rs`, two sites),
+    /// with no `"Point2"` arm anywhere. That is why this probe's param type is
+    /// `Point3<Length>` and why the `.ri` twin's param must be spelled the same
+    /// way. It does NOT follow that the arity rule is unreachable from
+    /// inline-source fixtures — a param spelling constrains PARAMS, not ARGS,
+    /// and that inference must not be re-asserted over the arg side. The `.ri`
+    /// twin named below carries the detail.
+    ///
+    /// The arity leg IS now pinned from `.ri` source, by
+    /// `point2_arg_at_point3_param_errors_arity_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
+    /// direct-`Type` seam of the same pair the cross-dimension probe above
+    /// describes: constructed directly so it reaches the walker without
+    /// depending on `math_fn_result_type`'s name-suffix `n` inference, while the
+    /// `.ri` fixture is the one that would notice that inference ceasing to
+    /// produce a `Type::Point { n: 2, .. }` at all. (Task 5889 narrowed that
+    /// arm's QUANTITY slot and deliberately left `n` alone — it still comes from
+    /// the name suffix.)
+    ///
+    /// Sibling of `vector_param_rejects_wrong_arity_vector_arg`, which is also a
+    /// direct-`Type` arity probe — note its own doc claims no erasure premise,
+    /// so nothing there needs the correction this block carries. The `Vector`
+    /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
+    /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`. The two
+    /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
+    /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
+    /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
+    /// the split cannot drift.
     #[test]
     fn point_param_rejects_wrong_arity_point_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
@@ -8368,7 +8645,7 @@ mod tests {
     /// A bare `Enum("Hue")` param supplied an applied `Result<…>` arg resolves
     /// to two DIFFERENT base names, so it must still be exactly one
     /// `ArgTypeMismatch` — the same verdict the forward-direction cross-enum
-    /// probe (`enum_param_given_wrong_enum_warns_arg_type_mismatch`) pins.
+    /// probe (`enum_param_given_wrong_enum_errors_arg_type_mismatch`) pins.
     #[test]
     fn enum_param_rejects_applied_enum_arg_of_different_base() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();

@@ -916,14 +916,12 @@ fn extract_xyz(m: &Manifold) -> Vec<[f64; 3]> {
 
 /// Build a [`Manifold`] directly from the `unit_cube_mesh` test fixture by
 /// replicating the exact f32→f64 / u32→u64 conversion that
-/// [`crate::kernel::ManifoldKernel::ingest_mesh`] performs (kernel.rs:295–313).
+/// [`crate::kernel::ManifoldKernel::ingest_mesh`] performs.
 ///
 /// Exposed at module level (not confined to `mod tests`) so it is reusable
 /// across test modules within this crate without re-deriving the conversion.
-/// Ideally this helper would live in `crate::test_fixtures`; moving it there
-/// requires editing `crates/reify-kernel-manifold/src/test_fixtures.rs`, which
-/// is outside the file scope of task 3612 (KGQ-γ) — deferred per
-/// the KGQ-γ code review.
+/// Ideally this helper would live in `crate::test_fixtures`; it has not been
+/// moved there yet.
 ///
 /// `offset` shifts the [0,1]³ unit cube by (dx, dy, dz) in each axis.
 #[cfg(test)]

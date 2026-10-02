@@ -35,6 +35,7 @@ function commonMembers($) {
     $.minimize_declaration,
     $.maximize_declaration,
     $.relate_block,
+    $.sketch_block,
     $.guarded_block,
     $.port_declaration,
     $.connect_statement,
@@ -120,6 +121,17 @@ module.exports = grammar({
     //   `_primary_expression`, `variant_construction`".
     // PRD §4.4 / task α (data-carrying-enums, step-6).
     [$._primary_expression, $.variant_construction],
+    // import_path must stay live across a `.` so the parser can decide, on the
+    // token AFTER it, whether the dot continues the path (`a.b.c`, `a.b.C`) or
+    // introduces the destructured item list (`a.b.{C, D}`).  That is a
+    // 2-token-lookahead decision an LR(1) table cannot make, so without this
+    // entry `tree-sitter generate` aborts with:
+    //   "Unresolved conflict for symbol sequence:  'import'  identifier  •  '.'
+    //    …  Add a conflict for these rules: `import_path`".
+    // Required by the `.`-before-`{` terminal in import_declaration below; per
+    // the convention noted at the foot of this file, it is present only because
+    // generate reported the conflict and named this rule.  Task #5931.
+    [$.import_path],
   ],
 
   rules: {
@@ -261,7 +273,23 @@ module.exports = grammar({
       field('path', $.import_path),
       optional(choice(
         // Destructured: import a.b.{C, D}
-        field('items', $.import_items),
+        //
+        // The `.` before the brace list is NORMATIVE, per the `import_path`
+        // production in docs/reify-language-spec.md §15 "Grammar Summary":
+        //   import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?
+        // (corroborated by that spec's §7.3 "Import Forms" table, row
+        // "Destructured import", and by the identical `import_path` production
+        // in docs/initial-design/syntax-design-decisions.md §11 "Grammar
+        // summary").  Pinned by tests/import_items_grammar_tests.rs (#5931).
+        //
+        // The braces deliberately stay a SEPARATE `items` field on
+        // import_declaration rather than being folded into import_path the way
+        // the spec EBNF nests them: lower_import (crates/reify-syntax/src/
+        // ts_parser.rs) distinguishes Destructured from Aliased/Entity/Module
+        // by which optional FIELD is present.  Only the surface `.` terminal is
+        // normative here, so adding it settles the spelling without disturbing
+        // the CST shape or the lowering.
+        seq('.', field('items', $.import_items)),
         // Aliased: import a.b as x  OR  import a.b.C as X
         seq('as', field('alias', $.identifier)),
       )),
@@ -667,6 +695,74 @@ module.exports = grammar({
       field('value', $._expression),
     ),
 
+    // ── auto(seed) in positional call-argument position ─────
+    // PRD v0.6 constrained-2d-sketch §5 D6, implementing the 2026-07-25
+    // OPTION B decision: `auto(<expr>)` is admitted grammar-generally in CALL
+    // position (any `callTail($)` consumer — function_call, namespaced_call,
+    // ad_hoc_selector, trait_method_call), so `point(auto(10mm), 0mm)` means
+    // "solve for this point, seeded at 10mm".
+    //
+    // WHY A DISTINCT NODE RATHER THAN A FOURTH `auto_keyword` ARM.
+    // `auto_keyword` includes the bare `$._auto_token` arm, so admitting
+    // `auto_keyword` into `argument_list` would ALSO admit bare `auto` as a
+    // positional argument and thereby fully reverse task 3808's
+    // operand-position rejection. The OPTION B decision authorises only the
+    // parenthesized-seed form, so only that form gets a rule. The distinct
+    // node kind is also what lets `lower_expr` route it on kind alone,
+    // without re-inspecting children to tell a seed from a modifier.
+    //
+    // WHY NO AMBIGUITY / NO `conflicts` ENTRY. The three `argument_list`
+    // alternatives have disjoint FIRST sets: `named_argument` starts
+    // `identifier ':'`; `auto_seed` starts AUTO_TOKEN; and `_expression` can
+    // never start with AUTO_TOKEN, because the external scanner emits
+    // AUTO_TOKEN regardless of valid_symbols (src/scanner.c's
+    // `auto_token_block` label — cited by LABEL, not by line range, because
+    // the previous `src/scanner.c:437-505` citation rotted within ten days:
+    // task 5784's U+00B7 unit-operator work shifted that block to 459-529) — the
+    // very mechanism that makes `auto` an ERROR at operand positions. So
+    // `auto` never lexes as an `identifier` here and the arms cannot collide.
+    // `tree-sitter generate` reports no new conflict for this rule (measured);
+    // if that ever changes, resolve it and record the ACTUAL cause here rather
+    // than leaving this claim stale.
+    //
+    // PARTIAL-REVERSAL BREADCRUMB. Task 3808 rejected `auto` at operand
+    // positions. This widens ONLY `auto( <expr> )` in positional call args.
+    // Measured on the generated parser, positionally: bare `auto` stays a
+    // parse error (`f(auto)` → ERROR) and so does the named-parameter form
+    // (`f(auto(seed = 5mm))` → ERROR, since `seed = 5mm` is not an
+    // `_expression`); and `auto(<expr>)` is still NOT admitted at a binding
+    // site in v1 (`_binding_value` is untouched, so `let x : Length =
+    // auto(5mm)` → ERROR). Pinned by tests/sketch_grammar_tests.rs's
+    // `bare_auto_stays_rejected_in_positional_operand_position`,
+    // `named_argument_auto_forms_unchanged` and
+    // `auto_seed_is_not_admitted_at_binding_sites_in_v1`.
+    //
+    // CONSEQUENCE OF THE GENERALITY, called out so no reader mistakes it for a
+    // special case: `auto(free)` in POSITIONAL argument position does NOT stay
+    // an error — it parses as an `auto_seed` whose `seed` is the plain
+    // identifier `free` (measured), NOT as `auto_keyword`'s free-modifier arm,
+    // which is unreachable there. The modifier reading is still the one that
+    // wins wherever `auto_keyword` IS reachable — a binding site, and a NAMED
+    // argument, which reaches `auto_keyword` through `_binding_value`
+    // (`f(x: auto(free))` → `named_argument` / `auto_keyword`, measured). So
+    // the two readings are position-DISJOINT: no single token sequence
+    // acquires two readings, which is what INV-SF-7 actually forbids.
+    //
+    // Admitting a form in the GRAMMAR is not accepting it in the LANGUAGE.
+    // Once `auto_seed` lowers to the existing `ExprKind::Auto` (α's lowering
+    // step), every one of these positional forms — seeded or `free` — hits
+    // `reject_auto_in_arg_list` in reify-compiler/src/expr.rs, which emits the
+    // coded E_AUTO_NOT_AT_BINDING_SITE diagnostic for the first offending arg.
+    // That is what OPTION B's "typed semantic rejection outside sketch scope,
+    // loud + coded, never silent-accept" buys, and γ/η are what relax it
+    // INSIDE sketch scope.
+    auto_seed: $ => seq(
+      $._auto_token,
+      '(',
+      field('seed', $._expression),
+      ')',
+    ),
+
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
       optional(choice('pub', 'priv')),
@@ -746,6 +842,80 @@ module.exports = grammar({
       'where',
       '{',
       repeat($.relation_member),
+      '}',
+    ),
+
+    // ── Sketch block (member-level) ─────────────────────────
+    // `sketch profile { aux let cl = line(…)  let a = point(…)  fix(a) }` — a
+    // member-level constrained 2D sketch (constrained-2d-sketch v0_6, PRD §7
+    // C1; §5 D2/D11/D12; task α 5506).  The block binds `name` as a member
+    // whose value is the assembled profile region, so `extrude(profile, …)`
+    // consumes it through the ordinary member-reference path (D11) with no
+    // new call surface.
+    //
+    // `sketch` is a PLAIN string token (contextual keyword), mirroring
+    // `relate`'s proven pattern (see relate_block above): tree-sitter makes it
+    // a lex candidate ONLY where the parse state admits a member start (via
+    // commonMembers()).  No member alternative begins with a bare identifier,
+    // so `'sketch'` and `identifier` are never both valid at one state —
+    // everywhere else (operands, names, args, let bindings) `sketch` keeps
+    // lexing as `identifier`.
+    //
+    // The body deliberately REUSES two existing node kinds rather than
+    // introducing a `sketch_member` wrapper:
+    //   • `let_declaration` — its existing `optional('aux')` already delivers
+    //     PRD §5 D12's construction geometry with ZERO new grammar, and its
+    //     `optional(seq(':', type))` gives an annotated sketch entity for free.
+    //   • `relation_member` — the same bare-expression shape as
+    //     `relate_block`/`sub_relate_block`, so `lower_relation_members` stays
+    //     single-implementation across all three blocks.
+    // Body shape therefore mirrors relate_block's: GLR separates newline- and
+    // `;`-separated members with no explicit separator token, and empty
+    // `sketch s { }` is admitted (repeat = zero-or-more), matching `relate { }`.
+    //
+    // PRD §5 D2's `on <expr>` datum-plane clause is DELIBERATELY ABSENT in v1
+    // (every sketch is implicitly on the structure's XY datum).  The slot
+    // between `name` and `{` is reserved for it: adding
+    // `optional(seq('on', field('plane', $._expression)))` there is a
+    // non-breaking widening, because no v1 source can occupy that slot.
+    //
+    // ── INV-SF-7 `parse-is-value-faithful` ──
+    // (docs/legibility/design-invariants.md:247-273.)  This body is the FIRST
+    // place in the language where a `let_declaration` and a bare expression are
+    // siblings with no separator token, so the adjacency readings were MEASURED
+    // rather than assumed.  All five are pinned by
+    // `tests/sketch_grammar_tests.rs`; each inherits an existing precedent
+    // rather than inventing a reading:
+    //
+    //   • `let d = 5mm` ⏎ `fix(a)` stays TWO members — the quantity literal
+    //     does not absorb the following line.  (The relation_member's exact
+    //     text is asserted, not just its kind.)
+    //   • `5mm` is one quantity_literal; `5 mm` is a parse ERROR and no
+    //     quantity_literal may span the whitespace.  Inherited law, pinned by
+    //     `test/corpus/unit_expr.txt` — a diagnostic, never a quiet pick.
+    //   • `let x = a.b` ⏎ `(c)` collapses into ONE member: the `(c)` becomes a
+    //     namespaced_call argument list.  This is the ITEM-BOUNDARY reading
+    //     `test/corpus/namespaced_ref.txt` already commits for `relate { a.b ⏎
+    //     (x) }` ("namespaced_ref item boundary" case).  `fix(c)` on that line
+    //     does NOT join — only a `(`-led line does.
+    //   • `fix(a)` ⏎ `horizontal(ab)` stays two relation_members (relate-block
+    //     parity).
+    //
+    // The join above, and the `let d = 5mm` ⏎ `- 3mm` leading-operator
+    // continuation, both reproduce with NO sketch block anywhere — they belong
+    // to `let_declaration`'s `value:` being a full `$._expression`, which is
+    // the seam INV-SF-7's evidence task #5392 describes.  So they are NOT
+    // narrowed here: doing so would fork this body away from every other member
+    // body in the language.  Instead
+    // `sketch_body_item_boundary_matches_a_plain_member_body` asserts this body
+    // reads them IDENTICALLY to a plain member body, so a future fix at that
+    // seam propagates here automatically and the test reds if the two diverge.
+    // Recorded at greater length in escalation esc-5506-1.
+    sketch_block: $ => seq(
+      'sketch',
+      field('name', $.identifier),
+      '{',
+      repeat(choice($.let_declaration, $.relation_member)),
       '}',
     ),
 
@@ -933,6 +1103,184 @@ module.exports = grammar({
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
         optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
+      // Derived form: sub name = mirror of <proto> across <plane> { body }
+      //              sub name = image  of <proto> under  <transform> { body }
+      //
+      // Leaf A-alpha of `docs/prds/v0_6/assembly-derivation-toolbox.md`
+      // (task #6615). A-alpha is SYNTAX + LOWERING only; every compile-scope
+      // rejection (unknown / non-sibling / cyclic prototype, disposition-path
+      // resolution, let-override rules, auto-prototype) belongs to A-beta
+      // (#6616).
+      //
+      // (i) CONTEXTUAL KEYWORDS, not reserved words. `mirror`, `image`, `of`,
+      //     `across`, `under`, `keep`, `exclude` and `using` are plain
+      //     anonymous string tokens. grammar.js declares NO `word:` rule, so
+      //     none of them is reserved and `$.identifier` still matches them
+      //     everywhere else — the same mechanism `relate`, `joint`, `priv`
+      //     and `default` already rely on. This is load-bearing: MEASURED
+      //     occurrences of each word in the 673 committed `.ri` files are
+      //     mirror 65, image 15, across 64, under 143, keep 21, symmetry 5,
+      //     exclude 0 (`of` 937). Reserving any of them would un-pin
+      //     committed source.
+      //
+      // (ii) UNLIKE `relate`, these two lead tokens sit at a state where
+      //     `$.identifier` is ALSO valid: after `sub <name> =` the
+      //     instantiation arm expects `field('structure_name', $.identifier)`.
+      //     So `'mirror'` / `'image'` are separated from a structure name by
+      //     tree-sitter's documented LEXER rules, exactly like the `'List'`
+      //     collection arm above (see the long rule #1 / rule #2 note at the
+      //     specialization arm):
+      //       Rule #1 (longest match): `mirrored` is 8 chars vs `'mirror'`'s
+      //         6, so `sub y = mirrored(a: 1mm)` still reaches the
+      //         instantiation arm with structure_name == "mirrored".
+      //       Rule #2 (string beats regex on an EQUAL-length match): on the
+      //         exact text `mirror`, both `'mirror'` and $.identifier match 6
+      //         chars, so `'mirror'` wins and this arm is taken.
+      //     MEASURED CONSEQUENCE, deliberate: `sub x = mirror(a: 1mm)` and
+      //     `sub y = image(a: 1mm)` parsed on the base commit and are a LOUD
+      //     parse error from here on. ZERO committed `.ri` is affected — the
+      //     only `sub <name> = mirror|image` occurrence in the tree is the
+      //     A-alpha target fixture itself. Pinned by the negative controls in
+      //     `tests/derived_sub_grammar_tests.rs`.
+      //
+      // (iii) The body brace is REQUIRED (not `optional`), upholding
+      //     INV-SF-7: a derivation clause ends in `field('plane'|'transform',
+      //     $._expression)`, so an optional body would leave a dangling
+      //     right-edge expression free to absorb the following line's tokens
+      //     (`across plane_yz` + a newline + `55mm` juxtaposing into one
+      //     expression). Requiring `{` closes that seam by construction, and
+      //     omitting the body is a loud parse error.
+      //
+      // (iv) `at <pose>` is deliberately ACCEPTED here. Placement of a
+      //     derived sub is DERIVED, so an explicit `at` is an error — but it
+      //     is a COMPILE-scope error, `E_DERIVED_SUB_EXPLICIT_AT` (T8), owned
+      //     by A-beta per the D3-adversary ownership ruling. Same shape as
+      //     the collection arm's `at` note above: the grammar accepts it for
+      //     uniformity and the compiler rejects it with a good message.
+      //
+      // (v)  `keep <path> using <plane>` is RESERVED syntax for v2 (PRD
+      //     §3.3 / §11). It parses and lowers into a stored slot; it carries
+      //     NO v1 meaning and no lowering consequence.
+      //
+      // (vi) `symmetry` is RESERVED as a future contextual keyword (PRD §8
+      //     contract item ii). It gets NO production here on purpose — a
+      //     production would start capturing the 5 committed occurrences.
+      //     The reservation is documentation-only; that `symmetry` still
+      //     lexes as an ordinary identifier is asserted at runtime by the
+      //     contextual-keyword battery in `tests/derived_sub_grammar_tests.rs`.
+      //
+      // (vii) `xs[<element>]` element addressing inside a disposition path is
+      //     RESERVED (PRD §8 contract item iii) — no implementation here.
+      //     `disposition_path` is a dotted identifier chain only.
+      //
+      // Arm disambiguation costs NOTHING: MEASURED, `tree-sitter generate`
+      // reports zero new conflicts, so this arm adds no `conflicts:` entry
+      // and no `prec(...)`. The pre-existing `conflicts: [$.sub_declaration]`
+      // entry already covers the shared `priv? aux? sub <name>` prefix.
+      seq(
+        optional('priv'),
+        optional('aux'),
+        'sub',
+        field('name', $.identifier),
+        '=',
+        field('derivation', $.sub_derivation),
+        field('body', $.derived_body),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
+      ),
+    ),
+
+    // ── Sub derivation clause ─────────────────────────────────
+    // The derivation itself: which prototype, and under which transform.
+    //
+    // Modelled as ONE rule with two alternatives (rather than two sibling
+    // rules) because PRD §6 D1 makes the derivation an ELEMENT type with
+    // several constructors: Layer-3 group elements become FURTHER
+    // alternatives here, and consumers should switch on the constructor, not
+    // on which of two node kinds appeared.
+    //
+    // `prototype` is `$.identifier`, NOT `$.import_path` and not
+    // `$._expression`: the PRD names a bare sibling-sub identifier. A dotted
+    // `mirror of a.child across P` is therefore a loud parse error rather
+    // than a silently-accepted path that A-beta would have to reject later.
+    sub_derivation: $ => choice(
+      seq('mirror', 'of', field('prototype', $.identifier), 'across', field('plane', $._expression)),
+      seq('image', 'of', field('prototype', $.identifier), 'under', field('transform', $._expression)),
+    ),
+
+    // ── Derived body ─────────────────────────────────────────
+    // Body of a derived sub: overrides, dispositions, and local members.
+    //
+    // Deliberately NOT `specialization_body`: that rule admits the full
+    // `$._member` set (param / port / sub / connect / …), whereas a derived
+    // body admits exactly param overrides, `keep`/`exclude` dispositions,
+    // `let` and `constraint`. Reusing `specialization_body` would have
+    // widened the derived surface to member kinds the PRD does not define
+    // and pushed their rejection into A-beta for no benefit.
+    //
+    // `repeat` (not `repeat1`) so an empty `{ }` body is legal — the
+    // derivation alone is a complete specification.
+    derived_body: $ => seq(
+      '{',
+      repeat(choice(
+        $.derived_param_assignment,
+        $.keep_disposition,
+        $.exclude_disposition,
+        $.let_declaration,
+        $.constraint_declaration,
+      )),
+      '}',
+    ),
+
+    // A param override inside a derived body: `name = value where?`.
+    //
+    // Distinct from `param_assignment` (specialization bodies) ONLY because
+    // of `default_reset`: `<param> = default` resets an inherited value to
+    // the prototype's declared default, which is meaningless in a
+    // specialization body. Everything else — the `where` guard, the
+    // `_binding_value` value slot (so `auto` / `auto(free)` overrides lower
+    // to ExprKind::Auto exactly as on the specialization arm) — is the same
+    // shape, and the distinct name keeps the two contexts unconfusable, the
+    // same rationale `connect_param_assignment` records.
+    derived_param_assignment: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', choice($.default_reset, $._binding_value)),
+      optional(field('guard', $.where_clause)),
+    ),
+
+    // `default` in value position: reset an inherited param to its default.
+    // A named node (not a bare anonymous token) so lowering can discriminate
+    // a reset from an override without re-inspecting source text.
+    default_reset: $ => 'default',
+
+    // Dispositions: which of the prototype's features survive derivation.
+    //
+    // `keep <path> using <plane>` — the `using` tail is RESERVED (PRD §3.3 /
+    // §11), stored but meaningless in v1. See note (v) on the arm above.
+    keep_disposition: $ => seq(
+      'keep',
+      field('path', $.disposition_path),
+      optional(seq('using', field('plane', $._expression))),
+    ),
+
+    exclude_disposition: $ => seq(
+      'exclude',
+      field('path', $.disposition_path),
+    ),
+
+    // A dotted feature path: `web`, `web.hub`, `a.b.c`.
+    //
+    // Deliberately the `import_path` dotted-identifier SHAPE rather than
+    // `$._expression`. This is the second INV-SF-7 seam closed by
+    // construction: a `$._expression` path would end at a right edge that
+    // could absorb the next newline-separated body item (`keep drum` +
+    // newline + `w = 2mm` juxtaposing), whereas a dotted identifier chain
+    // cannot continue past its last identifier. It also makes the reserved
+    // `xs[<element>]` addressing of PRD §8 item (iii) a parse error today
+    // rather than something silently accepted with no meaning.
+    disposition_path: $ => seq(
+      $.identifier,
+      repeat(seq('.', $.identifier)),
     ),
 
     // ── Specialization body ──────────────────────────────────
@@ -1658,9 +2006,20 @@ module.exports = grammar({
       callTail($),
     )),
 
+    // `$.auto_seed` is a positional-argument ALTERNATIVE, not a wrapper: an
+    // `auto(<expr>)` argument is an ordinary member of the list and keeps its
+    // position among the other arguments. It appears in BOTH choices (head and
+    // repeat) so `f(auto(1mm), x)` and `f(x, auto(1mm))` are equally admitted.
+    //
+    // Deliberately NOT added to `_expression` / `_primary_expression` /
+    // `_binding_value`: scoping the widening to this one rule is what keeps
+    // task 3808's operand-position rejection intact everywhere else. See the
+    // `auto_seed` rule for the full partial-reversal rationale and for why the
+    // three arms need no `conflicts` entry (disjoint FIRST sets — only
+    // `auto_seed` can begin with the external scanner's AUTO_TOKEN).
     argument_list: $ => seq(
-      choice($.named_argument, $._expression),
-      repeat(seq(',', choice($.named_argument, $._expression))),
+      choice($.named_argument, $.auto_seed, $._expression),
+      repeat(seq(',', choice($.named_argument, $.auto_seed, $._expression))),
       optional(','),
     ),
 
