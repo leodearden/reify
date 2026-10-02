@@ -33,6 +33,7 @@ pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
+pub mod product_tree;
 pub mod provenance;
 pub mod ranked;
 pub mod ri_literal;
