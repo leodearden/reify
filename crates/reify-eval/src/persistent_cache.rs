@@ -2885,10 +2885,11 @@ version = "9.9.9"
     }
 
     /// Narrowing guard (task 5272): the workspace `Cargo.lock` must NOT appear
-    /// in `CONTRIBUTORS_RELATIVE`. Its contribution to `ENGINE_VERSION_HASH` is
+    /// among the contributor paths. Its contribution to `ENGINE_VERSION_HASH` is
     /// now narrowed to only the resolved (name, version) pins of reify-eval's
-    /// build+normal (exclude-dev) closure — hashed by `build.rs` from the static
-    /// `engine_hash_closure.txt` manifest via `cargo_lock_closure_parts`, NOT by
+    /// build+normal (exclude-dev) closure — hashed by `engine_version_hash_for`
+    /// from the static `engine_hash_closure.txt` manifest via
+    /// `cargo_lock_closure_parts`, NOT by
     /// a whole-file walk. This pins that the narrowing is not reverted: a
     /// re-added `"../../Cargo.lock"` entry would restore whole-lockfile
     /// invalidation (any unrelated dep bump anywhere in the 716-package
@@ -2899,14 +2900,14 @@ version = "9.9.9"
     /// closure by `tests/infra/test_engine_hash_closure.sh`. PRD:
     /// `docs/prds/merge-gate-compile-cost.md` §3 W4 / §5 C4.
     #[test]
-    fn contributors_relative_excludes_workspace_cargo_lock_now_narrowed_to_closure() {
+    fn contributor_paths_exclude_workspace_cargo_lock_now_narrowed_to_closure() {
         assert!(
-            !crate::engine_hash_algo::CONTRIBUTORS_RELATIVE.contains(&"../../Cargo.lock"),
-            "CONTRIBUTORS_RELATIVE must NOT contain \"../../Cargo.lock\" — the \
+            !crate::engine_hash_algo::contributor_paths().any(|p| p == "../../Cargo.lock"),
+            "contributor_paths() must NOT yield \"../../Cargo.lock\" — the \
              Cargo.lock contribution is narrowed to reify-eval's closure pins \
-             (task 5272; hashed by build.rs from engine_hash_closure.txt). \
+             (task 5272; hashed from engine_hash_closure.txt). \
              Actual list: {:#?}",
-            crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
+            crate::engine_hash_algo::contributor_paths().collect::<Vec<_>>()
         );
     }
 
