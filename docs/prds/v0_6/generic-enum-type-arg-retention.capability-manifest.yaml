@@ -125,8 +125,9 @@ tasks:
   capabilities:
   - name: s1-s3-4031-u1-flip
     binding: 'Probe set delta: S-1 exit 1 E_FALLBACK_TYPE; S-3 exit 1 "expects type";
-      4031 exit 1 "bound to both"; U-1 exit 0 W.v = 0.001 m. All red today (3 FAIL
-      + 1 UNPROVABLE).'
+      4031 exit 1 "bound to both"; U-1 exit 0 W.v = 0.001 m; S-4 binder form exit 1
+      "no matching overload for hb(" (moved from the beta set, esc-8014-3). All red
+      today (4 FAIL + 1 UNPROVABLE).'
     verdict: PASS
     delivered_check:
       kind: script
