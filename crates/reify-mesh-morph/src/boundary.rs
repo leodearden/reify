@@ -384,6 +384,22 @@ mod tests {
         }
     }
 
+    /// A `TopologyAttributeTable` recording `attr` on the single OCCT vertex `vertex`.
+    fn one_vertex_table(
+        vertex: GeometryHandleId,
+        attr: TopologyAttribute,
+    ) -> TopologyAttributeTable {
+        let mut table = TopologyAttributeTable::default();
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: vertex,
+            },
+            attr,
+        );
+        table
+    }
+
     // ── RecordingProjector ────────────────────────────────────────────────────
 
     /// Recorded call to a `Projector` method.
@@ -675,8 +691,7 @@ mod tests {
         ba.associate(0, NodeAttachment::OnVertex(h(50)));
 
         // Hand-built to isolate compute_dirichlet_bcs from Stage B; the
-        // Stage-B-driven path is pinned by
-        // compute_dirichlet_bcs_snaps_vertex_attached_node_through_stage_b_vertex_correspondence.
+        // Stage-B-driven seam is covered by the Task 7276 test below.
         let mut correspondence = CorrespondenceMap::default();
         correspondence.vertex_to_vertex.insert(h(50), h(60));
 
@@ -737,22 +752,8 @@ mod tests {
             user_label: None,
             mod_history: Vec::new(),
         };
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: h(50),
-            },
-            corner.clone(),
-        );
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: h(60),
-            },
-            corner,
-        );
+        let old_table = one_vertex_table(h(50), corner.clone());
+        let new_table = one_vertex_table(h(60), corner);
 
         let map = stage_b_eligible(
             &old_table,
