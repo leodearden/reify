@@ -49,6 +49,12 @@ use xxhash_rust::xxh3::xxh3_128;
 ///    engine_tolerance.rs, engine_purposes.rs
 /// 5. Transitive-dep version pin  — NOT in this list. Narrowed to reify-eval's
 ///    closure pins and handled by [`engine_version_hash_for`] directly (see below).
+/// 6. Persisted-target dispatch   — the code each persisted target's trampoline
+///    runs: reify-eval's src/compute_targets/, shell_extract_compute.rs and
+///    topology_selectors.rs, plus reify-shell-extract, reify-fdm, reify-ir,
+///    reify-core and reify-compute-contract (src/ + Cargo.toml).
+///
+/// Entries are grouped by owning crate, crates in alphabetical order.
 ///
 /// # Transitive-dep version pin (formerly category 5 — narrowed, task 5272)
 ///
@@ -100,19 +106,17 @@ use xxhash_rust::xxh3::xxh3_128;
 // `#[allow(dead_code)]` on `ContributorWalk` and `walk_contributor`.
 #[allow(dead_code)]
 pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
-    // 1. FEA solver
-    "../reify-solver-elastic/src",
-    "../reify-solver-elastic/Cargo.toml",
-    // 2. Meshing pipeline
-    "../reify-kernel-gmsh/src",
-    "../reify-kernel-gmsh/Cargo.toml",
-    "../reify-kernel-gmsh/build.rs",
-    // 3. Stdlib FEA helpers
-    "../reify-stdlib/src/fea.rs",
-    "../reify-stdlib/src/loads.rs",
-    "../reify-stdlib/src/supports.rs",
-    "../reify-stdlib/src/analysis.rs",
-    // 4. Per-purpose tolerance implementation
+    // Persisted contract types (ElasticResult)
+    "../reify-compute-contract/src",
+    "../reify-compute-contract/Cargo.toml",
+    // Value / Diagnostic model used in every trampoline
+    "../reify-core/src",
+    "../reify-core/Cargo.toml",
+    // reify-eval: persisted-target trampolines + tolerance implementation
+    "src/compute_targets",
+    "src/engine_purposes.rs",
+    "src/engine_tolerance.rs",
+    "src/shell_extract_compute.rs",
     "src/tolerance_bucket.rs",
     "src/tolerance_budget.rs",
     "src/tolerance_combine.rs",
@@ -120,14 +124,29 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
     "src/tolerance_gate.rs",
     "src/tolerance_promise.rs",
     "src/tolerance_scope.rs",
-    "src/engine_tolerance.rs",
-    "src/engine_purposes.rs",
-    // 5. Transitive-dep version pin — NOT here (task 5272). Narrowed to
-    //    reify-eval's build+normal (dev-excluded) closure pins:
-    //    engine_version_hash_for reads ../../Cargo.lock + engine_hash_closure.txt
-    //    directly and hashes only the matching (name, version) pins via
-    //    cargo_lock_closure_parts. See the CONTRIBUTORS_RELATIVE doc-comment
-    //    above for the full rationale.
+    "src/topology_selectors.rs",
+    // As-printed zone classification (elastic_static)
+    "../reify-fdm/src",
+    "../reify-fdm/Cargo.toml",
+    // arg_acceptance + sampled-field helpers used in every trampoline
+    "../reify-ir/src",
+    "../reify-ir/Cargo.toml",
+    // Meshing pipeline
+    "../reify-kernel-gmsh/src",
+    "../reify-kernel-gmsh/Cargo.toml",
+    "../reify-kernel-gmsh/build.rs",
+    // Shell extraction (shell-extract::extract)
+    "../reify-shell-extract/src",
+    "../reify-shell-extract/Cargo.toml",
+    // FEA solver
+    "../reify-solver-elastic/src",
+    "../reify-solver-elastic/Cargo.toml",
+    // Stdlib FEA helpers
+    "../reify-stdlib/src/analysis.rs",
+    "../reify-stdlib/src/fea.rs",
+    "../reify-stdlib/src/loads.rs",
+    "../reify-stdlib/src/supports.rs",
+    // Transitive-dep version pins: NOT here (task 5272); see the doc above.
 ];
 
 /// Suffix set shared by the bare dot-prefix branch and the extension branch of
