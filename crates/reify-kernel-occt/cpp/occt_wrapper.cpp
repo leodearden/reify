@@ -9102,6 +9102,37 @@ StepTreeRecords step_document_tree(const OcctStepDocument& doc) {
     return out;
 }
 
+std::unique_ptr<OcctShape> step_document_body(const OcctStepDocument& doc,
+                                              std::uint32_t product_index,
+                                              std::uint32_t body_index) {
+    // No lock: this touches only the document, never the XSTEP state.
+    return wrap_occt_call("step_document_body", [&]() {
+        if (product_index >= doc.products.size()) {
+            throw ContractViolation("product index " + std::to_string(product_index) +
+                                    " is out of range for " +
+                                    std::to_string(doc.products.size()) + " products");
+        }
+        // The PRODUCT label, never a component label: its shape is in the
+        // product's own frame, not placed by any occurrence.
+        TopoDS_Shape shape;
+        if (!XCAFDoc_ShapeTool::GetShape(doc.products[product_index].label, shape)) {
+            throw ContractViolation("product " + std::to_string(product_index) + " has no shape");
+        }
+        std::uint32_t solid = 0;
+        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next(), ++solid) {
+            if (solid == body_index) {
+                auto body = std::make_unique<OcctShape>();
+                body->shape = ex.Current();
+                return body;
+            }
+        }
+        throw ContractViolation("body index " + std::to_string(body_index) +
+                                " is out of range for product " +
+                                std::to_string(product_index) + "'s " +
+                                std::to_string(solid) + " solids");
+    });
+}
+
 rust::String xstep_cascade_unit_for_test() {
     return wrap_occt_call("xstep_cascade_unit_for_test", []() {
         std::lock_guard<std::mutex> lock(g_step_export_mutex);

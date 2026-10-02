@@ -45,6 +45,43 @@ impl fmt::Display for StepReadError {
 
 impl std::error::Error for StepReadError {}
 
+/// Why a product's body cannot be taken from a [`StepDocument`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepBodyError {
+    UnknownProduct(ProductRef),
+    /// Assemblies own no bodies; their components' products do.
+    NotAPart(ProductRef),
+    BodyIndexOutOfRange {
+        product: ProductRef,
+        index: u32,
+        solid_count: u32,
+    },
+}
+
+impl fmt::Display for StepBodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownProduct(product) => {
+                write!(f, "the STEP document has no product {product}")
+            }
+            Self::NotAPart(product) => write!(
+                f,
+                "product {product} is an assembly and has no bodies of its own"
+            ),
+            Self::BodyIndexOutOfRange {
+                product,
+                index,
+                solid_count,
+            } => write!(
+                f,
+                "product {product} has {solid_count} solid(s), so body {index} does not exist"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StepBodyError {}
+
 /// A STEP file read through OCCT XDE: its product tree, with lengths in
 /// metres, and the native document that owns every product's shapes.
 ///
@@ -103,6 +140,44 @@ impl StepDocument {
 
     pub fn tree(&self) -> &ProductTree {
         &self.tree
+    }
+
+    /// The `body_index`-th solid (0-based, the order `solid_count` counts) of
+    /// `product`, in the product's local frame. Validated against the tree,
+    /// whose products are index-aligned with the native walk.
+    pub(crate) fn body_shape(
+        &self,
+        product: &ProductRef,
+        body_index: u32,
+    ) -> Result<cxx::UniquePtr<ffi::OcctShape>, StepBodyError> {
+        let position = self
+            .tree
+            .position(product)
+            .ok_or_else(|| StepBodyError::UnknownProduct(product.clone()))?;
+        let solid_count = match self.tree.products()[position].kind {
+            ProductKind::Assembly => return Err(StepBodyError::NotAPart(product.clone())),
+            ProductKind::Part { solid_count } => solid_count,
+        };
+        if body_index >= solid_count {
+            return Err(StepBodyError::BodyIndexOutOfRange {
+                product: product.clone(),
+                index: body_index,
+                solid_count,
+            });
+        }
+        // The tree and the native document come from one walk, so a validated
+        // request failing here is a reader defect, not a user error.
+        let product_index =
+            u32::try_from(position).expect("product positions come from u32 walk indices");
+        let shape = ffi::step_document_body(&self.native, product_index, body_index)
+            .unwrap_or_else(|exception| {
+                panic!(
+                    "STEP document {}: body {body_index} of validated product {product} is \
+                     missing from the native walk: {exception}",
+                    self.path.display()
+                )
+            });
+        Ok(shape)
     }
 }
 

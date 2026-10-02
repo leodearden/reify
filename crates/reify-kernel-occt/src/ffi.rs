@@ -1640,6 +1640,14 @@ pub mod ffi {
         /// only an exception's text.
         fn read_step_document(path: &str) -> Result<UniquePtr<OcctStepDocument>>;
         fn step_document_tree(doc: &OcctStepDocument) -> StepTreeRecords;
+        /// The `body_index`-th solid (0-based, TopExp SOLID order) of a
+        /// product, in the product's local frame. `Err` on an out-of-range
+        /// index, which callers validate against the tree beforehand.
+        fn step_document_body(
+            doc: &OcctStepDocument,
+            product_index: u32,
+            body_index: u32,
+        ) -> Result<UniquePtr<OcctShape>>;
         /// The process-global `xstep.cascade.unit` static (test observability).
         fn xstep_cascade_unit_for_test() -> Result<String>;
 

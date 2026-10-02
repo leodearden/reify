@@ -1763,6 +1763,16 @@ std::unique_ptr<OcctStepDocument> read_step_document(rust::Str path);
 /// The document's status and flat walk records, names converted to UTF-8.
 StepTreeRecords step_document_tree(const OcctStepDocument& doc);
 
+/// The `body_index`-th solid (0-based, in the TopExp_Explorer SOLID order that
+/// `solid_count` counts) of product `product_index`, taken from the PRODUCT
+/// label, so in that product's local frame. Out-of-range indices throw a
+/// contract violation: the caller validates against the tree first.
+std::unique_ptr<OcctShape> step_document_body(
+    const OcctStepDocument& doc,
+    std::uint32_t product_index,
+    std::uint32_t body_index
+);
+
 /// Current value of the process-global `xstep.cascade.unit` static, read under
 /// the XSTEP mutex after registering the STEP statics. Test-only observability.
 rust::String xstep_cascade_unit_for_test();
