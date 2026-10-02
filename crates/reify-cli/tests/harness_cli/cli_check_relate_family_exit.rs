@@ -32,8 +32,7 @@ fn assert_check_rejects(fixture: &str, needle: &str, phase: Phase) {
         return;
     }
 
-    let (status, stdout, stderr) =
-        common::run_subcommand("check", &common::fixture_path(fixture));
+    let (status, stdout, stderr) = common::run_subcommand("check", &common::fixture_path(fixture));
 
     assert_eq!(
         status.code(),
