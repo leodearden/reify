@@ -2698,4 +2698,33 @@ mod tests {
         // (d) Display == "Feature"
         assert_eq!(format!("{}", Type::Feature), "Feature");
     }
+
+    // ── R1 unbound placeholder (generic-enum-type-arg-retention §6 R1(c)) ────
+
+    #[test]
+    fn unbound_placeholder_is_a_recognisable_type_param() {
+        let e = Type::unbound_placeholder("E");
+
+        // (1) R1(c): it stays a TypeParam, so provisional-binding rules apply.
+        assert!(matches!(e, Type::TypeParam(_)), "got {e:?}");
+        // (2) the predicate recognises it.
+        assert!(e.is_unbound_placeholder());
+
+        // (3) site-independent: no per-site counter in the name or Display.
+        assert_eq!(e, Type::unbound_placeholder("E"));
+        assert_eq!(e.to_string(), Type::unbound_placeholder("E").to_string());
+        assert_ne!(Type::unbound_placeholder("T"), e);
+
+        // (4) negatives — the predicate inspects the top level only.
+        let not_placeholders = [
+            Type::TypeParam("E".into()),
+            Type::TypeParam("__auto_Seal".into()),
+            Type::Int,
+            Type::applied("Result", vec![Type::length(), Type::unbound_placeholder("E")]),
+            Type::Option(Box::new(Type::unbound_placeholder("T"))),
+        ];
+        for t in &not_placeholders {
+            assert!(!t.is_unbound_placeholder(), "{t:?} is not an R1 placeholder");
+        }
+    }
 }
