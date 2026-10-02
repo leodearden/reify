@@ -34,7 +34,11 @@
 #      pin: reify pins OCCT nowhere else in-tree, so a distro upgrade that
 #      moves the version relinks the kernel with nothing louder than a
 #      `cargo:warning` — and the has_occt suite that would have caught the
-#      regression is exactly what disappears when OCCT goes missing.
+#      regression is exactly what disappears when OCCT goes missing. The XDE
+#      toolkits build.rs links for the STEP assembly reader (OCCT_XDE_TOOLKITS)
+#      are fatal when absent and recorded when present; gmsh loads its own 7.9
+#      copies of them beside these in-process (hazard:
+#      docs/prds/v0_6/step-assembly-import.md §3.1).
 #
 #   4. Gmsh presence (task #6493). The rule again, one dep over. PRESENCE is
 #      fatal; the resolved SONAME is RECORDED but deliberately NOT pinned to an
@@ -195,6 +199,10 @@ OCCT_INCLUDE_CANDIDATES=(
 OCCT_LIB_SENTINEL=libTKernel.so
 OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # END occt-candidates
+
+# The toolkits crates/reify-kernel-occt/build.rs links for the STEP assembly
+# reader (step-assembly-import α), beyond the libTKernel.so sentinel.
+OCCT_XDE_TOOLKITS=(TKXCAF TKLCAF)
 
 # Accepted OCCT versions, compared at MAJOR.MINOR. The value under test is the
 # suffix of the FIRST-level `libTKernel.so` symlink target — exactly what
@@ -632,7 +640,32 @@ if [ "$occt_soname_accepted" -ne 1 ]; then
     exit 1
 fi
 
-ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED)"
+# Each toolkit by the exact filename build.rs's `dylib:+verbatim=lib<TK>.so.<ver>`
+# directive links; `-e` follows the symlink.
+occt_xde_resolved=()
+occt_xde_missing=()
+for tk in "${OCCT_XDE_TOOLKITS[@]}"; do
+    tk_file="lib$tk.so.$OCCT_SONAME_VER"
+    if [ -e "$OCCT_LIB_RESOLVED/$tk_file" ]; then
+        occt_xde_resolved+=("$tk_file")
+    else
+        occt_xde_missing+=("$tk_file")
+    fi
+done
+
+if [ "${#occt_xde_missing[@]}" -ne 0 ]; then
+    for tk_file in "${occt_xde_missing[@]}"; do
+        err "manifold-deps guard: OCCT XDE toolkit missing — no $tk_file in $OCCT_LIB_RESOLVED."
+    done
+    err "WHY THIS IS FATAL: crates/reify-kernel-occt/build.rs links it verbatim, so its absence is a"
+    err " cryptic link failure of every OCCT-touching crate deep in the build; it carries the XDE"
+    err " document framework the STEP assembly reader uses."
+    err "TKXCAF ships in libocct-data-exchange-<ver>, TKLCAF in libocct-ocaf-<ver>."
+    occt_install_hint
+    exit 1
+fi
+
+ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED; XDE toolkits: ${occt_xde_resolved[*]})"
 
 # ---------- Gmsh presence preflight (task #6493) ----------
 #
