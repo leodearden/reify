@@ -1,13 +1,19 @@
 //! STEP assembly import through OCCT XDE (PRD docs/prds/v0_6/step-assembly-import.md
 //! §5 C1, boundary signal B1): the plain product tree, metre units, typed read
-//! failures, and process-global unit-static hygiene.
+//! failures, process-global unit-static hygiene, and each product's solids as
+//! kernel handles in product-local coordinates.
 #![cfg(all(has_occt, feature = "test-fixtures"))]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use reify_ir::{Component, Placement, ProductKind, ProductNode, ProductRef, ProductTree};
-use reify_kernel_occt::{StepDocument, StepReadError, xstep_cascade_unit_for_test};
+use reify_ir::{
+    BRepKind, Component, GeometryHandle, GeometryQuery, Placement, ProductKind, ProductNode,
+    ProductRef, ProductTree, Value,
+};
+use reify_kernel_occt::{
+    OcctKernel, StepBodyError, StepDocument, StepReadError, xstep_cascade_unit_for_test,
+};
 
 const LOCATION_TOL: f64 = 1e-9;
 
@@ -331,4 +337,160 @@ fn xde_reader_runs_inside_the_gmsh_linked_binary() {
 
     let doc = read_fixture("step_assembly_small.step");
     assert_eq!(doc.tree().roots(), &[pref("Container", 1)]);
+}
+
+/// BRepBndLib enlarges every box by Precision::Confusion (1e-7 m).
+const BBOX_TOL: f64 = 1e-6;
+
+/// `[xmin, ymin, zmin, xmax, ymax, zmax]` through the public query path.
+fn bbox(kernel: &OcctKernel, handle: &GeometryHandle) -> [f64; 6] {
+    let value = kernel
+        .query(&GeometryQuery::BoundingBox(handle.id))
+        .expect("bounding-box query");
+    let Value::String(text) = value else {
+        panic!("expected a JSON string, got {value:?}");
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {text:?}: {e}"));
+    ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"].map(|key| {
+        parsed[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{key} missing from {text}"))
+    })
+}
+
+fn assert_bbox(actual: [f64; 6], expected: [f64; 6], what: &str) {
+    for i in 0..6 {
+        assert!(
+            (actual[i] - expected[i]).abs() <= BBOX_TOL,
+            "{what}: bbox {actual:?}, expected {expected:?} (tol {BBOX_TOL})"
+        );
+    }
+}
+
+fn extent(b: [f64; 6]) -> [f64; 3] {
+    [b[3] - b[0], b[4] - b[1], b[5] - b[2]]
+}
+
+fn import_body(
+    kernel: &mut OcctKernel,
+    doc: &StepDocument,
+    product: &ProductRef,
+    body_index: u32,
+) -> GeometryHandle {
+    kernel
+        .import_step_body(doc, product, body_index)
+        .unwrap_or_else(|e| panic!("import {product} body {body_index}: {e}"))
+}
+
+#[test]
+fn casting_body_is_in_metres() {
+    let doc = read_fixture("step_assembly_small.step");
+    let mut kernel = OcctKernel::new();
+
+    let casting = import_body(&mut kernel, &doc, &pref("CornerCasting", 1), 0);
+    assert_bbox(
+        bbox(&kernel, &casting),
+        [0.0, 0.0, 0.0, 0.178, 0.162, 0.118],
+        "CornerCasting body 0",
+    );
+    assert_eq!(kernel.repr_of(casting.id), Some(BRepKind::Solid));
+}
+
+#[test]
+fn multi_body_product_exposes_each_solid() {
+    let doc = read_fixture("step_assembly_small.step");
+    let mut kernel = OcctKernel::new();
+    let weldment = pref("Weldment", 1);
+
+    let first = import_body(&mut kernel, &doc, &weldment, 0);
+    assert_bbox(
+        bbox(&kernel, &first),
+        [0.0, 0.0, 0.0, 0.05, 0.05, 0.05],
+        "Weldment body 0",
+    );
+    let second = import_body(&mut kernel, &doc, &weldment, 1);
+    assert_bbox(
+        bbox(&kernel, &second),
+        [0.2, 0.0, 0.0, 0.23, 0.03, 0.03],
+        "Weldment body 1",
+    );
+    assert_eq!(
+        kernel.import_step_body(&doc, &weldment, 2).err(),
+        Some(StepBodyError::BodyIndexOutOfRange {
+            product: weldment.clone(),
+            index: 2,
+            solid_count: 2,
+        })
+    );
+}
+
+#[test]
+fn product_body_is_product_local_not_occurrence_placed() {
+    let doc = read_fixture("step_assembly_rotated.step");
+    let mut kernel = OcctKernel::new();
+
+    // The placed Bracket-1 occurrence (Rz90 at x = 0.2) would span
+    // (0.15, 0, 0)-(0.2, 0.1, 0.02); the product itself is unrotated.
+    let bracket = import_body(&mut kernel, &doc, &pref("Bracket", 1), 0);
+    assert_bbox(
+        bbox(&kernel, &bracket),
+        [0.0, 0.0, 0.0, 0.1, 0.05, 0.02],
+        "Bracket body 0",
+    );
+}
+
+#[test]
+fn dedupe_indices_address_distinct_products() {
+    let doc = read_fixture("step_assembly_rotated.step");
+    let mut kernel = OcctKernel::new();
+
+    let pin_1 = import_body(&mut kernel, &doc, &pref("Pin", 1), 0);
+    assert_vec_close(
+        extent(bbox(&kernel, &pin_1)),
+        [0.01, 0.01, 0.06],
+        BBOX_TOL,
+        "Pin#1 extent",
+    );
+    let pin_2 = import_body(&mut kernel, &doc, &pref("Pin", 2), 0);
+    assert_vec_close(
+        extent(bbox(&kernel, &pin_2)),
+        [0.008, 0.008, 0.04],
+        BBOX_TOL,
+        "Pin#2 extent",
+    );
+}
+
+#[test]
+fn body_access_errors_are_typed() {
+    let doc = read_fixture("step_assembly_rotated.step");
+    let mut kernel = OcctKernel::new();
+    let cases = [
+        (
+            pref("Label", 1),
+            StepBodyError::BodyIndexOutOfRange {
+                product: pref("Label", 1),
+                index: 0,
+                solid_count: 0,
+            },
+        ),
+        (pref("Hinge", 1), StepBodyError::NotAPart(pref("Hinge", 1))),
+        (
+            pref("Ghost", 1),
+            StepBodyError::UnknownProduct(pref("Ghost", 1)),
+        ),
+    ];
+    for (product, expected) in cases {
+        let shapes_before = kernel.shape_count();
+        assert_eq!(
+            kernel.import_step_body(&doc, &product, 0).err(),
+            Some(expected),
+            "{product} body 0"
+        );
+        assert_eq!(
+            kernel.shape_count(),
+            shapes_before,
+            "a failed import of {product} must store nothing"
+        );
+    }
 }
