@@ -1,40 +1,20 @@
 //! Discovery of the workspace `examples/` corpus, shared by the test suites
 //! that walk it.
 //!
-//! Several suites in different crates need the same four things: the absolute
-//! path to `<repo>/examples`, a recursive `*.ri` walk of it, the canonical
-//! relative-path key form used by their skip lists and failure reports, and
-//! the skip-list filter that turns "discovered" into "exercised". Before this
-//! module the corpus-WALKING suites each carried a private copy, kept in sync
-//! by three "Mirrors … update both when this changes" prose obligations. This
-//! module is the single implementation those copies collapse into.
+//! Four pieces, used together: [`examples_dir`], the absolute corpus root;
+//! [`discover_ri_files`], a sorted recursive `*.ri` walk; [`relative_to`] /
+//! [`relative_to_examples_dir`], the forward-slash relative key that skip lists
+//! and failure reports use; and [`filter_skipped_under`] / [`filter_skipped`],
+//! which turn "discovered" into "exercised". The skip lists' dead-key check is
+//! the sibling [`crate::skip_sets::missing_paths_under`].
 //!
-//! # Scope of that claim
+//! Every function that pairs a walk root with a strip prefix takes that root
+//! once, so the two are always the same spelling; the [`relative_to_examples_dir`]
+//! and [`filter_skipped`] wrappers bind it to [`examples_dir`].
 //!
-//! It covers the suites that walk and skip-filter the corpus. Two suites that
-//! only ever `join` onto the corpus root still spell the manifest-relative path
-//! themselves — reify-compiler's
-//! `tests/harness_statement_semantics/tolerancing_tests.rs` and
-//! `tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs`.
-//! Neither ever calls `strip_prefix`, so they are the latent form of the hazard
-//! [`examples_dir`] describes rather than a live instance of it. Two private
-//! `collect_ri_files` walks also survive: reify-eval's single shared copy in
-//! `tests/common/eval_gate_support.rs` (consolidated by #7431) and
-//! reify-compiler's in
-//! `tests/harness_compilation_surface/unresolved_function_corpus_sweep.rs`.
-//! Migrating all four is tracked as task #7216, deliberately not swept into
-//! the hoist: doing so would have widened its file lock beyond the two suites
-//! it migrated.
-//!
-//! It is the corpus-discovery sibling of [`crate::skip_sets::missing_paths_under`],
-//! which single-sources the skip lists' dead-key check; the two together are
-//! the whole shared surface of a skip-list-guarded corpus walk.
-//!
-//! Deliberately un-gated and dependency-free (`std::fs` / `std::path` only):
-//! `crates/reify-audit` carries this crate as a NORMAL dependency, so anything
-//! here that pulled a dependency closure would land in that binary's
-//! production build graph (see the measured 130-vs-185-crate note in this
-//! crate's `Cargo.toml`).
+//! Dependency-free (`std` only): `crates/reify-audit` carries this crate as a
+//! NORMAL dependency, so anything pulled in here would land in that binary's
+//! production build graph (see this crate's `Cargo.toml`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -42,37 +22,25 @@ use std::path::{Path, PathBuf};
 /// Absolute path to the workspace `examples/` directory.
 ///
 /// Resolved at compile time from `CARGO_MANIFEST_DIR` evaluated inside **this**
-/// crate, which always sits at `<repo>/crates/reify-test-support/` regardless of
-/// which downstream crate calls the public API — the same resolution precedent
-/// [`crate::orphan_audit`]'s `resolve_script_and_root` documents (and
-/// [`crate::temp_dirs::assert_no_unguarded_temp_dir_sites`] reuses), so a helper
-/// here can walk a corpus owned by the workspace rather than by any one crate.
+/// crate, which sits at `<repo>/crates/reify-test-support/` whichever crate
+/// calls it — the resolution precedent [`crate::orphan_audit`]'s
+/// `resolve_script_and_root` documents.
 ///
-/// # This `concat!` is the one definition of the lexical prefix
+/// # The one definition of the lexical prefix
 ///
-/// [`relative_to_examples_dir`] strips this path as a **lexical string**
-/// prefix, so the walk root and the strip prefix must come from a single
-/// definition or the round-trip contract silently breaks. A caller that
-/// re-spelled `concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples")` in *its*
-/// crate would produce a different byte string naming the same directory —
-/// `…/crates/reify-compiler/../../examples` rather than
-/// `…/crates/reify-test-support/../../examples` — and every `strip_prefix`
-/// against it would panic. That is why this is a function returning a `Path`
-/// and not a `pub const &str`: this module hands out no string const to copy,
-/// so the mis-spelling cannot be *inherited* from here. It is not
-/// unrepresentable — a caller can still hand-spell one, and two join-only
-/// spellings survive in reify-compiler's test suite (see the module doc).
-/// Callers wanting the old string form use `examples_dir().join(…)` or
-/// `examples_dir().display()`, which serve every existing use.
+/// [`relative_to_examples_dir`] strips this path as a **lexical** prefix, so the
+/// walk root and the strip prefix must both come from this one definition. A
+/// caller re-spelling the `concat!` in its own crate gets a different byte
+/// string for the same directory (`…/crates/reify-compiler/../../examples`), and
+/// every `strip_prefix` against it panics. That is why this returns a `Path`
+/// rather than exposing a `pub const &str` to copy.
 ///
 /// # Deliberately not canonicalized
 ///
-/// The returned path retains its `..` components. Canonicalizing would resolve
-/// them and no longer match the paths [`discover_ri_files`] builds by walking
-/// from this same root, breaking [`relative_to_examples_dir`]'s lexical
-/// `strip_prefix`. Tests that need to compare this against a *differently
-/// spelled* path to the same directory must canonicalize both sides
-/// themselves.
+/// The returned path keeps its `..` components, so it lexically prefixes every
+/// path [`discover_ri_files`] builds from it. Canonicalizing one side alone
+/// breaks that pairing; a test comparing this against a differently spelled
+/// path to the same directory must canonicalize both sides.
 pub fn examples_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"))
 }
@@ -80,32 +48,24 @@ pub fn examples_dir() -> &'static Path {
 /// Strip the `root` prefix from `path` and return a portable,
 /// forward-slash-separated relative path string.
 ///
-/// For example, with `root` = [`examples_dir`]:
+/// With `root` = [`examples_dir`]:
 /// - `<root>/bracket.ri`                   → `"bracket.ri"`
 /// - `<root>/fields/composed_stiffness.ri` → `"fields/composed_stiffness.ri"`
 ///
-/// This is the canonical form used as skip-list keys and in failure reports, so
-/// that same-basename files in different subdirectories stay unambiguous. It is
-/// also the key form [`crate::skip_sets::missing_paths_under`] expects, which is
-/// what lets a suite check its skip list for dead keys with a plain
-/// `dir.join(rel)`.
+/// This is the skip-list key and failure-report form, so same-basename files in
+/// different subdirectories stay distinct, and it is the key form
+/// [`crate::skip_sets::missing_paths_under`] expects (`root.join(rel)`).
 ///
-/// # Why the root is a parameter
-///
-/// For the same reason [`discover_ri_files`]'s is, and it must be: a walk root
-/// and the prefix stripped off its results have to be the *same* spelling, so
-/// pinning one to [`examples_dir`] while the other is free is what would make
-/// the pair unusable. Taking it here keeps the two composable over a hermetic
-/// fixture tree, and over corpus sub-roots such as `examples/best_practices`
-/// that some gates walk on their own. Callers working on the whole workspace
-/// corpus want the [`relative_to_examples_dir`] wrapper.
+/// `root` is a parameter so that the walk root and the stripped prefix can be
+/// the same value over a hermetic fixture tree or a corpus sub-root such as
+/// `examples/best_practices`. Whole-corpus callers use
+/// [`relative_to_examples_dir`].
 ///
 /// # Panics
 ///
-/// Panics if `path` does not begin with the **lexical** `root` prefix. Pass
-/// paths produced by `discover_ri_files(root)` — i.e. built by walking that
-/// same root without canonicalization. Canonicalizing one side alone (which
-/// resolves `..` components) breaks the lexical pairing and panics.
+/// If `path` does not begin with the **lexical** `root` prefix. Pass paths
+/// produced by `discover_ri_files(root)`; canonicalizing one side alone
+/// resolves `..` components and breaks the pairing.
 pub fn relative_to(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or_else(|e| {
         panic!(
@@ -121,15 +81,13 @@ pub fn relative_to(root: &Path, path: &Path) -> String {
 
 /// [`relative_to`] bound to [`examples_dir`]: the workspace-corpus key form.
 ///
-/// Thin wrapper, kept because every current call site works on the whole
-/// corpus. Spelling `examples_dir()` at each of them instead would hand every
-/// call site the chance to pair a walk root with a mismatched strip prefix,
-/// which is precisely the hazard [`examples_dir`]'s doc describes.
+/// Binding the root here, rather than having each call site spell
+/// `examples_dir()`, is what keeps every whole-corpus caller's strip prefix
+/// identical to its walk root.
 ///
 /// # Panics
 ///
-/// Via [`relative_to`], if `path` is not lexically rooted under
-/// [`examples_dir`] — i.e. was neither produced by
+/// Via [`relative_to`], if `path` was neither produced by
 /// `discover_ri_files(examples_dir())` nor built by joining onto
 /// `examples_dir()`.
 pub fn relative_to_examples_dir(path: &Path) -> String {
@@ -138,39 +96,28 @@ pub fn relative_to_examples_dir(path: &Path) -> String {
 
 /// Return all `*.ri` files under `dir` (recursively), sorted by full path.
 ///
-/// Call sites walking the workspace corpus pass [`examples_dir`]; the root is a
-/// parameter rather than baked in so this is unit-testable against a fixture
-/// tree instead of only against the live corpus (and to match
-/// [`crate::skip_sets::missing_paths_under`], which likewise takes its directory
-/// explicitly).
+/// Whole-corpus callers pass [`examples_dir`]; the root is a parameter so the
+/// walk is testable against a fixture tree.
 ///
 /// # Contracts callers may rely on
 ///
-/// - **The result is sorted by full path.** Suites report discovered files in
-///   failure messages and ratchet on their count, so a `read_dir`-order walk
-///   would make those messages reorder between runs on the same corpus. The
-///   sort is a determinism contract, not an incidental tidy-up.
-/// - **Paths are returned uncanonicalized**, built by joining onto `dir`. That
-///   is what keeps them valid inputs to [`relative_to_examples_dir`], whose
-///   `strip_prefix` is lexical.
-/// - **Only `.ri` file EXTENSIONS match.** A *directory* whose name ends in
-///   `.ri` is recursed into, never pushed.
-/// - **Symlinks are never followed for recursion.** Only real directories are
-///   descended into (the entry's own `file_type`, which does not follow links),
-///   so a symlinked directory cycle anywhere under `dir` cannot drive unbounded
-///   recursion. That matters because a stack overflow is an ABORT, not a
-///   catchable panic, and would escape the loud-failure contract below.
-///   A symlink pointing at a *file* is still classified by extension, so a
-///   symlinked `foo.ri` is collected as normal; a symlink pointing at a
-///   directory is simply not descended into, which is why a symlinked subtree
-///   must be passed as its own `dir` to be walked.
+/// - **Sorted by full path.** Suites print discovered files in failure messages
+///   and ratchet on their count, so the order must not depend on `read_dir`.
+/// - **Uncanonicalized**, built by joining onto `dir`, so each path is a valid
+///   input to [`relative_to`] with that same `dir`.
+/// - **Only `.ri` FILES match.** A directory whose name ends in `.ri` is
+///   recursed into, never returned.
+/// - **Symlinks are never descended into.** Recursion is decided by the entry's
+///   own `file_type`, which does not follow links, so a symlinked directory
+///   cycle cannot make the walk revisit the tree it is walking. A symlink is
+///   classified by its own name, so a symlinked `foo.ri` is returned like any
+///   other `.ri` file; a symlinked directory is walked only if passed as `dir`.
 ///
 /// # Panics
 ///
-/// Panics if any directory in the tree cannot be read, or if an entry's
-/// `file_type` cannot be read, naming the path and the io error. A corpus walk
-/// that silently degraded to walking nothing would turn every guard built on it
-/// vacuous, so an unreadable directory must fail loudly.
+/// If any directory, directory entry, or entry file type cannot be read, naming
+/// the path and the io error. A walk that silently skipped an unreadable
+/// directory would make every guard built on it vacuous.
 pub fn discover_ri_files(dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_ri_files(dir, &mut paths);
@@ -191,12 +138,15 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
         )
     });
     for entry in entries {
-        let entry = entry.expect("IO error reading examples dir entry");
+        let entry = entry.unwrap_or_else(|e| {
+            panic!(
+                "reify_test_support::examples_corpus: cannot read an entry of '{}': {}",
+                dir.display(),
+                e
+            )
+        });
         let path = entry.path();
-        // `entry.file_type()` does NOT follow symlinks, unlike `path.is_dir()`.
-        // That is deliberate: following them would let a symlinked directory
-        // cycle recurse until the stack overflows, which aborts the process
-        // instead of panicking — see the doc's symlink contract.
+        // Not `path.is_dir()`: that follows symlinks (see the symlink contract).
         let file_type = entry.file_type().unwrap_or_else(|e| {
             panic!(
                 "reify_test_support::examples_corpus: cannot read file type of '{}': {}",
@@ -213,53 +163,34 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The subset of `paths` whose [`relative_to`]-against-`root` key is not in
-/// `skip_keys`, each paired with that precomputed key.
+/// `skip_keys`, each paired with that key.
 ///
-/// This is the SINGLE source of the skip-list-filtered "exercised" quantity.
-/// Every consumer — corpus-walking `#[test]`s and the discovery-floor ratchets
-/// alike — calls this instead of re-deriving the filter, so they can never
-/// disagree about what "exercised" means. Before this existed, each suite
-/// open-coded the same `HashSet` + `filter_map`, and a suite that had drifted
-/// would have reported a different `exercised` count from its own floor guard
-/// without either failing.
+/// The single definition of a suite's skip-list-filtered "exercised" set: its
+/// corpus-walking tests and its discovery-floor ratchets all call this, so they
+/// cannot disagree about what was exercised.
 ///
 /// # Contracts callers may rely on
 ///
-/// - **Input order is preserved** (`filter_map` is order-preserving), so a
-///   caller reporting the kept set gets a stable, reviewable message without
-///   sorting — and, given [`discover_ri_files`] sorts, a path-sorted one.
-/// - **The relative key is precomputed.** It is computed once per path here and
-///   handed back, so callers need not recompute it (and cannot compute it
-///   differently).
+/// - **Input order is preserved**, so a [`discover_ri_files`] result stays
+///   path-sorted.
+/// - **The relative key is computed once, here**, and returned, so callers
+///   cannot compute it differently.
 /// - **A skip key naming no path in `paths` is silently inert.** Detecting such
-///   a dead key is [`crate::skip_sets::missing_paths_under`]'s job; this function
-///   deliberately does not duplicate it.
+///   a dead key is [`crate::skip_sets::missing_paths_under`]'s job.
+/// - **`root` must be the root `paths` were walked from** (see [`relative_to`]).
+///   Whole-corpus callers use [`filter_skipped`].
 ///
-/// The two lifetimes are independent on purpose: `skip_keys` are typically
-/// borrowed from a caller's `'static` SKIP_SET, and tying them to the `paths`
-/// borrow would force a needless reborrow at every call site.
+/// # Skip lists of any arity
 ///
-/// # Why the root is a parameter
-///
-/// `root` must be the same root `paths` were walked from — see
-/// [`relative_to`]'s "Why the root is a parameter". Taking it here is what lets
-/// a `discover_ri_files(fixture)` result be skip-filtered at all, and what lets
-/// a gate over a corpus sub-root (`examples/best_practices`, say) reuse this
-/// filter instead of open-coding one. Callers working on the whole workspace
-/// corpus want the [`filter_skipped`] wrapper.
-///
-/// # Arity is the caller's problem
-///
-/// Exactly as for [`crate::skip_sets::missing_paths_under`]: skip lists carry
-/// per-file metadata of differing shape, so this takes a plain iterator of
-/// relative keys and callers project their own tuple away at the call boundary
-/// — `SKIP_SET.iter().map(|(name, _)| *name)`. That is what lets skip lists of
-/// differing arity share one implementation while staying private to their own
-/// crate: no cross-crate coupling of the skip lists is created or implied.
+/// Skip lists carry per-entry metadata of differing shape, so this takes a
+/// plain iterator of keys and each caller projects its own tuple away at the
+/// call boundary — `SKIP_SET.iter().map(|(name, _)| *name)` — which keeps every
+/// skip list private to its own crate. `skip_keys` has its own lifetime so that
+/// a borrow of a `'static` SKIP_SET need not be tied to the `paths` borrow.
 ///
 /// # Panics
 ///
-/// Panics via [`relative_to`] if any path is not lexically rooted under `root`.
+/// Via [`relative_to`], if any path is not lexically rooted under `root`.
 pub fn filter_skipped_under<'p, 'k>(
     root: &Path,
     paths: &'p [PathBuf],
@@ -280,12 +211,7 @@ pub fn filter_skipped_under<'p, 'k>(
 }
 
 /// [`filter_skipped_under`] bound to [`examples_dir`]: the workspace-corpus
-/// "exercised" set.
-///
-/// Thin wrapper for the same reason [`relative_to_examples_dir`] is one — every
-/// current call site walks the whole corpus, and pairing the walk root with the
-/// strip prefix in ONE place is the point. All of
-/// [`filter_skipped_under`]'s contracts apply unchanged.
+/// "exercised" set, with all of [`filter_skipped_under`]'s contracts.
 ///
 /// # Panics
 ///
@@ -342,8 +268,7 @@ mod tests {
     /// both top-level and nested paths.
     ///
     /// Pure lexical string work — the fixtures are constructed by `join`ing
-    /// onto `examples_dir()` and need not exist on disk. This is the hoisted
-    /// counterpart of the per-suite copies of this test.
+    /// onto `examples_dir()` and need not exist on disk.
     #[test]
     fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_paths() {
         let top_level = super::examples_dir().join("bracket.ri");
@@ -363,6 +288,34 @@ mod tests {
             nested,
             "expected the relative key to round-trip back onto examples_dir()"
         );
+    }
+
+    /// Over the LIVE corpus, every path `discover_ri_files(examples_dir())`
+    /// returns is accepted by `relative_to_examples_dir`, and its key joins back
+    /// onto `examples_dir()` to reproduce the path.
+    ///
+    /// The fixture tests below pin the walk and the key against trees this
+    /// suite controls; this pins that the real corpus root and the real walk
+    /// still pair lexically — a walker that started canonicalizing, or a root
+    /// spelled two ways, would panic or fail the join here. The non-empty check
+    /// keeps the loop from passing vacuously.
+    #[test]
+    fn relative_to_examples_dir_round_trips_every_discovered_corpus_path() {
+        let paths = super::discover_ri_files(super::examples_dir());
+        assert!(
+            !paths.is_empty(),
+            "expected the live corpus at {} to hold at least one .ri file",
+            super::examples_dir().display()
+        );
+
+        for path in paths {
+            let rel = super::relative_to_examples_dir(&path);
+            assert_eq!(
+                super::examples_dir().join(&rel),
+                path,
+                "round-trip failed: examples_dir().join({rel:?}) != original {path:?}"
+            );
+        }
     }
     // ─── discover_ri_files contract ───────────────────────────────────────
 
@@ -423,6 +376,40 @@ mod tests {
              by extension, the `.ri`-named DIRECTORY must be recursed into rather than \
              pushed, and a walk that did not recurse would miss `sub/deep/nested.ri`; \
              got {found:?}"
+        );
+    }
+
+    /// discover_ri_files: a symlinked `.ri` file is collected, a symlinked
+    /// directory is never descended into.
+    ///
+    /// `sub/loop -> ..` is a directory cycle: a link-following walk
+    /// (`path.is_dir()`) re-enters the root through it, returning
+    /// `sub/loop/real.ri`, `sub/loop/sub/loop/…` and so on until the OS refuses
+    /// the path. `link.ri -> real.ri` must still come back like any `.ri` file.
+    #[cfg(unix)]
+    #[test]
+    fn discover_ri_files_collects_symlinked_files_but_never_descends_symlinked_dirs() {
+        let guard = crate::temp_dirs::prefixed_tempdir(EXAMPLES_CORPUS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+
+        touch_under(dir, "real.ri");
+        touch_under(dir, "sub/inner.ri");
+        std::os::unix::fs::symlink("real.ri", dir.join("link.ri"))
+            .unwrap_or_else(|e| panic!("symlink link.ri -> real.ri: {e}"));
+        std::os::unix::fs::symlink("..", dir.join("sub/loop"))
+            .unwrap_or_else(|e| panic!("symlink sub/loop -> ..: {e}"));
+
+        let found = super::discover_ri_files(dir);
+
+        assert_eq!(
+            found,
+            vec![
+                dir.join("link.ri"),
+                dir.join("real.ri"),
+                dir.join("sub/inner.ri"),
+            ],
+            "expected the symlinked `link.ri` to be collected and the `sub/loop -> ..` cycle \
+             never descended into; got {found:?}"
         );
     }
 
@@ -599,13 +586,9 @@ mod tests {
 
     /// The walk and the filter compose over one fixture tree, end to end.
     ///
-    /// This is the composition the root parameters exist for: before they were
-    /// there, a `discover_ri_files(<temp dir>)` result could not be handed to
-    /// the filter at all — the filter's `strip_prefix` was pinned to the live
-    /// corpus root and would have panicked on every path. Pinning it here means
-    /// the two halves of the module are exercised against each other on a tree
-    /// whose exact contents this test controls, rather than only against the
-    /// live corpus via the consuming suites.
+    /// This is the composition the root parameters exist for: a
+    /// `discover_ri_files(root)` result skip-filtered against that same `root`,
+    /// on a tree whose exact contents this test controls.
     #[test]
     fn discovered_paths_can_be_skip_filtered_against_the_tree_they_were_walked_from() {
         let guard = crate::temp_dirs::prefixed_tempdir(EXAMPLES_CORPUS_TEMPDIR_PREFIX);

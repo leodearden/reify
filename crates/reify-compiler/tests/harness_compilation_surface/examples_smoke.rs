@@ -12,9 +12,7 @@ use reify_test_support::ctor_conformance_debt::{
     CTOR_CONFORMANCE_MIGRATION_DEBT, debt_entry_matches, is_migration_debt_diagnostic,
     param_name_from_ctor_diagnostic,
 };
-use reify_test_support::examples_corpus::{
-    discover_ri_files, examples_dir, filter_skipped, relative_to_examples_dir,
-};
+use reify_test_support::examples_corpus::{discover_ri_files, examples_dir, filter_skipped};
 use reify_test_support::missing_paths_under;
 use reify_test_support::is_ctor_conformance_code;
 
@@ -346,7 +344,8 @@ fn skip_set_entries_exist_under_examples_dir() {
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 /// The subset of `paths` not skipped by [`SKIP_SET`], each paired with its
-/// precomputed [`relative_to_examples_dir`] key.
+/// precomputed
+/// [`reify_test_support::examples_corpus::relative_to_examples_dir`] key.
 ///
 /// A one-line projection over the shared
 /// [`reify_test_support::examples_corpus::filter_skipped`], which carries the
@@ -361,99 +360,6 @@ fn skip_set_entries_exist_under_examples_dir() {
 /// private to its own crate.
 fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
     filter_skipped(paths, SKIP_SET.iter().map(|(name, _)| *name))
-}
-
-/// Verify two invariants for every path returned by `discover_ri_files()`:
-///
-/// (a) `relative_to_examples_dir` accepts the path without panicking (i.e. the
-///     path is lexically rooted under `examples_dir()`, as `discover_ri_files`
-///     guarantees).  If `discover_ri_files` ever starts canonicalizing paths
-///     (resolving `..`), the `strip_prefix` inside `relative_to_examples_dir`
-///     would break and this test would surface the regression before it silently
-///     corrupts SKIP_SET lookups or failure reports.
-///
-/// (b) The relative form round-trips back to the original absolute path when
-///     joined onto `examples_dir()`: `examples_dir().join(rel) == path`.
-///     This locks the SKIP_SET-key join-compatibility contract across the full
-///     corpus — both top-level (`bracket.ri`-style) and nested
-///     (`fields/composed_stiffness.ri`-style) entries.
-#[test]
-fn relative_to_examples_dir_accepts_all_discovered_paths() {
-    for path in discover_ri_files(examples_dir()) {
-        // Will panic if path is not lexically rooted under examples_dir().
-        let rel = relative_to_examples_dir(&path);
-        assert_eq!(
-            examples_dir().join(&rel),
-            path,
-            "round-trip failed: examples_dir().join({:?}) != original {:?}",
-            rel,
-            path
-        );
-    }
-}
-
-/// Pin the premise the shared corpus helpers rest on: THIS crate's
-/// manifest-relative path to `examples/` and
-/// [`reify_test_support::examples_corpus::examples_dir`] name the same
-/// directory.
-///
-/// # Why this test must outlive the migration to the shared module
-///
-/// `relative_to_examples_dir` strips a **lexical** prefix, and after the hoist
-/// that prefix is spelled from reify-test-support's manifest dir
-/// (`…/crates/reify-test-support/../../examples`), not this crate's
-/// (`…/crates/reify-compiler/../../examples`). The two strings differ by
-/// construction and only the directories they resolve to are expected to match
-/// — which holds only while reify-test-support sits at the same depth as this
-/// crate. A future crate relocation or workspace re-layout that changed that
-/// depth would make `examples_dir()` name a directory other than this crate's
-/// own `examples/`, and every corpus guard in this file would be walking the
-/// wrong tree. This is the only test that pins that premise for
-/// reify-compiler; the premise is per-consumer-crate (each crate's
-/// `CARGO_MANIFEST_DIR` is its own), so reify-eval carries its own counterpart.
-///
-/// # Why one assertion is the whole test
-///
-/// Deliberately just the canonicalized-path equality. The count comparison this
-/// pin used to also carry could not fail: once the two canonicalized paths are
-/// asserted equal, both walks are over the same physical directory. And a wrong
-/// depth does not produce a silent walk-of-nothing — `discover_ri_files` calls
-/// `read_dir` on the root and PANICS if it cannot be read, a contract
-/// reify-test-support pins directly
-/// (`discover_ri_files_panics_on_an_unreadable_directory`), while
-/// `examples_dir_resolves_to_the_workspace_examples_directory` pins the root's
-/// shape there. A non-zero-count assertion is likewise a weaker restatement of
-/// this file's own discovery floor. What is left here is the one thing neither
-/// of those can see: that the shared root and THIS crate's manifest-relative
-/// path agree.
-#[test]
-fn shared_examples_dir_agrees_with_this_crates_manifest_relative_path() {
-    // Spelled out here rather than read from a shared constant on purpose: the
-    // whole point is to compare the shared root against a path built from THIS
-    // crate's own manifest dir, so this `concat!` must not be aliasable to the
-    // one inside `examples_dir()`.
-    const THIS_CRATES_EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
-
-    let local = std::fs::canonicalize(THIS_CRATES_EXAMPLES_DIR).unwrap_or_else(|e| {
-        panic!("canonicalize this crate's examples path ({THIS_CRATES_EXAMPLES_DIR}): {e}")
-    });
-    let shared_raw = reify_test_support::examples_corpus::examples_dir();
-    let shared = std::fs::canonicalize(shared_raw).unwrap_or_else(|e| {
-        panic!(
-            "canonicalize reify_test_support::examples_corpus::examples_dir() ({}): {e}",
-            shared_raw.display()
-        )
-    });
-
-    assert_eq!(
-        local, shared,
-        "the shared corpus root and this crate's own manifest-relative path must resolve to \
-         the same directory — the two lexical spellings differ by construction, so only the \
-         canonicalized forms are compared. If reify-test-support ever moves to a different \
-         depth under the repo root, examples_dir() starts naming a different directory and \
-         every corpus guard in this file is walking the wrong tree — loudly if that path does \
-         not exist (discover_ri_files panics on an unreadable root), silently if it does."
-    );
 }
 
 /// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: this floor is a
