@@ -613,7 +613,6 @@ mod tests {
     fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
         let t = || Type::TypeParam("T".to_string());
         let q = || Type::ScalarParam("Q".to_string());
-        let ph = |n: &str| Type::unbound_placeholder(n);
         let result_of = |args: Vec<Type>| Type::Applied {
             name: "Result".to_string(),
             args,
@@ -1042,6 +1041,19 @@ mod tests {
         Type::TypeParam(name.to_string())
     }
 
+    /// R1 unbound-placeholder shorthand.
+    fn ph(name: &str) -> Type {
+        Type::unbound_placeholder(name)
+    }
+
+    /// `Result<ok, err>` as an `Applied` type.
+    fn res(ok: Type, err: Type) -> Type {
+        Type::Applied {
+            name: "Result".to_string(),
+            args: vec![ok, err],
+        }
+    }
+
     /// `type_carries_trait_object` deliberately walks FEWER constructors than
     /// its two siblings: only `Option`/`List`/`Set`/`Map`/`Applied` args /
     /// `Projection` base — no `Field`, `Function`, `Union`, `Keyed`, `Complex`,
@@ -1439,11 +1451,97 @@ mod tests {
             &Type::String,
             false
         ));
+
+        // ARG side (PRD generic-enum-type-arg-retention §7 C-4): one row per
+        // arm — (1) bare user param, (2) headed, (3) bare R1 placeholder.
+        let force = Type::Scalar {
+            dimension: crate::dimension::DimensionVector::FORCE,
+        };
+        let arg_side_rows = [
+            (
+                Type::Bool,
+                tp("U"),
+                false,
+                true,
+                "(1) D4: bare user TypeParam",
+            ),
+            (
+                Type::length(),
+                res(tp("T"), tp("E")),
+                false,
+                false,
+                "(2) headed: Length vs leaky Result<T,E> (S-4)",
+            ),
+            (
+                Type::dimensionless_scalar(),
+                Type::Option(Box::new(tp("T"))),
+                false,
+                false,
+                "(2) headed: Real vs Option<T>",
+            ),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::List(Box::new(tp("T"))),
+                false,
+                false,
+                "(2) headed: a nested USER param needs heads to unify",
+            ),
+            (
+                res(Type::length(), Type::String),
+                res(Type::length(), ph("E")),
+                false,
+                true,
+                "(2) headed: heads unify through a placeholder slot (U-1)",
+            ),
+            (
+                res(force, Type::String),
+                res(Type::length(), ph("E")),
+                false,
+                false,
+                "(2) headed: a placeholder slot does not excuse Force vs Length",
+            ),
+            (
+                Type::Bool,
+                ph("E"),
+                false,
+                false,
+                "(3) bare placeholder vs a concrete param",
+            ),
+            (
+                Type::Bool,
+                ph("E"),
+                true,
+                false,
+                "(3) bare placeholder vs a generic candidate's CONCRETE slot",
+            ),
+            (
+                tp("T"),
+                ph("E"),
+                true,
+                true,
+                "(3) bare placeholder vs a generic param (param side admits)",
+            ),
+            (
+                Type::TraitObject("Load".to_string()),
+                ph("E"),
+                false,
+                true,
+                "(3) bare placeholder vs the ungated trait-object param",
+            ),
+        ];
+        for (param, arg, is_generic, expected, arm) in &arg_side_rows {
+            assert_eq!(
+                super::slot_matches_wildcard_tier(param, arg, *is_generic),
+                *expected,
+                "C-4 arg side, {arm}: param={param:?}, arg={arg:?}, \
+                 is_generic={is_generic}"
+            );
+        }
     }
 
     /// THE UNIFICATION PIN (#5689).
     ///
-    /// A type-param-carrying ARG is itself a resolution wildcard: D4 /
+    /// A bare user `TypeParam` ARG is itself a resolution wildcard: D4 /
     /// task-4232 γ. A generic fn body passing a `T`-typed value to a
     /// CONCRETE-param overload must still select that overload rather than
     /// falling to a spurious no-match.
@@ -1465,7 +1563,7 @@ mod tests {
     /// `is_generic` — the genericity in question belongs to the CALLER whose
     /// body produced the `T`-typed value, not to the CANDIDATE being matched.
     #[test]
-    fn slot_matches_wildcard_tier_accepts_a_type_param_carrying_arg() {
+    fn slot_matches_wildcard_tier_accepts_a_bare_user_type_param_arg() {
         assert!(
             super::slot_matches_wildcard_tier(
                 &Type::dimensionless_scalar(),
@@ -1482,16 +1580,6 @@ mod tests {
         assert!(!super::slot_matches_wildcard_tier(
             &Type::dimensionless_scalar(),
             &Type::Int,
-            false,
-        ));
-        // A NESTED type-param arg also carries the wildcard at this tier —
-        // tier 2 is where headed args get discriminated, not here.
-        assert!(super::slot_matches_wildcard_tier(
-            &Type::dimensionless_scalar(),
-            &Type::Applied {
-                name: "Result".to_string(),
-                args: vec![tp("T"), tp("E")],
-            },
             false,
         ));
     }
@@ -1552,6 +1640,8 @@ mod tests {
         // The BARE-`TypeParam` ARG disjunct: ungated, matches any param.
         assert!(super::slot_matches_head_tier(&Type::Int, &tp("T"), false));
         assert!(super::slot_matches_head_tier(&option_t, &tp("T"), false));
+        // ...for a bare USER param only: an R1 placeholder is not D4's subject.
+        assert!(!super::slot_matches_head_tier(&Type::Int, &ph("E"), false));
         // ...but a HEADED arg carrying a NESTED type-param is NOT a wildcard
         // here (task #4038 δ) — it has a real head, so heads_unifiable
         // discriminates it.
@@ -1620,5 +1710,14 @@ mod tests {
         // head tier was introduced to disambiguate.
         assert!(!super::slot_matches_head_tier(&param, &arg, false));
         assert!(!super::slot_matches_wildcard_tier(&param, &arg, false));
+
+        // The non-generic subset relation also holds for a bare R1 placeholder
+        // arg: both tiers reject it against a concrete param.
+        assert!(!super::slot_matches_head_tier(&Type::Bool, &ph("E"), false));
+        assert!(!super::slot_matches_wildcard_tier(
+            &Type::Bool,
+            &ph("E"),
+            false
+        ));
     }
 }

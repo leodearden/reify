@@ -424,3 +424,82 @@ structure S {
         v_expr.result_type
     );
 }
+
+// ── (i) S-4: tier 3 rejects a leaky headed Result (β #8014) ─────────────────
+
+/// [CORE SIGNAL] PRD docs/prds/v0_6/generic-enum-type-arg-retention.md §7 C-4
+/// (S-4, headed form; probe fixture
+/// tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri, inlined here).
+/// `or_else(Ok{..}, Ok{..})` has the leaky static type `Result<T, E>`; a
+/// headed type-param-carrying arg admits a concrete param at tier 3 only where
+/// heads unify, and `Length` vs `Result` do not — so `fl` has no match and the
+/// cell is poisoned, instead of a Result value silently passing as a Length.
+#[test]
+fn or_else_leaky_result_is_rejected_by_a_concrete_length_param() {
+    let source = r#"
+fn fl(x: Length) -> Length { x }
+
+structure S {
+    let v = fl(or_else(Ok { value: 5mm }, Ok { value: 6mm }))
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for fl(or_else(..)), got: {:?}",
+        errors
+    );
+    assert!(
+        errors[0].message.contains("no matching overload for fl("),
+        "expected a no-matching-overload diagnostic for fl, got: {:?}",
+        errors[0].message
+    );
+
+    let v_expr = get_let_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::Error,
+        "poisoned cell result_type should be Type::Error, got {:?}",
+        v_expr.result_type
+    );
+}
+
+/// [REGRESSION GUARD] The same leaky `Result<T, E>` subject chained into the
+/// GENERIC stdlib `fallback` still resolves (the #4038 δ chained-combinator
+/// shape): generic candidates admit it on the PARAM side, which β must not
+/// narrow.
+#[test]
+fn chained_leaky_result_still_resolves_the_generic_fallback() {
+    let source = r#"
+structure S {
+    let v = fallback(or_else(Ok { value: 5mm }, Ok { value: 6mm }), 1mm)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for fallback(or_else(..), 1mm), got: {:?}",
+        errors
+    );
+
+    let v_expr = get_let_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "fallback(or_else(..), 1mm) should resolve to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}

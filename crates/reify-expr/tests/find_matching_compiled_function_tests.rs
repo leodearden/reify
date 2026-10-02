@@ -872,31 +872,36 @@ fn bare_type_param_arg_resolves_a_non_generic_concrete_candidate() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tier 3's arg-side disjunct, HEADED-arg half (#5689 amendment)
+// Tier 3's arg side for HEADED and R1-placeholder args (β #8014, PRD C-4)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Adding `type_carries_type_param(arg_ty)` to eval's tier 3 (#5689) has TWO
-/// distinct consequences, and
-/// `bare_type_param_arg_resolves_a_non_generic_concrete_candidate` above pins
-/// only the first — a BARE `Type::TypeParam` arg.
+/// R1 unbound-placeholder shorthand.
+fn ph(name: &str) -> Type {
+    Type::unbound_placeholder(name)
+}
+
+/// `Result<ok, err>` as an `Applied` type.
+fn res(ok: Type, err: Type) -> Type {
+    Type::Applied {
+        name: "Result".to_string(),
+        args: vec![ok, err],
+    }
+}
+
+/// A HEADED arg that merely CARRIES a nested type param (`Option<T>`,
+/// `Applied{"Result",[T,E]}`, …) is NOT a resolution wildcard. β #8014 (PRD
+/// generic-enum-type-arg-retention §7 C-4) closed S-4: a headed arg admits a
+/// candidate at tier 3 only where `heads_unifiable(param, arg)` holds, and a
+/// `Scalar<dimensionless>` param does not head-unify with `Option<T>`. Only a
+/// BARE user `TypeParam` keeps D4's wildcard
+/// (`bare_type_param_arg_resolves_a_non_generic_concrete_candidate` above).
 ///
-/// This is the second: a HEADED arg that merely CARRIES a nested type param
-/// (`Option<T>`, `Applied{"Result",[T,E]}`, …). `type_carries_type_param`
-/// recurses, so such an arg is newly WILDCARD-ELIGIBLE against a non-generic
-/// concrete-param candidate, where before #5689 the same call returned `None`.
-/// It is simultaneously INELIGIBLE at tier 2 — with `type_params.is_empty()`
-/// the head tier's `heads_unifiable` arm is gated off, the arg is not a bare
-/// `Type::TypeParam`, and `Scalar<dimensionless> != Option<T>` — so this is
-/// also the concrete witness for the head-⊂-wildcard direction the doc on
-/// `find_matching_compiled_function` (crates/reify-expr/src/lib.rs) states.
-///
-/// With a single candidate the head tier is empty and falls through to tier 3,
-/// so what this test measures is exactly tier 3's admission. The ordering
-/// consequence of the same admission is pinned by
-/// `leaky_headed_arg_excludes_the_non_generic_candidate_from_the_head_tier`
-/// below.
+/// With a single candidate there is no tier 2 to fall back on, so this
+/// measures exactly tier 3's admission. The compile twin, over the same
+/// witness, is `overload_headed_type_param_arg_rejects_a_head_mismatched_concrete_candidate`
+/// in `crates/reify-compiler/src/type_compat.rs`.
 #[test]
-fn headed_type_param_arg_resolves_a_non_generic_concrete_candidate() {
+fn headed_type_param_arg_does_not_resolve_a_head_mismatched_non_generic_candidate() {
     let concrete = make_fn("g", Type::dimensionless_scalar());
     let fns = vec![concrete];
     let args = vec![CompiledExpr::literal(
@@ -904,18 +909,75 @@ fn headed_type_param_arg_resolves_a_non_generic_concrete_candidate() {
         Type::Option(Box::new(Type::TypeParam("T".to_string()))),
     )];
 
-    let selected = find_matching_compiled_function(&fns, "g", &args).expect(
-        "an `Option<T>` arg CARRIES a type param, so tier 3's \
-         `type_carries_type_param(arg_ty)` disjunct (D4 / task-4232 γ) admits a \
-         non-generic concrete-param candidate. Returning None here means the \
-         arg-side disjunct stopped recursing into constructors — i.e. eval has \
-         diverged from compile-side `matches` again, on the headed-arg path \
-         rather than the bare-`TypeParam` one.",
+    assert!(
+        find_matching_compiled_function(&fns, "g", &args).is_none(),
+        "an `Option<T>` arg must not wildcard-match a concrete `Scalar` param: \
+         a headed arg needs heads_unifiable(param, arg) at tier 3 (PRD C-4). \
+         Some(_) here means S-4 re-opened — a leaky headed value silently \
+         reaches a concrete-param function."
     );
+}
+
+/// A headed arg whose heads unify only THROUGH an R1 placeholder slot — the
+/// U-1 shape once δ #8018 types `Ok { value: 5mm }` as `Result<Length, ?E>` —
+/// resolves a same-head non-generic candidate; a concrete leaf mismatch beside
+/// the placeholder still rejects it. Compile twin:
+/// `overload_placeholder_slot_arg_resolves_a_same_head_concrete_candidate`.
+#[test]
+fn placeholder_slot_arg_resolves_a_same_head_non_generic_candidate() {
+    let fns = vec![make_fn("g", res(Type::length(), Type::String))];
+    let force = Type::Scalar {
+        dimension: DimensionVector::FORCE,
+    };
+
+    let same_head = vec![CompiledExpr::literal(
+        Value::Undef,
+        res(Type::length(), ph("E")),
+    )];
+    assert!(
+        find_matching_compiled_function(&fns, "g", &same_head).is_some(),
+        "Result<Length, ?E> head-unifies with Result<Length, String>: the \
+         placeholder slot is an unknown, not a disagreement"
+    );
+
+    let leaf_mismatch = vec![CompiledExpr::literal(Value::Undef, res(force, ph("E")))];
+    assert!(
+        find_matching_compiled_function(&fns, "g", &leaf_mismatch).is_none(),
+        "Result<Force, ?E> must not match Result<Length, String>: a placeholder \
+         slot never excuses a concrete mismatch elsewhere"
+    );
+}
+
+/// A BARE R1 placeholder arg gets no arg-side admission (PRD C-4 case 3): it
+/// passes tier 3 only where the PARAM side is itself a wildcard — here a
+/// generic candidate's type-param slot — never against a concrete param. So
+/// a first-declared non-generic `h(b: Bool)` must not win on table order, and
+/// alone it does not resolve. Compile twin:
+/// `overload_bare_placeholder_arg_rejects_a_concrete_candidate`.
+#[test]
+fn bare_placeholder_arg_selects_only_a_generic_candidate() {
+    let generic_h = make_generic_fn(
+        "h",
+        &["T"],
+        vec![("x".to_string(), Type::TypeParam("T".to_string()))],
+        b"generic_h",
+    );
+    let args = vec![CompiledExpr::literal(Value::Undef, ph("E"))];
+
+    let fns = vec![make_fn("h", Type::Bool), generic_h];
+    let selected = find_matching_compiled_function(&fns, "h", &args)
+        .expect("the generic h<T>(x: T) admits a placeholder arg on the param side");
     assert_eq!(
-        selected.params[0].1,
-        Type::dimensionless_scalar(),
-        "the concrete-param candidate is the one both sides select"
+        selected.content_hash,
+        ContentHash::of(b"generic_h"),
+        "a bare placeholder arg must select the generic candidate, not the \
+         first-declared concrete h(b: Bool)"
+    );
+
+    let concrete_only = vec![make_fn("h", Type::Bool)];
+    assert!(
+        find_matching_compiled_function(&concrete_only, "h", &args).is_none(),
+        "a bare placeholder arg is not a wildcard against a concrete Bool param"
     );
 }
 
@@ -926,22 +988,24 @@ fn headed_type_param_arg_resolves_a_non_generic_concrete_candidate() {
 /// generic container overloads (`Option<T>` / `Result<T,E>`) plus a same-name
 /// NON-generic concrete one.
 ///
-/// All three are wildcard-eligible — the non-generic one via the very disjunct
-/// the test above pins, which looks at the ARG only and so admits any candidate.
-/// Tier 2 is what separates them: only `Result<T,E>` head-matches the subject.
-/// `Option<T>` fails `heads_unifiable`, and the non-generic candidate fails
-/// `is_generic`, the bare-`TypeParam` wildcard AND plain equality.
+/// Since β #8014 (PRD C-4) the non-generic `fallback(Length, Length)` is
+/// rejected AT TIER 3: a headed arg admits a concrete param only where heads
+/// unify, and `Length` vs `Result` do not. `Option<T>` passes tier 3 on the
+/// param side (a generic candidate's type-param slot) and is dropped by
+/// tier 2, because `heads_unifiable(Option<T>, Result<T,E>)` is false. Only
+/// `Result<T,E>` survives both.
 ///
 /// The candidate ORDER differs deliberately from the compile-side pin, and
 /// that is the whole point of writing this half separately. Compile-side
 /// detects a tier-2 leak as `Ambiguous(2)`, which is order-insensitive; eval
 /// has no `Ambiguous` — it takes first-match-wins over the surviving set — so
 /// the leak is only observable if the non-generic candidate is declared FIRST.
-/// Declared that way, this test fails if the non-generic candidate leaks into
-/// tier 2 (it would win on order), if `Option<T>` leaks in (likewise), and if
-/// tier 2 were dropped altogether (tier-3 fallthrough would also pick the
-/// first-declared non-generic candidate). Only the correct ladder selects the
-/// `Result<T,E>` overload.
+/// Declared that way, this test fails if the non-generic candidate leaks back
+/// through tier 3 (it would win on order), if `Option<T>` leaks into tier 2
+/// (likewise), and if tier 2 were dropped altogether (tier-3 fallthrough would
+/// pick the first surviving candidate, `Option<T>`). Only the correct ladder
+/// selects the `Result<T,E>` overload — a first-declared, head-mismatched
+/// non-generic candidate cannot win on table order.
 #[test]
 fn leaky_headed_arg_excludes_the_non_generic_candidate_from_the_head_tier() {
     let leaky_result = Type::Applied {
@@ -969,13 +1033,13 @@ fn leaky_headed_arg_excludes_the_non_generic_candidate_from_the_head_tier() {
     let args = recovery_args("fallback", leaky_result);
 
     let selected = find_matching_compiled_function(&fns, "fallback", &args)
-        .expect("all three candidates are wildcard-eligible, so this must resolve");
+        .expect("the Result<T,E> overload passes tiers 3 and 2, so this must resolve");
     assert_eq!(
         selected.content_hash, result_ov.content_hash,
         "a leaky Result<T,E> subject must select the Result<T,E> overload even \
          with a same-name non-generic candidate declared FIRST — the non-generic \
-         one is wildcard-eligible (arg-side D4) but head-INELIGIBLE, so tier 2 \
-         must drop it rather than let table order hand it the call"
+         one is rejected at tier 3 (Length vs Result heads do not unify, PRD \
+         C-4), so table order must not hand it the call"
     );
     assert_eq!(
         selected.type_params.len(),

@@ -4125,15 +4125,10 @@ mod tests {
     ///
     /// `non_generic_overload` (`fallback(r: Length, dflt: Length)`, no type
     /// params) is structurally unrelated to the leaky `Applied{"Result",[T,E]}`
-    /// arg, but it IS admitted into the first (`matches`) tier — the
-    /// `type_carries_type_param(arg_ty)` disjunct there looks only at the arg,
-    /// not `param_ty`, so any candidate is provisionally eligible. Before the
-    /// head-exact-tier narrowing (this task), it would ALSO have been eligible
-    /// for `head_matches` via the same permissive arg-only check, joining
-    /// `result_overload` there and forcing a spurious `Ambiguous`. After the
-    /// narrowing, `non_generic_overload` fails `is_generic`, the bare-`TypeParam`
-    /// wildcard, and plain equality, so it is excluded from `head_matches` —
-    /// only the structurally-matching `result_overload` remains, and
+    /// arg. Since β #8014 (PRD generic-enum-type-arg-retention §7 C-4) it is
+    /// rejected at tier 3 (`matches`) already: a headed arg admits a concrete
+    /// param only where heads unify, and `Length` vs `Result` do not. Only the
+    /// structurally-matching `result_overload` survives `head_matches`, and
     /// resolution stays a clean `Resolved`, identical to
     /// `overload_chained_result_leaky_arg_resolves_to_result_overload` above.
     #[test]
@@ -4267,6 +4262,84 @@ mod tests {
                 OverloadResolution::Resolved(_)
             ),
             "a bare TypeParam arg must still wildcard-resolve a single concrete overload"
+        );
+    }
+
+    // ── β #8014 (PRD generic-enum-type-arg-retention §7 C-4): tier 3 arg side ─
+    // Compile twins of the eval-side pins in
+    // crates/reify-expr/tests/find_matching_compiled_function_tests.rs.
+
+    /// R1 unbound-placeholder shorthand.
+    fn ph(name: &str) -> Type {
+        Type::unbound_placeholder(name)
+    }
+
+    /// `Result<ok, err>` as an `Applied` type.
+    fn res(ok: Type, err: Type) -> Type {
+        Type::applied("Result", vec![ok, err])
+    }
+
+    /// A HEADED type-param-carrying arg is not a resolution wildcard: it admits
+    /// a concrete param only where heads unify (S-4 closed). Eval twin:
+    /// `headed_type_param_arg_does_not_resolve_a_head_mismatched_non_generic_candidate`.
+    #[test]
+    fn overload_headed_type_param_arg_rejects_a_head_mismatched_concrete_candidate() {
+        let fns = vec![make_fn("g", vec![("x", Type::dimensionless_scalar())])];
+        let arg = Type::Option(Box::new(tp("T")));
+        assert!(
+            matches!(
+                resolve_function_overload("g", &[arg], &fns),
+                OverloadResolution::NoMatch(_)
+            ),
+            "an Option<T> arg must not wildcard-match a concrete Scalar param"
+        );
+    }
+
+    /// Heads that unify only THROUGH an R1 placeholder slot resolve a same-head
+    /// concrete candidate; a concrete leaf mismatch beside the placeholder does
+    /// not. Eval twin: `placeholder_slot_arg_resolves_a_same_head_non_generic_candidate`.
+    #[test]
+    fn overload_placeholder_slot_arg_resolves_a_same_head_concrete_candidate() {
+        let fns = vec![make_fn("f", vec![("r", res(Type::length(), Type::String))])];
+        let force = Type::Scalar {
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            matches!(
+                resolve_function_overload("f", &[res(Type::length(), ph("E"))], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "Result<Length, ?E> head-unifies with Result<Length, String>"
+        );
+        assert!(
+            matches!(
+                resolve_function_overload("f", &[res(force, ph("E"))], &fns),
+                OverloadResolution::NoMatch(_)
+            ),
+            "Result<Force, ?E> must not match Result<Length, String>"
+        );
+    }
+
+    /// A BARE R1 placeholder arg gets no arg-side admission: a concrete param
+    /// rejects it, while a generic candidate's type-param slot admits it on the
+    /// param side. Eval twin: `bare_placeholder_arg_selects_only_a_generic_candidate`.
+    #[test]
+    fn overload_bare_placeholder_arg_rejects_a_concrete_candidate() {
+        let concrete = vec![make_fn("h", vec![("b", Type::Bool)])];
+        assert!(
+            matches!(
+                resolve_function_overload("h", &[ph("E")], &concrete),
+                OverloadResolution::NoMatch(_)
+            ),
+            "a bare placeholder arg is not a wildcard against a concrete Bool param"
+        );
+        let generic = vec![make_generic_fn("h", vec![("x", tp("T"))], &["T"], tp("T"))];
+        assert!(
+            matches!(
+                resolve_function_overload("h", &[ph("E")], &generic),
+                OverloadResolution::Resolved(_)
+            ),
+            "a generic h<T>(x: T) admits a placeholder arg on the param side"
         );
     }
 
