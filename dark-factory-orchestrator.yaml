@@ -973,9 +973,11 @@ verify_host_policy: prefer_remote
 # change frees. Accepted: the guard is the whole safety case for prefer_remote. Restart-only.
 verify_drift_check_every_n_lands: 10
 #
-# verify_cross_check_remote_green: TRUE again 2026-09-30 (task 7269 amendment item 4) for
-# the 3-day remote-verify parity window (dark_factory 5416), which owns the OFF step: it
-# flips this back to false by reload, then confirms the drift cadence above fires.
+# verify_cross_check_remote_green: FALSE again 2026-10-02 (dark_factory 5416 OFF step, Leo
+# ruling on esc-5416-2: window shortened to 1 day, OFF pre-approved). Window 2026-10-01T05:01Z
+# to 2026-10-02T05:01Z: reify verdict_parity_ok x7, zero mismatch or inconclusive. The drift
+# cadence above (10) is now the standing fidelity guard. The window itself: TRUE 2026-09-30
+# (task 7269 amendment item 4) for the remote-verify parity window owned by dark_factory 5416.
 # PROVENANCE of the former false: DISABLED 2026-08-21 (Leo) as an interim
 # mitigation for dark_factory:4579. The task-2822 per-land cross-check re-verifies
 # every non-trivial remote green with a full LOCAL verify, inside the merge
@@ -996,7 +998,7 @@ verify_drift_check_every_n_lands: 10
 # was contributing zero verdicts anyway, so no real corroboration was given up, while
 # the false 'blocked' verdicts and the wasted ~47 min per remote green were real.
 # dark_factory:4579 has since landed (done), which is why this is true again.
-verify_cross_check_remote_green: true
+verify_cross_check_remote_green: false
 
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge
