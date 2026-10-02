@@ -109,8 +109,9 @@ use reify_test_support::rust_fixture_scan;
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
 ///
-/// Same rooting idiom as `examples_smoke.rs`'s `EXAMPLES_DIR`, pointed one
-/// level higher: β's whole point is that the sweep is NOT examples-scoped.
+/// Same rooting idiom as `reify_test_support::examples_corpus::examples_dir()`,
+/// pointed one level higher: β's whole point is that the sweep is NOT
+/// examples-scoped.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 // ─── step 21/22: one sanitized git constructor for every call site ───────────
@@ -4017,7 +4018,7 @@ fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
 /// That list is `examples/`-keyed BY CONSTRUCTION: its own doc forbids the
-/// repo-relative spelling, and the gate consuming it walks `EXAMPLES_DIR` only.
+/// repo-relative spelling, and the gate consuming it walks `examples_dir()` only.
 /// It cannot name a path under `tests/prd-gate/fixtures/` at all. The two tables
 /// are joined at exactly one place — the disposition resolver — and
 /// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] keeps
@@ -4124,7 +4125,7 @@ const EXAMPLES_PREFIX: &str = "examples/";
 ///
 /// The single place the two tables' key forms are bridged. The debt list is
 /// `examples/`-keyed by construction — its own doc forbids the repo-relative
-/// spelling, and the gate that consumes it walks `EXAMPLES_DIR` only — so
+/// spelling, and the gate that consumes it walks `examples_dir()` only — so
 /// neither table can change shape and the join has to happen here. A file
 /// outside `examples/` can never match a debt entry, which is exactly why
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
@@ -4985,7 +4986,7 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
         "these site(s) are described by BOTH CTOR_CONFORMANCE_CORPUS_RESIDUAL and \
          CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
          Pick one. CTOR_CONFORMANCE_MIGRATION_DEBT owns sites under examples/, because \
-         the gate that consumes it walks EXAMPLES_DIR only and its keys are relative to \
+         the gate that consumes it walks examples_dir() only and its keys are relative to \
          that directory. CTOR_CONFORMANCE_CORPUS_RESIDUAL owns everything else.",
         overlap.join("\n"),
     );
