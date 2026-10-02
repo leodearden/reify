@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::engine_hash_algo::{
-    EngineVersionHash, LockPackage, engine_version_hash_for, parse_cargo_lock_stanzas,
+    Coverage, EngineVersionHash, LockPackage, WORKSPACE_CRATE_COVERAGE, engine_version_hash_for,
+    parse_cargo_lock_stanzas, parse_closure_manifest,
 };
 
 /// Which files implement each persisted target: its trampoline and the code
@@ -257,5 +258,113 @@ fn every_persisted_target_source_changes_engine_version_hash_when_one_byte_flips
         "flipping one byte of these persisted-target sources left ENGINE_VERSION_HASH \
          unchanged, so a change to them would serve stale persisted results:\n{}",
         uncovered.join("\n")
+    );
+}
+
+/// The Cargo.lock stanzas of every crate named in `engine_hash_closure.txt`.
+fn closure_stanzas() -> Vec<LockPackage> {
+    let read = |rel: &str| {
+        let path = real_manifest_dir().join(rel);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    };
+    let closure: BTreeSet<String> = parse_closure_manifest(&read("engine_hash_closure.txt"))
+        .into_iter()
+        .collect();
+    parse_cargo_lock_stanzas(&read("../../Cargo.lock"))
+        .into_iter()
+        .filter(|package| closure.contains(&package.name))
+        .collect()
+}
+
+#[test]
+fn every_path_crate_in_the_engine_hash_closure_is_classified() {
+    let path_crates: BTreeSet<String> = closure_stanzas()
+        .into_iter()
+        .filter(|package| package.source.is_none())
+        .map(|package| package.name)
+        .collect();
+    for expected in ["reify-eval", "reify-shell-extract"] {
+        assert!(
+            path_crates.contains(expected),
+            "{expected} must be among the closure's path crates, got {path_crates:?}"
+        );
+    }
+
+    let mut rows_per_crate: BTreeMap<&str, usize> = BTreeMap::new();
+    for row in WORKSPACE_CRATE_COVERAGE {
+        *rows_per_crate.entry(row.crate_name).or_default() += 1;
+    }
+    let mut problems: Vec<String> = Vec::new();
+    for (crate_name, rows) in &rows_per_crate {
+        if *rows > 1 {
+            problems.push(format!("{crate_name}: {rows} rows; keep exactly one"));
+        }
+        if !path_crates.contains(*crate_name) {
+            problems.push(format!(
+                "{crate_name}: not a path crate in reify-eval's closure; remove the row"
+            ));
+        }
+    }
+    for crate_name in &path_crates {
+        if !rows_per_crate.contains_key(crate_name.as_str()) {
+            problems.push(format!(
+                "{crate_name}: unclassified. Its Cargo.lock version is a constant, so the \
+                 closure pin never invalidates on a source change; add a row: \
+                 Hashed(paths) or NotHashed(reason)"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "WORKSPACE_CRATE_COVERAGE (src/engine_hash_algo.rs) must classify every path crate \
+         in engine_hash_closure.txt exactly once:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[test]
+fn every_non_path_closure_member_is_registry_sourced() {
+    let offenders: Vec<String> = closure_stanzas()
+        .into_iter()
+        .filter_map(|package| {
+            let source = package.source?;
+            (!source.starts_with("registry+"))
+                .then(|| format!("{} {}: {source}", package.name, package.version))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these closure members are neither registry- nor path-sourced. (name, version) does \
+         not determine a git/[patch] crate's content, so the closure pin would not \
+         invalidate on a change; fold source/checksum into cargo_lock_closure_pins:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn each_hashed_row_names_paths_inside_its_own_crate() {
+    let mut misplaced: Vec<String> = Vec::new();
+    for row in WORKSPACE_CRATE_COVERAGE {
+        let Coverage::Hashed(paths) = row.coverage else {
+            continue;
+        };
+        let own_prefix = format!("../{}/", row.crate_name);
+        for path in paths {
+            let inside = if row.crate_name == "reify-eval" {
+                !path.starts_with("../")
+            } else {
+                path.starts_with(&own_prefix)
+            };
+            if !inside {
+                misplaced.push(format!("{}: {path}", row.crate_name));
+            }
+        }
+    }
+    assert!(
+        misplaced.is_empty(),
+        "a Hashed row's paths are relative to crates/reify-eval and must lie inside the \
+         row's own crate (reify-eval's own paths carry no `../`; any other crate's start \
+         with `../<crate_name>/`), so each row's crate_name stays truthful:\n{}",
+        misplaced.join("\n")
     );
 }
