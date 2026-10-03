@@ -246,11 +246,18 @@ impl<'a> Lowering<'a> {
     /// When the anchor is a detached unit suffix, [`Self::detached_unit_hint`] is appended.
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
-        let mut message = message.into();
-        if let Some(hint) = self.detached_unit_hint(anchor) {
+        let message = self.with_detached_unit_hint(message.into(), anchor);
+        self.push_error(message, self.span(anchor));
+    }
+
+    /// `message` with [`Self::detached_unit_hint`] appended when `fault` is a detached unit
+    /// suffix, else `message` unchanged. The one append rule shared by every place a fault
+    /// becomes a message.
+    fn with_detached_unit_hint(&self, mut message: String, fault: tree_sitter::Node) -> String {
+        if let Some(hint) = self.detached_unit_hint(fault) {
             message.push_str(&hint);
         }
-        self.push_error(message, self.span(anchor));
+        message
     }
 
     /// The remedy for a fault that is a unit detached from its number (`1000.0 N/m`), which
@@ -425,7 +432,7 @@ impl<'a> Lowering<'a> {
         for &fault in &generic[..generic_kept] {
             reports.push((
                 fault.start_byte(),
-                format!("syntax error in {context}"),
+                self.with_detached_unit_hint(format!("syntax error in {context}"), fault),
                 self.span(fault),
             ));
         }
