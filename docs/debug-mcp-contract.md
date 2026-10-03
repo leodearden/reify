@@ -887,6 +887,10 @@ Its cases (d)–(f) cover the precondition: a clipped or occluded element report
   bounds centre returns the element or a descendant. That is the same
   resolution `click_at`, `hover` and `drag` perform, so it predicts whether the
   canonical round-trip reaches the element.
+- Precisely, `hitTestable: true` means the synthetic event is dispatched within
+  the element's subtree. A descendant hit reaches the element's own handler by
+  bubbling, so that handler still does not run if the hit descendant (say, an
+  inner button in a row) stops propagation.
 - It is false when the element is clipped by an overflow ancestor (including a
   zero-height scrollport, the measured PropertyEditor case), occluded by an
   unrelated painted element, outside the window, or has `pointer-events: none`.
@@ -909,9 +913,12 @@ Its cases (d)–(f) cover the precondition: a clipped or occluded element report
 - `click_at`, `hover` and `drag` resolve their target with the webview's own
   `document.elementFromPoint`, then `dispatchEvent` a synthetic event on it;
   what they skip is native OS input delivery (see §4).  jsdom has no layout, so
-  the unit tests model that hit test with a fake compositor; the live WebKit
-  hit test is exercised by the `get_layout_metrics_hit_testable_app_layout`
-  e2e scenario (`npm run test:e2e`, not verify-gated).
+  the unit tests model that hit test with a fake compositor. Both branches of
+  the live WebKit hit test have e2e scenarios (`npm run test:e2e`, not
+  verify-gated): `get_layout_metrics_hit_testable_app_layout` (true) and
+  `get_layout_metrics_hit_testable_clipped_cm_content` (false: the `overflow`
+  fixture's no-wrap line puts `.cm-content`'s centre outside `.cm-scroller`'s
+  clip).
 - The canvas (viewport) coordinate frame is the same CSS-pixel frame: the NDC
   conversion in `createSelection` uses `rect = canvas.getBoundingClientRect()` as
   its origin (see §5).

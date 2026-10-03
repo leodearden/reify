@@ -378,8 +378,8 @@ describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
 // false, and click_at at its centre lands elsewhere (#7770).
 //
 // NOTE: jsdom has no layout engine, so (d)-(f) model WebKit's hit test with a
-// fake compositor (`mountHitFixture`); the live check is the
-// get_layout_metrics_hit_testable_app_layout VALUE_SCENARIO (npm run test:e2e).
+// fake compositor (`mountHitFixture`); the live checks are the
+// get_layout_metrics_hit_testable_* VALUE_SCENARIOS (npm run test:e2e).
 // ─────────────────────────────────────────────────────────────────────────────
 describe('debug contract — coordinate convention (step-5)', () => {
   let capturedHandler: DebugRequestHandler | undefined;
@@ -497,7 +497,7 @@ describe('debug contract — coordinate convention (step-5)', () => {
     // Pins the get_layout_metrics→click(center) convention I1 will wrap.
     // The center is in the same CSS-logical-px frame as getBoundingClientRect,
     // so a synthetic MouseEvent at (centerX, centerY) fires the element's handler.
-    // NOTE: elementFromPoint hit-test (OS layout) is deferred to I1's real-GUI e2e.
+    // Whether elementFromPoint at that centre reaches the element is (d)-(f).
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'click-target');
     document.body.appendChild(el);

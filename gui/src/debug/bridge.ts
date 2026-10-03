@@ -532,9 +532,10 @@ function shapeDiagnostic(d: DiagnosticInfo) {
 
 /**
  * Returns true iff the element is visible in the render tree.
- * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
- * panels count as not-visible) plus the rect.width>0 convention shared with
- * describePlacement.
+ * Walks ancestors via isEffectivelyHidden(), so an element inside a collapsed
+ * panel is NOT visible here. This intentionally differs from describePlacement's
+ * `visible`, which reads only the element's own display/visibility (the R1
+ * payload meaning, contract §3); only the rect.width>0 test is shared.
  */
 function isElementVisible(el: Element): boolean {
   return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
