@@ -317,8 +317,8 @@ fn corpus_has_no_unresolved_function_calls() {
 
 /// The sweep must actually be sweeping something.
 ///
-/// Without this, a typo in `CORPUS_ROOTS` or a `read_dir` that quietly returns
-/// nothing would make `corpus_has_no_unresolved_function_calls` pass
+/// Without this, a typo in `CORPUS_ROOTS` or a root that exists but holds no
+/// `.ri` files would make `corpus_has_no_unresolved_function_calls` pass
 /// vacuously — the classic way a corpus gate stops gating.
 #[test]
 fn every_corpus_root_exists_and_holds_ri_files() {

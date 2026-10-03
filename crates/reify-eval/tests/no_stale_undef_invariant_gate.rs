@@ -46,6 +46,9 @@ use reify_eval::cache::NodeId;
 use reify_eval::deps::DependencyTrace;
 use reify_eval::graph::{EvaluationGraph, ValueCellNode};
 use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value};
+use reify_test_support::examples_corpus::{
+    discover_ri_files, examples_dir, relative_to_examples_dir,
+};
 
 /// Seeded state: `producer` is resolved (non-Undef); `consumer`'s
 /// `default_expr` is a `ValueRef(producer)` — NOT an undef literal — and its
@@ -1503,10 +1506,6 @@ struct OptimizedCallerSurvey {
 /// Runs the survey. Cheap enough to call from more than one `#[test]`: one
 /// stdlib compile plus a 260-file read.
 fn survey_optimized_callers() -> OptimizedCallerSurvey {
-    use reify_test_support::examples_corpus::{
-        discover_ri_files, examples_dir, relative_to_examples_dir,
-    };
-
     let stdlib_fns = stdlib_optimized_fns();
     assert!(
         !stdlib_fns.is_empty(),
