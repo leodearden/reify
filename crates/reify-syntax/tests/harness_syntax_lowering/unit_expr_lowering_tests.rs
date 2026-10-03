@@ -679,6 +679,34 @@ fn fn_body_let_with_detached_unit_carries_the_hint() {
     );
 }
 
+/// A structure-body `let` reaches the generic `syntax error in structure body` arm
+/// rather than the `invalid <label>` refusal, so it needs the hint there too.  The
+/// hint changes wording only: the arm's per-row dedupe still yields ONE diagnostic.
+#[test]
+fn structure_body_let_with_detached_unit_carries_the_hint() {
+    let source = "structure A {\n  let q = 5 mm\n}\n";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let expected = format!(
+        "syntax error in structure body{}",
+        detached_unit_hint("mm", "q", "5")
+    );
+    let mm_at = byte_of(source, "mm", 0);
+    assert!(
+        errors
+            .iter()
+            .any(|(message, span)| *message == expected && span.start == mm_at),
+        "expected {expected:?} pointing at `mm`; got {errors:?}"
+    );
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|(message, _)| message.starts_with("syntax error in structure body"))
+            .count(),
+        1,
+        "the hint must not change how many diagnostics the row yields; got {errors:?}"
+    );
+}
+
 /// GREEN on arrival: the attached spelling is the accepted one, and this pins it
 /// at AST level inside a connect body — both spellings are pinned, the detached
 /// one by the diagnostics above.
