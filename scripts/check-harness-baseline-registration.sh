@@ -46,9 +46,9 @@
 # `added=0` is therefore NOT evidence of a check unless the diff truly adds no
 # files. The trustworthy forms are `--from-git` (what scripts/verify.sh runs) or
 # explicit positional paths of files that exist in the tree; pair either with a
-# control that should FAIL. The empty-stdin green (rc 0, exact stdout, silent
-# stderr) is pinned by tests/infra/test_harness_baseline_registration_gate.sh
-# Sections J and P2, so it is documented here rather than made self-announcing.
+# control that should FAIL. The empty-stdin green is pinned by
+# tests/infra/test_harness_baseline_registration_gate.sh: rc 0 and the SUMMARY
+# line (Section J), silent stderr (Section P2).
 #
 # OUTPUT — TWO STREAMS, deliberately separated:
 #   STDOUT (structured verdict grammar, rule-(c) style — machine-parseable,
