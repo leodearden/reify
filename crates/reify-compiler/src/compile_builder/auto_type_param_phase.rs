@@ -33,12 +33,12 @@
 //!      and therefore synthesis, is now the norm rather than the exception
 //!      for mixed use-sites. The residual skip-synthesis path is reached for
 //!      a genuinely unbound `auto:` param (shapes A/B) or an explicit
-//!      type-arg that is not a concrete `Type::StructureRef` and so cannot
-//!      be seeded; either way the use-site is left pointing at the generic
-//!      template. Shapes A/B stay silent here — they already carry the
-//!      resolver's own `NoCandidate` / `Ambiguous` error — while the
-//!      un-seedable residual is diagnosed with a dedicated compile error
-//!      instead of failing silently (#6854),
+//!      type-arg (or declared default) that is not a `Type::StructureRef`
+//!      naming a known template and so cannot be seeded; either way the
+//!      use-site is left pointing at the generic template. Shapes A/B stay
+//!      silent here — they already carry the resolver's own `NoCandidate` /
+//!      `Ambiguous` error — while the un-seedable residual is diagnosed with
+//!      a dedicated compile error instead of failing silently (#6854, #7318),
 //!   4. accumulates `(param_name, template_name)` substitution pairs across all
 //!      requests, deduping first-wins, into `ctx.auto_type_substitution`.
 //!
@@ -299,9 +299,15 @@ pub(crate) fn phase_auto_type_param_resolution(
                     }
                     // An explicitly-supplied type-arg is ALREADY RESOLVED —
                     // just not by this resolver. Seed it so coverage below
-                    // sees the truth. A non-`StructureRef` slot (e.g. an
-                    // enclosing generic's own `TypeParam`) is left unseeded
-                    // and falls through to the partial-coverage skip below.
+                    // sees the truth. A slot that is not a `StructureRef` to
+                    // a known template is left unseeded and falls through to
+                    // the partial-coverage skip below: an enclosing generic's
+                    // own `TypeParam`, or an undefined name (lowering turns an
+                    // unknown name into a `StructureRef` of it, which is no
+                    // safe monomorph base, #7318). `Type::Applied` never
+                    // arrives: both sources of `effective_arg` (entity.rs's
+                    // sub type-arg arms, `convert_type_params`'s default arm)
+                    // keep only the head name of `Box<SealA>` (#7839).
                     //
                     // When the position carries NO type-arg at all, fall back
                     // to the type parameter's DECLARED DEFAULT (shape D,
@@ -321,7 +327,9 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // an explicit arg, so seeding it is the correct remedy.
                     let effective_arg: Option<&Type> =
                         sub.type_args.get(position).or(tp.default.as_ref());
-                    if let Some(Type::StructureRef(name)) = effective_arg {
+                    if let Some(Type::StructureRef(name)) = effective_arg
+                        && template_registry.contains_key(name.as_str())
+                    {
                         sigma.insert(tp.name.clone(), Type::StructureRef(name.clone()));
                         candidates_by_position.push((position, name.clone()));
                     }
@@ -361,8 +369,8 @@ pub(crate) fn phase_auto_type_param_resolution(
             // On residual PARTIAL coverage — a genuinely unbound `auto:`
             // param (shapes A/B), or a non-`auto:` position whose effective
             // type-arg (explicit arg, else declared default) is not a
-            // concrete `Type::StructureRef` and so could not be seeded
-            // — synthesis must still be skipped: the block below clears
+            // `Type::StructureRef` to a known template and so could not be
+            // seeded — synthesis must still be skipped: the block below clears
             // `mono.type_params` — advertising the clone as fully concrete —
             // while any cell whose type-param was NOT in `sigma` keeps its
             // raw `Type::TypeParam(name)`. That is the one shape no
@@ -383,13 +391,13 @@ pub(crate) fn phase_auto_type_param_resolution(
             // `Ambiguous` error and must not be double-reported), yet full
             // `target.type_params` coverage is still not reached — meaning
             // a non-`auto:` position's EFFECTIVE type-arg (its explicit arg,
-            // else its declared default) was something other than a concrete
-            // `Type::StructureRef` (e.g. an enclosing generic's own
-            // `TypeParam`, #6854) and the seeding loop above could not bind
-            // it. Gating on "the resolver bound everything it was asked to
-            // bind" rather than scanning `diagnostics` for newly-pushed
-            // errors avoids depending on which `Severity` the resolver
-            // assigns each halt reason.
+            // else its declared default) was something other than a
+            // `Type::StructureRef` naming a known template (e.g. an enclosing
+            // generic's own `TypeParam`, #6854, or an undefined name, #7318)
+            // and the seeding loop above could not bind it. Gating on "the
+            // resolver bound everything it was asked to bind" rather than
+            // scanning `diagnostics` for newly-pushed errors avoids depending
+            // on which `Severity` the resolver assigns each halt reason.
             let all_auto_clause_params_bound =
                 params.iter().all(|p| sigma.contains_key(p.name.as_str()));
             if !sigma_covers_all_type_params && all_auto_clause_params_bound {
