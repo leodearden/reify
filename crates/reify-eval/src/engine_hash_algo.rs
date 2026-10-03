@@ -138,15 +138,20 @@ pub(crate) const WORKSPACE_CRATE_COVERAGE: &[WorkspaceCrateCoverage] = &[
         crate_name: "reify-core",
         coverage: Coverage::Hashed(&["../reify-core/src", "../reify-core/Cargo.toml"]),
     },
-    // The persisted targets' trampolines, the BC face resolution they call,
-    // and the per-purpose tolerance implementation. The rest of reify-eval
-    // evaluates the arguments, which is upstream of the persistent key.
+    // The persisted targets' trampolines (compute_targets, shell_extract_compute),
+    // their BC face resolution (topology_selectors + selector_vocabulary_v2) and
+    // the per-purpose tolerance code. Other reify-eval code evaluates the
+    // arguments (upstream of the key) or runs in the dispatch without shaping
+    // values: solver_progress (progress/cancellation), compute_cache_key (key
+    // only), persistent_cache (wire format, versioned by ENTRY_FORMAT_VERSION).
+    // Re-exported contract types live in reify-ir and reify-compute-contract.
     WorkspaceCrateCoverage {
         crate_name: "reify-eval",
         coverage: Coverage::Hashed(&[
             "src/compute_targets",
             "src/engine_purposes.rs",
             "src/engine_tolerance.rs",
+            "src/selector_vocabulary_v2.rs",
             "src/shell_extract_compute.rs",
             "src/tolerance_bucket.rs",
             "src/tolerance_budget.rs",
