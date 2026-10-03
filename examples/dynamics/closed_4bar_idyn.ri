@@ -193,8 +193,9 @@ structure def ClosedFourBarIdyn {
     let traj = MotionTrajectory(mechanism: 0.0, samples: [sample_0, sample_1])
 
     // Closed-chain inverse dynamics through the landed 4146 bridge, UNCHANGED.
-    // β2 reads this cell: B6 checks the live constraint rank (m_eff=2 from the
-    // loop Jacobian at the assembled config); B7 checks the virtual-work power
+    // β2 reads this cell: B6 checks the live constraint rank (m_eff=3 from the
+    // loop Jacobian at the assembled config: the ω_z orientation closure plus
+    // in-plane v_x, v_y); B7 checks the virtual-work power
     // identity Σ τ_i·q̇_i = J_eff·ω·α ≈ 2.573 W across the two samples.
     // forces: List<List<JointForce>> of shape 2×5 (two samples × 5 tree joints).
     let forces = inverse_dynamics(m, traj)

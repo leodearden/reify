@@ -896,9 +896,9 @@ fn moves_with(joint: &Value, target: &Value) -> bool {
 /// It now occurs exactly once, at the tail of `chain_a`, so its column is the
 /// derivative through `chain_a` alone.  Before 7186 it was appended to
 /// `chain_b` as well, and the perturb-every-occurrence rule above
-/// differentiated both copies together.  Its absorbed directions are still
-/// removed downstream by
-/// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank).
+/// differentiated both copies together.  Its column is a genuine constraint
+/// column, and nothing downstream removes the closing joint's directions (see
+/// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank)).
 ///
 /// # Parameters
 /// - `chain_a`, `vals_a`: spanning-tree side of the loop; `vals_a.len()` must

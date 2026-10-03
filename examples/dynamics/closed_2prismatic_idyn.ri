@@ -12,7 +12,7 @@
 // pure-Rust step-7 finiteness smoke test (q̇=q̈=0, no gravity work).
 //
 // The companion Rust gate
-// `crates/reify-eval/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
+// `crates/reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
 // asserts the virtual-work power identity below within 1 µW.
 //
 // ── Why a vertical PRISMATIC loop (not a revolute 4-bar) ──────────────────────
@@ -24,6 +24,8 @@
 // 2-prismatic loop, oriented along gravity so the energy ledger is non-trivial.
 // The kinematic-offset feature that would unlock a true spatial linkage is the
 // deferred follow-up docs/prds/v0_6/kinematic-inter-joint-offsets.md.
+// Task 4331 has since added revolute pivot offsets, and the revolute 4-bar now
+// lives in examples/dynamics/closed_4bar_idyn.ri.
 //
 // ── Analytic energy rate (first principles) ───────────────────────────────────
 // Two prismatic joints along the VERTICAL axis [0,0,1], each parenting one body
@@ -37,11 +39,13 @@
 // enters the energy. COM offsets, inertia, and joint positions do not enter τ
 // for a pure-translation DOF; only masses, rates, gravity, and the axis z-comp.
 //
-// For the prismatic-closing loop the rank reduction projects out the entire
-// residual row (m_eff = 0): there is no live constraint, so the closed path
-// reduces to per-DOF open-chain RNEA and τ = τ_open exactly. By the work-energy
-// theorem (b ≡ 0, constraint forces do no work on the supplied velocities),
-//     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly (holds for m_eff = 0 too).
+// The loop carries ONE live constraint row, v_z = [1, −1] (m_eff = 1, closure
+// q_b == q_a), but its multiplier vanishes analytically: both sliders carry the
+// same per-mass gravity load and the prescribed accelerations are equal, so the
+// unconstrained response to τ_open already satisfies the constraint. Hence
+// λ = 0 and τ = τ_open exactly. By the work-energy theorem (b ≡ 0, constraint
+// forces do no work on the supplied velocities),
+//     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly.
 //
 // At the prescribed instant — q_a = q_b = 0.3 m (the closure q_b == q_a is
 // satisfied; positions do not enter dE/dt here), consistent rates

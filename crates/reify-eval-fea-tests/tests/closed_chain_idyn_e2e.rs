@@ -20,18 +20,14 @@
 //! which has q̇=q̈=0 and no gravity work).
 //!
 //! ── What this does NOT validate (and why) ─────────────────────────────────────
-//! For a prismatic-closing loop whose closing joint shares the residual axis,
-//! `reduce_constraint_rank` projects out the entire residual row → `m_eff = 0`:
-//! there is no LIVE constraint, so the closed path reduces to per-DOF open-chain
-//! RNEA (τ = τ_open). The power identity Σ τ_i·q̇_i = τ_open·q̇ = dE/dt is exact
-//! by the work-energy theorem and holds for `m_eff = 0` too, but this fixture
-//! therefore does NOT exercise the nonzero-constraint machinery (λ, `m_eff ≥ 1`,
-//! incidence map, rank reduction to a non-empty A). That machinery is covered by
-//! the existing array-level unit tests (steps 3–6 — incl. a synthetic revolute
-//! rank-reduction case — in `closed_chain.rs` / `loop_closure.rs` / `rnea.rs`).
-//! A live-constraint (`m_eff ≥ 1`) *e2e* requires the deferred kinematic
-//! inter-joint-offset feature (docs/prds/v0_6/kinematic-inter-joint-offsets.md),
-//! which the current kinematic layer cannot express (esc-4146-280).
+//! The 2-prismatic loop carries ONE live constraint row, v_z = [1, −1]
+//! (`m_eff = 1`, closure q_b == q_a), but its multiplier vanishes analytically:
+//! both sliders carry the same per-mass gravity load and the prescribed
+//! accelerations are equal, so the unconstrained response to τ_open already
+//! satisfies the constraint. Hence λ = 0 and τ = τ_open, and this fixture does
+//! NOT exercise a nonzero λ. The live-constraint e2e is the planar 4-bar below
+//! (B6/B7, `m_eff = 3`); the array-level unit tests in `closed_chain.rs` /
+//! `loop_closure.rs` / `rnea.rs` cover the same machinery in isolation.
 //!
 //! Kernel-INDEPENDENT: `inverse_dynamics` derives mass from each body's
 //! `MassProperties` solid and needs no `GeometryKernel`, so a

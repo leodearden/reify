@@ -198,36 +198,27 @@ pub fn solve_closed_chain(
 ///
 /// # Policy (resolves GAP 3)
 ///
-/// A raw 6-row Jacobian from [`loop_residual_twist`](crate::loop_closure) is
-/// structurally rank-deficient for sub-6-DOF loops:
+/// A row is discarded only when it is (numerically) zero or linearly dependent
+/// on rows already kept — Gaussian elimination with partial row pivoting keeps
+/// rows whose pivot exceeds `eps`. Each returned row is a verbatim row of
+/// `a_full`, so the rank of A and ker(A) — the closure's velocity-level tangent
+/// space — are preserved.
 ///
-/// 1. **Closing-joint projection** — rows corresponding to directions the
-///    closing joint absorbs (its motion-subspace `S_close`) are zeroed by
-///    projecting each raw row onto the orthogonal complement of S_close.
-///    For a revolute pin about +y, `S_close = [[0,1,0, 0,0,0]]` and the
-///    ωy row is zeroed, on the ground that the mechanism retains freedom
-///    along the closing joint's own axis, so keeping the ωy row would
-///    over-constrain it.
+/// That is the whole policy. The KKT constraint must have the SAME zero set as
+/// the kinematic residual ([`loop_residual_twist`](crate::loop_closure)) that
+/// the snapshot solve enforces, so no row is dropped on modelling grounds. In
+/// particular the closing joint's motion subspace is NOT projected out: the
+/// closing joint is a spanning-tree DOF with its own column of A, and deleting
+/// its rows too would release a phantom second copy of that freedom and admit
+/// velocities that open the loop.
 ///
-///    **This projection is UNVERIFIED against the corrected chains.** It was
-///    justified by the Newton solve adjusting the closing joint's own free
-///    coordinate, which no longer describes the builder: the closing joint is
-///    composed on `chain_a` alone and resolved from bindings or its range
-///    midpoint, so it is never among `free_b`. Projection and in-tree
-///    expectations are unchanged — `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`
-///    derives `m_eff = 2` row by row with ωz absorbed, under `assert_eq!` so
-///    drift fails loudly — but re-deriving whether ωz is still a redundant row
-///    is task #7312, so do not "fix" the rank here without that derivation.
-///
-/// 2. **Numerical row reduction** — Gaussian elimination with partial row
-///    pivoting collects rows whose pivot exceeds `eps`.  Zero rows from step 1
-///    (and any other structurally zero or linearly dependent rows) are discarded.
+/// Derivations: `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`
+/// (planar 4-bar, rank 3) and
+/// `closed_chain::tests::reduce_constraint_rank_on_builder_produced_closed_chain`.
 ///
 /// # Parameters
 /// - `a_full`: raw constraint Jacobian, row-major, shape `rows × cols`.
 /// - `rows`, `cols`: dimensions of `a_full`.
-/// - `closing_subspace`: motion-subspace columns of the closing joint,
-///   each as a `[f64; 6]` twist vector.  Pass `&[]` to skip projection.
 /// - `eps`: row-pivot threshold for the row-reduction step.
 ///
 /// # Returns
