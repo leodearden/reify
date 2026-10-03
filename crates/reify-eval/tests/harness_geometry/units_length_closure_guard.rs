@@ -99,12 +99,10 @@
 //! **`.config/nextest.toml`: no override, deliberately.** That file is read by
 //! `cargo nextest`, so the runner that decides the question is nextest, which
 //! gives each test its own process: every sweeping test pays the sweep itself.
-//! The sweep is IR-build-only and never constructs a kernel, and the slowest test
-//! of this module runs over forty-fold inside `[profile.default]`'s `120s x 10` =
-//! 1200s ceiling, so neither run-to-run variance nor the cost of the multi-start
-//! baseline search can threaten the conclusion. `harness_geometry` carries no
-//! override block today, and adding one would be dead config AND would owe a
-//! paired row in `GATE_RESIDENT_FILTERS`
+//! The sweep is IR-build-only and never constructs a kernel, so the module stays
+//! far inside `[profile.default]`'s `120s x 10` = 1200s ceiling.
+//! `harness_geometry` carries no override block today, and adding one would be
+//! dead config AND would owe a paired row in `GATE_RESIDENT_FILTERS`
 //! (`tests/infra/test_nextest_slow_priority.sh`), whose Assertion K reds on an
 //! override classifying as neither heavy nor gate-resident. A block that does
 //! not exist cannot red.
@@ -117,8 +115,8 @@
 //! **`tests/infra/test_no_new_wallclock_upper_bounds.sh`: nothing owed.** This
 //! file asserts no elapsed-time bound at all, which is what C7 prefers and what
 //! `version_id_discipline_gate.rs` set the precedent for. The counts it DOES
-//! bound — observations, rejections, universe size — are FLOORS on evidence,
-//! not deadlines, so they cannot flake with machine load.
+//! bound — observations, rejections, ANGLE gates, universe size — are FLOORS on
+//! evidence, not deadlines, so they cannot flake with machine load.
 //!
 //! # ACCEPTED LIMITATIONS — read these before trusting a green run
 //!
@@ -1716,13 +1714,22 @@ struct Probed {
     diagnostics: Vec<reify_core::Diagnostic>,
 }
 
-/// How unusable a call is as a BASELINE, worst first: dimension rejections,
-/// then any other diagnostic, then a failed op compile (0 or 1). Compared
-/// lexicographically.
-type Badness = (usize, usize, usize);
+/// How unusable a call is as a BASELINE. Fields are declared worst first and the
+/// derived `Ord` compares them in declaration order, so reordering them changes
+/// which repair the search prefers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Badness {
+    dimension_rejections: usize,
+    other_diagnostics: usize,
+    op_failed: bool,
+}
 
 /// A call with nothing left to repair. Nothing is strictly better than this.
-const CLEAN_BASELINE: Badness = (0, 0, 0);
+const CLEAN_BASELINE: Badness = Badness {
+    dimension_rejections: 0,
+    other_diagnostics: 0,
+    op_failed: false,
+};
 
 impl Probed {
     fn dimension_rejections(&self) -> usize {
@@ -1733,11 +1740,12 @@ impl Probed {
     }
 
     fn baseline_badness(&self) -> Badness {
-        (
-            self.dimension_rejections(),
-            self.diagnostics.len(),
-            usize::from(self.result.is_err()),
-        )
+        let dimension_rejections = self.dimension_rejections();
+        Badness {
+            dimension_rejections,
+            other_diagnostics: self.diagnostics.len() - dimension_rejections,
+            op_failed: self.result.is_err(),
+        }
     }
 }
 
@@ -1824,20 +1832,14 @@ fn start_fillers() -> Vec<Filler> {
 /// necessarily CLEAN: scalar fillers cannot make a selector, a datum or a count
 /// valid, so the op may still fail.
 ///
-/// Greedy repair is enough within a start because the fillers do not interact:
-/// each position's acceptable dimension is independent of its neighbours'. But
-/// a partial repair can look WORSE than the state it repairs — a non-length
-/// filler in a `?`-chained length group HIDES the rejections behind it, and
-/// fixing an early slot can EXPOSE a later gate — and a greedy that only takes
-/// strict improvements then never leaves an all-length start. So the repair runs
-/// once per filler DIMENSION and keeps the strictly best result: a slot's verdict
-/// turns on its filler's dimension, so one start per dimension reaches every
-/// basin that matters, where a start per filler would only repeat them.
-///
-/// The default start goes first and ties keep the earlier result, so every call
-/// the default start already repairs cleanly is unchanged and costs no further
-/// start. A call the default start finds compiling to no op returns `None`
-/// outright: whether an op is emitted is decided by the arity, not by the values.
+/// [`greedy_repair`] runs once per filler DIMENSION ([`start_fillers`]), default
+/// start first, because a repair can score WORSE than the state it repairs — a
+/// non-length filler in a `?`-chained length group hides the rejections behind
+/// it, and fixing an early slot exposes a later gate — so one start can stall
+/// where another does not (the `baseline_search` tests pin both). A later start
+/// replaces the best so far only when strictly better, and a clean result ends
+/// the search. `None` outright when the default start compiles to no op: the
+/// arity decides that, not the values.
 fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
     let mut starts = start_fillers().into_iter();
     let mut best = greedy_repair(name, template, arity, starts.next()?)?;
@@ -1852,8 +1854,8 @@ fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<V
             best = repaired;
         }
     }
-    let (args, (dimension_rejections, ..)) = best;
-    (dimension_rejections == 0).then_some(args)
+    let (args, badness) = best;
+    (badness.dimension_rejections == 0).then_some(args)
 }
 
 /// The argument-slot FAMILIES an op exposes — slot names with their trailing
@@ -1937,9 +1939,8 @@ fn sweep_universe() -> Vec<Observation> {
 /// Per process, not per binary: `cargo test` runs this binary's tests as
 /// threads of one process, so one sweep serves all five sweeping tests, while
 /// `cargo nextest` — the gate's runner — gives each test its own process and
-/// each pays its own sweep. The module doc's C7 paragraph says why that cost,
-/// far inside the ceiling, keeps `.config/nextest.toml` free of an override for
-/// it.
+/// each pays its own sweep. The module doc's C7 paragraph covers why that needs
+/// no `.config/nextest.toml` override.
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
@@ -2154,8 +2155,9 @@ mod real_tree {
     ///
     /// A `classify_all` over an empty or tiny observation set is trivially
     /// green, so the green above is only worth having with a floor under the
-    /// evidence it rests on. Floors, not equalities: adding builtins or arities
-    /// must never red this.
+    /// evidence it rests on. The ANGLE census is vacuous over an empty set too,
+    /// so its floor lives here, where it consults no allowlist row. Floors, not
+    /// equalities: adding builtins or arities must never red this.
     #[test]
     fn the_sweep_observes_a_substantial_gated_surface() {
         let observations = observe_universe();
@@ -2178,6 +2180,14 @@ mod real_tree {
              113 were measured and the floor is 80. A drop means gates \
              disappeared from `geometry_ops`.",
             observations.len()
+        );
+        let angle_gated = observed_angle_gates(observations).len();
+        assert!(
+            angle_gated >= 8,
+            "only {angle_gated} observed positions are gated at ANGLE; 8 were \
+             measured and the floor is 8. A drop means the sweep stopped reaching \
+             an angle gate. Deleting its ANGLE_ALLOWLIST row would only hide \
+             that: repair the probe."
         );
     }
 
@@ -2328,17 +2338,7 @@ mod real_tree {
         assert_every_gated_row_is_observed(observations);
 
         let angle_rows = angle_positions();
-        let observed_gates = observed_angle_gates(observations);
-        assert_no_angle_gate_is_unregistered(&observed_gates, &angle_rows);
-        assert!(
-            observed_gates.len() >= 8,
-            "the sweep observed only {} positions gated at ANGLE; the census \
-             measured 8 (rotate, rotate_around and revolve once each, arc twice, \
-             draft twice, circular_pattern once) and this is its floor. A drop \
-             means the sweep stopped reaching an angle gate, and deleting its \
-             ANGLE_ALLOWLIST row would only hide that: repair the probe.",
-            observed_gates.len()
-        );
+        assert_no_angle_gate_is_unregistered(&observed_angle_gates(observations), &angle_rows);
         assert_shrunken_angle_census_fires(observations, &angle_rows);
     }
 
