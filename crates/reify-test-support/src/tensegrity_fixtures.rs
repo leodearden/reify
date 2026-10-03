@@ -1,5 +1,5 @@
-//! The single definitions of the two form-finding goldens: the triplex
-//! tensegrity and the tent membrane.
+//! The single definitions of the three form-finding goldens: the triplex
+//! tensegrity, the tent membrane and the catenoid tube.
 //!
 //! The "triplex" is the canonical symmetric triangular T-prism used across the
 //! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
@@ -7,6 +7,9 @@
 //! hand-maintained copies inside
 //! `crates/reify-eval/tests/harness_fea_solver_e2e/`, so a topology or node-order
 //! change had to be mirrored across all of them or they silently drifted apart.
+//! Its raw coordinates are also exposed, as [`triplex_node_coords`], because
+//! reify-solver-elastic's integration tests consume the prism below the `Value`
+//! layer.
 //!
 //! The "tent" is the minimal fixed-boundary membrane: four anchored corners in
 //! one plane, fanned around one free node seeded off that plane (see
@@ -14,15 +17,21 @@
 //! it is exposed as raw consts, because reify-solver-elastic's `form_find` unit
 //! tests consume it below the `Value` layer.
 //!
+//! The "catenoid tube" is the minimal surface of revolution `r(z) = c·cosh(z/c)`
+//! between two coaxial anchored rings (see [`catenoid_tube`]). It is raw-only,
+//! like the tent's consts, because reify-solver-elastic's integration tests
+//! consume it below the `Value` layer.
+//!
 //! ANTI-DRIFT PROPERTY: changing the topology or node order *here* changes every
 //! consuming suite at once. That is the whole point — resist re-inlining a
 //! "just this once" local variant in a call site.
 //!
 //! Copies elsewhere in the workspace are still being collapsed onto this module.
 //! Each remaining one is inventoried by exact path in the task that closes it —
-//! #7286 for the `harness_fea_solver_e2e` siblings, #7292 for
-//! reify-solver-elastic’s `tests/`, and #7721 for the `#[cfg(test)]`-internal
-//! ones.
+//! #7721 for the `#[cfg(test)]`-internal triplex copies, #8106 for the tent
+//! mirror in the `harness_fea_solver_e2e` T1a suite, and #8152 for the triplex
+//! member-topology, group-id, guess-table and closed-form-q copies in
+//! reify-solver-elastic’s `tests/`.
 //!
 //! Two axes on which the superseded triplex copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
