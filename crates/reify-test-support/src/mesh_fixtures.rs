@@ -1,39 +1,37 @@
-use reify_ir::Mesh;
+//! Box / cube / cylinder mesh fixtures, and the tolerance they share
+//!
+//! Hoisted from `crates/reify-kernel-gmsh/tests/common/mod.rs` by task #6387,
+//! completing the dedup that #6200 deliberately deferred (that module's own doc
+//! comment named this wider hoist as the intended end state, but carried no
+//! task cite). These are the workspace-canonical definitions; they replace the
+//! per-file copies that previously lived in
+//! `reify-kernel-gmsh/tests/{mesh_to_volume_tests,pipeline_integration,
+//! refine_volume_tests}.rs` and, transitively, `tests/common/mod.rs`'s own.
+//!
+//! Why one copy matters: the cost of duplicated fixtures is DRIFT. A fixture
+//! corrected in one copy and not the others silently makes independent guards
+//! disagree about what "a box" is — exactly the class of gap that let #6200
+//! survive undetected. Deduplicating the geometry means a correction lands
+//! everywhere at once.
+//!
+//! `reify-kernel-manifold`'s offset-taking `test_fixtures::unit_cube_mesh` is
+//! the one deliberate exception and keeps its own box literal: that module is
+//! reachable from the crate's plain library artifact (the `test-fixtures`
+//! feature path), where `reify-test-support` is not linkable because it is only
+//! a dev-dependency there. `crates/reify-kernel-manifold/tests/
+//! cube_fixture_agreement.rs` is the executable guard that keeps the two
+//! honest.
+//!
+//! This module is deliberately NOT glob-exported from `lib.rs` (see the note
+//! there): `assert_rel`, `unit_cube_mesh`, `prismatic_box_mesh`,
+//! `unwelded_prismatic_box_mesh` and `F32_STORAGE_REL` are generic enough that
+//! hoisting them into the crate root, which many test files glob-import via
+//! `use reify_test_support::*;`, would risk an E0659 ambiguity against any
+//! future same-named item (compare `assert_rel_close` in reify-stdlib/reify-cli
+//! and the private `unit_cube_mesh` in reify-ir). Spell the module path:
+//! `reify_test_support::mesh_fixtures::…`.
 
-// ---------------------------------------------------------------------------
-// Box / cube / cylinder mesh fixtures, and the tolerance they share
-// ---------------------------------------------------------------------------
-//
-// Hoisted from `crates/reify-kernel-gmsh/tests/common/mod.rs` by task #6387,
-// completing the dedup that #6200 deliberately deferred (that module's own doc
-// comment named this wider hoist as the intended end state, but carried no
-// task cite). These are the workspace-canonical definitions; they replace the
-// per-file copies that previously lived in
-// `reify-kernel-gmsh/tests/{mesh_to_volume_tests,pipeline_integration,
-// refine_volume_tests}.rs` and, transitively, `tests/common/mod.rs`'s own.
-//
-// Why one copy matters: the cost of duplicated fixtures is DRIFT. A fixture
-// corrected in one copy and not the others silently makes independent guards
-// disagree about what "a box" is — exactly the class of gap that let #6200
-// survive undetected. Deduplicating the geometry means a correction lands
-// everywhere at once.
-//
-// `reify-kernel-manifold`'s offset-taking `test_fixtures::unit_cube_mesh` is
-// the one deliberate exception and keeps its own box literal: that module is
-// reachable from the crate's plain library artifact (the `test-fixtures`
-// feature path), where `reify-test-support` is not linkable because it is only
-// a dev-dependency there. `crates/reify-kernel-manifold/tests/
-// cube_fixture_agreement.rs` is the executable guard that keeps the two
-// honest.
-//
-// This module is deliberately NOT glob-exported from `lib.rs` (see the note
-// there): `assert_rel`, `unit_cube_mesh`, `prismatic_box_mesh`,
-// `unwelded_prismatic_box_mesh` and `F32_STORAGE_REL` are generic enough that
-// hoisting them into the crate root, which many test files glob-import via
-// `use reify_test_support::*;`, would risk an E0659 ambiguity against any
-// future same-named item (compare `assert_rel_close` in reify-stdlib/reify-cli
-// and the private `unit_cube_mesh` in reify-ir). Spell the module path:
-// `reify_test_support::mesh_fixtures::…`.
+use reify_ir::Mesh;
 
 // --- Shared tolerance -------------------------------------------------------
 
