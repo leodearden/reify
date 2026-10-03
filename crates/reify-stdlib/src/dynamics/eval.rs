@@ -729,15 +729,16 @@ fn snapshot_inverse_dynamics(
         return None;
     }
 
-    // ── closed-chain guard: deferred to task 4146 ──────────────────────────────
-    // A mechanism with a non-empty `loop_closures` list is a closed chain.
-    // Silently routing it through the open-chain RNEA would produce finite but
-    // physically-incorrect torques (the spanning-tree RNEA ignores the loop
-    // constraints) — a plausible-but-wrong number rather than the `Undef` the
-    // caller would expect for unsupported input. Return `None` (→ `Value::Undef`)
-    // so closed mechanisms fail loudly until task 4146 wires the closed-chain path.
-    // This guard is placed before the bodies.is_empty() early-return so it fires
-    // regardless of body count.
+    // ── closed-chain guard (design decision esc-3836-226) ──────────────────────
+    // A mechanism with a non-empty `loop_closures` list is a closed chain, and
+    // returns `None` (→ `Value::Undef`) HERE by design: a snapshot carries no
+    // spanning-tree q to extract the loop-closure chains from. Routing it
+    // through the open-chain RNEA instead would yield finite but physically
+    // wrong torques (the spanning-tree RNEA ignores the loop constraints). The
+    // supported closed-chain entry is the trajectory variant `inverse_dynamics`,
+    // which routes through `closed_chain_inverse_dynamics` via
+    // `inverse_dynamics_sample`. This guard is placed before the
+    // bodies.is_empty() early-return so it fires regardless of body count.
     if let Some(Value::List(lc)) = map_get(mech, "loop_closures")
         && !lc.is_empty()
     {
@@ -2139,7 +2140,8 @@ mod tests {
 
     /// `snapshot_inverse_dynamics` must return `Value::Undef` for a mechanism
     /// with a non-empty `loop_closures` list instead of silently computing
-    /// physically-incorrect open-chain torques (task 4146 deferred).
+    /// physically-incorrect open-chain torques (design decision esc-3836-226:
+    /// a snapshot carries no spanning-tree q).
     #[test]
     fn snapshot_inverse_dynamics_rejects_closed_mechanism() {
         // Build a minimal mechanism Map that passes kind/error validation but has
@@ -2178,7 +2180,7 @@ mod tests {
         assert_eq!(
             result,
             Value::Undef,
-            "closed mechanism (non-empty loop_closures) must return Value::Undef until task 4146"
+            "closed mechanism (non-empty loop_closures) must return Value::Undef at the snapshot entry (esc-3836-226)"
         );
     }
 
