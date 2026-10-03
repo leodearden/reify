@@ -300,8 +300,7 @@ pub(crate) fn compile_function(
                 }
             }
             // An un-annotated return type defaults to `Real`; `reconcile_fn_return`
-            // reports a body that contradicts that default. Inferring the return
-            // type from the body instead was considered and deferred.
+            // reports a body that contradicts that default.
             None => Type::dimensionless_scalar(),
         }
     };
