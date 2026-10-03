@@ -265,6 +265,59 @@ structure def Rod : Tagged { param d : Length = 5mm }
     assert_no_errors(&module);
 }
 
+/// A default body is reported once, however many conformers inherit it, while
+/// each override is its own body and reports separately. A trait-static default
+/// is compiled both as a namespaced static fn and per conformer; it too is
+/// reported once.
+#[test]
+fn conformer_default_body_is_reported_once_per_body() {
+    let module = compile_source(
+        r#"
+trait Tagged {
+    param d : Length
+    fn flag(self) { true }
+    fn default_len() { 10mm }
+}
+structure def Rod : Tagged { param d : Length = 5mm }
+structure def Bar : Tagged { param d : Length = 9mm }
+structure def Pin : Tagged {
+    param d : Length = 2mm
+    fn flag(self) { 2mm }
+}
+"#,
+    );
+
+    assert_eq!(
+        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).len(),
+        3,
+        "expected one FnReturnTypeUnannotated per offending body (default `flag`, \
+         override `flag`, static `default_len`), got: {:?}",
+        module.diagnostics
+    );
+    assert_no_errors(&module);
+}
+
+/// A receiver-taking default is compiled only per conformer. With no conformer
+/// nothing can call it, so no caller can receive its defaulted `Real`, and it
+/// is deliberately not reconciled.
+#[test]
+fn conformer_default_without_conformers_is_not_reconciled() {
+    let module = compile_source(
+        r#"
+trait Tagged {
+    param d : Length
+    fn flag(self) { true }
+}
+"#,
+    );
+
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
+        "expected no FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+}
+
 #[test]
 fn conformer_override_contradicting_its_annotation_warns() {
     let module = compile_source(

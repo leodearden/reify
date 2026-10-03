@@ -809,12 +809,7 @@ pub(crate) fn compile_assoc_function(
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
     };
-    reconcile_fn_return(
-        fn_def,
-        FnOwner::Conformer(conformer_name),
-        &compiled,
-        diagnostics,
-    );
+    reconcile_fn_return(fn_def, FnOwner::Conformer, &compiled, diagnostics);
     Some(compiled)
 }
 

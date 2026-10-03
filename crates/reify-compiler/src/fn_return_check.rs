@@ -20,22 +20,21 @@ pub(crate) const FN_RETURN_RECONCILE_SEVERITY: Severity = Severity::Warning;
 
 /// What a compiled fn belongs to.
 #[derive(Clone, Copy)]
-pub(crate) enum FnOwner<'a> {
+pub(crate) enum FnOwner {
     /// A module fn, or a trait-static fn compiled under its namespaced name.
     Free,
-    /// A trait associated fn compiled for the named conformer.
-    Conformer(&'a str),
+    /// A trait associated fn compiled for a conformer: its override, or a trait
+    /// default body injected into it.
+    Conformer,
 }
 
-impl FnOwner<'_> {
-    /// How diagnostics name the fn. An injected default body is compiled once
-    /// per conformer, so naming the conformer keeps same-span reports distinct.
+impl FnOwner {
+    /// How diagnostics name the fn. A report describes a body, not one
+    /// conformer's compile of it, so no conformer is named.
     fn subject(self, fn_name: &str) -> String {
         match self {
             FnOwner::Free => format!("function '{fn_name}'"),
-            FnOwner::Conformer(conformer) => {
-                format!("associated function '{fn_name}' (conformer '{conformer}')")
-            }
+            FnOwner::Conformer => format!("associated function '{fn_name}'"),
         }
     }
 }
@@ -45,16 +44,20 @@ impl FnOwner<'_> {
 /// An explicit annotation is checked by the annotated arm; an absent one means
 /// call sites type the result as the defaulted `Real`, so a body producing
 /// anything else is reported as un-annotated.
+///
+/// A trait default body is compiled once per conformer, so it is reconciled
+/// only once some structure conforms (before that, nothing can call it), and
+/// it is reported once however many conformers compile it.
 pub(crate) fn reconcile_fn_return(
     fn_def: &reify_ast::FnDef,
-    owner: FnOwner<'_>,
+    owner: FnOwner,
     compiled: &CompiledFunction,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(body) = &fn_def.body else {
         return;
     };
-    if matches!(owner, FnOwner::Conformer(_)) && reads_receiver(fn_def, compiled) {
+    if matches!(owner, FnOwner::Conformer) && reads_receiver(fn_def, compiled) {
         return;
     }
     let declared = &compiled.return_type;
@@ -63,25 +66,51 @@ pub(crate) fn reconcile_fn_return(
     match &fn_def.return_type {
         None => {
             if body_contradicts(declared, produced) {
-                diagnostics.push(unannotated_return(
-                    &owner.subject(&compiled.name),
-                    declared,
-                    produced,
-                    body_span,
-                ));
+                push_once_per_body(
+                    diagnostics,
+                    unannotated_return(
+                        &owner.subject(&compiled.name),
+                        declared,
+                        produced,
+                        body_span,
+                    ),
+                );
             }
         }
         Some(annotation) => {
             if annotation_is_reconciled(declared) && body_contradicts(declared, produced) {
-                diagnostics.push(mismatched_return(
-                    &owner.subject(&compiled.name),
-                    declared,
-                    annotation.span,
-                    produced,
-                    body_span,
-                ));
+                push_once_per_body(
+                    diagnostics,
+                    mismatched_return(
+                        &owner.subject(&compiled.name),
+                        declared,
+                        annotation.span,
+                        produced,
+                        body_span,
+                    ),
+                );
             }
         }
+    }
+}
+
+/// Push `report` unless the same body has already been reported: same code,
+/// and labels at the same spans saying the same thing.
+///
+/// A trait default body is compiled for every conformer, and a trait-static
+/// one also as its namespaced fn, but the user fixes it in one place.
+fn push_once_per_body(diagnostics: &mut Vec<Diagnostic>, report: Diagnostic) {
+    let same_body = |existing: &Diagnostic| {
+        existing.code == report.code
+            && existing.labels.len() == report.labels.len()
+            && existing
+                .labels
+                .iter()
+                .zip(&report.labels)
+                .all(|(a, b)| a.span == b.span && a.message == b.message)
+    };
+    if !diagnostics.iter().any(same_body) {
+        diagnostics.push(report);
     }
 }
 
