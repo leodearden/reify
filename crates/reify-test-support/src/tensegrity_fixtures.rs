@@ -235,6 +235,7 @@ pub fn tent_membrane_tensegrity() -> Value {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+    use std::collections::BTreeMap;
 
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
@@ -805,5 +806,284 @@ mod tests {
                 "anchor {a} must sit in exactly two triangles for the fan to close"
             );
         }
+    }
+
+    /// The tube resolutions the consumers solve at: the gauge-covariance suite's
+    /// 8×2, and the γ golden's coarse 16×3 and fine 32×6.
+    const TUBE_RESOLUTIONS: [(usize, usize); 3] = [(8, 2), (16, 3), (32, 6)];
+
+    /// Both seeds: exactly on the catenoid, and the shared perturbed seed.
+    const TUBE_PERTURBS: [f64; 2] = [0.0, CATENOID_SEED_PERTURB];
+
+    /// Every `(n_theta, n_axial, perturb)` tube of [`TUBE_RESOLUTIONS`] ×
+    /// [`TUBE_PERTURBS`], with its label for assertion messages.
+    fn every_tube() -> impl Iterator<Item = (usize, usize, String, CatenoidTube)> {
+        TUBE_RESOLUTIONS.into_iter().flat_map(|(n_theta, n_axial)| {
+            TUBE_PERTURBS.into_iter().map(move |perturb| {
+                let at = format!("{n_theta}×{n_axial} tube at perturb {perturb}");
+                (n_theta, n_axial, at, catenoid_tube(n_theta, n_axial, perturb))
+            })
+        })
+    }
+
+    /// Distance of a point from the tube's (z) axis.
+    fn axial_distance(p: [f64; 3]) -> f64 {
+        (p[0] * p[0] + p[1] * p[1]).sqrt()
+    }
+
+    /// The ring a node id lies on: the inverse of the ring-major layout pinned by
+    /// `catenoid_tube_lays_out_rings_by_azimuth`.
+    fn ring_of(n_theta: usize, id: usize) -> usize {
+        id / n_theta
+    }
+
+    /// How many triangles share each undirected edge.
+    fn edge_multiplicities(surfaces: &[(usize, usize, usize)]) -> BTreeMap<(usize, usize), usize> {
+        let mut counts = BTreeMap::new();
+        for &(a, b, c) in surfaces {
+            for (u, v) in [(a, b), (b, c), (c, a)] {
+                *counts.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    /// Ring-major layout: ring 0 (z = −H) first, azimuth fastest. The boundary
+    /// rings are the anchors and the interior rings the free nodes, both in id
+    /// order, and `node_id` wraps the azimuth so ring members can close a hoop.
+    #[test]
+    fn catenoid_tube_lays_out_rings_by_azimuth() {
+        for (n_theta, n_axial, at, tube) in every_tube() {
+            assert_eq!(
+                tube.nodes.len(),
+                (n_axial + 1) * n_theta,
+                "{at}: n_theta nodes on each of n_axial + 1 rings"
+            );
+            assert_eq!(
+                tube.surfaces.len(),
+                2 * n_axial * n_theta,
+                "{at}: two triangles per quad"
+            );
+
+            let ring_ids = move |ring: usize| (0..n_theta).map(move |j| ring * n_theta + j);
+            let want_anchors: Vec<usize> = ring_ids(0).chain(ring_ids(n_axial)).collect();
+            let want_free: Vec<usize> = (1..n_axial).flat_map(ring_ids).collect();
+            assert_eq!(
+                tube.anchors, want_anchors,
+                "{at}: anchors are the bottom ring's ids, then the top ring's"
+            );
+            assert_eq!(
+                tube.free, want_free,
+                "{at}: free nodes are the interior rings' ids, bottom to top"
+            );
+
+            let mut all: Vec<usize> = tube.anchors.iter().chain(&tube.free).copied().collect();
+            all.sort_unstable();
+            assert_eq!(
+                all,
+                (0..tube.nodes.len()).collect::<Vec<_>>(),
+                "{at}: anchors and free nodes partition the node set"
+            );
+
+            for ring in 0..=n_axial {
+                for j in 0..n_theta {
+                    assert_eq!(
+                        tube.node_id(ring, j),
+                        ring * n_theta + j,
+                        "{at}: ring-major id of ({ring}, {j})"
+                    );
+                    assert_eq!(
+                        tube.node_id(ring, j + n_theta),
+                        tube.node_id(ring, j),
+                        "{at}: the azimuth of ({ring}, {j}) must wrap at n_theta"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The anchors are the boundary data of the BVP, so they sit ON the analytic
+    /// catenoid: bottom ring at z = −H, top ring at z = +H. Epsilon compares,
+    /// not bit: the ring height `−H + 2H·n/n` and `√(cos²θ + sin²θ)` are not
+    /// exact for every `n`.
+    #[test]
+    fn catenoid_tube_anchors_sit_on_the_analytic_catenoid() {
+        assert_eq!(catenoid_radius(0.0), CATENOID_WAIST, "the waist radius is c, at z = 0");
+        for z in [0.25, CATENOID_HALF_HEIGHT, 1.5] {
+            assert_eq!(
+                catenoid_radius(z),
+                catenoid_radius(-z),
+                "the catenoid is symmetric about its waist"
+            );
+        }
+
+        for (n_theta, _, at, tube) in every_tube() {
+            for &a in &tube.anchors {
+                let p = tube.nodes[a];
+                let want_z = if ring_of(n_theta, a) == 0 {
+                    -CATENOID_HALF_HEIGHT
+                } else {
+                    CATENOID_HALF_HEIGHT
+                };
+                assert!(
+                    (p[2] - want_z).abs() < 1e-15,
+                    "{at}: anchor {a} must sit on its boundary plane z = {want_z}, got {}",
+                    p[2]
+                );
+                assert!(
+                    (axial_distance(p) - catenoid_radius(p[2])).abs() < 1e-12,
+                    "{at}: anchor {a} must lie on the catenoid: r = {}, want {}",
+                    axial_distance(p),
+                    catenoid_radius(p[2])
+                );
+            }
+        }
+    }
+
+    /// The seed moves ONLY the free rings, and by at most its amplitude:
+    /// radially by ≤ `perturb`, axially by ≤ `perturb / 2`. The unperturbed tube
+    /// is the reference (every node on the catenoid, at its ring's height), and
+    /// the non-vacuity floor proves the seed really is off the catenoid.
+    #[test]
+    fn catenoid_tube_seed_moves_only_the_free_rings() {
+        let perturb = CATENOID_SEED_PERTURB;
+        for (n_theta, n_axial) in TUBE_RESOLUTIONS {
+            let at = format!("{n_theta}×{n_axial} tube");
+            let on = catenoid_tube(n_theta, n_axial, 0.0);
+            let seeded = catenoid_tube(n_theta, n_axial, perturb);
+
+            for (i, &p) in on.nodes.iter().enumerate() {
+                assert!(
+                    (axial_distance(p) - catenoid_radius(p[2])).abs() < 1e-12,
+                    "{at}: unperturbed node {i} must lie on the catenoid"
+                );
+            }
+
+            for &a in &seeded.anchors {
+                for (axis, c) in ["x", "y", "z"].iter().zip(0..3) {
+                    assert_bits_eq(
+                        seeded.nodes[a][c],
+                        on.nodes[a][c],
+                        &format!("{at}: anchor {a} {axis} must not move with the seed"),
+                    );
+                }
+            }
+
+            let mut largest_radial = 0.0_f64;
+            for &f in &seeded.free {
+                let (p, ring_z) = (seeded.nodes[f], on.nodes[f][2]);
+                let radial = (axial_distance(p) - catenoid_radius(ring_z)).abs();
+                let axial = (p[2] - ring_z).abs();
+                assert!(
+                    radial <= perturb,
+                    "{at}: free node {f} moved {radial} radially, more than {perturb}"
+                );
+                assert!(
+                    axial <= 0.5 * perturb,
+                    "{at}: free node {f} moved {axial} axially, more than {}",
+                    0.5 * perturb
+                );
+                largest_radial = largest_radial.max(radial);
+            }
+            assert!(
+                largest_radial > 0.1 * perturb,
+                "{at}: the seed must move some free node off the catenoid, largest radial \
+                 offset {largest_radial}"
+            );
+        }
+    }
+
+    /// The free-ring seed, spelled independently and pinned BIT-FOR-BIT: radius
+    /// `catenoid_radius(z) + p·sin(12.9898·ring + 78.233·j)`, height
+    /// `z + ½·p·sin(12.9898·j + 78.233·ring)`, azimuth `2π·j/n_theta`. The γ
+    /// golden's measured shape bounds are calibrated against exactly this seed,
+    /// so a changed hash must fail here first.
+    #[test]
+    fn catenoid_tube_seed_is_the_documented_trig_hash() {
+        let (n_theta, n_axial, p) = (8, 2, CATENOID_SEED_PERTURB);
+        let tube = catenoid_tube(n_theta, n_axial, p);
+        let h = CATENOID_HALF_HEIGHT;
+
+        for ring in 1..n_axial {
+            let (ring_f, z) = (ring as f64, -h + 2.0 * h * (ring as f64) / (n_axial as f64));
+            for j in 0..n_theta {
+                let j_f = j as f64;
+                let r = catenoid_radius(z) + p * (12.9898 * ring_f + 78.233 * j_f).sin();
+                let seeded_z = z + 0.5 * p * (12.9898 * j_f + 78.233 * ring_f).sin();
+                let theta = 2.0 * std::f64::consts::PI * j_f / (n_theta as f64);
+                let got = tube.nodes[tube.node_id(ring, j)];
+                assert_bits_eq(got[0], r * theta.cos(), &format!("free node ({ring}, {j}) x"));
+                assert_bits_eq(got[1], r * theta.sin(), &format!("free node ({ring}, {j}) y"));
+                assert_bits_eq(got[2], seeded_z, &format!("free node ({ring}, {j}) z"));
+            }
+        }
+    }
+
+    /// The triangulation is a closed strip between the two boundary rings: no
+    /// duplicate face, an edge on a boundary ring borders exactly ONE triangle
+    /// and every other edge exactly TWO (no gap, no seam), and every triangle's
+    /// normal `(b − a) × (c − a)` points away from the axis.
+    #[test]
+    fn catenoid_tube_is_a_closed_consistently_oriented_strip() {
+        for (n_theta, n_axial, at, tube) in every_tube() {
+            let mut faces: Vec<[usize; 3]> = tube
+                .surfaces
+                .iter()
+                .map(|&(a, b, c)| {
+                    let mut face = [a, b, c];
+                    face.sort_unstable();
+                    face
+                })
+                .collect();
+            faces.sort_unstable();
+            faces.dedup();
+            assert_eq!(faces.len(), tube.surfaces.len(), "{at}: no face may repeat");
+
+            let mut boundary_edges = 0;
+            for ((u, v), count) in edge_multiplicities(&tube.surfaces) {
+                let ring = ring_of(n_theta, u);
+                let on_boundary_ring =
+                    ring == ring_of(n_theta, v) && (ring == 0 || ring == n_axial);
+                let want = if on_boundary_ring { 1 } else { 2 };
+                assert_eq!(count, want, "{at}: edge ({u}, {v}) borders {count} triangles");
+                boundary_edges += usize::from(on_boundary_ring);
+            }
+            assert_eq!(boundary_edges, 2 * n_theta, "{at}: both boundary rings are closed");
+
+            for &(a, b, c) in &tube.surfaces {
+                let (pa, pb, pc) = (tube.nodes[a], tube.nodes[b], tube.nodes[c]);
+                let normal = cross3(sub3(pb, pa), sub3(pc, pa));
+                let centroid_xy = [(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0];
+                let outward = normal[0] * centroid_xy[0] + normal[1] * centroid_xy[1];
+                assert!(
+                    outward > 0.0,
+                    "{at}: triangle ({a}, {b}, {c}) must face away from the axis"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "catenoid_tube needs n_axial >= 1")]
+    fn catenoid_tube_rejects_a_degenerate_axial_resolution() {
+        catenoid_tube(8, 0, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "catenoid_tube needs n_theta >= 3")]
+    fn catenoid_tube_rejects_a_degenerate_azimuthal_resolution() {
+        catenoid_tube(2, 2, 0.0);
     }
 }
