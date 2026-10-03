@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
+mod detached_unit;
 mod fault_diagnosis;
 
 use fault_diagnosis::{
@@ -241,9 +242,36 @@ impl<'a> Lowering<'a> {
     /// multi-line slice of source is what made these diagnostics unreadable and
     /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
     /// (see [`Self::push_fault_error_with_excerpt`]).
+    ///
+    /// When the anchor is a detached unit suffix, [`Self::detached_unit_hint`] is appended.
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
-        self.push_error(message.into(), self.span(anchor));
+        let mut message = message.into();
+        if let Some(hint) = self.detached_unit_hint(anchor) {
+            message.push_str(&hint);
+        }
+        self.push_error(message, self.span(anchor));
+    }
+
+    /// The remedy for a fault that is a unit detached from its number (`1000.0 N/m`), which
+    /// the contiguity invariant rejects on purpose (docs/prds/unit-expressions.md §3.1, task
+    /// #7190): ``" — unit `N` in `k` must follow its number with no whitespace: write
+    /// `1000.0N`"``. The ``in `k` `` clause is omitted when no binding holds the number.
+    ///
+    /// Every interpolated token goes through [`Self::snippet`], so the hint keeps INV-SF-7's
+    /// bounded-excerpt rule (#5392).
+    fn detached_unit_hint(&self, fault: tree_sitter::Node) -> Option<String> {
+        let detached = detached_unit::detached_unit_suffix(fault, self.source)?;
+        let unit = self.snippet(detached.unit);
+        let binding = detached
+            .binding_name
+            .map(|name| format!(" in `{}`", self.snippet(name)))
+            .unwrap_or_default();
+        let number = self.snippet(detached.number);
+        Some(format!(
+            " — unit `{unit}`{binding} must follow its number with no whitespace: \
+             write `{number}{unit}`"
+        ))
     }
 
     /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
