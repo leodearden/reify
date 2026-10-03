@@ -588,7 +588,7 @@ compose.
 
 **The `done_at` derivation.** Fused-memory MCP does NOT currently expose an explicit done-flip timestamp on its task records (probed 2026-05-16; only `updatedAt` is available). P1's orphan-export grace window (see §5 P1) compares `ctx.now - done_at` against 14 days — so without a `done_at` value P1 silently skips every done task and becomes a no-op (this was the reviewer-blocking bug uncovered in task 3731 review cycle 1).
 
-The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string (stripping the `.NNN` millisecond suffix that jq 1.7's `fromdateiso8601` rejects) and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
+The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string, accepting the same shapes as the crate's live loader (`Z`, `±HH:MM`, `±HH`, or no TZ read as UTC; optional fractional seconds), and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
 
 Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change on the wrapper path — the crate's live loader does not implement this precedence (see §11.2.1).
 
@@ -604,27 +604,36 @@ Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback
 
 **Equivalent on the shared tier.** For `status == "done"`, both the jq
 sidecar and the crate's live loader derive `done_at` from the same
-top-level `updatedAt` field, and both tolerate the `.NNN` fractional-second
-suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
-`sub("\\.[0-9]+Z$"; "Z")`, `crates/reify-audit/src/fused_memory_client.rs:405`
-via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
-tasks and for an absent or `null` `updatedAt`. The Rust parser
-additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
-`fromdateiso8601` rejects. Unreachable today since fused-memory's writer
-only ever emits `...Z`; if it ever became reachable it would land in the
-failure tier below (jq aborts the whole snapshot) rather than degrading
-gracefully.
+top-level `updatedAt` field. Since task 7280 both loaders map `Z`,
+`±HH:MM`, `±HH` and no-TZ (read as UTC) timestamps, with or without a
+fractional-second suffix, to the same epoch: the sidecar's
+`iso8601_to_epoch_or_null` mirrors
+`crates/reify-audit/src/fused_memory_client.rs` `parse_iso8601_to_epoch` /
+`split_tz`, pinned by Check 5h of
+`tests/infra/test_reify_audit_predone_wrapper.sh`. Both yield
+`null`/`None` for non-done tasks and for an absent or `null` `updatedAt`.
+The residual difference is one-directional: the Rust parser also accepts
+some non-ISO input (text after `Z`, a non-numeric fraction, unpadded or
+out-of-range fields) and mis-reads a basic-format `±HHMM` offset, where the
+sidecar yields `null` and the wrapper warns. Tightening the Rust side is
+follow-up ticket `tkt_0RVBKGK1V4N31Q6T8XV5GEC3B9`.
 
 **Not equivalent on the precedence tier.** The jq filter prefers
 `.metadata.done_at` before falling back to `updatedAt`
-(`scripts/reify-audit-snapshot-filter.jq:70`). `task_metadata_from_wire`
+(the `.metadata.done_at //` precedence in
+`scripts/reify-audit-snapshot-filter.jq`). `task_metadata_from_wire`
 (`fused_memory_client.rs:364-370`) does not implement that precedence — it
 derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
 binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
 `consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
 never consulted.
 
-**Not equivalent on the failure tier.** On an unparseable `updatedAt`
+**Not equivalent on the failure tier.** Since task 7236 the sidecar's
+conversion is total: an unparseable `updatedAt` degrades that row alone to
+`done_at = null` (Check 5f of `tests/infra/test_reify_audit_predone_wrapper.sh`)
+and the wrapper no longer takes its `exit 125` arm; the measurement below
+records the pre-7236 behaviour.
+On an unparseable `updatedAt`
 the two paths diverge hard, in opposite directions. Measured against a
 `get_tasks` payload whose `status=="done"` row carries
 `"updatedAt":"garbage"`: `jq -r -f scripts/reify-audit-snapshot-filter.jq`
@@ -633,8 +642,8 @@ prints `jq: error (at <stdin>:1): date "garbage" does not match format
 snapshot is lost, every task, not just the offending row. jq's
 `fromdateiso8601` raises rather than returning null, and the filter
 guards only the empty-string case (`if . == "" then null else
-(sub(...) | fromdateiso8601) end`,
-`scripts/reify-audit-snapshot-filter.jq:71-75`), so a
+(sub(...) | fromdateiso8601) end`, the pre-7236 `done_at` derivation in
+`scripts/reify-audit-snapshot-filter.jq`), so a
 non-empty-but-unparseable value reaches the raiser uncaught. The Rust
 path degrades per row instead: `parse_iso8601_to_epoch`
 (`crates/reify-audit/src/fused_memory_client.rs:398`) starts

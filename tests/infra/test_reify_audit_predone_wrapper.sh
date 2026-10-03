@@ -318,9 +318,9 @@ assert "5f-d: the good neighbour row is unaffected (done_at a positive integer)"
     bash -c 'jq -e '"'"'[.[] | select(.task_id=="d2")] | length == 1 and (.[0].done_at | (type == "number") and (. > 0))'"'"' "$1"' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
-# 5f-e: a NON-STRING updatedAt raises inside sub(), which `fromdateiso8601?`
-# does NOT catch (`?` binds only to fromdateiso8601) -- so this row is the
-# second discriminator against that form.
+# 5f-e: a NON-STRING updatedAt raises in the string matching that precedes
+# fromdateiso8601, which `fromdateiso8601?` does NOT catch (`?` binds only to
+# fromdateiso8601) -- so this row is the second discriminator against that form.
 assert "5f-e: done task with a non-string updatedAt gets done_at null" \
     bash -c 'jq -e '"'"'[.[] | select(.task_id=="d3")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
