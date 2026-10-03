@@ -372,10 +372,14 @@ describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
 // Pins: (a) get_window_state.devicePixelRatio is numeric; (b) get_layout_metrics
 // returns getBoundingClientRect verbatim (CSS-logical-px from window origin);
 // (c) the center derived from bounds is a valid clientX/clientY that fires the
-// element's handler — the get_layout_metrics→click(center) convention I1 wraps.
+// element's handler — the get_layout_metrics→click(center) convention I1 wraps;
+// (d)-(f) `hitTestable` predicts whether that round-trip holds: an element
+// clipped by an overflow ancestor or occluded by another painted element reports
+// false, and click_at at its centre lands elsewhere (#7770).
 //
-// NOTE: jsdom has no layout engine, so document.elementFromPoint() always returns
-// null — the live hit-test is deferred to I1's real-GUI e2e (needs H0).
+// NOTE: jsdom has no layout engine, so (d)-(f) model WebKit's hit test with a
+// fake compositor (`mountHitFixture`); the live check is the
+// get_layout_metrics_hit_testable_app_layout VALUE_SCENARIO (npm run test:e2e).
 // ─────────────────────────────────────────────────────────────────────────────
 describe('debug contract — coordinate convention (step-5)', () => {
   let capturedHandler: DebugRequestHandler | undefined;
@@ -390,9 +394,67 @@ describe('debug contract — coordinate convention (step-5)', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     delete window.__REIFY_DEBUG__;
     document.body.innerHTML = '';
   });
+
+  type Box = { x: number; y: number; width: number; height: number };
+
+  function domRect({ x, y, width, height }: Box): DOMRect {
+    return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height } as DOMRect;
+  }
+
+  function boxContains(b: Box, px: number, py: number): boolean {
+    return px >= b.x && px < b.x + b.width && py >= b.y && py < b.y + b.height;
+  }
+
+  /**
+   * A clip pane holding a shown row and a row laid out below the pane's bottom
+   * edge, a sibling panel painting where that clipped row claims to be, and a
+   * button covered by an unrelated overlay. Each element's getBoundingClientRect
+   * reports its UNCLIPPED layout rect, as WebKit does.
+   */
+  function mountHitFixture(): void {
+    document.body.innerHTML = `
+      <div data-testid="clip-pane" style="overflow:hidden">
+        <div data-testid="shown-row"><span data-testid="shown-row-label">row</span></div>
+        <div data-testid="clipped-row">row</div>
+      </div>
+      <div data-testid="other-panel"></div>
+      <button data-testid="covered-button">go</button>
+      <div data-testid="overlay"></div>`;
+    const byId = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement;
+    const LAYOUT: Record<string, Box> = {
+      'clip-pane': { x: 0, y: 0, width: 300, height: 80 },
+      'shown-row': { x: 0, y: 10, width: 300, height: 23 },
+      'shown-row-label': { x: 0, y: 10, width: 300, height: 23 },
+      'clipped-row': { x: 0, y: 120, width: 300, height: 23 },
+      'other-panel': { x: 0, y: 100, width: 300, height: 100 },
+      'covered-button': { x: 400, y: 0, width: 100, height: 40 },
+      overlay: { x: 380, y: 0, width: 200, height: 200 },
+    };
+    for (const [id, box] of Object.entries(LAYOUT)) {
+      vi.spyOn(byId(id), 'getBoundingClientRect').mockReturnValue(domRect(box));
+    }
+    // Fake compositor standing in for WebKit's hit test: topmost first. clipped-row
+    // is absent because its painted rect (layout ∩ clip-pane) is empty.
+    const PAINT_ORDER = ['overlay', 'shown-row-label', 'other-panel', 'clip-pane', 'covered-button'];
+    vi.spyOn(document, 'elementFromPoint').mockImplementation((x: number, y: number) => {
+      const id = PAINT_ORDER.find((candidate) => boxContains(LAYOUT[candidate], x, y));
+      return id === undefined ? null : byId(id);
+    });
+  }
+
+  async function layoutMetricsOf(id: number, testId: string): Promise<any> {
+    return dispatchCmd(capturedHandler!, id, 'get_layout_metrics', {
+      selector: `[data-testid="${testId}"]`,
+    });
+  }
+
+  function centreOf(bounds: Box): { x: number; y: number } {
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  }
 
   it('(a) get_window_state reports devicePixelRatio as a number', async () => {
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.5 });
@@ -465,6 +527,78 @@ describe('debug contract — coordinate convention (step-5)', () => {
     expect(receivedX).toBeLessThanOrEqual(BOUNDS.x + BOUNDS.width);
     expect(receivedY).toBeGreaterThanOrEqual(BOUNDS.y);
     expect(receivedY).toBeLessThanOrEqual(BOUNDS.y + BOUNDS.height);
+  });
+
+  it('(d) an element clipped by an overflow:hidden ancestor reports hitTestable false; click_at at its centre lands elsewhere', async () => {
+    mountHitFixture();
+    const clippedRow = document.querySelector('[data-testid="clipped-row"]') as HTMLElement;
+    let clippedRowClicked = false;
+    clippedRow.addEventListener('click', () => {
+      clippedRowClicked = true;
+    });
+    await initDebugBridge(makeStores());
+
+    const metrics = await layoutMetricsOf(110, 'clipped-row');
+    expect(metrics.bounds).toEqual({ x: 0, y: 120, width: 300, height: 23 });
+    expect(metrics.visible).toBe(true);
+    expect(metrics.hitTestable).toBe(false);
+
+    const centre = centreOf(metrics.bounds);
+    const click = (await dispatchCmd(capturedHandler!, 111, 'click_at', centre)) as any;
+    expect(click.ok).toBe(true);
+    expect(click.target.testId).toBe('other-panel');
+    expect(clippedRowClicked).toBe(false);
+  });
+
+  it('(e) a shown element reports hitTestable true and click_at at its centre fires its handler', async () => {
+    mountHitFixture();
+    const shownRow = document.querySelector('[data-testid="shown-row"]') as HTMLElement;
+    let received: { x: number; y: number } | undefined;
+    shownRow.addEventListener('click', (e) => {
+      received = { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
+    });
+    await initDebugBridge(makeStores());
+
+    const metrics = await layoutMetricsOf(120, 'shown-row');
+    expect(metrics.hitTestable).toBe(true);
+
+    const centre = centreOf(metrics.bounds);
+    const click = (await dispatchCmd(capturedHandler!, 121, 'click_at', centre)) as any;
+    expect(click.ok).toBe(true);
+    expect(received).toEqual(centre);
+  });
+
+  it('(f) hitTestable agrees with whether click_at at the bounds centre fires the element handler', async () => {
+    mountHitFixture();
+    await initDebugBridge(makeStores());
+
+    const TARGETS = ['shown-row', 'clipped-row', 'other-panel', 'covered-button'];
+    const outcomes: Record<string, { hitTestable: boolean; fired: boolean }> = {};
+    let id = 130;
+    for (const testId of TARGETS) {
+      const el = document.querySelector(`[data-testid="${testId}"]`) as HTMLElement;
+      let fired = false;
+      const onClick = () => {
+        fired = true;
+      };
+      el.addEventListener('click', onClick);
+
+      const metrics = await layoutMetricsOf(id++, testId);
+      await dispatchCmd(capturedHandler!, id++, 'click_at', centreOf(metrics.bounds));
+      el.removeEventListener('click', onClick);
+
+      outcomes[testId] = { hitTestable: metrics.hitTestable, fired };
+    }
+
+    for (const testId of TARGETS) {
+      expect(outcomes[testId].hitTestable, testId).toBe(outcomes[testId].fired);
+    }
+    expect(outcomes).toEqual({
+      'shown-row': { hitTestable: true, fired: true },
+      'clipped-row': { hitTestable: false, fired: false },
+      'other-panel': { hitTestable: true, fired: true },
+      'covered-button': { hitTestable: false, fired: false },
+    });
   });
 });
 
