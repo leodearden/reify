@@ -7,7 +7,7 @@
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -1024,6 +1024,41 @@ pub fn get_let_expr<'a>(
         .name
         .as_str();
     get_let_expr_in(module, template_name, name)
+}
+
+/// Retrieve the compiled function named `name` from `module`.
+///
+/// # Panics
+/// - `"no function named '{name}' in module '{module.path}'; has: [...]"` if no function has
+///   that name — the panic lists the name of every function the module does carry.
+/// - `"ambiguous function name '{name}' in module '{module.path}'"` if more than one overload
+///   shares that name, listing each overload's params.
+#[track_caller]
+pub fn get_function_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledFunction {
+    let matching: Vec<_> = module.functions.iter().filter(|f| f.name == name).collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+            panic!(
+                "no function named '{name}' in module '{}'; has: {available:?}",
+                module.path
+            )
+        }
+        [only] => only,
+        many => {
+            let params: Vec<_> = many.iter().map(|f| &f.params).collect();
+            panic!(
+                "ambiguous function name '{name}' in module '{}': {} overloads share this name, \
+                 with params {params:?}; this lookup resolves on name alone, so disambiguate by \
+                 searching `module.functions` for the desired params",
+                module.path,
+                many.len()
+            )
+        }
+    }
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -2837,7 +2872,11 @@ mod tests {
         let message = panic_message(|| {
             super::get_function_in(&module, "convert");
         });
-        for expected in ["ambiguous function name 'convert'", "fn_lookup", "2 overloads"] {
+        for expected in [
+            "ambiguous function name 'convert'",
+            "fn_lookup",
+            "2 overloads",
+        ] {
             assert!(
                 message.contains(expected),
                 "panic message should contain {expected:?}, got: {message}"
