@@ -237,68 +237,18 @@ pub fn reduce_constraint_rank(
     a_full: &[f64],
     rows: usize,
     cols: usize,
-    closing_subspace: &[[f64; 6]],
     eps: f64,
 ) -> (Vec<f64>, usize) {
-    // ── Step 1: orthonormalize S_close and project each row ──────────────────
-    // Build an orthonormal basis for the closing-subspace columns using
-    // Gram-Schmidt (in-place, storing the orthonormal vectors in `basis`).
-    let mut basis: Vec<[f64; 6]> = Vec::with_capacity(closing_subspace.len());
-    for &col in closing_subspace {
-        let mut v = col;
-        // Subtract projections onto already-orthonormalised basis vectors.
-        for b in &basis {
-            let dot: f64 = v.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-            for k in 0..6 {
-                v[k] -= dot * b[k];
-            }
-        }
-        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > eps {
-            let scale = 1.0 / norm;
-            for x in &mut v {
-                *x *= scale;
-            }
-            basis.push(v);
-        }
-    }
-
-    // Compute the complement scale for each row.
-    //
-    // Each of the `rows` rows corresponds to one twist component (row index ri).
-    // The closing joint's basis spans certain twist directions.  Row ri is
-    // "absorbed" by the closing joint when the canonical unit vector e_ri lies
-    // in span(basis), i.e. when Σ_b b[ri]² ≈ 1.  We scale each row by the
-    // complement factor (1 − Σ_b b[ri]²), clamped to [0, 1], so absorbed rows
-    // become zero and independent rows are unchanged (or partially attenuated
-    // for oblique subspaces).
-    let mut row_scales: Vec<f64> = Vec::with_capacity(rows);
-    for ri in 0..rows {
-        let mut scale_complement = 1.0_f64;
-        for b in &basis {
-            scale_complement -= b[ri] * b[ri];
-        }
-        row_scales.push(scale_complement.clamp(0.0, 1.0));
-    }
-
-    // Build the projected rows as an actual matrix for Gaussian elimination.
-    // Each entry is (original_row_index, projected_row_vec) so we can recover
-    // the original unscaled row once an independent pivot is found.
+    // Working copy for the elimination, each entry tagged with its original
+    // row index so the unmodified row can be recovered once it pivots.
     let mut remaining: Vec<(usize, Vec<f64>)> = (0..rows)
-        .map(|ri| {
-            let scale = row_scales[ri];
-            let row: Vec<f64> = (0..cols).map(|j| a_full[ri * cols + j] * scale).collect();
-            (ri, row)
-        })
+        .map(|ri| (ri, a_full[ri * cols..(ri + 1) * cols].to_vec()))
         .collect();
 
-    // ── Step 2: Gaussian elimination with partial row pivoting ───────────────
-    //
-    // We use the PROJECTED rows for the elimination (so zero-scaled rows never
-    // attract a pivot) but record the ORIGINAL row index of each pivot found.
-    // The returned reduced matrix is built from the original unscaled rows,
-    // not the elimination-modified ones, so each output row is a scalar multiple
-    // of a row from `a_full` (required by the virtual-work identity test).
+    // Gaussian elimination with partial row pivoting. The elimination modifies
+    // the working copies only; the returned matrix is built from the ORIGINAL
+    // rows of `a_full`, so each output row is verbatim a row of A (required by
+    // the virtual-work identity tests).
     let mut pivot_original_indices: Vec<usize> = Vec::new();
     let mut pivot_col = 0usize;
 
@@ -321,7 +271,7 @@ pub fn reduce_constraint_rank(
         let (orig_idx, pivot_row) = remaining.remove(local_idx);
         let pv = pivot_row[pivot_col];
 
-        // Eliminate this column from all remaining rows (projected versions).
+        // Eliminate this column from all remaining working rows.
         for (_, row) in &mut remaining {
             let factor = row[pivot_col] / pv;
             for j in 0..cols {
@@ -333,7 +283,7 @@ pub fn reduce_constraint_rank(
         pivot_col += 1;
     }
 
-    // Return the ORIGINAL (unscaled) rows for the identified pivot indices.
+    // Return the ORIGINAL rows for the identified pivot indices.
     // Each returned row is exactly a_full[orig_idx * cols .. (orig_idx+1) * cols].
     let m_eff = pivot_original_indices.len();
     let mut a_red: Vec<f64> = Vec::with_capacity(m_eff * cols);
@@ -448,11 +398,17 @@ mod tests {
         }
 
         let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, 3, eps);
-        assert_eq!(m_eff, 3, "case1: expected m_eff=3 (ωy-, vx- and vz-rows all kept)");
+        assert_eq!(
+            m_eff, 3,
+            "case1: expected m_eff=3 (ωy-, vx- and vz-rows all kept)"
+        );
         assert_eq!(a_red.len(), 3 * 3, "case1: reduced A is 3×3");
         let returned: Vec<&[f64]> = a_red.chunks(3).collect();
         for (label, want) in [("ωy", wy_row), ("vx", vx_row), ("vz", vz_row)] {
-            let hits = returned.iter().filter(|row| **row == want.as_slice()).count();
+            let hits = returned
+                .iter()
+                .filter(|row| **row == want.as_slice())
+                .count();
             assert_eq!(
                 hits, 1,
                 "case1: the {label} row must be returned verbatim exactly once, got {returned:?}"
@@ -466,13 +422,17 @@ mod tests {
         ];
         let (a_red2, m_eff2) = reduce_constraint_rank(&a_dup, 2, 3, eps);
         assert_eq!(m_eff2, 1, "case2: duplicate rows → m_eff=1");
-        assert_eq!(a_red2, vec![1.0, -2.0, 3.0], "case2: retained row is the original");
+        assert_eq!(
+            a_red2,
+            vec![1.0, -2.0, 3.0],
+            "case2: retained row is the original"
+        );
 
         // ── case 3: 3×3 A with a dependent, non-duplicate row → m_eff = 2 ──
         let a_dep: Vec<f64> = vec![
             1.0, -2.0, 3.0, // r1
-            0.0, 1.0, 1.0,  // r2
-            1.0, 0.0, 5.0,  // r3 = r1 + 2·r2
+            0.0, 1.0, 1.0, // r2
+            1.0, 0.0, 5.0, // r3 = r1 + 2·r2
         ];
         let (a_red3, m_eff3) = reduce_constraint_rank(&a_dep, 3, 3, eps);
         assert_eq!(m_eff3, 2, "case3: r3 = r1 + 2·r2 is dependent → m_eff=2");

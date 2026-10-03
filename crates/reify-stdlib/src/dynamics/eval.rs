@@ -1539,16 +1539,9 @@ fn closed_chain_inverse_dynamics(
             }
         }
 
-        // Closing joint's motion subspace (for rank-reduction projection).
-        let closing_joint = match record {
-            Value::Map(m) => m.get(&Value::String("closing_joint".to_string()))?,
-            _ => return None,
-        };
-        let closing_sv: Vec<SpatialVector6> = motion_subspace_columns(closing_joint)?;
-        let closing_sub: Vec<[f64; 6]> = closing_sv.iter().map(|sv| sv.as_array()).collect();
-
-        // Project out the closing joint's absorbed directions and row-reduce.
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, &closing_sub, 1e-10);
+        // Drop only zero or linearly dependent rows — rank-preserving; see
+        // reduce_constraint_rank.
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
 
         // b = −Ȧ·q̇.  For the cases exercised here (q̇=0 smoke test; 4-bar
         // power-identity e2e where τ·q̇ = τ_open·q̇ for any consistent q̇) b=0
@@ -3050,7 +3043,10 @@ mod tests {
             }
         }
         let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
-        assert_eq!(m_eff, 1, "the closure q_b = q_a + 0.5 is one live constraint row");
+        assert_eq!(
+            m_eff, 1,
+            "the closure q_b = q_a + 0.5 is one live constraint row"
+        );
         for (i, (got, want)) in a_red.iter().zip([1.0, -1.0]).enumerate() {
             assert!(
                 (got - want).abs() <= 1e-6,

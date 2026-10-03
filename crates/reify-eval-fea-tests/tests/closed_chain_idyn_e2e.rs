@@ -619,7 +619,13 @@ fn closed_4bar_live_constraint_rank() {
     let a_red_times = |q_dot: &[f64; 5]| -> f64 {
         a_red
             .chunks(n)
-            .map(|row| row.iter().zip(q_dot).map(|(a, qd)| a * qd).sum::<f64>().powi(2))
+            .map(|row| {
+                row.iter()
+                    .zip(q_dot)
+                    .map(|(a, qd)| a * qd)
+                    .sum::<f64>()
+                    .powi(2)
+            })
             .sum::<f64>()
             .sqrt()
     };
