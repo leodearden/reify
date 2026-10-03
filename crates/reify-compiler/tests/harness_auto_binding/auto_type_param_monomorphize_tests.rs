@@ -1405,6 +1405,201 @@ fn unseedable_explicit_type_arg_emits_diagnostic_rather_than_silent_leak() {
     );
 }
 
+/// Accepting-side pin for the seeding predicate (#7318), the counterpart of
+/// the un-seedable test above: a type-arg whose head names a KNOWN template is
+/// seeded, so `sub w` gets a monomorph rather than a diagnostic. `Type::Applied`
+/// cannot reach the predicate today because lowering keeps only the head name
+/// (#7839), so neither the mangle name nor `slot_t`'s exact type is pinned. If
+/// #7839 preserves nested args, this pin goes RED until seeding learns
+/// `Type::Applied` — the intended forcing function. GREEN on arrival.
+#[test]
+fn explicit_applied_type_arg_with_known_head_is_seeded_into_monomorph() {
+    let source = r#"
+        trait Gasket {}
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def SealA { param d : Real = 2.0 }
+        structure def Box<X> { param d : Real = 1.0 }
+        structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<Box<SealA>, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) Accepted: zero Error diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        0,
+        "a type-arg with a known head must be accepted, got: {:?}",
+        errors
+    );
+
+    // (2) 'w' points at a synthesized 'Widget$...' monomorph, not the generic.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "WidgetAssembly")
+        .expect("expected 'WidgetAssembly' template");
+    let sub_w = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "w")
+        .expect("expected sub 'w' in 'WidgetAssembly'");
+    assert!(
+        sub_w.structure_name.starts_with("Widget$"),
+        "sub 'w' must reference a 'Widget$...' monomorph, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) That monomorph is concrete: no type_params, no top-level TypeParam cell.
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == sub_w.structure_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "sub 'w' names '{}', which is not in compiled.templates: {:?}",
+                sub_w.structure_name,
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph '{}' must have no type_params, got: {:?}",
+        monomorph.name,
+        monomorph.type_params
+    );
+    let leaked_cells: Vec<_> = monomorph
+        .value_cells
+        .iter()
+        .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+        .map(|c| format!("'{}': {:?}", c.id.member, c.cell_type))
+        .collect();
+    assert!(
+        leaked_cells.is_empty(),
+        "monomorph '{}' retains TypeParam value cells: {:?}",
+        monomorph.name,
+        leaked_cells
+    );
+
+    // (4) Eval-level: a compile-only test cannot see a hydration panic (#6854).
+    let result = check_source_with_stdlib(source);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected clean evaluation, got: {:?}",
+        eval_errors
+    );
+}
+
+/// Rejecting-side pin for the seeding predicate (#7318): a non-`auto:`
+/// type-arg that lowers to a name no template defines — an undefined name, a
+/// declared default naming nothing, or an applied spelling with a non-structure
+/// head (`List<Real>`) — must not be seeded. T stays unbound, so the residual
+/// un-seedable diagnostic fires and no monomorph is minted. T is UNBOUNDED on
+/// purpose so no bound-check error masks a silent mint.
+///
+/// RED against HEAD: seeding accepts any `Type::StructureRef(_)` without
+/// consulting the template registry, so `Widget$Nonexistent$GasketA` and its
+/// siblings are minted with zero errors.
+#[test]
+fn explicit_type_arg_naming_no_structure_is_not_seeded_and_is_diagnosed() {
+    let prelude = "trait Gasket {}\n\
+                   structure def GasketA : Gasket { param g : Real = 1.0 }";
+    let widget = "structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }";
+    let widget_defaulting_t = "structure def Widget<U: Gasket, T = Nonexistent> \
+                               { param slot_u : U  param slot_t : T }";
+
+    for (label, widget_def, use_site) in [
+        (
+            "explicit undefined name",
+            widget,
+            "Widget<Nonexistent, auto: Gasket>()",
+        ),
+        (
+            "declared-default undefined name",
+            widget_defaulting_t,
+            "Widget<auto: Gasket>()",
+        ),
+        (
+            "applied spelling, non-structure head",
+            widget,
+            "Widget<List<Real>, auto: Gasket>()",
+        ),
+    ] {
+        let source = format!(
+            "{prelude}\n{widget_def}\nstructure def WidgetAssembly {{ sub w = {use_site} }}"
+        );
+        let compiled = compile_source_with_stdlib(&source);
+
+        // (1) No monomorph is minted for the unresolvable name.
+        assert!(
+            !compiled
+                .templates
+                .iter()
+                .any(|t| t.name.starts_with("Widget$")),
+            "[{label}] an unresolvable type-arg must NOT synthesize a 'Widget$...' \
+             monomorph; got templates: {:?}",
+            compiled
+                .templates
+                .iter()
+                .map(|t| &t.name)
+                .collect::<Vec<_>>()
+        );
+
+        // (2) Exactly one Error, naming the unbound type parameter, the target
+        // and the owner sub-component (quote-delimited, as in the un-seedable
+        // test above).
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "[{label}] expected exactly one error diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+        let message = &errors[0].message;
+        for needle in ["\"T\"", "'Widget'", "'w'"] {
+            assert!(
+                message.contains(needle),
+                "[{label}] diagnostic message must contain {needle}, got: {message:?}"
+            );
+        }
+
+        // (3) 'w' still references the generic 'Widget' template.
+        let assembly = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "WidgetAssembly")
+            .expect("expected 'WidgetAssembly' template");
+        let sub_w = assembly
+            .sub_components
+            .iter()
+            .find(|s| s.name == "w")
+            .expect("expected sub 'w' in 'WidgetAssembly'");
+        assert_eq!(
+            sub_w.structure_name, "Widget",
+            "[{label}] sub 'w' must still reference the generic 'Widget' template, got: {:?}",
+            sub_w.structure_name
+        );
+    }
+}
+
 /// Companion assertion pinning the diagnostic-gate design (reviewer detail
 /// (b)): the residual-skip diagnostic must NOT double-report on shapes A/B
 /// (step-1), which already carry the resolver's own
