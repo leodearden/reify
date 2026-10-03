@@ -136,14 +136,13 @@ structure def AngleCrossings {
     // Bands, not sign guards. A regression that preserved dimensions but moved
     // magnitudes would still satisfy `arc > 0mm`; these fail `reify check`
     // instead, so each identity above is pinned by a predicate and not only by
-    // a comment. HONEST SCOPE: `reify check` is the enforcer, and no CI gate
-    // runs it over this corpus — `examples_smoke.rs` compiles only, and the
-    // two `reify-eval` corpus sweeps assert zero stale-Undef and zero
-    // snapshot/cache divergence, never constraint status. What these bands
-    // pin is the per-file `reify check` SKILL.md already mandates before
-    // shipping a design. A corpus-wide constraint gate is in flight as #6215;
-    // if it lands, the no-CI-gate half of this paragraph is stale — re-measure
-    // before repeating it.
+    // a comment. Two enforcers: `reify check` is what an author runs per file
+    // (SKILL.md mandates it before shipping a design), and CI runs the same
+    // constraints over this whole corpus in
+    // `crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`
+    // (`best_practices_corpus_satisfies_every_constraint`), which fails on any
+    // Violated constraint here — this file has no `EXPECTED_INDETERMINATE`
+    // exemption, so every band below must be Satisfied.
     constraint r > 0mm
     constraint s > r
     constraint f > 0Hz
