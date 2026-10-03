@@ -32,8 +32,8 @@
 //! would otherwise make every downstream corpus test in this suite
 //! vacuously green.
 
-/// The corpus walker and the ONE engine constructor this file's sweeps share
-/// with `harness_corpus_gates`'s unified corpus sweep. `#[path]` (not `mod
+/// The ONE engine constructor this file's sweeps share with
+/// `harness_corpus_gates`'s unified corpus sweep. `#[path]` (not `mod
 /// common;`) follows the `common/differential.rs` precedent — see that file's
 /// header for why the 312-line `common/mod.rs` is deliberately not pulled in.
 #[path = "common/eval_gate_support.rs"]
