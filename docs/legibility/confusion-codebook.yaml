@@ -466,6 +466,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: 'Turn 26: grep -rn ... --include=*.rs . returned exit 2 (path/IO error). Turn 288 repeats with different search string, demonstrating retry pattern.'
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 165: grep -n ... /tmp/7274-amend-vitest.log | head -30 exits 2; exit code 2 from grep signals path/IO error (not pattern-not-found=1)'
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -1743,6 +1749,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: 'Turn 288: grep with 2>/dev/null redirected stderr, conflating exit 2 path/IO error with pattern-not-found by suppressing diagnostic output'
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 165: ls gui/test/visual/tsconfig* gui/test/tsconfig* 2>/dev/null masks path/argument errors via stderr redirection'
 - id: entry-cand-20260730-4
   title: watcher-rearm.sh CEILING timeout retried 5x with only cosmetic changes, ending in user interrupt
   severity: medium
@@ -8716,6 +8728,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Read tool rejected 1500-token chunk request (offset 680) from 32262-token file; hard cap at 25000 tokens applies even with limit parameter. Agent followed documented workaround (offset/limit) but error still occurred.
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 227: Read tool on tasks/b92ezr2xd.output (455.2KB) hits 256KB cap; forces fallback to offset/limit or search'
 - id: entry-cand-20260910-15
   title: Agent's own free-text tool-call field (design-decision rationale) contains literal MCP envelope closing tags, rejected by mcp_markup_detected guard, and recurs later in the same session
   severity: medium
@@ -8755,6 +8773,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "250", "path": "prj/printer_v01/printer.ri"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked grep_search (turns 17, 19, 21) instead of actual Grep tool; all failed with 'No such tool available'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 17: grep_search({path: ''crates'', pattern: ''SetRunParallel|RunParallel''}) → ''Error: No such tool available: grep_search'''
 - id: entry-cand-20260918-12
   title: add_memory MCP call times out and is retried with an identical payload, risking a duplicate write
   severity: medium
@@ -8970,6 +9000,18 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "50", "path": "crates/reify-compiler/src/type_resolution.rs"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked git_log (turn 23) instead of actual git tool; failed with 'No such tool available'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 19: git_log({max_entries: ''15'', path: ''...''}) → ''Error: No such tool available: git_log'''
 - id: entry-cand-20260914-18
   title: Safety justification for a timeout ceiling bump assumes a guard env var applies uniformly across roles, missing role-scoped gating logic
   severity: medium
@@ -8996,6 +9038,12 @@ entries:
     origin_phase: unknown
     manifested_phase: merge
     evidence_quote: "1 validation error for call[merge_request]\nworktree\n  Missing required argument [type=missing_argument, input_value={'task_id': '5099', 'bran...'verified_green': False}, input_type=dict]"
+  - date: '2026-10-02'
+    project: reify
+    session: 3836510d-c204-4ac9-b025-369e0f41aaf7
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Similar core pattern: MCP tool called with required argument missing (step_id) and unexpected keyword argument (task_id), both surfacing as Pydantic validation errors. Tool differs (add_plan_step vs merge_request) and error includes unexpected-argument in addition to missing-argument.'
 - id: entry-cand-20260913-1
   title: add_design_decision rationale field polluted with self-serialized MCP envelope markup
   severity: medium
@@ -9291,6 +9339,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Worktree cwd nested at worktrees/_lane-50 below expected repo root; 5 not_found errors consistent with repo-root-relative path resolution failures
+  - date: '2026-10-02'
+    project: reify
+    session: b79cde74-b54c-40c0-8ceb-e60ca59b0134
+    origin_phase: architect
+    manifested_phase: verify
+    note: Nested warm-lane worktree cwd (_lane-30) causes path resolution failure; sed exit 2 on relative path crates/reify-eval/tests/result_fallback_e2e.rs across 8 not_found signals. File exists at repo root, not under worktree subdirectory.
+  - date: '2026-10-02'
+    project: reify
+    session: 2960c205-b7b9-4bf0-8946-89b547094b7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Nested warm-lane worktree session (_lane-41) with two 'not found' errors at turns 38 and 305 aligns with pattern of repeated path resolution failures when worktree CWD is below expected repo root
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -9558,6 +9618,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "260", "path": "crates/reify-lsp/src/server.rs"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 17: grep_search invocation matches hallucinated tool-name pattern alongside session''s git_log error'
 - id: entry-cand-20260812-11
   title: fused-memory resolve_ticket times out repeatedly, retried with varying ticket IDs instead of diagnosing a systemic failure
   severity: medium
@@ -25384,3 +25450,42 @@ candidates:
     origin_phase: implement
     manifested_phase: review
     evidence_quote: Every heterogeneous literal the new tests pin as 'stays_clean' fails to evaluate. The language cannot represent any such literal, and the removed compile-time rejection was a correct early diagnostic for a program that is guaranteed undef at runtime. The branch converts it into compile-time silence plus a runtime undef.
+- id: cand-20261002-1
+  title: Agent invokes hallucinated verification_complete tool absent from toolset
+  cause: Agent assumes a tool named 'verification_complete' exists to report task verification status and evidence, but tool is not available in the actual toolset
+  area: Tool interface contract / agent expectations
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 76) verification_complete({"confidence": "0.8", "evidence": [...]}) -> <tool_use_error>Error: No such tool available: verification_complete</tool_use_error>'
+- id: cand-20261002-2
+  title: add_plan_step called with task_id instead of step_id
+  cause: Agent assumes add_plan_step accepts task_id to specify parent task; unaware that step_id is the required primary identifier for the step object
+  area: plan-tools MCP integration / step planning
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: 3836510d-c204-4ac9-b025-369e0f41aaf7
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'mcp__plan-tools__add_plan_step({''description'': ''Replace assert_has_code call sites with assert_error_code_present and delete local fns'', ''step_type'': ''impl'', ''task_id'': ''7205''}) -> step_id Missing required argument [type=missing_argument], task_id Unexpected keyword argument [type=unexpected_keyword_argument]'
+- id: cand-20261002-3
+  title: add_plan_step called with task-parameter names instead of step-specific schema
+  cause: Agent uses task-level parameters (task_id, type) instead of step-level parameters (step_id, step_type); conflation of task vs. step API schemas or outdated/incorrect tool schema knowledge
+  area: plan-tools API
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: bc08f1a5-471e-4305-b2e6-368332c19d91
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'add_plan_step({...,''task_id'': ''6288'',''type'': ''impl''}) -> Missing required arguments: step_id, step_type; Unexpected keyword arguments: task_id, type'
