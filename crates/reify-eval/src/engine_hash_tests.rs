@@ -25,6 +25,7 @@ const PERSISTED_TARGET_SOURCES: &[(&str, &[&str])] = &[
             "src/compute_targets/fea_diagnostics.rs",
             "src/compute_targets/mod.rs",
             "src/topology_selectors.rs",
+            "src/selector_vocabulary_v2.rs",
             "../reify-solver-elastic/src/lib.rs",
             "../reify-kernel-gmsh/src/lib.rs",
             "../reify-fdm/src/as_printed.rs",
