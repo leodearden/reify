@@ -47,6 +47,7 @@ use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
 use reify_compiler::parse_with_stdlib;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_compiler::cfg::CfgSet;
+use reify_test_support::examples_corpus::discover_ri_files;
 
 /// Workspace root, resolved at compile time from this crate's manifest dir.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -165,29 +166,18 @@ fn workspace_relative(path: &Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
-/// Recursively collect `*.ri` files under `dir`, sorted for deterministic
-/// reporting. A missing root is an empty result, not a panic — see
-/// `every_corpus_root_exists`, which is where that is diagnosed properly.
-fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_ri_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-            out.push(path);
-        }
-    }
-}
-
 /// Every `.ri` file across both corpus roots, sorted.
+///
+/// Each root is walked by the shared `examples_corpus::discover_ri_files`,
+/// rooted at `WORKSPACE_ROOT` so every path keeps the lexical prefix
+/// [`workspace_relative`] strips. A missing or unreadable root panics, naming
+/// the directory. The final sort is global: each root's slice arrives sorted,
+/// but `CORPUS_ROOTS` order is not path order.
 fn discover_corpus() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    for root in CORPUS_ROOTS {
-        collect_ri_files(&Path::new(WORKSPACE_ROOT).join(root), &mut paths);
-    }
+    let mut paths: Vec<PathBuf> = CORPUS_ROOTS
+        .iter()
+        .flat_map(|root| discover_ri_files(&Path::new(WORKSPACE_ROOT).join(root)))
+        .collect();
     paths.sort();
     paths
 }
@@ -339,8 +329,7 @@ fn every_corpus_root_exists_and_holds_ri_files() {
             "corpus root '{root}' does not exist at {} — CORPUS_ROOTS is stale",
             dir.display()
         );
-        let mut found = Vec::new();
-        collect_ri_files(&dir, &mut found);
+        let found = discover_ri_files(&dir);
         assert!(
             !found.is_empty(),
             "corpus root '{root}' contains no .ri files; the sweep over it is vacuous"
