@@ -24,15 +24,19 @@ fn assert_no_errors(module: &CompiledModule) {
     );
 }
 
-fn has_label_spanning(diagnostic: &Diagnostic, source: &str, needle: &str) -> bool {
-    let start = source
-        .find(needle)
-        .unwrap_or_else(|| panic!("fixture must contain `{needle}`")) as u32;
-    let end = start + needle.len() as u32;
+fn has_label_at(diagnostic: &Diagnostic, start: usize, len: usize) -> bool {
+    let (start, end) = (start as u32, (start + len) as u32);
     diagnostic
         .labels
         .iter()
         .any(|l| l.span.start == start && l.span.end == end)
+}
+
+fn has_label_spanning(diagnostic: &Diagnostic, source: &str, needle: &str) -> bool {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("fixture must contain `{needle}`"));
+    has_label_at(diagnostic, start, needle.len())
 }
 
 // ── Un-annotated free fns ───────────────────────────────────────────────────
@@ -96,14 +100,16 @@ fn unannotated_trait_static_fn_with_dimensioned_body_warns() {
 }
 
 /// Bodies that agree with the `Real` default stay silent: a dimensionless
-/// body, an `Int` body (widens to the default), and a bare type-param body
-/// (generic, so agreement depends on the instantiation; see #7008).
+/// body, an `Int` body (widens to the default), and a bare type-param or
+/// dimension-param body (generic, so agreement depends on the instantiation;
+/// see #7008).
 #[test]
 fn unannotated_fn_whose_body_agrees_with_real_is_silent() {
     for source in [
         "fn half(x: Real) { x / 2.0 }\n",
         "fn three() { 3 }\n",
         "fn id<T>(x: T) { x }\n",
+        "fn id_q<Q: Dimension>(x: Scalar<Q>) { x }\n",
     ] {
         let module = compile_source(source);
         assert!(
@@ -157,13 +163,10 @@ fn annotated_scalar_return_contradicted_by_body_warns() {
     assert_eq!(mismatches[0].severity, Severity::Warning);
     assert_no_errors(&module);
 
-    let annotation_start = (source.find("-> Length").unwrap() + 3) as u32;
+    let annotation_start = source.find("-> Length").unwrap() + "-> ".len();
     assert!(
-        mismatches[0]
-            .labels
-            .iter()
-            .any(|l| l.span.start == annotation_start),
-        "expected a label starting at the return annotation, got: {:?}",
+        has_label_at(mismatches[0], annotation_start, "Length".len()),
+        "expected a label spanning the return annotation `Length`, got: {:?}",
         mismatches[0].labels
     );
     assert!(
@@ -222,6 +225,25 @@ fn annotated_return_agreeing_with_body_is_silent() {
             module.diagnostics
         );
     }
+}
+
+#[test]
+fn annotated_fn_with_erroring_body_reports_only_the_root_cause() {
+    let module = compile_source("fn broken() -> Length { no_such_name }\n");
+
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected the unresolved name to be reported as an Error, got: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+        "expected no cascading FnReturnTypeMismatch, got: {:?}",
+        module.diagnostics
+    );
 }
 
 #[test]
@@ -348,7 +370,8 @@ structure def Rod : Sized {
 
 /// Correct bodies that read the receiver's members stay silent. Both bodies
 /// agree with their signatures once receiver members are typed from the
-/// conformer (#8118), so this holds before and after that fix.
+/// conformer (#8118), so this holds before and after that fix; until then each
+/// one's member-read fallback type contradicts its signature.
 #[test]
 fn conformer_body_reading_self_members_is_not_reconciled() {
     let module = compile_source(
@@ -357,7 +380,7 @@ trait Cylindrical {
     param diameter : Length
     param length : Length
     fn lateral_area(self) -> Scalar<Area> { pi * diameter * length }
-    fn aspect(self) { length / diameter }
+    fn length_in_mm(self) { length / 1mm }
 }
 structure def Pin : Cylindrical {
     param diameter : Length = 8mm
@@ -397,13 +420,9 @@ fn bodyless_required_fn_without_return_annotation_warns() {
     assert_eq!(unannotated[0].severity, Severity::Warning);
     assert_no_errors(&module);
 
-    let decl_start = source.find("fn measure").unwrap() as u32;
     assert!(
-        unannotated[0]
-            .labels
-            .iter()
-            .any(|l| l.span.start >= decl_start),
-        "expected a label within the fn declaration, got: {:?}",
+        has_label_spanning(unannotated[0], source, "fn measure(self)"),
+        "expected a label spanning the declaration `fn measure(self)`, got: {:?}",
         unannotated[0].labels
     );
 }
