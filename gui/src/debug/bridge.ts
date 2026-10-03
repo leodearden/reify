@@ -23,6 +23,7 @@ import {
 } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
 import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
+import { describePlacement } from './elementPlacement';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -1023,10 +1024,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if ('error' in r) return { error: r.error };
       if (!r.el) return { exists: false };
       const h = r.el as HTMLElement;
-      const rect = h.getBoundingClientRect();
       return {
         exists: true,
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(h),
         scroll: { top: h.scrollTop, left: h.scrollLeft, width: h.scrollWidth, height: h.scrollHeight },
         client: { width: h.clientWidth, height: h.clientHeight },
         overflow: {
