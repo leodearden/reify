@@ -48,19 +48,6 @@ import {
 } from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
 
-// jsdom 25 does not implement document.elementFromPoint — the method is simply
-// absent from the document prototype. vi.spyOn requires the property to exist
-// before it can be overridden per test. Define a stub that returns null (matching
-// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
-// vi.restoreAllMocks() reverts to this stub after each test.
-if (typeof document.elementFromPoint !== 'function') {
-  Object.defineProperty(document, 'elementFromPoint', {
-    configurable: true,
-    writable: true,
-    value: (): Element | null => null,
-  });
-}
-
 /** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
   const stores = makeDebugStores();

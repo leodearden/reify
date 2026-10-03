@@ -68,15 +68,6 @@ import {
 import { clearConsoleErrors } from '../debug/consoleErrors';
 import { flushMacrotasks } from './test-utils';
 
-// jsdom lacks document.elementFromPoint — stub it (mirrors debugBridge.test.tsx:46-53).
-if (typeof document.elementFromPoint !== 'function') {
-  Object.defineProperty(document, 'elementFromPoint', {
-    configurable: true,
-    writable: true,
-    value: (): Element | null => null,
-  });
-}
-
 // ── Test state ────────────────────────────────────────────────────────────────
 
 let harness: HarnessSetup;
