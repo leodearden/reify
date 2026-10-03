@@ -28,10 +28,12 @@
 //! rather than normalised away, because both are load-bearing inputs to a solve:
 //!
 //!   * bottom-triangle height — [`canonical_triplex_tensegrity`] puts it at
-//!     `z = 0.0` (the gauge and T1b prism), [`tall_triplex_tensegrity`] at
-//!     `z = -1.0` (δ’s taller prism, which feeds a different solve). Named
-//!     constructors, so the geometry choice stays legible at the call site
-//!     instead of becoming a positional float.
+//!     [`CANONICAL_TRIPLEX_BOTTOM_Z`] (the gauge and T1b prism),
+//!     [`tall_triplex_tensegrity`] at [`TALL_TRIPLEX_BOTTOM_Z`] (δ’s taller
+//!     prism, which feeds a different solve). Named constructors, and callers
+//!     of the raw [`triplex_node_coords`] pass one of the two named consts, so
+//!     the geometry choice stays legible at the call site instead of becoming
+//!     a positional float.
 //!   * `surfaces` presence — see [`tensegrity`]: T1b’s structure OMITS the
 //!     field where the gauge and δ carry it. Absent and present-but-empty are
 //!     different inputs, and at least one test turns on the distinction.
@@ -72,10 +74,19 @@ pub const TRIPLEX_ANCHORS: [i64; 3] = [3, 4, 5];
 /// Height of the top triangle, shared by both prisms; only the bottom ring varies.
 const TRIPLEX_TOP_Z: f64 = 1.0;
 
+/// Bottom-triangle height of the canonical unit-height prism: the force-density
+/// gauge, T1b and T2 prism.
+pub const CANONICAL_TRIPLEX_BOTTOM_Z: f64 = 0.0;
+
+/// Bottom-triangle height of the taller, height-2 prism: the combined membrane δ
+/// prism.
+pub const TALL_TRIPLEX_BOTTOM_Z: f64 = -1.0;
+
 /// The triplex prism at circumradius 1, as raw coordinates: top triangle
 /// (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom triangle
-/// (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
-fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
+/// (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°. Callers pass
+/// [`CANONICAL_TRIPLEX_BOTTOM_Z`] or [`TALL_TRIPLEX_BOTTOM_Z`].
+pub fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     let ring = |i: usize, twist: f64, z: f64| {
         let a = (120.0 * (i as f64) + twist).to_radians();
         [a.cos(), a.sin(), z]
@@ -147,7 +158,7 @@ fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<&[[i64; 3]]>) -> Value 
 /// See [`tensegrity`] for what `surfaces: None` means — it is not the same input
 /// as `Some(&[])`.
 pub fn canonical_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
-    triplex_tensegrity_at(0.0, surfaces)
+    triplex_tensegrity_at(CANONICAL_TRIPLEX_BOTTOM_Z, surfaces)
 }
 
 /// The taller triplex: circumradius 1, **height 2** (top `z = +1.0`, bottom
@@ -155,7 +166,7 @@ pub fn canonical_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
 ///
 /// See [`tensegrity`] for what `surfaces: None` means.
 pub fn tall_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
-    triplex_tensegrity_at(-1.0, surfaces)
+    triplex_tensegrity_at(TALL_TRIPLEX_BOTTOM_Z, surfaces)
 }
 
 /// Both membrane end caps of the triplex, as raw index rows: the top cap over
@@ -225,12 +236,6 @@ mod tests {
     use super::*;
     use reify_core::DimensionVector;
 
-    /// The `bottom_z` of [`canonical_triplex_tensegrity`] / the gauge and T1b
-    /// prism, and of [`tall_triplex_tensegrity`] / the δ prism. Named here so the
-    /// tests below assert against the same two heights the constructors pick.
-    const CANONICAL_BOTTOM_Z: f64 = 0.0;
-    const TALL_BOTTOM_Z: f64 = -1.0;
-
     /// The azimuth formulation used by the two *pre-refactor* inline copies
     /// (`tensegrity_t1b_form_find_e2e.rs` and
     /// `tensegrity_delta_combined_form_find_e2e.rs`): an explicit
@@ -290,8 +295,8 @@ mod tests {
     /// so the raw seam and the `Value` form cannot drift apart.
     #[test]
     fn canonical_triplex_geometry_is_pinned_bit_for_bit() {
-        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
-        let nodes = triplex_nodes(CANONICAL_BOTTOM_Z);
+        let coords = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z);
+        let nodes = triplex_nodes(CANONICAL_TRIPLEX_BOTTOM_Z);
         assert_eq!(coords.len(), 6, "the canonical triplex has exactly 6 nodes");
         assert_eq!(nodes.len(), 6, "the Value form has the same 6 nodes");
 
@@ -318,7 +323,7 @@ mod tests {
     /// bit compare: cos²θ + sin²θ is not exactly 1.0 in binary floating point.
     #[test]
     fn triplex_nodes_lie_on_the_unit_circumradius() {
-        for (i, n) in triplex_nodes(CANONICAL_BOTTOM_Z).iter().enumerate() {
+        for (i, n) in triplex_nodes(CANONICAL_TRIPLEX_BOTTOM_Z).iter().enumerate() {
             let [x, y, _] = point_components(n);
             assert!(
                 (x * x + y * y - 1.0).abs() < 1e-15,
@@ -334,14 +339,18 @@ mod tests {
     /// normalised away by the collapse.
     #[test]
     fn triplex_nodes_parameterises_bottom_z_without_moving_the_rings() {
-        let canonical = triplex_node_coords(CANONICAL_BOTTOM_Z);
-        let tall = triplex_node_coords(TALL_BOTTOM_Z);
+        let canonical = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z);
+        let tall = triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z);
         assert_eq!(tall.len(), 6, "the tall triplex also has exactly 6 nodes");
 
         for i in 0..6 {
             assert_bits_eq(tall[i][0], canonical[i][0], &format!("node {i} x must not move"));
             assert_bits_eq(tall[i][1], canonical[i][1], &format!("node {i} y must not move"));
-            let (ring, want_z) = if i < 3 { ("top", 1.0) } else { ("bottom", TALL_BOTTOM_Z) };
+            let (ring, want_z) = if i < 3 {
+                ("top", 1.0)
+            } else {
+                ("bottom", TALL_TRIPLEX_BOTTOM_Z)
+            };
             assert_bits_eq(tall[i][2], want_z, &format!("{ring} node {i} z"));
         }
     }
@@ -386,8 +395,12 @@ mod tests {
     /// map T1b's superseded copy built. `None` must OMIT `surfaces`.
     #[test]
     fn tensegrity_with_none_surfaces_omits_the_key_entirely() {
-        let v =
-            tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), &STUB_STRUTS, &STUB_CABLES, None);
+        let v = tensegrity(
+            triplex_nodes(CANONICAL_TRIPLEX_BOTTOM_Z),
+            &STUB_STRUTS,
+            &STUB_CABLES,
+            None,
+        );
 
         let d = match &v {
             Value::StructureInstance(d) => d,
@@ -413,7 +426,7 @@ mod tests {
     #[test]
     fn tensegrity_with_some_surfaces_inserts_the_key() {
         let v = tensegrity(
-            triplex_nodes(CANONICAL_BOTTOM_Z),
+            triplex_nodes(CANONICAL_TRIPLEX_BOTTOM_Z),
             &STUB_STRUTS,
             &STUB_CABLES,
             Some(&TRIPLEX_CAPS),
@@ -462,7 +475,7 @@ mod tests {
 
         assert_eq!(
             fields.get("nodes"),
-            Some(&Value::List(triplex_nodes(CANONICAL_BOTTOM_Z))),
+            Some(&Value::List(triplex_nodes(CANONICAL_TRIPLEX_BOTTOM_Z))),
             "the canonical constructor is the bottom z = 0.0 prism"
         );
         assert_eq!(
@@ -507,7 +520,7 @@ mod tests {
 
         assert_eq!(
             tall_fields.get("nodes"),
-            Some(&Value::List(triplex_nodes(TALL_BOTTOM_Z))),
+            Some(&Value::List(triplex_nodes(TALL_TRIPLEX_BOTTOM_Z))),
             "tall_triplex_tensegrity is the bottom z = -1.0 prism"
         );
         assert_ne!(
@@ -603,7 +616,7 @@ mod tests {
     #[test]
     fn triplex_groups_are_the_symmetry_classes_of_the_prism() {
         let groups = int_list(&triplex_group_ids(), "triplex_group_ids");
-        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
+        let coords = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z);
         let member_len = |m: usize| {
             let [j, k] = TRIPLEX_MEMBERS[m];
             let (a, b) = (coords[j as usize], coords[k as usize]);
@@ -651,7 +664,7 @@ mod tests {
     /// side) and cap 1 is exactly the anchored set.
     #[test]
     fn triplex_caps_are_the_prisms_two_rings() {
-        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
+        let coords = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z);
 
         let mut covered: Vec<i64> = TRIPLEX_CAPS.concat();
         covered.sort_unstable();
