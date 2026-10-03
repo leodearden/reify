@@ -1486,13 +1486,11 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 /// prose the way "that yields 18 candidate files" did.
 struct OptimizedCallerSurvey {
     /// How many `.ri` files were walked under `examples/` — recursively, via
-    /// `eval_gate_support::collect_ri_files`. That is the SAME walker the unified
-    /// eval sweep uses, so this surface and that one cannot disagree about which
-    /// files exist. Task #7431 changed what enforces that and not whether it
-    /// holds: the walker used to be a private fn the two sweeps shared by living
-    /// in one file, and is now a single `pub fn` in `tests/common/eval_gate_support.rs`
-    /// that both compile units declare by `#[path]` — shared deliberately rather
-    /// than by co-residence, which is the stronger guarantee.
+    /// `reify_test_support::examples_corpus::discover_ri_files` over
+    /// `examples_dir()`. The unified eval sweep
+    /// (`harness_corpus_gates::eval_invariant_corpus_sweep::corpus_files`) routes
+    /// through the SAME shared walker, so this surface and that one cannot
+    /// disagree about which files exist.
     files_scanned: usize,
     /// `(examples/-relative extension-stripped name, targets it calls)` for every
     /// caller file, sorted by name. The name shape matches `BuildSurfaceCase::name`
@@ -1505,7 +1503,9 @@ struct OptimizedCallerSurvey {
 /// Runs the survey. Cheap enough to call from more than one `#[test]`: one
 /// stdlib compile plus a 260-file read.
 fn survey_optimized_callers() -> OptimizedCallerSurvey {
-    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    use reify_test_support::examples_corpus::{
+        discover_ri_files, examples_dir, relative_to_examples_dir,
+    };
 
     let stdlib_fns = stdlib_optimized_fns();
     assert!(
@@ -1519,9 +1519,7 @@ fn survey_optimized_callers() -> OptimizedCallerSurvey {
     stdlib_targets.sort();
     stdlib_targets.dedup();
 
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
-    eval_gate_support::collect_ri_files(&examples_dir, &mut files);
-    files.sort();
+    let files = discover_ri_files(examples_dir());
 
     let mut callers: Vec<(String, Vec<String>)> = Vec::new();
     for path in &files {
@@ -1538,11 +1536,11 @@ fn survey_optimized_callers() -> OptimizedCallerSurvey {
         if targets.is_empty() {
             continue;
         }
-        let rel = path
-            .strip_prefix(&examples_dir)
-            .unwrap_or(path)
-            .with_extension("");
-        callers.push((rel.to_string_lossy().into_owned(), targets));
+        let rel = std::path::Path::new(&relative_to_examples_dir(path))
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned();
+        callers.push((rel, targets));
     }
 
     OptimizedCallerSurvey {
