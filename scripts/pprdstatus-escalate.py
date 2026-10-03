@@ -3,13 +3,19 @@
 batched escalation.
 
 Usage:
-  pprdstatus-escalate.py --reify-audit BIN --escalation-url URL
-                         [--project-root DIR] [--dry-run]
+  pprdstatus-escalate.py (--reify-audit BIN [--project-root DIR] | --findings-file PATH)
+                         --escalation-url URL [--dry-run]
 
-Runs `BIN --pattern PPRDSTATUS --no-jcodemunch --project-root DIR`, with DIR as
-the detector's working directory so its cwd-relative defaults (the runs-db)
-resolve inside the project. It then parses the findings array the detector
-writes to stderr and does one of two things:
+Takes the detector's stderr from one of two sources:
+  - --reify-audit runs `BIN --pattern PPRDSTATUS --no-jcodemunch --project-root
+    DIR`, with DIR as the detector's working directory so its cwd-relative
+    defaults (the runs-db) resolve inside the project. This is the standalone
+    default;
+  - --findings-file reads a run's stderr as already captured, so a caller that
+    records its own run (the /audit skill) raises exactly the findings it
+    recorded, from one corpus load.
+It then parses the findings array in that stderr, keeps its PPRDSTATUS
+findings, and does one of two things:
   - an EMPTY set files nothing and makes no network contact at all;
   - a non-empty set files exactly ONE escalate_info on URL, under the fixed
     subject "audit", carrying the finding count, the list of PRD docs, and
@@ -18,10 +24,16 @@ Whatever the detector wrote to stderr ahead of the array, or all of it when
 there is no array, is forwarded to stderr.
 
 Flags:
-  --reify-audit BIN     the reify-audit binary (required). Callers resolve it
+  --reify-audit BIN     the reify-audit binary to run. Callers resolve it
                         through scripts/reify-audit-freshness.sh
                         `reify_audit_guard`, so a stale binary is never run.
-  --project-root DIR    the checkout to audit (default: .).
+  --project-root DIR    the checkout --reify-audit audits (default: .).
+  --findings-file PATH  the captured stderr of a `--pattern PPRDSTATUS` run.
+                        Pass a run of that pattern alone: over an empty task
+                        corpus it refuses with no findings array, which exits
+                        125 here, whereas a mixed run only prints a "skipped"
+                        breadcrumb, and an array without PPRDSTATUS findings
+                        cannot say whether they were checked.
   --escalation-url URL  the escalation server's MCP endpoint (required, with
                         no default, so no caller can file into the live queue
                         by omission). Reify's queue listens on
@@ -30,13 +42,17 @@ Flags:
   --dry-run             print the escalate_info arguments as JSON instead of
                         filing them.
 
+Output: a filed escalation prints its record as one JSON object on stdout,
+{"id", "status", "level", "finding_count"}, and a human line on stderr. An
+empty set prints nothing on stdout.
+
 Exit codes:
-  0    the detector checked the corpus: nothing to raise, or raised (or,
-       under --dry-run, printed)
+  0    a findings array was read: nothing to raise, or raised (or, under
+       --dry-run, printed)
   1    the escalation could not be filed
-  125  the detector produced no parseable findings array, so nothing was
-       checked or raised: it failed, or it refused an empty task corpus, which
-       leaves PPRDSTATUS nothing to check
+  125  no parseable findings array, so nothing was checked or raised: the
+       detector failed, or it refused an empty task corpus, which leaves
+       PPRDSTATUS nothing to check, or the findings file could not be read
 
 This is the one-shot raise primitive. Its recurring cadence, set-level dedupe
 and docs-truth aggregation belong to task #6347.
@@ -51,6 +67,7 @@ import sys
 import urllib.request
 
 PATTERN = "PPRDSTATUS"
+FINDING_PATTERN = "PPrdStatus"
 SITTING = "/audit --pattern PPRDSTATUS"
 ERROR_PREFIX = "pprdstatus-escalate:"
 EXIT_FILE_FAILED = 1
@@ -81,6 +98,15 @@ def run_detector(binary, project_root):
         errors="replace",
     )
     return completed.stderr, completed.returncode
+
+
+def captured_stderr(args):
+    """The detector's stderr, and where it came from; OSError if unreadable."""
+    if args.findings_file:
+        with open(args.findings_file, encoding="utf-8", errors="replace") as captured:
+            return captured.read(), f"findings file {args.findings_file}"
+    stderr, returncode = run_detector(args.reify_audit, os.path.abspath(args.project_root))
+    return stderr, f"{args.reify_audit} exited {returncode}"
 
 
 def findings_array_start(stderr):
@@ -226,8 +252,16 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Raise a non-empty reify-audit PPRDSTATUS finding set as one batched escalation."
     )
-    parser.add_argument("--reify-audit", required=True, metavar="BIN", help="the reify-audit binary")
-    parser.add_argument("--project-root", default=".", metavar="DIR", help="the checkout to audit")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--reify-audit", metavar="BIN", help="the reify-audit binary to run")
+    source.add_argument(
+        "--findings-file",
+        metavar="PATH",
+        help="the captured stderr of a `--pattern PPRDSTATUS` run, instead of running one",
+    )
+    parser.add_argument(
+        "--project-root", default=".", metavar="DIR", help="the checkout --reify-audit audits"
+    )
     parser.add_argument(
         "--escalation-url", required=True, metavar="URL", help="the escalation MCP endpoint"
     )
@@ -239,21 +273,20 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(argv)
-    project_root = os.path.abspath(args.project_root)
     try:
-        stderr, returncode = run_detector(args.reify_audit, project_root)
+        stderr, origin = captured_stderr(args)
     except OSError as error:
-        print(f"{ERROR_PREFIX} could not run {args.reify_audit}: {error}", file=sys.stderr)
+        print(f"{ERROR_PREFIX} could not read the detector's findings: {error}", file=sys.stderr)
         return EXIT_NO_FINDINGS_ARRAY
     sys.stderr.write(detector_preamble(stderr))
-    findings = parse_findings(stderr)
-    if findings is None:
+    all_findings = parse_findings(stderr)
+    if all_findings is None:
         print(
-            f"{ERROR_PREFIX} reify-audit exited {returncode} without a parseable findings "
-            "array; nothing was raised",
+            f"{ERROR_PREFIX} no parseable findings array ({origin}); nothing was raised",
             file=sys.stderr,
         )
         return EXIT_NO_FINDINGS_ARRAY
+    findings = [finding for finding in all_findings if finding.get("pattern") == FINDING_PATTERN]
     if not findings:
         print(f"{ERROR_PREFIX} no PPRDSTATUS findings; nothing to raise", file=sys.stderr)
         return 0
@@ -269,9 +302,17 @@ def main(argv=None):
             file=sys.stderr,
         )
         return EXIT_FILE_FAILED
+    filed = {
+        "id": record.get("id"),
+        "status": record.get("status"),
+        "level": record.get("level"),
+        "finding_count": len(findings),
+    }
+    print(json.dumps(filed))
     print(
-        f"filed {record.get('id')} (status={record.get('status')}, level={record.get('level')}) "
-        f"for {len(findings)} PPRDSTATUS finding(s)"
+        f"filed {filed['id']} (status={filed['status']}, level={filed['level']}) "
+        f"for {len(findings)} PPRDSTATUS finding(s)",
+        file=sys.stderr,
     )
     return 0
 

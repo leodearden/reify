@@ -12,7 +12,8 @@ invokes this file.
 HOW THE SCRIPT IS DRIVEN: every test runs the REAL script as a subprocess, with
   - a stub reify-audit: an executable written into a tempdir that records its
     argv and replays a canned stderr and exit code, shaped like the real
-    binary's JSON-on-stderr contract;
+    binary's JSON-on-stderr contract; or, under --findings-file, that same
+    canned stderr written to a file, as the /audit skill captures it;
   - a stub escalation MCP server: a ThreadingHTTPServer on 127.0.0.1:0 that
     records every JSON-RPC request and its mcp-session-id header.
 
@@ -59,10 +60,10 @@ EMPTY_CORPUS_REFUSAL = (
 )
 
 
-def finding(path, kind="stale-status-header"):
-    """One PPRDSTATUS finding, shaped like the binary's serde output."""
+def finding(path, kind="stale-status-header", pattern="PPrdStatus"):
+    """One finding, shaped like the binary's serde output."""
     return {
-        "pattern": "PPrdStatus",
+        "pattern": pattern,
         "severity": "High",
         "task_id": path,
         "summary": f"{kind}: {path} — a canned summary",
@@ -180,22 +181,25 @@ class PprdstatusEscalateTest(unittest.TestCase):
         return server
 
     def run_script(self, url, *extra):
+        return self.run_script_with(
+            url, "--reify-audit", str(self.stub), "--project-root", str(self.project_root), *extra
+        )
+
+    def run_script_on_findings_file(self, url, stderr):
+        findings_file = self.tmp / "captured-stderr.txt"
+        findings_file.write_text(stderr)
+        return self.run_script_with(url, "--findings-file", str(findings_file))
+
+    def run_script_with(self, url, *source_and_extra):
         return subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--reify-audit",
-                str(self.stub),
-                "--project-root",
-                str(self.project_root),
-                "--escalation-url",
-                url,
-                *extra,
-            ],
+            [sys.executable, str(SCRIPT), "--escalation-url", url, *source_and_extra],
             capture_output=True,
             text=True,
             timeout=120,
         )
+
+    def detector_was_run(self):
+        return (self.stub_dir / "argv.json").exists()
 
     def assert_one_batched_escalation(self, server, result, paths):
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -216,7 +220,9 @@ class PprdstatusEscalateTest(unittest.TestCase):
         detail = json.loads(arguments["detail"])
         self.assertEqual([entry["path"] for entry in detail], paths)
         self.assertTrue(all(entry["summary"] for entry in detail), detail)
-        self.assertIn(STUB_ESCALATION["id"], result.stdout)
+        self.assertEqual(
+            json.loads(result.stdout), {**STUB_ESCALATION, "finding_count": len(paths)}
+        )
 
     def test_two_findings_file_exactly_one_escalation(self):
         server = self.escalation_server()
@@ -239,6 +245,7 @@ class PprdstatusEscalateTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(server.requests, [])
+        self.assertEqual(result.stdout, "")
 
     def test_diagnostics_ahead_of_the_array_are_forwarded_and_the_array_still_parses(self):
         server = self.escalation_server()
@@ -316,6 +323,41 @@ class PprdstatusEscalateTest(unittest.TestCase):
         self.assertEqual(
             [entry["path"] for entry in json.loads(arguments["detail"])], ["docs/prds/a.md"]
         )
+
+    def test_findings_file_raises_its_pprdstatus_findings_without_running_a_detector(self):
+        server = self.escalation_server()
+        recorded = detector_stderr(
+            [
+                finding("docs/prds/a.md"),
+                finding("crates/x/src/lib.rs", "todo-untracked", pattern="PTodo"),
+                finding("docs/prds/b.md", "cite-status-contradiction"),
+            ],
+            "reify-audit: a diagnostic line ahead of the findings array\n",
+        )
+
+        result = self.run_script_on_findings_file(server.url, recorded)
+
+        self.assert_one_batched_escalation(server, result, ["docs/prds/a.md", "docs/prds/b.md"])
+        self.assertFalse(self.detector_was_run())
+
+    def test_findings_file_without_an_array_exits_125_and_raises_nothing(self):
+        server = self.escalation_server()
+
+        result = self.run_script_on_findings_file(server.url, EMPTY_CORPUS_REFUSAL)
+
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn(EMPTY_CORPUS_REFUSAL, result.stderr)
+        self.assertEqual(server.requests, [])
+
+    def test_unreadable_findings_file_exits_125_naming_it(self):
+        server = self.escalation_server()
+        missing = self.tmp / "no-such-capture.txt"
+
+        result = self.run_script_with(server.url, "--findings-file", str(missing))
+
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn(str(missing), result.stderr)
+        self.assertEqual(server.requests, [])
 
     def test_detector_is_run_as_an_offline_pprdstatus_sweep_of_the_project_root(self):
         server = self.escalation_server()
