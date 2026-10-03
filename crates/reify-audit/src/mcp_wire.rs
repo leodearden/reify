@@ -70,12 +70,12 @@ pub fn decode_body(content_type: &str, body: &str) -> Result<Value, BodyDecodeEr
     }
 }
 
-/// The data field of the first SSE event that carries one: every `data:` line
-/// up to the blank line ending that event, joined with `\n` (WHATWG SSE).
+/// The data of the first SSE event that carries any: the values of its
+/// `data:` lines, up to the blank line ending that event, joined with `\n`.
 /// Later events are ignored.
 fn first_event_data(body: &str) -> Option<String> {
     let mut data_lines: Vec<&str> = Vec::new();
-    for line in body.lines() {
+    for line in sse_lines(body) {
         if line.is_empty() {
             if !data_lines.is_empty() {
                 break;
@@ -85,6 +85,12 @@ fn first_event_data(body: &str) -> Option<String> {
         }
     }
     (!data_lines.is_empty()).then(|| data_lines.join("\n"))
+}
+
+/// `body` split at every SSE line terminator: CRLF, LF or a bare CR.
+fn sse_lines(body: &str) -> impl Iterator<Item = &str> {
+    body.split("\r\n")
+        .flat_map(|chunk| chunk.split(['\r', '\n']))
 }
 
 #[cfg(test)]
@@ -190,6 +196,12 @@ mod tests {
     #[test]
     fn sse_multi_line_data_field_tolerates_crlf_line_endings() {
         let body = "data: {\"a\":1,\r\ndata: \"b\":2}\r\n\r\n";
+        assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn sse_bare_cr_line_endings_split_lines_and_end_the_event() {
+        let body = "data: {\"a\":1,\rdata: \"b\":2}\r\rdata: {\"second\":2}\r\r";
         assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1, "b": 2}));
     }
 
