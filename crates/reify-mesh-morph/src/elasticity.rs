@@ -730,9 +730,10 @@ mod tests {
     /// Defends against a future refactor swapping `AssemblyMode::Deterministic`
     /// or `SolverMode::Deterministic` for their `Parallel` counterparts —
     /// those produce tolerance-equivalent but not bit-equal results across
-    /// thread counts (per solver.rs:33-50). Reuses the cone fixture from
+    /// thread counts (per the `Parallel` docs of `reify_solver_elastic::SolverMode`
+    /// and `reify_solver_elastic::AssemblyMode`). Reuses the cone fixture from
     /// step-9. Mirrors `laplacian_smooth_is_deterministic_across_runs_with_same_input`
-    /// (laplacian.rs:619-658).
+    /// (laplacian.rs).
     #[test]
     fn elasticity_morph_is_deterministic_across_runs_with_same_input() {
         let mesh = VolumeMesh {

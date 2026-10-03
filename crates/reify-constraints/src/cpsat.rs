@@ -1313,11 +1313,13 @@ fn verdict_from_enumeration(
             // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
             //
             // β sets the flag and stops there. It does NOT copy
-            // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+            // `DimensionalSolver`'s `finalise_uniqueness` (solver.rs),
             // which demotes a non-unique STRICT-auto solve to
             // `Infeasible { ConstraintNonUnique }`. The engine's
-            // non-unique warning is gated on `ap.free`
-            // (engine_eval.rs:3355/5975), so nothing user-visible turns
+            // non-unique warning is gated on `ap.free` (engine_eval.rs:
+            // `push_merged_cluster_nonunique_warnings` and the
+            // per-template arms of `Engine::eval` and
+            // `Engine::eval_cached`), so nothing user-visible turns
             // on the strict case yet, and the demotion POLICY belongs
             // with the step that first makes it observable. See
             // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
@@ -1474,9 +1476,11 @@ mod cpsat_test_fixtures {
     ///
     /// Exists to pin that the distinction makes NO difference to what cpsat
     /// reports. `free` is what the engine gates its non-unique WARNING on
-    /// (engine_eval.rs:3355/5975), and `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686) goes further still and DEMOTES a non-unique strict solve
-    /// to `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), and
+    /// `DimensionalSolver`'s `finalise_uniqueness` (solver.rs) goes further
+    /// still and DEMOTES a non-unique strict solve to
+    /// `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
     /// the honest flag and stops there. That is a deliberate scope line, not an
     /// oversight, so it gets a fixture and a unit rather than silence.
     pub(super) fn strict_bool_auto(member: &str) -> AutoParam {
@@ -3045,13 +3049,15 @@ mod unique_honesty_tests {
     /// is pinned rather than left to be inferred from an absence.
     ///
     /// β's job is to make `unique` TRUE-OR-FALSE-AS-MEASURED. It stops there.
-    /// It does NOT copy `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686), which demotes a non-unique STRICT-auto solve all the
+    /// It does NOT copy `DimensionalSolver`'s `finalise_uniqueness`
+    /// (solver.rs), which demotes a non-unique STRICT-auto solve all the
     /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
     /// this task: the engine's non-unique warning is gated on `ap.free`
-    /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
-    /// case yet; and the demotion POLICY belongs with the step that first makes
-    /// it observable (task #6554).
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), so
+    /// nothing user-visible turns on the strict case yet; and the demotion
+    /// POLICY belongs with the step that first makes it observable
+    /// (task #6554).
     ///
     /// If a later step adds that demotion, this unit fails — which is the
     /// correct outcome. It asserts today's contract, not a wish.
