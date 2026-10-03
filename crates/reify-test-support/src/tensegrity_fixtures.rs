@@ -231,6 +231,123 @@ pub fn tent_membrane_tensegrity() -> Value {
     tensegrity(lift_points(TENT_NODE_COORDS), &[], &[], Some(&TENT_TRIS))
 }
 
+/// Catenoid waist `c` in `r(z) = c·cosh(z/c)`: the minimum radius, at the waist
+/// `z = 0`.
+const CATENOID_WAIST: f64 = 1.0;
+
+/// Half-height: the two anchored boundary rings sit at `z = ±H`. `H/c = 0.8`
+/// keeps the patch on the STABLE, globally area-minimizing catenoid branch, well
+/// below the `t·tanh(t) = 1 ⇒ t ≈ 1.2` existence limit and the `t ≈ 1.056`
+/// Goldschmidt two-disk threshold, so form-finding has a clean minimum to settle
+/// into.
+const CATENOID_HALF_HEIGHT: f64 = 0.8;
+
+/// The free-ring seed amplitude both catenoid consumers use: large enough that
+/// the solve must do real work, small enough to stay in the catenoid's basin of
+/// attraction. The γ golden's measured shape bounds are calibrated at this seed.
+pub const CATENOID_SEED_PERTURB: f64 = 0.02;
+
+/// Analytic catenoid radius at height `z`.
+pub fn catenoid_radius(z: f64) -> f64 {
+    CATENOID_WAIST * (z / CATENOID_WAIST).cosh()
+}
+
+/// Deterministic, RNG-free perturbation in `[-1, 1]` keyed on two indices: a
+/// fixed trig hash keeps the seed reproducible and well spread.
+fn jitter(a: usize, b: usize) -> f64 {
+    ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
+}
+
+/// Ring-major node id of azimuth `j` on `ring`, with `j` wrapping mod `n_theta`.
+fn tube_node_id(n_theta: usize, ring: usize, j: usize) -> usize {
+    ring * n_theta + (j % n_theta)
+}
+
+/// A triangulated catenoid tube built by [`catenoid_tube`].
+pub struct CatenoidTube {
+    /// Ring-major: ring 0 (`z = −H`) first, azimuth fastest.
+    pub nodes: Vec<[f64; 3]>,
+    /// Two triangles per quad between adjacent rings, facing away from the axis.
+    pub surfaces: Vec<(usize, usize, usize)>,
+    /// The two boundary rings, bottom then top: the fixed data of the BVP.
+    pub anchors: Vec<usize>,
+    /// The interior rings, bottom to top.
+    pub free: Vec<usize>,
+    n_theta: usize,
+}
+
+impl CatenoidTube {
+    /// Id of azimuth `j` on `ring`. `j` wraps at the ring size, so
+    /// `node_id(ring, j + 1)` closes a hoop.
+    pub fn node_id(&self, ring: usize, j: usize) -> usize {
+        tube_node_id(self.n_theta, ring, j)
+    }
+}
+
+/// The catenoid tube: `n_theta` nodes per ring and `n_axial` axial segments, so
+/// `n_axial + 1` rings from `z = −H` to `z = +H`. The two boundary rings are
+/// anchored exactly on the analytic catenoid; the interior rings are free,
+/// seeded on it plus a deterministic radial (≤ `perturb`) and axial
+/// (≤ `perturb / 2`) offset so a solve must genuinely move them back.
+///
+/// Raw types rather than `Value`, because the consumers call
+/// reify-solver-elastic's anchored surface solves below the `Value` layer.
+pub fn catenoid_tube(n_theta: usize, n_axial: usize, perturb: f64) -> CatenoidTube {
+    assert!(
+        n_theta >= 3,
+        "catenoid_tube needs n_theta >= 3 nodes per ring, got {n_theta}"
+    );
+    assert!(
+        n_axial >= 1,
+        "catenoid_tube needs n_axial >= 1 segment between the anchored rings, got {n_axial}"
+    );
+    let h = CATENOID_HALF_HEIGHT;
+    let n_rings = n_axial + 1;
+    let node_id = |ring: usize, j: usize| tube_node_id(n_theta, ring, j);
+    let mut nodes = vec![[0.0_f64; 3]; n_rings * n_theta];
+    let mut anchors = Vec::new();
+    let mut free = Vec::new();
+
+    for ring in 0..n_rings {
+        let z = -h + 2.0 * h * (ring as f64) / (n_axial as f64);
+        let r_true = catenoid_radius(z);
+        let is_boundary = ring == 0 || ring == n_rings - 1;
+        for j in 0..n_theta {
+            let theta = 2.0 * std::f64::consts::PI * (j as f64) / (n_theta as f64);
+            let id = node_id(ring, j);
+            if is_boundary {
+                nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
+                anchors.push(id);
+            } else {
+                let r = r_true + perturb * jitter(ring, j);
+                let dz = 0.5 * perturb * jitter(j, ring);
+                nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
+                free.push(id);
+            }
+        }
+    }
+
+    let mut surfaces = Vec::new();
+    for ring in 0..n_axial {
+        for j in 0..n_theta {
+            let a = node_id(ring, j);
+            let b = node_id(ring, j + 1);
+            let c = node_id(ring + 1, j);
+            let d = node_id(ring + 1, j + 1);
+            surfaces.push((a, b, c));
+            surfaces.push((b, d, c));
+        }
+    }
+
+    CatenoidTube {
+        nodes,
+        surfaces,
+        anchors,
+        free,
+        n_theta,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,7 +938,12 @@ mod tests {
         TUBE_RESOLUTIONS.into_iter().flat_map(|(n_theta, n_axial)| {
             TUBE_PERTURBS.into_iter().map(move |perturb| {
                 let at = format!("{n_theta}×{n_axial} tube at perturb {perturb}");
-                (n_theta, n_axial, at, catenoid_tube(n_theta, n_axial, perturb))
+                (
+                    n_theta,
+                    n_axial,
+                    at,
+                    catenoid_tube(n_theta, n_axial, perturb),
+                )
             })
         })
     }
@@ -920,7 +1042,11 @@ mod tests {
     /// exact for every `n`.
     #[test]
     fn catenoid_tube_anchors_sit_on_the_analytic_catenoid() {
-        assert_eq!(catenoid_radius(0.0), CATENOID_WAIST, "the waist radius is c, at z = 0");
+        assert_eq!(
+            catenoid_radius(0.0),
+            CATENOID_WAIST,
+            "the waist radius is c, at z = 0"
+        );
         for z in [0.25, CATENOID_HALF_HEIGHT, 1.5] {
             assert_eq!(
                 catenoid_radius(z),
@@ -1024,8 +1150,16 @@ mod tests {
                 let seeded_z = z + 0.5 * p * (12.9898 * j_f + 78.233 * ring_f).sin();
                 let theta = 2.0 * std::f64::consts::PI * j_f / (n_theta as f64);
                 let got = tube.nodes[tube.node_id(ring, j)];
-                assert_bits_eq(got[0], r * theta.cos(), &format!("free node ({ring}, {j}) x"));
-                assert_bits_eq(got[1], r * theta.sin(), &format!("free node ({ring}, {j}) y"));
+                assert_bits_eq(
+                    got[0],
+                    r * theta.cos(),
+                    &format!("free node ({ring}, {j}) x"),
+                );
+                assert_bits_eq(
+                    got[1],
+                    r * theta.sin(),
+                    &format!("free node ({ring}, {j}) y"),
+                );
                 assert_bits_eq(got[2], seeded_z, &format!("free node ({ring}, {j}) z"));
             }
         }
@@ -1057,10 +1191,17 @@ mod tests {
                 let on_boundary_ring =
                     ring == ring_of(n_theta, v) && (ring == 0 || ring == n_axial);
                 let want = if on_boundary_ring { 1 } else { 2 };
-                assert_eq!(count, want, "{at}: edge ({u}, {v}) borders {count} triangles");
+                assert_eq!(
+                    count, want,
+                    "{at}: edge ({u}, {v}) borders {count} triangles"
+                );
                 boundary_edges += usize::from(on_boundary_ring);
             }
-            assert_eq!(boundary_edges, 2 * n_theta, "{at}: both boundary rings are closed");
+            assert_eq!(
+                boundary_edges,
+                2 * n_theta,
+                "{at}: both boundary rings are closed"
+            );
 
             for &(a, b, c) in &tube.surfaces {
                 let (pa, pb, pc) = (tube.nodes[a], tube.nodes[b], tube.nodes[c]);
