@@ -490,16 +490,13 @@ function paneDiagnostics(
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
-// Mirrors the bounds + visible formula from dom_query for cross-tool consistency.
+// The bounds/visible/hitTestable trio comes from describePlacement.
 function describeElement(el: HTMLElement) {
-  const rect = el.getBoundingClientRect();
-  const style = window.getComputedStyle(el);
   return {
     tagName: el.tagName.toLowerCase(),
     testId: el.getAttribute('data-testid'),
     text: el.innerText?.slice(0, 500) ?? '',
-    bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-    visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
+    ...describePlacement(el),
   };
 }
 
@@ -537,7 +534,7 @@ function shapeDiagnostic(d: DiagnosticInfo) {
  * Returns true iff the element is visible in the render tree.
  * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
  * panels count as not-visible) plus the rect.width>0 convention shared with
- * describeElement/dom_query/list_elements.
+ * describePlacement.
  */
 function isElementVisible(el: Element): boolean {
   return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
@@ -964,14 +961,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
 
       const el = r.el as HTMLElement;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
       return {
         exists: true,
-        visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
         text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(el),
         ...paneDiagnostics(r),
       };
     },
@@ -980,13 +974,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const elements = document.querySelectorAll('[data-testid]');
       const result: Array<Record<string, unknown>> = [];
       elements.forEach((el) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        const style = window.getComputedStyle(el);
         result.push({
           testId: el.getAttribute('data-testid'),
           tagName: el.tagName.toLowerCase(),
-          visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
-          bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          ...describePlacement(el),
         });
       });
       return { elements: result };
