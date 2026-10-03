@@ -21,11 +21,13 @@
 //!
 //! # Fixtures
 //!
-//! Integration tests cannot reach the kernel's `#[cfg(test)]` helpers, so the
-//! triplex + open-square fixtures are re-declared here verbatim (the established
-//! T1a/T1b convention).
+//! The triplex prism geometry is the shared
+//! `reify_test_support::tensegrity_fixtures` canonical prism. Integration tests
+//! cannot reach the kernel's `#[cfg(test)]` helpers, so the member list, the
+//! closed-form force densities and the open square are declared locally.
 
 use reify_solver_elastic::{StabilityResult, analyze_prestress_stability};
+use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 // ---------------------------------------------------------------------------
 // Fixtures (re-declared — integration tests cannot reach #[cfg(test)] helpers)
@@ -52,21 +54,6 @@ fn triplex_members() -> Vec<(usize, usize)> {
         (1, 4),
         (2, 5),
     ]
-}
-
-/// The canonical symmetric triplex prism (R = 1, height = 1, twist 30°): nodes
-/// 0,1,2 top (z = 1) at azimuth 120°·i; 3,4,5 bottom (z = 0) at 120°·i + 30°.
-fn canonical_prism() -> Vec<[f64; 3]> {
-    let deg = std::f64::consts::PI / 180.0;
-    let top = |i: usize| {
-        let a = 120.0 * (i as f64) * deg;
-        [a.cos(), a.sin(), 1.0]
-    };
-    let bot = |i: usize| {
-        let a = (120.0 * (i as f64) + 30.0) * deg;
-        [a.cos(), a.sin(), 0.0]
-    };
-    vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
 }
 
 /// Closed-form force densities for the symmetric prism, struts-then-cables order:
@@ -103,7 +90,8 @@ fn square_members() -> Vec<(usize, usize)> {
 
 #[test]
 fn canonical_triplex_is_super_stable() {
-    let result = analyze_prestress_stability(&canonical_prism(), &triplex_members(), &closed_form_q())
+    let prism = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z);
+    let result = analyze_prestress_stability(&prism, &triplex_members(), &closed_form_q())
         .expect("the canonical triplex + closed-form q is a well-formed analysis input");
 
     // The full five-field PRD §5 verdict, pinned exactly: one self-stress state,

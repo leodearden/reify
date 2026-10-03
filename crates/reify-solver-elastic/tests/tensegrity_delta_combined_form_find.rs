@@ -20,9 +20,11 @@
 use reify_solver_elastic::{
     ForceDensitySpec, FreeFormError, FreeFormResult, MemberKind, form_find_free_surfaces,
 };
+use reify_test_support::tensegrity_fixtures::{TALL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 // ---------------------------------------------------------------------------
-// Fixture — the complete triplex (same as T1b golden)
+// Fixture — the complete triplex topology over the shared TALL prism
+// (bottom z = -1, height 2), not T1b's unit-height one
 // ---------------------------------------------------------------------------
 
 fn triplex_topology() -> (Vec<(usize, usize)>, Vec<MemberKind>) {
@@ -45,16 +47,6 @@ fn triplex_group_ids() -> Vec<usize> {
     vec![0,0,0, 1,1,1,1,1,1, 2,2,2]
 }
 
-/// Canonical symmetric T-prism.
-fn canonical_prism() -> Vec<[f64; 3]> {
-    let s = 3.0_f64.sqrt() / 2.0;
-    let h = 1.0_f64;
-    vec![
-        [ 1.0,  0.0, h],  [ -0.5,  s, h],  [-0.5, -s, h],
-        [-0.5, -s, -h],   [  1.0,  0.0, -h], [-0.5, s, -h],
-    ]
-}
-
 /// Perturbed prism guess, with the fixed `PERTURB` displacement table scaled
 /// by `k` — lets regression tests probe how far off-symmetry a starting guess
 /// can be while still converging. `perturbed_prism_guess()` delegates here at
@@ -69,7 +61,7 @@ fn perturbed_prism_guess_scaled(k: f64) -> Vec<[f64; 3]> {
         [0.0010, -0.0008, -0.0013],
         [-0.0011, 0.0013, 0.0006],
     ];
-    canonical_prism()
+    triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)
         .iter()
         .zip(PERTURB.iter())
         .map(|(p, d)| [p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]])
@@ -337,7 +329,7 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
     let spec = ForceDensitySpec::Explicit(line_only_q);
 
     for (label, guess) in [
-        ("canonical", canonical_prism()),
+        ("canonical", triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)),
         ("perturbed", perturbed_prism_guess()),
     ] {
         assert_eq!(
@@ -370,7 +362,7 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
         let spec = ForceDensitySpec::Explicit(q);
 
         let guesses: [(&str, Vec<[f64; 3]>); 4] = [
-            ("canonical", canonical_prism()),
+            ("canonical", triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)),
             ("scaled x1", perturbed_prism_guess_scaled(1.0)),
             ("scaled x10", perturbed_prism_guess_scaled(10.0)),
             ("scaled x50", perturbed_prism_guess_scaled(50.0)),
