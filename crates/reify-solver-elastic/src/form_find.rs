@@ -1095,6 +1095,7 @@ pub(crate) fn triangle_cotangent_laplacian(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_test_support::tensegrity_fixtures::{TENT_ANCHORS, TENT_NODE_COORDS, TENT_TRIS};
 
     /// A membrane test case: `(nodes, surface triangles, anchor indices)`.
     /// Aliased to keep the surface-test helper signatures readable (and to
@@ -1573,26 +1574,17 @@ mod tests {
         resid / (1.0 + scale)
     }
 
-    /// "Tent" membrane: a diamond boundary of 4 anchored corners in the z=0
-    /// plane plus one free interior node (seeded off-plane at z=0.3), fanned by
-    /// 4 triangles. The minimal surface spanning a planar boundary is flat, so a
-    /// correct cotangent assembly pulls the free node back into the boundary
-    /// plane (z→0) and leaves a ~0 equilibrium residual; a wrong assembly drives
-    /// it off-plane or blows up the residual (non-circular signal). The in-plane
-    /// (x,y) position is NOT unique — the flat surface has constant area for any
-    /// interior position, so the cotangent-Laplacian vanishes across the whole
-    /// interior — hence the tests assert planarity + residual, not an (x,y).
+    /// The shared tent golden, `reify_test_support::tensegrity_fixtures::TENT_*`,
+    /// in this module's [`MembraneCase`] shape — why it is shaped that way is
+    /// documented there.
     fn tent_membrane() -> MembraneCase {
-        let nodes = vec![
-            [0.1, 0.1, 0.3],  // 0: free interior — deliberately off-solution
-            [1.0, 0.0, 0.0],  // 1: anchor
-            [0.0, 1.0, 0.0],  // 2: anchor
-            [-1.0, 0.0, 0.0], // 3: anchor
-            [0.0, -1.0, 0.0], // 4: anchor
-        ];
-        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
-        let anchors = vec![1, 2, 3, 4];
-        (nodes, surfaces, anchors)
+        let index = |i: i64| usize::try_from(i).expect("tent fixture indices are non-negative");
+        let surfaces = TENT_TRIS
+            .iter()
+            .map(|&[i, j, k]| (index(i), index(j), index(k)))
+            .collect();
+        let anchors = TENT_ANCHORS.into_iter().map(index).collect();
+        (TENT_NODE_COORDS.to_vec(), surfaces, anchors)
     }
 
     /// Equilibrium-residual bound for the surface solve: a linear solve iterated
@@ -2318,8 +2310,8 @@ mod tests {
 
     // ── ε step-7 RED: form_find_anchored_surfaces_aniso guards + iso-equiv ──────
 
-    /// Minimal fixed-boundary tent fixture reused for aniso solve tests.
-    /// One free interior node, 4 anchored corners in the z=0 plane, 4 triangles.
+    /// [`tent_membrane`] plus one isotropic-valued anisotropic prestress per
+    /// triangle, for the aniso solve tests.
     #[allow(clippy::type_complexity)]
     fn tent_aniso_fixture() -> (
         Vec<[f64; 3]>,
@@ -2327,15 +2319,7 @@ mod tests {
         Vec<AnisotropicSurfaceStress>,
         Vec<usize>,
     ) {
-        let nodes = vec![
-            [0.1, 0.1, 0.3],  // 0: free interior node (off-plane seed)
-            [1.0, 0.0, 0.0],  // 1: anchor
-            [0.0, 1.0, 0.0],  // 2: anchor
-            [-1.0, 0.0, 0.0], // 3: anchor
-            [0.0, -1.0, 0.0], // 4: anchor
-        ];
-        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
-        let anchors = vec![1, 2, 3, 4];
+        let (nodes, surfaces, anchors) = tent_membrane();
         let sigma = 2.0;
         let prestress = vec![
             AnisotropicSurfaceStress { warp_dir: [1.0, 0.0, 0.0], sigma_warp: sigma, sigma_weft: sigma };
