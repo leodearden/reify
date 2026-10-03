@@ -325,27 +325,12 @@ assert "5f-e: done task with a non-string updatedAt gets done_at null" \
     bash -c 'jq -e '"'"'[.[] | select(.task_id=="d3")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
-# 5f-f: pins a KNOWN, ACCEPTED divergence rather than leaving it to be
-# rediscovered as a fresh bug: jq's fromdateiso8601 accepts only
-# "%Y-%m-%dT%H:%M:%SZ", while the Rust parse_iso8601_to_epoch has a split_tz
-# arm that handles "+HH:MM". The two loaders still disagree on offset-form
-# timestamps -- but under this fix the jq side degrades that ONE row instead of
-# aborting the whole snapshot, which is the property this guard exists for.
-#
-# ACCEPTED, BUT TRACKED -- not merely narrated. `catch null` makes this
-# particular failure permanently QUIET: done_at=null reproduces the ORIGINAL
-# task-3731 silent-skip (P1's 14-day grace comparison skips the row entirely)
-# and the only signal is the wrapper's stderr WARNING, on a systemd hook path
-# nobody is likely reading. It is unreachable today -- fused-memory's
-# sqlite_task_backend.py updatedAt writer only emits ...Z -- so 7236 pinned it
-# rather than widening the sidecar's parser. Closing it (matching split_tz's
-# "+HH:MM" and no-TZ arms) is filed as fused-memory follow-up ticket
-# tkt_0RT8TN837CA7QP5T4GFH8Q5VYZ. When that lands, THIS assertion and its
-# comment flip in the same diff, and any widened parser must stay TOTAL: jq's
-# capture/match produce EMPTY on no-match, which inside `map({...})` DROPS the
-# whole row -- the same data-loss trap that made `fromdateiso8601?` wrong.
-assert "5f-f: valid ISO-8601 with a numeric TZ offset degrades to null, not an abort" \
-    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d4")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
+# 5f-f: d4 is the zero-offset parity probe -- the same instant as d2, written
+# with a numeric "+00:00" offset instead of ".000Z". Nonzero and negative
+# offsets are covered by Check 5h. The jq-vs-Rust offset divergence this row
+# used to pin was closed by task 7280.
+assert "5f-f: valid ISO-8601 with a numeric TZ offset parses to the same epoch as its Z form" \
+    bash -c 'jq -e '"'"'([.[] | select(.task_id=="d2")][0].done_at) as $d2 | [.[] | select(.task_id=="d4")] | length == 1 and (.[0].done_at | type == "number") and (.[0].done_at == $d2)'"'"' "$1"' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
 assert "5f-g: metadata.done_at precedence still wins over a garbage updatedAt" \
@@ -354,11 +339,11 @@ assert "5f-g: metadata.done_at precedence still wins over a garbage updatedAt" \
 
 # 5f-h: the degraded rows must be OBSERVABLE. This is the wrapper's own
 # post-snapshot sanity-check expression (the same one 5d pins), run against the
-# degraded snapshot: it must name exactly d1, d3 and d4. Unreachable if the
+# degraded snapshot: it must name exactly d1 and d3. Unreachable if the
 # rows were dropped -- which is the whole point of degrading rather than
 # vanishing.
-assert "5f-h: the wrapper's missing_done_at snippet reports exactly d1,d3,d4" \
-    bash -c 'missing=$(jq -r '"'"'[ .[] | select(.status == "done" and .done_at == null) | .task_id ] | sort | join(",")'"'"' "$1"); [ "$missing" = "d1,d3,d4" ]' \
+assert "5f-h: the wrapper's missing_done_at snippet reports exactly d1,d3" \
+    bash -c 'missing=$(jq -r '"'"'[ .[] | select(.status == "done" and .done_at == null) | .task_id ] | sort | join(",")'"'"' "$1"); [ "$missing" = "d1,d3" ]' \
     -- "$FILTER_TMPDIR/snapshot-malformed.json"
 
 # ------------------------------------------------------------------------------
@@ -433,11 +418,13 @@ assert "5f-j: wrapper stderr carries no 'failed to fetch tasks' diagnostic" \
 
 # 5f-k: the degradation is REPORTED, not swallowed. This is the wrapper's LIVE
 # warning (5f-h pins only the jq expression it is built from), naming exactly
-# the three degraded ids -- which also proves d2 (good neighbour) and d5
-# (metadata.done_at precedence) survived the round trip, since they are absent
-# from the list.
-assert "5f-k: wrapper stderr warns 'done tasks with no done_at' naming exactly d1,d3,d4" \
-    bash -c 'printf "%s" "$1" | grep -qF "WARNING: done tasks with no done_at (P1 will skip them): d1,d3,d4"' \
+# the two degraded ids -- which also proves d2 (good neighbour), d4 (numeric
+# TZ offset) and d5 (metadata.done_at precedence) all survived the round trip
+# WITH a done_at, end-to-end through the wrapper, since they are absent from
+# the list. The `$` anchor matters: unanchored, ": d1,d3" would also match a
+# regressed ": d1,d3,d4".
+assert "5f-k: wrapper stderr warns 'done tasks with no done_at' naming exactly d1,d3" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "WARNING: done tasks with no done_at \(P1 will skip them\): d1,d3\$"' \
     -- "$E2E_STDERR"
 
 # ------------------------------------------------------------------------------
@@ -505,6 +492,62 @@ assert "5g-a: verify-pipeline-infra-tests.txt maps the snapshot filter sidecar -
 assert "5g-b: verify-pipeline-guard.sh reports the snapshot filter sidecar as registered" \
     bash -c 'bash "$1/scripts/verify-pipeline-guard.sh" is-registered "$2" >/dev/null 2>&1' \
     -- "$REPO_ROOT" "$SIDECAR_REL"
+
+# ------------------------------------------------------------------------------
+# Check 5h: sidecar ISO-8601 shapes match the live loader
+# ------------------------------------------------------------------------------
+# The contract is crates/reify-audit/src/fused_memory_client.rs
+# parse_iso8601_to_epoch / split_tz. 1778917144 is the instant that crate's
+# iso8601_* unit tests pin. Every row must stay present: capture/match yield
+# EMPTY on no-match, which inside map({...}) would drop the row.
+echo ""
+echo "--- Check 5h: sidecar ISO-8601 shapes match the live loader ---"
+
+PARITY_OK=(
+    2026-05-16T07:39:04Z
+    2026-05-16T07:39:04.350Z
+    2026-05-16T08:39:04+01:00
+    2026-05-16T03:39:04-04:00
+    2026-05-16T07:39:04
+    2026-05-16T08:39:04.350+01:00
+    2026-05-16T07:39:04.350
+    2026-05-16T13:09:04+05:30
+    2026-05-16T04:09:04-03:30
+    2026-05-15T23:39:04-08:00
+    2026-05-16T08:39:04+01
+)
+PARITY_NULL=(
+    2026-05-16T07:39:04+0100
+    2026-05-16
+    2026-05-16T07:39:04z
+    2026-05-16T07:39:04+01:00junk
+)
+PARITY_EXPECTED_EPOCH=1778917144
+
+jq -n '{result:{content:[{type:"text",text:({tasks:[$ARGS.positional[] | {id:., status:"done", title:., updatedAt:., metadata:{}}]} | tojson)}]}}' \
+    --args "${PARITY_OK[@]}" "${PARITY_NULL[@]}" \
+    > "$FILTER_TMPDIR/fixture-parity.json"
+
+jq -r -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
+    "$FILTER_TMPDIR/fixture-parity.json" \
+    > "$FILTER_TMPDIR/snapshot-parity.json" 2>/dev/null || \
+    echo '[]' > "$FILTER_TMPDIR/snapshot-parity.json"
+
+assert "5h-a: every parity row survives the filter (no row dropped)" \
+    bash -c 'jq -e --argjson n "$2" '"'"'type == "array" and length == $n'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-parity.json" "$(( ${#PARITY_OK[@]} + ${#PARITY_NULL[@]} ))"
+
+for _parity_ts in "${PARITY_OK[@]}"; do
+    assert "5h-b: updatedAt $_parity_ts -> done_at $PARITY_EXPECTED_EPOCH" \
+        bash -c 'jq -e --arg ts "$2" --argjson epoch "$3" '"'"'[.[] | select(.task_id == $ts)] | length == 1 and (.[0].done_at == $epoch)'"'"' "$1"' \
+        -- "$FILTER_TMPDIR/snapshot-parity.json" "$_parity_ts" "$PARITY_EXPECTED_EPOCH"
+done
+
+for _parity_ts in "${PARITY_NULL[@]}"; do
+    assert "5h-c: updatedAt $_parity_ts -> done_at null (row kept)" \
+        bash -c 'jq -e --arg ts "$2" '"'"'[.[] | select(.task_id == $ts)] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
+        -- "$FILTER_TMPDIR/snapshot-parity.json" "$_parity_ts"
+done
 
 # ==============================================================================
 # Check 6: exit-code propagation under `set -e`
