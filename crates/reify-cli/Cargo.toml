@@ -42,6 +42,10 @@ tracing.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 
+# SIGPIPE disposition reset in src/sigpipe.rs (task #7906); 0.2.186 is already locked.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 reify-test-support.workspace = true
