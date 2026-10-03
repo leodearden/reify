@@ -2872,10 +2872,17 @@ mod tests {
         let message = panic_message(|| {
             super::get_function_in(&module, "convert");
         });
+        let real_param = format!(
+            "{:?}",
+            ("x".to_string(), reify_core::Type::dimensionless_scalar())
+        );
+        let int_param = format!("{:?}", ("x".to_string(), reify_core::Type::Int));
         for expected in [
             "ambiguous function name 'convert'",
             "fn_lookup",
             "2 overloads",
+            real_param.as_str(),
+            int_param.as_str(),
         ] {
             assert!(
                 message.contains(expected),
