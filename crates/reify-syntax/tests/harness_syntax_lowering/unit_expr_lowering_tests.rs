@@ -528,3 +528,225 @@ fn comment_after_a_middot_is_still_a_parse_error() {
     // `(ERROR … (UNEXPECTED 183))`.
     assert_loud_middot_parse_error("structure def S { let x = 5N·/*c*/m }");
 }
+
+// ── Detached unit suffix (task #7190) ────────────────────────────────────────
+//
+// PRD docs/prds/unit-expressions.md §3.1 (contiguity): a unit must touch its
+// number.  `1000.0 N/m` is therefore a parse ERROR on purpose — the same rule is
+// what keeps `5kg * m` a binary expression — so the parser must not accept the
+// detached spelling.  It must instead explain the fix: name the binding and the
+// attached spelling, with the span on the unit word.
+
+const HINT_MARK: &str = "must follow its number with no whitespace";
+
+/// The remedy suffix appended to a detached-unit diagnostic.
+fn detached_unit_hint(unit: &str, binding: &str, number: &str) -> String {
+    format!(" — unit `{unit}` in `{binding}` {HINT_MARK}: write `{number}{unit}`")
+}
+
+/// The single diagnostic whose message starts with `prefix`.
+fn only_error_starting_with(
+    errors: &[(String, reify_core::SourceSpan)],
+    prefix: &str,
+) -> (String, reify_core::SourceSpan) {
+    let matching: Vec<_> = errors
+        .iter()
+        .filter(|(message, _)| message.starts_with(prefix))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one diagnostic starting with `{prefix}`; got {errors:?}"
+    );
+    matching[0].clone()
+}
+
+/// Byte offset of `needle` in `source`, plus `skip` bytes.
+fn byte_of(source: &str, needle: &str, skip: usize) -> u32 {
+    (source
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` not found in `{source}`"))
+        + skip) as u32
+}
+
+#[test]
+fn connect_param_detached_unit_names_the_param_and_the_attached_spelling() {
+    let source = "structure Leaf {\n\
+                  \x20 port p : LocatedPort { frame = frame3() }\n\
+                  }\n\
+                  structure Asm {\n\
+                  \x20 sub e1 : Leaf\n\
+                  \x20 sub e2 : Leaf\n\
+                  \x20 connect e1.p -> e2.p : Prismatic { axis = vec3(1.0,0.0,0.0), spring_rate = 1000.0 N/m }\n\
+                  }\n";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let (message, span) = only_error_starting_with(&errors, "invalid connect: ");
+    assert_eq!(
+        span.start,
+        byte_of(source, " N/m", 1),
+        "the diagnostic must point at the detached unit word `N`; got {message:?}"
+    );
+    let hint = detached_unit_hint("N", "spring_rate", "1000.0");
+    assert!(
+        message.ends_with(&hint),
+        "the diagnostic must name the param and the attached spelling;\n \
+         expected suffix: {hint:?}\n got: {message:?}"
+    );
+}
+
+#[test]
+fn connect_param_detached_unit_is_hinted_for_any_horizontal_gap() {
+    for gap in [" ", "\t", "   "] {
+        let source = format!(
+            "structure A {{ connect e1.p -> e2.p : Prismatic {{ neutral = 0.0{gap}mm }} }}"
+        );
+        let (_, _, errors) = parse_shape_spanned(&source);
+        let (message, span) = only_error_starting_with(&errors, "invalid connect: ");
+        assert_eq!(
+            span.start,
+            byte_of(&source, "mm", 0),
+            "gap {gap:?}: the diagnostic must point at `mm`; got {message:?}"
+        );
+        let hint = detached_unit_hint("mm", "neutral", "0.0");
+        assert!(
+            message.ends_with(&hint),
+            "gap {gap:?}: expected suffix {hint:?}, got {message:?}"
+        );
+    }
+}
+
+#[test]
+fn detached_unit_inside_a_call_argument_names_the_enclosing_param() {
+    let source =
+        "structure A { connect e1.p -> e2.p : Prismatic { axis = vec3(1.0 mm, 0.0, 0.0) } }";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let (message, span) = only_error_starting_with(&errors, "invalid connect: ");
+    assert_eq!(
+        span.start,
+        byte_of(source, "mm", 0),
+        "the diagnostic must point at `mm`; got {message:?}"
+    );
+    let hint = detached_unit_hint("mm", "axis", "1.0");
+    assert!(
+        message.ends_with(&hint),
+        "the call's `name` field is not a binding — the hint must name the param \
+         `axis` the author edits;\n expected suffix: {hint:?}\n got: {message:?}"
+    );
+}
+
+#[test]
+fn param_default_and_sub_override_carry_the_same_hint() {
+    let hint = detached_unit_hint("N", "k", "1000.0");
+    for (source, prefix) in [
+        (
+            "structure S { param k : TranslationalStiffness = 1000.0 N/m }",
+            "invalid param: ",
+        ),
+        (
+            "structure Leaf { param k : TranslationalStiffness = 1.0N/m }\n\
+             structure S { sub l : Leaf { k = 1000.0 N/m } }",
+            "invalid sub: ",
+        ),
+    ] {
+        let (_, _, errors) = parse_shape_spanned(source);
+        let (message, span) = only_error_starting_with(&errors, prefix);
+        assert_eq!(
+            span.start,
+            byte_of(source, " N/m", 1),
+            "`{source}`: the diagnostic must point at `N`; got {message:?}"
+        );
+        assert!(
+            message.ends_with(&hint),
+            "`{source}`: expected suffix {hint:?}, got {message:?}"
+        );
+    }
+}
+
+#[test]
+fn fn_body_let_with_detached_unit_carries_the_hint() {
+    let source = "fn f(x: Real) -> Real {\n  let y = 5 mm;\n  y\n}\n";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let expected = format!(
+        "syntax error in function definition{}",
+        detached_unit_hint("mm", "y", "5")
+    );
+    let mm_at = byte_of(source, "mm", 0);
+    assert!(
+        errors
+            .iter()
+            .any(|(message, span)| *message == expected && span.start == mm_at),
+        "expected {expected:?} pointing at `mm`; got {errors:?}"
+    );
+}
+
+/// GREEN on arrival: the attached spelling is the accepted one, and this pins it
+/// at AST level inside a connect body — both spellings are pinned, the detached
+/// one by the diagnostics above.
+#[test]
+fn attached_unit_in_connect_param_lowers_to_a_quantity() {
+    let source = "structure A { connect e1.p -> e2.p : Prismatic { \
+                  spring_rate = 1000.0N/m, neutral = 0.0mm } }";
+    let module = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("unit_expr_lowering_test"),
+    );
+    assert!(
+        module.errors.is_empty(),
+        "the attached spelling must parse cleanly; got {:?}",
+        module.errors
+    );
+    let Some(Declaration::Structure(structure)) = module.declarations.first() else {
+        panic!("expected a structure, got {:?}", module.declarations);
+    };
+    let connect = structure
+        .members
+        .iter()
+        .find_map(|member| match member {
+            MemberDecl::Connect(c) => Some(c),
+            _ => None,
+        })
+        .expect("the structure must keep its connect member");
+    let quantity_of = |name: &str| {
+        let (_, expr) = connect
+            .params
+            .iter()
+            .find(|(param, _)| param == name)
+            .unwrap_or_else(|| panic!("connect must carry `{name}`; got {:?}", connect.params));
+        match &expr.kind {
+            ExprKind::QuantityLiteral { value, unit } => (*value, unit.clone()),
+            other => panic!("`{name}` must lower to a QuantityLiteral, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        quantity_of("spring_rate"),
+        (1000.0, div(bare("N"), bare("m")))
+    );
+    assert_eq!(quantity_of("neutral"), (0.0, bare("mm")));
+}
+
+/// GREEN on arrival: the hint fires only for a word directly after a number on
+/// the same line.  A newline gap is the absorbed-next-line shape, a preceding
+/// unit name means the quantity is already attached, and a non-word fault is
+/// not a unit at all — a wrong remedy is worse than none.
+#[test]
+fn detached_unit_hint_needs_a_number_directly_before_the_word_on_the_same_line() {
+    for source in [
+        "structure A {\n  param k : Real = 1000.0\n  N\n}",
+        "structure A { let x = 5mm mm }",
+        "structure A { let a = 1 1 }",
+        "structure def S { let x = 5N ·m }",
+    ] {
+        let (_, _, errors) = parse_shape_spanned(source);
+        assert!(
+            !errors.is_empty(),
+            "`{source}` must still produce a diagnostic"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|(message, _)| !message.contains(HINT_MARK)),
+            "`{source}` is not a detached unit suffix and must carry no remedy hint; \
+             got {errors:?}"
+        );
+    }
+}
