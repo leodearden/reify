@@ -454,16 +454,10 @@ fn cite_contradiction_findings(
 /// Run PPRDSTATUS over the tracked PRDs against the loaded task corpus: lane-1
 /// findings, then lane-2 findings.
 ///
-/// An empty corpus checks nothing, so it prints a breadcrumb rather than
-/// passing silently for a clean result.
+/// An empty corpus yields no findings, which means "not checked", never
+/// "clean", so a caller must not report it as clean. The CLI skips this
+/// detector on an empty corpus and prints a breadcrumb instead.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    if ctx.task_metadata.is_empty() {
-        eprintln!(
-            "reify-audit: PPRDSTATUS skipped — the task corpus is empty; \
-             this is NOT a clean bill of health"
-        );
-        return Vec::new();
-    }
     let prds = tracked_prds(ctx);
     let mut findings = stale_status_findings(&ctx.task_metadata, &prds);
     findings.extend(cite_contradiction_findings(&ctx.task_metadata, &prds));

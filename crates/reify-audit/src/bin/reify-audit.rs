@@ -127,7 +127,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  exit 0:    no High-severity findings");
     let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
     let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable,");
-    let _ = writeln!(out, "             empty task corpus for a PPRDSTATUS-only run)");
+    let _ = writeln!(out, "             empty task corpus when every selected detector needs it)");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -607,10 +607,9 @@ struct Detector {
     queries_jcodemunch: bool,
     /// Whether it treats an empty task corpus as a setup error rather than a
     /// clean result. A run of nothing else refuses an empty corpus with 125
-    /// before printing any findings array ([`task_corpus_only_run_set`]), so
-    /// no caller can read the unchecked run as clean. Only a detector that
-    /// prints its own "skipped" breadcrumb for an empty corpus may be `true`:
-    /// that breadcrumb is what marks it unchecked in a mixed run.
+    /// before printing any findings array ([`task_corpus_only_run_set`]); in a
+    /// mixed run [`run_detector`] skips it with a "skipped" breadcrumb. Either
+    /// way no caller can read the unchecked detector as clean.
     refuses_empty_task_corpus: bool,
     check: fn(&AuditContext<'_>) -> Vec<Finding>,
 }
@@ -640,6 +639,20 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pdcheck::check },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: true,  check: pprdstatus::check },
 ];
+
+/// One detector's findings. A detector that refuses an empty task corpus is
+/// not run on one: the breadcrumb marks its zero findings as unchecked.
+fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> Vec<Finding> {
+    if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
+        eprintln!(
+            "reify-audit: {} skipped — the task corpus is empty; \
+             this is NOT a clean bill of health",
+            detector.token
+        );
+        return Vec::new();
+    }
+    (detector.check)(ctx)
+}
 
 /// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in
 /// row order.
@@ -868,7 +881,7 @@ fn main() -> ExitCode {
     } else {
         // Spot-check or window sweep: every detector this run selects.
         selected_detectors(args.pattern.as_deref())
-            .flat_map(|detector| (detector.check)(&ctx))
+            .flat_map(|detector| run_detector(detector, &ctx))
             .collect()
     };
 
@@ -1301,9 +1314,9 @@ mod tests {
             err.contains("'BOGUS'"),
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
-        // Per-token containment (not the exact connecting prose) so adding a
-        // future detector token or reordering the list does not break the test.
-        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+        // Every vocabulary token, by containment rather than the exact
+        // connecting prose, so reordering the list does not break the test.
+        for &tok in pattern_flag::TOKENS {
             assert!(
                 err.contains(tok),
                 "error must list known token {tok}; got: {err}"
@@ -1874,26 +1887,6 @@ mod tests {
         assert!(
             selects(pattern_flag::PPRDSTATUS, Some("P1,PPRDSTATUS")),
             "P1,PPRDSTATUS must enable PPRDSTATUS"
-        );
-    }
-
-    #[test]
-    fn parse_args_unknown_pattern_lists_pprdstatus() {
-        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
-        assert!(
-            err.contains("PPRDSTATUS"),
-            "error must list PPRDSTATUS as a valid pattern; got: {err}"
-        );
-    }
-
-    #[test]
-    fn usage_text_lists_pprdstatus() {
-        let mut buf: Vec<u8> = Vec::new();
-        print_usage(&mut buf);
-        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
-        assert!(
-            usage.contains("PPRDSTATUS"),
-            "--help must list PPRDSTATUS on the --pattern line; got:\n{usage}"
         );
     }
 

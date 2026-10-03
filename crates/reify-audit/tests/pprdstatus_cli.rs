@@ -112,8 +112,14 @@ fn run_pprdstatus(prd_text: &str) -> Output {
 }
 
 /// Run `reify-audit --pattern PPRDSTATUS` over a repo holding `prd_text`,
-/// against the `tasks` corpus, with every substrate pinned at a tempdir.
+/// against the `tasks` corpus.
 fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
+    run_reify_audit("PPRDSTATUS", prd_text, tasks)
+}
+
+/// Run `reify-audit --pattern <pattern>` over a repo holding `prd_text`,
+/// against the `tasks` corpus, with every substrate pinned at a tempdir.
+fn run_reify_audit(pattern: &str, prd_text: &str, tasks: &[TaskMetadata]) -> Output {
     let repo = tempfile::tempdir().expect("create repo tempdir");
     let aux = tempfile::tempdir().expect("create aux tempdir");
     repo_with_prd(repo.path(), prd_text);
@@ -122,7 +128,7 @@ fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_reify-audit"))
         .args([
             "--pattern",
-            "PPRDSTATUS",
+            pattern,
             "--no-jcodemunch",
             "--project-root",
             repo.path().to_str().expect("utf-8 repo path"),
@@ -132,7 +138,7 @@ fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
             runs_db.to_str().expect("utf-8 runs.db path"),
         ])
         .output()
-        .expect("invoke reify-audit --pattern PPRDSTATUS")
+        .unwrap_or_else(|e| panic!("invoke reify-audit --pattern {pattern}: {e}"))
 }
 
 /// The pre-fix doc is stale on both lanes: one finding each, both High, so the
@@ -224,5 +230,26 @@ fn pattern_pprdstatus_refuses_an_empty_task_corpus() {
     assert!(
         !stderr.lines().any(|line| line.starts_with('[')),
         "a refusal must print no findings array; stderr:\n{stderr}"
+    );
+}
+
+/// A mixed run over an empty corpus refuses nothing: the other detectors
+/// still emit the findings array, so PPRDSTATUS's breadcrumb is the only
+/// thing that marks its zero findings "not checked" rather than clean.
+#[test]
+fn mixed_run_over_an_empty_task_corpus_marks_pprdstatus_skipped() {
+    let out = run_reify_audit("P5,PPRDSTATUS", PRE_FIX, &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+    assert_eq!(
+        findings_from_stderr(&stderr),
+        Vec::<serde_json::Value>::new()
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("PPRDSTATUS skipped")),
+        "a mixed run must mark PPRDSTATUS unchecked; stderr:\n{stderr}"
     );
 }
