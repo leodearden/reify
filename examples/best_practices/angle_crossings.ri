@@ -137,12 +137,14 @@ structure def AngleCrossings {
     // magnitudes would still satisfy `arc > 0mm`; these fail `reify check`
     // instead, so each identity above is pinned by a predicate and not only by
     // a comment. Two enforcers: `reify check` is what an author runs per file
-    // (SKILL.md mandates it before shipping a design), and CI runs the same
-    // constraints over this whole corpus in
+    // (SKILL.md mandates it before shipping a design), and CI checks the same
+    // constraints over this whole corpus, on a kernel-less engine, in
     // `crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`
     // (`best_practices_corpus_satisfies_every_constraint`), which fails on any
     // Violated constraint here — this file has no `EXPECTED_INDETERMINATE`
-    // exemption, so every band below must be Satisfied.
+    // exemption, so every band below must be Satisfied. Every band is a pure
+    // scalar comparison, so the two enforcers cannot disagree on this file; a
+    // geometry-consumer constraint is where they can.
     constraint r > 0mm
     constraint s > r
     constraint f > 0Hz
