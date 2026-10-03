@@ -40,10 +40,10 @@
 //! - `0 < poissons_ratio < 0.5` (dimensionless scalar) → no error
 //! - `0kg < mass < 5kg` (same-dimension chained) → no error
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::DiagnosticCode;
 use reify_test_support::{
     assert_error_code_present, assert_no_error_diagnostics, compile_source,
-    compile_source_with_stdlib,
+    compile_source_with_stdlib, errors_only,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -51,21 +51,13 @@ use reify_test_support::{
 /// Compile `source` with stdlib and return Error-severity diagnostics.
 fn errors_stdlib(source: &str) -> Vec<reify_core::Diagnostic> {
     let module = compile_source_with_stdlib(source);
-    module
-        .diagnostics
-        .into_iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
+    errors_only(&module).into_iter().cloned().collect()
 }
 
 /// Compile `source` without stdlib and return Error-severity diagnostics.
 fn errors(source: &str) -> Vec<reify_core::Diagnostic> {
     let module = compile_source(source);
-    module
-        .diagnostics
-        .into_iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
+    errors_only(&module).into_iter().cloned().collect()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
