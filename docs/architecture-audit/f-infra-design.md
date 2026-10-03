@@ -609,8 +609,12 @@ top-level `updatedAt` field. Since task 7280 both loaders map `Z`,
 fractional-second suffix, to the same epoch: the sidecar's
 `iso8601_to_epoch_or_null` mirrors
 `crates/reify-audit/src/fused_memory_client.rs` `parse_iso8601_to_epoch` /
-`split_tz`, pinned by Check 5h of
-`tests/infra/test_reify_audit_predone_wrapper.sh`. Both yield
+`split_tz`. The pin is a shared instant, not a differential test: Check 5h
+of `tests/infra/test_reify_audit_predone_wrapper.sh` pins every sidecar
+shape to 1778917144, the instant the crate's `iso8601_*` unit tests pin,
+but those unit tests cover only the `Z`-with-fraction, `±HH:MM` and no-TZ
+shapes, so the `±HH`, half-hour-offset and fraction-plus-offset shapes are
+pinned on the sidecar side only. Both yield
 `null`/`None` for non-done tasks and for an absent or `null` `updatedAt`.
 The residual difference is one-directional: the Rust parser also accepts
 some non-ISO input (text after `Z`, a non-numeric fraction, unpadded or
@@ -622,46 +626,23 @@ follow-up ticket `tkt_0RVBKGK1V4N31Q6T8XV5GEC3B9`.
 `.metadata.done_at` before falling back to `updatedAt`
 (the `.metadata.done_at //` precedence in
 `scripts/reify-audit-snapshot-filter.jq`). `task_metadata_from_wire`
-(`fused_memory_client.rs:364-370`) does not implement that precedence — it
-derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
-binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
-`consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
-never consulted.
+(`crates/reify-audit/src/fused_memory_client.rs`) does not implement that
+precedence — it derives `done_at` solely from the top-level `updatedAt`.
+Its `metadata` binding is read only for `files`, `done_provenance`, `prd`,
+`consumer_ref`, and `audit_foundation`; `metadata.done_at` is never
+consulted.
 
-**Not equivalent on the failure tier.** Since task 7236 the sidecar's
-conversion is total: an unparseable `updatedAt` degrades that row alone to
-`done_at = null` (Check 5f of `tests/infra/test_reify_audit_predone_wrapper.sh`)
-and the wrapper no longer takes its `exit 125` arm; the measurement below
-records the pre-7236 behaviour.
-On an unparseable `updatedAt`
-the two paths diverge hard, in opposite directions. Measured against a
-`get_tasks` payload whose `status=="done"` row carries
-`"updatedAt":"garbage"`: `jq -r -f scripts/reify-audit-snapshot-filter.jq`
-prints `jq: error (at <stdin>:1): date "garbage" does not match format
-"%Y-%m-%dT%H:%M:%SZ"` and exits 5 with no output at all — the whole
-snapshot is lost, every task, not just the offending row. jq's
-`fromdateiso8601` raises rather than returning null, and the filter
-guards only the empty-string case (`if . == "" then null else
-(sub(...) | fromdateiso8601) end`, the pre-7236 `done_at` derivation in
-`scripts/reify-audit-snapshot-filter.jq`), so a
-non-empty-but-unparseable value reaches the raiser uncaught. The Rust
-path degrades per row instead: `parse_iso8601_to_epoch`
-(`crates/reify-audit/src/fused_memory_client.rs:398`) starts
-`s.split_once('T')?`, so `"garbage"` returns `None`; `done_at` is
-`None` for that row alone (`:364-370`) and every other task still
-loads. The blast radius lands on the wrapper: the jq failure trips
-`set -euo pipefail` in the `curl | jq` pipeline
-(`scripts/reify-audit-predone-wrapper.sh:298-299`), so `--tasks-file`
-materialization fails and the wrapper takes the `exit 125` arm
-(`:308`; its documented "Infrastructure error ... jq failure" code,
-`:130`) — through the synchronous pre-done hook once the §11.1 rewire
-lands (today §11.1.3 measures the raw binary invoked directly on the
-hook path, bypassing the wrapper entirely), that is a project-wide
-blocked done-flip caused by one malformed row. So the
-wrapper path is fail-closed and blast-radius-wide while the
-live-loader path is fail-open and per-row: which loader is wired
-(§11.1.3) changes not just the derived value but the failure mode
-itself.
+**Equivalent on the failure tier (since task 7236).** On an unparseable
+`updatedAt` both paths degrade per row. The sidecar's
+`iso8601_to_epoch_or_null` is total, so that row alone gets
+`done_at = null` and stays in the snapshot (Check 5f of
+`tests/infra/test_reify_audit_predone_wrapper.sh`), where the wrapper's
+missing-`done_at` WARNING names it; `parse_iso8601_to_epoch` returns
+`None` for that row alone and every other task still loads.
+*History (measured under task 6985, before 7236):* the sidecar's
+`fromdateiso8601` raised uncaught on such a row, so jq exited with no
+output, the wrapper took its `exit 125` infrastructure-error arm, and one
+malformed row lost the whole snapshot.
 
 **Consequence: a latent forward-compatibility hazard, not a live bug.**
 §11.2's claim that once fused-memory exposes an explicit `metadata.done_at`

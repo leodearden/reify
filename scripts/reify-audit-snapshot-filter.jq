@@ -48,10 +48,8 @@
 #      and an explicit `else null` arm for no-match, because capture yields
 #      EMPTY there and an empty value inside map({...}) DROPS the row.  Not
 #      `?`: it is `catch EMPTY` (same drop) and binds only to the last filter.
-#      Null, not the loader's answer, for non-ISO input it is lax about (text
-#      after Z, non-numeric fraction, unpadded or out-of-range fields) and for
-#      a basic-format "+HHMM" offset it mis-reads; the wrapper warns on every
-#      done row left with a null done_at (its missing_done_at check).
+#      Input the loader accepts but this parser rejects stays null, and the
+#      wrapper warns on it: docs/architecture-audit/f-infra-design.md §11.2.1.
 #
 # Approximation skew: updatedAt equals the done-flip time only when nothing
 # further has been written to the task record after the flip.  Typical skew
