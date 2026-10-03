@@ -53,12 +53,9 @@ impl std::error::Error for BodyDecodeError {
 /// choosing SSE or bare-JSON framing from `content_type`.
 pub fn decode_body(content_type: &str, body: &str) -> Result<Value, BodyDecodeError> {
     if content_type.contains("text/event-stream") {
-        let data = body
-            .lines()
-            .find_map(|line| line.strip_prefix("data:"))
-            .ok_or_else(|| BodyDecodeError::SseNoDataLine {
-                body: body.to_owned(),
-            })?;
+        let data = first_event_data(body).ok_or_else(|| BodyDecodeError::SseNoDataLine {
+            body: body.to_owned(),
+        })?;
         serde_json::from_str(data.trim()).map_err(|source| BodyDecodeError::SseDataParse {
             source,
             body: body.to_owned(),
@@ -71,6 +68,29 @@ pub fn decode_body(content_type: &str, body: &str) -> Result<Value, BodyDecodeEr
             body: body.to_owned(),
         })
     }
+}
+
+/// The data of the first SSE event that carries any: the values of its
+/// `data:` lines, up to the blank line ending that event, joined with `\n`.
+/// Later events are ignored.
+fn first_event_data(body: &str) -> Option<String> {
+    let mut data_lines: Vec<&str> = Vec::new();
+    for line in sse_lines(body) {
+        if line.is_empty() {
+            if !data_lines.is_empty() {
+                break;
+            }
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+    (!data_lines.is_empty()).then(|| data_lines.join("\n"))
+}
+
+/// `body` split at every SSE line terminator: CRLF, LF or a bare CR.
+fn sse_lines(body: &str) -> impl Iterator<Item = &str> {
+    body.split("\r\n")
+        .flat_map(|chunk| chunk.split(['\r', '\n']))
 }
 
 #[cfg(test)]
@@ -143,12 +163,46 @@ mod tests {
         );
     }
 
-    // Deliberately pins today's first-line-wins behaviour; spec-conformant
-    // multi-line `data:` accumulation is #6288, which replaces this test.
     #[test]
-    fn sse_first_data_line_wins_until_task_6288() {
-        let body = "data: {\"first\":1}\ndata: {\"second\":2}\n\n";
+    fn sse_multi_line_data_field_is_joined_with_newlines() {
+        let body = "event: message\ndata: {\"a\":1,\ndata: \"b\":2}\n\n";
+        assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn sse_data_split_inside_a_json_string_is_refused() {
+        // The joining newline is a raw newline inside a JSON string, which is
+        // invalid JSON: refused, not silently repaired.
+        let body = "data: {\"a\":\"x\ndata: y\"}\n\n";
+        let err = decode_body(SSE, body).unwrap_err();
+        assert!(
+            matches!(err, BodyDecodeError::SseDataParse { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sse_stream_with_several_events_decodes_the_first_event_only() {
+        let body = "data: {\"first\":1}\n\nevent: message\ndata: {\"second\":2}\n\n";
         assert_eq!(decode_body(SSE, body).unwrap(), json!({"first": 1}));
+    }
+
+    #[test]
+    fn sse_event_without_data_is_skipped_for_the_next_event_with_data() {
+        let body = "event: ping\n\ndata: {\"a\":1}\n\n";
+        assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1}));
+    }
+
+    #[test]
+    fn sse_multi_line_data_field_tolerates_crlf_line_endings() {
+        let body = "data: {\"a\":1,\r\ndata: \"b\":2}\r\n\r\n";
+        assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn sse_bare_cr_line_endings_split_lines_and_end_the_event() {
+        let body = "data: {\"a\":1,\rdata: \"b\":2}\r\rdata: {\"second\":2}\r\r";
+        assert_eq!(decode_body(SSE, body).unwrap(), json!({"a": 1, "b": 2}));
     }
 
     #[test]
