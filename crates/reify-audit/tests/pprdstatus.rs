@@ -562,6 +562,34 @@ fn status_classes_decide_contradiction() {
     );
 }
 
+/// The status word need not close the parenthetical. On the live corpus
+/// (2026-10-03) these three shapes were 4 of the 17 true lane-2 positives,
+/// and no hit read a word like `Done when …` or `review-gated` as a status,
+/// so requiring `)`, `,` or a backtick after the word would only lose them.
+#[test]
+fn status_word_followed_by_prose_still_asserts_the_status() {
+    let prd = "docs/prds/live.md";
+    let project = Project::new()
+        .tracked_file(
+            prd,
+            &live_prd(&[
+                "two-FixedSupport pin-collapse #6663 (in-progress; inherited, not owned);",
+                "**Deps:** #6759 (in-progress standard leaf — real edge kept).",
+                "**Supersedes:** task **#3114** (deferred — \"Tighten structural_physical.ri\").",
+            ]),
+        )
+        .task(task("6663", "done"))
+        .task(task("6759", "done"))
+        .task(task("3114", "cancelled"));
+
+    let fired: Vec<String> = cited(&cite_contradictions(&project))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+
+    assert_eq!(fired, ["6663", "6759", "3114"]);
+}
+
 #[test]
 fn unknown_ids_and_prd_relative_indices_are_silent() {
     let project = Project::new()
