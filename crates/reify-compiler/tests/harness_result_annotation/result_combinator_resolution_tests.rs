@@ -503,3 +503,38 @@ structure S {
         v_expr.result_type
     );
 }
+
+// ── (j) D4 narrowed to BARE type params: generic body, headed arg (β #8014) ──
+
+/// [CORE SIGNAL] β #8014 (PRD docs/prds/v0_6/generic-enum-type-arg-retention.md
+/// §7 C-4) narrowed D4's arg-side wildcard (task-4232 γ) to a BARE user type
+/// param. A generic body passing a HEADED `T`-carrying value (`r :
+/// Result<T, E>`) to a concrete headed param (`Result<Length, String>`) must
+/// now head-unify, and the user `T` facing `Length` does not — so the call is
+/// rejected rather than silently resolved. A bare `T` still resolves (pinned in
+/// harness_traits `generic_body_type_param_arg_to_concrete_param_no_error`).
+#[test]
+fn generic_body_headed_type_param_arg_rejects_a_concrete_headed_param() {
+    let source = r#"
+fn need(r: Result<Length, String>) -> Length { 1mm }
+fn wrap<T, E>(r: Result<T, E>) -> Length { need(r) }
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for need(r) in wrap's body, got: {:?}",
+        errors
+    );
+    assert!(
+        errors[0].message.contains("no matching overload for need("),
+        "expected a no-matching-overload diagnostic for need, got: {:?}",
+        errors[0].message
+    );
+}

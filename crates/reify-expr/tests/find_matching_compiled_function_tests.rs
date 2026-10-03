@@ -882,10 +882,7 @@ fn ph(name: &str) -> Type {
 
 /// `Result<ok, err>` as an `Applied` type.
 fn res(ok: Type, err: Type) -> Type {
-    Type::Applied {
-        name: "Result".to_string(),
-        args: vec![ok, err],
-    }
+    Type::applied("Result", vec![ok, err])
 }
 
 /// A HEADED arg that merely CARRIES a nested type param (`Option<T>`,

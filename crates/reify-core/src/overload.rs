@@ -511,8 +511,7 @@ fn is_bare_user_type_param(t: &Type) -> bool {
 #[inline]
 fn arg_side_admits(param_ty: &Type, arg_ty: &Type) -> bool {
     match arg_ty {
-        bare if is_bare_user_type_param(bare) => true,
-        Type::TypeParam(_) => false,
+        Type::TypeParam(_) => !arg_ty.is_unbound_placeholder(),
         headed => type_carries_type_param(headed) && heads_unifiable(param_ty, headed),
     }
 }
@@ -644,10 +643,7 @@ mod tests {
     fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
         let t = || Type::TypeParam("T".to_string());
         let q = || Type::ScalarParam("Q".to_string());
-        let result_of = |args: Vec<Type>| Type::Applied {
-            name: "Result".to_string(),
-            args,
-        };
+        let result_of = |args: Vec<Type>| Type::applied("Result", args);
         let proj = |base: Type, member: &str| Type::Projection {
             base: Box::new(base),
             member: member.to_string(),
@@ -1079,10 +1075,7 @@ mod tests {
 
     /// `Result<ok, err>` as an `Applied` type.
     fn res(ok: Type, err: Type) -> Type {
-        Type::Applied {
-            name: "Result".to_string(),
-            args: vec![ok, err],
-        }
+        Type::applied("Result", vec![ok, err])
     }
 
     /// `type_carries_trait_object` deliberately walks FEWER constructors than
