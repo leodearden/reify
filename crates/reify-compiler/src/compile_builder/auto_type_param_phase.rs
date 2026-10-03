@@ -38,7 +38,8 @@
 //!      use-site is left pointing at the generic template. Shapes A/B stay
 //!      silent here — they already carry the resolver's own `NoCandidate` /
 //!      `Ambiguous` error — while the un-seedable residual is diagnosed with
-//!      a dedicated compile error instead of failing silently (#6854, #7318),
+//!      a dedicated compile error, anchored on the sub-component and naming
+//!      the rejected type-argument, instead of failing silently (#6854, #7318),
 //!   4. accumulates `(param_name, template_name)` substitution pairs across all
 //!      requests, deduping first-wins, into `ctx.auto_type_substitution`.
 //!
@@ -61,8 +62,8 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
 use crate::types::{
-    AutoTypeSubstitution, EntityKind, TopologyTemplate, ValueCellKind, mangle_monomorph_name,
-    monomorph_name_would_collide,
+    AutoTypeSubstitution, EntityKind, SubComponentDecl, TopologyTemplate, ValueCellKind,
+    mangle_monomorph_name, monomorph_name_would_collide,
 };
 
 /// A compile-time [`ConstraintChecker`] that returns
@@ -141,6 +142,69 @@ fn substitute_constraint_collection(
     }
 }
 
+/// Where a non-`auto:` position's effective type-argument came from.
+#[derive(Clone, Copy)]
+enum TypeArgSource {
+    /// Written at the use-site.
+    Explicit,
+    /// Omitted at the use-site, so the type parameter's declared default.
+    DeclaredDefault,
+}
+
+/// A non-`auto:` position whose effective type-argument could not seed `sigma`.
+struct UnseededTypeArg<'a> {
+    param: &'a str,
+    source: TypeArgSource,
+    arg: &'a Type,
+}
+
+impl UnseededTypeArg<'_> {
+    fn describe(&self) -> String {
+        let source = match self.source {
+            TypeArgSource::Explicit => "explicit type-argument",
+            TypeArgSource::DeclaredDefault => "declared default",
+        };
+        format!(
+            "{:?} has {source} '{}', which does not name a known structure",
+            self.param, self.arg
+        )
+    }
+}
+
+/// The compile error for a use-site whose non-`auto:` type-arguments left type
+/// parameters of its generic target unbound, so no monomorph can be synthesized
+/// (#6854, #7318). `unbound` lists every such parameter; `unseeded` says which
+/// of them had a type-argument that was rejected, and why. The error is
+/// anchored on the sub-component when it can be found.
+fn unseedable_type_arg_error(
+    owner_structure: &str,
+    target_name: &str,
+    sub: Option<&SubComponentDecl>,
+    unbound: &[&str],
+    unseeded: &[UnseededTypeArg<'_>],
+) -> Diagnostic {
+    let sub_name = sub.map_or("<unknown>", |sub| sub.name.as_str());
+    let offenders: String = unseeded
+        .iter()
+        .map(|arg| format!("; {}", arg.describe()))
+        .collect();
+    let error = Diagnostic::error(format!(
+        "sub-component '{sub_name}' of '{owner_structure}' instantiates \
+         generic '{target_name}' with a non-`auto:` type-argument that \
+         does not resolve to a concrete structure (type parameter(s) \
+         {unbound:?} could not be bound{offenders}), so no monomorph can be \
+         synthesized; the sub-component would retain unsubstituted type \
+         parameters at evaluation time"
+    ));
+    match sub {
+        Some(sub) => error.with_label(DiagnosticLabel::new(
+            sub.span,
+            "no monomorph can be synthesized for this sub-component",
+        )),
+        None => error,
+    }
+}
+
 /// Drain `ctx.pending_auto_resolutions`, resolve each `auto:` type-arg use-site,
 /// rewrite placeholder slots to concrete `StructureRef`s, and aggregate the
 /// module's `auto_type_substitution`.
@@ -189,6 +253,10 @@ pub(crate) fn phase_auto_type_param_resolution(
     let (rewrites, subst_pairs, monomorph_clones, structure_name_rewrites) = {
         // Template registry: prelude `structure def`s first, then local
         // overrides — identical composition to `phase_pending_bound_checks`.
+        // Local templates are deliberately NOT kind-filtered: an occurrence is
+        // a valid owner and a valid `auto:` candidate here, so the seeding
+        // below accepts an explicitly-named one exactly as it accepts a
+        // resolver-chosen one.
         let template_registry: HashMap<String, &TopologyTemplate> = prelude
             .iter()
             .flat_map(|m| m.templates.iter())
@@ -286,9 +354,11 @@ pub(crate) fn phase_auto_type_param_resolution(
             // `outcome.substitution` above, and `sigma` would otherwise stay
             // short of full coverage even though the position is already
             // resolved — just not by this resolver (#6854).
-            if let Some(owner) = template_registry.get(req.owner_structure.as_str())
-                && let Some(sub) = owner.sub_components.get(req.sub_index)
-            {
+            let sub: Option<&SubComponentDecl> = template_registry
+                .get(req.owner_structure.as_str())
+                .and_then(|owner| owner.sub_components.get(req.sub_index));
+            let mut unseeded: Vec<UnseededTypeArg> = Vec::new();
+            if let Some(sub) = sub {
                 for (position, tp) in target.type_params.iter().enumerate() {
                     // Positions this use-site supplied as an `auto:` clause
                     // are the resolver's to bind; a failure there is a
@@ -300,14 +370,18 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // An explicitly-supplied type-arg is ALREADY RESOLVED —
                     // just not by this resolver. Seed it so coverage below
                     // sees the truth. A slot that is not a `StructureRef` to
-                    // a known template is left unseeded and falls through to
-                    // the partial-coverage skip below: an enclosing generic's
-                    // own `TypeParam`, or an undefined name (lowering turns an
-                    // unknown name into a `StructureRef` of it, which is no
-                    // safe monomorph base, #7318). `Type::Applied` never
-                    // arrives: both sources of `effective_arg` (entity.rs's
-                    // sub type-arg arms, `convert_type_params`'s default arm)
-                    // keep only the head name of `Box<SealA>` (#7839).
+                    // a known template is left unseeded, recorded in
+                    // `unseeded`, and falls through to the partial-coverage
+                    // skip below: an enclosing generic's own `TypeParam`, or
+                    // an undefined name (lowering turns an unknown name into
+                    // a `StructureRef` of it without diagnosing it, and such
+                    // a name is no safe monomorph base, #7318). Diagnosing it
+                    // where it is lowered is #8151's job; this guard is the
+                    // backstop for use-sites that carry an `auto:` clause.
+                    // `Type::Applied` never arrives: both sources of
+                    // `effective_arg` (entity.rs's sub type-arg arms,
+                    // `convert_type_params`'s default arm) keep only the head
+                    // name of `Box<SealA>` (#7839).
                     //
                     // When the position carries NO type-arg at all, fall back
                     // to the type parameter's DECLARED DEFAULT (shape D,
@@ -325,13 +399,30 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // not even describe what happened — the arg was omitted.
                     // A default is already-resolved information exactly like
                     // an explicit arg, so seeding it is the correct remedy.
-                    let effective_arg: Option<&Type> =
-                        sub.type_args.get(position).or(tp.default.as_ref());
-                    if let Some(Type::StructureRef(name)) = effective_arg
-                        && template_registry.contains_key(name.as_str())
-                    {
-                        sigma.insert(tp.name.clone(), Type::StructureRef(name.clone()));
-                        candidates_by_position.push((position, name.clone()));
+                    let effective_arg = sub
+                        .type_args
+                        .get(position)
+                        .map(|arg| (TypeArgSource::Explicit, arg))
+                        .or_else(|| {
+                            tp.default
+                                .as_ref()
+                                .map(|arg| (TypeArgSource::DeclaredDefault, arg))
+                        });
+                    match effective_arg {
+                        Some((_, Type::StructureRef(name)))
+                            if template_registry.contains_key(name.as_str()) =>
+                        {
+                            sigma.insert(tp.name.clone(), Type::StructureRef(name.clone()));
+                            candidates_by_position.push((position, name.clone()));
+                        }
+                        Some((source, arg)) => unseeded.push(UnseededTypeArg {
+                            param: tp.name.as_str(),
+                            source,
+                            arg,
+                        }),
+                        // Neither supplied nor defaulted: the bound-check pass
+                        // reports the missing type-argument.
+                        None => {}
                     }
                 }
             }
@@ -407,21 +498,13 @@ pub(crate) fn phase_auto_type_param_resolution(
                     .map(|tp| tp.name.as_str())
                     .filter(|n| !sigma.contains_key(*n))
                     .collect();
-                let sub_name = template_registry
-                    .get(req.owner_structure.as_str())
-                    .and_then(|owner| owner.sub_components.get(req.sub_index))
-                    .map(|sub| sub.name.as_str())
-                    .unwrap_or("<unknown>");
-                let owner_structure = req.owner_structure.as_str();
-                let target_name = req.target_name.as_str();
-                diagnostics.push(Diagnostic::error(format!(
-                    "sub-component '{sub_name}' of '{owner_structure}' instantiates \
-                     generic '{target_name}' with a non-`auto:` type-argument that \
-                     does not resolve to a concrete structure (type parameter(s) \
-                     {unbound:?} could not be bound), so no monomorph can be \
-                     synthesized; the sub-component would retain unsubstituted type \
-                     parameters at evaluation time"
-                )));
+                diagnostics.push(unseedable_type_arg_error(
+                    req.owner_structure.as_str(),
+                    req.target_name.as_str(),
+                    sub,
+                    &unbound,
+                    &unseeded,
+                ));
             }
 
             if sigma_covers_all_type_params {
