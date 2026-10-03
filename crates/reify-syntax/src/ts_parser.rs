@@ -849,21 +849,15 @@ impl<'a> Lowering<'a> {
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
     /// the structure that uses `pp.Pulley()` still binds.
     ///
-    /// **This file's OWN imports only — no external seeding hook (task ν).**
-    /// `known_enums` can be pre-seeded from outside the file
-    /// (`parse_with_prelude_enums` → `with_prelude_enums`); these two maps
-    /// cannot — by construction they see only the `import_declaration` nodes of
-    /// the file being parsed. So a qualifier that `std.prelude` supplies, or
-    /// that a facade re-exports via `pub import` (PRD D-4, §10 Q1), is absent
-    /// from this file's import set and `lower_namespaced_call`'s gate rejects
-    /// it at PARSE time.
-    ///
-    /// The enum precedent is deliberately not mirrored yet: a
-    /// `with_prelude_bindings` seed has no caller until the N3 prelude work
-    /// (PRD §8 ι) ships `std.prelude`, so it would be untested surface today.
-    /// Widening the gate to prelude-supplied and re-exported bindings is
-    /// ν's (task 5505), alongside the qualified lookup that gives such a
-    /// binding a module to resolve against.
+    /// **Per-file by construction: nothing outside the file seeds these
+    /// bindings.** `known_enums` takes an external seed
+    /// (`parse_with_prelude_enums`) because enum names are pub DEFS, which cross
+    /// module boundaries; a namespace binding never does. The qualifier is the
+    /// importing file's OWN binding name (docs/prds/v0_6/stdlib-namespace.md
+    /// NS-Q1 / D-7), and a `pub import` re-exports its target's pub defs, not
+    /// its binding (docs/prds/v0_6/resolution-unification.md D-7). So `import
+    /// std.prelude` binds `prelude` alone: what the facade re-exports is reached
+    /// as `prelude.Name` or unqualified, never as `units.Name`.
     fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
         let Some(import) = self.lower_import(node) else {
             return;
