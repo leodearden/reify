@@ -480,15 +480,20 @@ fn closed_4bar_loop_closes_consistently() {
 /// B6 — §8 live constraint rank (KIN-OFFSET β2, task 4429):
 ///
 /// At the ASSEMBLED config of the Grashof 4-bar, the loop-constraint Jacobian
-/// (6×5, one column per spanning-tree joint) has effective rank ≥ 1 after
-/// projecting out the closing +Z-revolute's absorbed ω_z row via
-/// `reduce_constraint_rank`.
+/// (6×5, one column per spanning-tree joint) reduces to m_eff = 3 rows under
+/// `reduce_constraint_rank`, which drops only zero or dependent rows.
 ///
-/// Expected m_eff = 2: in-plane (v_x, v_y) rows are active; ω_z is absorbed
-/// by the closing revolute; ω_x, ω_y, v_z are structurally zero for the
-/// planar-XY linkage.  This exercises the live-constraint branch of the
-/// closed-chain bridge — unreachable by the 2-prismatic fixture (m_eff=0 there
-/// because the closing prismatic absorbs the entire residual row).
+/// The residual welds the coupler_tip body to the rocker_tip body, so the
+/// closure constrains the in-plane translation (v_x, v_y) AND the orientation
+/// (ω_z: θ_crank+θ_coupler+θ_coupler_tip = θ_rocker+θ_rocker_tip). ω_x, ω_y
+/// and v_z are structurally zero for the planar-XY linkage. Planar Gruebler
+/// cross-check, with coupler_tip+rocker_tip welded into one link: links = 5,
+/// joints = 5R, M = 3·4 − 2·5 = 2, rank = n − M = 5 − 2 = 3 — a planar 4-bar
+/// constrains 3 DOF (kinematic-constraints-completion.md §4.3).
+///
+/// The kernel of the reduced constraint pins the policy physically: the .ri's
+/// prescribed tangent velocity lies in ker(A), and spinning the closing joint
+/// alone does not (it opens the loop at first order).
 ///
 /// Characterization/contract assertion: β1's non-coincident pivot offsets make
 /// the FD Jacobian non-degenerate at the Grashof θ=45° config, so the test
@@ -542,7 +547,8 @@ fn closed_4bar_live_constraint_rank() {
 
     // The 5 spanning-tree joints in bodies order:
     //   crank, coupler, coupler_tip, rocker, rocker_tip.
-    // This is the same ordering the bridge uses for its ordered_joints (eval.rs:1341).
+    // This is the same ordering `closed_chain_inverse_dynamics` uses for its
+    // ordered_joints.
     let target_joints = vec![
         j_crank,
         j_coupler,
@@ -563,8 +569,8 @@ fn closed_4bar_live_constraint_rank() {
         "5 spanning-tree joints → 5 Jacobian columns"
     );
 
-    // Transpose to 6×5 row-major (a_raw[row*5+col] = col[row]).
-    // Mirrors eval.rs:1361: for (col_idx, col) in raw_cols.iter().enumerate() { ... }
+    // Transpose to 6×5 row-major (a_raw[row*5+col] = col[row]), exactly as
+    // `closed_chain_inverse_dynamics` assembles it.
     let n = 5usize;
     let mut a_raw = vec![0.0f64; 6 * n];
     for (col_idx, col) in raw_cols.iter().enumerate() {
@@ -573,49 +579,82 @@ fn closed_4bar_live_constraint_rank() {
         }
     }
 
-    // Closing joint's motion subspace: j_coupler_tip is a +Z revolute.
-    // Spatial twist convention: [ω_x, ω_y, ω_z, v_x, v_y, v_z].
-    // A +Z-revolute has ω=(0,0,1), v=(0,0,0) → subspace column [0,0,1,0,0,0].
-    // (motion_subspace_columns is pub(crate) in reify-stdlib, so we build the
-    // literal directly — all 5 joints are +Z revolutes per closed_4bar_idyn.ri.)
-    let s_close = [[0.0f64, 0.0, 1.0, 0.0, 0.0, 0.0]];
+    // Drop only zero or dependent rows — the exact call
+    // `closed_chain_inverse_dynamics` makes.
+    let (a_red, m_eff) =
+        reify_stdlib::dynamics::closed_chain::reduce_constraint_rank(&a_raw, 6, n, 1e-10);
 
-    // Project out the closing joint's absorbed ω_z direction and row-reduce.
-    // Exact call the bridge makes at eval.rs:1377.
-    let (_a_red, m_eff) =
-        reify_stdlib::dynamics::closed_chain::reduce_constraint_rank(&a_raw, 6, n, &s_close, 1e-10);
-
-    // Expected m_eff = 2 (row-by-row reasoning):
-    //   row 0 (ω_x): identically zero for planar-XY linkage → reduced to near-zero → dropped
+    // Expected m_eff = 3 (row-by-row reasoning):
+    //   row 0 (ω_x): identically zero for planar-XY linkage → dropped
     //   row 1 (ω_y): identically zero for planar-XY          → dropped
-    //   row 2 (ω_z): absorbed by the closing +Z revolute's subspace → subtracted → zero
+    //   row 2 (ω_z): ACTIVE orientation closure
+    //                θ_crank+θ_coupler+θ_coupler_tip = θ_rocker+θ_rocker_tip,
+    //                raw row [−1, −1, −1, +1, +1]             → survives
     //   row 3 (v_x): ACTIVE in-plane translational constraint → survives
     //   row 4 (v_y): ACTIVE in-plane translational constraint → survives
     //   row 5 (v_z): identically zero for planar-XY          → dropped
     //
-    // The 2-prismatic e2e gets m_eff=0 because its closing prismatic absorbs the
-    // sole non-zero residual row entirely.  This 4-bar's +Z revolute projects out
-    // only ω_z, leaving the translational (v_x, v_y) rows as live constraints.
-    // Using assert_eq rather than ≥1: a regression that drops one translational
-    // row (m_eff 2→1) would silently pass a ≥1 check.
+    // Cross-check (planar Gruebler, coupler_tip+rocker_tip welded into one
+    // link): links = 5, joints = 5R ⇒ M = 3·4 − 2·5 = 2, rank = n − M = 3.
+    // Matches kinematic-constraints-completion.md §4.3: a planar 4-bar
+    // constrains 3 DOF. Using assert_eq rather than ≥1: a regression that
+    // drops a live row (3→2) would silently pass a ≥1 check.
     assert_eq!(
-        m_eff, 2,
-        "reduce_constraint_rank must return m_eff=2 at the assembled 4-bar config \
-         (in-plane v_x,v_y active; ω_z absorbed by closing +Z revolute; \
-         ω_x,ω_y,v_z structurally zero for planar-XY). \
-         Indicates a degenerate or partially-degenerate FD Jacobian — check \
-         closed_4bar_idyn.ri link lengths and pivot offsets (β1 §0 gap requirement)."
+        m_eff, 3,
+        "reduce_constraint_rank must return m_eff=3 at the assembled 4-bar config \
+         (ω_z orientation closure and in-plane v_x,v_y active; ω_x,ω_y,v_z \
+         structurally zero for planar-XY). Indicates a degenerate or wrongly-reduced \
+         Jacobian — check closed_4bar_idyn.ri link lengths and pivot offsets (β1 §0 \
+         gap requirement) and that no row is dropped on modelling grounds."
     );
 
-    // ── Bridge tie-back: m_eff=2 implies non-trivial KKT correction in `forces` ──
+    // q̇ in bodies order (same as B7): [ω, −8π/3, 0, 0, −2π/3]
+    let q_dot_b6 = [
+        std::f64::consts::TAU,   // j_crank:       ω = 2π
+        -8.377580409572781_f64,  // j_coupler:     −8π/3
+        0.0_f64,                 // j_coupler_tip: 0
+        0.0_f64,                 // j_rocker:      0
+        -2.0943951023931953_f64, // j_rocker_tip:  −2π/3
+    ];
+    let a_red_times = |q_dot: &[f64; 5]| -> f64 {
+        a_red
+            .chunks(n)
+            .map(|row| row.iter().zip(q_dot).map(|(a, qd)| a * qd).sum::<f64>().powi(2))
+            .sum::<f64>()
+            .sqrt()
+    };
+
+    // (i) The .ri's prescribed tangent velocity is admitted: ‖a_red·q̇‖₂ ≈ 0.
+    //     Basis: measured 6.1e-9; FD entry noise ≤ ~1.1e-9 (measured) ×
+    //     |q̇|₁ ≈ 16.8 gives ≤ ~2e-8 a priori, so 1e-6 has ≥ 50× headroom.
+    let tangent_residual = a_red_times(&q_dot_b6);
+    assert!(
+        tangent_residual < 1e-6,
+        "the 4-bar's prescribed tangent velocity must lie in ker(a_red): \
+         ‖a_red·q̇‖₂ = {tangent_residual:.3e} (expected < 1e-6, measured 6.1e-9)"
+    );
+
+    // (ii) Spinning the closing joint alone is REJECTED: e_2 is a unit velocity
+    //      on j_coupler_tip (target index 2). Its analytic ω_z entry is −1, so
+    //      ‖a_red·e_2‖₂ ≈ 1.0 (measured). The retired closing-joint projection
+    //      admitted it (6.9e-11): a phantom freedom that opens the loop.
+    let e_2 = [0.0, 0.0, 1.0, 0.0, 0.0];
+    let closing_spin_residual = a_red_times(&e_2);
+    assert!(
+        closing_spin_residual > 0.5,
+        "spinning the closing joint alone must violate the closure: \
+         ‖a_red·e_2‖₂ = {closing_spin_residual:.3e} (expected > 0.5, measured 1.0)"
+    );
+
+    // ── Bridge tie-back: m_eff=3 implies non-trivial KKT correction in `forces` ──
     //
     // B6 reconstructs reduce_constraint_rank from public primitives; the test above
     // passes as long as the two stdlib functions behave, regardless of how the bridge
     // wires them together.  This tie-back reads the bridge's actual `forces` output
     // and asserts the loaded-sample power is substantial (> 1 W), confirming that the
-    // bridge's KKT path (ordered_joints, closing-joint extraction, eps) was correctly
-    // wired and propagated the inertial load.  A mismatch in bridge wiring would
-    // produce near-zero or wrong forces here even if m_eff=2 above.
+    // bridge's KKT path (ordered_joints, eps) was correctly wired and propagated
+    // the inertial load.  A mismatch in bridge wiring would
+    // produce near-zero or wrong forces here even if m_eff=3 above.
     let cell = ValueCellId::new("ClosedFourBarIdyn", "forces");
     let per_sample = match result.values.get(&cell) {
         Some(Value::List(s)) if s.len() >= 2 => s,
@@ -629,14 +668,6 @@ fn closed_4bar_live_constraint_rank() {
         Value::List(f) => f,
         other => panic!("B6 bridge tie-back: forces[1] expected List<JointForce>, got {other:?}"),
     };
-    // q̇ in bodies order (same as B7): [ω, −8π/3, 0, 0, −2π/3]
-    let q_dot_b6 = [
-        std::f64::consts::TAU,   // j_crank:       ω = 2π
-        -8.377580409572781_f64,  // j_coupler:     −8π/3
-        0.0_f64,                 // j_coupler_tip: 0
-        0.0_f64,                 // j_rocker:      0
-        -2.0943951023931953_f64, // j_rocker_tip:  −2π/3
-    ];
     let power_b6: f64 = forces_1
         .iter()
         .zip(q_dot_b6.iter())
@@ -648,10 +679,10 @@ fn closed_4bar_live_constraint_rank() {
     assert!(
         power_b6 > 1.0,
         "B6 bridge tie-back: loaded-sample power = {power_b6:.4} W must be > 1 W \
-         (m_eff=2 ⇒ active KKT constraints ⇒ inertial torques carry ~2.573 W load). \
+         (m_eff=3 ⇒ active KKT constraints ⇒ inertial torques carry ~2.573 W load). \
          A near-zero value indicates bridge wiring is broken even though the standalone \
-         reduce_constraint_rank call returned m_eff=2 — wrong ordered_joints, wrong \
-         closing-joint extraction, or wrong eps silences the KKT correction."
+         reduce_constraint_rank call returned m_eff=3 — wrong ordered_joints or wrong \
+         eps silences the KKT correction."
     );
 }
 

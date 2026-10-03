@@ -2761,9 +2761,10 @@ mod tests {
         );
 
         // ── 1-sample MotionTrajectory ─────────────────────────────────────────
-        // values[0] = j_a driver (0.5m); values[1] = spanning-tree j_b (1.0m);
-        // values[2] = closing j_b initial guess (0.5m).
-        // Closure identity: spanning(j_b) = j_a + free(j_b) → 1.0 = 0.5 + 0.5. ✓
+        // One value per body. The loop's closure is q_b == q_a, so the sample
+        // sits ON closure at q_a = q_b = 0.5 m. values[2] (the closing body's
+        // `at`, j_b again) is structurally required and inert for chain
+        // extraction, which reads the FIRST j_b binding.
         let sample = mint_instance(
             "TrajectorySample",
             vec![
@@ -2777,9 +2778,9 @@ mod tests {
                 (
                     "values".to_string(),
                     Value::List(vec![
-                        Value::length(0.5), // m1@j_a: driver = 0.5 m
-                        Value::length(1.0), // m2@j_b: spanning-tree position = 1.0 m
-                        Value::length(0.5), // m3@j_b: closing-edge initial guess = 0.5 m
+                        Value::length(0.5), // m1@j_a: q_a = 0.5 m
+                        Value::length(0.5), // m2@j_b: q_b = 0.5 m (closure q_b == q_a)
+                        Value::length(0.5), // m3@j_b: closing body, inert for chains
                     ]),
                 ),
                 (
@@ -2881,16 +2882,19 @@ mod tests {
     /// (identity-pose) form, so that combination was previously inferred rather
     /// than exercised.
     ///
-    /// Fixture — `j_a` prismatic +x and `j_b` prismatic +z, both parented to
-    /// world, closed by a third body that re-parents `j_b` onto `j_a` carrying
-    /// a pose of `translate(0, 0, 0.5 m)`:
+    /// Fixture — `j_a` and `j_b` both prismatic +z (distinct ranges keep the
+    /// joint Maps distinct), both parented to world, closed by a third body
+    /// that re-parents `j_b` onto `j_a` carrying a pose of
+    /// `translate(0, 0, 0.5 m)`:
     ///
     ///     path_a = [world, j_b]                  T_a = translate(0, 0, q_b)
-    ///     path_b = [world, j_a, fixed(pose)]     T_b = translate(q_a, 0, 0.5)
+    ///     path_b = [world, j_a, fixed(pose)]     T_b = translate(0, 0, q_a + 0.5)
     ///
-    /// At `q_a = 0, q_b = 0.5` the closure is EXACTLY satisfied, and the pose is
-    /// what satisfies it — a pose link dropped anywhere on this path surfaces as
-    /// a 0.5 m residual rather than as a silently different answer.
+    /// The closure is `q_b = q_a + 0.5`: one live constraint row v_z = [1, −1]
+    /// and one degree of mobility along q̇ = [1, 1]. At `q_a = 0, q_b = 0.5`
+    /// the closure is EXACTLY satisfied, and the pose is what satisfies it — a
+    /// pose link dropped anywhere on this path surfaces as a 0.5 m residual
+    /// rather than as a silently different answer.
     ///
     /// The workless-constraint identity is checked against a τ_open measured on
     /// the same two spanning-tree bodies with the closing call dropped. That
@@ -2913,7 +2917,7 @@ mod tests {
             lower_inclusive: true,
             upper_inclusive: true,
         };
-        let j_a = eval_builtin("prismatic", &[unit(1.0, 0.0, 0.0), len_range(1.0)]);
+        let j_a = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(1.0)]);
         let j_b = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(2.0)]);
 
         let mp_a = mass_properties_fixture(
@@ -3037,6 +3041,23 @@ mod tests {
             chain_b.len()
         );
 
+        // The reduced constraint is the single live v_z row [1, −1] — the row a
+        // closing-joint (+z) projection would delete.
+        let mut a_raw = vec![0.0f64; 6 * n];
+        for (col_idx, col) in raw_cols.iter().enumerate() {
+            for row_idx in 0..6 {
+                a_raw[row_idx * n + col_idx] = col[row_idx];
+            }
+        }
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
+        assert_eq!(m_eff, 1, "the closure q_b = q_a + 0.5 is one live constraint row");
+        for (i, (got, want)) in a_red.iter().zip([1.0, -1.0]).enumerate() {
+            assert!(
+                (got - want).abs() <= 1e-6,
+                "reduced row[{i}]: got {got:.6e}, want {want:.6e} (the v_z row [1, −1])"
+            );
+        }
+
         // (d) End-to-end: the closed path returns finite torques.
         let sample = |values: Vec<Value>| {
             mint_instance(
@@ -3098,24 +3119,25 @@ mod tests {
             assert!(t.is_finite(), "tau_closed[{i}] must be finite, got {t}");
         }
 
-        // (e) Workless constraints: the reduced constraint row is [1, 0] (the
-        // v_z row is absorbed by the closing +z prismatic — see
-        // `closed_chain::tests::reduce_constraint_rank_on_builder_produced_closed_chain`),
-        // so q̇ = [0, 1] lies in its null space and τ·q̇ must equal τ_open·q̇:
-        // λ does no work along it. Non-vacuous — j_b carries its 2 kg link
-        // against gravity, so the shared value is ≈ 19.62 N, not 0.
+        // (e) Workless constraints: the tangent virtual velocity q̇ = [1, 1]
+        // satisfies A·q̇ = 0, so Σ τ_closed·q̇ must equal Σ τ_open·q̇ — λ does
+        // no work along it. Non-vacuous: both sliders carry their links against
+        // gravity, so Σ τ_open·q̇ ≈ (1 + 2)·9.81 = 29.43 N, not 0. Bound basis:
+        // the difference is λ·(A·q̇), and both factors are first-order in the FD
+        // asymmetry of A's two entries (≤ ulp(0.5)/2 / 1e-7 ≈ 5.6e-10), so the
+        // product is ~1e-17 and 1e-9 leaves ≥ 8 orders of headroom.
+        let q_dot = [1.0, 1.0];
+        let power = |tau: &[f64]| -> f64 { tau.iter().zip(q_dot).map(|(t, qd)| t * qd).sum() };
+        let (power_closed, power_open) = (power(&tau_closed), power(&tau_open));
         assert!(
-            tau_open[1].abs() > 1.0,
-            "the +z prismatic must carry a real gravity load for this identity to \
-             discriminate, got {}",
-            tau_open[1]
+            power_open.abs() > 1.0,
+            "both +z sliders must carry a real gravity load for this identity to \
+             discriminate, got Σ τ_open·q̇ = {power_open}"
         );
         assert!(
-            (tau_closed[1] - tau_open[1]).abs() < 1e-9,
-            "virtual work along the null-space direction q̇ = [0, 1]: τ_closed[1] = {}, \
-             τ_open[1] = {} — constraint forces must do no work along it",
-            tau_closed[1],
-            tau_open[1]
+            (power_closed - power_open).abs() < 1e-9,
+            "virtual work along the tangent q̇ = [1, 1]: Σ τ_closed·q̇ = {power_closed}, \
+             Σ τ_open·q̇ = {power_open} — constraint forces must do no work along it"
         );
     }
 

@@ -416,114 +416,76 @@ fn ldlt_solve_symmetric(a: &mut [f64], b: &mut [f64], k: usize, pivot_eps: f64) 
 mod tests {
     use super::{reduce_constraint_rank, solve_closed_chain, ClosedChainError, DEFAULT_PIVOT_EPS};
 
-    // ── reduce_constraint_rank: planar revolute 4-bar row filter ─────────────
+    // ── reduce_constraint_rank: zero and dependent rows only ──────────────────
     //
-    // Builds a synthetic 6×3 raw A that mimics the raw twist Jacobian of a
-    // planar revolute 4-bar (mechanism in the x-z plane, revolute pins about +y):
+    // Nothing is "absorbed": a row is discarded only when it is (numerically)
+    // zero or linearly dependent on rows already kept, and every retained row
+    // is a verbatim row of `a_full`.
     //
-    //   ωx row = [0, 0, 0]   — structurally zero (planar motion)
-    //   ωy row = [a, b, c]   — nonzero BUT absorbed by closing revolute (+y)
-    //   ωz row = [0, 0, 0]   — structurally zero
-    //   vx row = [d, e, f]   — active constraint
-    //   vy row = [0, 0, 0]   — structurally zero (planar motion)
-    //   vz row = [g, h, k]   — active constraint
+    // Case 1 is a synthetic 6×3 raw A shaped like a planar loop's twist
+    // Jacobian (ωx, ωz, vy rows structurally zero). The three nonzero rows
+    // ωy, vx, vz are independent — det = −0.369 ≠ 0 — so all three survive.
     //
-    // Closing-joint motion subspace S_close = [[0,1,0, 0,0,0]] (+y revolute).
-    // After projecting out S_close and row-reducing, expected m_eff = 2
-    // (vx-row, vz-row).
+    // Case 2: a duplicate row is dropped (m_eff = 1).
     //
-    // A second case checks that a duplicate row is dropped (full-row-rank
-    // reduction leaves m_eff = 1 for a 2×3 A with identical rows).
+    // Case 3: a dependent but non-duplicate row is dropped. r3 = r1 + 2·r2 is
+    // exact in f64: partial pivoting takes r3 at col 0, r1 − r3 = [0, −2, −2],
+    // and r2 + 0.5·[0, −2, −2] = 0 exactly, so m_eff = 2.
     //
     // Achievability: deterministic linear algebra — exact expected result.
     #[test]
-    fn reduce_constraint_rank_drops_closing_freedom_and_zero_rows() {
+    fn reduce_constraint_rank_drops_only_zero_and_dependent_rows() {
         let eps = 1e-10_f64;
 
-        // ── case 1: planar revolute 4-bar synthetic A (6×3) ─────────────────
-        let d = 1.3_f64;
-        let e = -0.7_f64;
-        let f = 0.4_f64;
-        let g = -0.5_f64;
-        let h = 0.9_f64;
-        let k = -1.1_f64;
-        let a_wy = 2.0_f64;
-        let b_wy = -1.5_f64;
-        let c_wy = 0.8_f64;
+        // ── case 1: planar-shaped synthetic A (6×3) ─────────────────────────
+        let wy_row = [2.0_f64, -1.5, 0.8];
+        let vx_row = [1.3_f64, -0.7, 0.4];
+        let vz_row = [-0.5_f64, 0.9, -1.1];
         // Row order: [ωx, ωy, ωz, vx, vy, vz] (6 rows) × 3 cols (row-major).
-        let a_raw: Vec<f64> = vec![
-            0.0, 0.0, 0.0,    // ωx
-            a_wy, b_wy, c_wy, // ωy — absorbed by closing revolute +y
-            0.0, 0.0, 0.0,    // ωz
-            d,   e,   f,      // vx — active
-            0.0, 0.0, 0.0,    // vy
-            g,   h,   k,      // vz — active
-        ];
-        // Closing revolute about +y: S_close = [0,1,0, 0,0,0].
-        let s_close: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let mut a_raw: Vec<f64> = Vec::with_capacity(18);
+        for row in [[0.0; 3], wy_row, [0.0; 3], vx_row, [0.0; 3], vz_row] {
+            a_raw.extend_from_slice(&row);
+        }
 
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, 3, &[s_close], eps);
-        assert_eq!(m_eff, 2, "case1: expected m_eff=2 (vx-row + vz-row)");
-        assert_eq!(a_red.len(), 2 * 3, "case1: reduced A is 2×3");
-
-        // The two independent rows must span vx-row and vz-row (up to row order
-        // and possible row scaling — we check that each retained row is a scalar
-        // multiple of either vx-row or vz-row by verifying the cross-product
-        // of the reduced row with the expected is zero).
-        let vx_row = [d, e, f];
-        let vz_row = [g, h, k];
-
-        let is_parallel_to = |row: &[f64], ref_row: &[f64; 3]| -> bool {
-            // row × ref_row == 0 ⟺ parallel (in ℝ³)
-            // Use |row × ref_row|² / (|row|²·|ref_row|²) < eps²
-            let cx = row[1] * ref_row[2] - row[2] * ref_row[1];
-            let cy = row[2] * ref_row[0] - row[0] * ref_row[2];
-            let cz = row[0] * ref_row[1] - row[1] * ref_row[0];
-            let cross_sq = cx * cx + cy * cy + cz * cz;
-            let norm_sq = row.iter().map(|x| x * x).sum::<f64>()
-                * ref_row.iter().map(|x| x * x).sum::<f64>();
-            cross_sq < 1e-20 * norm_sq.max(1e-30)
-        };
-
-        let row0 = &a_red[0..3];
-        let row1 = &a_red[3..6];
-        let row0_ok = is_parallel_to(row0, &vx_row) || is_parallel_to(row0, &vz_row);
-        let row1_ok = is_parallel_to(row1, &vx_row) || is_parallel_to(row1, &vz_row);
-        assert!(row0_ok, "case1: reduced row0 must be parallel to vx-row or vz-row");
-        assert!(row1_ok, "case1: reduced row1 must be parallel to vx-row or vz-row");
-        // The two rows must not be parallel to each other.
-        assert!(
-            !is_parallel_to(row0, &[row1[0], row1[1], row1[2]]),
-            "case1: two reduced rows must be independent"
-        );
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, 3, eps);
+        assert_eq!(m_eff, 3, "case1: expected m_eff=3 (ωy-, vx- and vz-rows all kept)");
+        assert_eq!(a_red.len(), 3 * 3, "case1: reduced A is 3×3");
+        let returned: Vec<&[f64]> = a_red.chunks(3).collect();
+        for (label, want) in [("ωy", wy_row), ("vx", vx_row), ("vz", vz_row)] {
+            let hits = returned.iter().filter(|row| **row == want.as_slice()).count();
+            assert_eq!(
+                hits, 1,
+                "case1: the {label} row must be returned verbatim exactly once, got {returned:?}"
+            );
+        }
 
         // ── case 2: 2×3 A with duplicate rows → m_eff = 1 ──────────────────
         let a_dup: Vec<f64> = vec![
             1.0, -2.0, 3.0,
             1.0, -2.0, 3.0,
         ];
-        // No closing subspace to project (pass empty slice).
-        let (a_red2, m_eff2) = reduce_constraint_rank(&a_dup, 2, 3, &[], eps);
+        let (a_red2, m_eff2) = reduce_constraint_rank(&a_dup, 2, 3, eps);
         assert_eq!(m_eff2, 1, "case2: duplicate rows → m_eff=1");
-        assert_eq!(a_red2.len(), 3, "case2: 1×3 reduced A");
-        assert!(
-            is_parallel_to(&a_red2, &[1.0, -2.0, 3.0]),
-            "case2: retained row must be parallel to original"
-        );
+        assert_eq!(a_red2, vec![1.0, -2.0, 3.0], "case2: retained row is the original");
+
+        // ── case 3: 3×3 A with a dependent, non-duplicate row → m_eff = 2 ──
+        let a_dep: Vec<f64> = vec![
+            1.0, -2.0, 3.0, // r1
+            0.0, 1.0, 1.0,  // r2
+            1.0, 0.0, 5.0,  // r3 = r1 + 2·r2
+        ];
+        let (a_red3, m_eff3) = reduce_constraint_rank(&a_dep, 3, 3, eps);
+        assert_eq!(m_eff3, 2, "case3: r3 = r1 + 2·r2 is dependent → m_eff=2");
+        assert_eq!(a_red3.len(), 2 * 3, "case3: reduced A is 2×3");
     }
 
     /// `reduce_constraint_rank` over a BUILDER-produced closed chain, pinned
-    /// row by row — the red/green oracle for #7312.
+    /// row by row.
     ///
     /// Every other rank case in this module feeds a hand-built `a_full`, and
     /// the live e2e (`closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`)
-    /// hand-builds its chain pair. Neither exercises what `body()` actually
-    /// emits, and the `S_close` projection's original justification — that the
-    /// Newton solve adjusts the closing joint's own free coordinate — stopped
-    /// describing the builder when task 7186 moved the closing joint onto
-    /// `chain_a` alone (it is never in `free_b`). Whether the projection is
-    /// still the right policy is #7312's to re-derive; this pins what it does
-    /// today, on the chain shape the builder produces, so any drift reds here.
+    /// hand-builds its chain pair; this one runs on the chain shape `body()`
+    /// actually emits.
     ///
     /// Fixture — two prismatic joints on ORTHOGONAL axes, both parented to
     /// world, closed by a third body that re-parents `j_b` onto `j_a`:
@@ -532,15 +494,15 @@ mod tests {
     ///     path_b = [world, j_a]     T_b = translate(q_a, 0, 0)
     ///     residual = log(inv(T_a) · T_b) = [0,0,0,  q_a, 0, −q_b]
     ///
-    /// so the raw 6×2 Jacobian carries exactly two nonzero rows — v_x = [1, 0]
-    /// and v_z = [0, −1] — and `S_close` (j_b, prismatic +z) absorbs the v_z
-    /// row, leaving `m_eff = 1`. Orthogonal axes are deliberate: a same-axis
-    /// pair collapses to `m_eff = 0`, which cannot distinguish "absorbed" from
-    /// "no constraint at all".
+    /// The residual is a weld of j_b's output frame to j_a's output frame, and
+    /// its zero set is the single point (q_a, q_b) = (0, 0): moving either
+    /// slider opens the loop at first order. Both nonzero raw rows — v_x =
+    /// [1, 0] and v_z = [0, −1] — are therefore genuine constraints, so
+    /// rank = 2 = n and ker(A) = {0}. The v_z row is the one the retired
+    /// closing-joint motion-subspace projection deleted.
     #[test]
     fn reduce_constraint_rank_on_builder_produced_closed_chain() {
         use crate::eval_builtin;
-        use crate::joints::motion_subspace_columns;
         use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
         use reify_ir::Value;
 
@@ -608,28 +570,18 @@ mod tests {
             }
         }
 
-        let closing_sub: Vec<[f64; 6]> = motion_subspace_columns(&j_b)
-            .expect("prismatic joint must have a motion subspace")
-            .iter()
-            .map(|sv| sv.as_array())
-            .collect();
-        assert_eq!(
-            closing_sub,
-            vec![[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
-            "the closing joint is the +z prismatic, so S_close is the v_z direction"
-        );
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, 1e-10);
 
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, &closing_sub, 1e-10);
-
-        // The v_z row is NONZERO before projection and absent after: this is
-        // the projection removing a row, not a row that was never there.
+        // The v_z row is NONZERO in the raw Jacobian and survives the
+        // reduction: it is a genuine constraint row, not an absorbed one.
         assert_near("raw v_z row", &a_raw[5 * n..6 * n], &[0.0, -1.0], 1e-6);
         assert_eq!(
-            m_eff, 1,
-            "S_close absorbs the v_z row, leaving the v_x row alone (#7312 re-derives \
-             whether that is still right; if it changes, update this oracle deliberately)"
+            m_eff, 2,
+            "both the v_x and v_z rows are genuine constraints (rank 2 = n, ker(A) = {{0}})"
         );
-        assert_near("reduced row", &a_red, &[1.0, 0.0], 1e-6);
+        // Gaussian-elimination order: the v_x row pivots col 0, then the v_z
+        // row pivots col 1.
+        assert_near("reduced rows", &a_red, &[1.0, 0.0, 0.0, -1.0], 1e-6);
     }
 
     /// Helper: assert two f64 slices are element-wise within `tol`.
