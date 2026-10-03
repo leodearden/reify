@@ -10,7 +10,7 @@
 // The clamp probe and its serialising mutex are shared verbatim with
 // `tests/mesh_size_option_hermeticity.rs`, the other half of this
 // discipline. Declared by path rather than through `common/mod.rs`, which
-// #6387 reduced to a re-export shim over `reify_test_support::fixtures` and
+// #6387 reduced to a re-export shim over `reify_test_support::mesh_fixtures` and
 // which is scheduled for deletion; see `common/clamp_probe.rs` for why one
 // copy matters.
 #[path = "common/clamp_probe.rs"]
@@ -24,7 +24,7 @@ use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::{
     BackgroundSizeField, MeshingOptions, ffi, init, refine_volume_with_size_field,
 };
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
 /// `[0,scale]^3`.

@@ -14,6 +14,7 @@ pub mod helpers;
 pub mod ignore_hygiene;
 pub mod kernel_assertions;
 pub mod lsp_fixtures;
+pub mod mesh_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
 pub mod prd_gate_probe_set;
@@ -29,7 +30,7 @@ pub mod value_decompose;
 pub mod values;
 pub mod workspace_sweep;
 
-// Not every module is glob-exported below. These four are held back
+// Not every module is glob-exported below. These five are held back
 // deliberately: their item names are generic enough that hoisting them into a
 // crate root which many test files glob-import (`use reify_test_support::*;`)
 // would turn a future same-named item in any other glob-exported module into an
@@ -37,6 +38,7 @@ pub mod workspace_sweep;
 // - `ctor_conformance_debt`
 // - `examples_corpus`
 // - `git_env`
+// - `mesh_fixtures`
 // - `rust_fixture_scan`
 pub use builders::*;
 pub use ctor_conformance::*;

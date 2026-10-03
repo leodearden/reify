@@ -55,7 +55,7 @@ mod size_field;
 use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, refine_volume_with_size_field};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 use size_field::uniform_unit_cube_size_field;
 
 /// A single open triangle: a surface gmsh accepts and classifies happily but
@@ -63,7 +63,7 @@ use size_field::uniform_unit_cube_size_field;
 ///
 /// This is the cheapest known input that reaches `gmshModelMeshGenerate(3)`
 /// and fails there — the precise failure this binary needs. Not hoisted into
-/// `reify_test_support::fixtures`: it has exactly one consumer, and
+/// `reify_test_support::mesh_fixtures`: it has exactly one consumer, and
 /// `tests/common/mod.rs` states in its own header that no new shared fixture
 /// belongs there.
 fn unmeshable_open_triangle() -> Mesh {
