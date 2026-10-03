@@ -5693,6 +5693,36 @@ mod check_error_gate_tests {
             gating.message
         );
     }
+
+    /// Behavioural, not a table-text match, so it holds against any matcher
+    /// shape.  `ArgTypeMismatch` is guarded whole because a `Code` matcher cannot
+    /// be scoped to relate call sites.  Code-less relate Errors (the conflict
+    /// family) can only be swallowed by a `MessageContains` entry and are pinned
+    /// end to end by `crates/reify-cli/tests/harness_cli/cli_check_relate_family_exit.rs`
+    /// `check_exits_nonzero_on_engine_phase_relate_conflict`.
+    #[test]
+    fn relate_family_errors_are_never_excused() {
+        const RELATE_FAMILY_ERROR_CODES: &[DiagnosticCode] = &[
+            DiagnosticCode::DatumProjectionUnavailable,
+            DiagnosticCode::DatumProjectionAmbiguous,
+            DiagnosticCode::TangentOperandsUnsupported,
+            DiagnosticCode::ArgTypeMismatch,
+            DiagnosticCode::RelateExpectsRelation,
+            DiagnosticCode::RelateStaticViolated,
+            DiagnosticCode::AssemblyGlobalFloat,
+            // TODO(#5436): add β's pose-cycle code (E_POSE_CYCLE) here once it is minted.
+        ];
+
+        for code in RELATE_FAMILY_ERROR_CODES {
+            let d = Diagnostic::error(format!("{code:?}")).with_code(*code);
+            assert!(
+                check_gating_error(std::slice::from_ref(&d)).is_some(),
+                "a relate-family Error must always move `reify check`'s exit \
+                 (INV-SF-2); {code:?} is excused — adding it to \
+                 CHECK_ERROR_EXIT_ALLOWLIST is the regression this test forbids"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
