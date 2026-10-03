@@ -12,7 +12,7 @@
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
 | §2d Image + trailing-text envelope | EMISSION: `debug_server.rs` `mcp_content_blocks_*` tests. DECODE: `rpc.test.ts` case 4b + `rpcEnvelope.test.ts`'s branch-3 fall-through case — the same success envelope through both JS decoders |
-| §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
+| §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention; `debugElementPlacement.test.ts` — the placement trio on every bounds-reporting tool |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
 | §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
@@ -856,7 +856,9 @@ This is the same frame as `Element.getBoundingClientRect()` and `MouseEvent.clie
 ### Canonical round-trip
 
 ```
-bounds = get_layout_metrics(selector).bounds
+metrics = get_layout_metrics(selector)
+require metrics.hitTestable === true
+bounds = metrics.bounds
 center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
 click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
   → element's JS click handler fires with event.clientX === center.x
@@ -866,14 +868,50 @@ click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
 which stubs `getBoundingClientRect` to `{x:100, y:50, width:80, height:40}`,
 verifies `get_layout_metrics.bounds === {x:100, y:50, width:80, height:40}`,
 then proves the derived center `(140, 70)` fires the element's click handler.
+Its cases (d)–(f) cover the precondition: a clipped or occluded element reports
+`hitTestable: false` and `click_at` at its centre lands on another element, and
+`hitTestable` agrees with whether `click_at` at the centre fires the handler.
+
+### Clipping and hit-testability
+
+- `bounds` is the element's **unclipped** layout rect (`getBoundingClientRect`).
+  It is not intersected with an ancestor's overflow clip or scrollport, nor with
+  the window.
+- `visible` keeps its R1 meaning: the element's own computed `display` /
+  `visibility` plus `width > 0`. A clipped or occluded element therefore still
+  reports `visible: true`.
+- Every tool that reports `bounds` — `dom_query`, `query_selector`,
+  `query_selector_all`, `list_elements`, `get_layout_metrics` — also reports
+  `visible` and `hitTestable`.
+- `hitTestable` is true iff `visible` and `document.elementFromPoint` at the
+  bounds centre returns the element or a descendant. That is the same
+  resolution `click_at`, `hover` and `drag` perform, so it predicts whether the
+  canonical round-trip reaches the element.
+- It is false when the element is clipped by an overflow ancestor (including a
+  zero-height scrollport, the measured PropertyEditor case), occluded by an
+  unrelated painted element, outside the window, or has `pointer-events: none`.
+- It answers for the **centre** only: a partly clipped element whose centre is
+  clipped reports `false`.
+- It is unrelated to `get_layout_metrics`' `overflow.*`, which says whether the
+  element clips its **own** content.
+- The canonical round-trip holds only when `hitTestable` is true. When it is
+  false, address the element with a testId/selector tool (`click_element`,
+  `focus_element`, `scroll`, `edit_text_input`, `scrub_range_input`), or bring
+  it into view first. Never feed its bounds to a coordinate tool.
+- `element_screenshot` crops the same unclipped rect, so a clipped element's
+  crop shows whatever is painted there.
+
+**Guarded by:** `debugContract.test.ts` §coordinate-convention (step-5) cases
+(d)–(f), and `debugElementPlacement.test.ts`.
 
 ### Notes
 
-- This convention is validated **arithmetically** in the unit tests.  The live
-  `document.elementFromPoint(centerX, centerY)` hit-test (OS layout + compositing)
-  is a synthetic-event fidelity gap: `click_at` dispatches a `PointerEvent` via
-  `dispatchEvent`, which fires JS handlers but does not involve OS hit-testing
-  (see §4).  Real-GUI e2e tests verify full OS compositing end-to-end.
+- `click_at`, `hover` and `drag` resolve their target with the webview's own
+  `document.elementFromPoint`, then `dispatchEvent` a synthetic event on it;
+  what they skip is native OS input delivery (see §4).  jsdom has no layout, so
+  the unit tests model that hit test with a fake compositor; the live WebKit
+  hit test is exercised by the `get_layout_metrics_hit_testable_app_layout`
+  e2e scenario (`npm run test:e2e`, not verify-gated).
 - The canvas (viewport) coordinate frame is the same CSS-pixel frame: the NDC
   conversion in `createSelection` uses `rect = canvas.getBoundingClientRect()` as
   its origin (see §5).
@@ -894,7 +932,7 @@ input:
 | CSS `:hover` pseudo-class | ✗ NOT applied | ✓ applied |
 | CSS `:active` pseudo-class | ✗ NOT applied | ✓ applied |
 | Native drag-and-drop (`dragstart`, `drop`) | ✗ not triggered | ✓ triggered |
-| OS / compositor hit-testing (`elementFromPoint`) | ✗ not involved | ✓ involved |
+| Native OS input delivery (target resolved by the webview's `elementFromPoint` either way) | ✗ not involved | ✓ involved |
 | `focus` / `blur` side-effects (click on input) | partial — only if `focus()` called explicitly | ✓ automatic |
 | Native form-control value (`<input type=range\|text>`) | ✗ not reachable — an untrusted event runs no default action, and `drag` / `keyboard` never assign `.value` | ✓ the browser's default action moves it |
 
@@ -903,11 +941,8 @@ A native form control's value is reached programmatically, by `scrub_range_input
 events the control's own handlers bind, so they assert application logic, not the
 browser's thumb or caret behaviour.
 
-Coordinate-addressed tools (`click_at`, `hover`, `drag`) cannot be reliably aimed
-at a control clipped by an `overflow:hidden` ancestor: `query_selector` /
-`get_layout_metrics` bounds are the unclipped `getBoundingClientRect`, and
-`visible` ignores clipping (#7770).  Address such a control by CSS selector
-instead.
+Before aiming a coordinate-addressed tool (`click_at`, `hover`, `drag`) at an
+element's bounds, check its `hitTestable` — see §3 "Clipping and hit-testability".
 
 **Practical implication:** tools that dispatch synthetic events can assert that
 JS-registered handlers fire (click handlers, React `onClick`, Three.js pointer

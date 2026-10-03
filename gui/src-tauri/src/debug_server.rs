@@ -136,7 +136,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect. Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
+            description: "Query a DOM element by data-testid. Returns { exists, visible, hitTestable, text, tagName, bounds }. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3). Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -154,7 +154,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_elements",
-            description: "List all DOM elements with data-testid attributes. Returns testId, tagName, visibility, and bounds for each.",
+            description: "List all DOM elements with data-testid attributes. Returns { elements: [{ testId, tagName, visible, hitTestable, bounds }] }. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -589,7 +589,7 @@ fn tool_defs() -> Vec<ToolDef> {
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
-            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible } on match, { exists: false } when no element matches, { error } on invalid selector or missing param.",
+            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible, hitTestable } on match, { exists: false } when no element matches, { error } on invalid selector or missing param. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -603,7 +603,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "query_selector_all",
-            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param.",
+            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results; each element as query_selector describes it, including bounds, visible, hitTestable), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -617,7 +617,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_layout_metrics",
-            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text).",
+            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, visible, hitTestable, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text). bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -904,6 +904,8 @@ fn tool_defs() -> Vec<ToolDef> {
                           (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
                           Resolves the target element via document.elementFromPoint(x, y), then dispatches \
                           pointerdown → pointerup → click events with clientX=x, clientY=y. \
+                          To aim at an element, use its bounds centre only when its hitTestable is true: \
+                          a clipped or occluded element's centre resolves to a different element. \
                           Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
                           (synthetic-event fidelity gap — contract §4).",
             input_schema: json!({
@@ -926,6 +928,8 @@ fn tool_defs() -> Vec<ToolDef> {
             description: "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
                           Resolves the target element via document.elementFromPoint(x, y), then dispatches \
                           pointermove + mousemove events with clientX=x, clientY=y. \
+                          To aim at an element, use its bounds centre only when its hitTestable is true: \
+                          a clipped or occluded element's centre resolves to a different element. \
                           Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
                           (synthetic-event fidelity gap — contract §4).",
             input_schema: json!({
