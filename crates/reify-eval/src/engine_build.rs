@@ -12197,12 +12197,13 @@ impl Engine {
                 // guard, with no test pinning it either way. Untested
                 // behaviour change plus inert motivation ⇒ removed.
                 //
-                // The real defect on the geometry-list side — under selective
-                // demand a second no-op `tessellate_snapshot` returns
-                // `[Undef; n]` where the first returned live handles, while full
-                // scope returns live handles both times — is filed separately as
-                // task #6460 (escalation esc-5385-5) and is NOT addressed by
-                // anything at this line.
+                // The geometry-list reuse-pass defect (a second no-op selective
+                // `tessellate_snapshot` returned `[Undef; n]`, task #6460) is
+                // closed at `tessellate_snapshot`'s baseline mint, not here: that
+                // mint re-derives the list cell from the current values every
+                // pass, so this line's shallow write-back of a list's
+                // `[Undef; n]` re-eval into `snapshot.values` never reaches the
+                // result.
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
@@ -12318,6 +12319,17 @@ impl Engine {
     /// companion to `tessellate_realizations()`: after `edit_param()` updates
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
+    ///
+    /// A geometry-backed cell whose realizations this pass does NOT execute
+    /// (hidden, or hash-exempt because their inputs are unchanged) carries the
+    /// symbolic eval-path handle (`kernel_handle: None`) minted from the
+    /// current values — scalar and list cells alike. Executed realizations are
+    /// upgraded to kernel-backed handles by hydration. Pinned by the
+    /// geometry-list reuse-pass tests in `harness_cache`'s
+    /// `selective_demand_redemand_staleness.rs`
+    /// (`a_repeat_no_op_tessellate_under_all_visible_selective_demand_keeps_the_geometry_list_resolved`,
+    /// `redemand_geometry_list_survives_hide_unhide`,
+    /// `the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit_one`).
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
         // Reset all per-build engine state through the single exhaustive-
         // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
@@ -12385,6 +12397,18 @@ impl Engine {
         for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
+        // The symbolic geometry baseline `build` / `tessellate_realizations`
+        // get from `check().values`, re-derived from the CURRENT values: a
+        // geometry-list cell's snapshot entry is only its pre-hydration
+        // `[Undef; n]` placeholder, so without this a list whose realizations
+        // this pass does not execute (hash-exempt or hidden) would ship that
+        // placeholder (task #6460).
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &self.functions,
+            &self.meta_map,
+        );
 
         // Check constraints (guard-aware)
         let (constraint_results, mut diagnostics) =

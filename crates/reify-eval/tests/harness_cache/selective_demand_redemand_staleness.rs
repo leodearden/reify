@@ -633,13 +633,18 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry-LIST lets across a rebuild (task #5385, review esc-5385-4).
 //
-// MEASURED GROUND TRUTH for the test below — `snapshot.values` and
+// MEASURED GROUND TRUTH for the tests below — `snapshot.values` and
 // `TessellateResult.values` do NOT agree for a geometry list, and only the
 // latter is the user-visible surface:
 //
-//   cell                       snapshot.values      TessellateResult.values
-//   `a`     (scalar geometry)  live GeometryHandle  live GeometryHandle
-//   `holes` (List<Geometry>)   List([Undef; 3])     List([3 live handles])
+//                                                  TessellateResult.values
+//   cell                       snapshot.values   executed pass   reuse pass
+//   `a`     (scalar geometry)  symbolic handle   live handle     symbolic handle
+//   `holes` (List<Geometry>)   List([Undef; 3])  3 live handles  3 symbolic handles
+//
+// A "reuse pass" is a selective-demand `tessellate_snapshot` that re-executes
+// nothing because every demanded realization's inputs are unchanged; no geometry
+// cell can be kernel-backed on it (task #6460).
 //
 // The `snapshot.values` column for `holes` is `List([Undef; 3])` in EVERY path —
 // `eval`, `tessellate_snapshot`, `build_snapshot` and `build` — because the
@@ -649,7 +654,7 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
 // `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
 // (generate_eval.rs); the remaining silent-Undef seam is #5402's.
 //
-// So this test asserts on the RESULT, not on `snapshot.values`. Asserting the
+// So these tests assert on the RESULT, not on `snapshot.values`. Asserting the
 // snapshot would pin `[Undef; 3]` — the defect — as if it were the contract.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -663,13 +668,10 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
 ///
 /// FULL SCOPE ON PURPOSE (review esc-5385-7). This test deliberately does NOT
 /// call `set_demand_selective`, so despite living in the selective-demand harness
-/// it exercises the ordinary full-scope rebuild path. Driving the same fixture
-/// through hide → un-hide is RED today for a reason this task does not own: a
-/// repeat `tessellate_snapshot` under selective demand returns
-/// `List([Undef; 3])`, a realization-NAME versus cell-MEMBER correspondence gap
-/// filed as task #6460. It lives here rather than in a rebuild harness so #6460
-/// can add its selective-demand cases against this same fixture and these same
-/// helpers.
+/// it exercises the ordinary full-scope rebuild path. The selective-demand
+/// cases on the same fixture and helpers are the reuse-pass tests further down
+/// (task #6460), including
+/// `the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit_one`.
 #[test]
 fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
@@ -761,10 +763,10 @@ fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
 /// sibling back in. `into_entries`' exact-index-set check therefore stays
 /// intact, and still defeats a compensating index set.
 ///
-/// DISTINCT FROM #6460, which is a repeat no-op `tessellate_snapshot` under
-/// selective demand. Each arm below uses its OWN engine, so both assert on a
-/// FIRST tessellate after their own `set_demand_selective` and neither sits on
-/// that path.
+/// DISTINCT FROM the reuse-pass tests below (task #6460), which drive a REPEAT
+/// `tessellate_snapshot` under selective demand. Each arm here uses its OWN
+/// engine, so both assert on a FIRST tessellate after their own
+/// `set_demand_selective` and neither sits on that path.
 #[test]
 fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list()
 {

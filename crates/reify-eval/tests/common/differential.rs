@@ -1301,25 +1301,18 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
 ///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
 ///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
 ///
-/// WHAT ITS SOLE CONSUMER ACTUALLY PINS TODAY (review esc-5385-7). The only test
-/// using this fixture, `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed`,
-/// is a FULL-SCOPE build → `edit_param` → rebuild test: it never calls
-/// `set_demand_selective`, so the demand-cone transitions described above are set
-/// up by this source but not taken by that test. It asserts that an edited param
-/// re-realizes all three elements as live handles with a changed
-/// `upstream_values_hash` — i.e. the rebuild path, not the demand path.
-///
-/// The selective-demand transitions this fixture was shaped for are #6460's to
-/// drive, and they are RED today: under `set_demand_selective` a second, no-op
-/// `tessellate_snapshot` returns `List([Undef, Undef, Undef])` where full scope
-/// returns live handles both times. That is a realization-NAME (`holes#k`) versus
-/// cell-MEMBER (`holes`) correspondence gap, not a write-back-guard problem — the
-/// monotone write-back guard once hypothesized here was MEASURED INERT for a
-/// geometry-list cell (such a cell never holds a resolved value in
-/// `snapshot.values` in any path) and was removed. The fixture and its
-/// `assert_live_handle_list` / `geometry_list_upstream_hashes` helpers are left in
-/// this harness deliberately, so #6460 can add its selective-demand tests without
-/// re-authoring them.
+/// ITS CONSUMERS, all in `harness_cache/selective_demand_redemand_staleness.rs`:
+/// - `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed` is a
+///   FULL-SCOPE build → `edit_param` → rebuild test (review esc-5385-7): it never
+///   calls `set_demand_selective`, so it pins the rebuild path, not the demand
+///   path.
+/// - `set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list`
+///   drives a FIRST tessellate under a selective cone.
+/// - The three reuse-pass tests (task #6460) drive the demand-cone transitions
+///   described above: a repeat no-op tessellate, a hide → un-hide of `merged`,
+///   and the no-op pass after an edit. Each pins that a pass which re-executes
+///   nothing serves `holes` backed exactly as the scalar let `a` is, with the
+///   identity of the pass that built it — never `List([Undef; 3])`.
 pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
     param r : Length = 5mm
     param h : Length = 20mm
