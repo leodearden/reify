@@ -90,6 +90,7 @@ import json
 import re
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -588,6 +589,193 @@ def _census_report(census: dict, census_path: Path, adjudication_path: Path) -> 
     ])
 
 
+# ── Review ──────────────────────────────────────────────────────────────────
+
+_CANONICAL_MINT_NAME = re.compile("Task [0-9]+")
+_VERDICT_VALUES = frozenset(verdict.value for verdict in Verdict)
+
+
+class ReviewRule(enum.Enum):
+    CENSUS_MISMATCH = "census_mismatch"
+    MISSING_ADJUDICATION = "missing_adjudication"
+    UNKNOWN_CANDIDATE = "unknown_candidate"
+    DUPLICATE_ADJUDICATION = "duplicate_adjudication"
+    INVALID_VERDICT = "invalid_verdict"
+    EMPTY_RATIONALE = "empty_rationale"
+    REPAIR_TARGET_COUNT = "repair_target_count"
+    REPAIR_SELF_LOOP = "repair_self_loop"
+    TARGET_NOT_UUID = "target_not_uuid"
+    MINT_NAME_NOT_CANONICAL = "mint_name_not_canonical"
+    TARGET_ON_NON_REPAIR = "target_on_non_repair"
+
+
+@dataclass(frozen=True)
+class ReviewError:
+    candidate_id: str | None
+    rule: ReviewRule
+
+    def __str__(self) -> str:
+        return f"{self.candidate_id or '<adjudication>'}: {self.rule.value}"
+
+
+def _repair_rules(entry: dict, candidate: dict) -> list[ReviewRule]:
+    target, mint_name = entry.get("target_node_uuid"), entry.get("mint_name")
+    if (target is None) == (mint_name is None):
+        return [ReviewRule.REPAIR_TARGET_COUNT]
+    if mint_name is not None:
+        canonical = isinstance(mint_name, str) and _CANONICAL_MINT_NAME.fullmatch(mint_name)
+        return [] if canonical else [ReviewRule.MINT_NAME_NOT_CANONICAL]
+    if not isinstance(target, str) or not _UUID_SHAPE.fullmatch(target):
+        return [ReviewRule.TARGET_NOT_UUID]
+    if target in (candidate["node_uuid"], candidate["other_uuid"]):
+        return [ReviewRule.REPAIR_SELF_LOOP]
+    return []
+
+
+def _entry_rules(entry: dict, candidate: dict) -> list[ReviewRule]:
+    verdict = entry.get("verdict")
+    if verdict not in _VERDICT_VALUES:
+        return [ReviewRule.INVALID_VERDICT]
+    rationale = entry.get("rationale")
+    rules = [] if isinstance(rationale, str) and rationale.strip() else [ReviewRule.EMPTY_RATIONALE]
+    if verdict == Verdict.REPAIR.value:
+        return rules + _repair_rules(entry, candidate)
+    if entry.get("target_node_uuid") is not None or entry.get("mint_name") is not None:
+        rules.append(ReviewRule.TARGET_ON_NON_REPAIR)
+    return rules
+
+
+def validate_adjudication(census: dict, adjudication: dict,
+                          census_file_name: str) -> list[ReviewError]:
+    """Every way `adjudication` fails to be a complete, applicable verdict list for `census`."""
+    errors = []
+    if adjudication.get("census") != census_file_name:
+        errors.append(ReviewError(None, ReviewRule.CENSUS_MISMATCH))
+    candidates = {candidate["candidate_id"]: candidate for candidate in census["candidates"]}
+    seen: set[str] = set()
+    for entry in adjudication.get("adjudications", []):
+        candidate_id = entry.get("candidate_id")
+        if candidate_id not in candidates:
+            errors.append(ReviewError(candidate_id, ReviewRule.UNKNOWN_CANDIDATE))
+        elif candidate_id in seen:
+            errors.append(ReviewError(candidate_id, ReviewRule.DUPLICATE_ADJUDICATION))
+        else:
+            seen.add(candidate_id)
+            errors.extend(ReviewError(candidate_id, rule)
+                          for rule in _entry_rules(entry, candidates[candidate_id]))
+    errors.extend(ReviewError(candidate_id, ReviewRule.MISSING_ADJUDICATION)
+                  for candidate_id in candidates if candidate_id not in seen)
+    return errors
+
+
+def _paired(census: dict, adjudication: dict) -> list[tuple[dict, dict]]:
+    entries = {entry["candidate_id"]: entry for entry in adjudication["adjudications"]}
+    return [(candidate, entries[candidate["candidate_id"]]) for candidate in census["candidates"]]
+
+
+def repair_list(census: dict, adjudication: dict) -> list[dict]:
+    """The REPAIR rows of a valid adjudication, keyed like reassign_edge's parameters."""
+    repairs = []
+    for candidate, entry in _paired(census, adjudication):
+        if entry["verdict"] != Verdict.REPAIR.value:
+            continue
+        repair = {"candidate_id": candidate["candidate_id"], "edge_uuid": candidate["edge_uuid"],
+                  "which_end": candidate["which_end"], "from_node_uuid": candidate["node_uuid"]}
+        if entry.get("target_node_uuid") is not None:
+            repair["new_endpoint_uuid"] = entry["target_node_uuid"]
+        else:
+            repair["mint_name"] = entry["mint_name"]
+        repairs.append(repair)
+    return repairs
+
+
+def _cell(value: Any) -> str:
+    if isinstance(value, list):
+        value = ", ".join(str(item) for item in value)
+    text = "-" if value is None or value == "" else str(value)
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _row(cells: Iterable[Any]) -> str:
+    return "| " + " | ".join(_cell(cell) for cell in cells) + " |"
+
+
+def _target_text(entry: dict) -> str | None:
+    if entry.get("mint_name"):
+        return f"mint {entry['mint_name']}"
+    return entry.get("target_node_uuid")
+
+
+def _candidate_row(number: int, candidate: dict, entry: dict) -> str:
+    proposal = candidate["proposal"]
+    return _row([
+        number, f"{candidate['node_name']} ({candidate['node_uuid']})", candidate["edge_uuid"],
+        candidate["which_end"], f"{candidate['other_name']} ({candidate['other_uuid']})",
+        candidate["fact"], candidate["named_numbers"], candidate["signature"],
+        f"{proposal['verdict']} ({proposal['reason']})", entry["verdict"], _target_text(entry),
+        entry["rationale"],
+    ])
+
+
+def render_review(census: dict, adjudication: dict) -> str:
+    """The markdown review sheet for a valid adjudication of `census`."""
+    key, probe, summary = census["key_confirmation"], census["bm25_probe"], census["summary"]
+    pairs = _paired(census, adjudication)
+    adjudicated = Counter(entry["verdict"] for _, entry in pairs)
+    mints = [(n, c, e) for n, (c, e) in enumerate(pairs, 1) if e.get("mint_name")]
+    columns = ["#", "node", "edge", "node end", "other endpoint", "fact", "named", "signature",
+               "proposed", "adjudicated", "target", "rationale"]
+    return "\n".join([
+        f"# Task-N conflation review: {adjudication['census']}",
+        "",
+        f"- graph `{census['graph_key']}`, generated {census['generated_at']} by "
+        f"`{census['generator']}` (schema {census['schema_version']})",
+        f"- key confirmation: {key['observed_node_count']} nodes observed, "
+        f"{key['expected_node_count']} expected",
+        f"- BM25 probe `{probe['token']}`: fulltext_hits {probe['fulltext_hits']}, name_contains "
+        f"{probe['name_contains']}, serving {probe['serving']}, error {probe['error']}",
+        f"- task nodes {summary['task_nodes']}, live edge rows scanned "
+        f"{summary['live_edge_rows_scanned']}, self-loops skipped {summary['self_loops_skipped']}",
+        f"- foreign facts {summary['foreign_facts']}, adjacent signature "
+        f"{summary['adjacent_signature']}",
+        "",
+        "## Verdicts",
+        "",
+        _row(["verdict", "proposed", "adjudicated"]),
+        _row(["---"] * 3),
+        *(_row([v.value, summary["proposed"][v.value], adjudicated[v.value]]) for v in Verdict),
+        "",
+        "## REPAIRs that need a node minted first",
+        "",
+        *([f"- row {n}: {e['mint_name']} for edge {c['edge_uuid']}" for n, c, e in mints]
+          or ["- none"]),
+        "",
+        "## Candidates",
+        "",
+        _row(columns),
+        _row(["---"] * len(columns)),
+        *(_candidate_row(number, c, e) for number, (c, e) in enumerate(pairs, 1)),
+    ]) + "\n"
+
+
+def _load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_review(args: argparse.Namespace) -> int:
+    census, adjudication = _load_json(args.census), _load_json(args.adjudication)
+    errors = validate_adjudication(census, adjudication, args.census.name)
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    review_path = args.census.with_name(args.census.name.removesuffix(".json") + ".review.md")
+    review_path.write_text(render_review(census, adjudication), encoding="utf-8")
+    print(f"review sheet: {review_path}", file=sys.stderr)
+    print(json.dumps(repair_list(census, adjudication), indent=2, ensure_ascii=False))
+    return 0
+
+
 # ── Command line ────────────────────────────────────────────────────────────
 
 
@@ -655,7 +843,7 @@ def run_census(args: argparse.Namespace, connect, clock: Callable[[], datetime])
 
 
 _REPORTED_ERRORS = (KeyConfirmationError, GraphQueryTimeout, MissingDriverError,
-                    OutputExistsError)
+                    OutputExistsError, FileNotFoundError, json.JSONDecodeError)
 
 
 def main(argv: list[str] | None = None, connect=connect_falkor,
@@ -664,6 +852,8 @@ def main(argv: list[str] | None = None, connect=connect_falkor,
     try:
         if args.command == "census":
             return run_census(args, connect, clock)
+        if args.command == "review":
+            return run_review(args)
         raise NotImplementedError(f"subcommand {args.command!r} is not implemented yet")
     except _REPORTED_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)

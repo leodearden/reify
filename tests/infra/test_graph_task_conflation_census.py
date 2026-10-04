@@ -875,7 +875,7 @@ class RenderReviewTest(ReviewFixture):
     def test_cells_cannot_break_the_table(self):
         self.entry(self.unary_id)["rationale"] = "unary | about the other endpoint\nno target"
         sheet = census_tool.render_review(self.census, self.adjudication)
-        lines = sheet.splitlines()
+        lines = [line for line in sheet.splitlines() if line.startswith("|")]
         row = next(line for line in lines if self.world.e_unary in line)
         plain_row = next(line for line in lines if self.world.e_absent in line)
         self.assertIn("unary \\| about the other endpoint", row)
