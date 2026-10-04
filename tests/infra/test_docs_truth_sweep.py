@@ -81,6 +81,12 @@ class DocsTruthSweepTest(unittest.TestCase):
         self.addCleanup(server.close)
         return server
 
+    def sweep(self, prd=(), cite=(), **server_kwargs):
+        """One run against a fresh stub server, so its requests are this run's alone."""
+        server = self.escalation_server(**server_kwargs)
+        self.corpus(prd=prd, cite=cite)
+        return server, self.run_sweep(server.url)
+
     def run_sweep(self, url, *extra):
         return subprocess.run(
             [
@@ -117,6 +123,11 @@ class DocsTruthSweepTest(unittest.TestCase):
         [member] = server.calls_to("escalate_info")
         [promotion] = server.calls_to("promote_to_l2")
         return member, promotion, json.loads(result.stdout)
+
+    def assert_silent(self, server, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(server.requests, [])
+        self.assertEqual(result.stdout, "")
 
     def test_first_raise_aggregates_the_family_into_one_l2_sitting(self):
         server = self.escalation_server()
@@ -183,13 +194,94 @@ class DocsTruthSweepTest(unittest.TestCase):
             self.assertIn(("--project-root", str(self.project_root)), pairs, argv)
 
     def test_clean_corpus_is_silent(self):
-        server = self.escalation_server()
+        self.assert_silent(*self.sweep())
 
-        result = self.run_sweep(server.url)
+    # ── Silence discipline: raise only when the set holds a new (pattern, doc) ──
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(server.requests, [])
-        self.assertEqual(result.stdout, "")
+    def test_unchanged_set_is_not_raised_twice(self):
+        findings = [prd_finding("docs/prds/a.md"), prd_finding("docs/prds/b.md")]
+        self.assert_one_sitting_raised(*self.sweep(prd=findings))
+
+        self.assert_silent(*self.sweep(prd=findings))
+
+    def test_summary_churn_on_the_same_docs_is_not_news(self):
+        self.assert_one_sitting_raised(
+            *self.sweep(prd=[prd_finding("docs/prds/a.md"), prd_finding("docs/prds/b.md")])
+        )
+        churned = [
+            {**prd_finding("docs/prds/a.md"), "summary": "stale-status-header: line 14, 6/9 leaves"},
+            {**prd_finding("docs/prds/b.md"), "summary": "cite-status-contradiction: line 3"},
+        ]
+
+        self.assert_silent(*self.sweep(prd=churned))
+
+    def test_a_shrink_is_silent_and_a_regression_is_news(self):
+        a, b = prd_finding("docs/prds/a.md"), prd_finding("docs/prds/b.md")
+        self.assert_one_sitting_raised(*self.sweep(prd=[a, b]))
+        self.assert_silent(*self.sweep(prd=[a]))
+
+        _, _, record = self.assert_one_sitting_raised(*self.sweep(prd=[a, b]))
+
+        self.assertEqual((record["new_count"], record["finding_count"]), (1, 2))
+
+    def test_growth_raises_the_full_set_counting_only_the_new_doc(self):
+        a, c = prd_finding("docs/prds/a.md"), prd_finding("docs/prds/c.md")
+        self.assert_one_sitting_raised(*self.sweep(prd=[a]))
+
+        member, _, record = self.assert_one_sitting_raised(*self.sweep(prd=[a, c]))
+
+        self.assertEqual(
+            sorted(entry["path"] for entry in json.loads(member["detail"])),
+            ["docs/prds/a.md", "docs/prds/c.md"],
+        )
+        self.assertEqual((record["new_count"], record["finding_count"]), (1, 2))
+
+    def test_an_empty_set_is_recorded_so_a_reappearance_is_news(self):
+        a = prd_finding("docs/prds/a.md")
+        self.assert_one_sitting_raised(*self.sweep(prd=[a]))
+        self.assert_silent(*self.sweep())
+
+        _, _, record = self.assert_one_sitting_raised(*self.sweep(prd=[a]))
+
+        self.assertEqual(record["new_count"], 1)
+
+    def test_the_same_doc_under_a_different_detector_is_news(self):
+        self.assert_one_sitting_raised(*self.sweep(prd=[prd_finding("docs/prds/a.md")]))
+
+        _, _, record = self.assert_one_sitting_raised(
+            *self.sweep(prd=[prd_finding("docs/prds/a.md")], cite=[cite_finding("docs/prds/a.md")])
+        )
+
+        self.assertEqual((record["new_count"], record["finding_count"]), (1, 2))
+
+    def test_unreadable_state_refuses_before_any_work_and_keeps_the_file(self):
+        for label, content in (
+            ("not JSON", "{not json"),
+            ("a bare list", "[]"),
+            ("an unknown version", '{"version": 2, "seen": []}'),
+            ("seen is not a list", '{"version": 1, "seen": "docs/prds/a.md"}'),
+            ("an identity missing its path", '{"version": 1, "seen": [{"pattern": "PPrdStatus"}]}'),
+            ("a non-string field", '{"version": 1, "seen": [{"pattern": 1, "path": "a.md"}]}'),
+        ):
+            with self.subTest(label):
+                self.state_file.parent.mkdir(parents=True, exist_ok=True)
+                self.state_file.write_text(content)
+                runs_before = len(self.detector.invocations())
+
+                server, result = self.sweep(prd=[prd_finding("docs/prds/a.md")])
+
+                self.assertEqual(result.returncode, 125, result.stderr)
+                self.assertIn(str(self.state_file), result.stderr)
+                self.assertEqual(server.requests, [])
+                self.assertEqual(len(self.detector.invocations()), runs_before)
+                self.assertEqual(self.state_file.read_text(), content)
+
+    def test_a_missing_state_file_is_a_first_run_that_records_the_set(self):
+        self.assertFalse(self.state_file.parent.exists())
+
+        self.assert_one_sitting_raised(*self.sweep(prd=[prd_finding("docs/prds/a.md")]))
+
+        self.assertTrue(self.state_file.is_file())
 
 
 if __name__ == "__main__":
