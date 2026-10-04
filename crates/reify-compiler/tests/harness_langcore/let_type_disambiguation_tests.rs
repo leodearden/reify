@@ -166,13 +166,16 @@ trait HasBadType {
     );
 }
 
-// ── step-8 (test): conformance integration — annotated let satisfies let requirement ──
+// ── step-8 (test): conformance integration — annotated let default through a two-trait conformer ──
 
-/// Trait A provides `let x : Length = 5mm`, trait B requires `let x : Length`.
-/// Structure S : A + B should compile without errors.
+/// Trait A provides `let x : Length = 5mm`; structure `S : A + B` injects it
+/// through a two-trait conformer and must compile clean.
 ///
-/// Before the fix, available_defaults used Type::dimensionless_scalar() for all Let defaults,
-/// so the conformance check compared Real vs Scalar{LENGTH} → false type-mismatch.
+/// Trait B is empty: it cannot require `let x : Length`, because a value-less
+/// `let` is not trait syntax (see `let_with_type_and_no_value_…` below) and
+/// `RequirementKind::Let` is not parser-reachable. The requirement-matching
+/// half is pinned on a hand-built requirement in conformance/mod.rs
+/// `chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade`.
 #[test]
 fn annotated_let_default_satisfies_let_requirement() {
     let source = r#"
@@ -180,7 +183,6 @@ trait A {
     let x : Length = 5mm
 }
 trait B {
-    let x : Length
 }
 structure S : A + B {
 }

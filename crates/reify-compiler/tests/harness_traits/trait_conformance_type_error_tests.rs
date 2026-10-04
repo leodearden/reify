@@ -24,13 +24,13 @@
 //! ## Scenarios covered
 //!
 //! **Scenario A** (`poisoned_structure_let_preserves_root_cause_error`):
-//! A structure's own annotated `let x : Length = self.unsupported` claims trait
-//! `HasX { let x : Length }`.  The entity pass produces `Type::Error` + an
-//! "unknown member" error from `expr.rs:~724`; the conformance pass sees
-//! `Length` (from the annotation) vs `Length` (requirement) so
-//! `implicitly_converts_to(Length, Length)` returns `true` directly — no wildcard
-//! needed, no mismatch emitted.  The invariant: ≥1 root-cause error must still be
-//! present so the caller isn't misled by the green conformance outcome.
+//! A structure claiming trait `HasX` declares its own annotated
+//! `let x : Length = self.unsupported`.  The entity pass produces `Type::Error`
+//! + an "unknown member" error from `expr.rs:~724`.  `HasX` is empty: a
+//! value-less `let x : Length` is not trait syntax, so there is no requirement
+//! for the conformance pass to compare against, and the anti-cascade half (b)
+//! has nothing to cascade against.  The invariant pinned is the root-cause half:
+//! the "unknown member" error survives on a structure that claims a trait.
 //!
 //! **Scenario B** (`poisoned_trait_default_preserves_root_cause_error`):
 //! A trait provides a default `let x : Length = self.unsupported`; a structure
@@ -93,20 +93,22 @@ fn assert_poisoned_conformance_invariant(module: &reify_compiler::CompiledModule
 
 // ── Scenario A: structure's own poisoned annotated let ────────────────────────
 
-/// Pinning test: a structure that claims a trait but whose matching `let`
-/// binding uses `self.unsupported` (a canonical `Type::Error` producer) must
-/// still carry a root-cause `Severity::Error` diagnostic even though the
-/// conformance check succeeds silently (annotation type matches requirement).
+/// Pinning test: a structure that claims a trait and whose own annotated `let`
+/// uses `self.unsupported` (a canonical `Type::Error` producer) must still
+/// carry the root-cause "unknown member" `Severity::Error` diagnostic.
+///
+/// `HasX` is empty: a value-less `let x : Length` is not trait syntax
+/// (tree-sitter recovers it as an ERROR node), so no trait requirement exists
+/// and the anti-cascade half has no requirement to cascade against.
 ///
 /// If this test fails it means one of:
 ///   • the "unknown member" producer-site diagnostic was downgraded/removed,
-///   • or the wildcard in `type_compat.rs:9–11/94–96` no longer fires and a
-///     spurious "type mismatch for trait" cascade was emitted instead.
+///   • or a "type mismatch for trait" diagnostic appeared with no trait
+///     requirement behind it.
 #[test]
 fn poisoned_structure_let_preserves_root_cause_error() {
     let source = r#"
 trait HasX {
-    let x : Length
 }
 structure def S : HasX {
     let x : Length = self.unsupported
@@ -214,12 +216,17 @@ structure def S : T {
 /// arm, so both paths exercise the same `Type::Error` return.  This test
 /// guards against a future refactor that splits the two call-sites and
 /// accidentally re-introduces `Type::dimensionless_scalar()` on only one of them.
+///
+/// Trait `T` is empty (a value-less `let x : Length` is not trait syntax), so
+/// only the root-cause half is load-bearing here: the structure's own
+/// `let x : UnknownType` still reaches the Let call-site and emits
+/// `unresolved type in conformance check: UnknownType`.  The anti-cascade half
+/// has no trait requirement to cascade against.
 #[test]
 fn let_unresolved_annotation_suppresses_conformance_cascade() {
     assert_unresolved_annotation_suppresses_cascade(
         r#"
 trait T {
-    let x : Length
 }
 structure def S : T {
     let x : UnknownType = 5mm
