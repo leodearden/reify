@@ -2982,37 +2982,18 @@ pub(crate) fn compile_entity(
                     ) else {
                         continue;
                     };
-
-                    let id = ValueCellId::new(entity_name, &let_decl.name);
-                    let visibility = if let_decl.is_pub {
-                        Visibility::Public
-                    } else {
-                        Visibility::Private
-                    };
-
-                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
-                    validate_annotations(&lowered_annotations, "let", diagnostics);
-                    crate::annotations::display::validate_display_dimension(
-                        &lowered_annotations,
-                        &cell_type,
+                    let decl = build_auto_let_value_cell_decl(
+                        entity_name,
+                        let_decl,
+                        free,
+                        cell_type,
+                        &scope,
+                        functions,
                         diagnostics,
                     );
-                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
-                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                     // Register in scope so subsequent constraints referencing this name type-check.
-                    scope.register(&let_decl.name, cell_type.clone());
-
-                    let decl = ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility,
-                        is_aux: let_decl.is_aux,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: let_decl.span,
-                    };
+                    scope.register(&let_decl.name, decl.cell_type.clone());
 
                     if let Some(wc) = &let_decl.where_clause {
                         compile_per_decl_guard(
@@ -6735,20 +6716,19 @@ pub(crate) fn build_param_value_cell_decl(
 }
 
 // ---------------------------------------------------------------------------
-// Auto-let cell-type resolution (shared by the top-level `MemberDecl::Let`
-// auto branch in this file and the guarded one in guards.rs, task #6888).
-// Sits beside `build_param_value_cell_decl` for the same reason it exists: a
-// binding site that hand-rolls its own auto lowering is exactly how the
-// guarded let arm came to drop the `auto` silently.
+// Auto-let value-cell lowering, shared by every `let x = auto` binding site:
+// the top-level `MemberDecl::Let` auto branch in this file and the guarded one
+// in guards.rs. Type resolution is its own step because guards.rs's
+// name-registration prepass needs the declared type without the decl.
 // ---------------------------------------------------------------------------
 
 /// Resolve the declared type of an `auto` let binding.
 ///
 /// An auto let is a solver cell, so its type must come from the declared
 /// annotation — there is no initializer to infer one from. `None` means no
-/// cell should be minted at all, in two cases:
-///   * no annotation → the mandatory-annotation error is emitted here;
-///   * unresolvable annotation → the resolver has already emitted.
+/// cell should be minted: either there is no annotation (the
+/// mandatory-annotation error is emitted here) or the resolver could not
+/// resolve it.
 ///
 /// A `Keyed<T>` annotation is poisoned to `Type::Error` rather than suppressed,
 /// so the cell is still minted and no Keyed value reaches the eval graph.
@@ -6791,6 +6771,48 @@ pub(crate) fn resolve_auto_let_cell_type(
     reject_keyed_value_position(&mut cell_type, name, span, diagnostics);
 
     Some(cell_type)
+}
+
+/// Build the `ValueCellDecl` for an `auto` let whose type
+/// `resolve_auto_let_cell_type` has already resolved: an `Auto { free }`
+/// solver cell with no default expression, carrying the let's visibility,
+/// `aux` flag and validated solver hints. Where the decl goes is the caller's
+/// decision.
+pub(crate) fn build_auto_let_value_cell_decl(
+    entity_name: &str,
+    let_decl: &reify_ast::LetDecl,
+    free: bool,
+    cell_type: Type,
+    scope: &CompilationScope,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ValueCellDecl {
+    let visibility = if let_decl.is_pub {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+
+    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+    validate_annotations(&lowered_annotations, "let", diagnostics);
+    crate::annotations::display::validate_display_dimension(
+        &lowered_annotations,
+        &cell_type,
+        diagnostics,
+    );
+    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+    validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
+
+    ValueCellDecl {
+        id: ValueCellId::new(entity_name, &let_decl.name),
+        kind: ValueCellKind::Auto { free },
+        visibility,
+        is_aux: let_decl.is_aux,
+        cell_type,
+        default_expr: None,
+        solver_hints,
+        span: let_decl.span,
+    }
 }
 
 // ---------------------------------------------------------------------------
