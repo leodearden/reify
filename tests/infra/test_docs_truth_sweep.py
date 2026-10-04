@@ -350,6 +350,58 @@ class DocsTruthSweepTest(unittest.TestCase):
         self.assertEqual(server.calls_to("promote_to_l2"), [])
         self.assert_state(state)
 
+    def test_a_reply_that_confirms_no_record_is_a_failed_filing(self):
+        for tool, reply in (
+            ("escalate_info", {"status": "queued", "level": 0}),
+            ("promote_to_l2", {**STUB_PROMOTION, "id": None}),
+            ("promote_to_l2", {**STUB_PROMOTION, "status": "accepted_unpersisted"}),
+        ):
+            with self.subTest(tool=tool, reply=reply):
+                state = self.seed_state()
+
+                server, result = self.sweep(
+                    prd=[prd_finding("docs/prds/a.md")], payloads={tool: reply}
+                )
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(tool, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(len(server.calls_to(tool)), 1)
+                self.assert_state(state)
+
+    def make_state_unrecordable(self):
+        """Point the state file into a dangling symlink: it reads as a missing
+        file (a first run), yet its directory cannot be created, even by root."""
+        directory = self.tmp / "dangling-state-dir"
+        directory.symlink_to(self.tmp / "absent" / "dir")
+        self.state_file = directory / "docs-truth-sweep.json"
+
+    def test_a_silent_run_that_cannot_record_its_observation_exits_1(self):
+        self.make_state_unrecordable()
+
+        server, result = self.sweep()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(str(self.state_file), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(server.requests, [])
+
+    def test_a_booked_sitting_whose_observation_cannot_be_recorded_still_reports_its_ids(self):
+        self.make_state_unrecordable()
+
+        server, result = self.sweep(prd=[prd_finding("docs/prds/a.md")])
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(len(server.calls_to("promote_to_l2")), 1)
+        record = json.loads(result.stdout)
+        self.assertEqual(
+            (record["member_id"], record["l2_id"]), (STUB_ESCALATION["id"], STUB_PROMOTION["id"])
+        )
+        self.assertIn(STUB_PROMOTION["id"], result.stderr)
+        self.assertIn(str(self.state_file), result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_an_unreachable_endpoint_exits_1_naming_the_url(self):
         url = "http://127.0.0.1:0/mcp"
         self.corpus(prd=[prd_finding("docs/prds/a.md")])

@@ -37,9 +37,11 @@ A silent run prints nothing on stdout.
 Exit codes:
   0    every member was checked, and the set was raised, correctly silent, or
        printed under --dry-run
-  1    a raise was due but escalate_info or promote_to_l2 could not be filed,
-       or the observed set could not be recorded; a failed raise leaves the
-       state untouched, so the next run retries
+  1    a raise was due but escalate_info or promote_to_l2 could not be filed
+       (a reply naming no record id, or an accepted_unpersisted one, is not a
+       filing), or the observed set could not be recorded (a booked sitting is
+       still reported first); a failed raise leaves the state untouched, so
+       the next run retries
   125  nothing was checked or raised: a member's run had no parseable findings
        array (detector failure, or a refusal of an empty task corpus), the
        state file is unreadable, or --mcp-config declares no endpoint
@@ -242,9 +244,12 @@ def flagged_members(runs):
     return [run.member for run in runs if run.findings]
 
 
+def count_docs(findings):
+    return len({finding.path for finding in findings})
+
+
 def tally(findings, new_count):
-    docs = len({finding.path for finding in findings})
-    return f"{len(findings)} finding(s) across {docs} doc(s), {new_count} new"
+    return f"{len(findings)} finding(s) across {count_docs(findings)} doc(s), {new_count} new"
 
 
 @dataclass(frozen=True)
@@ -262,7 +267,7 @@ class Sitting:
 
     @property
     def doc_count(self):
-        return len({finding.path for finding in self.findings})
+        return count_docs(self.findings)
 
     @property
     def tally(self):
@@ -330,18 +335,32 @@ def planned_raise(sitting):
     }
 
 
-def raise_sitting(url, sitting):
-    """escalate_info then promote_to_l2 in ONE session; both server records.
+def filed_record(tool_name, reply):
+    """reply, if it names a record the server confirmed storing; else EscalationError.
 
-    An accepted_unpersisted member is not a filing: promoting an id the server
-    could not confirm would book a sitting on a record that may not exist.
+    An accepted_unpersisted reply is not a filing: promoting or recording an id
+    the server could not confirm would book a sitting on a record that may not
+    exist.
     """
+    record_id = reply.get("id")
+    if not isinstance(record_id, str) or not record_id:
+        raise EscalationError(f"{tool_name} reply names no record id: {reply}")
+    if reply.get("status") == "accepted_unpersisted":
+        raise EscalationError(f"{tool_name} was accepted_unpersisted, not filed: {reply}")
+    return reply
+
+
+def raise_sitting(url, sitting):
+    """escalate_info then promote_to_l2 in ONE session; both filed server records."""
     session = McpSession(url, AGENT_ROLE)
     session.open()
-    member = session.call_tool("escalate_info", escalation_arguments(sitting))
-    if member.get("status") == "accepted_unpersisted":
-        raise EscalationError(f"escalate_info was accepted_unpersisted, not filed: {member}")
-    promotion = session.call_tool("promote_to_l2", promotion_arguments(sitting, member["id"]))
+    member = filed_record(
+        "escalate_info", session.call_tool("escalate_info", escalation_arguments(sitting))
+    )
+    promotion = filed_record(
+        "promote_to_l2",
+        session.call_tool("promote_to_l2", promotion_arguments(sitting, member["id"])),
+    )
     return member, promotion
 
 
@@ -385,7 +404,9 @@ def stay_silent(args, runs, observed):
 
 
 def raise_and_record(url, sitting, state_path, observed):
-    """Book the sitting, then record the observation; a failed raise records nothing."""
+    """Book the sitting and report it, then record the observation; a failed
+    raise records nothing. The report precedes the state write, so a booked
+    sitting is never lost from the log to a write failure."""
     try:
         member, promotion = raise_sitting(url, sitting)
     except (EscalationError, OSError, ValueError, http.client.HTTPException) as error:
@@ -395,21 +416,21 @@ def raise_and_record(url, sitting, state_path, observed):
             file=sys.stderr,
         )
         return EXIT_FILE_FAILED
-    save_seen(state_path, observed)
     record = {
-        "member_id": member.get("id"),
-        "l2_id": promotion.get("id"),
+        "member_id": member["id"],
+        "l2_id": promotion["id"],
         "l2_status": promotion.get("status"),
         "finding_count": len(sitting.findings),
         "doc_count": sitting.doc_count,
         "new_count": sitting.new_count,
     }
-    print(json.dumps(record))
+    print(json.dumps(record), flush=True)
     print(
         f"{LOG_PREFIX} raised {record['member_id']} -> L2 {record['l2_id']} "
         f"({record['l2_status']}) for {sitting.tally}",
         file=sys.stderr,
     )
+    save_seen(state_path, observed)
     return 0
 
 
