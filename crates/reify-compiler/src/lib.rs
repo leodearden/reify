@@ -202,7 +202,7 @@ pub fn __infer_mul_div_result_for_parity_test(
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
 // consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
 // type-preservation pin).
 pub fn __registry_result_type_for_test(
@@ -222,7 +222,7 @@ pub fn __registry_result_type_for_test(
 /// implication if it can call both halves. Same `__`-prefix stability caveat.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
 // consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the ladder
 // arm's cheap-miss guard pin).
 pub fn __registry_owns_for_test(name: &str) -> bool {
