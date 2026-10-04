@@ -13,16 +13,18 @@
 use reify_kernel_gmsh::EntityAttribution;
 use reify_ir::{GeometryHandleId, NodeAttachment};
 
-// `entity_census`, `prismatic_box_mesh` and `subdivided_unit_cube_surface` come
-// from `tests/common/mod.rs`; the assertions below are this file's own
+// `entity_census` and `subdivided_unit_cube_surface` come from
+// `tests/common/mod.rs`, `prismatic_box_mesh` from
+// `reify_test_support::mesh_fixtures`; the assertions below are this file's own
 // contract. The module's file-level `#![allow(dead_code)]` covers the parts
 // this binary does not use.
 //
-// Call sites stay path-qualified rather than taking a top-level
-// `use common::{entity_census, prismatic_box_mesh};` the way
-// classify_feature_angle.rs does: THAT file is `#![cfg(has_gmsh)]` as a whole,
-// this one is not, and `common::entity_census` exists only under `has_gmsh` —
-// so a top-level `use` of it would fail to resolve on a stub-host build.
+// Call sites stay path-qualified rather than taking top-level `use`s the way
+// classify_feature_angle.rs takes `use common::entity_census;`: THAT file is
+// `#![cfg(has_gmsh)]` as a whole, this one is not. `common::entity_census`
+// exists only under `has_gmsh`, so a top-level `use` of it would fail to
+// resolve on a stub-host build; `prismatic_box_mesh` is called only from a
+// `has_gmsh` test, so a top-level `use` of it would be an unused import there.
 mod common;
 
 // ---------------------------------------------------------------------------
@@ -445,8 +447,10 @@ fn classify_surfaces_over_decomposes_unit_cube() {
 #[test]
 fn entity_census_tracks_its_surface_argument() {
     let subdivided = common::entity_census(&common::subdivided_unit_cube_surface(), "reify_6830_subdiv");
-    let welded =
-        common::entity_census(&common::prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_welded");
+    let welded = common::entity_census(
+        &reify_test_support::mesh_fixtures::prismatic_box_mesh(1.0, 1.0, 1.0),
+        "reify_6830_welded",
+    );
 
     assert_ne!(
         subdivided, welded,
