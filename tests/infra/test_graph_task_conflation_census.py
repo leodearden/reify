@@ -768,6 +768,181 @@ class CensusCliTest(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in self.out.iterdir()}, before)
 
 
+class ReviewFixture(unittest.TestCase):
+    """A ProposalWorld census plus a fully valid adjudication of it."""
+
+    census_name = "reify-task-conflations-2026-10-04T05-06-07Z.json"
+
+    def setUp(self):
+        self.world = ProposalWorld()
+        self.census = self.world.census
+        self.adjudication = census_tool.adjudication_template(self.census, self.census_name)
+        for entry in self.adjudication["adjudications"]:
+            entry["rationale"] = "fact is about the named task, checked against its episode"
+        self.unique_id = f"{self.world.e_unique_source}@{self.world.t3019}"
+        self.mint_id = f"{self.world.e_absent}@{self.world.t500}"
+        self.unary_id = f"{self.world.e_unary}@{self.world.t2590}"
+
+    def entry(self, candidate_id):
+        return next(e for e in self.adjudication["adjudications"]
+                    if e["candidate_id"] == candidate_id)
+
+    def rules(self):
+        errors = census_tool.validate_adjudication(self.census, self.adjudication, self.census_name)
+        return {(error.candidate_id, error.rule) for error in errors}
+
+
+Rule = census_tool.ReviewRule
+
+
+class ValidateAdjudicationTest(ReviewFixture):
+    def test_a_fully_valid_adjudication_has_no_errors(self):
+        self.assertEqual(self.rules(), set())
+
+    def test_census_mismatch(self):
+        self.adjudication["census"] = "reify-task-conflations-other.json"
+        self.assertEqual(self.rules(), {(None, Rule.CENSUS_MISMATCH)})
+
+    def test_missing_adjudication(self):
+        self.adjudication["adjudications"].remove(self.entry(self.unary_id))
+        self.assertEqual(self.rules(), {(self.unary_id, Rule.MISSING_ADJUDICATION)})
+
+    def test_unknown_candidate(self):
+        stray = dict(self.entry(self.unary_id), candidate_id="feedface-0000@deadbeef-0000")
+        self.adjudication["adjudications"].append(stray)
+        self.assertEqual(self.rules(), {("feedface-0000@deadbeef-0000", Rule.UNKNOWN_CANDIDATE)})
+
+    def test_duplicate_adjudication(self):
+        self.adjudication["adjudications"].append(dict(self.entry(self.unary_id)))
+        self.assertEqual(self.rules(), {(self.unary_id, Rule.DUPLICATE_ADJUDICATION)})
+
+    def test_invalid_verdict(self):
+        self.entry(self.unary_id)["verdict"] = "FIX"
+        self.assertEqual(self.rules(), {(self.unary_id, Rule.INVALID_VERDICT)})
+
+    def test_empty_rationale(self):
+        self.entry(self.unary_id)["rationale"] = "  \n\t"
+        self.entry(self.mint_id)["rationale"] = ""
+        self.assertEqual(self.rules(), {(self.unary_id, Rule.EMPTY_RATIONALE),
+                                        (self.mint_id, Rule.EMPTY_RATIONALE)})
+
+    def test_repair_needs_exactly_one_target(self):
+        self.entry(self.unique_id)["mint_name"] = "Task 2919"
+        self.entry(self.mint_id)["mint_name"] = None
+        self.assertEqual(self.rules(), {(self.unique_id, Rule.REPAIR_TARGET_COUNT),
+                                        (self.mint_id, Rule.REPAIR_TARGET_COUNT)})
+
+    def test_repair_onto_either_endpoint_is_a_self_loop(self):
+        self.entry(self.unique_id)["target_node_uuid"] = self.world.t3017
+        self.entry(self.mint_id).update(mint_name=None, target_node_uuid=self.world.t500)
+        self.assertEqual(self.rules(), {(self.unique_id, Rule.REPAIR_SELF_LOOP),
+                                        (self.mint_id, Rule.REPAIR_SELF_LOOP)})
+
+    def test_repair_may_target_a_non_task_node(self):
+        self.entry(self.mint_id).update(mint_name=None, target_node_uuid=self.world.harness)
+        self.assertEqual(self.rules(), set())
+
+    def test_repair_target_must_be_uuid_shaped(self):
+        self.entry(self.unique_id)["target_node_uuid"] = "Task 2919"
+        self.assertEqual(self.rules(), {(self.unique_id, Rule.TARGET_NOT_UUID)})
+
+    def test_mint_name_must_be_canonical(self):
+        for name in ("task #502", "Task 502 ", "task 502", "Task  502"):
+            self.entry(self.mint_id)["mint_name"] = name
+            self.assertEqual(self.rules(), {(self.mint_id, Rule.MINT_NAME_NOT_CANONICAL)}, name)
+
+    def test_target_on_non_repair(self):
+        self.entry(self.unary_id)["target_node_uuid"] = self.world.t2919
+        self.entry(self.mint_id).update(verdict=NOT_A_CONFLATION)
+        self.assertEqual(self.rules(), {(self.unary_id, Rule.TARGET_ON_NON_REPAIR),
+                                        (self.mint_id, Rule.TARGET_ON_NON_REPAIR)})
+
+
+class RenderReviewTest(ReviewFixture):
+    def test_review_sheet_carries_header_counts_and_every_row(self):
+        self.entry(self.unary_id)["rationale"] = "unary | about the other endpoint\nno target"
+        sheet = census_tool.render_review(self.census, self.adjudication)
+        for value in ("reify", GENERATED_AT, "orchestrator", "547", self.census_name):
+            self.assertIn(value, sheet)
+        for candidate in self.census["candidates"]:
+            self.assertIn(candidate["edge_uuid"], sheet)
+            self.assertIn(candidate["node_name"], sheet)
+        self.assertIn("Task 502 restarted the orchestrator", sheet)
+        self.assertIn("Task 502", sheet)
+        self.assertIn(self.world.t2919, sheet)
+        self.assertIn(census_tool.ProposalReason.UNARY_ABOUT_OTHER_ENDPOINT.value, sheet)
+
+    def test_cells_cannot_break_the_table(self):
+        self.entry(self.unary_id)["rationale"] = "unary | about the other endpoint\nno target"
+        sheet = census_tool.render_review(self.census, self.adjudication)
+        lines = sheet.splitlines()
+        row = next(line for line in lines if self.world.e_unary in line)
+        plain_row = next(line for line in lines if self.world.e_absent in line)
+        self.assertIn("unary \\| about the other endpoint", row)
+        self.assertIn("no target", row)
+        self.assertEqual(row.replace("\\|", "").count("|"), plain_row.count("|"))
+
+
+class RepairListTest(ReviewFixture):
+    def test_only_repair_rows_with_reassign_edge_shaped_keys(self):
+        repairs = census_tool.repair_list(self.census, self.adjudication)
+        by_id = {r["candidate_id"]: r for r in repairs}
+        self.assertEqual(set(by_id), {self.unique_id, self.mint_id,
+                                      f"{self.world.e_unique_target}@{self.world.t4100}"})
+        self.assertEqual(by_id[self.unique_id], {
+            "candidate_id": self.unique_id, "edge_uuid": self.world.e_unique_source,
+            "which_end": "source", "from_node_uuid": self.world.t3019,
+            "new_endpoint_uuid": self.world.t2919,
+        })
+        self.assertEqual(by_id[self.mint_id], {
+            "candidate_id": self.mint_id, "edge_uuid": self.world.e_absent,
+            "which_end": "source", "from_node_uuid": self.world.t500, "mint_name": "Task 502",
+        })
+
+
+class ReviewCliTest(ReviewFixture):
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.census_path = self.dir / self.census_name
+        self.adjudication_path = self.dir / self.census_name.replace(".json", ".adjudication.json")
+        self.review_path = self.dir / self.census_name.replace(".json", ".review.md")
+        census_tool.write_new_json(self.census_path, self.census)
+
+    def review(self):
+        self.adjudication_path.write_text(json.dumps(self.adjudication), encoding="utf-8")
+        return _run_main(["review", "--census", str(self.census_path),
+                          "--adjudication", str(self.adjudication_path)], connection=None)
+
+    def test_valid_adjudication_writes_the_sheet_and_prints_repairs(self):
+        code, stdout, _ = self.review()
+        self.assertEqual(code, 0)
+        self.assertIn(self.world.e_absent, self.review_path.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(stdout),
+                         census_tool.repair_list(self.census, self.adjudication))
+
+    def test_review_re_renders_after_an_edit(self):
+        self.assertEqual(self.review()[0], 0)
+        self.entry(self.unary_id)["rationale"] = "re-adjudicated after reading the episode"
+        self.assertEqual(self.review()[0], 0)
+        self.assertIn("re-adjudicated after reading the episode",
+                      self.review_path.read_text(encoding="utf-8"))
+
+    def test_invalid_adjudication_lists_every_error_and_writes_no_sheet(self):
+        self.entry(self.unary_id)["verdict"] = "FIX"
+        self.entry(self.mint_id)["rationale"] = ""
+        code, stdout, stderr = self.review()
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertFalse(self.review_path.exists())
+        self.assertIn(self.unary_id, stderr)
+        self.assertIn(Rule.INVALID_VERDICT.value, stderr)
+        self.assertIn(self.mint_id, stderr)
+        self.assertIn(Rule.EMPTY_RATIONALE.value, stderr)
+
+
 class ConnectFalkorTest(unittest.TestCase):
     def test_missing_redis_package_is_named(self):
         def no_module(name):
