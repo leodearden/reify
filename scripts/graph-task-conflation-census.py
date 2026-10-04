@@ -173,6 +173,10 @@ class EdgeEndpoints:
     invalid_at: str | None
     expired_at: str | None
 
+    @property
+    def is_tombstoned(self) -> bool:
+        return self.invalid_at is not None or self.expired_at is not None
+
 
 class GraphReader(Protocol):
     def node_count(self) -> int: ...
@@ -701,6 +705,80 @@ def run_review(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── Repair check ────────────────────────────────────────────────────────────
+
+
+class RepairState(enum.Enum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    MOVED_ELSEWHERE = "moved_elsewhere"
+    EDGE_GONE = "edge_gone"
+    TARGET_MISSING = "target_missing"
+    UNMINTED = "unminted"
+
+
+@dataclass(frozen=True)
+class RepairStatus:
+    candidate_id: str
+    edge_uuid: str
+    which_end: str
+    status: RepairState
+
+
+class InvalidAdjudicationError(ValueError):
+    """An adjudication failed validate_adjudication; carries every ReviewError."""
+
+    def __init__(self, errors: list[ReviewError]):
+        super().__init__("invalid adjudication:\n" + "\n".join(str(error) for error in errors))
+        self.errors = errors
+
+
+def _repair_state(reader: GraphReader, repair: dict) -> RepairState:
+    if "mint_name" in repair:
+        return RepairState.UNMINTED
+    target = repair["new_endpoint_uuid"]
+    if not reader.node_exists(target):
+        return RepairState.TARGET_MISSING
+    endpoints = reader.edge_endpoints(repair["edge_uuid"])
+    if endpoints is None or endpoints.is_tombstoned:
+        return RepairState.EDGE_GONE
+    end = endpoints.source_uuid if repair["which_end"] == "source" else endpoints.target_uuid
+    if end == repair["from_node_uuid"]:
+        return RepairState.PENDING
+    return RepairState.APPLIED if end == target else RepairState.MOVED_ELSEWHERE
+
+
+def check_repairs(reader: GraphReader, census: dict, adjudication: dict,
+                  census_file_name: str) -> list[RepairStatus]:
+    """The live state of every REPAIR row; refuses an adjudication review would refuse."""
+    errors = validate_adjudication(census, adjudication, census_file_name)
+    if errors:
+        raise InvalidAdjudicationError(errors)
+    return [RepairStatus(repair["candidate_id"], repair["edge_uuid"], repair["which_end"],
+                         _repair_state(reader, repair))
+            for repair in repair_list(census, adjudication)]
+
+
+def run_check_repairs(args: argparse.Namespace, connect, clock: Callable[[], datetime]) -> int:
+    if args.out is not None:
+        _refuse_existing([args.out])
+    census, adjudication = _load_json(args.census), _load_json(args.adjudication)
+    rows = check_repairs(_open_reader(args, connect), census, adjudication, args.census.name)
+    report = {
+        "census": args.census.name,
+        "checked_at": f"{clock().astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
+        "require": args.require,
+        "rows": [{"candidate_id": row.candidate_id, "edge_uuid": row.edge_uuid,
+                  "which_end": row.which_end, "status": row.status.value} for row in rows],
+        "counts": {state.value: sum(row.status is state for row in rows) for state in RepairState},
+    }
+    if args.out is not None:
+        write_new_json(args.out, report)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    required = RepairState(args.require)
+    return 0 if all(row.status is required for row in rows) else 1
+
+
 # ── Command line ────────────────────────────────────────────────────────────
 
 
@@ -719,8 +797,8 @@ def _add_artifact_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="graph-task-conflation-census.py",
-        description=__doc__.splitlines()[0],
-        epilog="See the module docstring for the artifact schema and safety rules.",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -751,13 +829,17 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _open_reader(args: argparse.Namespace, connect, **options: Any) -> FalkorReader:
+    return FalkorReader(connect(args.redis_url), args.graph, **options)
+
+
 def run_census(args: argparse.Namespace, connect, clock: Callable[[], datetime]) -> int:
     now = clock().astimezone(timezone.utc)
     stem = f"{args.graph}-task-conflations-{now:%Y-%m-%dT%H-%M-%SZ}"
     census_path = args.out_dir / f"{stem}.json"
     adjudication_path = args.out_dir / f"{stem}.adjudication.json"
     _refuse_existing([census_path, adjudication_path])
-    reader = FalkorReader(connect(args.redis_url), args.graph, batch_size=args.batch_size)
+    reader = _open_reader(args, connect, batch_size=args.batch_size)
     census = build_census(reader, args.graph, args.expect_node_count,
                           f"{now:%Y-%m-%dT%H:%M:%SZ}", args.bm25_token)
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -768,7 +850,8 @@ def run_census(args: argparse.Namespace, connect, clock: Callable[[], datetime])
 
 
 _REPORTED_ERRORS = (KeyConfirmationError, GraphQueryTimeout, MissingDriverError,
-                    OutputExistsError, FileNotFoundError, json.JSONDecodeError)
+                    OutputExistsError, InvalidAdjudicationError, FileNotFoundError,
+                    json.JSONDecodeError)
 
 
 def main(argv: list[str] | None = None, connect=connect_falkor,
@@ -779,7 +862,7 @@ def main(argv: list[str] | None = None, connect=connect_falkor,
             return run_census(args, connect, clock)
         if args.command == "review":
             return run_review(args)
-        raise NotImplementedError(f"subcommand {args.command!r} is not implemented yet")
+        return run_check_repairs(args, connect, clock)
     except _REPORTED_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

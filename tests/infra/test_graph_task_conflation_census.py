@@ -9,9 +9,10 @@ tests/infra/test_graph_task_conflation_census.sh, which invokes this file. A
 bare .py here would be silently never run.
 
 The tool's filename is hyphenated (repo script convention), so it is loaded by
-path via importlib rather than by a bare `import`; scripts/ is prepended to
-sys.path so the tool's sibling import of task_reference_grammar (the grammar
-module these tests also exercise directly) resolves. Every test drives the tool
+path via importlib rather than by a bare `import`. Its sibling grammar module,
+which these tests also exercise directly, is loaded first under its import
+name, so the tool's `from task_reference_grammar import ...` resolves to it
+without any sys.path edit. Every test drives the tool
 in-process through its public seams (the reader Protocol and main()'s
 `connect` parameter); this file spawns no subprocess and touches no live graph.
 """
@@ -30,15 +31,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-TOOL_PATH = SCRIPTS_DIR / "graph-task-conflation-census.py"
-
-sys.path.insert(0, str(SCRIPTS_DIR))
 
 
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("graph_task_conflation_census", TOOL_PATH)
+def _load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {TOOL_PATH}")
+        raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     # Register before exec: @dataclass resolves a field's type through
     # sys.modules[cls.__module__], which is None for an unregistered module.
@@ -47,8 +45,9 @@ def _load_tool():
     return module
 
 
-census_tool = _load_tool()
-import task_reference_grammar as grammar  # noqa: E402  (needs SCRIPTS_DIR on sys.path)
+grammar = _load_module("task_reference_grammar", SCRIPTS_DIR / "task_reference_grammar.py")
+census_tool = _load_module("graph_task_conflation_census",
+                           SCRIPTS_DIR / "graph-task-conflation-census.py")
 
 
 class FactTaskRefsTest(unittest.TestCase):
@@ -700,7 +699,8 @@ class FalkorReaderTest(unittest.TestCase):
         self.assertTrue(queries)
         for query in queries:
             parameter = _LIST_PARAMETER.match(query)
-            self.assertIsNotNone(parameter, query)
+            if parameter is None:
+                self.fail(f"no list parameter in {query!r}")
             self.assertNotIn("'", parameter.group(1))
 
     def test_a_timeout_is_retried(self):
