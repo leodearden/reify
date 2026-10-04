@@ -53,9 +53,16 @@ use xxhash_rust::xxh3::xxh3_128;
 /// below never invalidates on its source change: each one is therefore either
 /// [`Coverage::Hashed`] or excluded for a [`NotHashedBecause`] reason.
 /// `src/engine_hash_tests.rs` enforces a row per path crate, and that a byte
-/// change in each persisted target's own sources moves the hash. A row is
-/// crate-granular, so a partially hashed crate (reify-eval, reify-stdlib)
-/// lists the files it hashes and leaves the rest to that second guard.
+/// change in each file of its hand-kept `PERSISTED_TARGET_SOURCES` table moves
+/// the hash. A partially hashed crate (reify-eval, reify-stdlib) lists the
+/// files it hashes, so its soundness rests on that table naming every file of
+/// the crate a persisted dispatch runs; an unlisted callee goes undetected.
+///
+/// reify-core and reify-ir are hashed whole although the trampolines reach
+/// only part of them (Value/Diagnostic, arg_acceptance, the sampled-field
+/// helpers), so almost any edit to either flushes the persistent FEA cache.
+/// That trades hit rate for soundness, per the PRD's prefer-over-invalidation
+/// policy; a per-file narrowing would inherit the partial-crate caveat above.
 ///
 /// # Transitive-dep version pin (narrowed, task 5272)
 ///

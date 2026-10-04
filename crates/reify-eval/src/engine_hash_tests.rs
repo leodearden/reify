@@ -7,14 +7,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::engine_hash_algo::{
-    Coverage, EngineVersionHash, LockPackage, WORKSPACE_CRATE_COVERAGE, engine_version_hash_for,
-    parse_cargo_lock_stanzas, parse_closure_manifest,
+    Coverage, EngineVersionHash, LockPackage, WORKSPACE_CRATE_COVERAGE, contributor_paths,
+    engine_version_hash_for, parse_cargo_lock_stanzas, parse_closure_manifest,
 };
 
 /// Which files implement each persisted target: its trampoline and the code
 /// that trampoline calls. Paths are files relative to `crates/reify-eval`.
 /// A byte change in any of them must move `ENGINE_VERSION_HASH`, or a stale
-/// persisted result would be served.
+/// persisted result would be served. Kept by hand: in a partially hashed crate
+/// (reify-eval, reify-stdlib) a callee missing from this table is a gap no
+/// test detects, so list each file a trampoline newly reaches.
 const PERSISTED_TARGET_SOURCES: &[(&str, &[&str])] = &[
     (
         "solver::elastic_static",
@@ -104,10 +106,31 @@ fn regular_file_count(hash: &EngineVersionHash) -> usize {
 }
 
 #[test]
-#[should_panic(expected = "ENGINE_VERSION_HASH contributor not found")]
 fn engine_version_hash_for_panics_naming_the_first_missing_contributor() {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
-    engine_version_hash_for(tmp.path());
+    let first = contributor_paths()
+        .next()
+        .expect("WORKSPACE_CRATE_COVERAGE hashes at least one path");
+    let payload = std::panic::catch_unwind(|| engine_version_hash_for(tmp.path()))
+        .err()
+        .expect("a manifest dir with no contributors must panic");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the panic carries a formatted message");
+    let expected = format!("ENGINE_VERSION_HASH contributor not found: {first} (");
+    assert!(
+        message.contains(&expected),
+        "the panic must name {first:?}, got: {message}"
+    );
+}
+
+#[test]
+fn the_baked_engine_version_hash_is_engine_version_hash_for_this_checkout() {
+    assert_eq!(
+        crate::persistent_cache::ENGINE_VERSION_HASH,
+        engine_version_hash_for(real_manifest_dir()).hex,
+        "build.rs must bake exactly engine_version_hash_for(CARGO_MANIFEST_DIR), unmodified"
+    );
 }
 
 #[test]
