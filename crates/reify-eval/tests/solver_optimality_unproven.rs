@@ -100,6 +100,9 @@ impl ConstraintSolver for EnumerationBudgetRankedSolver {
             optimality: OptimalityStatus::BestFound {
                 reason: BestFoundReason::EnumerationBudget,
             },
+            // #6706: carrying the field changes nothing about what this test
+            // observes — the EnumerationBudget warning.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }

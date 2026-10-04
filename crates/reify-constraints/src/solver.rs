@@ -8933,6 +8933,7 @@ mod tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => {
                 assert_eq!(
                     candidates.len(),

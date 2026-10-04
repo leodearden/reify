@@ -1423,10 +1423,20 @@ fn production_registry_ranks_the_bool_balance_by_its_objective() {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                completeness,
             } => {
                 assert!(
                     matches!(optimality, reify_ir::OptimalityStatus::ProvenOptimal),
                     "{sense:?}: complete enumeration must prove optimality; got {optimality:?}"
+                );
+                assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "{sense:?}: BT13 + C2 interim: production()'s ranked lift reports \
+                     not_attempted() even when CP-SAT proved optimality by complete \
+                     enumeration; re-expressing CP-SAT's `complete` as Exhaustive is \
+                     #6903's (its Ranked candidates are capped at RANKED_CANDIDATE_CAP, \
+                     so `complete` alone does not make the carried set exhaustive)"
                 );
                 let ups = balance_bools(&candidates[0].values);
                 assert_balanced(ups);
