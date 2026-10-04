@@ -18,6 +18,7 @@ mod lsp_bridge_tests;
 mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
+mod openvdb_kernel_tests;
 mod path_key_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
