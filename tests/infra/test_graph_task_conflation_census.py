@@ -197,6 +197,10 @@ class FakeReader:
         self.reported_node_count = len(self.nodes) if node_count is None else node_count
         self.bm25 = bm25 or census_tool.Bm25Probe(
             token="orchestrator", fulltext_hits=547, name_contains=92, error=None)
+        self.endpoints = {edge.uuid: census_tool.EdgeEndpoints(edge.source, edge.target,
+                                                               edge.invalid_at, edge.expired_at)
+                          for edge in self.edges}
+        self.existing = set(self.nodes)
         self.calls = []
 
     def node_count(self):
@@ -228,6 +232,14 @@ class FakeReader:
     def bm25_probe(self, token):
         self.calls.append("bm25_probe")
         return self.bm25
+
+    def edge_endpoints(self, edge_uuid):
+        self.calls.append(("edge_endpoints", edge_uuid))
+        return self.endpoints.get(edge_uuid)
+
+    def node_exists(self, uuid):
+        self.calls.append(("node_exists", uuid))
+        return uuid in self.existing
 
 
 class FakeGraph:
@@ -658,7 +670,18 @@ class FalkorReaderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             code, _, _ = _run_main(["census", "--expect-node-count", str(len(w.graph.nodes)),
                                     "--out-dir", out], self.conn)
-        self.assertEqual(code, 0)
+            self.assertEqual(code, 0)
+            census_path = Path(out) / CENSUS_NAME
+            adjudication_path = Path(out) / ADJUDICATION_NAME
+            adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+            for entry in adjudication["adjudications"]:
+                entry["rationale"] = "checked"
+            adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+            calls_before = len(self.conn.calls)
+            _run_main(["check-repairs", "--census", str(census_path),
+                       "--adjudication", str(adjudication_path), "--require", "pending"],
+                      self.conn)
+            self.assertGreater(len(self.conn.calls), calls_before)
         self.assertEveryCallIsReadOnly(self.conn.calls)
 
     def test_edges_are_read_in_batches(self):
@@ -947,6 +970,148 @@ class ReviewCliTest(ReviewFixture):
         self.assertIn(Rule.INVALID_VERDICT.value, stderr)
         self.assertIn(self.mint_id, stderr)
         self.assertIn(Rule.EMPTY_RATIONALE.value, stderr)
+
+
+State = census_tool.RepairState
+
+
+class CheckRepairsTest(ReviewFixture):
+    """One case per RepairState, on both which_end values, over a FakeReader."""
+
+    def setUp(self):
+        super().setUp()
+        self.reader = self.world.graph.reader()
+        self.target_id = f"{self.world.e_unique_target}@{self.world.t4100}"
+
+    def statuses(self):
+        rows = census_tool.check_repairs(self.reader, self.census, self.adjudication,
+                                         self.census_name)
+        return {row.candidate_id: row.status for row in rows}
+
+    def move(self, edge, source, target, **tombstone):
+        self.reader.endpoints[edge] = census_tool.EdgeEndpoints(
+            source, target, tombstone.get("invalid_at"), tombstone.get("expired_at"))
+
+    def test_pending_on_both_ends_and_unminted_without_a_query(self):
+        statuses = self.statuses()
+        self.assertEqual(statuses, {self.unique_id: State.PENDING,
+                                    self.target_id: State.PENDING,
+                                    self.mint_id: State.UNMINTED})
+        queried = {arg for name, arg in (c for c in self.reader.calls if isinstance(c, tuple))}
+        self.assertNotIn(self.world.e_absent, queried)
+
+    def test_applied_on_both_ends(self):
+        w = self.world
+        self.move(w.e_unique_source, w.t2919, w.t3017)
+        self.move(w.e_unique_target, w.harness, w.t2919)
+        statuses = self.statuses()
+        self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
+                         (State.APPLIED, State.APPLIED))
+
+    def test_moved_elsewhere_on_both_ends(self):
+        w = self.world
+        self.move(w.e_unique_source, w.t1999, w.t3017)
+        self.move(w.e_unique_target, w.harness, w.t700)
+        statuses = self.statuses()
+        self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
+                         (State.MOVED_ELSEWHERE, State.MOVED_ELSEWHERE))
+
+    def test_edge_gone_when_absent_invalidated_or_expired(self):
+        w = self.world
+        for tombstone in ({"invalid_at": "2026-10-04T00:00:00Z"},
+                          {"expired_at": "2026-10-04T00:00:00Z"}):
+            self.move(w.e_unique_source, w.t3019, w.t3017, **tombstone)
+            del self.reader.endpoints[w.e_unique_target]
+            statuses = self.statuses()
+            self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
+                             (State.EDGE_GONE, State.EDGE_GONE), tombstone)
+            self.reader.endpoints[w.e_unique_target] = census_tool.EdgeEndpoints(
+                w.harness, w.t4100, None, None)
+
+    def test_target_missing_is_checked_before_the_endpoint(self):
+        self.reader.existing.discard(self.world.t2919)
+        self.move(self.world.e_unique_source, self.world.t2919, self.world.t3017)
+        statuses = self.statuses()
+        self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
+                         (State.TARGET_MISSING, State.TARGET_MISSING))
+
+    def test_an_invalid_adjudication_is_refused(self):
+        self.entry(self.unary_id)["rationale"] = ""
+        with self.assertRaises(ValueError) as ctx:
+            self.statuses()
+        self.assertIn(Rule.EMPTY_RATIONALE.value, str(ctx.exception))
+        self.assertEqual(self.reader.calls, [])
+
+
+class CheckRepairsCliTest(ReviewFixture):
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.census_path = self.dir / self.census_name
+        self.adjudication_path = self.dir / self.census_name.replace(".json", ".adjudication.json")
+        census_tool.write_new_json(self.census_path, self.census)
+        self.entry(self.mint_id).update(verdict=RECORD_ONLY, mint_name=None,
+                                        rationale="no node to mint; recorded only")
+        self.conn = FakeFalkorConnection(self.world.graph)
+
+    def check(self, require, *extra):
+        self.adjudication_path.write_text(json.dumps(self.adjudication), encoding="utf-8")
+        return _run_main(["check-repairs", "--census", str(self.census_path),
+                          "--adjudication", str(self.adjudication_path),
+                          "--require", require, *extra], self.conn)
+
+    def apply_repairs(self):
+        w, edges = self.world, self.world.graph.edges
+        for index, edge in enumerate(edges):
+            if edge.uuid == w.e_unique_source:
+                edges[index] = FakeEdge(edge.uuid, w.t2919, edge.target, edge.fact)
+            if edge.uuid == w.e_unique_target:
+                edges[index] = FakeEdge(edge.uuid, edge.source, w.t2919, edge.fact)
+
+    def test_pending_report_and_exit_code(self):
+        code, stdout, _ = self.check("pending")
+        self.assertEqual(code, 0)
+        report = json.loads(stdout)
+        self.assertEqual(report["census"], self.census_name)
+        self.assertEqual(report["require"], "pending")
+        self.assertEqual(report["checked_at"], "2026-10-04T05:06:07Z")
+        self.assertEqual({row["candidate_id"]: row["status"] for row in report["rows"]},
+                         {self.unique_id: "pending",
+                          f"{self.world.e_unique_target}@{self.world.t4100}": "pending"})
+        self.assertEqual({r["which_end"] for r in report["rows"]}, {"source", "target"})
+        self.assertEqual(report["counts"]["pending"], 2)
+        self.assertEqual(self.check("applied")[0], 1)
+
+    def test_applied_after_the_repairs_land(self):
+        self.apply_repairs()
+        code, stdout, _ = self.check("applied")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["counts"]["applied"], 2)
+        self.assertEqual(self.check("pending")[0], 1)
+
+    def test_an_unminted_row_fails_either_requirement(self):
+        self.entry(self.mint_id).update(verdict=REPAIR, mint_name="Task 502")
+        self.assertEqual(self.check("pending")[0], 1)
+
+    def test_out_writes_the_report_and_never_overwrites(self):
+        out = self.dir / "pre.json"
+        code, stdout, _ = self.check("pending", "--out", str(out))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.read_text(encoding="utf-8")), json.loads(stdout))
+        before = out.read_bytes()
+        code, _, stderr = self.check("pending", "--out", str(out))
+        self.assertNotEqual(code, 0)
+        self.assertIn("pre.json", stderr)
+        self.assertEqual(out.read_bytes(), before)
+
+    def test_an_invalid_adjudication_exits_non_zero_with_its_errors(self):
+        self.entry(self.unary_id)["verdict"] = "FIX"
+        code, _, stderr = self.check("pending")
+        self.assertNotEqual(code, 0)
+        self.assertIn(Rule.INVALID_VERDICT.value, stderr)
+        self.assertEqual(self.conn.calls, [])
 
 
 class ConnectFalkorTest(unittest.TestCase):
