@@ -33,6 +33,7 @@ extern crate reify_kernel_openvdb as _;
 mod cache;
 mod dev;
 mod mcp_context;
+mod sigpipe;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction, UndefCause};
 
@@ -113,6 +114,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
 }
 
 fn main() -> ExitCode {
+    sigpipe::restore_default();
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
