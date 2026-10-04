@@ -96,12 +96,14 @@
 #      is the contract, arm order is not. This is the assert that would have
 #      caught task 6493's own finding, and the one that stops a FOURTH native
 #      dep shipping ungated.
-#  13. OCCT XDE TOOLKITS (step-assembly-import α): an OCCT lib dir lacking
-#      lib<TK>.so.<soname> for TKXCAF or TKLCAF => non-zero, output names the
-#      missing file and the dir; a complete install => exit 0 with both
-#      resolved toolkit files RECORDED. The OCCT lib fixture builders model a
-#      complete install (they materialise both toolkits), so every other OCCT
-#      positive control stays about what it tests.
+#  13. OCCT XDE TOOLKITS (step-assembly-import α): the guard's
+#      OCCT_XDE_TOOLKITS equals the set in build.rs's `// BEGIN
+#      occt-xde-toolkits` block; an OCCT lib dir lacking lib<TK>.so.<soname>
+#      for any of them => non-zero, output names the missing file and the dir;
+#      a complete install => exit 0 with every resolved toolkit file RECORDED.
+#      The OCCT lib fixture builders model a complete install (they materialise
+#      every toolkit), so every other OCCT positive control stays about what it
+#      tests.
 #
 # The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
 # a legitimate future pin bump stays a one-line diff in one file. Every derived
@@ -152,6 +154,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 GUARD="$REPO_ROOT/scripts/check-manifold-deps.sh"
 RUST_SRC="$REPO_ROOT/crates/reify-build-utils/src/lib.rs"
+OCCT_BUILD_RS="$REPO_ROOT/crates/reify-kernel-occt/build.rs"
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 
 _TMPDIR="$(mktemp -d)"
@@ -162,11 +165,6 @@ echo "=== native-dep preflight tests (OCCT + Gmsh + OpenVDB) ==="
 # ---------------------------------------------------------------------------
 # Fixture + invocation helpers
 # ---------------------------------------------------------------------------
-
-# The OCCT toolkits crates/reify-kernel-occt/build.rs links for the STEP
-# assembly reader, beyond the TKernel sentinel. Section 13 pins that the guard
-# requires each of them.
-_OCCT_XDE_TOOLKITS=(TKXCAF TKLCAF)
 
 # _mk_include_fixture <name> [<sentinel>] — dir under $_TMPDIR containing the
 # named include sentinel (default: OCCT's Standard_Failure.hxx). Prints the
@@ -617,6 +615,24 @@ _rust_native_dep_variants() {
     ' "$RUST_SRC"
 }
 
+# _rust_occt_xde_toolkits — the toolkit names inside the
+# `// BEGIN occt-xde-toolkits` marker block of crates/reify-kernel-occt/build.rs,
+# one per line. Whole-line anchored like _rust_native_dep_variants, and an
+# unmarked block yields NOTHING, which section 13's anchor assert names.
+_rust_occt_xde_toolkits() {
+    awk '
+        $0 ~ /^[[:space:]]*\/\/ BEGIN occt-xde-toolkits[[:space:]]*$/ { inblk = 1; next }
+        inblk && $0 ~ /^[[:space:]]*\/\/ END occt-xde-toolkits[[:space:]]*$/ { exit }
+        !inblk { next }
+        {
+            line = $0
+            sub(/\/\/.*/, "", line)
+            gsub(/[[:space:]",]/, "", line)
+            if (line != "") print line
+        }
+    ' "$OCCT_BUILD_RS"
+}
+
 # _bash_gated_deps — the dep names scripts/check-manifold-deps.sh actually
 # gates, DERIVED from its `# BEGIN <dep>-candidates` marker-block names rather
 # than listed again here. Deriving it is the point: a fourth dep that ships
@@ -714,6 +730,12 @@ _setup_dev_occt_version() {
 # non-empty assert lives with the SONAME section below.
 _ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
 _ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
+
+# The OCCT XDE toolkits the guard requires, derived from its OCCT_XDE_TOOLKITS
+# for the same reason, and up here because every OCCT lib fixture below
+# materialises them. Section 13 asserts the parse non-empty and equal to
+# build.rs's linked set.
+mapfile -t _OCCT_XDE_TOOLKITS < <(_bash_guard_array OCCT_XDE_TOOLKITS)
 
 # Healthy UPSTREAM OCCT, built at the DERIVED accepted version rather than a
 # hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
@@ -1513,9 +1535,32 @@ done <<< "$_BASH_GATED"
 # is otherwise a cryptic link failure deep in every OCCT-touching crate. Every
 # fixture is at the accepted SONAME with healthy headers, so the toolkit rule is
 # the only thing under test, and each red names the toolkit file it is about.
+#
+# Both toolkit sets are DERIVED: the guard's OCCT_XDE_TOOLKITS, and build.rs's
+# `// BEGIN occt-xde-toolkits` block. A toolkit build.rs links without the
+# guard requiring it reds the parity assert; one the guard declares is driven
+# by the behavioural loop with no edit here.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- 13: XDE toolkits — presence fatal, recorded ---"
+
+_BUILD_RS_XDE="$(_rust_occt_xde_toolkits)"
+
+assert "build.rs parse of the XDE toolkits is non-empty (anchor '// BEGIN occt-xde-toolkits' found)" \
+    test -n "$_BUILD_RS_XDE"
+
+assert "guard parse of OCCT_XDE_TOOLKITS is non-empty" \
+    test "${#_OCCT_XDE_TOOLKITS[@]}" -gt 0
+
+_XDE_SET_DIFF="$(_parity_diff \
+    "$(printf '%s\n' "$_BUILD_RS_XDE" | sort -u)" \
+    "$(printf '%s\n' "${_OCCT_XDE_TOOLKITS[@]}" | sort -u)")"
+if [ -n "$_XDE_SET_DIFF" ]; then
+    echo "  XDE toolkit gate gap (< build.rs occt-xde-toolkits, > guard OCCT_XDE_TOOLKITS):"
+    printf '%s\n' "$_XDE_SET_DIFF" | sed 's/^/    /'
+fi
+assert "the guard's OCCT_XDE_TOOLKITS equals the toolkits build.rs links for the STEP reader" \
+    test -z "$_XDE_SET_DIFF"
 
 _XDE_INC="$(_mk_include_fixture xde-include)"
 
@@ -1534,8 +1579,12 @@ _XDE_LIB_OK="$(_mk_lib_fixture xde-lib-complete "$_ACCEPTED_FIRST")"
 assert "guard exits 0 when the OCCT lib dir carries every XDE toolkit (positive control)" \
     _guard_exits_zero "$_XDE_LIB_OK" "$_XDE_INC"
 
-assert "guard RECORDS both resolved XDE toolkit files on the green path" \
-    _guard_output_names "$_XDE_LIB_OK" "$_XDE_INC" \
-    "libTKXCAF.so.$_ACCEPTED_FIRST" "libTKLCAF.so.$_ACCEPTED_FIRST"
+_XDE_RECORDED=()
+for _tk in "${_OCCT_XDE_TOOLKITS[@]}"; do
+    _XDE_RECORDED+=("lib$_tk.so.$_ACCEPTED_FIRST")
+done
+
+assert "guard RECORDS every resolved XDE toolkit file on the green path" \
+    _guard_output_names "$_XDE_LIB_OK" "$_XDE_INC" "${_XDE_RECORDED[@]}"
 
 test_summary

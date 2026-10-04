@@ -201,7 +201,9 @@ OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
 # END occt-candidates
 
 # The toolkits crates/reify-kernel-occt/build.rs links for the STEP assembly
-# reader (step-assembly-import α), beyond the libTKernel.so sentinel.
+# reader (step-assembly-import α), beyond the libTKernel.so sentinel: the set
+# in its `// BEGIN occt-xde-toolkits` block, which
+# tests/infra/test_occt_deps_preflight.sh section 13 holds equal to this one.
 OCCT_XDE_TOOLKITS=(TKXCAF TKLCAF)
 
 # Accepted OCCT versions, compared at MAJOR.MINOR. The value under test is the
