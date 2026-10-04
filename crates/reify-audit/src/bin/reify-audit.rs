@@ -996,6 +996,10 @@ mod tests {
         // assert their exact values here.
         assert!(!args.no_jcodemunch);
         assert!(
+            !args.require_tasks_db,
+            "--require-tasks-db is opt-in; the default keeps the §6.7 fail-soft"
+        );
+        assert!(
             args.jcodemunch_repo.is_none(),
             "no --jcodemunch-repo must leave the id UNSET so it is derived \
              per §4.2 from the project root; a hardcoded git-identity default \
@@ -1142,6 +1146,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn usage_text_lists_require_tasks_db() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("--require-tasks-db"),
+            "--help must list --require-tasks-db; got:\n{usage}"
+        );
+        assert!(
+            usage.contains("255"),
+            "--help must document the dedicated refusal exit code; got:\n{usage}"
+        );
+    }
+
     // -------------------------------------------------------------------
     // needs_jcodemunch
     // -------------------------------------------------------------------
@@ -1162,6 +1181,7 @@ mod tests {
             jcodemunch_index_dir: String::new(),
             no_jcodemunch: false,
             print_repo_id: false,
+            require_tasks_db: false,
         }
     }
 
