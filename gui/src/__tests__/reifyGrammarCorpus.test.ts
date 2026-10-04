@@ -999,7 +999,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Measurable { param mass : Mass }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:15 — a trait body carries
+  // Corpus-attested: examples/m9_trait_conformance.ri:14 — a trait body carries
   // the same member forms a structure body does.
   it('parses a trait body with param, let and constraint members', () => {
     expect(
@@ -1012,7 +1012,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Seal : Costed { }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:54
+  // Corpus-attested: examples/m9_trait_conformance.ri:53
   // (`trait Physical : Measurable + Weighable {`).
   it('parses a multi-bound refinement `: Measurable + Weighable`', () => {
     expect(countErrorNodes('trait Physical : Measurable + Weighable { }')).toBe(0);
@@ -1474,7 +1474,8 @@ describe('reify.grammar snippets — port, connect, chain, forall', () => {
     expect(countErrorNodes('structure def F { port p : Fluid }')).toBe(0);
   });
 
-  // Corpus-attested: examples/integration_corner_cases.ri:45.
+  // The bodyless DIRECTIONAL form (same optional-direction rule as above); no
+  // longer corpus-attested since #7809.
   it('parses the bodyless directional `port output : out FullTrait`', () => {
     expect(countErrorNodes('structure def F { port output : out FullTrait }')).toBe(0);
   });
@@ -2652,7 +2653,7 @@ describe('reify.grammar snippets — constraint def', () => {
   });
 
   /**
-   * Corpus-attested verbatim: examples/integration_corner_cases.ri:57-59. The
+   * Corpus-attested verbatim: examples/integration_corner_cases.ri:56-58. The
    * predicate repeat is zero-or-more, so a body of params alone is legal —
    * the case that would break if the body were written `params* predicates+`.
    */
@@ -3226,7 +3227,7 @@ describe('reify.grammar snippets — `chain` stays a legal ordinary identifier',
  * apart; that is the reason it exists.
  */
 describe('reify.grammar snippets — a ReservedWord in call position', () => {
-  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:99.
+  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:98.
   it('parses `some(u)`', () => {
     expect(countErrorNodes('structure def S { let s = some(u) }')).toBe(0);
   });
@@ -4194,9 +4195,9 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
    * FAMILY 12's third one-off, "chained comparison `a < b < c < d`". Does not
    * exist either. Measured: 0 errors in both binding and constraint position.
    *
-   * examples/integration_corner_cases.ri:131 is `let chain = a < b < c < d`,
+   * examples/integration_corner_cases.ri:130 is `let chain = a < b < c < d`,
    * and every error on that line came from `chain` — which round 2 had promoted
-   * to a hard `kw<>` — not from the comparison. Lines 133-135 were cascade.
+   * to a hard `kw<>` — not from the comparison. Lines 132-134 were cascade.
    * Round 4's family 1 (`chain` back to `ekw<>`) is the whole fix.
    *
    * The `leftOperandOf` assertion pins the GROUPING, not just the absence of
@@ -5002,8 +5003,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     self-inflicted regression, and the cheapest fix in the round.
 //   - "three remaining one-offs" was two. Chained comparison `a < b < c < d`
 //     already parsed with zero errors in both binding and constraint position;
-//     integration_corner_cases.ri:131 is `let chain = …`, so its errors were
-//     the keyword above and :133-135 were cascade.
+//     integration_corner_cases.ri:130 is `let chain = …`, so its errors were
+//     the keyword above and :132-134 were cascade.
 //   - "arrow (function) types in a param annotation" was already reachable —
 //     `FunctionType` has been in the grammar all along.
 //
