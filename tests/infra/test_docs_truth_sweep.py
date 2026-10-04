@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from stub_escalation_mcp import (  # noqa: E402  (imported after sys.path manipulation)
+    EMPTY_CORPUS_REFUSAL,
     STUB_ESCALATION,
     STUB_PROMOTION,
     STUB_SESSION,
@@ -88,6 +89,9 @@ class DocsTruthSweepTest(unittest.TestCase):
         return server, self.run_sweep(server.url)
 
     def run_sweep(self, url, *extra):
+        return self.run_sweep_with("--escalation-url", url, *extra)
+
+    def run_sweep_with(self, *endpoint_and_extra):
         return subprocess.run(
             [
                 sys.executable,
@@ -96,11 +100,9 @@ class DocsTruthSweepTest(unittest.TestCase):
                 str(self.detector.path),
                 "--project-root",
                 str(self.project_root),
-                "--escalation-url",
-                url,
                 "--state-file",
                 str(self.state_file),
-                *extra,
+                *endpoint_and_extra,
             ],
             capture_output=True,
             text=True,
@@ -282,6 +284,125 @@ class DocsTruthSweepTest(unittest.TestCase):
         self.assert_one_sitting_raised(*self.sweep(prd=[prd_finding("docs/prds/a.md")]))
 
         self.assertTrue(self.state_file.is_file())
+
+    # ── Failure semantics: all-or-nothing, and state moves only on success ──
+
+    def seed_state(self):
+        """A valid recorded observation, whose bytes a failed run must not touch."""
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(
+            '{"version": 1, "seen": [{"pattern": "PPrdStatus", "path": "docs/prds/old.md"}]}\n'
+        )
+        return self.state_file.read_bytes()
+
+    def assert_state(self, expected_bytes):
+        if expected_bytes is None:
+            self.assertFalse(self.state_file.exists())
+        else:
+            self.assertEqual(self.state_file.read_bytes(), expected_bytes)
+
+    def test_one_unchecked_member_raises_nothing_and_keeps_the_state(self):
+        state = self.seed_state()
+        server = self.escalation_server()
+        self.corpus(cite=[cite_finding("docs/prds/x.capability-manifest.md")])
+        self.detector.returns(EMPTY_CORPUS_REFUSAL, 125, pattern="PPRDSTATUS")
+
+        result = self.run_sweep(server.url)
+
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn(EMPTY_CORPUS_REFUSAL, result.stderr)
+        self.assertIn("PPRDSTATUS", result.stderr.replace(EMPTY_CORPUS_REFUSAL, ""))
+        self.assertEqual(server.requests, [])
+        self.assert_state(state)
+
+    def test_a_failed_filing_keeps_the_state_so_the_next_run_retries(self):
+        findings = [prd_finding("docs/prds/a.md")]
+        server, result = self.sweep(prd=findings, error_tools={"escalate_info"})
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(server.url, result.stderr)
+        self.assertEqual(server.calls_to("promote_to_l2"), [])
+        self.assert_state(None)
+
+        self.assert_one_sitting_raised(*self.sweep(prd=findings))
+
+    def test_a_failed_promotion_keeps_the_state(self):
+        state = self.seed_state()
+        server, result = self.sweep(
+            prd=[prd_finding("docs/prds/a.md")], error_tools={"promote_to_l2"}
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(server.url, result.stderr)
+        self.assertEqual(len(server.calls_to("escalate_info")), 1)
+        self.assert_state(state)
+
+    def test_an_unpersisted_filing_is_not_filed_and_is_not_promoted(self):
+        state = self.seed_state()
+        unpersisted = {**STUB_ESCALATION, "status": "accepted_unpersisted", "persist_check": "x"}
+        server, result = self.sweep(
+            prd=[prd_finding("docs/prds/a.md")], payloads={"escalate_info": unpersisted}
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("accepted_unpersisted", result.stderr)
+        self.assertEqual(server.calls_to("promote_to_l2"), [])
+        self.assert_state(state)
+
+    def test_an_unreachable_endpoint_exits_1_naming_the_url(self):
+        url = "http://127.0.0.1:0/mcp"
+        self.corpus(prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_sweep(url)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(url, result.stderr)
+        self.assert_state(None)
+
+    def test_dry_run_prints_the_planned_raise_and_touches_nothing(self):
+        server = self.escalation_server()
+        self.corpus(prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_sweep(server.url, "--dry-run")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(server.requests, [])
+        planned = json.loads(result.stdout)
+        self.assertEqual(set(planned), {"escalate_info", "promote_to_l2"})
+        self.assertEqual(
+            [entry["path"] for entry in json.loads(planned["escalate_info"]["detail"])],
+            ["docs/prds/a.md"],
+        )
+        [placeholder] = planned["promote_to_l2"]["member_ids"]
+        self.assertNotEqual(placeholder, STUB_ESCALATION["id"])
+        self.assert_state(None)
+
+    def write_mcp_config(self, servers):
+        config = self.tmp / ".mcp.json"
+        config.write_text(json.dumps({"mcpServers": servers}))
+        return config
+
+    def test_mcp_config_names_the_endpoint(self):
+        server = self.escalation_server()
+        config = self.write_mcp_config({"escalation": {"type": "http", "url": server.url}})
+        self.corpus(prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_sweep_with("--mcp-config", str(config))
+
+        self.assert_one_sitting_raised(server, result)
+
+    def test_mcp_config_without_an_escalation_endpoint_refuses_before_any_work(self):
+        server = self.escalation_server()
+        config = self.write_mcp_config({"other": {"type": "http", "url": server.url}})
+        self.corpus(prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_sweep_with("--mcp-config", str(config))
+
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn(str(config), result.stderr)
+        self.assertEqual(server.requests, [])
+        self.assertEqual(self.detector.invocations(), [])
+        self.assert_state(None)
 
 
 if __name__ == "__main__":
