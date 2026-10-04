@@ -106,7 +106,7 @@ fn small_fixture_product_tree() {
     let order: Vec<(&str, u32)> = tree
         .products()
         .iter()
-        .map(|p| (p.name.as_str(), p.dedupe_index))
+        .map(|p| (p.product.name.as_str(), p.product.dedupe_index))
         .collect();
     assert_eq!(
         order,
@@ -122,9 +122,9 @@ fn small_fixture_product_tree() {
     );
 
     let container = node(tree, "Container", 1);
-    assert_eq!(container.kind, ProductKind::Assembly);
+    assert!(matches!(container.kind, ProductKind::Assembly { .. }));
     assert_eq!(
-        instance_names(&container.components),
+        instance_names(container.components()),
         [
             "CornerCasting-1",
             "CornerCasting-2",
@@ -140,21 +140,24 @@ fn small_fixture_product_tree() {
         [0.0, 0.8, 0.0],
         [1.0, 0.8, 0.0],
     ];
-    for (component, translation) in container.components[..4].iter().zip(casting_translations) {
+    for (component, translation) in container.components()[..4].iter().zip(casting_translations) {
         assert_eq!(component.product, pref("CornerCasting", 1));
         assert_placement(component, IDENTITY, translation);
     }
-    assert_eq!(container.components[4].product, pref("SideWall", 1));
-    assert_placement(&container.components[4], IDENTITY, [0.0, 0.0, 0.5]);
-    assert_eq!(container.components[5].product, pref("Weldment", 1));
+    assert_eq!(container.components()[4].product, pref("SideWall", 1));
+    assert_placement(&container.components()[4], IDENTITY, [0.0, 0.0, 0.5]);
+    assert_eq!(container.components()[5].product, pref("Weldment", 1));
 
     let side_wall = node(tree, "SideWall", 1);
-    assert_eq!(side_wall.kind, ProductKind::Assembly);
-    assert_eq!(instance_names(&side_wall.components), ["Panel-1", "Rail-1"]);
-    assert_eq!(side_wall.components[0].product, pref("Panel", 1));
-    assert_placement(&side_wall.components[0], IDENTITY, [0.0, 0.0, 0.0]);
-    assert_eq!(side_wall.components[1].product, pref("Rail", 1));
-    assert_placement(&side_wall.components[1], IDENTITY, [0.0, 0.3, 0.0]);
+    assert!(matches!(side_wall.kind, ProductKind::Assembly { .. }));
+    assert_eq!(
+        instance_names(side_wall.components()),
+        ["Panel-1", "Rail-1"]
+    );
+    assert_eq!(side_wall.components()[0].product, pref("Panel", 1));
+    assert_placement(&side_wall.components()[0], IDENTITY, [0.0, 0.0, 0.0]);
+    assert_eq!(side_wall.components()[1].product, pref("Rail", 1));
+    assert_placement(&side_wall.components()[1], IDENTITY, [0.0, 0.3, 0.0]);
 
     for name in ["CornerCasting", "Panel", "Rail"] {
         assert_eq!(
@@ -162,7 +165,7 @@ fn small_fixture_product_tree() {
             ProductKind::Part { solid_count: 1 },
             "{name}"
         );
-        assert!(node(tree, name, 1).components.is_empty(), "{name}");
+        assert!(node(tree, name, 1).components().is_empty(), "{name}");
     }
     assert_eq!(
         node(tree, "Weldment", 1).kind,
@@ -177,19 +180,19 @@ fn rotated_occurrence_and_subassembly_rotations_round_trip() {
 
     let frame = node(tree, "Frame", 1);
     assert_eq!(
-        instance_names(&frame.components),
+        instance_names(frame.components()),
         ["Bracket-1", "Hinge-1", "Pin-2", "Label-1"]
     );
-    assert_eq!(frame.components[0].product, pref("Bracket", 1));
-    assert_placement(&frame.components[0], rz(90.0), [0.2, 0.0, 0.0]);
-    assert_eq!(frame.components[1].product, pref("Hinge", 1));
-    assert_placement(&frame.components[1], rx(30.0), [0.0, 0.1, 0.05]);
+    assert_eq!(frame.components()[0].product, pref("Bracket", 1));
+    assert_placement(&frame.components()[0], rz(90.0), [0.2, 0.0, 0.0]);
+    assert_eq!(frame.components()[1].product, pref("Hinge", 1));
+    assert_placement(&frame.components()[1], rx(30.0), [0.0, 0.1, 0.05]);
 
     // Parent-relative: NOT composed with Hinge-1's Rx(30) placement.
     let hinge = node(tree, "Hinge", 1);
-    assert_eq!(hinge.kind, ProductKind::Assembly);
-    assert_eq!(instance_names(&hinge.components), ["Pin-1"]);
-    assert_placement(&hinge.components[0], rz(45.0), [0.005, 0.0, 0.0]);
+    assert!(matches!(hinge.kind, ProductKind::Assembly { .. }));
+    assert_eq!(instance_names(hinge.components()), ["Pin-1"]);
+    assert_placement(&hinge.components()[0], rz(45.0), [0.005, 0.0, 0.0]);
 }
 
 #[test]
@@ -200,17 +203,20 @@ fn duplicate_product_names_get_traversal_order_dedupe_indices() {
     let pins: Vec<u32> = tree
         .products()
         .iter()
-        .filter(|p| p.name == "Pin")
-        .map(|p| p.dedupe_index)
+        .filter(|p| p.product.name == "Pin")
+        .map(|p| p.product.dedupe_index)
         .collect();
     assert_eq!(pins, [1, 2], "two distinct products named Pin");
 
     // Hinge (Frame's 2nd component) is walked before Frame's Pin-2, so the Pin
     // inside Hinge is visited first and becomes #1.
-    assert_eq!(node(tree, "Hinge", 1).components[0].product, pref("Pin", 1));
+    assert_eq!(
+        node(tree, "Hinge", 1).components()[0].product,
+        pref("Pin", 1)
+    );
     let frame = node(tree, "Frame", 1);
     let pin_2 = frame
-        .components
+        .components()
         .iter()
         .find(|c| c.instance_name == "Pin-2")
         .expect("Frame has a Pin-2 component");
@@ -226,7 +232,7 @@ fn every_free_root_is_reported() {
     assert_eq!(tree.roots(), &[pref("Frame", 1), pref("Spare", 1)]);
     let spare = node(tree, "Spare", 1);
     assert_eq!(spare.kind, ProductKind::Part { solid_count: 1 });
-    assert!(spare.components.is_empty());
+    assert!(spare.components().is_empty());
 }
 
 #[test]

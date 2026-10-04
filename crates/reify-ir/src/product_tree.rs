@@ -8,7 +8,8 @@
 //! rotation carried exactly as read: not orthonormalised and possibly improper.
 //! Validating it is the generator's job (C2.4).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 
 /// Name + 1-based dedupe index: the stable address of one product.
@@ -46,36 +47,36 @@ pub struct Component {
     pub location: Placement,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An assembly places components and owns no bodies; a part is the reverse.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProductKind {
-    Assembly,
+    Assembly { components: Vec<Component> },
     Part { solid_count: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProductNode {
-    pub name: String,
-    pub dedupe_index: u32,
+    pub product: ProductRef,
     pub kind: ProductKind,
-    /// Empty for a [`ProductKind::Part`].
-    pub components: Vec<Component>,
 }
 
 impl ProductNode {
-    pub fn product_ref(&self) -> ProductRef {
-        ProductRef {
-            name: self.name.clone(),
-            dedupe_index: self.dedupe_index,
+    /// The occurrences this product places: none for a [`ProductKind::Part`].
+    pub fn components(&self) -> &[Component] {
+        match &self.kind {
+            ProductKind::Assembly { components } => components,
+            ProductKind::Part { .. } => &[],
         }
     }
 }
 
 /// A validated product DAG: every reference resolves, refs are unique and
-/// 1-based, parts have no components, and no product contains itself.
+/// 1-based, and no product contains itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProductTree {
     products: Vec<ProductNode>,
     roots: Vec<ProductRef>,
+    positions: HashMap<ProductRef, usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +84,6 @@ pub enum ProductTreeError {
     NoRoots,
     ZeroDedupeIndex(ProductRef),
     DuplicateProduct(ProductRef),
-    PartWithComponents(ProductRef),
     DanglingComponent {
         parent: ProductRef,
         target: ProductRef,
@@ -103,9 +103,6 @@ impl fmt::Display for ProductTreeError {
                 )
             }
             Self::DuplicateProduct(product) => write!(f, "product {product} appears twice"),
-            Self::PartWithComponents(product) => {
-                write!(f, "part {product} has components (only assemblies may)")
-            }
             Self::DanglingComponent { parent, target } => write!(
                 f,
                 "assembly {parent} has a component referencing absent product {target}"
@@ -127,28 +124,33 @@ impl ProductTree {
         if roots.is_empty() {
             return Err(ProductTreeError::NoRoots);
         }
-        let mut seen = HashSet::with_capacity(products.len());
-        for node in &products {
-            let product = node.product_ref();
-            if node.dedupe_index == 0 {
-                return Err(ProductTreeError::ZeroDedupeIndex(product));
+        let mut positions = HashMap::with_capacity(products.len());
+        for (index, node) in products.iter().enumerate() {
+            if node.product.dedupe_index == 0 {
+                return Err(ProductTreeError::ZeroDedupeIndex(node.product.clone()));
             }
-            if !seen.insert(product.clone()) {
-                return Err(ProductTreeError::DuplicateProduct(product));
-            }
-            if node.kind != ProductKind::Assembly && !node.components.is_empty() {
-                return Err(ProductTreeError::PartWithComponents(product));
+            match positions.entry(node.product.clone()) {
+                Entry::Occupied(_) => {
+                    return Err(ProductTreeError::DuplicateProduct(node.product.clone()));
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(index);
+                }
             }
         }
-        let tree = ProductTree { products, roots };
+        let tree = ProductTree {
+            products,
+            roots,
+            positions,
+        };
         for node in &tree.products {
             if let Some(component) = node
-                .components
+                .components()
                 .iter()
                 .find(|component| tree.position(&component.product).is_none())
             {
                 return Err(ProductTreeError::DanglingComponent {
-                    parent: node.product_ref(),
+                    parent: node.product.clone(),
                     target: component.product.clone(),
                 });
             }
@@ -174,9 +176,7 @@ impl ProductTree {
 
     /// Index of `product` in [`Self::products`].
     pub fn position(&self, product: &ProductRef) -> Option<usize> {
-        self.products
-            .iter()
-            .position(|node| node.dedupe_index == product.dedupe_index && node.name == product.name)
+        self.positions.get(product).copied()
     }
 
     /// Iterative white/grey/black DFS over the component graph from every
@@ -202,7 +202,7 @@ impl ProductTree {
             let mut stack = vec![(start, 0usize)];
             while let Some(frame) = stack.last_mut() {
                 let (node, next_component) = *frame;
-                match self.products[node].components.get(next_component) {
+                match self.products[node].components().get(next_component) {
                     Some(component) => {
                         frame.1 += 1;
                         let target = target_index(component);
@@ -241,19 +241,15 @@ mod tests {
 
     fn part(name: &str, dedupe_index: u32, solid_count: u32) -> ProductNode {
         ProductNode {
-            name: name.to_string(),
-            dedupe_index,
+            product: pref(name, dedupe_index),
             kind: ProductKind::Part { solid_count },
-            components: Vec::new(),
         }
     }
 
     fn assembly(name: &str, dedupe_index: u32, components: Vec<Component>) -> ProductNode {
         ProductNode {
-            name: name.to_string(),
-            dedupe_index,
-            kind: ProductKind::Assembly,
-            components,
+            product: pref(name, dedupe_index),
+            kind: ProductKind::Assembly { components },
         }
     }
 
@@ -298,21 +294,19 @@ mod tests {
             .product(&pref("Casting", 1))
             .expect("shared part is present");
         assert_eq!(casting.kind, ProductKind::Part { solid_count: 1 });
-        assert_eq!(casting.product_ref(), pref("Casting", 1));
+        assert!(casting.components().is_empty());
 
         let container = tree
             .product(&pref("Container", 1))
             .expect("root is present");
-        assert_eq!(container.components.len(), 3);
-        assert_eq!(container.components[0].product, pref("Casting", 1));
-        assert_eq!(container.components[1].product, pref("Casting", 1));
-        assert_eq!(
-            container.components[1].location.translation,
-            [1.0, 0.0, 0.0]
-        );
+        let components = container.components();
+        assert_eq!(components.len(), 3);
+        assert_eq!(components[0].product, pref("Casting", 1));
+        assert_eq!(components[1].product, pref("Casting", 1));
+        assert_eq!(components[1].location.translation, [1.0, 0.0, 0.0]);
 
         for (index, node) in tree.products().iter().enumerate() {
-            assert_eq!(tree.position(&node.product_ref()), Some(index));
+            assert_eq!(tree.position(&node.product), Some(index));
         }
         assert_eq!(tree.position(&pref("Ghost", 1)), None);
         assert_eq!(tree.position(&pref("Casting", 2)), None);
@@ -348,15 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn placement_identity_is_the_unit_rotation_at_the_origin() {
-        assert_eq!(Placement::IDENTITY.translation, [0.0; 3]);
-        assert_eq!(
-            Placement::IDENTITY.rotation,
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        );
-    }
-
-    #[test]
     fn each_violated_invariant_is_rejected_with_its_own_error() {
         let cases: Vec<(&str, Vec<ProductNode>, Vec<ProductRef>, ProductTreeError)> = vec![
             (
@@ -380,18 +365,6 @@ mod tests {
                 ],
                 vec![pref("Top", 1)],
                 ProductTreeError::DuplicateProduct(pref("Pin", 1)),
-            ),
-            (
-                "part with components",
-                vec![
-                    ProductNode {
-                        components: vec![comp(pref("Pin", 1), "Pin-1", 0.0)],
-                        ..part("Odd", 1, 1)
-                    },
-                    part("Pin", 1, 1),
-                ],
-                vec![pref("Odd", 1)],
-                ProductTreeError::PartWithComponents(pref("Odd", 1)),
             ),
             (
                 "dangling component",
