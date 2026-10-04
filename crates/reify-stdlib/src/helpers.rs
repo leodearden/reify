@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
-use reify_ir::{Value, quaternion_is_finite};
+use reify_ir::{
+    PersistentMap, StructureInstanceData, StructureTypeId, Value, quaternion_is_finite,
+};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
 pub(crate) fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
@@ -185,6 +187,24 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
         m.insert(Value::String(k.to_string()), v);
     }
     Value::Map(m)
+}
+
+/// `StructureTypeId` sentinel carried by every [`mint_registry_free_instance`]
+/// result: no registry entry stands behind it.
+pub(crate) const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// Mint a `Value::StructureInstance` of the nominal `type_name` with the given
+/// fields. `eval_builtin` has no `StructureRegistry`, so the `type_name` is the
+/// source of truth, and the type must be declared in a stdlib `.ri` for the
+/// DSL to type the value.
+pub(crate) fn mint_registry_free_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+    let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: type_name.to_string(),
+        version: 1,
+        fields,
+    }))
 }
 
 /// Validate that `v` is a usable topology-selector target.

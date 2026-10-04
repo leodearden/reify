@@ -12,9 +12,8 @@
 //! 2. A thin marshalling arm wired into
 //!    [`crate::trajectory::eval_trajectory`] that maps `Value` arguments to the
 //!    pure function and the `GcodeImportResult` back to a `Value::List` of
-//!    `Value::Map` profile records (mirroring the `mechanism` builtin's
-//!    `Value::Map` structured-result precedent, since the `eval_builtin` path
-//!    has no `StructureRegistry` to mint a `Value::StructureInstance`).
+//!    registry-free `GcodeMotionSegment` / `GcodeWaypoint` instances (declared
+//!    in `trajectory.ri`).
 //!    [`waypoint_to_value`] is the UNIT-REGIME BOUNDARY of that arm: layer 1
 //!    stays in native g-code units (millimetres, mm/min) for lossless parse
 //!    fidelity, and the DSL-visible projection built here is SI and
@@ -38,12 +37,18 @@
 //! sibling `spline` submodule.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
-
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use reify_gcode::{GcodeCommand, ParseError};
+
+use crate::helpers::mint_registry_free_instance;
+
+/// Nominal type names of the values [`eval_gcode_import`] mints. They must
+/// match the `structure def`s in `crates/reify-compiler/stdlib/trajectory.ri`,
+/// which are what give the DSL its field types.
+const SEGMENT_TYPE_NAME: &str = "GcodeMotionSegment";
+const WAYPOINT_TYPE_NAME: &str = "GcodeWaypoint";
 
 /// Millimetres → SI metres. Same name and value as the other mm→SI
 /// boundaries in the FDM stack (`reify-fdm/src/r0.rs`,
@@ -356,7 +361,7 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
 }
 
 /// Marshal the `gcode_import(source, dialect)` builtin: `Value` arguments in,
-/// a `Value::List` of profile records out. This is the thin eval-path arm wired
+/// a `Value::List` of `GcodeMotionSegment` instances out. This is the thin eval-path arm wired
 /// into [`crate::trajectory::eval_trajectory`]; all lowering logic lives in the
 /// pure [`lower_gcode`] below it.
 ///
@@ -373,8 +378,8 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
 /// no diagnostic sink to carry an `E_GcodeParseError` (deferred per the
 /// `mechanism.rs` precedent), so a hard parse failure can only surface as the
 /// bad-value sentinel. On a clean parse each lowered profile becomes a
-/// `Value::Map` record (see [`profile_to_value`]) and the set is returned as a
-/// `Value::List`. Collected warnings are likewise undeliverable here and are
+/// registry-free `GcodeMotionSegment` instance (see [`segment_to_value`]) and
+/// the set is returned as a `Value::List`. Collected warnings are likewise undeliverable here and are
 /// dropped (they are asserted at the pure-function level instead).
 pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
     // Arity guard: exactly (source, dialect).
@@ -405,30 +410,20 @@ pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    Value::List(result.profiles.iter().map(profile_to_value).collect())
+    Value::List(result.profiles.iter().map(segment_to_value).collect())
 }
 
-/// Encode one lowered [`MotionProfile`] as a `Value::Map` record, mirroring the
-/// `mechanism` builtin's `{ kind, ... }` structured-result precedent (the
-/// `eval_builtin` path has no `StructureRegistry` to mint a real
-/// `Value::StructureInstance`). Shape:
-/// `{ kind: "motion_profile", waypoints: List(<waypoint record>...) }`.
-fn profile_to_value(profile: &MotionProfile) -> Value {
-    let waypoints = profile.waypoints.iter().map(waypoint_to_value).collect();
-    let mut m = BTreeMap::new();
-    m.insert(
-        Value::String("kind".to_string()),
-        Value::String("motion_profile".to_string()),
-    );
-    m.insert(
-        Value::String("waypoints".to_string()),
-        Value::List(waypoints),
-    );
-    Value::Map(m)
+/// Encode one lowered [`MotionProfile`] as a `GcodeMotionSegment` instance.
+fn segment_to_value(segment: &MotionProfile) -> Value {
+    let waypoints = segment.waypoints.iter().map(waypoint_to_value).collect();
+    mint_registry_free_instance(
+        SEGMENT_TYPE_NAME,
+        vec![("waypoints".to_string(), Value::List(waypoints))],
+    )
 }
 
-/// Encode one [`Waypoint`] as a `Value::Map` of its absolute coordinates:
-/// `{ x, y, z, e }` plus an optional `feedrate`.
+/// Encode one [`Waypoint`] as a `GcodeWaypoint` instance of its absolute
+/// coordinates `x`, `y`, `z`, `e` and its `feedrate`.
 ///
 /// # This function is the unit-regime boundary
 ///
@@ -441,10 +436,9 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 /// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned, field for
 ///   field:
 ///   - `x`, `y`, `z`, `e` → `Length` scalars in SI metres (via [`MM_TO_M`]);
-///   - `feedrate` → a `Velocity` scalar in m/s (via
-///     [`MM_PER_MIN_PER_M_PER_S`]), and the key is present ONLY when a feed is
-///     in effect for the move — an unknown feed is an absent key, never a `0.0`
-///     sentinel.
+///   - `feedrate` → an `Option` of a `Velocity` scalar in m/s (via
+///     [`MM_PER_MIN_PER_M_PER_S`]), `None` when no feed is in effect for the
+///     move — never a `0.0` sentinel.
 ///
 /// The conversion is TOTAL over the dimensional fields: every field names its
 /// own unit, so there is no carve-out left for a reader to have to remember.
@@ -467,21 +461,22 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 /// conversion at one nameable boundary instead of spreading it through
 /// downstream consumers.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
-    let mut m = BTreeMap::new();
-    m.insert(Value::String("x".to_string()), Value::length(wp.x * MM_TO_M));
-    m.insert(Value::String("y".to_string()), Value::length(wp.y * MM_TO_M));
-    m.insert(Value::String("z".to_string()), Value::length(wp.z * MM_TO_M));
-    m.insert(Value::String("e".to_string()), Value::length(wp.e * MM_TO_M));
-    if let Some(f) = wp.feedrate {
-        m.insert(
-            Value::String("feedrate".to_string()),
-            Value::Scalar {
-                si_value: f / MM_PER_MIN_PER_M_PER_S,
-                dimension: DimensionVector::VELOCITY,
-            },
-        );
-    }
-    Value::Map(m)
+    let feedrate = wp.feedrate.map(|f| {
+        Box::new(Value::Scalar {
+            si_value: f / MM_PER_MIN_PER_M_PER_S,
+            dimension: DimensionVector::VELOCITY,
+        })
+    });
+    mint_registry_free_instance(
+        WAYPOINT_TYPE_NAME,
+        vec![
+            ("x".to_string(), Value::length(wp.x * MM_TO_M)),
+            ("y".to_string(), Value::length(wp.y * MM_TO_M)),
+            ("z".to_string(), Value::length(wp.z * MM_TO_M)),
+            ("e".to_string(), Value::length(wp.e * MM_TO_M)),
+            ("feedrate".to_string(), Value::Option(feedrate)),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -806,14 +801,14 @@ mod tests {
                 segments[0]
             )
         };
-        assert_eq!(segment.type_name, "GcodeMotionSegment");
+        assert_eq!(segment.type_name, SEGMENT_TYPE_NAME);
         let Some(Value::List(waypoints)) = segment.fields.get("waypoints") else {
             panic!("segment should carry a \"waypoints\" list, got {segment:?}")
         };
         waypoints
             .iter()
             .map(|w| match w {
-                Value::StructureInstance(wp) if wp.type_name == "GcodeWaypoint" => {
+                Value::StructureInstance(wp) if wp.type_name == WAYPOINT_TYPE_NAME => {
                     wp.fields.clone()
                 }
                 other => panic!("expected a GcodeWaypoint instance, got {other:?}"),
