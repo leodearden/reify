@@ -338,6 +338,12 @@ class CandidateExclusionTest(unittest.TestCase):
         self.assertEqual(census["candidates"], [])
         self.assertEqual(census["summary"]["live_edge_rows_scanned"], 4)
 
+    def test_own_number_named_inside_a_range_excludes(self):
+        g = FakeGraph()
+        t4843 = g.node("Task 4843")
+        g.edge(t4843, g.node("Flake ledger"), "tasks 4841-4847 retired the flake class")
+        self.assertEqual(_build(g.reader())["candidates"], [])
+
     def test_facts_without_a_local_task_number_are_not_candidates(self):
         g = FakeGraph()
         t3670 = g.node("Task 3670")
@@ -457,7 +463,7 @@ class ProposalTest(unittest.TestCase):
 
     def test_summary_counts(self):
         summary = self.world.census["summary"]
-        self.assertEqual(summary["task_nodes"], 10)
+        self.assertEqual(summary["task_nodes"], 11)
         self.assertEqual(summary["live_edge_rows_scanned"], 8)
         self.assertEqual(summary["self_loops_skipped"], 0)
         self.assertEqual(summary["foreign_facts"], 6)

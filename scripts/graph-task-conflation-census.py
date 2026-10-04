@@ -79,13 +79,19 @@ the module itself is stdlib-only so --help and the tests run anywhere.
 """
 
 import argparse
+import enum
 import itertools
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_VERSION = 1
+GENERATOR = "scripts/graph-task-conflation-census.py"
+ADJACENCY_DISTANCE = 2
 
 # ── Task-reference grammar ──────────────────────────────────────────────────
 #
@@ -168,6 +174,232 @@ def canonical_task_number(name: str) -> int | None:
     """The number of a single-number canonical task node name ('Task 1997'), else None."""
     match = _CANONICAL_TASK_NAME.fullmatch(name)
     return int(match.group(1)) if match else None
+
+
+# ── Artifact vocabulary ─────────────────────────────────────────────────────
+
+
+class Verdict(enum.Enum):
+    REPAIR = "REPAIR"
+    RECORD_ONLY = "RECORD_ONLY"
+    NOT_A_CONFLATION = "NOT_A_CONFLATION"
+
+
+class ProposalReason(enum.Enum):
+    UNIQUE_TARGET = "unique_target"
+    TARGET_NODE_ABSENT = "target_node_absent"
+    AMBIGUOUS_TARGET_NODES = "ambiguous_target_nodes"
+    AMBIGUOUS_TARGET_NUMBERS = "ambiguous_target_numbers"
+    UNARY_ABOUT_OTHER_ENDPOINT = "unary_about_other_endpoint"
+
+
+class KeyConfirmationError(Exception):
+    """The graph key's node count disagrees with the count the caller expected."""
+
+
+@dataclass(frozen=True)
+class EdgeRow:
+    """One live-edge row as seen from a Task-N node (which_end = that node's end)."""
+
+    node_uuid: str
+    edge_uuid: str
+    fact: str
+    which_end: str
+    other_uuid: str
+    other_name: str
+    created_at: str | None
+    invalid_at: str | None
+    expired_at: str | None
+    first_episode: str | None
+    episode_count: int | None
+
+    @property
+    def is_tombstoned(self) -> bool:
+        return self.invalid_at is not None or self.expired_at is not None
+
+
+@dataclass(frozen=True)
+class Bm25Probe:
+    token: str
+    fulltext_hits: int | None
+    name_contains: int
+    error: str | None
+
+    @property
+    def serving(self) -> bool:
+        if self.fulltext_hits is not None and self.fulltext_hits > 0:
+            return True
+        return self.name_contains == 0 and self.error is None
+
+
+@dataclass(frozen=True)
+class EdgeEndpoints:
+    source_uuid: str
+    target_uuid: str
+    invalid_at: str | None
+    expired_at: str | None
+
+
+class GraphReader(Protocol):
+    def node_count(self) -> int: ...
+
+    def task_named_nodes(self) -> list[tuple[str, str]]: ...
+
+    def edges_touching(self, node_uuids: Sequence[str]) -> list[EdgeRow]: ...
+
+    def bm25_probe(self, token: str) -> Bm25Probe: ...
+
+    def edge_endpoints(self, edge_uuid: str) -> EdgeEndpoints | None: ...
+
+    def node_exists(self, uuid: str) -> bool: ...
+
+
+# ── Census ──────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class TaskNodeIndex:
+    """The Task-N node population and the canonical-name index of REPAIR targets."""
+
+    names: dict[str, str]
+    own_numbers: dict[str, frozenset[int]]
+    canonical: dict[int, tuple[str, ...]]
+
+    @classmethod
+    def from_nodes(cls, nodes: Iterable[tuple[str, str]]) -> "TaskNodeIndex":
+        names: dict[str, str] = {}
+        own_numbers: dict[str, frozenset[int]] = {}
+        canonical: dict[int, list[str]] = {}
+        for uuid, name in nodes:
+            numbers = node_task_numbers(name)
+            if numbers:
+                names[uuid] = name
+                own_numbers[uuid] = numbers
+            number = canonical_task_number(name)
+            if number is not None:
+                canonical.setdefault(number, []).append(uuid)
+        return cls(names, own_numbers,
+                   {number: tuple(sorted(uuids)) for number, uuids in canonical.items()})
+
+
+def _proposal(verdict: Verdict, reason: ProposalReason, numbers: list[int],
+              target_node_uuids: Sequence[str] = (), mint_name: str | None = None) -> dict:
+    return {"verdict": verdict.value, "reason": reason.value, "target_numbers": numbers,
+            "target_node_uuids": list(target_node_uuids), "mint_name": mint_name}
+
+
+def propose(surviving_numbers: frozenset[int], index: TaskNodeIndex) -> dict:
+    """Map the numbers a fact names beyond both endpoints to a proposed verdict."""
+    numbers = sorted(surviving_numbers)
+    if not numbers:
+        return _proposal(Verdict.RECORD_ONLY, ProposalReason.UNARY_ABOUT_OTHER_ENDPOINT, numbers)
+    if len(numbers) > 1:
+        return _proposal(Verdict.RECORD_ONLY, ProposalReason.AMBIGUOUS_TARGET_NUMBERS, numbers)
+    targets = index.canonical.get(numbers[0], ())
+    if not targets:
+        return _proposal(Verdict.REPAIR, ProposalReason.TARGET_NODE_ABSENT, numbers,
+                         mint_name=f"Task {numbers[0]}")
+    if len(targets) > 1:
+        return _proposal(Verdict.RECORD_ONLY, ProposalReason.AMBIGUOUS_TARGET_NODES, numbers, targets)
+    return _proposal(Verdict.REPAIR, ProposalReason.UNIQUE_TARGET, numbers, targets)
+
+
+def _signature(own: frozenset[int], named: frozenset[int]) -> str:
+    adjacent = any(abs(a - b) <= ADJACENCY_DISTANCE for a in own for b in named)
+    return "adjacent" if adjacent else "non_adjacent"
+
+
+def classify_row(row: EdgeRow, index: TaskNodeIndex) -> dict | None:
+    """The candidate record for a live, non-self-loop row, or None if it is not foreign."""
+    own = index.own_numbers[row.node_uuid]
+    named = fact_task_refs(row.fact).local
+    if not named or own & named or any(mentions_number(row.fact, n) for n in own):
+        return None
+    return {
+        "candidate_id": f"{row.edge_uuid}@{row.node_uuid}",
+        "node_uuid": row.node_uuid,
+        "node_name": index.names[row.node_uuid],
+        "own_numbers": sorted(own),
+        "edge_uuid": row.edge_uuid,
+        "which_end": row.which_end,
+        "other_uuid": row.other_uuid,
+        "other_name": row.other_name,
+        "fact": row.fact,
+        "named_numbers": sorted(named),
+        "signature": _signature(own, named),
+        "created_at": row.created_at,
+        "first_episode": row.first_episode,
+        "episode_count": row.episode_count,
+        "proposal": propose(named - node_task_numbers(row.other_name), index),
+    }
+
+
+def summarise(index: TaskNodeIndex, live_rows: int, self_loops: int,
+              candidates: list[dict]) -> dict:
+    proposed = {verdict.value: 0 for verdict in Verdict}
+    for candidate in candidates:
+        proposed[candidate["proposal"]["verdict"]] += 1
+    return {
+        "task_nodes": len(index.own_numbers),
+        "live_edge_rows_scanned": live_rows,
+        "self_loops_skipped": self_loops,
+        "foreign_facts": len(candidates),
+        "adjacent_signature": sum(c["signature"] == "adjacent" for c in candidates),
+        "proposed": proposed,
+    }
+
+
+def _probe_record(probe: Bm25Probe) -> dict:
+    return {"token": probe.token, "fulltext_hits": probe.fulltext_hits,
+            "name_contains": probe.name_contains, "serving": probe.serving,
+            "error": probe.error}
+
+
+def build_census(reader: GraphReader, graph_key: str, expected_node_count: int,
+                 generated_at: str, bm25_token: str = "orchestrator") -> dict:
+    """Read the graph through `reader` and return the census artifact."""
+    observed = reader.node_count()
+    if observed != expected_node_count:
+        raise KeyConfirmationError(
+            f"graph {graph_key!r} reports {observed} nodes but {expected_node_count} were "
+            "expected; re-read get_status and retry")
+    probe = reader.bm25_probe(bm25_token)
+    index = TaskNodeIndex.from_nodes(reader.task_named_nodes())
+    live = [row for row in reader.edges_touching(sorted(index.own_numbers))
+            if not row.is_tombstoned]
+    self_loops = sum(row.other_uuid == row.node_uuid for row in live)
+    candidates = [candidate for row in live if row.other_uuid != row.node_uuid
+                  if (candidate := classify_row(row, index)) is not None]
+    candidates.sort(key=lambda c: (min(c["own_numbers"]), c["node_uuid"], c["edge_uuid"]))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generator": GENERATOR,
+        "graph_key": graph_key,
+        "generated_at": generated_at,
+        "key_confirmation": {"expected_node_count": expected_node_count,
+                             "observed_node_count": observed},
+        "bm25_probe": _probe_record(probe),
+        "summary": summarise(index, len(live), self_loops, candidates),
+        "candidates": candidates,
+    }
+
+
+def _prefilled(candidate: dict) -> dict:
+    proposal = candidate["proposal"]
+    unique = proposal["reason"] == ProposalReason.UNIQUE_TARGET.value
+    return {
+        "candidate_id": candidate["candidate_id"],
+        "verdict": proposal["verdict"],
+        "target_node_uuid": proposal["target_node_uuids"][0] if unique else None,
+        "mint_name": proposal["mint_name"],
+        "rationale": "",
+    }
+
+
+def adjudication_template(census: dict, census_file_name: str) -> dict:
+    """An adjudication pre-filled with every candidate's proposal and a blank rationale."""
+    return {"census": census_file_name,
+            "adjudications": [_prefilled(c) for c in census["candidates"]]}
 
 
 # ── Live connection ─────────────────────────────────────────────────────────
