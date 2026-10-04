@@ -133,18 +133,21 @@ const COMPILE_RENDERER: &str = "error";
 /// the codebase has two producers:
 ///
 /// - the **parser** produces the bare message — `syntax error in structure
-///   body` — from the generic branch of `Lowering::diagnose_error_node`
+///   body`, followed (since #7190, because the fault is a detached unit
+///   suffix) by a remedy hint naming the unit, its binding and the attached
+///   spelling — from the generic branch of `Lowering::diagnose_error_node`
 ///   (`crates/reify-syntax/src/ts_parser.rs:564`), reached from the two
 ///   structure-body `ERROR` arms (`:2845`, `:2887`) and, with `source file`
 ///   substituted for the context, from the top-level one (`:962`). Task #5392
 ///   (INV-SF-7 `parse-is-value-faithful`) replaced the older
 ///   `format!("syntax error: {}", node_text(child))` source ECHO with this
-///   context-named form, so the message no longer quotes the offending token;
+///   context-named form, so the message no longer echoes the offending
+///   source; the #7190 hint quotes only bounded single tokens;
 /// - the **CLI** adds `Parse error: ` when it prints, at
 ///   `crates/reify-cli/src/main.rs:200` (and the same `eprintln!` at `:264`).
 ///   Since #5392 it also renders a `line:col` in front of the message, via
 ///   `ParsedModule::render_errors`, so a real run prints
-///   `Parse error: 2:19: syntax error in structure body` for the exemplar's
+///   `Parse error: 2:19: ` ahead of that message for the exemplar's
 ///   fixture. The exemplar transcribes the POSITION-FREE form, which is what
 ///   this module reconstructs and compares — the position is a property of the
 ///   fixture's layout, not of the diagnostic;
@@ -619,7 +622,8 @@ fn parse_layer_entry() -> TranscribedDiagnostic {
 ///
 /// This entry is structurally different from the other three and the
 /// difference is easy to get wrong: `Parse error: ` is **not** parser output.
-/// The parser produces the bare `syntax error in structure body`
+/// The parser produces the bare `syntax error in structure body` plus the
+/// #7190 detached-unit remedy hint
 /// (`crates/reify-syntax/src/ts_parser.rs:564`, reached from the `ERROR` arms
 /// at `:2845` and `:2887`), and the prefix — plus, since #5392, a `line:col` —
 /// is CLI presentation added at `crates/reify-cli/src/main.rs:200`.
@@ -696,9 +700,9 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
 /// *shape* of these errors rather than re-quoting them, and defers to the
 /// exemplar as the canonical copy — with exactly one exception: it quotes the
 /// parse diagnostic verbatim ("The spaced form `1 rad` is
-/// `Parse error: syntax error in structure body`"). That one line is the
-/// chunk's only unpinned verbatim claim, and it is collateral to this module's
-/// subject.
+/// `` Parse error: syntax error in structure body — unit … ``"). That one
+/// line is the chunk's only unpinned verbatim claim, and it is collateral to
+/// this module's subject.
 ///
 /// The expected text is RECONSTRUCTED from the scraped canonical-copy entry,
 /// never typed here. So the chunk is checked against the canonical copy, which
