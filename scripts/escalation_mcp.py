@@ -70,20 +70,27 @@ class McpSession:
         )
         with urllib.request.urlopen(request, timeout=MCP_TIMEOUT_SECONDS) as response:
             self.session_id = response.headers.get("mcp-session-id") or self.session_id
-            body = response.read().decode("utf-8")
-        return reply_message(body)
+            return read_reply(response) if "id" in payload else None
 
 
-def reply_message(body):
-    """The JSON-RPC message in a reply body, or None for an empty (202) reply."""
-    data_lines = [line[len("data:"):].strip() for line in body.splitlines() if line.startswith("data:")]
-    if data_lines:
-        return json.loads(data_lines[-1])
-    return json.loads(body) if body.strip() else None
+def read_reply(response):
+    """The JSON-RPC response a reply carries: a JSON body, or the first SSE
+    `data:` line holding one. An SSE stream is not read past that line, since
+    a server may hold it open."""
+    if "text/event-stream" not in response.headers.get("Content-Type", ""):
+        body = response.read()
+        return json.loads(body) if body.strip() else None
+    for line in response:
+        if line.startswith(b"data:"):
+            message = json.loads(line[len(b"data:"):])
+            if isinstance(message, dict) and ("result" in message or "error" in message):
+                return message
+    raise ValueError("SSE reply ended with no JSON-RPC response")
 
 
 def tool_payload(reply, tool_name):
-    """The JSON object a tools/call reply carries; EscalationError if refused."""
+    """The JSON object a tools/call reply carries, from structuredContent when
+    present, else from its text content; EscalationError if refused."""
     if reply is None:
         raise EscalationError("empty tools/call reply")
     if "error" in reply:
@@ -94,10 +101,12 @@ def tool_payload(reply, tool_name):
     )
     if result.get("isError"):
         raise EscalationError(f"{tool_name} returned an error: {text}")
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise EscalationError(f"unparseable {tool_name} payload {text!r}: {error}") from error
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise EscalationError(f"unparseable {tool_name} payload {text!r}: {error}") from error
     if not isinstance(payload, dict) or "error" in payload:
         raise EscalationError(f"{tool_name} refused the filing: {payload}")
     return payload

@@ -405,6 +405,24 @@ class DocsTruthSweepTest(unittest.TestCase):
         self.assertEqual(self.detector.invocations(), [])
         self.assert_state(None)
 
+    # ── Transport: the reply shapes a live escalation server may use ──
+
+    def test_an_sse_stream_held_open_after_its_response_still_books_the_sitting(self):
+        _, _, record = self.assert_one_sitting_raised(
+            *self.sweep(prd=[prd_finding("docs/prds/a.md")], sse=True, hold_open=True)
+        )
+
+        self.assertEqual(record["l2_id"], STUB_PROMOTION["id"])
+
+    def test_a_record_carried_only_in_structured_content_is_read(self):
+        _, _, record = self.assert_one_sitting_raised(
+            *self.sweep(prd=[prd_finding("docs/prds/a.md")], structured_only=True)
+        )
+
+        self.assertEqual(
+            (record["member_id"], record["l2_id"]), (STUB_ESCALATION["id"], STUB_PROMOTION["id"])
+        )
+
 
 class DeployedEntrypointTest(unittest.TestCase):
     """scripts/docs-truth-sweep.sh run bare, exactly as the unit runs it, over a

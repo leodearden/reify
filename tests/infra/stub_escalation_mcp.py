@@ -31,6 +31,10 @@ STUB_PROMOTION = {
     "severity": "info",
 }
 STUB_TOOL_FAILURE = "stub tool failure"
+# How long a held-open SSE stream outlives its response at most, should a
+# suite never call close(): long enough to outlast a client that waits for
+# the stream to end, short enough to free the handler thread.
+HOLD_OPEN_LIMIT_SECONDS = 120
 
 DEFAULT_PAYLOADS = {"escalate_info": STUB_ESCALATION, "promote_to_l2": STUB_PROMOTION}
 
@@ -64,15 +68,22 @@ class StubEscalationServer:
     """A recording stand-in for the escalation server's streamable-HTTP MCP.
 
     payloads overrides the canned record a tool replies with; error_tools names
-    the tools that reply isError=True instead.
+    the tools that reply isError=True instead. sse=True replies as an SSE
+    stream; hold_open=True then keeps that stream open after the response
+    until close(), as a live server may. structured_only=True carries a tool's
+    record in structuredContent alone, with no text content block.
     """
 
-    def __init__(self, sse=False, error_tools=(), payloads=None):
+    def __init__(self, sse=False, error_tools=(), payloads=None, hold_open=False,
+                 structured_only=False):
         self.sse = sse
+        self.hold_open = hold_open
+        self.structured_only = structured_only
         self.error_tools = frozenset(error_tools)
         self.payloads = {**DEFAULT_PAYLOADS, **(payloads or {})}
         self.requests = []
         self._lock = threading.Lock()
+        self._released = threading.Event()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -82,6 +93,7 @@ class StubEscalationServer:
         return f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
 
     def close(self):
+        self._released.set()
         self.server.shutdown()
         self.server.server_close()
 
@@ -107,6 +119,8 @@ class StubEscalationServer:
         if name in self.error_tools:
             return {"content": [{"type": "text", "text": STUB_TOOL_FAILURE}], "isError": True}
         payload = self.payloads.get(name, {"error": f"stub has no canned reply for {name}"})
+        if self.structured_only:
+            return {"content": [], "structuredContent": payload, "isError": False}
         return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
 
     def _handler_class(self):
@@ -143,12 +157,16 @@ class StubEscalationServer:
                 else:
                     payload = json.dumps(message).encode()
                     content_type = "application/json"
+                held_open = stub.sse and stub.hold_open
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(payload)))
+                if not held_open:
+                    self.send_header("Content-Length", str(len(payload)))
                 self.send_header("mcp-session-id", STUB_SESSION)
                 self.end_headers()
                 self.wfile.write(payload)
+                if held_open:
+                    stub._released.wait(HOLD_OPEN_LIMIT_SECONDS)
 
         return Handler
 
