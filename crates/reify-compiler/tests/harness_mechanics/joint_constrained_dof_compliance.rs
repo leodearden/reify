@@ -262,8 +262,14 @@ fn constrained_dof_compliance_is_dimension_checked() {
             .map(|g| ctor_call(kind, &[(g.field, g.family.other().literal())]))
             .collect();
         let module = compile_probe(&calls);
-        let mismatches = errors_with_code(&module, DiagnosticCode::ArgTypeMismatch);
         let unknown = errors_with_code(&module, DiagnosticCode::CtorUnknownField);
+        assert!(
+            unknown.is_empty(),
+            "{}: every probed field is declared, so none may draw CtorUnknownField; got \
+             {unknown:#?}",
+            kind.name
+        );
+        let mismatches = errors_with_code(&module, DiagnosticCode::ArgTypeMismatch);
         for g in kind.groups {
             assert!(
                 names_field(&mismatches, g.field),
@@ -272,12 +278,6 @@ fn constrained_dof_compliance_is_dimension_checked() {
                 kind.name,
                 g.field,
                 module.diagnostics
-            );
-            assert!(
-                !names_field(&unknown, g.field),
-                "{}.{} must be a declared field, not CtorUnknownField",
-                kind.name,
-                g.field
             );
         }
     }
