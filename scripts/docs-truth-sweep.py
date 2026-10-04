@@ -41,6 +41,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,6 +55,7 @@ SUBJECT = "audit"
 CATEGORY = "risk_identified"
 ROOT_CAUSE = "docs-truth sweep: documents awaiting a human docs-truth adjudication sitting"
 DRY_RUN_MEMBER_ID = "<escalate_info id>"
+STATE_VERSION = 1
 EXIT_FILE_FAILED = 1
 EXIT_UNCHECKED = 125
 
@@ -103,6 +105,79 @@ class DocFinding:
     @classmethod
     def from_detector(cls, finding):
         return cls(pattern=finding["pattern"], path=finding["task_id"], summary=finding["summary"])
+
+
+@dataclass(frozen=True, order=True)
+class FindingIdentity:
+    """What makes a finding the same finding from run to run: its detector and
+    its doc. The ONLY silence key; never derived from summary text, which
+    carries volatile line numbers and leaf counts."""
+
+    pattern: str
+    path: str
+
+
+def identities(findings):
+    return frozenset(FindingIdentity(finding.pattern, finding.path) for finding in findings)
+
+
+def new_identities(current, seen):
+    """The novelty rule: what this run observed that the last run did not."""
+    return current - seen
+
+
+class StateError(Exception):
+    """The state file exists but does not hold a recorded observation."""
+
+
+def load_seen(state_path):
+    """The last observed identity set; empty when no run has recorded one yet."""
+    try:
+        with open(state_path, encoding="utf-8") as state_file:
+            state = json.load(state_file)
+    except FileNotFoundError:
+        return frozenset()
+    except (OSError, ValueError) as error:
+        raise StateError(f"unreadable state file {state_path}: {error}") from error
+    if not (
+        isinstance(state, dict)
+        and state.get("version") == STATE_VERSION
+        and isinstance(state.get("seen"), list)
+        and all(_is_identity_record(entry) for entry in state["seen"])
+    ):
+        raise StateError(
+            f"state file {state_path} is not a version-{STATE_VERSION} observation "
+            '{"version": 1, "seen": [{"pattern": str, "path": str}, ...]}; '
+            "refusing rather than guessing (delete it to re-raise every current finding)"
+        )
+    return frozenset(FindingIdentity(entry["pattern"], entry["path"]) for entry in state["seen"])
+
+
+def _is_identity_record(entry):
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("pattern"), str)
+        and isinstance(entry.get("path"), str)
+    )
+
+
+def save_seen(state_path, observed):
+    """Record the observed identity set, atomically (sibling temp file + rename)."""
+    directory = os.path.dirname(os.path.abspath(state_path))
+    os.makedirs(directory, exist_ok=True)
+    state = {
+        "version": STATE_VERSION,
+        "seen": [{"pattern": i.pattern, "path": i.path} for i in sorted(observed)],
+    }
+    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".docs-truth-sweep.")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            json.dump(state, temporary_file, indent=2)
+            temporary_file.write("\n")
+        os.replace(temporary, state_path)
+    except BaseException:
+        os.unlink(temporary)
+        raise
 
 
 @dataclass(frozen=True)
@@ -245,17 +320,24 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     project_root = os.path.abspath(args.project_root)
+    try:
+        seen = load_seen(args.state_file)
+    except StateError as error:
+        print(f"{LOG_PREFIX} {error}", file=sys.stderr)
+        return EXIT_UNCHECKED
     url = args.escalation_url or escalation_url_from_mcp_config(args.mcp_config)
     try:
         runs = sweep_family(args.reify_audit, project_root)
     except MemberUnchecked as unchecked:
         print(f"{LOG_PREFIX} {unchecked}", file=sys.stderr)
         return EXIT_UNCHECKED
-    findings = all_findings(runs)
-    if not findings:
-        print(f"{LOG_PREFIX} no docs-truth findings; nothing to raise", file=sys.stderr)
+    current = identities(all_findings(runs))
+    new_count = len(new_identities(current, seen))
+    if not new_count:
+        if not args.dry_run:
+            save_seen(args.state_file, current)
+        print(f"{LOG_PREFIX} {tally(runs, new_count)}; nothing new to raise", file=sys.stderr)
         return 0
-    new_count = len(findings)
     head = head_sha(project_root)
     if args.dry_run:
         planned = {
@@ -265,6 +347,8 @@ def main(argv=None):
         print(json.dumps(planned, indent=2))
         return 0
     member, promotion = raise_sitting(url, runs, new_count, head)
+    save_seen(args.state_file, current)
+    findings = all_findings(runs)
     record = {
         "member_id": member.get("id"),
         "l2_id": promotion.get("id"),
