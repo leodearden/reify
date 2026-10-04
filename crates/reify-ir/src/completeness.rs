@@ -219,6 +219,13 @@ impl Completeness {
     /// set could beat it. A producer with an independent certificate (an exact MILP
     /// duality gap) may still claim it, but it must then also justify `Exhaustive`
     /// rather than treating the certificate as a substitute for the enumeration.
+    ///
+    /// C2 is a predicate, not runtime-enforced at α, and one in-tree producer
+    /// currently reports `ProvenOptimal` beside [`Completeness::not_attempted`]:
+    /// `CpSatSolver`, reachable through `SolverRegistry::production()`'s
+    /// CrossDomain fallback. That pair is pinned by
+    /// `registry_tests.rs::production_registry_ranks_the_bool_balance_by_its_objective`
+    /// and retired by #6903.
     pub const fn permits_proven_optimal(&self) -> bool {
         self.is_exhaustive()
     }

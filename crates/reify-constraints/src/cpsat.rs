@@ -1173,10 +1173,10 @@ impl CpSatSolver {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
-            // CpSat's `SolveAllResult::Enumerated.complete` is the discrete-side
-            // precedent this axis generalises, but wiring it through to
-            // `Exhaustive` / `Partial{BoxBudgetExhausted}` is a later leaf's work;
-            // task α threads the field only.
+            // Mapping `SolveAllResult::Enumerated.complete` to `Exhaustive` /
+            // `Partial{BoxBudgetExhausted}` is #6903's, and not a flag copy:
+            // `complete` is a claim about the SEARCH, `Exhaustive` one about the
+            // CARRIED set, which is truncated to `RANKED_CANDIDATE_CAP`.
             completeness: reify_ir::Completeness::not_attempted(),
         }
     }
@@ -3181,9 +3181,11 @@ mod solve_ranked_override_tests {
     ///
     /// BT13 (#6706): every `Ranked` the CpSat path produces is checked here for
     /// the completeness verdict, because CpSat does not opt into the axis at task
-    /// α — its `complete` flag becomes `Exhaustive` / `Partial{BoxBudgetExhausted}`
-    /// at a later leaf. Checking it in the shared unwrapper covers every CpSat
-    /// ranked test at once rather than one assertion per call site.
+    /// α. Mapping its `complete` flag is #6903's, and not a flag copy: `complete`
+    /// is a claim about the SEARCH, `Exhaustive` one about the CARRIED set, which
+    /// is truncated to [`RANKED_CANDIDATE_CAP`]. Checking it in the shared
+    /// unwrapper covers every CpSat ranked test at once rather than one assertion
+    /// per call site.
     ///
     /// `optimality` is passed through untouched; #6706 does not touch that axis.
     fn ranked(result: RankedSolveResult) -> (Vec<RankedCandidate>, OptimalityStatus) {
