@@ -4156,48 +4156,168 @@ mod tests {
             );
         }
 
-        /// Pins today's `RealJCodemunchOps::find_references` scoping
-        /// contract ([`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references):
-        /// production impls MUST scope to `symbol.file`) through the
-        /// production route, over the live 3-segment `__rows__` payload.
-        /// Only the first row's file matches `symbol.file`, so exactly one
-        /// reference must survive `filter_refs_to_file`.
-        #[test]
-        fn find_references_decodes_the_real_wire_through_real_ops() {
-            const MUNCH_REAL_WIRE: &str = concat!(
-                "#MUNCH/1 tool=find_references enc=gen1\n",
-                "\n",
-                "@1=crates/reify-audit/\n",
-                "\n",
-                "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
-                "r,@1src/jcodemunch_client.rs,crate,named\n",
-                "r,@1tests/p1.rs,reify_audit,named\n",
-            );
+        // --------------------------------------------------------------
+        // #6504: cross-file references survive the production seam
+        // --------------------------------------------------------------
 
+        /// The measured live `find_references` answer for identifier
+        /// `JCodemunchOps` (esc-6447-1, jcodemunch 1.108.54): one row per
+        /// file that IMPORTS it. The declaring file,
+        /// `crates/reify-audit/src/lib.rs`, is not among them, because a
+        /// Rust file never `use`s its own item.
+        const MUNCH_JCODEMUNCHOPS_IMPORTERS: &str = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "@1=crates/reify-audit/\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+            "r,@1src/bin/ptodo-baseline-gen.rs,reify_audit,named\n",
+            "r,@1src/bin/reify-audit.rs,reify_audit,named\n",
+            "r,@1src/jcodemunch_client.rs,crate,named\n",
+            "r,@1tests/p1.rs,reify_audit,named\n",
+        );
+
+        /// `RealJCodemunchOps::find_references` hands back every importer
+        /// the wire reports, through the production decode route.
+        #[test]
+        fn find_references_returns_cross_file_importers_through_real_ops() {
             let tmp = tempfile::TempDir::new().expect("create tempdir");
             let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
                 "find_references",
-                MUNCH_REAL_WIRE,
+                MUNCH_JCODEMUNCHOPS_IMPORTERS,
             )]));
             let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
                 .expect("handshake against the recording stub must succeed");
 
             let symbol = ChangedSymbol {
                 name: "JCodemunchOps".to_string(),
-                file: "crates/reify-audit/src/jcodemunch_client.rs".to_string(),
+                file: "crates/reify-audit/src/lib.rs".to_string(),
                 line: 1,
                 suppression: None,
             };
             let refs = ops.find_references(&symbol);
 
+            let files: Vec<&str> = refs.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(
-                refs.len(),
-                1,
-                "find_references must scope to symbol.file per the \
-                 JCodemunchOps::find_references doc in lib.rs; got {refs:?}",
+                files,
+                vec![
+                    "crates/reify-audit/src/bin/ptodo-baseline-gen.rs",
+                    "crates/reify-audit/src/bin/reify-audit.rs",
+                    "crates/reify-audit/src/jcodemunch_client.rs",
+                    "crates/reify-audit/tests/p1.rs",
+                ],
+                "an import-based lookup never lists the declaring file ({}), so \
+                 narrowing the answer to it empties it; every importer must come \
+                 back, in wire order",
+                symbol.file,
             );
-            assert_eq!(refs[0].file, symbol.file);
-            assert_eq!(refs[0].line, 0, "the real wire reports no line");
+            assert!(
+                refs.iter().all(|r| r.line == 0),
+                "the real wire reports no line; got {refs:?}",
+            );
+        }
+
+        /// Runs P1 over [`RealJCodemunchOps`] for one done task, 30 days
+        /// past its done-flip, whose commit introduced `JCodemunchOps`. The
+        /// stub answers `get_changed_symbols` with that one symbol and
+        /// `find_references` with `refs_munch`. The tempdir holds the
+        /// declaring file, so the enrichment pass locates the declaration
+        /// and finds no opt-out: only the reference check can suppress.
+        fn p1_findings_over_real_ops(refs_munch: &'static str) -> Vec<crate::Finding> {
+            const MUNCH_CHANGED_JCODEMUNCHOPS: &str = concat!(
+                "#MUNCH/1 tool=get_changed_symbols enc=gen1\n",
+                "\n",
+                "x=1 __stypes= __tables=t:added_symbols:name|file|line:str|str|int\n",
+                "t,JCodemunchOps,crates/reify-audit/src/lib.rs,1\n",
+            );
+            const NOW: i64 = 1_700_000_000;
+
+            let tmp = tempfile::TempDir::new().expect("create tempdir");
+            let decl_dir = tmp.path().join("crates/reify-audit/src");
+            std::fs::create_dir_all(&decl_dir).expect("create the declaring file's dir");
+            std::fs::write(decl_dir.join("lib.rs"), "pub trait JCodemunchOps {}\n")
+                .expect("write the declaring file");
+
+            // `ToolCallReply::Munch` borrows for `'static`; `refs_munch` is a
+            // parameter, so the pair list cannot be a promoted constant.
+            let replies: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
+                ("get_changed_symbols", MUNCH_CHANGED_JCODEMUNCHOPS),
+                ("find_references", refs_munch),
+            ]));
+            let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(replies));
+            let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
+                .expect("handshake against the recording stub must succeed");
+
+            let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+            let git = crate::MockGitOps::new();
+            let task = crate::TaskMetadata {
+                task_id: "6504".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                done_provenance: Some(crate::DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("s".to_string()),
+                    note: None,
+                }),
+                title: "Introduce JCodemunchOps".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(NOW - 30 * 86_400),
+            };
+            let ctx = crate::AuditContext {
+                project_root: tmp.path().to_path_buf(),
+                conn: &conn,
+                git: &git,
+                jcodemunch: &ops,
+                task_metadata: HashMap::from([(task.task_id.clone(), task)]),
+                target_task_id: None,
+                window: None,
+                now: Some(NOW),
+                producer_branch: None,
+            };
+            crate::p1_producer_orphan::check(&ctx)
+        }
+
+        /// A non-test importer in another file is a caller, so P1 must not
+        /// report the symbol as a producer-orphan when the answer comes
+        /// through the production seam.
+        #[test]
+        fn p1_cross_file_importer_suppresses_producer_orphan_through_real_ops() {
+            const MUNCH_TEST_ONLY_IMPORTER: &str = concat!(
+                "#MUNCH/1 tool=find_references enc=gen1\n",
+                "\n",
+                "@1=crates/reify-audit/\n",
+                "\n",
+                "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+                "r,@1tests/p1.rs,reify_audit,named\n",
+            );
+
+            let findings = p1_findings_over_real_ops(MUNCH_JCODEMUNCHOPS_IMPORTERS);
+            assert!(
+                findings.is_empty(),
+                "three of JCodemunchOps' four importers are non-test files other \
+                 than its declaring file, and each one is a caller that suppresses \
+                 the producer-orphan; got {findings:?}",
+            );
+
+            // Control: the same harness with only a test importer must report,
+            // so the empty result above is suppression rather than a sweep
+            // that never reached the reference check.
+            let control = p1_findings_over_real_ops(MUNCH_TEST_ONLY_IMPORTER);
+            assert_eq!(
+                control.len(),
+                1,
+                "a symbol whose only importer is a test file is a producer-orphan; \
+                 got {control:?}",
+            );
+            assert_eq!(control[0].pattern, crate::Pattern::P1ProducerOrphan);
+            assert_eq!(
+                control[0].evidence,
+                vec![crate::EvidenceRef::File {
+                    path: "crates/reify-audit/src/lib.rs".to_string(),
+                }],
+            );
         }
     }
 }
