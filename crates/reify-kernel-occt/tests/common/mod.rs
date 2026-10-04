@@ -1174,3 +1174,81 @@ fn xyz_of_error_panic_surfaces_error_debug() {
 fn xyz_of_panics_on_non_string_value() {
     let _ = xyz_of(Ok::<_, String>(Value::Real(1.0)), "Centroid");
 }
+
+// ---------------------------------------------------------------------------
+// Mesh-orientation helpers (task #7307)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Contract tests for the shared `tri_winding_normal` / `aabb_centre` helpers
+// above. Like the bbox and xyz ones, these `#[test]` fns run as
+// `common::<name>` within the single `harness_occt_measurement` test binary.
+//
+// Exact `assert_eq!` is the correct assertion throughout, not a tolerance:
+// every input is a small integer, exactly representable in both f32 and f64,
+// and every difference, product and halving of such values is exact in
+// binary64.
+// ---------------------------------------------------------------------------
+
+/// (a) The normal is AB × AC, right-handed in the emitted winding order, and
+/// reversing the winding flips its sign. Every outward-orientation check that
+/// consumes this helper tests only the SIGN of a dot product against it, so
+/// this convention is the load-bearing half of the contract.
+#[test]
+fn tri_winding_normal_is_ab_cross_ac_right_handed() {
+    let (pa, pb, pc) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        [0.0, 0.0, 1.0],
+        "(pa, pb, pc) winds counter-clockwise seen from +z"
+    );
+    assert_eq!(
+        tri_winding_normal(pa, pc, pb),
+        [0.0, 0.0, -1.0],
+        "reversing the winding must flip the normal"
+    );
+}
+
+/// (b) The normal is NOT normalised: its magnitude is twice the triangle's
+/// area, and it depends only on the edge vectors, so translating the triangle
+/// leaves it unchanged.
+#[test]
+fn tri_winding_normal_magnitude_is_twice_area_and_translation_invariant() {
+    let (pa, pb, pc) = ([1.0, 2.0, 3.0], [3.0, 2.0, 3.0], [1.0, 5.0, 3.0]);
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        [0.0, 0.0, 6.0],
+        "AB=(2,0,0), AC=(0,3,0): area 3, so the unnormalised normal is (0,0,6)"
+    );
+    assert_eq!(
+        tri_winding_normal(pa, pb, pc),
+        tri_winding_normal([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]),
+        "the same triangle anchored at the origin must give the same normal"
+    );
+}
+
+/// (c) The centre is the midpoint of the per-axis extents, NOT the vertex
+/// mean: three coincident vertices at one corner must not drag it toward
+/// that corner.
+#[test]
+fn aabb_centre_is_extent_midpoint_not_vertex_mean() {
+    let verts: [[f32; 3]; 4] = [
+        [-2.0, -1.0, 0.0],
+        [4.0, 3.0, 8.0],
+        [4.0, 3.0, 8.0],
+        [4.0, 3.0, 8.0],
+    ];
+    assert_eq!(
+        aabb_centre(&verts),
+        [1.0, 1.0, 4.0],
+        "expected the AABB midpoint; the vertex mean would be [2.5, 2.0, 6.0]"
+    );
+}
+
+/// (d) An empty slice has no bounding box and panics, rather than silently
+/// returning the origin that the `f64::MAX` / `f64::MIN` seeds would average to.
+#[test]
+#[should_panic(expected = "empty")]
+fn aabb_centre_panics_on_empty_input() {
+    let _ = aabb_centre(&[]);
+}
