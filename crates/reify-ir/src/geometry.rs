@@ -11456,7 +11456,7 @@ mod tests {
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
     ///
     /// Judgment call (task #7137): a deliberate local copy of the canonical
-    /// `reify_test_support::fixtures::unit_cube_mesh`, kept in step by
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`, kept in step by
     /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3

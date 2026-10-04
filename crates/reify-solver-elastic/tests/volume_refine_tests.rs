@@ -9,7 +9,7 @@ use reify_kernel_gmsh::MeshingOptions;
 use reify_solver_elastic::refine_marked_elements;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 // ---------------------------------------------------------------------------
 // Test fixture helpers

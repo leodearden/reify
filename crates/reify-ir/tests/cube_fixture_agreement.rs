@@ -1,6 +1,6 @@
 //! Drift guard: `geometry::tests::unit_cube_mesh`, this crate's test cube, must
 //! keep the same index block as the workspace-canonical
-//! `reify_test_support::fixtures::prismatic_box_mesh`.
+//! `reify_test_support::mesh_fixtures::prismatic_box_mesh`.
 //!
 //! The local copy cannot delegate to the canonical one. Because it is
 //! `#[cfg(test)]`, its `Mesh` is the `--test` build of `reify-ir`, which is a
@@ -40,7 +40,7 @@ fn workspace_root() -> std::path::PathBuf {
 }
 
 const LOCAL_PATH: &str = "crates/reify-ir/src/geometry.rs";
-const CANONICAL_PATH: &str = "crates/reify-test-support/src/fixtures.rs";
+const CANONICAL_PATH: &str = "crates/reify-test-support/src/mesh_fixtures.rs";
 
 /// `src` with every `//` comment cut off its line, so nothing a comment says —
 /// a `]` in `// [0,1]^3`, a mention of `indices` — can be read as code.
