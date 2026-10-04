@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""
+test_docs_truth_sweep.py — stdlib unittest for scripts/docs-truth-sweep.py,
+the recurring sweep that runs every docs-truth detector (PPRDSTATUS, PCITE)
+and books ONE human adjudication sitting at L2 when the finding set holds
+something new.
+
+WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
+is the thin wrapper tests/infra/test_docs_truth_sweep.sh, which invokes this
+file.
+
+HOW THE SCRIPT IS DRIVEN: every test runs the REAL script as a subprocess, with
+the shared stubs of tests/infra/stub_escalation_mcp.py: a stub reify-audit that
+logs its argv and replays a canned stderr and exit code per `--pattern` token,
+and a stub escalation MCP server that records every JSON-RPC request.
+
+SAFETY: --escalation-url always names the stub or an unbound port, so no test
+can file into a live queue.
+
+Assertions are on observable outcomes only: the requests the stub received,
+the stub binary's recorded argv, exit codes, output and the state file.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from stub_escalation_mcp import (  # noqa: E402  (imported after sys.path manipulation)
+    STUB_ESCALATION,
+    STUB_PROMOTION,
+    STUB_SESSION,
+    StubEscalationServer,
+    StubReifyAudit,
+    detector_stderr,
+    finding,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPO_ROOT / "scripts" / "docs-truth-sweep.py"
+
+FAMILY_TOKENS = ("PPRDSTATUS", "PCITE")
+
+
+def prd_finding(path, kind="stale-status-header"):
+    return finding(path, kind)
+
+
+def cite_finding(path, kind="fabricated-cite"):
+    return finding(path, kind, pattern="PManifestCite", severity="Medium")
+
+
+def hermetic_env():
+    """The caller's environment minus GIT_*, so no hook context leaks a repo in."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+
+class DocsTruthSweepTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.project_root = self.tmp / "project"
+        self.project_root.mkdir()
+        self.state_file = self.tmp / "state" / "docs-truth-sweep.json"
+        self.detector = StubReifyAudit(self.tmp / "stub" / "reify-audit")
+        self.corpus()
+
+    def corpus(self, prd=(), cite=()):
+        """Each member's findings this run; an empty member is a clean array."""
+        self.detector.returns(detector_stderr(list(prd)), len(prd), pattern="PPRDSTATUS")
+        self.detector.returns(detector_stderr(list(cite)), 0, pattern="PCITE")
+
+    def escalation_server(self, **kwargs):
+        server = StubEscalationServer(**kwargs)
+        self.addCleanup(server.close)
+        return server
+
+    def run_sweep(self, url, *extra):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--reify-audit",
+                str(self.detector.path),
+                "--project-root",
+                str(self.project_root),
+                "--escalation-url",
+                url,
+                "--state-file",
+                str(self.state_file),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=hermetic_env(),
+        )
+
+    def assert_one_sitting_raised(self, server, result):
+        """Exactly one escalate_info then one promote_to_l2, on one session."""
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tool_calls = server.tool_calls()
+        self.assertEqual(
+            [call["body"]["params"]["name"] for call in tool_calls],
+            ["escalate_info", "promote_to_l2"],
+            server.methods(),
+        )
+        self.assertTrue(all(call["session"] == STUB_SESSION for call in tool_calls))
+        methods = server.methods()
+        self.assertLess(methods.index("initialize"), methods.index("tools/call"), methods)
+        [member] = server.calls_to("escalate_info")
+        [promotion] = server.calls_to("promote_to_l2")
+        return member, promotion, json.loads(result.stdout)
+
+    def test_first_raise_aggregates_the_family_into_one_l2_sitting(self):
+        server = self.escalation_server()
+        self.corpus(
+            prd=[prd_finding("docs/prds/a.md"), prd_finding("docs/prds/b.md")],
+            cite=[cite_finding("docs/prds/x.capability-manifest.md")],
+        )
+
+        result = self.run_sweep(server.url)
+
+        member, promotion, record = self.assert_one_sitting_raised(server, result)
+        self.assertEqual(member["task_id"], "audit")
+        self.assertEqual(member["agent_role"], "docs-truth-sweep")
+        self.assertEqual(member["category"], "risk_identified")
+        self.assertEqual(member["severity"], "info")
+        self.assertIs(member["terminal_state_is_the_bug"], True)
+        self.assertIn("3 finding", member["summary"])
+        self.assertIn("3 doc", member["summary"])
+        self.assertEqual(
+            sorted((entry["pattern"], entry["path"]) for entry in json.loads(member["detail"])),
+            [
+                ("PManifestCite", "docs/prds/x.capability-manifest.md"),
+                ("PPrdStatus", "docs/prds/a.md"),
+                ("PPrdStatus", "docs/prds/b.md"),
+            ],
+        )
+        self.assertTrue(all(entry["summary"] for entry in json.loads(member["detail"])))
+        for sitting in ("/audit --pattern PPRDSTATUS", "/audit --pattern PCITE"):
+            self.assertIn(sitting, member["suggested_action"])
+        [evidence] = member["evidence"]
+        self.assertTrue(evidence["measured_at"].startswith("HEAD="), evidence)
+
+        self.assertEqual(promotion["member_ids"], [STUB_ESCALATION["id"]])
+        self.assertTrue(promotion["root_cause"].strip())
+        self.assertIsInstance(promotion["options"], list)
+        self.assertTrue(promotion["options"])
+        self.assertIn("3", promotion["summary"])
+
+        self.assertEqual(
+            record,
+            {
+                "member_id": STUB_ESCALATION["id"],
+                "l2_id": STUB_PROMOTION["id"],
+                "l2_status": STUB_PROMOTION["status"],
+                "finding_count": 3,
+                "doc_count": 3,
+                "new_count": 3,
+            },
+        )
+
+    def test_each_member_is_its_own_single_token_offline_run(self):
+        server = self.escalation_server()
+
+        self.run_sweep(server.url)
+
+        invocations = self.detector.invocations()
+        self.assertEqual(
+            sorted(argv[argv.index("--pattern") + 1] for argv in invocations),
+            sorted(FAMILY_TOKENS),
+        )
+        for argv in invocations:
+            pairs = list(zip(argv, argv[1:]))
+            self.assertIn("--no-jcodemunch", argv)
+            self.assertIn(("--project-root", str(self.project_root)), pairs, argv)
+
+    def test_clean_corpus_is_silent(self):
+        server = self.escalation_server()
+
+        result = self.run_sweep(server.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(server.requests, [])
+        self.assertEqual(result.stdout, "")
+
+
+if __name__ == "__main__":
+    unittest.main()

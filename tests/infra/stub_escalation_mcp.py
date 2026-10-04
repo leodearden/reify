@@ -24,7 +24,12 @@ from pathlib import Path
 
 STUB_SESSION = "stub-session"
 STUB_ESCALATION = {"id": "esc-audit-1", "status": "queued", "level": 0}
-STUB_PROMOTION = {"id": "esc-audit-l2-1", "status": "pending", "level": 2}
+STUB_PROMOTION = {
+    "id": "esc-audit-l2-1",
+    "status": "created",
+    "members": [STUB_ESCALATION["id"]],
+    "severity": "info",
+}
 STUB_TOOL_FAILURE = "stub tool failure"
 
 DEFAULT_PAYLOADS = {"escalate_info": STUB_ESCALATION, "promote_to_l2": STUB_PROMOTION}
