@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
-    assert_rigid_mass_props_not_final, cwd_lock, find_moi_principal_constraint,
+    assert_rigid_mass_props_not_final, bounded_bracket_source, cwd_lock,
+    find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session,
     rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
 };
@@ -13,9 +14,6 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
-// The ONE η bounded fixture, shared with the engine-level tests rather than twinned
-// here — see its doc comment for why a second copy is a hazard.
-use crate::tests::engine_tests::bounded_bracket_source;
 
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
