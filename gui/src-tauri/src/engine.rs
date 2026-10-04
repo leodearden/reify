@@ -2141,9 +2141,9 @@ impl EngineSession {
     /// Create a new EngineSession using the inventory-based kernel registry.
     ///
     /// This is the production-binary boot path. The engine holds:
-    /// - the single-pick default kernel of [`Engine::with_registered_kernel`]
-    ///   (the BRep-preferring registered adapter; `None` in a stub-mode build
-    ///   with no registration, matching `Engine::new(checker, None)`);
+    /// - the single-pick default kernel of [`Engine::with_registered_kernel`]:
+    ///   its lex-min BRep-capable adapter, else its lex-min adapter of any
+    ///   kind, and `None` only when nothing is registered;
     /// - the OpenVDB adapter via [`Engine::ensure_openvdb_kernel`], when it is
     ///   registered, so plans that name openvdb (an `isosurface`) realize;
     /// - the production solver (below).

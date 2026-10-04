@@ -3,39 +3,48 @@
 //! `isosurface`) realizes in the viewport instead of degrading to the
 //! "target kernel 'openvdb' not present" dispatch error (task #6963).
 
-#[cfg(has_openvdb)]
 use crate::engine::EngineSession;
-#[cfg(has_openvdb)]
 use reify_constraints::SimpleConstraintChecker;
+use reify_eval::{Engine, kernel_registry};
 
-#[cfg(has_openvdb)]
 fn production_session() -> EngineSession {
     EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker))
 }
 
-#[cfg(has_openvdb)]
 #[test]
 fn production_session_holds_the_openvdb_kernel() {
     let name = reify_core::KernelId::OpenVdb.as_registry_name();
 
-    let registry = reify_eval::kernel_registry::registry();
+    let registry = kernel_registry::registry();
+    let registry_keys: Vec<_> = registry.keys().collect();
     assert!(
         registry.contains_key(name),
         "LINK defect, not the boot defect: the OpenVDB adapter is not in this \
-         binary's kernel registry under cfg(has_openvdb); registry keys: {:?}",
-        registry.keys().collect::<Vec<_>>()
+         binary's kernel registry under cfg(has_openvdb); registry keys: {registry_keys:?}"
+    );
+    assert_ne!(
+        kernel_registry::pick_lexmin_brep_kernel().map(|reg| reg.name),
+        Some(name),
+        "the single-pick default must not be OpenVDB itself, or the session \
+         holds two independent OpenVDB instances with disjoint handle tables; \
+         registry keys: {registry_keys:?}"
     );
 
     let session = production_session();
-    let loaded: Vec<&str> = session.engine().registered_kernel_names().collect();
-    assert!(
-        loaded.contains(&name),
-        "the production EngineSession must hold the {name:?} kernel; \
-         loaded kernels: {loaded:?}"
+    let engine = session.engine();
+    assert_eq!(
+        engine.default_kernel_name(),
+        Some(Engine::DEFAULT_KERNEL_NAME)
+    );
+    assert_eq!(
+        engine.registered_kernel_names().collect::<Vec<_>>(),
+        [Engine::DEFAULT_KERNEL_NAME, name],
+        "the production EngineSession must hold exactly the single-pick \
+         default kernel and the {name:?} kernel"
     );
 }
 
-#[cfg(all(feature = "gui", has_openvdb))]
+#[cfg(feature = "gui")]
 #[test]
 fn production_session_realizes_isosurface_shell() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
