@@ -13,11 +13,12 @@
 //! true guard of `examples/trajectory/gcode_import_smoke.ri`, not an inlined
 //! copy. Follows the idiom from `kinematic_examples_e2e.rs`.
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
-use reify_ir::{Satisfaction, Value};
+use reify_ir::{Satisfaction, Value, ValueMap};
 use reify_test_support::{
     check_source_with_stdlib, collect_errors, compile_source_with_stdlib, make_simple_engine,
     parse_and_compile_with_stdlib,
@@ -478,4 +479,111 @@ fn gcode_import_smoke_waypoints_are_si_lengths() {
         "no F word is in effect for `G1 X10 Y10`, so feedrate must be none \
          (never a 0.0 sentinel); got {wp:?}"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DSL READ-BACK — every declared waypoint field, with an F word in effect
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const READ_BACK_STRUCTURE: &str = "GcodeWaypointReadBack";
+
+/// One Marlin move with a DISTINCT value on every axis and an `F` word in
+/// effect, so a swapped, misnamed or dropped field cannot read back correctly.
+const READ_BACK_SOURCE: &str = r#"structure def GcodeWaypointReadBack {
+    let imported = gcode_import("G1 X10 Y20 Z3 E4 F1800", MarlinDialect())
+    let wp = imported[0].waypoints[0]
+    let x = wp.x
+    let y = wp.y
+    let z = wp.z
+    let e = wp.e
+    let feedrate = wp.feedrate
+    let feed : Velocity = unwrap_or(wp.feedrate, 0mm/s)
+}
+"#;
+
+/// Compile [`READ_BACK_SOURCE`] (zero Error diagnostics required) and evaluate it.
+fn read_back_values() -> ValueMap {
+    let compiled = parse_and_compile_with_stdlib(READ_BACK_SOURCE);
+    make_simple_engine().eval(&compiled).values
+}
+
+fn read_back_cell<'a>(values: &'a ValueMap, member: &str) -> &'a Value {
+    values
+        .get(&ValueCellId::new(READ_BACK_STRUCTURE, member))
+        .unwrap_or_else(|| panic!("{READ_BACK_STRUCTURE}.{member} cell missing from eval result"))
+}
+
+/// The declared `GcodeWaypoint` field types accept the minted values: every
+/// field reads back through the DSL, and `feedrate`, the field carried as an
+/// `Option`, is `some(0.03 m/s)` and unwraps to that `Velocity`.
+#[test]
+fn every_waypoint_field_reads_back_through_the_dsl() {
+    let values = read_back_values();
+
+    for (member, metres) in [("x", 0.01), ("y", 0.02), ("z", 0.003), ("e", 0.004)] {
+        assert_eq!(
+            *read_back_cell(&values, member),
+            Value::length(metres),
+            "wp.{member} should read back as the Length {metres} m"
+        );
+    }
+
+    let feed = Value::Scalar {
+        si_value: 0.03,
+        dimension: DimensionVector::VELOCITY,
+    };
+    assert_eq!(
+        *read_back_cell(&values, "feedrate"),
+        Value::Option(Some(Box::new(feed.clone()))),
+        "F1800 mm/min should read back as some(0.03 m/s)"
+    );
+    assert_eq!(
+        *read_back_cell(&values, "feed"),
+        feed,
+        "unwrap_or should yield the present 0.03 m/s Velocity, not the 0 mm/s default"
+    );
+}
+
+/// Params declared by the stdlib `structure def` named `type_name`.
+fn declared_params<'a>(stdlib: &'a [CompiledModule], type_name: &str) -> BTreeSet<&'a str> {
+    let template = stdlib
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .find(|t| t.name == type_name)
+        .unwrap_or_else(|| panic!("stdlib declares no structure named `{type_name}`"));
+    template
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind == ValueCellKind::Param)
+        .map(|cell| cell.id.member.as_str())
+        .collect()
+}
+
+/// Referential integrity between the marshaller and the stdlib declarations:
+/// each instance `gcode_import` mints names a stdlib `structure def` and carries
+/// exactly that declaration's params as fields. A drifted name would still
+/// type-check against the declaration and then evaluate to undef.
+#[test]
+fn minted_instances_carry_exactly_their_declared_params() {
+    let values = read_back_values();
+    let stdlib = reify_compiler::stdlib_loader::load_stdlib();
+
+    let Value::List(segments) = read_back_cell(&values, "imported") else {
+        panic!("expected Value::List for {READ_BACK_STRUCTURE}.imported")
+    };
+    let first_waypoint = read_back_cell(&values, "wp");
+
+    for instance in [&segments[0], first_waypoint] {
+        let Value::StructureInstance(data) = instance else {
+            panic!("expected a minted StructureInstance, got {instance:?}")
+        };
+        let minted: BTreeSet<&str> = data.fields.keys().map(String::as_str).collect();
+        assert_eq!(
+            minted,
+            declared_params(stdlib, &data.type_name),
+            "the fields of a minted `{}` should be exactly the params its stdlib \
+             structure def declares",
+            data.type_name
+        );
+    }
 }
