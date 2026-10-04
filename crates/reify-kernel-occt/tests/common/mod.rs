@@ -1,6 +1,7 @@
 //! Shared helpers for the `harness_occt_measurement` integration tests:
-//! local-feature (fillet/chamfer) assertions, bounding-box query parsing, and
-//! JSON-Point3 (xyz) query parsing.
+//! local-feature (fillet/chamfer) assertions, bounding-box query parsing,
+//! JSON-Point3 (xyz) query parsing, and triangle-winding / AABB-centre
+//! mesh-orientation helpers.
 //!
 //! This file is a retained `tests/` SIBLING, not a member of any harness module
 //! dir, and exactly ONE harness root declares it — `harness_occt_measurement.rs`,
@@ -39,6 +40,10 @@
 //! finding filed during task 5893's review and resolved by task 5937. Its
 //! wire-format and strictness contracts are likewise stated ONCE, on
 //! [`parse_xyz`].
+//!
+//! The mesh-orientation section ([`tri_winding_normal`], [`aabb_centre`])
+//! retires the private copies that `tessellation_winding_integration.rs` and
+//! `reflection_det_negative_integration.rs` each carried (task #7307).
 
 #![cfg(has_occt)]
 
@@ -1178,6 +1183,70 @@ fn xyz_of_panics_on_non_string_value() {
 // ---------------------------------------------------------------------------
 // Mesh-orientation helpers (task #7307)
 // ---------------------------------------------------------------------------
+
+/// The geometric normal of triangle `(pa, pb, pc)` implied by its emitted
+/// winding order: `AB × AC`, right-handed.
+///
+/// Deliberately NOT normalised — its magnitude is twice the triangle's area —
+/// because every caller tests only the sign of a dot product against it.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ]
+}
+
+/// The centre of the axis-aligned bounding box of `verts` — per-axis
+/// `(min + max) / 2`, widened to `f64` — used as the interior reference point
+/// for an outward-winding check: a triangle is outward-wound when
+/// [`tri_winding_normal`] has a positive dot product with (triangle centroid −
+/// this centre).
+///
+/// The AABB centre rather than the vertex-cloud mean, because it is robust to
+/// non-uniform vertex density across faces: if a tighter tolerance makes OCCT
+/// add interior tessellation nodes on one face, the vertex mean shifts toward
+/// that denser face while the AABB centre does not move.
+///
+/// It is a valid outward reference only for a CONVEX solid; for a non-convex
+/// one, a correctly outward-wound triangle can face the centre.
+///
+/// `verts` is `[f32; 3]` because that is what `Mesh::weld_positions()` returns.
+///
+/// # Panics
+///
+/// If `verts` is empty. Without the check, the `f64::MAX` / `f64::MIN` seeds
+/// would average to a plausible-looking origin and make the downstream
+/// outward-dot check quietly meaningless.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+#[track_caller]
+pub fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
+    assert!(
+        !verts.is_empty(),
+        "aabb_centre: empty vertex slice has no bounding box, so it has no centre"
+    );
+    let mut min = [f64::MAX; 3];
+    let mut max = [f64::MIN; 3];
+    for v in verts {
+        for k in 0..3 {
+            let coord = v[k] as f64;
+            if coord < min[k] {
+                min[k] = coord;
+            }
+            if coord > max[k] {
+                max[k] = coord;
+            }
+        }
+    }
+    [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `tri_winding_normal` / `aabb_centre` helpers
