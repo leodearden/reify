@@ -1082,6 +1082,17 @@ plan_for_branch_modify() {
     git -C "$FIX_MOD" branch -q -D task-branch
 }
 
+# plan_for_branch_delete <file...> — like plan_for_branch_modify, but each already-seeded file shows up as a D.
+plan_for_branch_delete() {
+    local f
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    for f in "$@"; do git -C "$FIX_MOD" rm -q "$f"; done
+    git -C "$FIX_MOD" commit -q -m "delete"
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
 # plan_for_branch_rename <src> <dst> <root> <mod-line> — the actual
 # rename-based consolidation absorb the A+M broadening exists for: checkout a
 # fresh task-branch off FIX_MOD's main, `git mv` <src> to <dst> (git's
@@ -1788,14 +1799,48 @@ done <<< "UNITS_PATH $_PDOC_UNITS"$'\n'"BASELINE_PATH $_PDOC_BASELINE"
 
 # ---------------------------------------------------------------------------
 # Scenario B-PDOCCOVER-*: the diff-status and scope boundaries the DRIFT probes
-# do not reach. Every plan_for_branch capture there is an ADD, so the MODIFY
-# vector is pinned here on FIX_MOD, whose merge-base already carries the
-# seeded chunk.
+# do not reach. Every plan_for_branch capture there is an ADD, so the MODIFY,
+# DELETE and RENAME vectors are pinned here on FIX_MOD, whose merge-base
+# already carries a seeded chunk, oracle file and baseline.
+#
+# The DELETE and RENAME scenarios are where PDOCCOVER's selector DIVERGES from
+# PDIAG's (B-PDIAG-del asserts the leaf is ABSENT, because a PDIAG delete can
+# only yield a Medium OrphanRow): every status on a PDOCCOVER input can red the
+# gate, so a deletion, and a rename out of the corpus, must emit the leaf.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario B-PDOCCOVER-mod: MODIFY of a chunk (crates/reify-mcp/src/tools/chunks/pdoccover_probe.md) -> PDOCCOVER leaf emitted ---"
 plan_for_branch_modify crates/reify-mcp/src/tools/chunks/pdoccover_probe.md
 assert "B-PDOCCOVER-mod: plan contains test_reify_audit_pdoccover.sh (an edited chunk can drop a documented name or add a fabricated one)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-chunk: DELETE of a chunk -> PDOCCOVER leaf emitted (the names only it documented become undocumented-name debt) ---"
+plan_for_branch_delete crates/reify-mcp/src/tools/chunks/pdoccover_probe.md
+assert "B-PDOCCOVER-del-chunk: plan contains test_reify_audit_pdoccover.sh (a deleted chunk orphans the names only it documented — undocumented-name, High — and stales its <chunk>:<name> ledger rows)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-oracle: DELETE of an oracle-scope file -> PDOCCOVER leaf emitted (a chunk call it alone vouched for becomes fabricated-name debt) ---"
+plan_for_branch_delete crates/reify-compiler/src/pdoccover_probe.rs
+assert "B-PDOCCOVER-del-oracle: plan contains test_reify_audit_pdoccover.sh (a deleted literal un-vouches a chunk call — fabricated-name, High)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-baseline: DELETE of the ledger -> PDOCCOVER leaf emitted (every accepted debt row becomes new debt) ---"
+plan_for_branch_delete crates/reify-audit/pdoccover-baseline.txt
+assert "B-PDOCCOVER-del-baseline: plan contains test_reify_audit_pdoccover.sh (with the ledger gone every baselined debt row is new debt)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-rename-out: a chunk RENAMED out of the corpus -> PDOCCOVER leaf emitted (only its D side carries the trigger) ---"
+# The root argument is a NON-input file and the destination (docs/) is outside
+# the input set, so the only PDOCCOVER trace in the diff is the chunk's own D
+# side. That pins BOTH D-inclusion and --no-renames: without --no-renames the
+# entry is an R whose --name-only destination is docs/pdoccover_probe.md.
+plan_for_branch_rename crates/reify-mcp/src/tools/chunks/pdoccover_probe.md docs/pdoccover_probe.md \
+    crates/reify-eval/tests/foo.rs '// touched'
+assert "B-PDOCCOVER-rename-out: plan contains test_reify_audit_pdoccover.sh (a chunk moved out of the corpus leaves the names only it documented undocumented)" \
     plan_has "$_PDOCCOVER_LEAF"
 
 echo ""
