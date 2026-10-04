@@ -72,8 +72,7 @@ reify check examples/module_visibility/mismatch_variant.ri
 # Expected: exit 1
 # stderr:   error: E_MODULE_PATH_MISMATCH: declared module path 'wrong.path.here'
 #                  does not match expected path 'mismatch_variant' (derived from file location);
-#                  `module` is not a free-form label but must name the file's location, so this
-#                  file must declare `module mismatch_variant` (spec §7.1)
+#                  declare `module mismatch_variant` instead (spec §7.1)
 ```
 
 ## File layout

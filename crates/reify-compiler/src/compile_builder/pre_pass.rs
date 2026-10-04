@@ -116,9 +116,8 @@ pub fn check_module_path_decl(
         ))),
         Some(d) if d != expected => Some(Diagnostic::error(format!(
             "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' (derived from file location); `module` is not a \
-             free-form label but must name the file's location, so this file must \
-             declare `{}` (spec \u{00a7}7.1)",
+             expected path '{}' (derived from file location); declare `{}` instead \
+             (spec \u{00a7}7.1)",
             d.0.join("."),
             expected.0.join("."),
             module_declaration(expected)
@@ -272,6 +271,11 @@ mod tests {
             "message should contain 'W_MODULE_DECL_MISSING', got: {}",
             diag.message
         );
+        assert!(
+            diag.message.contains("module foo"),
+            "message should name the expected declaration 'module foo', got: {}",
+            diag.message
+        );
     }
 
     #[test]
@@ -284,7 +288,7 @@ mod tests {
     #[test]
     fn mismatched_decl_returns_error_with_both_paths() {
         let declared = ModulePath::from_dotted("a.b.c").unwrap();
-        let expected = ModulePath::single("foo");
+        let expected = ModulePath::from_dotted("sub.dep").unwrap();
         let diag = check_module_path_decl(Some(&declared), &expected)
             .expect("should return Some(diag) for mismatch");
         assert_eq!(diag.severity, Severity::Error);
@@ -299,8 +303,13 @@ mod tests {
             diag.message
         );
         assert!(
-            diag.message.contains("foo"),
-            "message should name the expected path 'foo', got: {}",
+            diag.message.contains("'sub.dep'"),
+            "message should name the expected path 'sub.dep', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("module sub.dep"),
+            "message should name the corrective declaration 'module sub.dep', got: {}",
             diag.message
         );
     }
