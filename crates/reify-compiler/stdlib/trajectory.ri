@@ -985,38 +985,49 @@ structure def MarlinDialect : GcodeDialect { }
 // authoring-time params or constraints.
 structure def KlipperDialect : GcodeDialect { }
 
-// gcode_import — lower a g-code program to a list of motion profiles
+// GcodeWaypoint — one resolved g-code move TARGET, in SI (PRD §7.2).
+// x / y / z / e are `Length` (metres); `feedrate` is the `Velocity` (m/s) in
+// effect for the move, `none` when no F word is in effect — never a 0 sentinel.
+structure def GcodeWaypoint {
+    param x : Length
+    param y : Length
+    param z : Length
+    param e : Length
+    param feedrate : Option<Velocity>
+}
+
+// GcodeMotionSegment — one contiguous motion run of a g-code program.
+// Its waypoints are move TARGETS: the start position is the running position
+// carried over from the previous segment and is not re-recorded. Deliberately
+// NOT a `Profile` refinement: it has no time parameterisation.
+// No defaults and no constraint on either type: the marshaller never emits an
+// empty segment, and a ctor constraint would not fire on a registry-free
+// minted value.
+structure def GcodeMotionSegment {
+    param waypoints : List<GcodeWaypoint>
+}
+
+// gcode_import — lower a g-code program to a list of motion segments
 // (PRD §7.2, §11 task ο).
 //
 // `source` is the raw g-code text. `dialect : GcodeDialect` selects the parser
 // (`MarlinDialect` / `KlipperDialect`) via the SIR-α nominal type-tag — the same
 // marker-trait dispatch `evaluate_profile(p: Profile, …)` uses to accept
-// any concrete variant. The result is one `Profile` per contiguous motion
-// segment: non-motion commands (temperature/fan/extruder M-codes,
-// SET_VELOCITY_LIMIT, INPUT_SHAPER) split the motion run, while G92 set-position
+// any concrete variant. The result is one `GcodeMotionSegment` per contiguous
+// motion run: non-motion commands (temperature/fan/extruder M-codes,
+// SET_VELOCITY_LIMIT, INPUT_SHAPER) split the run, while G92 set-position
 // and standalone F feed-rate updates are in-segment state that do not split.
 //
 // Runtime dispatch lives in the Rust eval path
 // (`reify-stdlib/src/trajectory/gcode_import.rs::eval_gcode_import`, wired
 // through `trajectory/mod.rs::eval_trajectory`): it marshals the
-// `(String, StructureInstance)` arguments into a `Value::List` of profile
-// records, mirroring the `mechanism` builtin's `Value::Map` structured-result
-// encoding (the `eval_builtin` path has no `StructureRegistry` to mint a real
-// `Value::StructureInstance`).
+// `(String, StructureInstance)` arguments into a `Value::List` of registry-free
+// `Value::StructureInstance`s of the two types declared above, minted by type
+// name (the `eval_builtin` path has no `StructureRegistry`) — the same
+// convention as `dynamics.ri`'s `MotionTrajectory` / `ramp_profile`.
 //
-// UNITS — the returned payload is SI and dimensioned. The profile record is an
-// untyped `Value::Map`, because `Profile` (this file, `trait Profile { }`) is a
-// bare marker trait with NO fields: there is no declaration site on which to
-// hang a field type the way the sibling concrete `PiecewisePolynomialProfile`
-// gives its `Waypoint.t : Time`. This comment is therefore where the payload
-// contract has to be written down. Shape:
-//
-//     { kind: "motion_profile",
-//       waypoints: List<{ x, y, z, e, feedrate? }> }
-//
-// where `x` / `y` / `z` / `e` are `Length` (SI metres) and `feedrate` is
-// `Velocity` (m/s), the latter present only when a feed is in effect for the
-// move — an unknown feed is an ABSENT key, never a 0.0 sentinel.
+// UNITS — the returned payload is SI and dimensioned; the field types are
+// declared on `GcodeWaypoint` / `GcodeMotionSegment` above.
 //
 // The conversion happens in `waypoint_to_value`
 // (`reify-stdlib/src/trajectory/gcode_import.rs`), which is the unit-regime
@@ -1050,32 +1061,11 @@ structure def KlipperDialect : GcodeDialect { }
 // (its F1800 fixture is chosen to discriminate the mm/min -> m/s divisor from a
 // multiply-by-reciprocal, which differ by one ULP — see that test's comment).
 //
-// NOTE — the returned value is NOT evaluable by the `Profile` functions, in
-// spite of the `-> List<Profile>` return type above. The `Value::Map` carrier
-// documented in the UNITS paragraph is the reason: `evaluate_profile`,
-// `evaluate_profile_dot`, `evaluate_profile_ddot` and `profile_duration` (all
-// declared above in this file) route through
-// `trajectory/trampoline.rs::value_to_multijoint_spline`, whose first act is to
-// destructure a `Value::StructureInstance` and return `None` for anything else
-// — so a bare Map never reaches the spline evaluator at all. Measured, on an
-// imported profile `g0 = gcode_import("G1 X10 Y10 F1800", MarlinDialect())[0]`:
-//
-//     profile_duration(g0)        =>  undef   (OpContractViolation)
-//     evaluate_profile(g0, 0.0s)  =>  undef   (OpContractViolation)
-//
-// The supported use today is to read the list itself and its `.count` — which
-// is exactly what both shipped consumers do (`examples/trajectory/`
-// `gcode_import_smoke.ri` and `printer_print_envelope.ri`). An author who
-// needs an *evaluable* profile should build a `PiecewisePolynomialProfile` by
-// hand out of `Waypoint` values instead (both declared above in this file);
-// that path is a real `StructureInstance` and does evaluate — measured, a
-// two-waypoint natural-cubic profile over [0s, 1s] gives `profile_duration`
-// => `1 s` and `evaluate_profile(p, 0.5s)` => `[0.5]`. Closing this gap for
-// `gcode_import` would mean giving the payload a concrete `Profile` variant
-// AND a time parameterisation the g-code waypoints do not carry — there is no
-// `t` in the payload, only positions and an optional feed — so it is a design
-// change well beyond the marshalling boundary the units conversion above
-// touches, not an oversight in it.
+// NOTE — a segment is NOT a `Profile`: passing one to a `Profile` param
+// (`evaluate_profile`, `profile_duration`, …) is a compile-time
+// `TypeNotConformingToTrait` error. An evaluable profile needs a time
+// parameterisation the g-code does not carry, so build a
+// `PiecewisePolynomialProfile` from the typed waypoints instead.
 //
 // The body delegates to the `gcode_import_lower` intrinsic rather than
 // returning a stub `[]`. Because this fn has a `.ri` declaration the compiler's
@@ -1084,23 +1074,25 @@ structure def KlipperDialect : GcodeDialect { }
 // …)` directly. `gcode_import_lower` has no `.ri` declaration, so a call to it
 // inside the body resolves `NoUserFunctions` → `FunctionCall` → `eval_builtin`
 // → `eval_trajectory("gcode_import_lower", …)` → `eval_gcode_import`. The fn
-// signature (`List<Profile>`) and the call site's `UserFunctionCall` result type
-// are unchanged, so `imported.count` and the `profile_count > 0` constraint
-// typecheck correctly. `compile_function` applies no body-vs-return-type check,
-// so the delegate body produces zero Error diagnostics.
+// signature (`List<GcodeMotionSegment>`) and the call site's `UserFunctionCall`
+// result type are unchanged, so `imported.count` and the `segment_count > 0`
+// constraint typecheck correctly. `compile_function` applies no
+// body-vs-return-type check, so the delegate body produces zero Error
+// diagnostics.
 //
 // NOTE — inner-call type discard: `gcode_import_lower(source, dialect)` inside
 // the body is typed by the compiler via the first-arg fallback (result_type =
-// `String`, the type of `source`), NOT as `List<Profile>`. This mis-typed
-// inferred type is intentionally discarded; the outer `UserFunctionCall` at the
-// call site uses the declared return type (`List<Profile>`) as its result_type,
-// so callers typecheck correctly. The discard is load-bearing: if a future
+// `String`, the type of `source`), NOT as `List<GcodeMotionSegment>`. This
+// mis-typed inferred type is intentionally discarded; the outer
+// `UserFunctionCall` at the call site uses the declared return type
+// (`List<GcodeMotionSegment>`) as its result_type, so callers typecheck
+// correctly. The discard is load-bearing: if a future
 // body-vs-declared-return-type check is added to `compile_function`, or the
 // first-arg fallback changes, this delegate pattern will need revisiting.
 // The IR dispatch contract (UserFunctionCall at the call site, FunctionCall
 // inside the body) is pinned by `gcode_import_dispatch_ir_contract` in
 // `crates/reify-eval/tests/gcode_import_eval_e2e.rs`.
-pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
+pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<GcodeMotionSegment> { gcode_import_lower(source, dialect) }
 
 // input_shape — apply an input shaper to a motion profile
 // (PRD §5.3, §11 Phase 2 task ζ).
