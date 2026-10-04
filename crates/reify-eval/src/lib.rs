@@ -339,7 +339,14 @@ fn value_type_kind_matches(
         Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
-        Value::Enum { .. } => matches!(ty, Type::Enum(_)),
+        Value::Enum { type_name, .. } => match ty {
+            Type::Enum(_) => true,
+            // Annotated generic enum (`param r : Result<Length, String>`): type
+            // args are compile-time only (PRD generic-enum-type-arg-retention
+            // C-5), so the runtime match is name-only, as for StructureInstance.
+            Type::Applied { name, .. } => name == type_name,
+            _ => false,
+        },
         Value::List(_) => matches!(ty, Type::List(_)),
         Value::Set(_) => matches!(ty, Type::Set(_)),
         Value::Map(_) => matches!(ty, Type::Map(_, _)),
