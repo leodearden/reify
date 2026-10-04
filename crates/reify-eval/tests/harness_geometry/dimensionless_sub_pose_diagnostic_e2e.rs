@@ -59,16 +59,7 @@
 //! green `reify check` as evidence that a design has no dimensionless sub-pose.
 
 use reify_core::Severity;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
-
-/// Build a Mock-kernel engine for structural surfacing assertions.
-///
-/// Same shape as `sub_placement_assembly_gate.rs`'s helper of the same name.
-fn mock_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
-}
+use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
 /// The headline repro: one correctly mm-posed sub beside one dimensionless sub.
 const MIXED_POSE_SRC: &str = r#"
@@ -102,7 +93,7 @@ fn compile_clean(source: &str) -> reify_compiler::CompiledModule {
 
 /// The Error-severity messages emitted while tessellating `compiled`.
 fn tessellate_errors(compiled: &reify_compiler::CompiledModule) -> (Vec<String>, Vec<String>) {
-    let mut engine = mock_engine();
+    let mut engine = make_engine_with_mock_kernel();
     let result = engine.tessellate_realizations(compiled);
     let errors: Vec<String> = result
         .diagnostics
