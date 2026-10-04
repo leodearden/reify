@@ -14,12 +14,12 @@
 //!   - ZERO findings for the pending cite (non-terminal acceptance); and
 //!   - exactly 1 `g-allow-unknown-id` finding at `Severity::Medium` (DB-absent
 //!     race is fail-soft; the remap removal must not promote unknown-id to High).
-//! - **Test B** (live anti-drift, no `#[ignore]`): runs `ptodo::check()` over
-//!   the real repo against the real `tasks.db`; graceful-skip when git or the
-//!   DB is absent (task worktrees skip in <1 ms).  When `tasks.db` IS present
-//!   (main checkout or `/audit` sweep) asserts ZERO `g-allow-orphaned` — the
-//!   per-verify clean-tree guard (the infra scenarios (a)–(e) are all hermetic
-//!   or structural-only and do NOT enforce this invariant over the live repo).
+//! - **Test B** (live, on-demand `#[ignore]`): runs the PTODO scan over the
+//!   real repo against the real `tasks.db` and asserts ZERO
+//!   `g-allow-orphaned`. It fails loud when the DB cannot be read, since a
+//!   degraded run would make that zero vacuous. Liveness never reds a commit
+//!   gate (PRD §19(c)); the cadenced dark-factory 5796 sweep owns live drift,
+//!   and Test A is the always-on assertion.
 
 mod common;
 
@@ -229,29 +229,21 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
     );
 }
 
-/// Test B: live anti-drift guard.
+/// Test B: live drift check, on demand.
 ///
-/// Runs `ptodo::check()` over the real repo against the real `tasks.db`
-/// (via `tasks_db_path()`).  Graceful-skip when git or the DB is absent.
+/// Runs the PTODO scan over the real repo against the real `tasks.db` (via
+/// `tasks_db_path()`) and asserts ZERO `g-allow-orphaned`. Run it with
+/// `--ignored` in the main checkout, or with `REIFY_PTODO_TASKS_DB` pointing
+/// at the main checkout's DB.
 ///
-/// **Why not `#[ignore]`:** the graceful-skip already handles the DB-absent
-/// case (task worktrees don't carry a local `tasks.db` → the skip path exits
-/// in under 1 ms with no assertion).  When `tasks.db` IS present (main
-/// checkout, `/audit` sweep, or a dev machine with the DB) the full `check()`
-/// runs and enforces ZERO `g-allow-orphaned` on every verify — making this a
-/// per-verify clean-tree gate rather than an on-demand-only check.
-///
-/// The infra scenarios (a)–(e) in `tests/infra/test_reify_audit_ptodo.sh` are
-/// all hermetic or structural-only (no live G-allow liveness over the real
-/// repo).  This test is therefore the only per-verify guard that catches a
-/// stale `// G-allow:` owner-cite pointing to a terminal task before it
-/// reaches `main`.
-///
-/// The invariant: ZERO `g-allow-orphaned` findings in the live repo.  The
-/// cleanup tasks #4776–#4783 re-homed/exempted the ~50 orphaned markers
-/// before this task landed, so the tree is clean at the hard-gate flip.
-/// The count is printed to stderr for visibility.
+/// It is `#[ignore]`d because liveness never reds a commit gate (PRD §19(c)):
+/// a cite orphans when its task closes, with no change to the tree, so a
+/// commit-path liveness gate reds whoever commits next. The cadenced
+/// dark-factory 5796 sweep owns live drift. Because the test only runs when
+/// asked for, an unreadable DB fails loud rather than skipping: a degraded
+/// run reports zero orphans vacuously. The count is printed to stderr.
 #[test]
+#[ignore = "on-demand liveness check; owned by the DF 5796 cadenced sweep — run with --ignored in the main checkout"]
 fn g_allow_repo_wide_hard_gate_live() {
     use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
     use rusqlite::Connection;
@@ -282,14 +274,7 @@ fn g_allow_repo_wide_hard_gate_live() {
         return;
     }
 
-    // Graceful-skip if tasks.db is absent (task worktrees don't have one).
     let db_path = reify_audit::ptodo::tasks_db_path(&ws_root);
-    if !db_path.exists() {
-        eprintln!(
-            "g_allow_repo_wide_hard_gate_live: skipping — tasks.db not found at {db_path:?}"
-        );
-        return;
-    }
 
     let git = RealGitOps::new(ws_root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
@@ -306,7 +291,16 @@ fn g_allow_repo_wide_hard_gate_live() {
         producer_branch: None,
     };
 
-    let findings = reify_audit::ptodo::check(&ctx);
+    let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
+
+    assert_eq!(
+        stats.tasks_db,
+        reify_audit::ptodo::TasksDbMode::Present,
+        "the task DB at {} could not be read, so the G-allow lane degraded and a \
+         zero-orphan result would be vacuous. Run in the main checkout, or set \
+         REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db",
+        db_path.display()
+    );
 
     let orphaned: Vec<_> = findings
         .iter()
