@@ -3,8 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
     assert_rigid_mass_props_not_final, bounded_bracket_source, cwd_lock,
-    find_moi_principal_constraint,
-    rigid_mass_props_fixture_path, rigid_mass_props_session,
+    find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
     rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
 };
 
