@@ -4529,6 +4529,7 @@ dependencies = [
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-mesh-morph",

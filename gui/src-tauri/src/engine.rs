@@ -2140,15 +2140,13 @@ impl EngineSession {
 
     /// Create a new EngineSession using the inventory-based kernel registry.
     ///
-    /// This is the production-binary boot path. Reads the static
-    /// linker-collected set of [`reify_types::KernelRegistration`] records once
-    /// at construction, picks the lexicographically smallest entry, and
-    /// instantiates the geometry kernel via its registered factory — mirroring
-    /// [`Engine::with_registered_kernel`]'s contract exactly.
-    ///
-    /// When no kernel adapter has submitted a registration (stub-mode build,
-    /// `cfg(has_occt)` off), the underlying engine receives `None` as the
-    /// geometry kernel, matching `Engine::new(checker, None)` semantics.
+    /// This is the production-binary boot path. The engine holds:
+    /// - the single-pick default kernel of [`Engine::with_registered_kernel`]
+    ///   (the BRep-preferring registered adapter; `None` in a stub-mode build
+    ///   with no registration, matching `Engine::new(checker, None)`);
+    /// - the OpenVDB adapter via [`Engine::ensure_openvdb_kernel`], when it is
+    ///   registered, so plans that name openvdb (an `isosurface`) realize;
+    /// - the production solver (below).
     ///
     /// Unit tests that require a mock or failing kernel should continue to
     /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
@@ -2162,8 +2160,9 @@ impl EngineSession {
     /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
     /// tests keep `solver = None` and are unperturbed.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        let engine = Engine::with_registered_kernel(checker)
+        let mut engine = Engine::with_registered_kernel(checker)
             .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        engine.ensure_openvdb_kernel();
         Self::from_engine(engine)
     }
 
