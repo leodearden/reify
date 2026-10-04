@@ -87,7 +87,7 @@ report("TOTS-optimal duration = " ++ show(optimal.duration));
 // examples/trajectory/gcode_import_smoke.ri
 let gcode = read_file("test_data/calibration_cube.gcode");
 let imported = gcode_import(gcode, dialect: Marlin);
-// imported : List<MotionProfile>
+// imported : List<MotionProfile>  — amended #7327: List<GcodeMotionSegment>, see §7.2
 let analyzed = simulate_trajectory(imported[0], mech, modal);
 plot(analyzed.end_effector_track(toolhead_tip));
 ```
@@ -157,7 +157,7 @@ plot(analyzed.end_effector_track(toolhead_tip));
 | θ | `EndEffectorTrack` value type — time-history of pose + velocity + (optional) accel at named locations | NEW | this PRD |
 | ι | `simulate_trajectory(profile, mech, modal) -> EndEffectorTrack` stdlib fn — forward-pass with modal-superposition | NEW | this PRD |
 | κ | G-code parser library (Marlin + Klipper dialects in v0.3; future extensible) | NEW | this PRD (new `reify-gcode` crate) |
-| λ | `gcode_import(source, dialect) -> List<MotionProfile>` stdlib helper | NEW | this PRD |
+| λ | `gcode_import(source, dialect) -> List<MotionProfile>` stdlib helper (amended #7327: `List<GcodeMotionSegment>`, §7.2) | NEW | this PRD |
 | μ | ComputeNode trampoline for `simulate_trajectory` (TOTS iteration calls this) | NEW | this PRD |
 | ν | ComputeNode trampoline for `input_shape` w/ TOTSShaper (heavy optimization-driven) | NEW | this PRD |
 
@@ -459,13 +459,39 @@ structure def MarlinDialect : GcodeDialect {
 structure def KlipperDialect : GcodeDialect {
 }
 
-fn gcode_import(source: String, dialect: GcodeDialect) -> List<MotionProfile>
+structure def GcodeWaypoint {
+    param x : Length
+    param y : Length
+    param z : Length
+    param e : Length
+    param feedrate : Option<Velocity>
+}
+
+structure def GcodeMotionSegment {
+    param waypoints : List<GcodeWaypoint>
+}
+
+fn gcode_import(source: String, dialect: GcodeDialect) -> List<GcodeMotionSegment>
 ```
 
 The output is a `List<MotionProfile>` because a real G-code file is a
 sequence of moves potentially interleaved with non-motion commands
 (temperature, fan, extruder); each contiguous motion segment becomes
 one MotionProfile.
+
+**Amended 2026-10, task #7327.** The implementation had mapped
+`List<MotionProfile>` to `List<Profile>` while returning an untyped
+`Map` that no `Profile` evaluator accepts: `profile_duration(imported[0])`
+compiled clean and evaluated to undef. The honest return type is the
+non-`Profile` segment type declared above, so passing a segment to a
+`Profile` param is now a compile-time `TypeNotConformingToTrait` error,
+and its waypoints are typed (`imported[0].waypoints[0].x : Length`).
+Turning a segment into an evaluable `Profile` needs a time
+parameterisation, a policy for moves with no `F` word, the segment's
+start knot (waypoints are move targets, not spans) and piecewise-linear
+interpolation; that is deferred to a follow-up. Until it lands, the §1
+`simulate_trajectory(imported[0], …)` example and the §10 G-code-smoke
+row's "first segment's `simulate_trajectory` runs" clause are NOT met.
 
 The mechanism the profiles bind to is inferred from a per-call
 `mechanism: Mechanism` parameter or from a `with_mechanism(m)`
@@ -700,13 +726,14 @@ early-acceptance milestone.
   - Prereqs: α.
 
 - **ο — `gcode_import(source, dialect) -> List<MotionProfile>`
-  stdlib fn + eval dispatch.**
+  stdlib fn + eval dispatch.** (Amended #7327: returns
+  `List<GcodeMotionSegment>`, §7.2.)
   - Crates: `reify-stdlib/src/trajectory/gcode_import.rs` (NEW),
     `reify-eval/src/trajectory_ops.rs` (extend); bridge between
     `reify-gcode` AST and `MotionProfile`.
   - Observable signal: `examples/trajectory/gcode_import_smoke.ri`
-    runs; produces List<MotionProfile> for a 100-line Marlin
-    fixture.
+    runs; produces List<MotionProfile> (amended #7327:
+    List<GcodeMotionSegment>) for a 100-line Marlin fixture.
   - Prereqs: μ, ν, ξ, β.
 
 ### Phase 6 — ComputeNode + dogfood + companion
