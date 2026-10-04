@@ -277,12 +277,12 @@ static const char* topabs_name(TopAbs_ShapeEnum type) {
     }
 }
 
-/// Reduce a swept-section profile to the shape `BRepFill_Section` accepts.
-///
-/// `BRepOffsetAPI_MakePipeShell::Add` funnels every section through
-/// `BRepFill_Section`, which stores only a `TopoDS_Wire` or a `TopoDS_Vertex`.
-/// Anything else — including a `TopAbs_FACE` and a bare `TopAbs_EDGE` — raises
-/// `Standard_Failure "BRepFill_Section: bad shape type of section"`. Faces are
+/// Reduce a section profile to a `TopoDS_Wire` or `TopoDS_Vertex` — the only
+/// section shapes either section consumer accepts:
+/// `BRepOffsetAPI_MakePipeShell` (make_pipe_shell, loft_guided_profiles), whose
+/// `BRepFill_Section` raises "bad shape type of section" on anything else, and
+/// `BRepOffsetAPI_ThruSections` (loft_profiles, make_loft_with_history, via
+/// `add_loft_section`), which takes only `AddWire` / `AddVertex`. Faces are
 /// the profile kind the Reify compiler actually produces (`circle(r)` lowers to
 /// `CircleProfile` → `make_circle_face`), so they are reduced here to their
 /// outer wire rather than rejected.
@@ -350,6 +350,19 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
                 + "'; section profile must be a Wire, a Vertex, or a Face "
                   "(reduced to its outer wire)");
     }
+}
+
+/// Add one loft section to `loft` and return the section actually added (the
+/// wire or vertex `section_profile_to_wire` reduced `profile` to).
+static TopoDS_Shape add_loft_section(BRepOffsetAPI_ThruSections& loft,
+                                     const TopoDS_Shape& profile) {
+    const TopoDS_Shape section = section_profile_to_wire(profile);
+    if (section.ShapeType() == TopAbs_VERTEX) {
+        loft.AddVertex(TopoDS::Vertex(section));
+    } else {
+        loft.AddWire(TopoDS::Wire(section));
+    }
+    return section;
 }
 
 /// Downcast a spine/guide argument to `TopoDS_Wire`, rejecting anything else
@@ -2402,10 +2415,12 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // caller hard-codes `true` to match `GeometryOp::Loft`'s contract.
         BRepOffsetAPI_ThruSections loft(
             is_solid ? Standard_True : Standard_False, Standard_False);
+        std::vector<TopoDS_Shape> sections;
+        sections.reserve(profiles.shapes.size());
         for (const auto& shape : profiles.shapes) {
             // Per profile, and AFTER the count check above (see `loft_profiles`).
             reject_empty_input_shape(shape, "profile");
-            loft.AddWire(TopoDS::Wire(shape));
+            sections.push_back(add_loft_section(loft, shape));
         }
         loft.Build();
         if (!loft.IsDone()) {
@@ -2423,9 +2438,10 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // unused — `BRepOffsetAPI_ThruSections::GeneratedFace` is the
         // sole correspondence accessor we exercise here.
 
-        // Per-section walk: for each profile section i ∈ [0, N), walk
-        // its edges in canonical TopExp `MapShapes(profile, TopAbs_EDGE, _)`
-        // order; for each edge call `loft.GeneratedFace(edge)` to recover
+        // Per-section walk: for each section i ∈ [0, N) AS ADDED to the
+        // builder (`GeneratedFace` is keyed on those edges), walk its edges
+        // in canonical TopExp `MapShapes(section, TopAbs_EDGE, _)` order;
+        // for each edge call `loft.GeneratedFace(edge)` to recover
         // the lateral side face in the result; look up the result face's
         // 0-based index in `result_face_map` and emit a flat triple
         // `(parent_index = i, parent_subshape_index = edge_idx_in_section,
@@ -2434,11 +2450,10 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // CANNOT REUSE `emit_sweep_generated_cross_type` because that
         // helper hard-codes `parent_index = 0` (single-parent contract);
         // loft's per-section walk needs distinct `parent_index` per section.
-        const std::size_t n_sections = profiles.shapes.size();
+        const std::size_t n_sections = sections.size();
         for (std::size_t i = 0; i < n_sections; ++i) {
-            const TopoDS_Shape& profile_shape = profiles.shapes[i];
             TopTools_IndexedMapOfShape section_edge_map;
-            TopExp::MapShapes(profile_shape, TopAbs_EDGE, section_edge_map);
+            TopExp::MapShapes(sections[i], TopAbs_EDGE, section_edge_map);
             const Standard_Integer n_edges = section_edge_map.Extent();
             for (Standard_Integer e = 1; e <= n_edges; ++e) {
                 const TopoDS_Shape& section_edge = section_edge_map.FindKey(e);
@@ -4350,7 +4365,7 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
             // Per profile, and AFTER the count check above, so a caller who
             // passed only one still gets the diagnostic naming THAT mistake.
             reject_empty_input_shape(shape, "profile");
-            loft.AddWire(TopoDS::Wire(shape));
+            add_loft_section(loft, shape);
         }
         loft.Build();
         if (!loft.IsDone()) {
