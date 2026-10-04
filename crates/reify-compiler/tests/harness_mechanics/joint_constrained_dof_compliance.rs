@@ -218,7 +218,7 @@ fn compile_probe(calls: &[String]) -> CompiledModule {
     compile_source_with_stdlib(&format!("structure def Probe {{\n{lets}}}\n"))
 }
 
-fn errors_with_code<'a>(module: &'a CompiledModule, code: DiagnosticCode) -> Vec<&'a Diagnostic> {
+fn errors_with_code(module: &CompiledModule, code: DiagnosticCode) -> Vec<&Diagnostic> {
     module
         .diagnostics
         .iter()
