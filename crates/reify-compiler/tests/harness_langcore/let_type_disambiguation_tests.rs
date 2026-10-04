@@ -13,7 +13,9 @@
 use reify_compiler::DefaultKind;
 use reify_core::{Diagnostic, DimensionVector, Type};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only, get_value_cell_in};
+use reify_test_support::{
+    compile_source, compile_source_allow_parse_errors, errors_only, get_value_cell_in,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -430,41 +432,45 @@ structure S : HasL {
     );
 }
 
-// ── task 1834 step-5: `let x : Length` without value is a parser-level no-op ──
+// ── task 1834 step-5 / #7809: `let x : Length` without a value is a parse error ──
 
-/// The forward-guard originally proposed for step-5 was
-/// `unannotated_let_default_satisfies_typed_let_requirement`: trait A provides
-/// `let x = 5mm`, trait B requires `let x : Length`, structure `S : A + B {}`
-/// should compile cleanly because A's inferred Length default matches B's
-/// Length requirement.  While writing the test we discovered that the reify
-/// DSL currently does not syntactically accept `let x : Length` without a
-/// value expression (see `lower_let` in ts_parser.rs:1455, which returns
-/// `None` when `value` is absent, and trait_merge_tests.rs:280).  Trait B
-/// therefore parses as empty: no members, no requirements, no defaults.  The
-/// original shape of the test was tautological — it passed equally on pre-
-/// and post-1834 code — and therefore provided no regression coverage.
+/// A value-less `let x : Length` is not trait syntax, and it is a loud,
+/// located parse error (INV-SF-7 parse-is-value-faithful, #7809): tree-sitter
+/// recovers it as an ERROR child of the trait body, `lower_trait_members`
+/// reports `syntax error in trait body` at the `let`, and the compiler forwards
+/// it with its `parse error: ` prefix.  Before #7809 that ERROR was dropped in
+/// silence.
 ///
-/// This replacement test asserts the parser behavior directly so the
-/// syntactic limitation is explicit in the test suite: `trait B { let x :
-/// Length }` must compile to a trait with zero members (no required_members
-/// that would produce a `RequirementKind::Let`, and no defaults for `x`).
-/// If `let x : Type` without a value becomes syntactically valid in the
-/// future, this test will start failing — at which point it should be
-/// replaced (or augmented) with the full A+B conformance scenario the
-/// original step-5 envisioned, exercising `available_defaults` for
-/// unannotated-let vs. typed-let-requirement matching.
-///
-/// Tracking the coverage gap: a `RequirementKind::Let`-satisfied-by-
-/// inferred-default scenario cannot be constructed from source today.  Filed
-/// as a follow-up on task 1834; no separate tracker task exists yet.
+/// The compiled trait is still empty: no `RequirementKind::Let` in
+/// `required_members` and no default for `x`.  So `RequirementKind::Let` is not
+/// reachable from source, and the scenario task 1834 step-5 envisioned (trait A
+/// provides `let x = 5mm`, trait B requires `let x : Length`, `S : A + B`
+/// compiles clean) is pinned on a hand-built requirement instead, in
+/// conformance/mod.rs `inferred_let_expr_satisfies_let_requirement`.  If a
+/// value-less trait `let` ever becomes syntax, replace this test with that
+/// source-level scenario.
 #[test]
-fn let_with_type_and_no_value_parses_as_empty_trait() {
+fn let_with_type_and_no_value_is_a_parse_error_and_lowers_an_empty_trait() {
     let source = r#"
 trait B {
     let x : Length
 }
     "#;
-    let module = compile_source(source);
+    let module = compile_source_allow_parse_errors(source);
+
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {errors:?}"
+    );
+    assert_eq!(errors[0].message, "parse error: syntax error in trait body");
+    assert_eq!(
+        errors[0].labels[0].span.start as usize,
+        source.find("let x : Length").unwrap(),
+        "the parse error must be located at the value-less let, got: {:?}",
+        errors[0]
+    );
 
     let b = module
         .trait_defs
@@ -475,7 +481,7 @@ trait B {
     assert!(
         b.required_members.is_empty(),
         "`let x : Length` without a value must not produce a RequirementKind::Let \
-         (the parser returns None when the value child is missing). \
+         (it is a parse error, not a trait member). \
          Got required_members = {:?}",
         b.required_members
     );

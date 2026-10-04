@@ -5,6 +5,8 @@
 
 use reify_ast::*;
 
+use crate::parse_error_lookup::{assert_located, only_error_starting_with};
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("trait_test"));
@@ -461,4 +463,81 @@ fn parse_trait_bound_with_type_args() {
     assert_eq!(structure.trait_bounds[0].type_args.len(), 1);
     let (arg0_name, _) = as_named(&structure.trait_bounds[0].type_args[0]);
     assert_eq!(arg0_name, "Bolt");
+}
+
+// ── INV-SF-7: a trait-body ERROR is diagnosed (#7809) ──────────────
+
+const TRAIT_BODY_ERROR: &str = "syntax error in trait body";
+
+/// The `(kind, name)` of each member of the lone trait in `decls`.
+fn trait_members(decls: &[Declaration]) -> Vec<(&'static str, &str)> {
+    let [Declaration::Trait(trait_decl)] = decls else {
+        panic!("expected exactly one trait, got {decls:?}");
+    };
+    trait_decl
+        .members
+        .iter()
+        .map(|member| match member {
+            MemberDecl::Param(p) => ("param", p.name.as_str()),
+            MemberDecl::Fn(f) => ("fn", f.name.as_str()),
+            other => panic!("unexpected trait member: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn trait_body_junk_is_a_located_parse_error() {
+    let src = "trait T {\n    param a : Real\n    >= )\n    param b : Real\n}\n";
+    let (decls, errors) = parse_decls(src);
+    let err = only_error_starting_with(&errors, TRAIT_BODY_ERROR);
+    assert_located(err, src, src.find(">= )").unwrap(), "3:5");
+    assert_eq!(trait_members(&decls), [("param", "a"), ("param", "b")]);
+}
+
+/// The shape the compiler tests once relied on: a value-less `let` is not trait syntax.
+#[test]
+fn value_less_let_in_trait_body_is_a_located_parse_error() {
+    let src = "trait B {\n    let x : Length\n}\n";
+    let (decls, errors) = parse_decls(src);
+    let err = only_error_starting_with(&errors, TRAIT_BODY_ERROR);
+    assert_located(err, src, src.find("let x : Length").unwrap(), "2:5");
+    assert!(trait_members(&decls).is_empty());
+}
+
+/// Trait-required ports are deferred (esc-7809-5;
+/// docs/prds/v0_6/generic-assemblies-interface-traits.md). The column is a lexer-recovery
+/// artefact (the `put` of `output`), so only the line is pinned.
+#[test]
+fn port_in_trait_body_is_a_located_parse_error() {
+    let src = "trait T {\n    param a : Real\n    port output : out T\n}\n";
+    let (decls, errors) = parse_decls(src);
+    let err = only_error_starting_with(&errors, TRAIT_BODY_ERROR);
+    let port_line_start = src.find("    port output").unwrap();
+    let port_line = port_line_start..port_line_start + src[port_line_start..].find('\n').unwrap();
+    assert!(
+        port_line.contains(&(err.span.start as usize)),
+        "expected the diagnostic on the port line {port_line:?}, got: {err:?}"
+    );
+    let rendered = err.render(src);
+    assert!(rendered.starts_with("3:"), "got: {rendered:?}");
+    assert_eq!(trait_members(&decls), [("param", "a")]);
+}
+
+#[test]
+fn annotation_before_a_trait_body_error_does_not_leak_onto_the_next_member() {
+    let src = "trait T {\n    @deprecated(\"x\")\n    port output : out T\n    fn f() -> Real { 1.0 }\n}\n";
+    let (decls, errors) = parse_decls(src);
+    only_error_starting_with(&errors, TRAIT_BODY_ERROR);
+    assert_eq!(trait_members(&decls), [("fn", "f")]);
+    let [Declaration::Trait(trait_decl)] = decls.as_slice() else {
+        unreachable!("trait_members asserted a lone trait")
+    };
+    let MemberDecl::Fn(f) = &trait_decl.members[0] else {
+        unreachable!("trait_members asserted a lone fn member")
+    };
+    assert!(
+        f.annotations.is_empty(),
+        "annotation leaked onto `f`: {:?}",
+        f.annotations
+    );
 }
