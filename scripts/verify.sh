@@ -2031,6 +2031,68 @@ select_pdiag_ratchet() {
 select_pdiag_ratchet
 
 # ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDOCCOVER ratchet (task #7987).
+#
+# tests/infra/test_reify_audit_pdoccover.sh scenario (a) — registry<->chunk
+# name-drift debt must stay within crates/reify-audit/pdoccover-baseline.txt —
+# ran ONLY in the merge-tier run_all.sh pool. A content task that documents a
+# baselined name and forgets to delete its row, or that adds any new omission
+# or fabrication, therefore learned of the RED from a ~20-minute merge cycle:
+# the esc-7376-2 shape #7691 closed for PDIAG. This selector runs the same file
+# on the task lane whenever the branch could have moved the verdict.
+#
+# Trigger: the merge-base diff ADDS or MODIFIES a path pdoccover_input_path
+# (below) accepts. Those are the four inputs pdoccover::load_inputs,
+# load_oracle_sources and committed_baseline read; the verdict depends on
+# nothing else in the tree. A and M are the triggering statuses
+# (git diff --no-renames --diff-filter=AM).
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_pdiag_ratchet, so it
+# INHERITS that header's properties and its STALE-BINARY DECISION exactly as
+# enumerated there; not restated.
+#
+# RESIDUAL, shared with select_pdiag_ratchet: edits to the scanner under
+# crates/reify-audit/src/ are NOT a trigger. PDIAG's header justifies that with
+# "its own cargo tests run on such a branch"; that reason is weaker here,
+# because reify-audit's cargo tests no longer run the real-tree PDOCCOVER
+# ratchet (it lives in the gate only). Such a branch learns at the merge gate,
+# which stays the wholesale authority: latency, not a hole.
+# ---------------------------------------------------------------------------
+
+# pdoccover_input_path <repo-relative-path> — succeeds iff PDOCCOVER reads the
+# path. One arm per input, each a DERIVED COPY of the Rust symbol its comment
+# names (cited by name, not line). Case-sensitive like the Rust; a case glob's
+# `*` crosses `/`, which is what starts_with means. Its source of truth is
+# behavioural: test_verify_scope.sh's PDOCCOVER-DRIFT re-derives every input
+# from the Rust source on each run and probes it through this selector.
+pdoccover_input_path() {
+    case "$1" in
+        crates/reify-compiler/src/units.rs) return 0 ;;          # pdoccover.rs UNITS_PATH
+        crates/reify-mcp/src/tools/chunks/*.md) return 0 ;;      # pdoccover.rs is_chunk_path (CHUNKS_PREFIX)
+        crates/reify-compiler/src/*.rs \
+            | crates/reify-compiler/stdlib/*.ri \
+            | crates/reify-stdlib/src/*.rs) return 0 ;;          # pdoccover.rs in_oracle_scope
+        crates/reify-audit/pdoccover-baseline.txt) return 0 ;;   # pdoccover_baseline.rs BASELINE_PATH
+    esac
+    return 1
+}
+
+select_pdoccover_ratchet() {
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    local _changed _path
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        if pdoccover_input_path "$_path"; then
+            add_selected_infra_glob "tests/infra/test_reify_audit_pdoccover.sh"
+            return 0
+        fi
+    done <<< "$_changed"
+}
+select_pdoccover_ratchet
+
+# ---------------------------------------------------------------------------
 # Cheap cited-test-path gate on the hook-gated --scope staged path (task #7785).
 #
 # tests/infra/test_cited_test_paths_resolve.sh — prose that names a
