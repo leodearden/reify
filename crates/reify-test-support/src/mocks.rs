@@ -1779,6 +1779,32 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Axis-aligned bbox staged for `handle` via [`Self::with_bbox_result`]
+    /// (the kernel's `{"xmin":..,...,"zmax":..}` JSON string shape). `None`
+    /// when nothing parseable is staged.
+    fn staged_bbox(&self, handle: GeometryHandleId) -> Option<Aabb> {
+        match self.typed_queries.get(&QueryKey::BoundingBox(handle))? {
+            Value::String(json) => Aabb::from_kernel_json(json),
+            _ => None,
+        }
+    }
+
+    /// Classify a boolean result the way the real OCCT kernel does: an empty
+    /// or multi-body (COMPSOLID) result is `Compound`, anything else `Solid`.
+    /// `yields_compound` decides from the operands' staged bboxes; operands
+    /// without a staged bbox keep the historical `Solid` stamp.
+    fn boolean_kind(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        yields_compound: impl Fn(&Aabb, &Aabb) -> bool,
+    ) -> BRepKind {
+        match (self.staged_bbox(left), self.staged_bbox(right)) {
+            (Some(l), Some(r)) if yields_compound(&l, &r) => BRepKind::Compound,
+            _ => BRepKind::Solid,
+        }
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
@@ -1840,6 +1866,33 @@ impl MockGeometryKernel {
     }
 }
 
+/// Axis-aligned bounding box used by the mock's boolean classification.
+struct Aabb {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+impl Aabb {
+    fn from_kernel_json(json: &str) -> Option<Self> {
+        let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
+        let coord = |key: &str| parsed.get(key)?.as_f64();
+        Some(Self {
+            min: [coord("xmin")?, coord("ymin")?, coord("zmin")?],
+            max: [coord("xmax")?, coord("ymax")?, coord("zmax")?],
+        })
+    }
+
+    /// Strictly separated on at least one axis (touching boxes are not disjoint).
+    fn is_disjoint_from(&self, other: &Aabb) -> bool {
+        (0..3).any(|a| self.max[a] < other.min[a] || other.max[a] < self.min[a])
+    }
+
+    /// `other` lies strictly inside `self` on every axis.
+    fn strictly_contains(&self, other: &Aabb) -> bool {
+        (0..3).all(|a| self.min[a] < other.min[a] && other.max[a] < self.max[a])
+    }
+}
+
 impl Default for MockGeometryKernel {
     fn default() -> Self {
         Self::new()
@@ -1871,6 +1924,15 @@ impl GeometryKernel for MockGeometryKernel {
             | GeometryOp::InterpCurve { .. }
             | GeometryOp::BezierCurve { .. }
             | GeometryOp::NurbsCurve { .. } => Some(BRepKind::Wire),
+            GeometryOp::Union { left, right } => {
+                Some(self.boolean_kind(*left, *right, |l, r| l.is_disjoint_from(r)))
+            }
+            GeometryOp::Intersection { left, right } => {
+                Some(self.boolean_kind(*left, *right, |l, r| l.is_disjoint_from(r)))
+            }
+            GeometryOp::Difference { left, right } => {
+                Some(self.boolean_kind(*left, *right, |l, r| r.strictly_contains(l)))
+            }
             _ => Some(BRepKind::Solid),
         };
 
@@ -3182,6 +3244,109 @@ mod tests {
             }
             other => panic!("expected Intersection, got {:?}", other),
         }
+    }
+
+    fn bbox_json(min: [f64; 3], max: [f64; 3]) -> Value {
+        Value::String(format!(
+            "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
+            min[0], min[1], min[2], max[0], max[1], max[2]
+        ))
+    }
+
+    /// Run `op(left, right)` on a mock whose handles 1 and 2 have the given
+    /// staged bboxes (`None` = unstaged) and return the result's repr.
+    fn boolean_repr(
+        left_bbox: Option<([f64; 3], [f64; 3])>,
+        right_bbox: Option<([f64; 3], [f64; 3])>,
+        op: impl Fn(GeometryHandleId, GeometryHandleId) -> GeometryOp,
+    ) -> Option<BRepKind> {
+        let mut kernel = MockGeometryKernel::new();
+        if let Some((min, max)) = left_bbox {
+            kernel = kernel.with_bbox_result(GeometryHandleId(1), bbox_json(min, max));
+        }
+        if let Some((min, max)) = right_bbox {
+            kernel = kernel.with_bbox_result(GeometryHandleId(2), bbox_json(min, max));
+        }
+        let unit_box = GeometryOp::Box {
+            width: Value::length(1.0),
+            height: Value::length(1.0),
+            depth: Value::length(1.0),
+        };
+        let left = kernel.execute(&unit_box).unwrap();
+        let right = kernel.execute(&unit_box).unwrap();
+        kernel.execute(&op(left.id, right.id)).unwrap().repr
+    }
+
+    const UNIT: ([f64; 3], [f64; 3]) = ([0.0; 3], [1.0; 3]);
+    const OVERLAPPING: ([f64; 3], [f64; 3]) = ([0.5; 3], [1.5; 3]);
+    const FAR_AWAY: ([f64; 3], [f64; 3]) = ([5.0; 3], [6.0; 3]);
+    const ENGULFING: ([f64; 3], [f64; 3]) = ([-1.0; 3], [2.0; 3]);
+
+    fn union(left: GeometryHandleId, right: GeometryHandleId) -> GeometryOp {
+        GeometryOp::Union { left, right }
+    }
+    fn difference(left: GeometryHandleId, right: GeometryHandleId) -> GeometryOp {
+        GeometryOp::Difference { left, right }
+    }
+    fn intersection(left: GeometryHandleId, right: GeometryHandleId) -> GeometryOp {
+        GeometryOp::Intersection { left, right }
+    }
+
+    #[test]
+    fn mock_union_of_disjoint_bboxes_is_compound() {
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(FAR_AWAY), union),
+            Some(BRepKind::Compound)
+        );
+    }
+
+    #[test]
+    fn mock_union_of_overlapping_or_unstaged_operands_is_solid() {
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(OVERLAPPING), union),
+            Some(BRepKind::Solid)
+        );
+        assert_eq!(boolean_repr(Some(UNIT), None, union), Some(BRepKind::Solid));
+        assert_eq!(boolean_repr(None, None, union), Some(BRepKind::Solid));
+    }
+
+    #[test]
+    fn mock_union_of_touching_bboxes_is_solid() {
+        let touching = ([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(touching), union),
+            Some(BRepKind::Solid)
+        );
+    }
+
+    #[test]
+    fn mock_intersection_of_disjoint_bboxes_is_empty_compound() {
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(FAR_AWAY), intersection),
+            Some(BRepKind::Compound)
+        );
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(OVERLAPPING), intersection),
+            Some(BRepKind::Solid)
+        );
+    }
+
+    #[test]
+    fn mock_difference_by_strictly_engulfing_tool_is_empty_compound() {
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(ENGULFING), difference),
+            Some(BRepKind::Compound)
+        );
+        // Reversed roles: a small tool cutting a big argument leaves a solid.
+        assert_eq!(
+            boolean_repr(Some(ENGULFING), Some(UNIT), difference),
+            Some(BRepKind::Solid)
+        );
+        // Disjoint tool removes nothing.
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(FAR_AWAY), difference),
+            Some(BRepKind::Solid)
+        );
     }
 
     // step-11: tests exercising shape and manufacturing ops
