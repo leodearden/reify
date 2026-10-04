@@ -51,12 +51,9 @@
 
 #![cfg(has_gmsh)]
 
-mod common;
-
 // The clamp probe and its serialising mutex are shared verbatim with
 // `tests/refine_volume_tests.rs`, the other half of this discipline. Declared
-// by path rather than through `common/mod.rs`, whose stated scope is the #6200
-// geometry fixtures; see `common/clamp_probe.rs` for why one copy matters.
+// by `#[path]`; see `common/clamp_probe.rs` for why, and why one copy matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
@@ -74,12 +71,13 @@ use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
 #[cfg(feature = "mesh-morph")]
 use reify_kernel_gmsh::{EntityAttribution, mesh_surface_to_volume_with_attribution};
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 use size_field::uniform_unit_cube_size_field;
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
 fn mesh_to_volume_tet_count(size: f64) -> usize {
-    let cube = common::unit_cube_mesh();
+    let cube = unit_cube_mesh();
     let opts = MeshingOptions {
         mesh_size: Some(size),
         deterministic: true,
@@ -98,7 +96,7 @@ fn mesh_to_volume_tet_count(size: f64) -> usize {
 /// the pair sweep measures, with no explicit `mesh_size` so the call is
 /// sensitive to the size table it inherits.
 fn mesh_to_volume_default_tet_count() -> usize {
-    let cube = common::unit_cube_mesh();
+    let cube = unit_cube_mesh();
     let opts = MeshingOptions {
         deterministic: true,
         ..Default::default()
@@ -114,7 +112,7 @@ fn mesh_to_volume_default_tet_count() -> usize {
 
 /// `refine_volume_with_size_field` on the unit cube with a uniform field.
 fn refine_tet_count() -> usize {
-    let cube = common::unit_cube_mesh();
+    let cube = unit_cube_mesh();
     let opts = MeshingOptions {
         deterministic: true,
         ..Default::default()
@@ -149,7 +147,7 @@ fn refine_tet_count() -> usize {
 /// fixture `mesh_surface_to_volume_attributed.rs` needs for its own subject.
 #[cfg(feature = "mesh-morph")]
 fn attributed_tet_count() -> usize {
-    let cube = common::unit_cube_mesh();
+    let cube = unit_cube_mesh();
     let opts = MeshingOptions {
         deterministic: true,
         ..Default::default()
@@ -367,7 +365,7 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
     /// `[SEED, SEED]` clamp it used to leave behind.
     const SEED: f64 = 0.5;
 
-    let cube = common::unit_cube_mesh();
+    let cube = unit_cube_mesh();
 
     // Seed through the real producer, then refine with a uniform field.
     //
