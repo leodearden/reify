@@ -123,6 +123,7 @@ mod tests {
             Pattern::PDocCover,
             Pattern::PDeliveredCheckPath,
             Pattern::PManifestCite,
+            Pattern::PPrdStatus,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -140,6 +141,7 @@ mod tests {
                 Pattern::PDocCover => {}
                 Pattern::PDeliveredCheckPath => {}
                 Pattern::PManifestCite => {}
+                Pattern::PPrdStatus => {}
             }
         }
 

@@ -51,6 +51,7 @@ pub mod pdoccover;
 pub mod pdoccover_baseline;
 pub mod pdcheck;
 pub mod pcite;
+pub mod pprdstatus;
 pub mod pattern_flag;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
 /// Not part of the detector API surface — the lanes are.
@@ -298,6 +299,9 @@ pub enum Pattern {
     /// reads the working tree via `ls_files()` + `std::fs`, never contacts
     /// jcodemunch. Grammar, oracle and their measured basis: `pcite.rs`.
     PManifestCite,
+    /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
+    /// the canonical definition of its lanes, inputs and opt-in rationale.
+    PPrdStatus,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

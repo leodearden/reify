@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
@@ -23,6 +23,7 @@ Pick from the user's invocation and context:
 | `/audit --pattern PDSSENTINEL` | Run only the ds-sentinel reintroduction guard (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDEAD\|PUNTESTED\|PLAYER` | Run one advisory jcodemunch detector (opt-in, Severity Low, serve-dependent) | `references/modes.md` §4 |
 | `/audit --pattern PDIAG\|PDOCCOVER\|PDCHECK\|PCITE` | Run one opt-in structural detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
+| `/audit --pattern PPRDSTATUS` | PRD status-prose drift: all-leaves-terminal PRDs whose Status header is not terminal, plus cites whose status parenthetical contradicts the task (reads the loaded task corpus; opt-in; High) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
 `--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
@@ -94,9 +95,9 @@ Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (Hi
 
 **Default-sweep membership:** PTODO High kinds (the current list is in `references/modes.md` §4 PTODO notes) drive a non-zero exit when violations are present. **Main is not a clean tree** (corrected 2026-08-27, esc-6088-2). Measured on main 2026-08-27: **65 findings, 11 High, exit code 11.** Composition — 10 `untracked` + 1 `orphaned` (High), 3 `malformed-cite`, 51 `task-cites-deleted-path` (ζ inverse lane; that measurement predates the renamed/deleted split — after #5654 the same ζ population splits between `task-cites-deleted-path` and `task-cites-renamed-path`, with the total and the exit code unchanged because the two kinds are mutually exclusive per cited path and both Medium). **Exit 11 is the steady state on main, not a regression signal**; do not treat a non-zero PTODO exit as evidence that something newly broke. Only the 14 path-keyed source-marker findings are ratcheted, collapsing to the 5 fingerprints in `ptodo-baseline.txt` (fingerprints drop line numbers, so the 8 identical `#[allow(dead_code)] // T12 layer-B seam …` markers in `engine_build.rs` are one baseline line). The 51 ζ findings are keyed by task ID, so `ptodo-baseline-gen`'s `is_swept_ext` filter excludes them from the baseline — they are outside the ratchet *and* exit-neutral, i.e. gated by nothing. To see what is actually new, diff live fingerprints against the baseline.
 
-## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE
+## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE, PPRDSTATUS
 
-Five more deterministic detectors that, like PTODO, read the tracked tree (PDCHECK also reads `tasks.db`) and never contact jcodemunch:
+Six more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the loaded task corpus (the fused-memory live loader, or `--tasks-file`), never `tasks.db`:
 
 | Pattern | Detects |
 |---|---|
@@ -105,8 +106,9 @@ Five more deterministic detectors that, like PTODO, read the tracked tree (PDCHE
 | `PDOCCOVER` | Name drift between the builtin registries and the MCP language chunks: undocumented and fabricated names |
 | `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
 | `PCITE` | Symbols a `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence that no tracked non-prose file contains. Medium only (report-only) |
+| `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
 
-PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other four key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
+PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other five key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
 ## Severity ladder
 
@@ -122,7 +124,7 @@ The skill **never** calls `set_task_status`. State-mutation of the offending tas
 
 **PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
 
-**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE):** route each finding by its own `severity` field, like every other pattern, with one exception: PDOCCOVER's findings go out as **one batched escalation per run**, not one per finding (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
+**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE / PPRDSTATUS):** route each finding by its own `severity` field, like every other pattern, with two exceptions, the batched patterns: PDOCCOVER's findings and PPRDSTATUS's findings each go out as **one batched escalation per run**, not one per finding. PPRDSTATUS's is filed by running `scripts/pprdstatus-escalate.py`, never by a hand-built `escalate_info`, and it files no follow-up tasks (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 
 ## Outputs
 

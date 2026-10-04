@@ -22,6 +22,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PDOCCOVER` | `PDocCover` | no | repo path: `crates/reify-compiler/src/units.rs`, `crates/reify-audit/pdoccover-baseline.txt`, or a `crates/reify-mcp/src/tools/chunks/*.md` | §2 PDOCCOVER (batched) |
 | `PDCHECK` | `PDeliveredCheckPath` | no | task id: the owning non-terminal task | §2 PDCHECK |
 | `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
+| `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
 
 ---
 
@@ -48,12 +49,12 @@ mcp__escalation__escalate_info(
 )
 ```
 
-**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG and PDOCCOVER is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
+**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG, PDOCCOVER and PPRDSTATUS is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
 
 - **The subject, not the raw `task_id`:** the escalation server mints the escalation id from `task_id` (`make_id` names its counter files `esc-<task_id>.seq…`), and a repo path cannot mint one. Measured 2026-09-23 against a scratch queue: `make_id('crates/reify-compiler/src/units.rs')` raises `FileNotFoundError`, while `make_id('audit')` mints `esc-audit-1`.
 - **`terminal_state_is_the_bug=True`:** without it the server auto-resolves, on arrival, any filing whose task is done or cancelled — and every `P5PhantomDone` is about a done task.
 
-PDOCCOVER is the one batched pattern: one escalation per run, not one per finding (§2).
+PDOCCOVER and PPRDSTATUS are the batched patterns: one escalation per run, not one per finding (§2).
 
 **Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
 
@@ -99,6 +100,7 @@ mcp__fused-memory__submit_task(
 | **PDOCCOVER** (registry ↔ chunk name drift) | _(High only: batched escalation, no Medium template)_ |
 | **PDCHECK** (`delivered_checks` dead path) — Medium `delivered-check-vacuous-absent-path` only | `Repair vacuous delivered_check <check_name> (PDCHECK on task <id>)` |
 | **PCITE** (capability-manifest cite) — Medium `fabricated-cite` | `Fix fabricated manifest cite (PCITE fabricated-cite <name> at <path>)` |
+| **PPRDSTATUS** (PRD status-prose drift) | _(High only: batched escalation via scripts/pprdstatus-escalate.py, no Medium template)_ |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
@@ -132,6 +134,15 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
 
 **PCITE note:** both kinds are Medium, so PCITE never escalates and never moves the exit code. `fabricated-cite` files a follow-up with the §2 template; take `<name>` and `<path>` from the finding's `FileLine` evidence (`symbol` and `path`; `line` locates the row), never from the summary. The fix is to correct the manifest row, or — when the symbol legitimately lives outside this repo (dark-factory, OCCT) — to add `<!-- pcite:allow — <reason> -->` on that line. `allow-missing-reason` files `Add pcite:allow reason (PCITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from the same evidence (its `symbol` is null).
+
+**PPRDSTATUS note:** every PPRDSTATUS finding is High (both kinds are listed in `references/modes.md` §4), and they are raised as **one batched escalation per run** by running the escalation script, never by calling `escalate_info` here:
+
+```bash
+"$REPO_ROOT/scripts/pprdstatus-escalate.py" --findings-file "$TMPFILE" \
+    --escalation-url http://127.0.0.1:8100/mcp
+```
+
+`$TMPFILE` is the captured stderr of this run's `--pattern PPRDSTATUS` invocation (`references/cli-invocation.md` §2), so route before that recipe's cleanup removes it. The script then raises exactly the findings the run artifact records, from the run's one task-corpus load. Pass a run of PPRDSTATUS alone: a mixed run that skipped PPRDSTATUS over an empty corpus still prints a findings array (`references/cli-invocation.md` §4.1), which the script cannot tell from a clean one. Outside the skill, `--reify-audit "$RELEASE_BIN" --project-root /home/leo/src/reify` in place of `--findings-file` makes the script run the detector itself. The script is the single source of that escalation's shape: subject `"audit"`, the finding count, the doc list and the sitting to run. So the skill must NOT also call `escalate_info` per finding, and must NOT rebuild the arguments by hand. It must NOT file follow-up tasks either: adjudication is a human docs-truth sitting (Leo's 2026-08-19 ruling), because each doc needs its own judgement — a still-active PRD whose prose needs correcting, a completed plan that needs a terminal stamp, or a dated snapshot that must not be edited. A filed escalation prints its record as one JSON object on stdout, `{"id", "status", "level", "finding_count"}`, and every PPRDSTATUS finding records `action_taken: "escalated"` with that object's `id`. An empty set prints nothing on stdout and files nothing. The script's exit codes are in its header: exit 0 means a findings array was read; exit 1 means the escalation was not filed; exit 125 means there was no parseable findings array, so nothing was checked or raised, whether the detector failed or refused an empty task corpus. Neither 1 nor 125 is a clean result.
 
 ---
 
