@@ -160,10 +160,10 @@ const COMPILE_RENDERER: &str = "error";
 ///   fixture. The exemplar transcribes the POSITION-FREE form, which is what
 ///   this module reconstructs and compares — the position is a property of the
 ///   fixture's layout, not of the diagnostic;
-/// - `reify-test-support`'s `parse_errors_as_diagnostics`
-///   (`crates/reify-test-support/src/helpers.rs:317-326`) forwards `e.message`
-///   verbatim with **no** prefix, so nothing at the library layer ever emits
-///   it either.
+/// - at the library layer the compiler's own `forward_parse_errors`
+///   (reify-compiler `compile_builder/pre_pass.rs`) prefixes a lowercase
+///   `parse error: `, not the CLI's capitalised form, so nothing at the
+///   library layer ever emits the exemplar's prefix either.
 ///
 /// A test in the `reify-compiler` crate cannot invoke the CLI, so the prefix is
 /// pinned here as a constant and reconstructed onto the live parser message;

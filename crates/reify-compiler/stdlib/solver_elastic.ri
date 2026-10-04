@@ -549,8 +549,9 @@ structure def ElasticResult {
     //   `curl` above, componentwise.
     //
     //   THIS IS THE DESIGNATED CROSSING (ruling task #6164). `rotation` is
-    //   where the radian enters the elastic-result algebra explicitly, and it
-    //   is the ONLY channel here that does. The mechanism is the same one used
+    //   where the radian enters the elastic-result algebra explicitly, and —
+    //   with its sibling `shear_angles` below — the ONLY channel here that
+    //   does. The mechanism is the same one used
     //   by `asin` and `orient_log`: the derivative algebra itself stays
     //   quotient-pure — ∇×u is Length/Length and therefore genuinely
     //   dimensionless — and ANGLE is introduced only by a named primitive that
@@ -574,6 +575,26 @@ structure def ElasticResult {
     //   matching the divergence/gradient/curl convention above — including
     //   `curl`'s note that Value::Undef must stay accepted here.
     param rotation : Field<Point3<Length>, Vector3<Angle>>
+    // `shear_angles` — the Voigt-order ENGINEERING shear strains
+    //   (γ_yz, γ_zx, γ_xy), stride-3, where γ_ij = ∂u_i/∂x_j + ∂u_j/∂x_i
+    //   = 2·ε_ij: the doubled symmetric off-diagonals of `gradient`, read as
+    //   angles (× η = 1 rad). Component i pairs with axis i, as for `curl` /
+    //   `rotation`.
+    //
+    //   A named crossing under the same law as `rotation` (see its comment
+    //   and docs/legibility/design-invariants.md INV-AD-1 / INV-AD-3).
+    //   `gradient` stays Tensor<2, 3, Real> and must NOT be retyped: a tensor
+    //   carries one quantity slot, so angle readings are extracted by named
+    //   channels like this one.
+    //
+    //   VALIDITY: an angle only in the small-deformation regime (‖∇u‖ ≪ 1),
+    //   as for `rotation`.
+    //
+    //   Tet/solid population: derived from the `gradient` Sampled Field at wrap
+    //   time, so it shares its Regular3D grid bit-identically with no extra BVH
+    //   pass. Shell population: Value::Undef (PRD §7, honest-absence) — and
+    //   Value::Undef must stay accepted here.
+    param shear_angles : Field<Point3<Length>, Vector3<Angle>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure

@@ -48,13 +48,20 @@ pub mod ptodo;
 pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
+pub mod pdoccover_baseline;
 pub mod pdcheck;
+pub mod pcite;
+pub mod pprdstatus;
+pub mod pattern_flag;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
 /// Not part of the detector API surface — the lanes are.
 pub(crate) mod task_rows;
 /// Crate-internal: shared text-scanning primitives for the structural
 /// detectors. Not part of the detector API surface — the detectors are.
 pub(crate) mod scan_util;
+/// Not a detector: public only so the live-serve test harnesses decode MCP
+/// response bodies with the same function both clients use.
+pub mod mcp_wire;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
@@ -222,27 +229,32 @@ pub enum Pattern {
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
-    /// directions, five finding categories carried as a stable summary prefix
+    /// directions, its finding categories carried as a stable summary prefix
     /// (PTODO's `kind`-as-prefix convention above), all at
     /// [`Severity::High`]:
     ///
     /// - **Omission lane** — a `*_NAMES` registry entry in
     ///   `crates/reify-compiler/src/units.rs` that is not documented in any
-    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
-    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
-    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
-    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
-    ///   that IS documented).
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not ledgered
+    ///   as a bare-name row → `undocumented-name:`. Ratchet-honesty sibling:
+    ///   `stale-allow-entry:` (an allow-marked name that IS documented).
     /// - **Fabrication lane** — a call-shaped name documented in a chunk that
-    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    ///   exists nowhere in the compiler/stdlib sources and is not ledgered as
+    ///   a `<chunk path>:<name>` row → `fabricated-name:`.
     /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
     ///   with a blank reason body confers NO exemption and is itself a finding.
+    /// - `stale-baseline-entry:` — a row of the committed ledger
+    ///   `crates/reify-audit/pdoccover-baseline.txt` that settles no live debt.
+    /// - `census-empty:` / `no-chunks:` — no registry name, or no readable
+    ///   chunk (a failed `git ls-files` is both): the run's ONLY finding, so a
+    ///   tree PDOCCOVER never read cannot report clean.
     ///
-    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
-    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
-    /// code is the High-severity count, so joining the no-`--pattern` default
-    /// sweep would drown every other detector. Structural: reads the working
-    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    /// **Opt-in only**, like PDIAG: the exit code is the High-severity count,
+    /// so a drifting ledger in the no-`--pattern` default sweep would move
+    /// every bare `reify-audit` exit code. The hard gate over the committed
+    /// ledger is `tests/infra/test_reify_audit_pdoccover.sh`. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch.
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,
@@ -273,6 +285,23 @@ pub enum Pattern {
     ///
     /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
     PDeliveredCheckPath,
+    /// PCITE — capability-manifest cite lane: a symbol a
+    /// `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence
+    /// that no tracked source outside `docs/` and markdown contains. Two kinds,
+    /// carried as a stable summary prefix (PTODO's `kind`-as-prefix convention
+    /// above): `fabricated-cite:` (one per manifest and name) and
+    /// `allow-missing-reason:` (a `pcite:allow` marker with no reason body,
+    /// which exempts nothing). Each carries one [`EvidenceRef::FileLine`]:
+    /// the manifest line, and the cited symbol for `fabricated-cite:`.
+    ///
+    /// **Medium only** — report-only and exit-neutral, so the lane cannot gate
+    /// even when selected. Opt-in, like PDIAG/PDOCCOVER/PDCHECK. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch. Grammar, oracle and their measured basis: `pcite.rs`.
+    PManifestCite,
+    /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
+    /// the canonical definition of its lanes, inputs and opt-in rationale.
+    PPrdStatus,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -282,6 +311,16 @@ pub enum Pattern {
 pub enum EvidenceRef {
     /// Filesystem path relative to `project_root`.
     File { path: String },
+    /// One line of a file relative to `project_root`, and the `symbol` on it
+    /// the finding is about — `None` when the finding is about the line
+    /// itself. A detector that reports several findings per file carries
+    /// each one's handle here, so a consumer (the `/audit` dedupe key, a
+    /// follow-up title) reads it rather than parsing it out of the summary.
+    FileLine {
+        path: String,
+        line: usize,
+        symbol: Option<String>,
+    },
     /// A git commit by SHA + first-line subject.
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.
@@ -1477,8 +1516,9 @@ pub struct DeclSuppression {
     pub has_cfg_test: bool,
     /// The reason text of a `// G-allow:` marker on the declaration, if any.
     /// A `Some` with non-blank content suppresses the finding; `Some("")` /
-    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh:150`
-    /// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` requires content).
+    /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh`'s
+    /// `G_ALLOW_RE` pattern, `//\s*G-allow:\s*(.+)`, where `(.+)` requires
+    /// content).
     pub g_allow_marker: Option<String>,
 }
 

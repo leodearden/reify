@@ -6,8 +6,16 @@ export { MultiViewport } from './MultiViewport';
 export type { MultiViewportProps, PaneConfig } from './MultiViewport';
 export { createScene } from './scene';
 export type { SceneContext } from './scene';
-export { createControls } from './controls';
+export { createControls, syncOrbitUpAxis } from './controls';
 export type { ControlsContext } from './controls';
+export {
+  fittedDistanceFor,
+  orbitFloorFor,
+  DEFAULT_FIT_PADDING,
+  ORBIT_MIN_DISTANCE_FRACTION_OF_FIT,
+  ORBIT_MIN_DISTANCE_FLOOR,
+  ORBIT_MAX_DISTANCE,
+} from './orbitDistance';
 export { createMeshManager } from './meshManager';
 export type { MeshManagerContext } from './meshManager';
 export { createSelection } from './selection';

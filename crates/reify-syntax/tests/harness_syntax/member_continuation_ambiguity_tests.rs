@@ -664,6 +664,23 @@ fn derived_body_leading_operator_continuation_is_rejected() {
     assert_one_member_continuation_error_at("derived body", source, "- 3mm", "-");
 }
 
+/// `sketch_block` (grammar.js:885-892) is the constrained-2d-sketch α body
+/// (task 5506), which met this guard on its back-merge — section (g)'s
+/// tripwire firing on real drift again. The body admits full `let` members, so
+/// it carries REPRO 1 verbatim.
+#[test]
+fn sketch_block_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  sketch p {\n",
+        "    let x = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("sketch body", source, "- 3mm", "-");
+}
+
 /// `joint_body`'s block arm repeats `relation_member` verbatim
 /// (grammar.js:799-802), the same item `relate_block` uses — so it carries the
 /// same join. Worth its own fixture rather than reasoning by analogy: the rule

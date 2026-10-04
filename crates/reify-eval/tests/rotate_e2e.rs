@@ -11,7 +11,9 @@
 use reify_core::Severity;
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+};
 
 // ── step-1 (RED) ─────────────────────────────────────────────────────────────
 
@@ -232,13 +234,63 @@ fn rotate_with_bare_radian_literal_is_rejected() {
         }
     "#;
 
-    let compiled = parse_and_compile(source);
+    // NOT `parse_and_compile` — that helper `assert!`s the compiled module has
+    // no Error-severity diagnostics, and this fixture's bare angle is a
+    // deliberate COMPILE-layer rejection since PRD 3 leaf ζ gave `rotate` an
+    // ANGLE slot. Under the panicking helper this test would die inside the
+    // helper before reaching a single assertion of its own, and the failure
+    // would read as "the fixture is wrong" rather than "the gate fired".
+    // Restoring `parse_and_compile` here re-breaks it.
+    let compiled = compile_source(source);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
+    // ── COMPILE layer (PRD 3 leaf ζ) ────────────────────────────────────────
+    //
+    // Observed INDEPENDENTLY of the eval assertions below, which is the whole
+    // point: PRD decision D3 says the compile slots COMPLEMENT the eval gates
+    // and never replace them, and two assertions over two different modules are
+    // what pins that rather than restating it in prose. Deleting either half
+    // would leave one layer's silence indistinguishable from the other layer
+    // doing the work.
+    //
+    // "got Real", not "got Int": `1.5707963267948966` types as a dimensionless
+    // Real, so this also exercises a different arm of `check_builtin_arg_types`
+    // than the bare-`45` integration test does.
+    //
+    // The hint's WORDING is pinned by the hard-coded `ANGLE_HINT` in
+    // `reify-compiler`'s `builtin_arg_signature_tests.rs`. Built from the shared
+    // const here, this assertion checks only that both layers agree.
+    let compile_rejection = compiled
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+        .unwrap_or_else(|| {
+            panic!(
+                "the compile layer must reject a bare rotate angle since leaf ζ; \
+                 got: {:?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        compile_rejection.severity,
+        Severity::Error,
+        "an Error is what makes `reify check` exit nonzero; got: {compile_rejection:?}"
+    );
+    assert_eq!(
+        compile_rejection.message,
+        format!(
+            "rotate: angle argument expects Angle, got Real; {}",
+            reify_core::units::ANGLE_MIGRATION_HINT
+        ),
+        "both layers must read from one const and say one thing"
+    );
+
+    // ── EVAL layer (PRD 3 leaf γ) ───────────────────────────────────────────
+    //
     // Assert the DIAGNOSTIC TEXT, not the op count: `rotate` has other ways to
     // drop an op (a degenerate axis, a missing arg), and any of them would
     // satisfy a bare "only 1 op reached the kernel".

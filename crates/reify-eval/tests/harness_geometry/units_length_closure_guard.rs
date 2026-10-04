@@ -718,23 +718,9 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
 
 /// Length-semantic sites OUTSIDE this guard's universe, recorded so a green
 /// sweep is never read as covering them.
-// TODO(#6089): the reify-stdlib `decompose_transform` consumers.
 // TODO(#5810): PRD 5's second universe of reify-stdlib `eval_builtin` names.
 // TODO(#7484): the five construction-datum constructors, in neither universe.
 const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
-    (
-        "reify_stdlib::geometry::affine_from_transform",
-        TaskCite(6089),
-        "discards the translation dimension into `_dim`; a pure VALUE-layer \
-         stdlib builtin that mints an AffineMap and never produces a \
-         `CompiledGeometryOp`, so this guard cannot reach it",
-    ),
-    (
-        "reify_stdlib::geometry::transform_inverse",
-        TaskCite(6089),
-        "propagates whatever dimension arrived through \
-         `make_dimensioned_component`; same value-layer reason",
-    ),
     (
         "reify-stdlib eval_builtin names: plane_*/axis_*/point3, prb_*, joints, \
          trajectory, FEA",

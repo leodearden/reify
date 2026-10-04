@@ -15,6 +15,8 @@
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
+| §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
+| §6 Camera-state coherence | `debugBridge.test.tsx` (set\_camera `applied` read-back), `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom), `viewport/controls.test.ts` + `viewport/fitCamera.test.ts` (floor policy), `viewport/selectionOrbitFloor.test.ts` (the shipped `fitToView` path). Live-only e2e, NOT verify-gated: the camera `VALUE_SCENARIOS` in `gui/test/visual/assertions.ts` (`npm run test:e2e`) |
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
@@ -26,7 +28,7 @@ separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
 ### Source of truth
 
 **`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
-authoritative list of advertised MCP tools (currently **66**).  Every `ToolDef`
+authoritative list of advertised MCP tools (currently **68**).  Every `ToolDef`
 entry there becomes visible to MCP clients via `tools/list`.
 
 Do **not** maintain a separate exhaustive list here — that list would itself be
@@ -39,7 +41,7 @@ a drift surface.  The invariant is enforced at test time (see below).
 | Liveness / engine | `health`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
 | Screenshots | `screenshot`, `screenshot_window`, `element_screenshot` |
 | DOM / style / layout / window | `dom_query`, `query_selector`, `query_selector_all`, `get_computed_style`, `get_layout_metrics`, `active_element`, `list_elements`, `get_window_state`, `ui_outline` |
-| Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
+| Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `scrub_range_input`, `edit_text_input`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
 | Viewport / selection | `viewport_state`, `select_entity`, `pick_entity_at`, `fit_to_view`, `set_camera`, `set_test_mode` |
 | Editor / LSP | `editor_content`, `open_file`, `completion_at`, `definition_at` |
 | Menus | `open_menu`, `menu_state` |
@@ -144,7 +146,7 @@ than a sweep, so a NEW entry point there that skips the choke-point is caught
 by neither. Closing that asymmetry belongs to `gui-state-sync`, which owns the
 seam; `docs/invariants.md` records the resulting split registry status.
 
-Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
+Both seams refresh the delta baseline via `crate::diff::compute_delta` (`docs/prds/v0_6/ai-native-editing.md` §6.2
 invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `GuiState` reaches the frontend through the caller's synchronous
 `query_frontend("apply_gui_state", …)` push, never `emit_delta`. There is no
@@ -308,7 +310,7 @@ selector constants kept deliberately separate for this reason:
 `gui/test/visual/railLengtheningGate.mjs`'s `PIN_RAIL_SPAN_CELL` docblock.
 
 **The no-stale-baseline invariant is NOT observable from this surface, by
-design.** §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
+design.** `docs/prds/v0_6/ai-native-editing.md` §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
 has the debug path DISCARD the `StateDelta` and push the full `GuiState`
 instead, so no tool here returns a delta or a changed-set, and none is
 missing: a client cannot ask whether the baseline advanced, and does not need
@@ -326,7 +328,7 @@ tool as this design decision, not as a gap to fill.
 
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
-`write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
+`write_on_engine_and_refresh_baseline` so `docs/prds/v0_6/ai-native-editing.md` §6.2 invariant (a) holds across the
 four seam-routed tools without a per-tool exception. The seam's
 `build_gui_state()` is a genuine REBUILD, not a cached snapshot: it calls
 `mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
@@ -345,7 +347,7 @@ material resolution, and then a frontend `engine.initFromState(…)` (store
 re-init + mesh rebuild), to write bytes already in memory. A cheap
 committed-buffer accessor would avoid both and would be safe — nothing changed,
 so nothing need be pushed — but it trades the four-tools-one-seam structure
-that §6.2 invariant (a) and task 5100's structural claim rest on, which is a
+that `docs/prds/v0_6/ai-native-editing.md` §6.2 invariant (a) and task 5100's structural claim rest on, which is a
 design change rather than an optimisation. The cost has **not** been measured
 on a real (non-mock) kernel; the number belongs here once it exists.
 
@@ -403,6 +405,18 @@ entry and therefore do **not** appear in `tools/list`.
   — each entry must actually exhibit its asymmetry, so a stale allowlist cannot
   silently mask real drift.
 
+`gui/src/__tests__/sidecarPromptParity.test.ts` (task 7049) guards the in-app
+assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
+same registry:
+- Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
+- Every `tool_defs()` tool is either advertised in the prompt's tool table
+  (`ADVERTISED_DEBUG_TOOL_NAMES`) or listed in `NOT_ADVERTISED_TO_SIDECAR`.
+- That allowlist is self-checked: no stale entries, no entries the table
+  advertises anyway, and no duplicates.
+- The five AI write tools are advertised in the table.
+- The prompt mentions exactly the tools its table describes, so its prose
+  cannot name a tool the assistant has no description of.
+
 ---
 
 ## §1 Tool-def → dispatch → handler wiring
@@ -452,6 +466,14 @@ A new frontend-mediated tool requires three coordinated changes:
      building each tool's params object out of its own `input_schema`
      property names (and, separately, out of just its `required` list) and
      feeding it through the extractor the handler calls.
+
+5. **Every new `ToolDef` — frontend-mediated or write tool — is classified for
+   the in-app assistant** (task 7049). If it is design-facing, name it in the
+   tool table in `gui/sidecar/src/system-prompt.ts`; otherwise list it in
+   `NOT_ADVERTISED_TO_SIDECAR` in
+   `gui/src/__tests__/sidecarPromptParity.test.ts`, under the group that says
+   why it is withheld. That guard reds on an unclassified tool, a stale
+   withheld entry, or a withheld tool the prompt mentions.
 
 ### Dispatch flow
 
@@ -761,6 +783,18 @@ input:
 | Native drag-and-drop (`dragstart`, `drop`) | ✗ not triggered | ✓ triggered |
 | OS / compositor hit-testing (`elementFromPoint`) | ✗ not involved | ✓ involved |
 | `focus` / `blur` side-effects (click on input) | partial — only if `focus()` called explicitly | ✓ automatic |
+| Native form-control value (`<input type=range\|text>`) | ✗ not reachable — an untrusted event runs no default action, and `drag` / `keyboard` never assign `.value` | ✓ the browser's default action moves it |
+
+A native form control's value is reached programmatically, by `scrub_range_input`
+(range) and `edit_text_input` (text).  They assign `.value` and dispatch only the
+events the control's own handlers bind, so they assert application logic, not the
+browser's thumb or caret behaviour.
+
+Coordinate-addressed tools (`click_at`, `hover`, `drag`) cannot be reliably aimed
+at a control clipped by an `overflow:hidden` ancestor: `query_selector` /
+`get_layout_metrics` bounds are the unclipped `getBoundingClientRect`, and
+`visible` ignores clipping (#7770).  Address such a control by CSS selector
+instead.
 
 **Practical implication:** tools that dispatch synthetic events can assert that
 JS-registered handlers fire (click handlers, React `onClick`, Three.js pointer
@@ -812,8 +846,52 @@ transparently — no caller change is needed.
 ### Query-only guarantee
 
 `pick_entity_at` is **query-only**: it does NOT mutate selection state, fire
-`onSelect`, or trigger any side-effects.  Its return value is the entity path string
-(or `null`) that the raycaster would resolve for the given screen coordinate.
+`onSelect`, or trigger any side-effects.  (`select_entity` covers the mutate case.)
+
+Its **return shape** is a structured envelope, not a bare string:
+
+| Outcome | Shape |
+|---------|-------|
+| Hit | `{hit: true, entityPath, point: {x, y, z}, distance}` |
+| Miss | `{hit: false}` |
+| Unknown viewport, or non-finite coords | `{error}` |
+
+`entityPath` carries what the pipeline above resolves as `intersections[0].object.name`;
+`point` and `distance` describe *where* along the ray the hit landed, which is what lets a
+caller tell a near face from a far one without a second round-trip.
+
+### The pick camera is the render camera
+
+The ray is cast through the **live** camera pose — the one a `set_camera` /
+`orbit_camera` / `zoom_camera` issued a moment earlier has already produced — not
+through whatever pose was last *rendered*.  That is an invariant the handler has to
+establish for itself, because three gives it away by default (#6496):
+
+- `Raycaster.setFromCamera` consumes **only** `camera.matrixWorld` and
+  `camera.projectionMatrixInverse`.  It never recomputes either.
+- `OrbitControls.update()` writes `camera.position` and then ends with
+  `object.lookAt(target)`.  `Object3D.lookAt()` calls `updateWorldMatrix(true, false)`
+  **before** it writes the new `quaternion`, and does not refresh `matrixWorld` again.
+  So after a camera move `matrixWorld` holds the **current** position with the
+  **previous** rotation (measured, esc-6965-3).
+- The usual refresher is `renderer.render()` — and `Viewport.tsx`'s loop is
+  **render-on-demand**: `controls.update()` runs every RAF frame, `renderer.render()`
+  only when `needsRender`.  So a render is *not* a reliable refresher, and the rotation
+  in `camera.matrixWorld` can lag the live pose.
+
+Left alone, the pick therefore casts a half-stale ray and silently resolves the wrong
+entity: the origin is correct, but the aim is the rotation of a camera the caller has
+already turned away from.  `pick_entity_at` closes this by calling
+`camera.updateMatrixWorld()` itself, immediately before `setFromCamera`.  The call is
+idempotent and cheap, and it keeps the tool query-only: it does **not** call
+`controls.update()`.
+
+**Consequence for callers:** the screenshot → `set_camera` → `pick_entity_at` →
+`select_entity` loop is sound with no intervening render and no settle step. Pixel
+coordinates remain valid against the most recent screenshot only.
+
+*Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray
+round-3 probe (2026-09-03).*
 
 ### Validation
 
@@ -827,3 +905,77 @@ real `PerspectiveCamera` at `(0, 0, 5)` looking toward the origin, places a
   `onSelect(null)`
 
 This pins the screen→NDC→raycast convention that `pick_entity_at` is built on top of.
+
+The live-pose invariant above is guarded separately by `debugCanvasInteraction.test.ts`,
+which moves the camera exactly as `OrbitControls.update()` plus the render-on-demand loop
+leave it: `position.set(...)` then `lookAt(0, 0, 0)` — the tail of `update()` — with **no**
+subsequent `updateMatrixWorld()` and no render. It then asserts the pick resolves the
+entity under the *new* pose. Because it asserts on the resolved entity rather than on the
+presence of a call, it still fails if a future refactor drops the sync.
+
+---
+
+## §6 Camera-state coherence
+
+Three camera defects shared a single signature: the stale pick camera (#6496, §5), the
+stale up-axis orbit frame (#6497, point 2 below) and the fixed 0.5 m orbit distance floor
+(repaired under #6965, point 3 below). In each, **the command reported what was requested
+while the live OrbitControls-governed state disagreed.** The contract that replaces it is
+one rule, stated once:
+
+> **Every camera command reports LIVE state.** A caller can trust the response without a
+> follow-up `viewport_state`.
+
+Concretely:
+
+1. **`set_camera`'s `applied` is a read-back, not an echo.** It is taken from
+   `camera.position`, `controls.target`, `camera.up` and `camera.zoom` *after*
+   `controls.update()` has run, so a pose OrbitControls relocated — by distance clamping,
+   by target clamping — is reported as relocated. Comparing a request against `applied` is
+   how a caller detects a clamp at all. These are the same four field reads, from the same
+   sources, as `Viewport.tsx`'s `snapshotCamera()`, so the reported pose and the persisted
+   viewport-store pose agree by construction. One caveat: `applied.position` round-trips
+   through spherical coordinates inside `update()`, so it can differ from an unclamped
+   request by ~1 ulp — compare with a tolerance, not for equality. `applied.target` does
+   not round-trip and is exact.
+
+2. **`set_camera {up}` re-derives the orbit frame.** three 0.183.2 computes OrbitControls'
+   orbit-frame quaternion pair **once, in the constructor** (`OrbitControls.js:406`), from
+   `object.up`; neither `update()` nor `reset()` re-derives it and no public API does. So
+   setting `camera.up` alone changes the camera's own orientation basis while leaving
+   orbiting about the *previous* axis — `camera.up` reads the new value and the next
+   `orbit_camera` contradicts it. `set_camera` therefore re-derives the pair from the
+   current `camera.up` before calling `update()` (after would take effect only on the
+   following command).
+
+3. **The orbit distance floor is model-derived, not a fixed absolute.** It is
+   `orbitFloorFor(d)`: a fixed fraction, `ORBIT_MIN_DISTANCE_FRACTION_OF_FIT`, of the
+   distance `d` at which `fittedDistanceFor` places a framed subject.
+   `gui/src/viewport/orbitDistance.ts` is the single home of that policy and its
+   constants. Because the floor is stated against the fitted distance, any model can be
+   dollied in by the same factor from its fitted pose, at every scale.
+
+   `fitCameraToBox` writes the floor on **every** framing: `fit_to_view`, the viewport's
+   one-shot auto-fit when the first geometry arrives, and the GUI's fly-to-entity. Before
+   anything is framed, `createControls` seeds the floor by applying the same policy to the
+   startup orbit distance. So a close-in `set_camera` on an **empty** scene is still
+   clamped until something is framed, and `applied` (point 1) reports that clamp.
+
+   The previous fixed 0.5 m floor was an absolute distance in a workspace whose parts span
+   four orders of magnitude: it silently snapped a fitted 75 mm part back out to ~6× its
+   framing distance, and the subsequent `zoom_camera` reported `distanceDelta: 0` — a
+   saturated request indistinguishable from a satisfied one.
+
+   Only the NEAR limit is model-derived. The far limit, `ORBIT_MAX_DISTANCE`, is
+   deliberately still a fixed absolute, so zoom-*out* does not track the model. It binds
+   only when a model's own fitted distance exceeds `ORBIT_MAX_DISTANCE`, where
+   `_clampDistance` would pull the framing itself inward and `fit_to_view` would
+   under-frame. Reify parts are four orders of magnitude below that, so the cliff is out
+   of reach rather than absent; a caller working at that scale should expect the same
+   saturation signature at the far end.
+
+Per §0's rule, this section deliberately does **not** enumerate per-tool return shapes;
+`tool_defs()` stays authoritative for those, and each tool's own `description` carries them.
+
+*Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray round-3
+probe (2026-09-03).*

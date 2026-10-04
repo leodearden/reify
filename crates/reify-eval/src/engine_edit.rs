@@ -4356,9 +4356,16 @@ impl Engine {
                         && let Some(ref expr) = node.default_expr
                     {
                         let start = Instant::now();
+                        // Determinacy view now matches edit_param's wave2
+                        // twin (#7114). Containment stays out of reach here,
+                        // as at every edit_source eval site: cell_eval_ctx's
+                        // `containment: self` is E0502 while
+                        // `pending_warm_seeds` (step 4c) holds `&mut
+                        // self.warm_pool` until the (14b) drain below.
                         let val = reify_expr::eval_expr(
                             expr,
                             &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_determinacy(&new_snapshot.values)
                                 .with_runtime_diagnostics(&runtime_sink),
                         );
 
@@ -6286,10 +6293,6 @@ mod tests {
         use crate::warm_pool::WarmStatePool;
         use reify_ir::OpaqueState;
         use reify_test_support::warn_capturing_subscriber;
-
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
 
         let (subscriber, capture) = warn_capturing_subscriber();
 

@@ -20,15 +20,15 @@
 //! decision D9 — so they live here, as one table with one edit site, exactly as
 //! [`unit_symbol_to_si`] does rather than as two independently-diverging copies.
 //!
-//! [`ANGLE_MIGRATION_HINT`] is the one whose two layers are KNOWINGLY out of
-//! step, and that is a schedule, not an oversight. The eval layer reads it
-//! (via `reify_ir::arg_acceptance::angle_spec`) from PRD
-//! `docs/prds/v0_6/angle-units-surface-convergence.md` leaf β onwards; the
-//! ANGLE slots of `builtin_arg_slots` deliberately still carry
-//! `migration_hint: None`, because reconciling the compile-slot messages onto
-//! the hint-carrying template is that PRD's leaf ζ (task 5782). The const
-//! lives here from β so that ζ is a one-line read rather than a second
-//! hard-coded copy to keep in sync.
+//! [`ANGLE_MIGRATION_HINT`] reached its two layers a PRD leaf apart, which is
+//! why it is worth naming here. The eval layer read it (via
+//! `reify_ir::arg_acceptance::angle_spec`) from PRD
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` leaf β onwards, while
+//! the ANGLE slots of `builtin_arg_slots` still rendered the un-hinted form;
+//! leaf ζ (task 5782) brought those slots onto the hint-carrying template, so
+//! all three consts are now read by BOTH layers. Hoisting the const here at β
+//! is what made ζ a one-line read rather than a second hard-coded copy to keep
+//! in sync — the reason to hoist a const before its second reader exists.
 //!
 //! ## Why a HOIST and not a copy
 //!
@@ -95,11 +95,12 @@ pub const DENSITY_MIGRATION_HINT: &str =
 /// `arc`'s `start_angle` / `end_angle`, `draft`'s angle, `circular_pattern`'s
 /// angle, and the four directional selectors' `tol`.
 ///
-/// Unlike its two siblings this is, for now, read by the EVAL layer ONLY: the
-/// ANGLE slots in `reify-compiler::builtin_signatures` still render the
-/// un-hinted form until PRD `angle-units-surface-convergence.md` leaf ζ
-/// (task 5782) reconciles them. See the module doc for why that gap is
-/// scheduled rather than accidental.
+/// Read by BOTH layers, like its two siblings, since PRD
+/// `angle-units-surface-convergence.md` leaf ζ (task 5782) routed the ANGLE
+/// slots of `reify-compiler::builtin_signatures` through that crate's
+/// `angle_arg` constructor. Before ζ it was an eval-only read and the compile
+/// layer rendered the un-hinted form; see the module doc for why the two
+/// halves landed a leaf apart.
 pub const ANGLE_MIGRATION_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
 
 /// The built-in unit symbols, as DATA rather than control flow — one physical

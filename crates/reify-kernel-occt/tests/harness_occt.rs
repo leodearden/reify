@@ -32,8 +32,8 @@
 //! other side of the seam and why the consumers were the side that moved.
 //!
 //! cfg retention: every module here carries a crate-level `#![cfg(has_occt)]` unless named
-//! otherwise in this paragraph; 2 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
-//! (conformance_integration, curve_curvature_integration), and 1 carries
+//! otherwise in this paragraph; 3 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
+//! (boolean_parallel_determinism, conformance_integration, curve_curvature_integration), and 1 carries
 //! `#![cfg(all(has_occt, feature = "mesh-morph"))]` (projector_impl). These inner attributes
 //! are retained VERBATIM on the moved submodules rather than hoisted to an outer `#[cfg]` on
 //! the `mod` declarations below — an inner `#![cfg(...)]` on a `#[path]`-loaded submodule
@@ -50,6 +50,10 @@
 mod apply_transform_integration;
 #[path = "harness_occt/boolean_op_history_integration.rs"]
 mod boolean_op_history_integration;
+#[path = "harness_occt/boolean_parallel_determinism.rs"]
+mod boolean_parallel_determinism;
+#[path = "harness_occt/boolean_single_build_guard.rs"]
+mod boolean_single_build_guard;
 #[path = "harness_occt/conformance_integration.rs"]
 mod conformance_integration;
 #[path = "harness_occt/contains.rs"]
@@ -60,6 +64,8 @@ mod curve_constructors_integration;
 mod curve_curvature_integration;
 #[path = "harness_occt/dispatcher_integration.rs"]
 mod dispatcher_integration;
+#[path = "harness_occt/draft_integration.rs"]
+mod draft_integration;
 #[path = "harness_occt/empty_shape_consumer_guard_integration.rs"]
 mod empty_shape_consumer_guard_integration;
 #[path = "harness_occt/extrude_integration.rs"]
@@ -86,6 +92,8 @@ mod max_deviation_query;
 mod mesh_deviation;
 #[path = "harness_occt/nurbs_surface_integration.rs"]
 mod nurbs_surface_integration;
+#[path = "harness_occt/offset_solid_integration.rs"]
+mod offset_solid_integration;
 #[path = "harness_occt/offset_surface_integration.rs"]
 mod offset_surface_integration;
 #[path = "harness_occt/pattern_differential_integration.rs"]

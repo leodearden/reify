@@ -116,13 +116,18 @@ tasks:
       The reify byte-identity ruling holds byte-identity to be WRONG for iterative
       methods and right for closed-form; the claim here is narrower and legitimate
       - same faer calls in the same order, which is the identical argument the in-file
-      comment already makes for the SparseStiffnessOp refactor.'
+      comment already makes for the SparseStiffnessOp refactor. AMENDED 2026-09-29
+      (Leo, esc-7260-4): scoped to B = cI. For B != cI pencils (buckling -K_g, modal
+      M), the sigma=0 Lanczos results these goldens pin are wrong, because Euclidean
+      Lanczos runs on a non-Euclidean-self-adjoint operator (PRD section 6 amendment).
+      This binding constrains this PRD''s own leaves. It does not constrain #7602,
+      which may move those goldens.'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: '"the goldens did not move" is proven by those suites staying green
         on the merge gate, not by a grep. Bound to boundary test BT1 (sigma=0 identity,
-        both implementations).'
+        both implementations; B = cI pencils only).'
 - label: γ
   task_id: 7260
   title: 'shift-invert γ: buckling kernel sigma input + trampoline wiring; retire

@@ -260,9 +260,9 @@ fn an_objective_reading_only_a_cyclic_cell_stays_fallback_component_zero() {
 // a component only through the objective's unions carries a type nothing
 // routes on, and so does an enum auto probed against a variant literal that
 // lives in ANOTHER component. `SolverRegistry::solver_for` routes on
-// `SubProblem.domain`, so either gap is a mis-ROUTING: latent while
-// `production()` leaves the `Logical` and `CrossDomain` slots `None`, live once
-// PRD2 γ wires them.
+// `SubProblem.domain`, so either gap is a mis-ROUTING in `production()`: a
+// `Dimensional` verdict hands a non-numeric auto to `DimensionalSolver`, and a
+// `Logical` one hands an auto CP-SAT cannot enumerate to `CpSatSolver`.
 // ---------------------------------------------------------------------------
 
 fn typed_auto(member: &str, param_type: Type) -> AutoParam {

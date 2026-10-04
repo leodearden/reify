@@ -138,6 +138,15 @@ use reify_ir::geometry::{
     debug_assert_query_many_invariant as debug_assert_query_many_invariant_mod,
 };
 
+// ── indeterminate (flat form) ────────────────────────────────────────────────
+use reify_ir::{IndeterminateReason, StructuralReason, TransientReason};
+
+// ── indeterminate (module-path form) ─────────────────────────────────────────
+use reify_ir::indeterminate::{
+    IndeterminateReason as IndeterminateReasonMod, StructuralReason as StructuralReasonMod,
+    TransientReason as TransientReasonMod,
+};
+
 // ── kernel_validation (flat form) ────────────────────────────────────────────
 use reify_ir::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
@@ -563,6 +572,16 @@ fn geometry_types_in_scope() {
     // fn item just needs to resolve as a symbol.
     let _ = debug_assert_query_many_invariant::<GeometryQuery, GeometryOp>;
     let _ = debug_assert_query_many_invariant_mod::<GeometryQueryMod, GeometryOpMod>;
+}
+
+#[test]
+fn indeterminate_types_in_scope() {
+    let _: fn() -> Option<IndeterminateReason> = || None;
+    let _: fn() -> Option<TransientReason> = || None;
+    let _: fn() -> Option<StructuralReason> = || None;
+    let _: fn() -> Option<IndeterminateReasonMod> = || None;
+    let _: fn() -> Option<TransientReasonMod> = || None;
+    let _: fn() -> Option<StructuralReasonMod> = || None;
 }
 
 #[test]

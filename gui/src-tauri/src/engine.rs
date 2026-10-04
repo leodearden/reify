@@ -12,7 +12,7 @@ use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
     unenforced_representation_bound_diagnostic,
 };
-use reify_eval::{CancellationHandle, CheckResult, Engine};
+use reify_eval::{CancellationHandle, CheckResult, ConstraintUpgrade, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
@@ -563,9 +563,9 @@ pub struct EngineSession {
     /// `commit_state` cycle, or before any reload has been attempted).
     ///
     /// Set by `record_reload_error` at the `commands::update_source_impl`
-    /// chokepoint — AFTER `with_engine_lock` has caught and converted any
-    /// `check()` panic to `Err` — so recording is panic-safe.  Covers both
-    /// the compile-error path and the check-panic path uniformly.
+    /// chokepoint: inside the failing reload's own lock for a compile error,
+    /// and in a second acquisition — after `with_engine_lock` has converted it
+    /// to `Err` — for a `check()` panic.  Covers both paths uniformly.
     ///
     /// Cleared in `commit_state` (alongside `compile_failure`) so any
     /// successful reeval auto-resets staleness.
@@ -589,12 +589,14 @@ pub struct EngineSession {
     /// re-source per-case FEA channels without re-tessellating — critical for
     /// keeping case-switch latency sub-frame even with large OCCT meshes.
     tess_mesh_cache: Option<Vec<MeshData>>,
-    /// Cache of tessellation diagnostics from the last `tessellate_snapshot`.
+    /// Diagnostics of the last `tessellate_snapshot`, as it emitted them —
+    /// before any constraint re-check replaced a claim it supersedes.
     ///
-    /// Populated alongside `tess_mesh_cache` in `build_gui_state`.  Used by
-    /// `set_active_fea_case` so the returned GuiState accurately reflects the
-    /// last tessellation result (no re-tessellation → same diagnostics).
-    tess_diag_cache: Vec<DiagnosticInfo>,
+    /// Populated alongside `tess_mesh_cache` in `build_gui_state`. Both
+    /// GuiState-producing paths derive their `tessellation_diagnostics` from it
+    /// with their OWN re-check's upgrades (`Self::tessellation_diagnostics`), so
+    /// a constraint's status and the warnings beside it come from one re-check.
+    tess_diag_cache: Vec<Diagnostic>,
     /// Task #5338: last delta-resolved value per geometry-derived panel cell —
     /// the VALUE-side twin of the mesh-side retention the frontend already does.
     ///
@@ -1351,25 +1353,24 @@ impl EngineSession {
         //
         // Prune safety is unaffected: `sync_demand` has already dropped every
         // hidden entity's entries, so only demanded entities can be replayed here.
-        {
-            let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
-                self.core.engine(),
-                &mut values,
-                &mut constraints,
-                &ValueMap::new(),
-                &[],
-                cache,
-            );
-        }
+        let upgrades = surface_geometry_derived_cells(
+            self.core.engine(),
+            self.core.compiled().unwrap(),
+            &mut values,
+            &mut constraints,
+            &ValueMap::new(),
+            &[],
+            &mut self.geometry_derived_cache,
+        );
+
+        // The cached tessellation stream (no re-tessellation), with this pass's
+        // own upgrades replacing the Indeterminate claims they supersede.
+        let tessellation_diagnostics = self.tessellation_diagnostics(&upgrades);
 
         // Build files and compile diagnostics via shared helpers so both
         // `build_gui_state` and `set_active_fea_case` stay in sync.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
-
-        // Tessellation diagnostics from the cache (no re-tessellation → same diags).
-        let tessellation_diagnostics = self.tess_diag_cache.clone();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Passive selective-demand measurement (task 4532): mirror build_gui_state
         // so the case-switch path carries the same observational record. Reading
@@ -2791,8 +2792,11 @@ impl EngineSession {
     /// opposite responses from the caller. The categories, in the order they
     /// are checked:
     ///
-    /// 1. **Malformed cell id** — no `.` at all, so it never denoted a cell.
-    ///    Propagated verbatim from `parse_cell_id`.
+    /// 1. **Malformed OR ambiguous cell id** — it never denoted exactly one
+    ///    cell: either no `.` at all, or a member half that still contains a
+    ///    `.` and so admits more than one reading (an instance path, a port
+    ///    composite member, a dotted key). Propagated verbatim from
+    ///    `parse_cell_id`.
     /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
     ///    in `compiled.templates[].value_cells`. Checked through the SHARED
     ///    [`Self::require_known_cell`] rather than a second copy of the
@@ -2992,7 +2996,9 @@ impl EngineSession {
     /// observed demand therefore cannot perturb `EvalResult` / `last_eval_set`
     /// (locked by the engine test
     /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
-    /// Unparseable entries are skipped with a warning, never a panic. See
+    /// Unparseable entries are skipped, never a panic: realization and
+    /// constraint keys warn, while unaddressable cell ids — a standing
+    /// population, not an event (see the loop) — log at debug. See
     /// `docs/prds/v0_6/selective-demand.md` §G6.
     pub fn sync_observed_demand(
         &mut self,
@@ -3014,13 +3020,18 @@ impl EngineSession {
                 ),
             }
         }
+        // An unaddressable displayed cell is a standing state, not an anomaly:
+        // `build_values` displays every template cell verbatim, including auto
+        // sub-arg cells minted under a dotted entity (`"E.bolt.length"`), and
+        // syncs fire on every state change. So it is skipped at debug — never
+        // mis-split into a bogus demand root — until #7717 makes it addressable.
         for cell in displayed_cells {
             match parse_cell_id(cell) {
                 Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
-                Err(e) => warn!(
+                Err(e) => tracing::debug!(
                     cell = %cell,
                     error = %e,
-                    "sync_observed_demand: skipping unparseable cell"
+                    "sync_observed_demand: skipping unaddressable cell"
                 ),
             }
         }
@@ -3298,10 +3309,10 @@ impl EngineSession {
 
     /// Record a hot-reload failure message as the authoritative staleness signal.
     ///
-    /// Called from `commands::update_source_impl` AFTER `with_engine_lock` has
-    /// caught and converted any `check()` panic to `Err` — so this call is always
-    /// panic-safe.  Covers both the compile-error path and the check-panic path
-    /// uniformly: any `Err` return from `update_source` triggers this recording.
+    /// Called from `commands::update_source_impl` for any `Err` from
+    /// `update_source`: inside the same lock as the failing reload, or — for a
+    /// `check()` panic, which `with_engine_lock` converts to `Err` — in a second
+    /// acquisition. Covers the compile-error and check-panic paths uniformly.
     ///
     /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
     /// the staleness flag.
@@ -3558,6 +3569,33 @@ impl EngineSession {
         Some((k.as_str(), v.as_str()))
     }
 
+    /// `tess_diag_cache` as the frontend receives it: each Indeterminate claim
+    /// that `upgrades` supersede replaced by the upgrade's own diagnostics, then
+    /// mapped to `DiagnosticInfo`.
+    ///
+    /// When source is unavailable (e.g. break_*_for_test helpers), the entries
+    /// are still produced but tagged code = "unresolved-source" so frontends can
+    /// distinguish reliable from unreliable positions.
+    fn tessellation_diagnostics(&self, upgrades: &[ConstraintUpgrade]) -> Vec<DiagnosticInfo> {
+        let mut diagnostics = self.tess_diag_cache.clone();
+        reify_eval::replace_superseded_constraint_diagnostics(&mut diagnostics, upgrades);
+        if diagnostics.is_empty() {
+            return Vec::new();
+        }
+        let resolved = self.resolve_source();
+        let unresolved = resolved.is_none();
+        let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
+        let mut diags = diagnostics_to_info(&diagnostics, file_path, source);
+        if unresolved {
+            for d in &mut diags {
+                if d.code.is_none() {
+                    d.code = Some("unresolved-source".to_owned());
+                }
+            }
+        }
+        diags
+    }
+
     /// Look up source location for either a template name (e.g., `"Bracket"`) or a
     /// cell ID (e.g., `"Bracket.width"`).
     ///
@@ -3710,7 +3748,10 @@ impl EngineSession {
     /// Ordering: build-time errors are appended LAST, after the static
     /// diagnostics and the live-edit / hot-reload synthetics, so existing
     /// positional expectations over the leading entries are unaffected.
-    fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
+    fn build_compile_diagnostics(
+        &self,
+        tessellation_diagnostics: &[DiagnosticInfo],
+    ) -> Vec<DiagnosticInfo> {
         let mut compile_diagnostics = self.get_diagnostics();
         if let Some(f) = &self.compile_failure
             && f.kind == CompileFailureKind::LiveEdit
@@ -3738,17 +3779,17 @@ impl EngineSession {
         }
 
         // Fold in build/realization-time geometry ERRORS (see the doc comment
-        // above). `tess_diag_cache` is refreshed by `build_gui_state` immediately
-        // after `tessellate_snapshot` and BEFORE this helper is called, and is
-        // reset to empty on the no-tessellation branch — so it always reflects
-        // the current snapshot and cannot carry stale errors forward.
+        // above). Both callers derive `tessellation_diagnostics` from
+        // `tess_diag_cache`, which `build_gui_state` refreshes immediately after
+        // `tessellate_snapshot` and resets to empty on the no-tessellation branch
+        // — so it always reflects the current snapshot and cannot carry stale
+        // errors forward.
         //
         // The identity guard is belt-and-braces: the two sources are disjoint by
         // construction (static compile vs. build pass), so it is a no-op today.
         // It exists so that if a diagnostic ever becomes reachable from both, the
         // designer sees it once rather than twice.
-        for diag in self
-            .tess_diag_cache
+        for diag in tessellation_diagnostics
             .iter()
             .filter(|d| d.severity == "Error")
         {
@@ -3974,48 +4015,29 @@ impl EngineSession {
         // retains the last delta-resolved value per cell and re-surfaces it on such
         // a gap. Disjoint-field borrow: the cache and the engine are distinct
         // `EngineSession` fields, so split the borrow rather than cloning.
-        if let Some(result) = &tess_result {
-            let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
+        let upgrades = match &tess_result {
+            Some(result) => surface_geometry_derived_cells(
                 self.core.engine(),
+                self.core.compiled().unwrap(),
                 &mut values,
                 &mut constraints,
                 &result.values,
                 &result.meshes,
-                cache,
-            );
-        }
+                &mut self.geometry_derived_cache,
+            ),
+            None => Vec::new(),
+        };
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
-                // log entries so headless/CI runs still surface these via tracing.
-                let tess_diags = if result.diagnostics.is_empty() {
-                    Vec::new()
-                } else {
-                    // Log each diagnostic before mapping so stderr/tracing output
-                    // is available even when the GUI channel is not subscribed.
-                    for diag in &result.diagnostics {
-                        warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
-                    }
-                    // Resolve source for span lookup. When source is unavailable (e.g.
-                    // break_*_for_test helpers), we still produce DiagnosticInfo but tag
-                    // code = "unresolved-source" so frontends can distinguish reliable from
-                    // unreliable positions. Borrows from `self` — no allocation on the
-                    // happy path; the "<unknown>"/"" fallback is zero-length static strs.
-                    let resolved = self.resolve_source();
-                    let unresolved = resolved.is_none();
-                    let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
-                    let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
-                    if unresolved {
-                        for d in &mut diags {
-                            if d.code.is_none() {
-                                d.code = Some("unresolved-source".to_owned());
-                            }
-                        }
-                    }
-                    diags
-                };
+                // log entries so headless/CI runs still surface these via tracing,
+                // even when the GUI channel is not subscribed.
+                self.tess_diag_cache = result.diagnostics;
+                let tess_diags = self.tessellation_diagnostics(&upgrades);
+                for diag in &tess_diags {
+                    warn!(severity = diag.severity.as_str(), message = %diag.message, "tessellation diagnostic");
+                }
                 // T6 (task 3904) complete: `default_visible` is surfaced to the
                 // GUI via the entity-tree realization nodes — NOT through MeshData.
                 // `get_entity_tree` → `build_template_node` computes
@@ -4183,7 +4205,6 @@ impl EngineSession {
                     // serve geometry from the wrong model.
                     self.tess_mesh_cache = None;
                 }
-                self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
                 // returns early when no ElasticResult is found (negligible
@@ -4230,7 +4251,7 @@ impl EngineSession {
         // synthesis logic. Both helpers are also called from `set_active_fea_case`
         // to keep the two paths consistent.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Extract tensegrity wire and surface descriptors from value cells.
         // Single scoped borrow covers both — shared precondition made explicit.
@@ -4350,7 +4371,7 @@ impl EngineSession {
     ///
     /// Saved by MOVE, not by clone — `build_gui_state` ASSIGNS both fields
     /// unconditionally on every path (the FEA-gated `Some(..)`/`None` branch and
-    /// the no-tessellation branch) and never reads them, so handing the inner call
+    /// the no-tessellation branch) before any read of them, so handing the inner call
     /// an empty pair costs nothing and the restore is free even for large OCCT
     /// meshes.
     pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
@@ -4915,21 +4936,19 @@ impl EngineSession {
     /// caller's cue to emit a structured error rather than to guess (PRD §6.1,
     /// §7 B7). It covers every non-resolving case:
     ///
-    /// * the cell id is malformed (no `.`),
+    /// * the cell id does not name exactly one `(entity, member)` pair — no
+    ///   `.` at all, or a second `.` as in an INSTANCE path
+    ///   (`Parent.childinst.member`),
     /// * no module is loaded, so there is no parse to read,
     /// * the entity is neither a `structure def` nor an `occurrence def` in the
     ///   loaded module,
     /// * the member is not a param, has no default, or is declared more than
     ///   once (see [`reify_ast::find_param_default_span`] for the refusal rule),
-    /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
     /// * the member names a param inside a PORT body.
     ///
-    /// The instance-path case is worth stating outright: `parse_cell_id` splits
-    /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
-    /// `"childinst.height"`, which matches no `ParamDecl.name` because a member
-    /// name never contains a `.`. That `None` is correct rather than a gap — a
-    /// shared structure's default literal is not one instance's value, and
-    /// rewriting it would change every instance.
+    /// The instance-path case is worth stating outright: its `None` is correct
+    /// rather than a gap — a shared structure's default literal is not one
+    /// instance's value, and rewriting it would change every instance.
     ///
     /// The port-body case is likewise correct rather than a gap. The compiler
     /// registers a port member under the COMPOSITE name
@@ -5290,18 +5309,17 @@ pub(crate) fn build_constraints(
 ///
 /// Constraint re-check: `tessellate_snapshot`'s own `result.constraint_results`
 /// were checked BEFORE `run_post_processes` patched the mass-property cells, so a
-/// constraint over such a cell still reads Indeterminate there. Re-check the
-/// active constraints against the now-complete `result.values` and adopt any
-/// verdict that resolved from Indeterminate → Satisfied / Violated. This mirrors
-/// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
-/// previously Satisfied/Violated constraint cannot regress because the re-check
-/// only ADDS now-resolved geometry cells, so only Indeterminate entries are
-/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
-/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
-/// constraints that reference a cell surfaced this pass — would need a subset-checking
-/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
-/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
-/// inherently required on every warm edit regardless.
+/// constraint over such a cell still reads Indeterminate there. Only the
+/// Indeterminate candidates are re-dispatched against the now-complete
+/// `result.values`, via `Engine::upgrade_indeterminate_verdicts`, and each verdict
+/// that became Satisfied / Violated is adopted; that API also withholds a
+/// geometric Conforms, whose verdict only the measure pass may give (C1). This
+/// mirrors the post-geometry constraint re-check in `Engine::build`
+/// (engine_build.rs): a Satisfied/Violated constraint is never a candidate, so it
+/// cannot regress. Skipped entirely when this pass surfaced no cell, or when
+/// nothing is Indeterminate (the common cases). Returns the adopted upgrades
+/// (empty when skipped) so the caller can replace the Indeterminate diagnostics
+/// they supersede.
 ///
 /// ## Task #5338: the delta contract
 ///
@@ -5357,18 +5375,19 @@ pub(crate) fn build_constraints(
 /// construction there — without fabricating a result struct.
 fn surface_geometry_derived_cells(
     engine: &Engine,
+    module: &CompiledModule,
     values: &mut [ValueData],
     constraints: &mut [ConstraintData],
     delta_values: &ValueMap,
     delta_meshes: &[reify_eval::MeshSurface],
     cache: &mut HashMap<ValueCellId, Value>,
-) {
+) -> Vec<ConstraintUpgrade> {
     // Track whether this pass surfaced any cell from Undef → Determined. If it
     // did not, `result.values` resolved nothing the kernel-less panel was
     // missing, so the constraint re-check below cannot flip any verdict (every
     // constraint input is a panel cell, and an Indeterminate constraint only
     // resolves once one of its Undef inputs is surfaced here) — skip it and
-    // spare the full active-constraint dispatch on every warm rebuild.
+    // spare the re-check dispatch on every warm rebuild.
     let mut surfaced_any = false;
     // Task #5338: `(id, value)` for each cell this pass served from the retention
     // cache because the delta omitted it. `delta_values` still reads `Undef` for
@@ -5518,28 +5537,18 @@ fn surface_geometry_derived_cells(
     // constraint permanently reading Indeterminate beside the value that satisfies
     // it. It costs, per re-render, one `im::HashMap` clone (O(1), structural
     // sharing) plus one insert per cache-sourced cell, and one
-    // `check_constraints_with_values` — a kernel-LESS `values.clone()` +
-    // active-constraint scan + dispatch over the active constraints
+    // `upgrade_indeterminate_verdicts` — a kernel-LESS `values.clone()` +
+    // active-constraint scan + dispatch over the Indeterminate candidates only
     // (reify-eval `engine_constraints.rs`). No kernel query, so the P0 kernel-less
-    // edit-latency gate is untouched; the load is proportional to the constraint
-    // graph, not to mesh size.
-    //
-    // Narrowing it further needs something this scope does not have. Skipping the
-    // dispatch when only cache-sourced cells were surfaced is NOT sound on its own
-    // (the verdicts would have to come from somewhere, and dropping them is the
-    // incoherence above); memoizing verdicts on the merged value set needs an
-    // equality/fingerprint over the whole `ValueMap` AND an argument that
-    // `active_constraint_ids` cannot move while those values hold still — active
-    // constraints are derived from the engine's own snapshot, not from the values
-    // passed in, so that argument is not available here. A per-constraint subset
-    // re-check API in reify-eval would close it properly; out of this task's locked
-    // scope.
+    // edit-latency gate is untouched; the load is proportional to the candidate
+    // subset, not to mesh size.
     //
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
     //
-    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // Both Indeterminate comparisons (this guard and the candidate filter in
+    // `recheck_indeterminate_constraints`) compare through `satisfaction_token`:
     // a bare literal out of step with it would disable this entire re-check with
     // no compile error, surfacing only as a PD constraint stuck Indeterminate.
     if surfaced_any
@@ -5557,26 +5566,48 @@ fn surface_geometry_derived_cells(
             Some(merged)
         };
         let recheck_values = merged.as_ref().unwrap_or(delta_values);
-
-        if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
-            for c in constraints.iter_mut() {
-                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
-                    continue;
-                }
-                let Some(new_sat) = recheck
-                    .iter()
-                    .find(|e| e.id.to_string() == c.node_id)
-                    .map(|e| e.satisfaction)
-                else {
-                    continue;
-                };
-                if new_sat == Satisfaction::Indeterminate {
-                    continue;
-                }
-                c.status = satisfaction_token(new_sat).to_string();
-            }
-        }
+        return recheck_indeterminate_constraints(engine, module, constraints, recheck_values);
     }
+    Vec::new()
+}
+
+/// Adopt each verdict `Engine::upgrade_indeterminate_verdicts` settles for the
+/// panel's Indeterminate constraints and return those upgrades. An engine error
+/// leaves every status as is and returns none.
+fn recheck_indeterminate_constraints(
+    engine: &Engine,
+    module: &CompiledModule,
+    constraints: &mut [ConstraintData],
+    recheck_values: &ValueMap,
+) -> Vec<ConstraintUpgrade> {
+    use std::fmt::Write as _;
+
+    let indeterminate = satisfaction_token(Satisfaction::Indeterminate);
+    let candidate_at: HashMap<&str, usize> = constraints
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.status == indeterminate)
+        .map(|(at, c)| (c.node_id.as_str(), at))
+        .collect();
+    let mut id_text = String::new();
+    let Ok(upgrades) = engine.upgrade_indeterminate_verdicts(module, recheck_values, |id| {
+        id_text.clear();
+        write!(id_text, "{id}").expect("formatting into a String cannot fail");
+        candidate_at.contains_key(id_text.as_str())
+    }) else {
+        return Vec::new();
+    };
+    let verdicts: Vec<(usize, &'static str)> = upgrades
+        .iter()
+        .filter_map(|u| {
+            let at = *candidate_at.get(u.entry().id.to_string().as_str())?;
+            Some((at, satisfaction_token(u.entry().satisfaction)))
+        })
+        .collect();
+    for (at, status) in verdicts {
+        constraints[at].status = status.to_string();
+    }
+    upgrades
 }
 
 /// The trait defs a conformance check must be resolved against: the module's
@@ -7529,16 +7560,23 @@ impl EngineSession {
     }
 }
 
-/// Parse a "Entity.member" string into a ValueCellId.
+/// Parse a `"Entity.member"` string into a [`ValueCellId`], rendering any
+/// refusal in this boundary's vocabulary.
+///
+/// The GRAMMAR is not defined here — it is owned by `ValueCellId`'s `FromStr`
+/// in reify-core, which is sited next to the `Display` it inverts so the two
+/// cannot drift. This function only supplies the wording, and every gui entry
+/// point funnels through it, so the reason a cell id is refused is decided in
+/// exactly one place for the whole GUI.
+///
+/// Note that the accepted language is NARROWER than "anything Display can
+/// emit": Display is not injective, so an id whose member half still contains a
+/// `'.'` (an instance path, a port composite member, a dotted key) names no
+/// single cell and is refused as ambiguous. See the `FromStr` docs for why no
+/// positional split could do better.
 fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
-    let parts: Vec<&str> = s.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Err(format!(
-            "Invalid cell ID '{}': expected 'Entity.member' format",
-            s
-        ));
-    }
-    Ok(ValueCellId::new(parts[0], parts[1]))
+    s.parse::<ValueCellId>()
+        .map_err(|e| format!("Invalid cell ID '{s}': {e}"))
 }
 
 /// Parse a realization mesh key of the form `Entity#realization[N]` — the

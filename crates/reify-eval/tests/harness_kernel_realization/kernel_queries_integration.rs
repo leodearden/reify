@@ -10,9 +10,9 @@
 //! Three live assertions (steps 1 / 3 / 5):
 //!
 //! - **`all_queries_walk_compiles_with_stdlib_no_errors`** (always-on) — reads
-//!   the walk fixture, runs `parse_and_compile_with_stdlib`, asserts
-//!   `errors_only` empty. Pins fixture presence + that every in-scope helper
-//!   name/signature resolves at compile time on every CI runner.
+//!   and compiles the walk fixture via `fixture_scaffolding::read_and_compile_fixture`,
+//!   asserting no error-severity diagnostics. Pins fixture presence + that every
+//!   in-scope helper name/signature resolves at compile time on every CI runner.
 //!
 //! - **`all_queries_walk_evals_top_level_helpers_to_non_undef`** (OCCT-gated)
 //!   — builds with a DIRECT `OcctKernelHandle` engine (NOT `SingleKernelHolder`,
@@ -66,7 +66,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+
+use super::fixture_scaffolding::read_and_compile_fixture;
 
 const ALL_QUERIES_WALK_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -80,16 +81,11 @@ const ALL_QUERIES_WALK_PATH: &str = concat!(
 /// `examples/kernel_queries/all_queries_walk.ri` is created (step-2).
 #[test]
 fn all_queries_walk_compiles_with_stdlib_no_errors() {
-    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH)
-        .expect("examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)");
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/all_queries_walk.ri should compile with no \
-         error-severity diagnostics (Warnings from Undef eval are acceptable \
-         pre-Phase-3), got:\n{:#?}",
-        errors_only(&compiled)
+    // Warnings from Undef eval are acceptable pre-Phase-3; only error-severity
+    // diagnostics fail the compile.
+    read_and_compile_fixture(
+        ALL_QUERIES_WALK_PATH,
+        "examples/kernel_queries/all_queries_walk.ri (task 3626 step-2)",
     );
 }
 
@@ -106,21 +102,9 @@ fn all_queries_walk_compiles_with_stdlib_no_errors() {
 #[test]
 fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     // ── always-on: fixture exists and compiles cleanly ────────────────────────
-    //
-    // NOTE: This compile check is intentionally duplicated from
-    // `all_queries_walk_compiles_with_stdlib_no_errors`. The duplication keeps
-    // this test self-contained: if the fixture regresses, the compile error
-    // surfaces here alongside the OCCT-gated assertion failure rather than only
-    // in the separate compile test. Do NOT remove this block in the name of DRY —
-    // `all_queries_walk_compiles_with_stdlib_no_errors` is the canonical always-on
-    // gate; this copy is a local self-containment guard.
-    let source = std::fs::read_to_string(ALL_QUERIES_WALK_PATH)
-        .expect("examples/kernel_queries/all_queries_walk.ri should exist (task 3626 step-2)");
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "all_queries_walk.ri compile check failed:\n{:#?}",
-        errors_only(&compiled)
+    let compiled = read_and_compile_fixture(
+        ALL_QUERIES_WALK_PATH,
+        "examples/kernel_queries/all_queries_walk.ri (task 3626 step-2)",
     );
 
     // ── OCCT-gated: runtime eval ───────────────────────────────────────────────

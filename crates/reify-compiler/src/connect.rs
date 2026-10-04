@@ -262,13 +262,8 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 /// * `sub[<idx-or-key>].p` — one element of a collection or keyed sub
 ///   (`vents[0].inlet`, `vents["intake"].inlet`, also what `forall` substitution
 ///   produces). Every element shares the sub's child template, and the pre-pass
-///   keys on the SUB name, so the indexer suffix is stripped before the lookup.
-///
-/// Splits on the LAST dot rather than the first: a keyed segment may itself
-/// contain one (`vents["a.b"].inlet`), so `rsplit_once` is what isolates the
-/// port name in every shape `resolve_port_name` can produce. Symmetrically, the
-/// indexer is stripped at the FIRST `[`, so a key containing a bracket still
-/// leaves the bare sub name behind.
+///   keys on the SUB name, so the indexer suffix is stripped before the lookup
+///   (see `sub_member_endpoint`).
 ///
 /// `None` means "this compile cannot see the port's declaration", NOT "the
 /// direction is Bidi". Callers must decline to check on `None`. Three cases
@@ -284,12 +279,14 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 ///   * A dotted endpoint naming a NON-port member (measured: `connect e1.w ->
 ///     e2.w` where `w` is a param) compiles clean today. Diagnosing it is a
 ///     separate question about what a connect endpoint may legally denote, and
-///     erroring here would break sub-of-sub endpoint refs.
+///     erroring here would break sub-of-sub endpoint refs. A name the child
+///     declares as nothing at all is NOT a silent pass: `names_undefined_port`
+///     reports it (#7880).
 ///   * A MATCH-ARM sub whose arms disagree about a port's direction, or one of
 ///     whose arms has an unresolvable child structure. Every arm declares the
 ///     same sub NAME, so the pre-pass folds the arms to their intersection and
 ///     drops the contested port rather than answering with whichever arm
-///     happened to compile last — see `merge_arm_port_directions` in
+///     happened to compile last — see `cluster_port_directions` in
 ///     `entity.rs`. Arms that AGREE resolve normally and are checked.
 fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
     if let Some(own) = own_port_name(port_ref) {
@@ -299,9 +296,44 @@ fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core
             .find(|p| p.name == own)
             .map(|p| p.direction);
     }
-    let (base, port) = port_ref.rsplit_once('.')?;
-    let sub = base.split_once('[').map_or(base, |(name, _)| name);
+    let (sub, port) = sub_member_endpoint(port_ref)?;
     ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
+}
+
+/// Split a sub-member endpoint (`sub.m`, `sub[<idx-or-key>].m`) into
+/// `(sub, member)`; `None` for an own-entity endpoint (see `own_port_name`).
+///
+/// Splits on the LAST dot rather than the first: a keyed segment may itself
+/// contain one (`vents["a.b"].inlet`), so `rsplit_once` is what isolates the
+/// member name in every shape `resolve_port_name` can produce. Symmetrically,
+/// the indexer is stripped at the FIRST `[`, so a key containing a bracket still
+/// leaves the bare sub name behind.
+fn sub_member_endpoint(port_ref: &str) -> Option<(&str, &str)> {
+    if own_port_name(port_ref).is_some() {
+        return None;
+    }
+    let (base, member) = port_ref.rsplit_once('.')?;
+    let sub = base.split_once('[').map_or(base, |(name, _)| name);
+    Some((sub, member))
+}
+
+/// Whether a connect endpoint names nothing that exists.
+///
+/// Two arms: an own-entity endpoint (`p`, `self.p`) that is not one of this
+/// entity's ports, or a sub-member endpoint whose sub's resolved child declares
+/// no member of that name (#7880). A sub with no `sub_declared_member_names`
+/// entry is NOT a finding — per that map's absence contract its child is not
+/// resolvable here, so the endpoint is left unchecked.
+fn names_undefined_port(ctx: &ConnectContext, port_ref: &str) -> bool {
+    if let Some(own) = own_port_name(port_ref) {
+        return !is_own_port(ctx, own);
+    }
+    sub_member_endpoint(port_ref).is_some_and(|(sub, member)| {
+        ctx.scope
+            .sub_declared_member_names
+            .get(sub)
+            .is_some_and(|declared| !declared.contains(member))
+    })
 }
 
 /// Desugar a `chain` statement's elements into one (source, destination)
@@ -567,16 +599,13 @@ pub(crate) fn compile_connection(
     let left_dir = endpoint_direction(ctx, &left_port);
     let right_dir = endpoint_direction(ctx, &right_port);
 
-    // An endpoint that claims one of THIS entity's ports must actually name one.
-    // `own_port_name` accepts bare `p` and `self.p` alike, so a typo is caught in
-    // either spelling — the same symmetry `endpoint_direction` gives the
-    // direction check.
-    let undefined_own_port =
-        |port_ref: &str| own_port_name(port_ref).is_some_and(|name| !is_own_port(ctx, name));
+    // Every endpoint must name something that exists: an own-entity endpoint
+    // (bare `p` or `self.p`) one of THIS entity's ports, a sub-member endpoint a
+    // member its sub's resolved child declares — see `names_undefined_port`.
     // Own-entity-only consumers below (auto-match, the asymmetric-LocatedPort
     // warning) still gate on the endpoint being written bare.
     let is_bare = |name: &str| !name.contains('.');
-    if undefined_own_port(&left_port) {
+    if names_undefined_port(ctx, &left_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -585,7 +614,7 @@ pub(crate) fn compile_connection(
             .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
-    if undefined_own_port(&right_port) {
+    if names_undefined_port(ctx, &right_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",

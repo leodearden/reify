@@ -224,6 +224,11 @@ pub const MEMBER_LIST_CONTAINERS: &[&str] = &[
     // REPRO 1 verbatim: `sub b = mirror of a across P { let x = 5mm ⏎ - 3mm }`
     // joins into one `binary_expression` (measured).
     "derived_body",
+    // repeat(choice($.let_declaration, $.relation_member)) — grammar.js:891.
+    // The constrained-2d-sketch α body (task 5506). It admits full `let`
+    // members, so it carries REPRO 1 verbatim: `sketch p { let x = 5mm ⏎
+    // - 3mm }` joins into one `binary_expression` (measured).
+    "sketch_block",
 ];
 
 /// Grammar rules that own a separator-free `repeat(...)` body which this check

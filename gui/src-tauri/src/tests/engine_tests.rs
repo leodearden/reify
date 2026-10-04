@@ -5371,7 +5371,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5597,7 +5597,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5858,7 +5858,7 @@ fn get_containing_definition_no_module_returns_none() {
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5875,7 +5875,7 @@ fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1mm }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5910,7 +5910,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -6565,7 +6565,7 @@ fn commit_state_refreshes_caches_on_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Length = 1 }";
+    let source1 = "structure A { param x: Length = 1mm }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -6581,7 +6581,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
+    let source2 = "structure A { param x: Length = 1mm }\nstructure B { param y: Length = 2mm }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
@@ -15996,16 +15996,19 @@ fn build_constraints_sorts_constraints_by_node_id() {
                 id: ConstraintNodeId::new("Zeta", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Alpha", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Mid", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
         ],
         diagnostics: vec![],
@@ -16176,6 +16179,53 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
     assert_eq!(
         control_m.eval_set_size, m.eval_set_size,
         "the production eval-set size is identical with and without observed sync"
+    );
+}
+
+/// `sync_observed_demand` must SKIP a displayed cell id that names no single
+/// cell, never mis-split it into a demand root for a cell that does not exist.
+///
+/// An `auto` sub arg is minted under a dotted entity (`E.bolt` + `length`) and
+/// displayed verbatim as `"E.bolt.length"`. A first-dot split registers
+/// `(E, bolt.length)` instead, and roots enter the observed cone
+/// unconditionally, so that bogus cell would read as demanded.
+#[test]
+fn sync_observed_demand_skips_an_auto_sub_arg_cell_rather_than_mis_splitting_it() {
+    use reify_eval::cache::NodeId;
+
+    let source = r#"
+structure Bolt {
+    param length : Length = 5mm
+}
+structure E {
+    param width : Length = 20mm
+    sub bolt = Bolt(length: auto)
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(source, "auto_sub_arg")
+        .expect("load_from_source should succeed");
+    let displayed: Vec<String> = state.values.iter().map(|v| v.cell_id.clone()).collect();
+    assert!(
+        displayed.iter().any(|id| id == "E.bolt.length"),
+        "fixture must display the auto sub-arg cell under its dotted entity; \
+         displayed: {displayed:?}"
+    );
+
+    session.sync_observed_demand(&[], &displayed, &[]);
+
+    let engine = session.core_state_for_test().engine();
+    assert!(
+        !engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "bolt.length"))),
+        "the auto sub-arg cell must be skipped, not registered as (E, bolt.length)"
+    );
+    assert!(
+        engine.observed_demand_is_demanded(&NodeId::Value(ValueCellId::new("E", "width"))),
+        "a well-formed displayed cell in the same sync must still be registered"
     );
 }
 
@@ -20236,9 +20286,29 @@ fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
     assert_eq!(session.resolve_param_default_span("width"), None);
 }
 
+/// The instance-path source shared by the tests below. `Holder` declares its
+/// OWN `width` as well as a `child` whose `width` it overrides, so
+/// "Holder.child.width" is an instance path that really exists AND collides
+/// with a real bare-member cell on the same entity. That collision is what
+/// gives each of those tests teeth, so they must reason about one fixture —
+/// two copies would let the collision be edited out of one and not the other.
+const INSTANCE_PATH_SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                                 structure def Holder {\n\
+                                     param width : Length = 10mm\n\
+                                     sub child : Leaf { width = 90mm }\n\
+                                 }";
+
+fn instance_path_session() -> EngineSession {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(INSTANCE_PATH_SRC, "holder")
+        .expect("load should succeed");
+    session
+}
+
 #[test]
 fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
-    // The source below declares a REAL `sub` with a specialization override, so
+    // `INSTANCE_PATH_SRC` declares a REAL `sub` with a specialization override, so
     // "Holder.child.width" is an instance path that actually exists rather than a
     // name nothing could ever match. That distinction is what gives this test
     // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
@@ -20248,31 +20318,110 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
     // structure default when the user only asked to change one instance's value.
     // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
     //
-    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
-    // which matches no ParamDecl.name (member names never contain a '.') — hence
-    // None, which γ surfaces as a structured error.
-    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
-                       structure def Holder {\n\
-                           param width : Length = 10mm\n\
-                           sub child : Leaf { width = 90mm }\n\
-                       }";
-
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
-    session
-        .load_from_source(SRC, "holder")
-        .expect("load should succeed");
+    // `parse_cell_id` refuses the id outright — "Holder.child.width" renders
+    // identically to (entity "Holder", member "child.width"), so it names no
+    // single cell — and this method maps that Err to None, which γ surfaces as
+    // a structured error. The outcome predates the refusal: the id used to be
+    // split on the FIRST '.' and then miss the ParamDecl lookup, reaching the
+    // same None by accident rather than on purpose.
+    let session = instance_path_session();
 
     // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
     // below cannot be blamed on the entity or the source failing to load.
     let own = session
         .resolve_param_default_span("Holder.width")
         .expect("Holder.width is a plain param with a default");
-    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
+    assert_eq!(
+        &INSTANCE_PATH_SRC[own.start as usize..own.end as usize],
+        "10mm"
+    );
 
     assert_eq!(
         session.resolve_param_default_span("Holder.child.width"),
         None,
         "an instance path must not resolve to the shared structure's own default"
+    );
+}
+
+#[test]
+fn preview_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
+    // "Holder.child.width" renders identically to a hypothetical cell
+    // (entity "Holder", member "child.width"), so the string cannot say which
+    // is meant. It USED to be rejected only by ACCIDENT: the first-dot split
+    // yielded member "child.width", which matched no cell, so the existence
+    // gate said "Unknown parameter" — a true outcome reached for a false
+    // reason, and one that would silently have become a WRONG WRITE if anyone
+    // ever "fixed" the split to rsplit_once. This pins the accurate refusal,
+    // so that repair can no longer be mistaken for a safe one.
+    let mut session = instance_path_session();
+
+    // Positive control first: the bare-member cell on the same entity is
+    // settable, so a failure below cannot be blamed on the fixture.
+    session
+        .preview_parameter("Holder.width", "50mm")
+        .expect("Holder.width is a plain settable param");
+
+    let err = session
+        .preview_parameter("Holder.child.width", "50mm")
+        .expect_err("an instance path names no single cell, so it must be refused");
+
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not (see `apply_param_to_source_discriminates_its_resolve_phase_rejections`).
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "the id is refused for AMBIGUITY, not for naming a cell that happens \
+         to be absent — misattributing the cause is the defect: {err}"
+    );
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_an_instance_path_cell_id() {
+    // Same id through the WRITE-BACK entry point. This is the path where a
+    // mis-split would have been most dangerous: taking "Holder" + "width" would
+    // splice over the SHARED structure default, changing every instance when
+    // the user asked to change one.
+    let mut session = instance_path_session();
+
+    let err = session
+        .apply_param_to_source_str("Holder.child.width", "50mm")
+        .expect_err("an instance path must be refused before any splice");
+
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "write-back must refuse for the same reason preview_parameter does: {err}"
+    );
+}
+
+#[test]
+fn preview_parameter_still_reports_unknown_parameter_for_a_well_formed_unknown_two_segment_id() {
+    // The new ambiguity refusal must not swallow the pre-existing, DISTINCT
+    // category. A two-segment id names exactly one cell; that the cell does not
+    // exist is a different complaint with a different remedy.
+    let mut session = instance_path_session();
+
+    let err = session
+        .preview_parameter("Nope.width", "50mm")
+        .expect_err("Nope is not a declared entity");
+
+    assert!(
+        err.contains("Unknown parameter"),
+        "a well-formed id naming no cell is still an unknown-parameter error: {err}"
+    );
+    assert!(
+        !err.contains("ambiguous"),
+        "a two-segment id is unambiguous — it just names nothing: {err}"
     );
 }
 

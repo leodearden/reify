@@ -946,15 +946,19 @@ pub(crate) fn affine_map_algebra_result_type(
             }
         }
         // Re-homed §4.1 dimensional contract (task 3963): `affine_apply` on a
-        // `Point3<Q>` yields `Point3<Q>` unchanged — dimensionless linear *
-        // `Q` + `Q` translation = `Q`, so the result type is dimension-
-        // preserving. Only overrides when the first arg is a `Type::Point`;
-        // `None`/non-Point first args fall through to `None` (the delta/3962
-        // hook: `affine_apply` is a geometry op, so the surface call is
-        // intercepted by the geometry-op path before this typing function
-        // would ever see a non-Point/None first arg in practice).
+        // `Point3<Length>` yields `Point3<Length>` — dimensionless linear ·
+        // Length + Length translation = Length, because an AffineMap's
+        // translation carries Length (RULING #6089). A `Point3<Q≠Length>` is
+        // ill-dimensioned and is not claimed, nor is any non-Point/None first
+        // arg (the delta/3962 hook: `affine_apply` is a geometry op, so the
+        // surface call is intercepted by the geometry-op path before this
+        // typing function would see such an arg in practice).
         "affine_apply" => match first_arg_type {
-            Some(ty @ reify_core::Type::Point { .. }) => Some(ty.clone()),
+            Some(ty @ reify_core::Type::Point { n: 3, quantity })
+                if **quantity == reify_core::Type::length() =>
+            {
+                Some(ty.clone())
+            }
             _ => None,
         },
         _ => None,
@@ -2016,7 +2020,7 @@ mod tests {
 
     /// `offset_surface` (θ, task 4192) offsets a face along its normal by a
     /// scalar distance (Skin mode of `BRepOffsetAPI_MakeOffsetShape`, distinct
-    /// from `offset_solid`'s `PerformBySimple` solid mode), producing a fresh
+    /// from `offset_solid`, which takes a solid, not a face), producing a fresh
     /// Surface. It must be recognised as a geometry-handle producer so the
     /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
     /// RED until step-6 adds "offset_surface" to GEOMETRY_FUNCTION_NAMES.
@@ -3773,6 +3777,28 @@ mod tests {
         );
         // The delta/3962 hook must still hold: no first-arg type -> None.
         assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
+    }
+
+    #[test]
+    fn algebra_affine_apply_claims_only_point3_length() {
+        for (label, quantity) in [
+            ("Angle", reify_core::Type::angle()),
+            ("dimensionless", reify_core::Type::dimensionless_scalar()),
+            (
+                "Mass",
+                reify_core::Type::Scalar {
+                    dimension: reify_core::DimensionVector::MASS,
+                },
+            ),
+        ] {
+            let point = reify_core::Type::point3(quantity);
+            assert_eq!(
+                affine_map_algebra_result_type("affine_apply", Some(&point)),
+                None,
+                "Point3<{label}>: RULING #6089 — an AffineMap's translation is Length, so \
+                 `linear·Q + Length` is ill-dimensioned unless Q is Length and must not be claimed"
+            );
+        }
     }
 
     // --- 2-D profile face producers (task-4160) ---

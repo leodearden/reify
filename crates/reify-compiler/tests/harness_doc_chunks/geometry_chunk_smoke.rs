@@ -83,12 +83,14 @@
 //! `units_chunk_smoke.rs` and task 6258 added `oracle_xref_smoke.rs`, and both
 //! point at THIS module's scanners (`reify_tagged_fences`,
 //! `assert_module_compiles`, `strip_reify_comments`, `call_sites`,
-//! `called_names`, `registry_family`, `phantom_name_panic`, `section_body`,
-//! `cited_source_paths`, `resolve_cited_path`, `source_files_by_basename`, all
+//! `called_names`, `registry_family`, `phantom_name_panic`, `section_body`, all
 //! raised to `pub(crate)`) rather than copying them. That is why those helpers
 //! take `chunk_path` / `tag` / `section_title` parameters instead of reading
 //! this module's consts — a sibling's failure must name the sibling's chunk, and
-//! 6258's are two chunks this module does not own at all. 6258 also SHARES a
+//! 6258's are two chunks this module does not own at all. The cite scanner and
+//! resolver this list once also named (`cited_source_paths`,
+//! `assert_cited_paths_resolve` and their helpers) have since moved to
+//! `chunk_cite_gate.rs`, the binary's one cite machinery. 6258 also SHARES a
 //! const rather than copying it: `GEOMETRY_ORACLE_NAMES` is the one list both
 //! the oracle section and those two pointers are held to. The extraction below
 //! is still owed; this is reuse inside the existing binary, not the shared
@@ -107,6 +109,8 @@
 //! Delete this section when the extraction lands.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
+
+use crate::chunk_cite_gate::assert_cited_paths_resolve;
 
 /// Compile `module_src` AS A WHOLE MODULE and assert zero Severity::Error
 /// diagnostics. The source is echoed in the panic so a failing scraped fence is
@@ -393,8 +397,8 @@ fn zone_annulus_compiles() {
 #[test]
 fn zone_profile_compiles() {
     // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
-    // form (geometry.rs:2355) — Difference(Thicken(solid, +w/2),
-    // Thicken(solid, −w/2)) via OCCT Thicken. Arg 0 is a SOLID here (unlike
+    // form (geometry.rs:2355) — Difference(OffsetSolid(solid, +w/2),
+    // OffsetSolid(solid, −w/2)). Arg 0 is a SOLID here (unlike
     // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri's
     // `prof_zone` cell.
     assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
@@ -1328,16 +1332,13 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
 /// their panic text claimed the form was "compile-verified" / "exercised by a
 /// compiling fence". A commented-out call is not a call.
 ///
-/// NOT AN AST WALK, and that is a scope decision rather than a preference. The
-/// sibling `stdlib_chunk_geometry_ops_smoke.rs` already extracts `(name, arity)`
-/// from the real parser via its `collect_call_forms` walk, which would close this
-/// hole for free AND handle nesting exactly — but that helper is a private `fn` in
-/// a sibling module, so reaching it needs a visibility edit to a file outside task
-/// 5389's locked set, and copying its ~120-line exhaustive `ExprKind` match here
-/// would make this binary's FOURTH near-identical scanner (see "Known
-/// duplication" above), which is the opposite of what ticket
-/// `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` exists to fix. The reconciled `chunk_io`
-/// extraction should take the AST route for the fence side; until then this
+/// NOT AN AST WALK — yet. `doc_forms::call_forms` (`pub(crate)`) already extracts
+/// `(name, arity)` from the real parser, which would close this hole for free AND
+/// handle nesting exactly; swapping this scan onto it belongs to the reconciled
+/// `chunk_io` extraction (task #5924 §B), not to this file. Copying its ~120-line
+/// exhaustive `ExprKind` match here instead would make this binary's FOURTH
+/// near-identical scanner (see "Known duplication" above), which is the opposite
+/// of what ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` exists to fix. Until then this
 /// stripper plus the unit tests at the bottom of this file are the guard.
 ///
 /// Handles both comment forms the grammar defines (`tree-sitter-reify/grammar.js`
@@ -2044,244 +2045,9 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 // this file looks at it: the guards above cover names, arities and fence
 // compilation only. So a renamed or deleted test silently turns a PINNED row into
 // a false claim — a rot mode strictly worse than plain prose, because the row
-// still LOOKS load-bearing. The check below closes that.
-
-/// Repo root, derived from this crate's manifest dir
-/// (`<repo>/crates/reify-compiler`).
-fn repo_root() -> std::path::PathBuf {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap_or_else(|| {
-            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
-        })
-        .to_path_buf()
-}
-
-/// Index of every tracked-ish `.rs`/`.ri` file under `crates/` and `examples/`,
-/// keyed by BASENAME, so the chunk may cite a test by bare file name (as its
-/// prose already does) without this check hard-coding a directory.
-///
-/// Build artifacts are skipped by directory name rather than by path prefix, so a
-/// nested `target/` cannot smuggle a stale duplicate into the index and make an
-/// otherwise-unique basename ambiguous.
-pub(crate) fn source_files_by_basename()
--> std::collections::BTreeMap<String, Vec<std::path::PathBuf>> {
-    fn walk(
-        dir: &std::path::Path,
-        out: &mut std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
-    ) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if path.is_dir() {
-                if matches!(name.as_str(), "target" | ".git" | "node_modules") {
-                    continue;
-                }
-                walk(&path, out);
-            } else if name.ends_with(".rs") || name.ends_with(".ri") {
-                out.entry(name).or_default().push(path);
-            }
-        }
-    }
-
-    let root = repo_root();
-    let mut out = std::collections::BTreeMap::new();
-    walk(&root.join("crates"), &mut out);
-    walk(&root.join("examples"), &mut out);
-    out
-}
-
-/// Every `<path>` / `<path>::<fn_name>` cite naming a `.rs` or `.ri` file in
-/// `markdown`, deduped, in document order.
-///
-/// Scans maximal runs of path-ish characters, so markdown decoration (backticks,
-/// parens, commas, the possessive `'s`) bounds a run rather than being swallowed.
-/// A run is only a cite if the part before `::` ends in `.rs`/`.ri` — that is what
-/// keeps the chunk's C++ cites (`BRepExtrema_DistShapeShape::InnerSolution()`) out
-/// of the resolution attempt without an exclusion list.
-///
-/// SCOPED TO THE CITE FORMS THE SYNC BLOCKS ACTUALLY USE — a token counts only if
-/// it carries a `::<fn>` half or a `/`-bearing repo-relative path. A BARE basename
-/// in prose is NOT a cite. geometry.md is a designer-facing tutorial whose whole
-/// subject is writing `.ri` files, so it will keep acquiring illustrative
-/// filenames ("save the model as `my_bracket.ri`"); resolving those would make an
-/// ordinary doc edit RED with a panic about SYNC blocks and false PINNED claims,
-/// i.e. a message that names neither the edit nor its cause. Every real cite in
-/// the two SYNC blocks is written in one of the two accepted forms, and
-/// `cited_test_paths_in_the_chunk_resolve`'s floors keep it that way, so nothing
-/// the check exists for is lost by ignoring bare basenames.
-pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
-    let mut out: Vec<(String, Option<String>)> = Vec::new();
-
-    for run in markdown
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-')))
-    {
-        // Sentence punctuation that the run charset happens to include.
-        let run = run.trim_end_matches(['.', '/', ':', '-']);
-        let (path, fn_name) = match run.split_once("::") {
-            Some((path, rest)) => (path, Some(rest)),
-            None => (run, None),
-        };
-        if !(path.ends_with(".rs") || path.ends_with(".ri")) {
-            continue;
-        }
-        // Tested on the RAW `::` split, before the identifier filter below: a
-        // malformed fn half still marks the token as an intended cite, so its
-        // path half stays subject to resolution.
-        if fn_name.is_none() && !path.contains('/') {
-            continue;
-        }
-        // A cite whose fn half is not a bare identifier is a malformed cite, not
-        // a licence to skip the path half — keep the path, drop the fn.
-        let fn_name = fn_name
-            .filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
-        let cite = (path.to_string(), fn_name.map(str::to_string));
-        if !out.contains(&cite) {
-            out.push(cite);
-        }
-    }
-    out
-}
-
-/// Resolve one cited path token to a real file, or explain why it did not.
-pub(crate) fn resolve_cited_path(
-    token: &str,
-    index: &std::collections::BTreeMap<String, Vec<std::path::PathBuf>>,
-) -> Result<std::path::PathBuf, String> {
-    let root = repo_root();
-    if token.contains('/') {
-        // Repo-relative, or crate-relative (the chunk writes both forms).
-        for candidate in [root.join(token), root.join("crates").join(token)] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-        return Err(format!(
-            "no such file — tried {:?} and {:?}",
-            root.join(token),
-            root.join("crates").join(token)
-        ));
-    }
-    match index.get(token).map(Vec::as_slice) {
-        None | Some([]) => Err(format!(
-            "no file named `{token}` exists under crates/ or examples/"
-        )),
-        Some([only]) => Ok(only.clone()),
-        Some(many) => Err(format!(
-            "`{token}` is ambiguous — {} files share that basename ({many:?}); cite it by its \
-             full repo-relative path instead",
-            many.len()
-        )),
-    }
-}
-
-/// Assert every `<path>::<fn>` cite in `markdown` resolves, and that the chunk
-/// still carries at least `min_fn` / `min_rs` / `min_ri` of them.
-///
-/// SHARED BY BOTH CHUNK MODULES — this file's traps SYNC block and
-/// `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory. It exists because the
-/// second copy of this loop was a ~55-line near-verbatim duplicate of the first,
-/// differing only in the chunk path, three numeric floors and the panic wording;
-/// a fix to the resolution or existence rule (a `#[cfg]`-gated fn, a `fn foo<T>(`
-/// with a generic parameter) then had to be applied twice or drift. Growing that
-/// kind of copy is exactly the tracked defect
-/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924) this harness binary is trying
-/// to shrink.
-///
-/// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
-/// not in the panic text here, so the shared message stays true for both. What
-/// the panics do carry is the chunk path, the floor that was missed and the full
-/// cite list, which is what a reader needs to act.
-///
-/// Floors are `>=`, so ADDING a cite is always safe; raise them WITH the chunk
-/// when one is added, and never lower one to go green — a lowered floor is a
-/// SYNC row that has quietly stopped claiming anything.
-///
-/// SCOPE — an EXISTENCE check, not a semantic one. It cannot tell that a
-/// still-named test stopped asserting what the row claims, it says nothing about
-/// rows marked UNPINNED, and it does not verify the fn is a `#[test]`.
-pub(crate) fn assert_cited_paths_resolve(
-    chunk_path: &str,
-    markdown: &str,
-    min_fn: usize,
-    min_rs: usize,
-    min_ri: usize,
-) {
-    let index = source_files_by_basename();
-    let cites = cited_source_paths(markdown);
-
-    // Keyed by the RESOLVED path, not the cite token: both chunks cite some
-    // files two ways (bare basename with a `::fn` half, and again by full
-    // repo-relative path), so token-counting would let one real reference
-    // disappear while the floor stayed satisfied by its own duplicate — exactly
-    // the regression these floors claim to catch.
-    let mut rs_paths: std::collections::BTreeSet<std::path::PathBuf> =
-        std::collections::BTreeSet::new();
-    let mut ri_paths: std::collections::BTreeSet<std::path::PathBuf> =
-        std::collections::BTreeSet::new();
-    let mut fn_cites = 0usize;
-
-    for (path_token, fn_name) in &cites {
-        let resolved = resolve_cited_path(path_token, &index).unwrap_or_else(|why| {
-            panic!(
-                "{chunk_path} cites `{path_token}`, which does not resolve: {why}. The chunk is \
-                 served verbatim to the in-GUI assistant and its SYNC rows are written to be read \
-                 as the authority on which claims a real test pins — a dangling cite is a false \
-                 claim. Update the cite, or mark the row UNPINNED."
-            )
-        });
-
-        if path_token.ends_with(".ri") {
-            ri_paths.insert(resolved.clone());
-        } else {
-            rs_paths.insert(resolved.clone());
-        }
-
-        let Some(fn_name) = fn_name else { continue };
-        fn_cites += 1;
-        let body = std::fs::read_to_string(&resolved)
-            .unwrap_or_else(|e| panic!("{resolved:?} must be readable ({e})"));
-        assert!(
-            body.contains(&format!("fn {fn_name}(")),
-            "{chunk_path} cites `{path_token}::{fn_name}` as pinning one of its claims, but \
-             {resolved:?} declares no `fn {fn_name}(`. The test was renamed or deleted, so that \
-             row now claims a pin that does not exist. Re-point the cite, or downgrade the row \
-             to UNPINNED."
-        );
-    }
-
-    // Anti-vacuity. Reformatting a SYNC block into a shape this scan cannot read
-    // — a path wrapped across two lines, or tabulated into two columns — would
-    // otherwise empty the loop above and pass.
-    assert!(
-        fn_cites >= min_fn,
-        "only {fn_cites} `<path>::<fn>` cite(s) found in {chunk_path} — expected at least \
-         {min_fn}. CITES MUST BE WRITTEN WHOLE ON ONE LINE, never wrapped and never tabulated; a \
-         wrapped path is invisible to this scan. Either the chunk was reformatted into a shape it \
-         cannot read, or a row lost its cite while still claiming to pin something. Cites seen: \
-         {cites:?}"
-    );
-    assert!(
-        rs_paths.len() >= min_rs,
-        "only {} distinct `.rs` FILE(s) cited in {chunk_path} (distinct after resolution — the \
-         same file cited two ways counts once), expected at least {min_rs}. Losing one turns a \
-         PINNED row into prose. Cites seen: {cites:?}",
-        rs_paths.len()
-    );
-    assert!(
-        ri_paths.len() >= min_ri,
-        "only {} distinct `.ri` example FILE(s) cited in {chunk_path} (distinct after resolution \
-         — the same example cited both bare and by full path counts once), expected at least \
-         {min_ri}. The worked examples are what a designer is sent to next, so losing a cite is a \
-         discoverability regression. Cites seen: {cites:?}",
-        ri_paths.len()
-    );
-}
+// still LOOKS load-bearing. The check below closes that, through
+// `chunk_cite_gate.rs`'s resolver — the binary's one cite machinery, shared with
+// `units_chunk_smoke.rs` and the corpus-wide cite gate.
 
 /// Cite floors for [`cited_test_paths_in_the_chunk_resolve`].
 ///
@@ -2356,9 +2122,8 @@ fn cited_test_paths_in_the_chunk_resolve() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `call_sites`, `strip_reify_comments`, `section_body`, `cited_source_paths`,
-// `called_names` and `catalogue_table_rows` are the hand-rolled text scanners in
-// this file, and every doc↔fence assertion above is downstream of one of them,
+// `call_sites`, `strip_reify_comments`, `section_body`, `called_names` and
+// `catalogue_table_rows` are the hand-rolled text scanners in this file, and every doc↔fence assertion above is downstream of one of them,
 // so they are pinned directly here rather than only through the chunk. Mirrors
 // the posture of `stdlib_chunk_geometry_ops_smoke.rs`, whose
 // `documented_geometry_op_forms` scanner carries its own `_extracts_exact_arity`
@@ -2553,58 +2318,6 @@ fn section_body_blames_an_unterminated_fence_rather_than_the_marker() {
               <!-- ORACLE-SECTION -->\n\
               body\n";
     let _ = section_body(md, ORACLE_SECTION_MARKER, CHUNK_PATH, ORACLE_SECTION_TITLE);
-}
-
-#[test]
-fn cited_source_paths_ignores_a_bare_illustrative_basename() {
-    // geometry.md is a designer-facing tutorial about authoring `.ri` files, so
-    // prose like this is ordinary content — not a claim that a repo file exists.
-    // Resolving it would make an ordinary doc edit RED with a panic about SYNC
-    // blocks and false PINNED claims.
-    let md = "Save the model as `my_bracket.ri` and run `reify build my_bracket.ri`.\n\
-              trap 5 — PINNED by\n\
-              crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::single_body_self_pair_excluded\n\
-              See `examples/kinematic/dock_pickup.ri`, and `geometry_chunk_smoke.rs`, whose\n\
-              `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve` resolves them.\n";
-
-    assert_eq!(
-        cited_source_paths(md),
-        vec![
-            (
-                "crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs"
-                    .to_string(),
-                Some("single_body_self_pair_excluded".to_string()),
-            ),
-            ("examples/kinematic/dock_pickup.ri".to_string(), None),
-            (
-                "geometry_chunk_smoke.rs".to_string(),
-                Some("cited_test_paths_in_the_chunk_resolve".to_string()),
-            ),
-        ],
-        "only `/`-bearing paths and `::<fn>`-carrying tokens are cites; `my_bracket.ri` and the \
-         bare `geometry_chunk_smoke.rs` mention are prose"
-    );
-}
-
-#[test]
-fn cited_source_paths_keeps_a_malformed_fn_half_as_a_path_cite() {
-    // `::` marks the token as an INTENDED cite even when the fn half is not a bare
-    // identifier, so the path half stays subject to resolution rather than being
-    // dropped as if it were a prose basename.
-    assert_eq!(
-        cited_source_paths("geometry_chunk_smoke.rs::not-an-ident"),
-        vec![("geometry_chunk_smoke.rs".to_string(), None)]
-    );
-}
-
-#[test]
-fn cited_source_paths_leaves_a_cxx_cite_alone() {
-    // The chunk cites OCCT's C++ API for the containment behaviour; the path half
-    // does not end in `.rs`/`.ri`, so no resolution is attempted.
-    assert!(
-        cited_source_paths("BRepExtrema_DistShapeShape::InnerSolution()").is_empty(),
-        "a C++ `Type::method()` cite is not a source-file cite"
-    );
 }
 
 /// A digit-prefixed run juxtaposed with `(` is a numeric literal, not a call.

@@ -1629,7 +1629,7 @@ pub enum ModifyKind {
     /// Offset a surface along its normal by a scalar distance
     /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
     /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
-    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// `OffsetSolid`, which takes a solid, not a face. Produces a fresh Surface.
     /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
     OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`

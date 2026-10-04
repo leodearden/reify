@@ -431,7 +431,7 @@ impl crate::Engine {
             && crate::compute_persist::is_persistable_target(target)
         {
             match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                Some(result) => {
+                Some((result, replayed)) => {
                     // Fold hook — mirrors the Completed arm.
                     if target == "shell-extract::extract" {
                         crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
@@ -453,7 +453,23 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
-                    return Ok((result, vec![], vec![]));
+                    // Task 7245: replay the diagnostics the original solve
+                    // emitted, through the SAME tuple slot the fresh
+                    // (trampoline) path uses. Every consumer already does
+                    // `diagnostics.extend(diags)` on it, so a warm serve needs
+                    // no consumer change to say what the cold serve said.
+                    //
+                    // #5062 / INV-EVAL-3 (each diagnostic has exactly one owner
+                    // per serve — replayed XOR freshly-pushed, never both)
+                    // holds STRUCTURALLY here, with no flag and no dedup pass:
+                    // this arm `return`s on a HIT and falls through to
+                    // `invoke_compute_trampoline` only on a MISS, so a single
+                    // dispatch can never do both.
+                    //
+                    // The 3rd element stays `vec![]`: `structured_detail`
+                    // replay is the same defect class through a different
+                    // codec, deferred to #7345.
+                    return Ok((result, replayed, vec![]));
                 }
                 None => {
                     self.persistent_miss_count += 1;
@@ -684,11 +700,16 @@ impl crate::Engine {
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
+                    // Task 7245: the trampoline's diagnostics are stored
+                    // alongside the value so a later warm serve can replay
+                    // them. Borrowed here, before the `Ok((..))` below moves
+                    // `diagnostics` out.
                     crate::compute_persist::persistent_write(
                         cache_dir,
                         target,
                         cache_key,
                         &effective_value,
+                        &diagnostics,
                     );
                 }
                 // θ / task 3427 step-4: return effective_value (prior on
@@ -4745,6 +4766,139 @@ mod tests {
             "expected an Error diagnostic naming the target, \"panicked\", and the \
              panic payload \"boom_str\" (i.e. the same enriched conversion \
              invoke_compute_trampoline performs), got {diags:?}",
+        );
+    }
+
+    // ── Persistent-hit diagnostics replay (task 7245) ─────────────────────────
+
+    /// Dispatch counter for [`never_called_trampoline`], proving a persistent
+    /// HIT skipped the trampoline entirely.
+    static PERSISTENT_REPLAY_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// A trampoline that must never run on a persistent HIT. If it does, the
+    /// diagnostics under test would be freshly produced rather than replayed,
+    /// and the test would be measuring the wrong thing.
+    fn never_called_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        PERSISTENT_REPLAY_DISPATCH_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// A persistent HIT must return the diagnostics the original solve emitted.
+    ///
+    /// This is the defect at the dispatch boundary: the hit arm returns the
+    /// reconstructed `Value` but hardcodes `vec![]` for the diagnostics, so a
+    /// warm serve is silent where the cold serve warned. Every consumer does
+    /// `diagnostics.extend(diags)` on this tuple slot, so an empty vec means the
+    /// warning vanishes for the whole rest of the session.
+    #[test]
+    fn persistent_hit_returns_the_replayed_diagnostics() {
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use crate::persistent_cache::{
+            ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, write_entry,
+        };
+        use reify_core::{ComputeNodeId, ContentHash, Severity, ValueCellId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness};
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_aaaa_7245_aaaa_7245_aaaa_7245_aaaa_u128);
+        let warning = reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick);
+
+        // Seed a persistent entry that CARRIES the warning.
+        let total_nodes: usize = 2 * 2 * 2;
+        write_entry::<WithDiagnostics<ElasticResult>>(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &format!("{cache_key}"),
+            &WithDiagnostics {
+                diagnostics: vec![warning.clone()],
+                value: ElasticResult {
+                    displacement: vec![1.0; total_nodes * 3],
+                    stress: vec![2.0; total_nodes * 9],
+                    max_von_mises: 42.0,
+                    converged: true,
+                    iterations: 5,
+                    solve_time_ms: 100,
+                    shell_channels: None,
+                    grid_bounds_min: [0.0, 0.0, 0.0],
+                    grid_bounds_max: [1.0, 1.0, 1.0],
+                    grid_counts: [1, 1, 1],
+                    divergence: vec![3.0; total_nodes],
+                    gradient: vec![4.0; total_nodes * 9],
+                    curl: vec![5.0; total_nodes * 3],
+                    aposteriori: None,
+                },
+            },
+        )
+        .expect("test seed write_entry must succeed");
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            never_called_trampoline as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "r_7245");
+        let c_id = ComputeNodeId::new("T", 7245);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let count_before = PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst);
+        let (_value, diagnostics, _detail) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .expect("the hit path must succeed");
+
+        assert_eq!(
+            PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst) - count_before,
+            0,
+            "the trampoline must not run — otherwise these diagnostics would be \
+             fresh, not replayed",
+        );
+        assert_eq!(
+            engine.persistent_hit_count(),
+            1,
+            "the dispatch must have been served from the on-disk cache",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Warning
+                && d.code == Some(reify_core::DiagnosticCode::ShellTooThick)),
+            "the persistent hit must replay the seeded ShellTooThick warning \
+             through the same tuple slot the trampoline path uses, got {diagnostics:?}",
         );
     }
 }

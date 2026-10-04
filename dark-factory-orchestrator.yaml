@@ -286,6 +286,10 @@ sequential_lint_first: true
 # because incremental and sccache are mutually exclusive.
 verify_env:
   REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: "1"
+  # Setting this decides nothing by itself: scripts/verify.sh role-scopes its EFFECT (the
+  # _GATE_HEAVY_EXCLUDE guard), so not every role this env reaches skips heavy members.
+  # Resolved effect per role: the `# heavy partition — HEAVY=` line of `DF_VERIFY_ROLE=<role>
+  # scripts/verify.sh test --scope all --print-plan`; why: docs/prds/offline-deep-test-lane.md DA6.
   REIFY_GATE_EXCLUDE_HEAVY: "1"
   # Durable FLAKY-ledger path (merge-gate-health W5a, 2026-07-19). Without this the
   # Phase-2.5 ledger defaults to the RUNNING checkout's data/verify-logs/ — i.e. the
@@ -860,6 +864,10 @@ timeouts:
 
 unblock_auto:
   timeout_seconds: 1800
+  # Attended-mode B3 (low-risk auto-unblock) ON — Leo, 2026-09-25, after the gate check in
+  # dark-factory plans/escalation-watcher-prompting-study-2026-09-23.md. SKILL-FACING: read by
+  # the interactive L2 watcher session only — no restart, no reload_config.
+  attended_b3_enabled: true
 
 # Scheduler v2 (eager parks, cross-tier preemption, owner-state GC sweep) is
 # UNCONDITIONAL in dark-factory since 2026-05-30 — there is no flag to set.
@@ -950,9 +958,27 @@ verify_runners:
     # a FAILED sync BENCHES the runner instead of silently trusting its verdict.
     df_checkout_path: /home/leo/src/dark-factory
     enabled: true
-verify_drift_check_every_n_lands: 20
+# verify_host_policy: prefer_remote — 2026-09-30 (task 7269; dark_factory 5097).
+# Take the laptop first when it is free, fall back to local otherwise (the queue never
+# stalls). Measured 2026-09-03: the laptop runs verifies ~2.5x faster (p50 17.4 vs 43.4
+# min) and sits 78-88% idle while the workstation CPU is the bottleneck for BOTH projects.
+# TRUST-ANCHOR TRADE-OFF, EYES OPEN: prefer-local existed because local is the trust
+# anchor (a laptop false green landed a red commit, #5120). Under prefer_remote nearly
+# every verdict is a REMOTE verdict, so the drift check below is the standing fidelity
+# guard. Green tier: reload_config applies it live, and `prefer_local` is the one-reload
+# rollback.
+verify_host_policy: prefer_remote
+# Cadence 20 -> 10 (2026-09-30), matching dark_factory D1 (5053). A drift check leases
+# BOTH hosts and runs both legs, so 1-in-10 spends back a little of the local CPU this
+# change frees. Accepted: the guard is the whole safety case for prefer_remote. Restart-only.
+verify_drift_check_every_n_lands: 10
 #
-# verify_cross_check_remote_green: DISABLED 2026-08-21 (Leo) as an interim
+# verify_cross_check_remote_green: FALSE again 2026-10-02 (dark_factory 5416 OFF step, Leo
+# ruling on esc-5416-2: window shortened to 1 day, OFF pre-approved). Window 2026-10-01T05:01Z
+# to 2026-10-02T05:01Z: reify verdict_parity_ok x7, zero mismatch or inconclusive. The drift
+# cadence above (10) is now the standing fidelity guard. The window itself: TRUE 2026-09-30
+# (task 7269 amendment item 4) for the remote-verify parity window owned by dark_factory 5416.
+# PROVENANCE of the former false: DISABLED 2026-08-21 (Leo) as an interim
 # mitigation for dark_factory:4579. The task-2822 per-land cross-check re-verifies
 # every non-trivial remote green with a full LOCAL verify, inside the merge
 # worker's awaited verify_task. That local leg is invisible to merge_queue's
@@ -966,13 +992,12 @@ verify_drift_check_every_n_lands: 20
 # Specimen: mr-945466ca / task 6393, three passing ~17.4-min remote verifies
 # discarded 2026-08-20.
 # TRADE-OFF, EYES OPEN: this reverts to the PRE-2822 safety posture — a single
-# host's green decides a land, with verify_drift_check_every_n_lands (20) above as
+# host's green decides a land, with verify_drift_check_every_n_lands (then 20) as
 # the only standing fidelity guarantee. That is the configuration in which #5120
 # landed a red commit off a laptop false green. Accepted because the cross-check
-# is currently contributing zero verdicts anyway, so no real corroboration is
-# being given up, while the false 'blocked' verdicts and the wasted ~47 min per
-# remote green are real.
-# REVERT THIS (back to true) once dark_factory:4579 lands and reify redeploys.
+# was contributing zero verdicts anyway, so no real corroboration was given up, while
+# the false 'blocked' verdicts and the wasted ~47 min per remote green were real.
+# dark_factory:4579 has since landed (done), which is why this is true again.
 verify_cross_check_remote_green: false
 
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,

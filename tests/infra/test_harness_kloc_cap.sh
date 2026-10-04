@@ -50,7 +50,7 @@
 # harness_occt itself dropped its bare `mod common;` in the #7466 split, which
 # moved the include to the new sibling along with its consumers; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
-# harness_selective_demand does the same for `common/differential.rs`). The
+# harness_cache does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
 # file moved under the harness directory, not for a retained `tests/` sibling.
 # Section 6 encodes exactly this scoping — a bare `mod <ident>;` is a violation
@@ -369,7 +369,11 @@ WARN_PCT=90
 # Empty is the healthy end state. The array stays DECLARED because Section 5d
 # expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
 # rather than in a manifest file.
-_KLOC_WARN_KNOWN=()
+_KLOC_WARN_KNOWN=(
+    # 18982/20000 = 94% at #7543 (root 51 + 18931 across 11 module files);
+    # the remedy is rule (a)'s split, #7709.
+    "crates/reify-compiler/tests/harness_compilation_surface.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
@@ -1411,7 +1415,7 @@ mkdir -p "$_s1e2_dir/common"
     printf 'mod does_not_exist;\n'
 } > "$_s1e2_dir/harness_sib.rs"                                   # root: 4 lines
 # (iii) transitivity: common/mod.rs itself declares a submodule (this is the
-#       live reify-eval shape — common/mod.rs declares alloc_counter/as_printed).
+#       live reify-eval shape — common/mod.rs declares as_printed).
 #       `mod.rs` resolves a bare `mod sub;` against its OWN directory.
 {
     printf 'pub mod sub;\n'

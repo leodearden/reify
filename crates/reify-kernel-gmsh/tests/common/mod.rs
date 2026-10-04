@@ -1,6 +1,7 @@
 //! What this crate's test binaries share: a re-export shim over the
-//! workspace-canonical fixtures in [`reify_test_support::fixtures`], plus the
-//! raw-FFI entity census [`entity_census`].
+//! workspace-canonical fixtures in [`reify_test_support::fixtures`], one
+//! not-yet-hoisted fixture [`subdivided_unit_cube_surface`], and the raw-FFI
+//! entity census [`entity_census`].
 //!
 //! A `tests/common/` subdirectory (rather than a sibling `tests/*.rs` file) is
 //! the cargo idiom for both: files under `tests/` are each compiled as their
@@ -20,7 +21,8 @@
 //! `tkt_0RTBP18NC8PBRZGQ49RYZD7ATJ` (escalation id `agent-followup-6387`)
 //! changes those import lines plus `volume_fill_fraction.rs`'s
 //! `common::assert_rel` call sites. No new shared FIXTURE belongs here — put it
-//! in `reify_test_support`.
+//! in `reify_test_support`. The one exception, [`subdivided_unit_cube_surface`],
+//! is pending that same move under #8048.
 //!
 //! # The census is NOT a fixture, and stays (#6830)
 //!
@@ -46,7 +48,7 @@
 //! part of it, so the unused remainder must not be an error under
 //! `-D warnings`. A `pub use` a given binary does not exercise is an
 //! `unused_imports` warning rather than the `dead_code` the pre-#6387 inlined
-//! fixture bodies produced, and `entity_census` is `dead_code` in every binary
+//! fixture bodies produced, and each local `fn` is `dead_code` in every binary
 //! that compiles it without calling it, so both are allowed.
 
 #![allow(dead_code, unused_imports)]
@@ -61,6 +63,67 @@ pub use reify_test_support::fixtures::{
     tessellated_cylinder_volume, unit_cube_mesh, unwelded_prismatic_box_mesh,
 };
 
+use reify_ir::Mesh;
+
+// ---------------------------------------------------------------------------
+// subdivided_unit_cube_surface — awaiting its hoist, see the module docs
+// ---------------------------------------------------------------------------
+
+/// Build a 2×2-subdivided unit cube (side 1.0, centred at origin):
+/// 8 corners + 12 edge midpoints + 6 face centres = 26 unique vertices, 48
+/// triangles (6 faces × 8 sub-triangles, outward-facing).
+pub fn subdivided_unit_cube_surface() -> Mesh {
+    #[rustfmt::skip]
+    let corners: [[f32; 3]; 8] = [
+        [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
+        [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],
+        [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5],
+        [-0.5,  0.5,  0.5], [ 0.5,  0.5,  0.5],
+    ];
+    #[rustfmt::skip]
+    let edges: [[f32; 3]; 12] = [
+        [ 0.0, -0.5, -0.5], [-0.5,  0.0, -0.5], [ 0.5,  0.0, -0.5], [ 0.0,  0.5, -0.5],
+        [ 0.0, -0.5,  0.5], [-0.5,  0.0,  0.5], [ 0.5,  0.0,  0.5], [ 0.0,  0.5,  0.5],
+        [-0.5, -0.5,  0.0], [ 0.5, -0.5,  0.0], [-0.5,  0.5,  0.0], [ 0.5,  0.5,  0.0],
+    ];
+    #[rustfmt::skip]
+    let face_centers: [[f32; 3]; 6] = [
+        [ 0.0,  0.0, -0.5], [ 0.0,  0.0,  0.5],
+        [ 0.0, -0.5,  0.0], [ 0.0,  0.5,  0.0],
+        [-0.5,  0.0,  0.0], [ 0.5,  0.0,  0.0],
+    ];
+    let mut vertices: Vec<f32> = Vec::with_capacity(26 * 3);
+    for c in &corners { vertices.extend_from_slice(c); }
+    for e in &edges   { vertices.extend_from_slice(e); }
+    for f in &face_centers { vertices.extend_from_slice(f); }
+    assert_eq!(vertices.len(), 26 * 3);
+
+    #[rustfmt::skip]
+    let indices: Vec<u32> = vec![
+        // Bottom (z=-0.5): vertex indices 8=edge[0], 9=edge[1], 10=edge[2], 11=edge[3], 20=fc[0]
+        0, 9,20,  0,20, 8,  8,20,10,  8,10, 1,
+        9, 2,11,  9,11,20, 20,11, 3, 20, 3,10,
+        // Top (z=0.5)
+        4,12,21,  4,21,13, 12, 5,14, 12,14,21,
+       13,21,15, 13,15, 6, 21,14, 7, 21, 7,15,
+        // Front (y=-0.5)
+        0, 8,22,  0,22,16,  8, 1,17,  8,17,22,
+       16,22,12, 16,12, 4, 22,17, 5, 22, 5,12,
+        // Back (y=0.5)
+        2,18,23,  2,23,11, 11,23,19, 11,19, 3,
+       18, 6,15, 18,15,23, 23,15, 7, 23, 7,19,
+        // Left (x=-0.5)
+        0,16,24,  0,24, 9,  9,24,18,  9,18, 2,
+       16, 4,13, 16,13,24, 24,13, 6, 24, 6,18,
+        // Right (x=0.5)
+        1,10,25,  1,25,17, 10, 3,19, 10,19,25,
+       17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
+    ];
+    assert_eq!(indices.len(), 48 * 3);
+
+    Mesh { vertices, indices, normals: None }
+}
+
 // ---------------------------------------------------------------------------
 // Raw-FFI entity census (has_gmsh only)
 // ---------------------------------------------------------------------------
@@ -72,8 +135,6 @@ pub use reify_test_support::fixtures::{
 // pure reify_ir arithmetic and must stay verified on stub hosts). Un-gating
 // either `use` or the `fn` below compiles fine on a libgmsh host and silently
 // breaks every stub-host build.
-#[cfg(has_gmsh)]
-use reify_ir::Mesh;
 #[cfg(has_gmsh)]
 use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
 

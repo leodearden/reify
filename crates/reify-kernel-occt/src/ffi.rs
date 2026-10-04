@@ -871,6 +871,11 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Thicken / Shell / Offset Solid ---
+        /// Offset a solid: every face moves |distance| along its outward
+        /// normal (inward when `distance` is negative), and sharp edges stay
+        /// sharp (adjacent faces are extended/trimmed to meet). Errs on a zero
+        /// distance, a non-solid input, a collapse (inward offset past the
+        /// inradius), or an invalid/degenerate result.
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         /// Offset a surface (open face/shell) by `distance` along its normal via
         /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
@@ -1363,9 +1368,22 @@ pub mod ffi {
         fn reset_boolean_pass_count();
 
         /// Read the calling thread's count of completed OCCT boolean passes —
-        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list,
-        /// counting only the passes this thread performed itself.
+        /// one per binary fuse/cut/common (plain or `*_with_history`) and one
+        /// per fuse_shape_list, counting only the passes this thread performed
+        /// itself.
         fn boolean_pass_count() -> u64;
+
+        /// Set whether the calling thread's BOP algorithms Build() in OCCT's
+        /// parallel mode (task 7439); per-thread, like the pass counter.
+        fn set_boolean_run_parallel(parallel: bool);
+
+        /// Read the calling thread's BOP parallelism mode.
+        fn boolean_run_parallel() -> bool;
+
+        /// Read the calling thread's count of completed BOP Builds that OCCT
+        /// itself ran in parallel mode (the algorithm's `RunParallel()` after
+        /// `Build()`).
+        fn parallel_bop_build_count() -> u64;
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",

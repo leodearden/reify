@@ -41,41 +41,12 @@ import {
 } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import {
+  makeCmdDispatcher,
+  makeDebugStores,
+  type DebugRequestHandler,
+} from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
-
-type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
-
-/**
- * Build a describe-block's `dispatchCmd`: invoke the captured debug-request
- * handler and return the parsed `debug_response` payload.
- *
- * Every block in this file had its own byte-identical copy of this nine-line
- * body (17 of them), so a change to the response envelope meant 17 edits and any
- * missed one drifted silently. Takes a THUNK rather than the handler itself
- * because each block's `capturedHandler` is reassigned by its `beforeEach` —
- * capturing the value here would freeze it at `undefined`.
- *
- * The per-block `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
- * they genuinely differ (some call `initDebugBridge` up front, others per test;
- * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
- * to be parameterised into something longer than the four lines it replaced.
- */
-function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
-  return async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await getHandler()!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  };
-}
 
 // jsdom 25 does not implement document.elementFromPoint — the method is simply
 // absent from the document prototype. vi.spyOn requires the property to exist
@@ -90,67 +61,19 @@ if (typeof document.elementFromPoint !== 'function') {
   });
 }
 
+/** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
+  const stores = makeDebugStores();
   return {
-    engine: {
-      state: {
-        meshes: {} as any,
-        values: {} as any,
-        constraints: {} as any,
-        evalStatus: { phase: 'idle' },
-        compileDiagnostics: [],
-        tessellationDiagnostics: [],
-      },
-      initFromState: vi.fn(),
-      setCompileDiagnostics: vi.fn(),
-      setTessellationDiagnostics: vi.fn(),
-    },
-    editor: {
-      state: {
-        openFiles: [],
-        activeFile: null,
-        dirtyFiles: [],
-        externallyChanged: [],
-        cursorPosition: null,
-      },
-      openFile: vi.fn(),
-      closeFile: vi.fn(),
-    },
+    ...stores,
     selection: {
+      ...stores.selection,
       state: {
+        ...stores.selection.state,
         selectedEntity: selectedEntities[selectedEntities.length - 1] ?? null,
-        // Cast to any until step-36 adds the fields to the DebugStores type
-        ...(selectedEntities.length > 0 ? { selectedEntities } : { selectedEntities: [] }),
-        ...(anchorEntity !== null ? { anchorEntity } : { anchorEntity: null }),
-        hoveredEntity: null,
-        highlightedParams: [],
-      } as any,
-      selectEntity: vi.fn(),
-      hoverEntity: vi.fn(),
-      clearSelection: vi.fn(),
-      toggleSelect: vi.fn(),
-    },
-    claude: {
-      state: {
-        messages: [],
-        sessionStatus: 'idle',
-        currentMessageId: null,
+        selectedEntities,
+        anchorEntity,
       },
-    },
-    viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
     },
   };
 }
@@ -268,12 +191,29 @@ describe('debug bridge set_camera', () => {
     expect(result).toEqual({ error: 'viewport not ready' });
   });
 
-  // Helper to build a viewport stub with spy functions
+  // Helper to build a viewport stub with spy functions.
+  //
+  // The coordinate setters both RECORD the call and WRITE the coordinates, because
+  // set_camera's `applied` is a read-back of live camera/controls state: a setter that
+  // only recorded would leave every coordinate at 0 and make the read-back untestable.
+  // They stay vi.fn spies so toHaveBeenCalledWith assertions still work.
   function makeViewportStub() {
-    const cameraPositionSet = vi.fn();
-    const cameraUpSet = vi.fn();
+    const cameraPositionSet = vi.fn((x: number, y: number, z: number) => {
+      camera.position.x = x;
+      camera.position.y = y;
+      camera.position.z = z;
+    });
+    const cameraUpSet = vi.fn((x: number, y: number, z: number) => {
+      camera.up.x = x;
+      camera.up.y = y;
+      camera.up.z = z;
+    });
     const cameraLookAt = vi.fn();
-    const controlsTargetSet = vi.fn();
+    const controlsTargetSet = vi.fn((x: number, y: number, z: number) => {
+      controls.target.x = x;
+      controls.target.y = y;
+      controls.target.z = z;
+    });
     const rendererRender = vi.fn();
     const camera = {
       position: { set: cameraPositionSet, x: 0, y: 0, z: 0 },
@@ -398,6 +338,117 @@ describe('debug bridge set_camera', () => {
     expect(stub.cameraLookAt).toHaveBeenCalledWith(0, 0, 0);
     expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
     expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+  });
+
+  // ── `applied` is LIVE state, never the request (task 6965) ─────────────────
+  //
+  // The through-line of all three camera defects is "commanded value reported, live
+  // state disagrees".  OrbitControls can legitimately relocate a commanded pose —
+  // _clampDistance on the orbit radius, minTargetRadius/maxTargetRadius on the target —
+  // and echoing the request back reports every such relocation as a faithful success.
+  // These pin `applied` as a read-back taken after controls.update().
+  describe('applied reports live state, not the request', () => {
+    function installViewport(stub: ReturnType<typeof makeViewportStub>, withControls = true) {
+      window.__REIFY_DEBUG__!.viewport = {
+        scene: stub.scene,
+        camera: stub.camera as any,
+        renderer: stub.renderer as any,
+        getMeshes: vi.fn().mockReturnValue(new Map()),
+        getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+        fitToView: vi.fn(),
+        flyToEntity: vi.fn(),
+        controls: withControls ? (stub.controls as any) : undefined,
+      };
+    }
+
+    it('reports a distance-clamped position as clamped, not as requested', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      // Stand-in for OrbitControls._clampDistance: push the camera back out to the
+      // floor along the same direction (the #6965 dogfood numbers: a 0.5 m floor, a
+      // 75 mm part fitted at ~88 mm).
+      const FLOOR = 0.5;
+      stub.controls.update.mockImplementation(() => {
+        const t = stub.controls.target;
+        const p = stub.camera.position;
+        const d = Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z);
+        if (d === 0 || d >= FLOOR) return;
+        const k = FLOOR / d;
+        p.x = t.x + (p.x - t.x) * k;
+        p.y = t.y + (p.y - t.y) * k;
+        p.z = t.z + (p.z - t.z) * k;
+      });
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 360, {
+        position: [0, 0, 0.088],
+        target: [0, 0, 0],
+      });
+
+      expect(result.applied.position).toEqual([
+        stub.camera.position.x,
+        stub.camera.position.y,
+        stub.camera.position.z,
+      ]);
+      expect(result.applied.position).toEqual([0, 0, FLOOR]);
+      expect(result.applied.position).not.toEqual([0, 0, 0.088]);
+    });
+
+    it('reads applied.target back from controls.target when controls are present', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      // Stand-in for minTargetRadius/maxTargetRadius: update() relocates the target.
+      const CLAMPED_TARGET = { x: 1, y: 0, z: 0 };
+      stub.controls.update.mockImplementation(() => {
+        stub.controls.target.x = CLAMPED_TARGET.x;
+        stub.controls.target.y = CLAMPED_TARGET.y;
+        stub.controls.target.z = CLAMPED_TARGET.z;
+      });
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 361, {
+        position: [0, 0, 5],
+        target: [9, 9, 9],
+      });
+
+      expect(result.applied.target).toEqual([CLAMPED_TARGET.x, CLAMPED_TARGET.y, CLAMPED_TARGET.z]);
+      expect(result.applied.target).not.toEqual([9, 9, 9]);
+    });
+
+    it('falls back to the requested target when there are no controls to read', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      installViewport(stub, false);
+
+      const result = await dispatch(capturedHandler!, 362, {
+        position: [0, 0, 5],
+        target: [1, 2, 3],
+      });
+
+      // The no-controls branch orients via camera.lookAt, which leaves no target state
+      // to read back — so the request is the only truthful answer available.
+      expect(result.applied.target).toEqual([1, 2, 3]);
+    });
+
+    it('still round-trips the request exactly when nothing relocates the pose', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 363, {
+        position: [10, 20, 30],
+        target: [1, 2, 3],
+        up: [0, 0, 1],
+        zoom: 2.5,
+      });
+
+      // The documented "same input → same camera frame" property must survive the
+      // switch to a read-back: on the ordinary path, live state IS the request.
+      expect(result).toEqual({
+        ok: true,
+        applied: { position: [10, 20, 30], target: [1, 2, 3], up: [0, 0, 1], zoom: 2.5 },
+      });
+    });
   });
 
   describe('input validation', () => {
@@ -5162,14 +5213,14 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * param at its OWN boundary, BEFORE resolution — so `{"testId": 3}` can never
    * coerce to `"3"` and be answered with a claim about the DOM. Most of them
    * resolve by `testId`; `open_menu` resolves by `name`, the tree-node tools by
-   * `path`, and the four whole-selector tools by `selector`, and the rule binds
+   * `path`, and the six whole-selector tools by `selector`, and the rule binds
    * those identically.
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
    * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
-   * row. The guards are ELEVEN independent hand-written copies, so a row here
-   * that covered only one of them would leave the other ten free to regress with
+   * row. The guards are TWELVE independent hand-written copies, so a row here
+   * that covered only one of them would leave the other eleven free to regress with
    * the suite green — which is what #6178 measured for the five guards it
    * rewrote, and its review measured again for the ninth and for the two
    * whole-selector copies.
@@ -5367,6 +5418,19 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         expected: { error: 'selector is required' },
       }),
     ),
+    // `driveFormControl`'s single whole-selector copy (./formControl), the
+    // twelfth, shared by scrub_range_input and edit_text_input. `value` and
+    // `commit` are valid, so the selector guard is the only thing standing
+    // between the array and a drive of the decoy.
+    {
+      label: 'scrub_range_input',
+      decoyTestId: SELECTOR_DECOY_TESTID,
+      dispatch: () => [
+        'scrub_range_input',
+        { selector: [`[data-testid="${SELECTOR_DECOY_TESTID}"]`], value: '1', commit: 'change' },
+      ],
+      expected: { error: 'selector is required' },
+    },
   ];
 
   /**
@@ -5384,6 +5448,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
     // `resolveElement`; `query_selector_all` is NOT here — it keeps its own copy.
     get_layout_metrics: 'query_selector',
     get_computed_style: 'query_selector',
+    // Both form-control tools are served by the single `driveFormControl`.
+    edit_text_input: 'scrub_range_input',
   };
 
   describe('boundary guards above the escape', () => {

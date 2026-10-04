@@ -62,18 +62,24 @@
 //! mirrors `reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs`; the
 //! cross-crate-source read plus anti-vacuity self-check mirrors
 //! `reify-eval/tests/ambient_default_material_integration_gate.rs`.
+//!
+//! The documented-form model — `Arity`, `DocForm`, the span and AST readers and
+//! their pairing — is `doc_forms.rs`'s, shared with the corpus-wide
+//! unfenced-signature gate; this module keeps only what is specific to stdlib.md's
+//! section and its fixture.
 
-use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
 use reify_compiler::{
     GEOMETRY_FUNCTION_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, compile_with_stdlib,
-    parse_with_stdlib,
 };
-use reify_core::{ModulePath, Severity};
+use reify_core::Severity;
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/stdlib_geometry_ops_smoke.ri"
-);
+use crate::chunk_cite_gate::cited_source_paths;
+use crate::chunk_prose::code_spans;
+use crate::doc_forms::{
+    Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
+};
+use crate::fence_gate::repo_root;
+use crate::signature_fixtures::{STDLIB_GEOMETRY_OPS_FIXTURE, read_fixture};
 
 /// The chunk this fixture transcribes. Read (never written) to check documented
 /// names against the compiler's registries. If the chunk moves, this const must
@@ -143,35 +149,12 @@ fn read_all_chunks() -> String {
         .join("\n")
 }
 
-fn read_fixture() -> String {
-    std::fs::read_to_string(FIXTURE_PATH)
-        .expect("tests/fixtures/stdlib_geometry_ops_smoke.ri should exist")
-}
-
-fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
-    // Prelude-aware parsing (matches the `compile_with_stdlib` companion). A
-    // parse error is a fixture/snippet bug, not the property under test, so
-    // surface it distinctly.
-    let parsed = parse_with_stdlib(source, ModulePath::single("stdlib_geometry_ops_smoke"));
-    assert!(
-        parsed.errors.is_empty(),
-        "{label} must parse cleanly, got parse errors:\n{}",
-        parsed
-            .errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    parsed
-}
-
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
 /// "Key Geometry Operations" (+ "Curves") table must compile with no
 /// Error-severity diagnostics.
 #[test]
 fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
-    let source = read_fixture();
+    let source = read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE);
     let parsed = parse_or_panic(&source, "fixture");
 
     // Compile phase — filter to Error severity only (warnings are allowed).
@@ -244,177 +227,11 @@ fn is_recognised_geometry_call(name: &str) -> bool {
     GEOMETRY_FUNCTION_NAMES.contains(&name) || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
 }
 
-/// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
-/// subtree onto `out`.
-///
-/// The match is intentionally exhaustive with **no `_` wildcard**, so adding an
-/// `ExprKind` variant breaks this file at compile time rather than silently
-/// dropping a whole class of call site from the guard (same posture as
-/// `find_node` in `tests/harness_langcore/type_error_propagation_tests.rs`).
-/// Walking the parsed AST — rather than lexing the source — means no comment or
-/// string-literal blind spots and no keyword/heuristic allowlists.
-///
-/// Non-`FunctionCall` callee names (a trait method, an ad-hoc port selector)
-/// are deliberately NOT collected: they are dispatched through a different
-/// resolver and are not geometry ops.
-fn collect_call_forms(expr: &Expr, out: &mut Vec<(String, usize)>) {
-    match &expr.kind {
-        // Leaves — no subexpressions, no callee name.
-        ExprKind::NumberLiteral { .. }
-        | ExprKind::QuantityLiteral { .. }
-        | ExprKind::StringLiteral(_)
-        | ExprKind::BoolLiteral(_)
-        | ExprKind::Ident(_)
-        | ExprKind::EnumAccess { .. }
-        | ExprKind::Undef => {}
-
-        // The variant under test.
-        ExprKind::FunctionCall { name, args, .. } => {
-            out.push((name.clone(), args.len()));
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-
-        // Compound variants — recurse into every child subexpression.
-        ExprKind::BinOp { left, right, .. } => {
-            collect_call_forms(left, out);
-            collect_call_forms(right, out);
-        }
-        ExprKind::UnOp { operand, .. } => collect_call_forms(operand, out),
-        ExprKind::MemberAccess { object, .. } => collect_call_forms(object, out),
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_call_forms(condition, out);
-            collect_call_forms(then_branch, out);
-            collect_call_forms(else_branch, out);
-        }
-        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
-            for item in items {
-                collect_call_forms(item, out);
-            }
-        }
-        ExprKind::MapLiteral(entries) => {
-            for (key, value) in entries {
-                collect_call_forms(key, out);
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::IndexAccess { object, index } => {
-            collect_call_forms(object, out);
-            collect_call_forms(index, out);
-        }
-        ExprKind::Match { discriminant, arms } => {
-            collect_call_forms(discriminant, out);
-            for arm in arms {
-                collect_call_forms(&arm.body, out);
-            }
-        }
-        ExprKind::Auto { params, .. } => {
-            for (_, value) in params {
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::Lambda { body, .. } => collect_call_forms(body, out),
-        ExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            collect_call_forms(collection, out);
-            collect_call_forms(predicate, out);
-        }
-        ExprKind::AdHocSelector { base, args, .. } => {
-            collect_call_forms(base, out);
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::QualifiedAccess { qualifier, .. } => collect_call_forms(qualifier, out),
-        ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            collect_call_forms(object, out);
-            collect_call_forms(qualified, out);
-        }
-        ExprKind::Range { lower, upper, .. } => {
-            if let Some(lower) = lower {
-                collect_call_forms(lower, out);
-            }
-            if let Some(upper) = upper {
-                collect_call_forms(upper, out);
-            }
-        }
-        ExprKind::TraitMethodCall { object, args, .. } => {
-            collect_call_forms(object, out);
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::TraitStaticCall { args, .. } => {
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::VariantConstruct { fields, .. } => {
-            for (_, value) in fields {
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::InterpolatedString(parts) => {
-            for part in parts {
-                match part {
-                    StringPart::Literal(_) => {}
-                    StringPart::Hole(inner) => collect_call_forms(inner, out),
-                }
-            }
-        }
-    }
-}
-
-/// Every `(call name, arg count)` form in `source`, deduped and sorted for
-/// deterministic output.
-///
-/// `source` must be `structure def`s whose members are all `let` bindings —
-/// the shape of the fixture and of the inline snippets above. Anything else
-/// PANICS rather than being skipped, so growing the fixture a new declaration
-/// or member kind is a loud "extend the walker", never a silent coverage hole.
-fn geometry_call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
-    let parsed = parse_or_panic(source, label);
-
-    let mut forms = Vec::new();
-    for decl in &parsed.declarations {
-        let Declaration::Structure(structure) = decl else {
-            panic!(
-                "{label}: the name-existence guard only walks `structure def` declarations, \
-                 but this source has another declaration kind — extend `geometry_call_forms` \
-                 rather than leaving those call sites unchecked"
-            );
-        };
-        for member in &structure.members {
-            let MemberDecl::Let(binding) = member else {
-                panic!(
-                    "{label}: the name-existence guard only walks `let` members of `{}`, \
-                     but it has another member kind — extend `geometry_call_forms` rather \
-                     than leaving those call sites unchecked",
-                    structure.name
-                );
-            };
-            collect_call_forms(&binding.value, &mut forms);
-        }
-    }
-
-    forms.sort();
-    forms.dedup();
-    forms
-}
-
-/// Every call name in `source`, projected from [`geometry_call_forms`] so
+/// Every call name in `source`, projected from `doc_forms`' [`call_forms`] so
 /// exactly one AST walker exists (overloads of the same name collapse to one
-/// entry here — see `geometry_call_forms` for the arity-preserving form).
+/// entry here — see `call_forms` for the arity-preserving form).
 fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
-    let mut names: Vec<String> = geometry_call_forms(source, label)
+    let mut names: Vec<String> = call_forms(source, label)
         .into_iter()
         .map(|(name, _count)| name)
         .collect();
@@ -505,7 +322,7 @@ structure def KnownOps {
 /// goes RED even though the compile smoke stays green.
 #[test]
 fn fixture_geometry_call_names_all_exist_in_the_compiler() {
-    let source = read_fixture();
+    let source = read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE);
     let unrecognised = unrecognised_geometry_call_names(&source, "fixture");
 
     assert!(
@@ -520,29 +337,6 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
 
 // ── Chunk → compiler / chunk → fixture ───────────────────────────────────────
 
-/// A documented form's declared argument count: either an exact arity, or a
-/// variadic form carrying the given MINIMUM arity.
-///
-/// An argument equal to `…` (U+2026) or ENDING IN `…` (e.g. `weights…`) marks
-/// the form variadic and contributes 0 to the minimum — see
-/// `documented_geometry_op_forms`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Arity {
-    Exact(usize),
-    AtLeast(usize),
-}
-
-/// One documented (name, arity) overload. A single row commonly documents
-/// several of these for the same name (e.g. `mirror(geo, plane)` and
-/// `mirror(geo, ox, oy, oz, nx, ny, nz)`) — they are deliberately NOT
-/// collapsed, which is the whole point of the FORM-granularity upgrade over
-/// `documented_geometry_op_names`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct DocForm {
-    name: String,
-    arity: Arity,
-}
-
 /// Every geometry-op / curve-constructor (name, arity) FORM documented in the
 /// chunk's [`CHUNK_SECTION`] section.
 ///
@@ -550,17 +344,10 @@ struct DocForm {
 /// never becomes a wording pin) — identical section/line/span selection to
 /// the name-only scan this supersedes: inside that section — from its
 /// heading to the next `## ` heading — every line that starts with `**` is a
-/// bolded signature row; within such a row only the backtick-delimited spans
-/// are inspected. From each span:
-///   - no `(`, or no `)`, or `)` before `(` → the span contributes no form
-///     (spans like `List<Geometry>`, `Length` have no `(` at all; a broken
-///     span with an unbalanced `(` is skipped rather than panicking);
-///   - the identifier immediately preceding the `(` is the name (as before);
-///   - the text between the first `(` and the last `)`, split on `,` and
-///     trimmed per piece, is the argument list: empty → `Exact(0)`; otherwise
-///     an argument equal to `…` or ENDING IN `…` contributes 0 to the count
-///     and marks the form variadic → `AtLeast(remaining count)`; with no such
-///     argument → `Exact(args.len())`.
+/// bolded signature row; within such a row only its code spans are inspected,
+/// and each is read by `doc_forms`' [`doc_form_of_span`] — the strict
+/// signature-shape rule, under which a bare `…` or an `ident…` argument marks
+/// the form variadic and counts nothing.
 ///
 /// Deduped and sorted (by name, then arity), so a caller's `assert_eq!` names
 /// the exact form. Callers must anti-vacuity-check the result: a heading
@@ -578,53 +365,11 @@ fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
         if !in_section || !line.starts_with("**") {
             continue;
         }
-
-        // Odd-indexed pieces of a backtick split are the spans *inside* the
-        // backticks (`a `x` b `y` c` → ["a ", "x", " b ", "y", " c"]).
-        for span in line.split('`').skip(1).step_by(2) {
-            let Some(open) = span.find('(') else {
-                continue;
-            };
-            let Some(close) = span.rfind(')') else {
-                continue;
-            };
-            if close < open {
-                continue;
-            }
-            let name = span[..open]
-                .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .next()
-                .unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
-
-            let inner = span[open + 1..close].trim();
-            let arity = if inner.is_empty() {
-                Arity::Exact(0)
-            } else {
-                let mut variadic = false;
-                let mut count = 0usize;
-                for arg in inner.split(',') {
-                    let arg = arg.trim();
-                    if arg == "…" || arg.ends_with('…') {
-                        variadic = true;
-                    } else {
-                        count += 1;
-                    }
-                }
-                if variadic {
-                    Arity::AtLeast(count)
-                } else {
-                    Arity::Exact(count)
-                }
-            };
-
-            forms.push(DocForm {
-                name: name.to_string(),
-                arity,
-            });
-        }
+        forms.extend(
+            code_spans(line)
+                .iter()
+                .filter_map(|span| doc_form_of_span(&span.text)),
+        );
     }
 
     forms.sort();
@@ -720,7 +465,7 @@ fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
     let documented = documented_geometry_op_names(&markdown);
     assert_scan_not_vacuous(&documented);
 
-    let exercised = geometry_call_names(&read_fixture(), "fixture");
+    let exercised = geometry_call_names(&read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE), "fixture");
     let missing: Vec<&String> = documented
         .iter()
         .filter(|name| !exercised.contains(name))
@@ -1151,70 +896,26 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
     );
 }
 
-// ── geometry.md → examples/ referential integrity ────────────────────────────
+// ── geometry.md → examples/ worked-example claim ─────────────────────────────
 //
 // Everything above checks what geometry.md says about the COMPILER. This checks
-// what it says about the REPOSITORY: the chunk points designers at runnable
-// `.ri` files, and a pointer that does not resolve — or that resolves to a file
-// not containing what the prose promises — sends a designer looking for a
-// constructor they will never find. Same authoritative-doc-is-wrong failure
-// class as the guards above, one artifact over, and NOTHING else checks it: the
-// chunk is inert prose to `cargo test`, and the examples never mention the
-// chunk, so the two drift apart silently.
+// one thing it says about the REPOSITORY: the chunk points designers at a
+// runnable `.ri` file as the worked example of a constructor family, and a
+// pointer to a file not containing what the prose promises sends a designer
+// looking for a constructor they will never find. Same
+// authoritative-doc-is-wrong failure class as the guards above, one artifact
+// over. That every cited path EXISTS is `chunk_cite_gate.rs`'s corpus-wide
+// job, so a dangling cite reds one test, not two.
 //
-// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). Both
-// assertions read a CLAIM out of the chunk and check it against real files on
-// disk; either side may be reworded freely so long as the claim stays true.
-
-/// Repository root, reached from this test crate's manifest dir. Same
-/// `concat!(env!("CARGO_MANIFEST_DIR"), "/../…")` idiom the chunk-path consts
-/// use to reach a sibling crate, one level further out — not a second
-/// path-discovery mechanism.
-const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). The
+// assertion reads a CLAIM out of the chunk and checks it against the real file
+// on disk; either side may be reworded freely so long as the claim stays true.
 
 /// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
 /// constructors, and the four names that claim has to cover.
 const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
 const GDT_ZONE_CONSTRUCTORS: &[&str] =
     &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
-
-/// Every repo-root-relative `examples/….ri` path cited in `markdown`, deduped,
-/// in source order.
-///
-/// Scans for the `examples/` prefix and consumes the longest following run of
-/// path characters, so a citation ends at the surrounding backtick, quote, comma
-/// or space rather than running on into the prose. A trailing sentence period is
-/// trimmed, and a span that does not end in `.ri` is not a file citation at all
-/// (bare `examples/` used as a directory word contributes nothing).
-///
-/// Anchored on a non-path boundary to the LEFT, for the mirror-image reason
-/// [`chunk_mentions`] is anchored: an `examples/` segment NESTED in a longer path
-/// (`docs/examples/foo.ri`, `crates/reify-eval/tests/examples/bar.ri`) would
-/// otherwise be truncated to `examples/foo.ri` and then reported by the caller as
-/// a file that does not exist — a spurious hard failure, with a misleading fix
-/// instruction, against a chunk edit that was entirely correct. Such a path is
-/// not a repo-root citation, so it contributes nothing.
-///
-/// Loose by design, like [`chunk_mentions`]: it exists only to FIND the pointers
-/// worth checking — the check itself is whether the file is there.
-fn cited_example_paths(markdown: &str) -> Vec<String> {
-    let is_path_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
-    let mut out: Vec<String> = Vec::new();
-    for (at, _) in markdown.match_indices("examples/") {
-        if markdown[..at].chars().next_back().is_some_and(is_path_char) {
-            continue;
-        }
-        let span: String = markdown[at..]
-            .chars()
-            .take_while(|c| is_path_char(*c))
-            .collect();
-        let path = span.trim_end_matches('.');
-        if path.ends_with(".ri") && !out.iter().any(|p| p == path) {
-            out.push(path.to_string());
-        }
-    }
-    out
-}
 
 /// `source` with every `//`-to-end-of-line comment removed.
 ///
@@ -1235,45 +936,23 @@ fn strip_line_comments(source: &str) -> String {
         .join("\n")
 }
 
-/// geometry.md's pointers into `examples/` must hold against the real files.
+/// geometry.md's GD&T section cites [`GDT_ZONES_EXAMPLE`] as the worked example
+/// of all four zone constructors, so that example must really call each of them.
 ///
-/// TWO claims, both read out of the chunk rather than pinned as wording:
-///
-/// (a) **Every cited `examples/….ri` path resolves on disk.** A standing ratchet
-///     against path rot — an example renamed or moved leaves the chunk citing a
-///     404, and the chunk is served verbatim to the in-GUI assistant.
-/// (b) **The GD&T section's "worked example of all four" claim is true**: the
-///     cited example really does call each of the four zone constructors. This
-///     is the half that motivated the guard — `zone_slab` had no worked example
-///     anywhere under `examples/` until task #5700 added a cell for it to the
-///     cited file, so the one constructor the prose promised an example for was
-///     the one that had none. This assertion is what keeps it that way.
+/// This claim is what motivated the guard — `zone_slab` had no worked example
+/// anywhere under `examples/` until task #5700 added a cell for it to the cited
+/// file, so the one constructor the prose promised an example for was the one
+/// that had none. This assertion is what keeps it that way. Whether the cite
+/// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
 #[test]
 fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let cited = cited_example_paths(&geometry_md);
-
-    // Anti-vacuity: a scan finding nothing (citations reworded out of
-    // `examples/…` shape) would make (a) pass without checking anything.
-    assert!(
-        cited.len() >= 3,
-        "anti-vacuity: only {} `examples/….ri` citation(s) found in {GEOMETRY_CHUNK_PATH} — \
-         the citation scan is vacuous and gives NO protection. Got: {cited:?}",
-        cited.len()
-    );
-
-    // (a) — every pointer resolves.
-    let missing: Vec<&String> = cited
-        .iter()
-        .filter(|path| !std::path::Path::new(REPO_ROOT).join(path).is_file())
+    let cited: Vec<String> = cited_source_paths(&geometry_md)
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
         .collect();
-    assert!(
-        missing.is_empty(),
-        "{GEOMETRY_CHUNK_PATH} cites example file(s) that do not exist — FIX: repoint the \
-         citation at the file's new path, or restore the example. Missing: {missing:?}"
-    );
 
-    // (b) — the "worked example of all four" claim, checked against the example.
     assert!(
         cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
         "{GEOMETRY_CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard \
@@ -1281,7 +960,7 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          against the file it is actually made about. Cited: {cited:?}"
     );
 
-    let example_path = std::path::Path::new(REPO_ROOT).join(GDT_ZONES_EXAMPLE);
+    let example_path = repo_root().join(GDT_ZONES_EXAMPLE);
     let example_src = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
         panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {GEOMETRY_CHUNK_PATH}")
     });
@@ -1302,45 +981,11 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     );
 }
 
-// Discriminating-power controls for the two pure helpers above, in the same
-// synthetic-data posture as the coverage-guard controls earlier in this file:
-// both helpers are the load-bearing part of the guard, and neither is exercised
-// by the real chunk in a way that would notice it going inert.
-
-#[test]
-fn cited_example_paths_trims_a_trailing_sentence_period_and_dedupes() {
-    let markdown = "Worked example: `examples/tolerancing/gdt_zones.ri`.\n\
-                    See also examples/tolerancing/gdt_zones.ri and examples/half_space.ri.\n";
-    assert_eq!(
-        cited_example_paths(markdown),
-        vec![
-            "examples/tolerancing/gdt_zones.ri".to_string(),
-            "examples/half_space.ri".to_string(),
-        ],
-        "citations are deduped, kept in source order, and stripped of the sentence period \
-         that ends the citing sentence"
-    );
-}
-
-#[test]
-fn cited_example_paths_ignores_a_bare_examples_directory_word() {
-    let markdown = "Runnable designs live under examples/, e.g. the tolerancing/ subdir.";
-    assert!(
-        cited_example_paths(markdown).is_empty(),
-        "`examples/` used as a directory word cites no file, so there is nothing to resolve"
-    );
-}
-
-#[test]
-fn cited_example_paths_ignores_an_examples_segment_nested_in_a_longer_path() {
-    let markdown = "See `crates/reify-eval/tests/examples/bar.ri` and `docs/examples/foo.ri`.";
-    assert!(
-        cited_example_paths(markdown).is_empty(),
-        "an `examples/` segment inside a longer path is not a repo-root citation — truncating \
-         it to `examples/bar.ri` would report a file nobody cited as missing. Got: {:?}",
-        cited_example_paths(markdown)
-    );
-}
+// Discriminating-power controls for `strip_line_comments`, in the same
+// synthetic-data posture as the coverage-guard controls earlier in this file: it
+// is the load-bearing part of the worked-example claim, and the real chunk does
+// not exercise it in a way that would notice it going inert. The citation scan's
+// own controls live beside the shared scanner in `chunk_cite_gate.rs`.
 
 #[test]
 fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {
@@ -1560,7 +1205,7 @@ Prose with `also_ignored(a, b)` inline is not a bolded row.
 //
 // `geometry_call_names` collapses every call to a name to a single entry, so
 // two arities of the same call name in the fixture are indistinguishable from
-// one. `geometry_call_forms` is the fixture-side counterpart to
+// one. `doc_forms::call_forms` is the fixture-side counterpart to
 // `documented_geometry_op_forms`: the same AST walk, additionally recording
 // each `FunctionCall`'s argument count.
 //
@@ -1580,7 +1225,7 @@ structure def TwoArities {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "two-arities snippet"),
+        call_forms(source, "two-arities snippet"),
         vec![
             ("box".to_string(), 3),
             ("orient_identity".to_string(), 0),
@@ -1612,7 +1257,7 @@ structure def NestedCall {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "nested-call snippet"),
+        call_forms(source, "nested-call snippet"),
         vec![
             ("box".to_string(), 3),
             ("edges".to_string(), 1),
@@ -1637,7 +1282,7 @@ structure def ZeroArgCall {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "zero-arg snippet"),
+        call_forms(source, "zero-arg snippet"),
         vec![("orient_identity".to_string(), 0)],
         "a zero-arg call must record arity 0, not be dropped or miscounted"
     );
@@ -1658,7 +1303,7 @@ structure def SortedAndDeduped {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "sorted-and-deduped snippet"),
+        call_forms(source, "sorted-and-deduped snippet"),
         vec![("box".to_string(), 3), ("scale".to_string(), 2)],
         "two calls sharing the same (name, arity) — here box/3 and scale/2, each appearing \
          twice — must collapse to one entry each in a deterministic sorted order"
@@ -1674,7 +1319,7 @@ structure def SortedAndDeduped {
 //
 // `unmirrored_documented_forms` is the FORM-granularity counterpart to
 // `every_documented_geometry_op_name_is_exercised_by_the_fixture`: it pairs
-// `documented_geometry_op_forms` against `geometry_call_forms` so a documented
+// `documented_geometry_op_forms` against `doc_forms::call_forms` so a documented
 // OVERLOAD with no compiling instance at that exact arity is reported, not
 // just an absent NAME.
 //
@@ -1684,37 +1329,19 @@ structure def SortedAndDeduped {
 // name-only guard cannot see this — `rotate` and `translate` are both real
 // names, exercised by the fixture, just not at THAT arity. Each test feeds a
 // SYNTHETIC markdown snippet — never editing stdlib.md or the fixture — but
-// checks it against the REAL fixture source via `read_fixture()`.
+// checks it against the REAL fixture source via `read_fixture`.
 
 /// Every documented form in `markdown` with no matching call in
-/// `fixture_source` — the doc → fixture direction at FORM granularity.
-///
-/// A `DocForm` is considered mirrored by any fixture `(name, count)` call
-/// where `count == n` for `Arity::Exact(n)`, or `count >= n` for
-/// `Arity::AtLeast(n)`. Pure over two `&str`s — no file I/O — so callers
-/// (including the inline printer_v01-replay controls below) can drive it with
-/// synthetic markdown checked against the real fixture. Sorted and deduped,
-/// so a caller's failure message names the exact unmirrored form(s).
+/// `fixture_source` — the doc → fixture direction at FORM granularity, by
+/// `doc_forms`' [`unmirrored_forms`] (`Exact` pairs by `==`, `AtLeast` by
+/// `>=`). Pure over two `&str`s — no file I/O — so callers (including the
+/// inline printer_v01-replay controls below) can drive it with synthetic
+/// markdown checked against the real fixture.
 fn unmirrored_documented_forms(markdown: &str, fixture_source: &str, label: &str) -> Vec<DocForm> {
-    let documented = documented_geometry_op_forms(markdown);
-    let fixture_forms = geometry_call_forms(fixture_source, label);
-
-    let mut unmirrored: Vec<DocForm> = documented
-        .into_iter()
-        .filter(|form| {
-            !fixture_forms.iter().any(|(name, count)| {
-                *name == form.name
-                    && match form.arity {
-                        Arity::Exact(n) => *count == n,
-                        Arity::AtLeast(n) => *count >= n,
-                    }
-            })
-        })
-        .collect();
-
-    unmirrored.sort();
-    unmirrored.dedup();
-    unmirrored
+    unmirrored_forms(
+        &documented_geometry_op_forms(markdown),
+        &call_forms(fixture_source, label),
+    )
 }
 
 #[test]
@@ -1726,7 +1353,11 @@ fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![
             DocForm {
                 name: "rotate".to_string(),
@@ -1753,7 +1384,11 @@ fn unmirrored_documented_forms_reports_nothing_for_the_corrected_row() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         Vec::<DocForm>::new(),
         "the control's control: with the compiler-true forms stdlib.md documents today, \
          nothing must be reported — the guard is not merely \"reports everything\""
@@ -1769,7 +1404,11 @@ fn unmirrored_documented_forms_at_least_matches_greater_or_equal_but_exact_does_
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![DocForm {
             name: "nurbs".to_string(),
             arity: Arity::Exact(12),
@@ -1789,7 +1428,11 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 "#;
 
     assert_eq!(
-        unmirrored_documented_forms(markdown, &read_fixture(), "fixture"),
+        unmirrored_documented_forms(
+            markdown,
+            &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+            "fixture"
+        ),
         vec![DocForm {
             name: "nonexistent_op".to_string(),
             arity: Arity::Exact(2),
@@ -1886,7 +1529,11 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
     let documented = documented_geometry_op_forms(&markdown);
     assert_form_scan_not_vacuous(&documented);
 
-    let unmirrored = unmirrored_documented_forms(&markdown, &read_fixture(), "fixture");
+    let unmirrored = unmirrored_documented_forms(
+        &markdown,
+        &read_fixture(STDLIB_GEOMETRY_OPS_FIXTURE),
+        "fixture",
+    );
     assert!(
         unmirrored.is_empty(),
         "stdlib.md documents geometry-op FORM(s) with no compiling instance at that exact \

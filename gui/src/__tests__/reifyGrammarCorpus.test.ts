@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { highlightTree, classHighlighter } from '@lezer/highlight';
 import { foldNodeProp, indentNodeProp } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
@@ -12,6 +11,15 @@ import {
   KEYWORD_LED_BODIES,
 } from '../editor/reifyLanguage';
 import { KEYWORDS } from '../editor/highlight';
+import {
+  countErrorNodes,
+  countNodesNamed,
+  keywordSpans,
+  nodeNames,
+  nodeNamesSpanning,
+  punctuationSpans,
+  sourceOfNodeNamed,
+} from './lezerProbeHelpers';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -29,92 +37,6 @@ const REPO_ROOT = join(__dirname, '../../..');
 
 function readFixture(relPath: string): string {
   return readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-}
-
-/** Parse `src` and count the error nodes the Lezer parser inserted. */
-function countErrorNodes(src: string): number {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  let errors = 0;
-  do {
-    if (cursor.type.isError) errors++;
-  } while (cursor.next());
-  return errors;
-}
-
-/** Parse `src` and collect the set of node type names in the resulting tree. */
-function nodeNames(src: string): Set<string> {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  const names = new Set<string>();
-  do {
-    names.add(cursor.type.name);
-  } while (cursor.next());
-  return names;
-}
-
-/**
- * Parse `src` and count the nodes named `name`.
- *
- * `nodeNames` collapses to a set, so a production that emits the SAME node
- * type nested inside itself reads as one hit and the redundancy is invisible.
- * That is not hypothetical: naming a rule and the token it wraps identically
- * made every wildcard arm come out as `WildcardPattern > WildcardPattern`
- * while `toContain('WildcardPattern')` stayed green (#5957). Use this wherever
- * the tree SHAPE, not just the presence of a name, is the contract.
- */
-function countNodesNamed(src: string, name: string): number {
-  const tree = parser.parse(src);
-  const cursor = tree.cursor();
-  let count = 0;
-  do {
-    if (cursor.type.name === name) count++;
-  } while (cursor.next());
-  return count;
-}
-
-/**
- * Node type names of every node whose span is EXACTLY the first occurrence of
- * `text` in `src`, outermost first — the discriminator for "what did this token
- * reduce TO?".
- *
- * `countNodesNamed(src, 'X') === 0` answers only what a token is NOT, and stays
- * green for every misparse that drops the token from the tree, absorbs it into
- * its parent with no child of its own, or brings it back under a third name.
- * Naming what actually spans the token separates those from the intended tree.
- * MEASURED: `A | _` gives `['Identifier']`; bare `_ => …` gives
- * `['MatchPattern', 'WildcardPattern']`. Throws rather than returning `[]` when
- * `text` is absent, so a typo'd needle fails loudly instead of vacuously.
- */
-function nodeNamesSpanning(src: string, text: string): string[] {
-  const from = src.indexOf(text);
-  if (from < 0) throw new Error(`no ${JSON.stringify(text)} in: ${src}`);
-  const to = from + text.length;
-  const cursor = parser.parse(src).cursor();
-  const names: string[] = [];
-  do {
-    if (cursor.from === from && cursor.to === to) names.push(cursor.type.name);
-  } while (cursor.next());
-  return names;
-}
-
-/**
- * Source text SPANNED by the first node named `name` — the discriminator for
- * "was this token absorbed into that node, or left beside it?".
- *
- * A count cannot answer that. An optional leading keyword parsed as a stray
- * SIBLING leaves the count of the node it should have joined at exactly 1, so
- * `countNodesNamed(..., 'ParamDeclaration') === 1` passes on both the right
- * tree and the wrong one; only the node's `from` offset separates them. Throws
- * rather than returning `''` when the node is absent, so a typo'd name fails
- * loudly instead of vacuously.
- */
-function sourceOfNodeNamed(src: string, name: string): string {
-  const cursor = parser.parse(src).cursor();
-  do {
-    if (cursor.type.name === name) return src.slice(cursor.from, cursor.to);
-  } while (cursor.next());
-  throw new Error(`no ${name} node in parse of: ${src}`);
 }
 
 /**
@@ -187,27 +109,7 @@ function leftOperandOf(src: string): string {
 }
 
 /**
- * ANTI-VACUITY GUARD. Every other assertion in this file is of the form
- * `countErrorNodes(...) === 0` or "this path is in the clean set". If the
- * helper ever silently degraded to always returning 0 — a @lezer/lr change to
- * `cursor.type.isError`, or `tree.cursor()` gaining a default that skips
- * anonymous/error nodes — the whole suite would stay green while covering
- * nothing, and the drift ledger would happily report 329/329 clean. This pins
- * that the helper can still report a non-zero count.
- */
-describe('reify.grammar — countErrorNodes helper', () => {
-  it('reports error nodes on input that cannot parse', () => {
-    // Measured: 3 error nodes.
-    expect(countErrorNodes('@@@ !!! ???')).toBeGreaterThan(0);
-  });
-
-  it('reports zero on input that parses', () => {
-    expect(countErrorNodes('structure def Foo { }')).toBe(0);
-  });
-});
-
-/**
- * Companion anti-vacuity guard for `leftOperandOf`. Pinned against the
+ * Anti-vacuity guard for `leftOperandOf`. Pinned against the
  * SYMBOLIC operator bands, which predate this file and are not touched by the
  * keyword-band work below — so if the helper ever stopped discriminating
  * groupings, these fail independently of whatever the keyword band does.
@@ -353,17 +255,44 @@ describe('reify.grammar snippets — module and import', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
   });
 
-  // NOTE — the destructured import form (`import a.b {C, D}` vs
-  // `import a.b.{C, D}`) is deliberately NOT asserted here. The tree-sitter
-  // RULE at grammar.js:258-282 sequences the path and the items with no
-  // separator, but grammar.js's own doc comment on that rule (:263) and the
-  // lowering at crates/reify-syntax/src/ts_parser.rs:538 both spell it with a
-  // dot. Nothing settles the disagreement: `import_items` has no tree-sitter
-  // corpus test, no committed `.ri` uses the form, and no Rust code matches on
-  // the node name. Asserting either spelling here would cement an unverified
-  // shape as an intentional GUI contract, so the production stays (faithful to
-  // the rule) and the test does not pin it. See the ImportDeclaration comment
-  // in reify.grammar; #5931 resolves the canonical form.
+  /**
+   * The destructured import is DOTTED, `import a.b.{C, D}`, per
+   * docs/reify-language-spec.md §15's `import_path` (#5931) — a normative
+   * claim, so pinned by assertion per docs/legibility/design-invariants.md.
+   * See the ImportDeclaration comment in reify.grammar.
+   */
+  it('parses the canonical destructured import `import std.mech.{Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech.{Bolt, Nut}')).toBe(0);
+  });
+
+  it('parses a single-item destructured import `import a.{Foo}`', () => {
+    expect(countErrorNodes('import a.{Foo}')).toBe(0);
+  });
+
+  it('rejects the spaced destructured form `import std.mech {Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech {Bolt, Nut}')).toBeGreaterThan(0);
+  });
+
+  /**
+   * This port's one deliberate divergence from tree-sitter, explained at the
+   * ImportDeclaration comment in reify.grammar. The accepting half is pinned by
+   * `interior_whitespace_before_the_brace_list_is_accepted` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs.
+   */
+  it('rejects interior whitespace in the opener `import a . { B }`', () => {
+    expect(countErrorNodes('import a . { B }')).toBeGreaterThan(0);
+  });
+
+  /**
+   * Deliberate latitude beyond §15's EBNF, kept for the reasons recorded at
+   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs, which pins the
+   * authoritative side identically.
+   */
+  it('accepts the empty and trailing-comma item lists §15 does not describe', () => {
+    expect(countErrorNodes('import a.{}')).toBe(0);
+    expect(countErrorNodes('import a.{Foo,}')).toBe(0);
+  });
 
   /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
@@ -3310,7 +3239,7 @@ describe('reify.grammar snippets — a ReservedWord in call position', () => {
     expect(nodeNames(src)).toContain('LambdaExpression');
   });
 
-  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31
+  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri
   // (`Steel_AISI_1045(yield_stress: some(310mm))`) — a reserved-word call nested
   // inside a NamedArgument VALUE, a third distinct position.
   it('parses a reserved-word call as a named-argument value', () => {
@@ -4285,20 +4214,6 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
 });
 
 /**
- * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
- * with the `@external propSource` — through `highlightTree`, and collects the
- * source text of every span that received `t.keyword`.
- */
-function keywordSpans(src: string): string[] {
-  const tree = reifyLRLanguage.parser.parse(src);
-  const spans: string[] = [];
-  highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes('tok-keyword')) spans.push(src.slice(from, to));
-  });
-  return spans;
-}
-
-/**
  * Promoting a word out of the `ReservedWord` @specialize list is mandatory
  * (lezer-generator otherwise hard-fails on a conflicting specialization), but
  * it silently drops that word out of the `ReservedWord: t.keyword` styleTags
@@ -4427,21 +4342,83 @@ describe('reifyLanguage — fold and indent coverage', () => {
   const EXCLUDED_BRACE_NODES = ['Interpolation'];
 
   /**
+   * `line` with its `//` comment removed, so prose about braces never counts
+   * as grammar. Quote-aware: a `//` inside a string literal
+   * (`LineComment { "//" … }`) is content, and a backslash escapes the next
+   * character both inside a literal and in a char set (`![\\\"{}]`).
+   */
+  function stripLineComment(line: string): string {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '\\') i++;
+      else if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (line.startsWith('//', i)) return line.slice(0, i);
+    }
+    return line;
+  }
+
+  /**
+   * reify.grammar's comment-stripped lines, split at the `@tokens` header:
+   * `productions` before it, `tokens` after it. The same text means different
+   * things on each side — inside `@tokens` a braced literal DECLARES a token
+   * rather than opening a production body — so every scan below reads exactly
+   * one side.
+   */
+  function grammarSections(grammarSrc: string): { productions: string[]; tokens: string[] } {
+    const lines = grammarSrc.split('\n');
+    const header = lines.findIndex((line) => /^@tokens\b/.test(line));
+    const split = header === -1 ? lines.length : header;
+    return {
+      productions: lines.slice(0, split).map(stripLineComment),
+      tokens: lines.slice(split + 1).map(stripLineComment),
+    };
+  }
+
+  /**
+   * Names declared INSIDE the `@tokens` block whose entire body is one string
+   * literal containing a `{` — a brace opener that has been folded into a
+   * single NAMED token, such as `ImportItemsOpen { ".{" }` (#5931).
+   *
+   * THE SINGLE-LITERAL SHAPE IS LOAD-BEARING, not incidental tightening. The
+   * looser reading — "any token declaration mentioning a braced literal" —
+   * also matches `StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }`, whose
+   * `"{{"` is a string ESCAPE and not a body opener at all, and would inject a
+   * phantom into the ledger below. Only a token that IS a brace, whole,
+   * qualifies.
+   */
+  function braceOpenerTokens(grammarSrc: string): string[] {
+    const names: string[] = [];
+    for (const line of grammarSections(grammarSrc).tokens) {
+      const decl = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/);
+      if (decl && decl[2].includes('{')) names.push(decl[1]);
+    }
+    return names;
+  }
+
+  /**
    * Every capitalised production in reify.grammar whose own body contains a
-   * literal `"{"` token. Scans line by line, tracking the most recent
-   * production header, and stops at `@tokens` — inside that block `"{"` is a
-   * token declaration, not a body.
+   * brace opener, tracking the most recent production header line by line.
+   *
+   * Two spellings count as an opener: the anonymous literal `"{"`, and a
+   * reference to a NAMED opener token from `braceOpenerTokens` (today
+   * `ImportItemsOpen`). A combined anonymous literal such as an inline `".{"`
+   * deliberately does not — it produces no node to fold — and is rejected
+   * outright by `admits no production that opens with an anonymous combined
+   * brace literal` below rather than silently skipped here.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
+    const openers = braceOpenerTokens(grammarSrc);
     const found = new Set<string>();
     let current: string | null = null;
-    for (const rawLine of grammarSrc.split('\n')) {
-      if (/^@tokens\b/.test(rawLine)) break;
-      // Strip line comments so prose about braces never counts as a body.
-      const line = rawLine.replace(/\/\/.*$/, '');
+    for (const line of grammarSections(grammarSrc).productions) {
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
-      if (current && line.includes('"{"')) found.add(current);
+      const opensWithBrace =
+        line.includes('"{"') || openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+      if (current && opensWithBrace) found.add(current);
     }
     return [...found].sort();
   }
@@ -4476,6 +4453,35 @@ describe('reifyLanguage — fold and indent coverage', () => {
   });
 
   /**
+   * The ledger's omission of a third opener spelling — a combined anonymous
+   * literal such as an inline `".{"` — is a decision, so it is asserted rather
+   * than left to the extractor to swallow. Such a literal produces no node;
+   * see the ImportDeclaration comment in reify.grammar.
+   */
+  it('admits no production that opens with an anonymous combined brace literal', () => {
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const line of grammarSections(readFixture('gui/src/editor/reify.grammar')).productions) {
+      for (const [literal] of line.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
+        scanned += 1;
+        const body = literal.slice(1, -1);
+        if (/[{}]/.test(body) && body !== '{' && body !== '}') offenders.push(line.trim());
+      }
+    }
+    // Sanity: the literal scan found something, so an empty match set cannot
+    // make the check below pass vacuously.
+    expect(scanned).toBeGreaterThan(50);
+    expect(
+      offenders,
+      `These production bodies in reify.grammar open with an anonymous literal ` +
+        `that is more than a bare brace. The lexer consumes such a literal ` +
+        `without emitting a node, so the body's fold returns null and its ` +
+        `opener cannot be styled or bracket-matched. Declare the opener as a ` +
+        `NAMED token in @tokens instead, as ImportItemsOpen is.`,
+    ).toEqual([]);
+  });
+
+  /**
    * And the props actually RESOLVE on the configured parser. The list check
    * above compares two string arrays; it would stay green if `parser.configure`
    * silently dropped the props (a rename of `foldNodeProp`, a node type that
@@ -4503,7 +4509,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * quoted `"}"`.
    */
   function productionBody(grammarSrc: string, name: string): string {
-    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const src = grammarSrc.split('\n').map(stripLineComment).join('\n');
     const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
     if (!header) throw new Error(`production ${name} not found in reify.grammar`);
     let depth = 1;
@@ -4564,16 +4570,36 @@ describe('reifyLanguage — fold and indent coverage', () => {
   describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
     const grammarSrc = readFixture('gui/src/editor/reify.grammar');
 
+    /**
+     * The spellings that count as a brace OPENER at the head of an arm: the
+     * anonymous literal `"{"`, plus every named opener token from
+     * `braceOpenerTokens` — the same definition `braceDelimitedNodeTypes` uses
+     * for list membership, so the two halves of this ledger cannot disagree on
+     * what an opener is.
+     *
+     * The sibling KEYWORD_LED_BODIES assertion below stays literal-only: no
+     * keyword-led body opens an arm with a named token.
+     */
+    const armOpeners = ['"{"', ...braceOpenerTokens(grammarSrc)];
+    /** `opener` appears ANYWHERE in `arm` — the "has a brace at all" reading. */
+    const armHasOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.includes('"{"') : new RegExp(`\\b${opener}\\b`).test(arm);
+    /** `arm` STARTS with `opener` — the positional reading this test is about. */
+    const armStartsWithOpener = (arm: string, opener: string) =>
+      opener === '"{"' ? arm.startsWith('"{"') : new RegExp(`^${opener}\\b`).test(arm);
+
     it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
       const arms = splitTopLevelArms(productionBody(grammarSrc, name));
-      const braceArms = arms.filter((arm) => arm.includes('"{"'));
-      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
-        0,
-      );
+      const braceArms = arms.filter((arm) => armOpeners.some((op) => armHasOpener(arm, op)));
       expect(
-        braceArms.every((arm) => arm.startsWith('"{"')),
+        braceArms.length,
+        `${name} has no brace opener in its reify.grammar production at all — neither a "{" ` +
+          `token nor any named opener (${JSON.stringify(braceOpenerTokens(grammarSrc))})`,
+      ).toBeGreaterThan(0);
+      expect(
+        braceArms.every((arm) => armOpeners.some((op) => armStartsWithOpener(arm, op))),
         `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
-          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+          `content before its brace opener — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
       ).toBe(true);
     });
 
@@ -4669,9 +4695,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
-    // `import a.b {C, D}` — no separator, matching the RULE this port follows
-    // (see the long note on `ImportDeclaration` in reify.grammar).
-    ImportItems: 'import std.mech {Bolt, Nut}',
+    // The `.` is part of the opener token `ImportItemsOpen` (`.{`), so
+    // `ownBraceInterior`'s literal-`{` scan lands one past the dot — the same
+    // `from` the fold assertion for this node expects.
+    ImportItems: 'import std.mech.{Bolt, Nut}',
     // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30.
     KeyedMemberBlock:
       'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }',
@@ -4702,6 +4729,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
     FieldSource: FIELD_DEFINITION_SRC,
     PurposeDeclaration: 'purpose design_review(subject : Structure) { constraint 1mm > 0mm }',
     RelateBlock: 'structure def F { relate { fasten(a.frame, b.frame) } }',
+    // Body lines from tests/prd-gate/fixtures/sketch_block_target.ri:9,13.
+    SketchBlock: 'structure def F { sketch profile { let a = point(0mm, 0mm)  fix(a) } }',
     ConstraintDefinition: 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}',
     SubRelateBlock: 'structure def F { sub s : T at auto where { concentric(a, b) } }',
     MatchArmDeclBlock:
@@ -4831,6 +4860,41 @@ describe('reifyLanguage — fold and indent coverage', () => {
       const fold = node!.type.prop(foldNodeProp)!;
       expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
     });
+  });
+
+  /**
+   * Behavioural pins for the destructured import's opener: they call the fold
+   * and read its range, and drive the real highlighter and read its spans. The
+   * structural `resolves fold and indent props on %s` guard only checks that
+   * the prop is DEFINED, so it cannot see a fold that returns null because the
+   * opener has no node — see the ImportDeclaration comment in reify.grammar.
+   */
+  it('folds the canonical destructured import to exactly its item list', () => {
+    const src = 'import std.mech.{Bolt, Nut}';
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    let items: SyntaxNode | null = null;
+    do {
+      if (cursor.type.name === 'ImportItems') items = cursor.node;
+    } while (!items && cursor.next());
+    expect(items, 'no ImportItems in the parse').not.toBeNull();
+
+    const fold = items!.type.prop(foldNodeProp)!;
+    const range = fold(items!, EditorState.create({ doc: src }));
+    // NOT null — `ImportItems` is listed in BRACE_FIRST_BODIES, and that
+    // membership is a claim that it folds, not merely that it has a prop.
+    expect(range, 'ImportItems resolves a fold prop that folds nothing').not.toBeNull();
+    // The range is the item list itself: `Bolt, Nut`. It starts after the
+    // WHOLE opener (`.{`, two characters), not after the `.`.
+    expect(range).toEqual({ from: src.indexOf('.{') + 2, to: src.lastIndexOf('}') });
+  });
+
+  it('styles the destructured import opener, symmetrically with its closer', () => {
+    const src = 'import a.{Foo}';
+    const spans = punctuationSpans(src);
+    // Sanity: the closer has always been styled, so a helper that collected
+    // nothing at all cannot make the real assertion pass vacuously.
+    expect(spans).toContain('}');
+    expect(spans).toContain('.{');
   });
 });
 
@@ -5400,6 +5464,9 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/shift_invert_modal_shifted.ri',
   'tests/prd-gate/fixtures/shift_invert_modal_unshifted.ri',
   'tests/prd-gate/fixtures/single_sub_pose_resolves.ri',
+  'tests/prd-gate/fixtures/sketch_auto_seed_target.ri',
+  'tests/prd-gate/fixtures/sketch_aux_let_premise.ri',
+  'tests/prd-gate/fixtures/sketch_block_target.ri',
   'tests/prd-gate/fixtures/solver_unification_ineq_eq_penalty_offset.ri',
   'tests/prd-gate/fixtures/solver_unification_ineq_eq_two_sided_control.ri',
   'tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri',

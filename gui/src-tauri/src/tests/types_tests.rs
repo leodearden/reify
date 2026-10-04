@@ -160,6 +160,7 @@ fn constraint_data_status_wire_tokens_are_lowercase() {
                 id: ConstraintNodeId::new("T", 0),
                 label: None,
                 satisfaction,
+                indeterminate_reason: None,
             }],
             diagnostics: vec![],
             resolved_params: std::collections::HashMap::new(),
@@ -235,6 +236,16 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
     let v = serde_json::to_value(&status).unwrap();
     assert_eq!(v["phase"], json!("evaluating"));
     assert_eq!(v["progress"], json!(0.5));
+}
+
+#[test]
+fn eval_generation_serializes_to_expected_json_shape() {
+    // Pins PRD §3.2 field-name-exactness: no rename_all, field names match TS exactly.
+    let payload = EvalGeneration { generation: 7 };
+    let wire = serde_json::to_string(&payload).unwrap();
+    assert_eq!(wire, r#"{"generation":7}"#);
+    let back: EvalGeneration = serde_json::from_str(&wire).unwrap();
+    assert_eq!(back, payload);
 }
 
 #[test]

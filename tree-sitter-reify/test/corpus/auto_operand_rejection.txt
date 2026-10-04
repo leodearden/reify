@@ -1,3 +1,27 @@
+; NOTE: `auto` operand-position rejection — task 3808 §8.1. The external
+; scanner emits AUTO_TOKEN regardless of valid_symbols (src/scanner.c), so
+; `auto` ERRORs wherever the grammar does not admit it; these cases pin that.
+;
+; PARTIAL REVERSAL, task 5506 (docs/prds/v0_6/constrained-2d-sketch.md §5 D6):
+; `auto( <expr> )` is now admitted in POSITIONAL CALL-ARGUMENT position as its
+; own `auto_seed` node. Nothing else moved. So "positional fn-call arg :error"
+; below now pins the BARE-`auto` rejection specifically, not all `auto` in
+; argument position, and "positional fn-call arg with a seed" documents the
+; other half of the reversal in the same file.
+;
+; 5506 also MOVED that case's expected tree without changing its verdict:
+; admitting AUTO_TOKEN as a prefix at that parser state changed how GLR
+; RECOVERS, so `clamp(auto)` now recovers as `(function_call (identifier)
+; (ERROR))` rather than an `(identifier)` plus a trailing `(ERROR)`. It is still
+; an error. Re-pin such a move ONLY from a `tree-sitter test` diff — never from
+; `tree-sitter parse`, which renders error recovery differently (the
+; maintenance rule is spelled out at the top of test/corpus/imaginary_literal.txt).
+;
+; This file is NOT include_str!'d by any Rust test, so `tree-sitter test` is the
+; only reader — but that CLI is not CI-invoked either. The CI-run signal for
+; these rejections is `bare_auto_stays_rejected_in_positional_operand_position`
+; in tree-sitter-reify/tests/sketch_grammar_tests.rs; keep the two in step.
+
 ================================================================================
 arithmetic operand :error
 ================================================================================
@@ -34,8 +58,9 @@ structure S { let x : Length = clamp(auto) }
       (identifier)
       (type_expr
         (identifier))
-      (identifier))
-    (ERROR)))
+      (function_call
+        (identifier)
+        (ERROR)))))
 
 ================================================================================
 constraint body :error
@@ -102,3 +127,27 @@ field def F : T -> U { source = analytical { auto } }
       (identifier))
     (type_expr
       (identifier))))
+
+================================================================================
+positional fn-call arg with a seed
+================================================================================
+
+structure S { let x : Length = clamp(auto(5mm)) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    (identifier)
+    (let_declaration
+      (identifier)
+      (type_expr
+        (identifier))
+      (function_call
+        (identifier)
+        (argument_list
+          (auto_seed
+            (quantity_literal
+              (number_literal)
+              (unit_expr
+                (unit_name)))))))))

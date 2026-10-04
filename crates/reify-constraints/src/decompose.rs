@@ -113,7 +113,7 @@ impl ExpandedObjectiveRefs {
 /// this function answers a ROUTING question, not a what-does-the-syntax-look-like
 /// question: `SolverRegistry::solver_for` routes on `SubProblem.domain`, and a
 /// `Logical` verdict hands the whole component to whatever occupies the
-/// `Logical` slot — `CpSatSolver`, once PRD2 γ wires it. If that solver cannot
+/// `Logical` slot — `CpSatSolver` in `production()`. If that solver cannot
 /// build a domain for one of the component's autos, `build_variable_domain`
 /// returns `Err` and `solve_inner` fails the ENTIRE component with
 /// `NoProgress`.
@@ -192,23 +192,22 @@ impl ExpandedObjectiveRefs {
 /// having one is a live bug (it short-circuits the domain answer for the very
 /// types whose domain differs from the base's).
 ///
-/// # PRECONDITION on the `Logical` slot — read before wiring PRD2 γ
+/// # PRECONDITION on the `Logical` slot
 ///
 /// This function is generic ROUTING, but the capability it consults —
 /// `crate::cpsat::can_enumerate` — belongs to ONE concrete solver. That is a
-/// dependency inversion, and it is sound today only because of a fact outside
-/// this function: `SolverRegistry::production()` (registry.rs) leaves both the
-/// `logical` and `fallback` slots `None`, so every spelling falls through to
-/// `DimensionalSolver` and `CpSatSolver` is the only thing that could ever
-/// occupy `Logical`. Nothing in the TYPE system enforces that — the slot is an
+/// dependency inversion, and it is sound only because of a fact outside this
+/// function: `SolverRegistry::production()` (registry.rs) installs
+/// `CpSatSolver` — the very solver whose capability this consults — in the
+/// `logical` slot. Nothing in the TYPE system enforces that — the slot is an
 /// `Option<Box<dyn ConstraintSolver>>` and accepts any implementor.
 ///
 /// So the anti-drift argument above ("routing and capability cannot disagree")
-/// holds only while CP-SAT is the sole `Logical` candidate. The moment PRD2 γ
-/// wires a DIFFERENT logical solver into that slot, components get routed by
-/// CP-SAT's acceptance set to a solver that never agreed to it, and the
-/// argument silently stops holding — with no test failing, because
-/// `production()` will still be the thing under test.
+/// holds only while CP-SAT is the `Logical` occupant. The moment a DIFFERENT
+/// logical solver is wired into that slot, components get routed by CP-SAT's
+/// acceptance set to a solver that never agreed to it, and the argument
+/// silently stops holding — with no test failing, because `production()` will
+/// still be the thing under test.
 ///
 /// The fix at that point is NOT to patch this arm: it is to move the capability
 /// question behind the `ConstraintSolver` trait (e.g. `fn can_enumerate(&self,
@@ -357,7 +356,9 @@ struct ConstraintInfo {
 /// it. `let ok = a > 5.0; constraint ok == true` over a `Real` auto classifies
 /// `Logical`; unwidened, that hands `a` to CP-SAT, whose
 /// `build_variable_domain` rejects it and fails the whole component with
-/// `NoProgress`.
+/// `NoProgress`. Widened to `CrossDomain`, it reaches `production()`'s
+/// fallback, `DiscreteFirstFallback`, which re-checks `can_enumerate` against
+/// the component and hands it to `DimensionalSolver`.
 ///
 /// The probe reads the COMPONENT's constraints because CP-SAT builds an auto's
 /// domain from the sub-problem it is handed. Over the whole problem, an enum
@@ -863,8 +864,8 @@ mod tests {
     // classifier never saw a `ValueRef` for, so `SubProblem.domain` describes
     // only the constraint's syntax while `SubProblem.auto_params` describes the
     // widened reality. `SolverRegistry::solver_for` routes on `domain`, so the
-    // disagreement is a mis-ROUTING, latent only because `production()` leaves
-    // both the `Logical` and the `CrossDomain` slot `None`.
+    // disagreement is a mis-ROUTING — live in `production()`, whose `Logical`
+    // slot holds `CpSatSolver`.
     // -----------------------------------------------------------------------
 
     fn bool_cell_ref(entity: &str, member: &str) -> CompiledExpr {
@@ -896,7 +897,7 @@ mod tests {
     /// `{ok: Bool, literal true}`. Post-α the auto `S.a` (a dimensioned
     /// `Scalar`) is nonetheless unioned into this component, so a `Logical`
     /// verdict would route a numeric auto to whatever sits in the `Logical`
-    /// slot. `CpSatSolver` — the intended occupant once PRD2 γ wires it —
+    /// slot. `CpSatSolver` — `production()`'s occupant —
     /// answers `Err("CpSatSolver does not support param type …")` from
     /// `build_variable_domain` and fails the entire component with
     /// `NoProgress`. `CrossDomain` is the honest description and routes to the
@@ -1207,11 +1208,11 @@ mod tests {
     ///
     /// That verdict routes the whole component at `DimensionalSolver`, which
     /// maps any non-`Type::Scalar` param to `DimensionVector::DIMENSIONLESS`
-    /// and writes a `Value::Scalar` back — for a `String` auto. Latent today
-    /// (`production()` leaves both the `Logical` and the `CrossDomain` slot
-    /// `None`, so every spelling lands on `DimensionalSolver` anyway) and live
-    /// at PRD2 γ; the classification is wrong either way, which is what this
-    /// pins.
+    /// and writes a `Value::Scalar` back — for a `String` auto. Latent in
+    /// `production()` (a `CrossDomain` verdict reaches `DiscreteFirstFallback`,
+    /// which cannot enumerate a `String` auto and so lands on
+    /// `DimensionalSolver` too); the classification is wrong either way, which
+    /// is what this pins.
     ///
     /// The dependent cell's `default_expr` is built as IR directly rather than
     /// compiled, so its node types are declarative: what the decomposition
@@ -1292,10 +1293,10 @@ mod tests {
     /// non-`Type::Scalar` param to `DIMENSIONLESS` and writes a `Value::Scalar`
     /// back.
     ///
-    /// Latent in `production()` today (both the `Logical` and `CrossDomain`
-    /// slots are `None`, so every spelling lands on `DimensionalSolver`
-    /// regardless) and live at PRD2 γ — the CLASSIFICATION is wrong either way,
-    /// which is what this pins.
+    /// In `production()` the correct `CrossDomain` verdict reaches
+    /// `DiscreteFirstFallback`, whose `can_enumerate` check sees the
+    /// in-component `Fit` literal and hands the component to `CpSatSolver`,
+    /// which can enumerate `fit`.
     #[test]
     fn an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional() {
         let fit = ValueCellId::new("S", "fit");

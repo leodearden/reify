@@ -147,6 +147,92 @@ fn parse_destructured_import_single_item() {
     );
 }
 
+/// The SPACED form `import a.b {C, D}` is NOT Reify and must be a parse error.
+///
+/// The canonical destructured form is the DOTTED `import a.b.{C, D}`, per the
+/// `import_path` production in `docs/reify-language-spec.md` §15 "Grammar
+/// Summary", which makes the `'.'` an explicit terminal before the brace list
+/// (#5931).
+///
+/// The two tests above cannot pin that separator: an ERROR nested inside
+/// `import_declaration` never becomes a diagnostic (see the note in
+/// `lower_import`), so they would stay green if the grammar merely
+/// error-recovered the `.` — the CST-level pins live in
+/// tree-sitter-reify/tests/import_items_grammar_tests.rs. The spaced form's
+/// stray `{...}`, by contrast, is a sibling ERROR at `source_file` level, which
+/// the source_file dispatch loop does surface, so this rejection is observable
+/// here.
+#[test]
+fn spaced_destructured_import_is_rejected() {
+    let source = "import std.mech {Bolt, Nut}";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "`{source}` (space instead of `.`) must be a parse error — the canonical \
+         destructured form is `import a.b.{{C, D}}` per \
+         docs/reify-language-spec.md §15's `import_path`; got declarations: {:?}",
+        parsed.declarations
+    );
+}
+
+/// The empty and trailing-comma item lists are DELIBERATE LATITUDE at the
+/// grammar level — §15's EBNF (`'{' IDENT (',' IDENT)* '}'`) describes neither,
+/// but `commaSep` in grammar.js and the Lezer port's
+/// `(Identifier ("," Identifier)* ","?)?` both admit them, and
+/// `empty_and_trailing_comma_item_lists_are_deliberate_latitude` in
+/// tree-sitter-reify/tests/import_items_grammar_tests.rs records why that is
+/// kept rather than tightened.
+///
+/// This pins what the two shapes LOWER to, which no grammar test can see: an
+/// empty list stays `Destructured` with no names — a vacuous import, NOT
+/// `ImportKind::Module` and not a parse error — and a trailing comma
+/// contributes no phantom name. Both follow from `lower_import` keeping only
+/// the `identifier` children of the `items` field, so a change to that loop
+/// (or to which field selects the kind) shows up here.
+#[test]
+fn empty_and_trailing_comma_destructured_imports_lower_as_written() {
+    // The single `ImportDecl` in `source`, with the parse asserted clean.
+    fn single_import(source: &str) -> ImportDecl {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "`{source}` must parse cleanly; parse errors: {:?}",
+            parsed.errors
+        );
+        parsed
+            .declarations
+            .iter()
+            .find_map(|d| {
+                if let reify_ast::Declaration::Import(i) = d {
+                    Some(i.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{source}` should have an import; got declarations: {:?}",
+                    parsed.declarations
+                )
+            })
+    }
+
+    let empty = single_import("import a.{}");
+    assert_eq!(empty.path, "a");
+    assert_eq!(
+        empty.kind,
+        ImportKind::Destructured(vec![]),
+        "an empty item list stays Destructured — a vacuous import, not Module"
+    );
+
+    let trailing = single_import("import a.{Foo,}");
+    assert_eq!(
+        trailing.kind,
+        ImportKind::Destructured(vec!["Foo".to_string()]),
+        "a trailing comma must not contribute a phantom name"
+    );
+}
+
 // ── Step 7: Aliased module import ─────────────────────────────────
 
 #[test]

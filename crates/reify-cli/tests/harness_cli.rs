@@ -61,10 +61,14 @@ mod cli_check_cfg;
 mod cli_check_cfg_example;
 #[path = "harness_cli/cli_check_connect_direction.rs"]
 mod cli_check_connect_direction;
+#[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
+mod cli_check_connect_undeclared_member;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
 mod cli_check_parametric_vec3;
+#[path = "harness_cli/cli_check_relate_family_exit.rs"]
+mod cli_check_relate_family_exit;
 #[path = "harness_cli/cli_check_result_prelude.rs"]
 mod cli_check_result_prelude;
 #[path = "harness_cli/cli_check_variant_construction.rs"]
@@ -177,6 +181,8 @@ mod cli_tensegrity_t0a_golden;
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
 mod cli_trait_assoc_fn_overload;
+#[path = "harness_cli/cli_transform_consumer_length_diag.rs"]
+mod cli_transform_consumer_length_diag;
 #[path = "harness_cli/cli_transform_twist_dimension_diag.rs"]
 mod cli_transform_twist_dimension_diag;
 #[path = "harness_cli/cli_type_hygiene_strict.rs"]
@@ -187,3 +193,7 @@ mod cli_undef_self_describing;
 mod cli_vc_clearance;
 #[path = "harness_cli/corpus_no_bare_scalar.rs"]
 mod corpus_no_bare_scalar;
+#[path = "harness_cli/units_length_boundary_gate.rs"]
+mod units_length_boundary_gate;
+#[path = "harness_cli/units_length_boundary_ledger.rs"]
+mod units_length_boundary_ledger;

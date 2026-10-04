@@ -21,6 +21,8 @@ import {
   DEFAULT_PROPERTY_HEIGHT,
   DEFAULT_CONSTRAINT_HEIGHT,
 } from '../stores/layoutStore';
+import { syncOrbitUpAxis } from '../viewport/controls';
+import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -85,7 +87,7 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //    would answer a malformed REQUEST with a true-looking OBSERVATION.
 //
 // The canonical enumeration is the exported `TYPE_GUARDED_RESOLVER_TOOLS`
-// below — FOURTEEN tool names, served by ELEVEN guard copies. It lives there
+// below — SIXTEEN tool names, served by TWELVE guard copies. It lives there
 // as a VALUE, not here as prose, so that a tool added without a guard fails a
 // test instead of merely making a comment stale; see its docblock. What the
 // flat list cannot express, and what this comment therefore carries, is the
@@ -103,7 +105,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //  * `resolveElement`'s single copy, on the whole-selector `selector`, SHARED
 //    by query_selector, get_layout_metrics and get_computed_style;
 //  * query_selector_all's own inline copy of that same `selector` guard — it
-//    needs the whole NodeList, so it never routes through `resolveElement`.
+//    needs the whole NodeList, so it never routes through `resolveElement`;
+//  * `driveFormControl`'s single copy, on the whole-selector `selector`, in
+//    ./formControl, SHARED by scrub_range_input and edit_text_input. It
+//    resolves STRICTLY — exactly one match, else an error — deliberately
+//    diverging from `resolveElement`'s first match, for the reason
+//    `pickFeaChannelSelect` gives: guessing between N form controls would
+//    misapply a value silently.
 //
 // (Grep `typeof .* !== 'string'` in this file and you will also hit wait_for's
 // `predicate.path is required for store kind` — that one is NOT in this list:
@@ -118,12 +126,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
 // own coverage or it can be reverted alone with the suite green. That makes the
 // unit of coverage the guard COPY, not the tool name: the `boundary guards above
-// the escape` block of debugBridge.test.tsx carries one row per copy — twelve
-// rows for eleven copies, since driveTreeNode's single copy interpolates two
+// the escape` block of debugBridge.test.tsx carries one row per copy — thirteen
+// rows for twelve copies, since driveTreeNode's single copy interpolates two
 // different testid prefixes and so earns a row each. A new tool joining this
 // list needs its own row unless it demonstrably SHARES an existing copy, as
-// collapse_tree_node shares expand_tree_node's and get_layout_metrics /
-// get_computed_style share query_selector's — in which case name the sharer.
+// collapse_tree_node shares expand_tree_node's, get_layout_metrics /
+// get_computed_style share query_selector's, and edit_text_input shares
+// scrub_range_input's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -144,7 +153,7 @@ export const RESOLVE_BY_TESTID_ERRORS = {
  * and the comments point at it instead of restating it.
  *
  * Order follows the rule's own prose: the seven `testId` tools, `open_menu`'s
- * `name`, the two tree tools' shared `path`, then the four whole-selector
+ * `name`, the two tree tools' shared `path`, then the six whole-selector
  * tools. NOT a dispatch table — nothing reads it at runtime.
  */
 export const TYPE_GUARDED_RESOLVER_TOOLS = [
@@ -162,6 +171,8 @@ export const TYPE_GUARDED_RESOLVER_TOOLS = [
   'query_selector_all',
   'get_layout_metrics',
   'get_computed_style',
+  'scrub_range_input',
+  'edit_text_input',
 ] as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -1261,6 +1272,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true };
     },
 
+    scrub_range_input: (params) => driveFormControl(RANGE_INPUT, params),
+    edit_text_input: (params) => driveFormControl(TEXT_INPUT, params),
+
     type_in_editor: (params) => {
       const content = params.content as string;
       if (content === undefined) return { error: 'content is required' };
@@ -1460,12 +1474,19 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       // Apply pose — set up before lookAt/controls.update so orientation is correct
       camera.position.set(...position);
-      if (up !== undefined) camera.up.set(...up);
+      if (up !== undefined) {
+        camera.up.set(...up);
+        // Re-derive the OrbitControls orbit frame from the new up BEFORE controls.update()
+        // (docs/debug-mcp-contract.md §6 point 2, #6497).
+        if (controls) syncOrbitUpAxis(controls);
+      }
       if (controls) {
         controls.target.set(...target);
       } else {
         // No OrbitControls — orient camera directly toward target so the contract
         // "same input → same camera frame" holds even without controls attached.
+        // No up-axis sync needed on this branch: Object3D.lookAt reads this.up
+        // directly, so it already honours the value set above.
         camera.lookAt(target[0], target[1], target[2]);
       }
       if (zoom !== undefined) camera.zoom = zoom;
@@ -1477,13 +1498,27 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       camera.updateMatrixWorld();
       renderer.render(scene, camera);
 
-      // Build the full applied pose — snapshot camera state for omitted params
-      const appliedUp = up ?? ([camera.up.x, camera.up.y, camera.up.z] as [number, number, number]);
-      const appliedZoom = zoom ?? (camera.zoom ?? 1);
+      // `applied` is the LIVE post-constraint pose (same reads as Viewport.tsx
+      // snapshotCamera), never the request; see docs/debug-mcp-contract.md §6 point 1.
+      const appliedPosition: [number, number, number] = [
+        camera.position.x,
+        camera.position.y,
+        camera.position.z,
+      ];
+      const appliedTarget: [number, number, number] = controls
+        ? [controls.target.x, controls.target.y, controls.target.z]
+        : target;
+      const appliedUp: [number, number, number] = [camera.up.x, camera.up.y, camera.up.z];
+      const appliedZoom = camera.zoom ?? 1;
 
       return {
         ok: true,
-        applied: { position, target, up: appliedUp, zoom: appliedZoom },
+        applied: {
+          position: appliedPosition,
+          target: appliedTarget,
+          up: appliedUp,
+          zoom: appliedZoom,
+        },
       };
     },
 
@@ -1889,6 +1924,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       );
       const rc = new Raycaster();
       (rc as any).firstHitOnly = true;
+      // Resync matrixWorld before casting: a camera move leaves its rotation stale. See
+      // docs/debug-mcp-contract.md §5 'The pick camera is the render camera' (#6496).
+      vp.camera.updateMatrixWorld();
       rc.setFromCamera(ndc, vp.camera);
 
       const meshes = Array.from(vp.getMeshes().values()) as import('three').Object3D[];

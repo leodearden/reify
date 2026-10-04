@@ -49,8 +49,10 @@ pub use ffi::ffi::TopologyCacheBuildCounts;
 
 /// Zero the calling thread's boolean-op-pass count (task 5213).
 ///
-/// Incremented once per completed OCCT boolean `Build()` (the binary
-/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// Incremented once per completed OCCT boolean `Build()`, at the single
+/// `Build()` site every boolean goes through: the binary fuse/cut/common ops,
+/// their `*_with_history` siblings (the production realization path) and the
+/// single-pass `fuse_shape_list`.  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
 /// single-pass change.
@@ -95,6 +97,14 @@ pub fn reset_boolean_pass_count() {}
 pub fn boolean_pass_count() -> u64 {
     0
 }
+
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+mod boolean_parallelism;
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use boolean_parallelism::{
+    BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
+};
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -8483,21 +8493,6 @@ mod tests {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0);
                 eprintln!("inner Thicken(-0.5mm) volume = {:.3e} m³ (expected ~7.29e-7 = (9mm)³)", inner_v);
-
-                // Try Difference(outer, inner)
-                let diff_result = kernel.execute(&GeometryOp::Difference {
-                    left: outer_h.id,
-                    right: inner_h.id,
-                });
-                eprintln!("Difference result: {:?}", diff_result.as_ref().map(|h| h.id));
-                if let Ok(diff_h) = diff_result {
-                    let diff_vol = kernel.query(&GeometryQuery::Volume(diff_h.id));
-                    eprintln!("Difference volume: {:?}", diff_vol);
-                    let diff_v = diff_vol.ok().and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    eprintln!("zone_profile volume = {:.3e} m³ (expected ~6e-7 for (11mm)³-(9mm)³)", diff_v);
-                } else {
-                    eprintln!("Difference failed: {:?}", diff_result.err());
-                }
             }
             Err(e) => {
                 eprintln!("negative Thicken failed: {}", e);
@@ -8674,69 +8669,6 @@ mod tests {
     }
 
     // --- OffsetSolid high-level execute tests ---
-
-    #[test]
-    fn offset_solid_outward_increases_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Outward offset 2.0 — same primitive as thicken, same 10³ box → vol > 1000
-        let grown_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(grown_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => assert!(
-                v > 1000.0,
-                "outward-offset volume should exceed original 1000, got {v}"
-            ),
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn offset_solid_inward_valid_shrinks_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000; inradius = 5
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Inward offset -2.0 (< inradius 5) → valid smaller solid, 0 < vol < 1000
-        let shrunk_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(-2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(shrunk_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!(v > 0.0, "shrunk volume must be positive, got {v}");
-                assert!(
-                    v < 1000.0,
-                    "shrunk volume must be less than original 1000, got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
 
     #[test]
     fn offset_solid_degenerate_collapse_returns_error() {

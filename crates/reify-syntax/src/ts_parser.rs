@@ -849,21 +849,15 @@ impl<'a> Lowering<'a> {
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
     /// the structure that uses `pp.Pulley()` still binds.
     ///
-    /// **This file's OWN imports only — no external seeding hook (task ν).**
-    /// `known_enums` can be pre-seeded from outside the file
-    /// (`parse_with_prelude_enums` → `with_prelude_enums`); these two maps
-    /// cannot — by construction they see only the `import_declaration` nodes of
-    /// the file being parsed. So a qualifier that `std.prelude` supplies, or
-    /// that a facade re-exports via `pub import` (PRD D-4, §10 Q1), is absent
-    /// from this file's import set and `lower_namespaced_call`'s gate rejects
-    /// it at PARSE time.
-    ///
-    /// The enum precedent is deliberately not mirrored yet: a
-    /// `with_prelude_bindings` seed has no caller until the N3 prelude work
-    /// (PRD §8 ι) ships `std.prelude`, so it would be untested surface today.
-    /// Widening the gate to prelude-supplied and re-exported bindings is
-    /// ν's (task 5505), alongside the qualified lookup that gives such a
-    /// binding a module to resolve against.
+    /// **Per-file by construction: nothing outside the file seeds these
+    /// bindings.** `known_enums` takes an external seed
+    /// (`parse_with_prelude_enums`) because enum names are pub DEFS, which cross
+    /// module boundaries; a namespace binding never does. The qualifier is the
+    /// importing file's OWN binding name (docs/prds/v0_6/stdlib-namespace.md
+    /// NS-Q1 / D-7), and a `pub import` re-exports its target's pub defs, not
+    /// its binding (docs/prds/v0_6/resolution-unification.md D-7). So `import
+    /// std.prelude` binds `prelude` alone: what the facade re-exports is reached
+    /// as `prelude.Name` or unqualified, never as `units.Name`.
     fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
         let Some(import) = self.lower_import(node) else {
             return;
@@ -966,7 +960,18 @@ impl<'a> Lowering<'a> {
         let alias_node = node.child_by_field_name("alias");
 
         let (path, kind) = if let Some(items) = items_node {
-            // Destructured: `import a.b.{C, D}`
+            // Destructured: `import a.b.{C, D}` — canonical per the
+            // `import_path` production in `docs/reify-language-spec.md` §15
+            // "Grammar Summary".
+            //
+            // The `items`/`alias` FIELDS are what select the ImportKind here,
+            // which is why the brace list stays a field on `import_declaration`
+            // rather than folding into `import_path` as the spec EBNF nests it.
+            //
+            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
+            // directly instead of routing through `check_and_lower!`, so an
+            // ERROR nested in the subtree never becomes a diagnostic. Latent,
+            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();
@@ -2629,6 +2634,12 @@ impl<'a> Lowering<'a> {
                 "relate block",
                 self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
+            "sketch_block" => check_and_lower!(
+                self,
+                child,
+                "sketch block",
+                self.lower_sketch_block(child).map(MemberDecl::Sketch)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
@@ -3679,6 +3690,74 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `sketch_block` CST node into a [`SketchDecl`]
+    /// (constrained-2d-sketch α, task 5506; PRD
+    /// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
+    ///
+    /// Infallible-`Some` in the same shape as [`Self::lower_relate_block`]:
+    /// fallibility is carried by the `check_and_lower!` at the dispatch site, so
+    /// an ERROR-bearing block pushes a diagnostic and yields `None` rather than a
+    /// partially-lowered member.
+    ///
+    /// # Body mapping
+    ///
+    /// The grammar admits exactly two body child kinds. Each maps onto an
+    /// EXISTING `MemberDecl` variant rather than a new sketch-specific one — a
+    /// second new variant would re-open the whole exhaustiveness blast radius
+    /// (10 src + 9 test matches) for zero gain:
+    ///
+    ///   * `let_declaration` → `MemberDecl::Let` via [`Self::lower_let`]. `aux`
+    ///     detection is NOT reimplemented here: `lower_let` already calls
+    ///     `has_aux_keyword` and sets `LetDecl.is_aux`, which is exactly PRD §5
+    ///     D12's construction-geometry marking.
+    ///   * `relation_member` → a single-expression `MemberDecl::Relate`, the
+    ///     same bare-expression shape `relate { }` already uses, so γ can reuse
+    ///     `check_relate_relations` verbatim.
+    ///
+    /// Members are collected in SOURCE ORDER and left UNCLASSIFIED: PRD §7 C2's
+    /// entity/constraint split is semantic (it depends on what each call
+    /// resolves to) and belongs to γ.
+    ///
+    /// A body child that lowers to `None` is skipped rather than substituted, so
+    /// the member count is a faithful record of what actually lowered.
+    fn lower_sketch_block(&mut self, node: tree_sitter::Node) -> Option<SketchDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut members = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "let_declaration" => {
+                    if let Some(decl) = self.lower_let(child) {
+                        members.push(MemberDecl::Let(decl));
+                    }
+                }
+                "relation_member" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        members.push(MemberDecl::Relate(RelateDecl {
+                            relations: vec![expr],
+                            span: self.span(child),
+                            content_hash: self.content_hash(child),
+                        }));
+                    }
+                }
+                // Anonymous tokens (`sketch`, the braces) and the `name`
+                // identifier. Nothing else is grammatically reachable here.
+                _ => {}
+            }
+        }
+
+        Some(SketchDecl {
+            name,
+            members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     /// Lower the `relation_member` children of a `relate_block` or
     /// `sub_relate_block` CST node into their relation expressions, in source
     /// order (task δ 4384). Each `relation_member` is `field('expr',
@@ -4165,6 +4244,28 @@ impl<'a> Lowering<'a> {
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
+            // Positional `auto(<expr>)` in call-argument position
+            // (constrained-2d-sketch α, task 5506; PRD
+            // `docs/prds/v0_6/constrained-2d-sketch.md` §5 D6). It IS the named
+            // form `auto(seed = <expr>)`, so it lowers to the existing
+            // `ExprKind::Auto` shape rather than a new variant, and every Auto
+            // consumer keeps working unchanged. Outside sketch scope that shape
+            // is rejected loudly by reify-compiler `expr.rs`'s
+            // `reject_auto_in_arg_list` (E_AUTO_NOT_AT_BINDING_SITE), pinned by
+            // cases (l)-(n) of `harness_auto_binding/auto_not_at_binding_site_tests.rs`.
+            // `free` is always false: the grammar's `auto_seed` rule admits only
+            // the parenthesized-expression form (rationale: that rule in
+            // grammar.js).
+            "auto_seed" => node
+                .child_by_field_name("seed")
+                .and_then(|seed_node| self.lower_expr(seed_node))
+                .map(|seed| Expr {
+                    kind: ExprKind::Auto {
+                        free: false,
+                        params: vec![("seed".to_string(), seed)],
+                    },
+                    span: self.span(node),
+                }),
             "quantity_literal" => self.lower_quantity_literal(node),
             "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
@@ -5261,7 +5362,9 @@ impl<'a> Lowering<'a> {
     /// still is, now with a message instead of an anonymous ERROR node. The
     /// rejection lowers nothing, so no fabricated multi-segment name reaches the
     /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
-    /// member is dropped rather than half-built.
+    /// member is dropped rather than half-built. All three rejections in this
+    /// function name the GR-040 no-method-call rule, whatever the receiver shape
+    /// (pinned by `tests/harness_syntax_lowering/method_call_rejection_lowering_tests.rs`).
     ///
     /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
     /// two-segment `ident.ident(args)`, not only the import-qualified ones.
@@ -5292,6 +5395,8 @@ impl<'a> Lowering<'a> {
     /// parse time, and their disambiguation is deferred to ν exactly as
     /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
     fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        const NO_METHOD_CALL_SYNTAX: &str = "Reify has no method-call syntax";
+
         let callee = node.child_by_field_name("callee")?;
         let object = callee.child_by_field_name("object")?;
         let member = callee.child_by_field_name("member")?;
@@ -5308,9 +5413,11 @@ impl<'a> Lowering<'a> {
                     "unsupported qualified call `{callee_text}(...)`: the callee of a \
                      qualified call must be a simple `binding.Name(...)` through an \
                      `import ... as binding` alias, but `{object_text}` is not a binding \
-                     name{scope_note}",
+                     name{scope_note}. {NO_METHOD_CALL_SYNTAX}, so `{member_text}` cannot \
+                     be called on it",
                     callee_text = self.node_text(callee),
                     object_text = self.node_text(object),
+                    member_text = self.node_text(member),
                 ),
                 self.span(callee),
             );
@@ -5329,7 +5436,7 @@ impl<'a> Lowering<'a> {
                     "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
                      namespace: an import in this file binds `{qualifier}`, but as \
                      {binding_note}, and the qualifier of a qualified call must be a \
-                     module namespace. Reify has no method-call syntax, so this cannot \
+                     module namespace. {NO_METHOD_CALL_SYNTAX}, so this cannot \
                      be a call on the entity `{qualifier}`{capitalisation_hint}",
                     binding_note = Self::entity_binding_note(kind),
                     capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
@@ -5339,8 +5446,8 @@ impl<'a> Lowering<'a> {
                     "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
                      of a qualified call must be a module namespace bound by an import, but \
                      no import in this file binds `{qualifier}` — declare one as \
-                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
-                     no method-call syntax, so this cannot be a call on a value named \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. \
+                     {NO_METHOD_CALL_SYNTAX}, so this cannot be a call on a value named \
                      `{qualifier}`"
                 ),
             };
@@ -6078,6 +6185,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
                 MemberDecl::Relate(_) => "relate".into(),
+                MemberDecl::Sketch(sk) => format!("sketch:{}", sk.name),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -6267,6 +6375,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
                 MemberDecl::Relate(r) => r.span,
+                MemberDecl::Sketch(sk) => sk.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -6402,6 +6511,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
                 MemberDecl::Relate(_) => {}
+                MemberDecl::Sketch(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -6472,6 +6582,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
                 MemberDecl::Relate(r) => (r.span, r.content_hash),
+                MemberDecl::Sketch(sk) => (sk.span, sk.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -6588,6 +6699,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -6610,6 +6722,7 @@ mod tests {
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
                 MemberDecl::Relate(r) => (r.content_hash, r.span),
+                MemberDecl::Sketch(sk) => (sk.content_hash, sk.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };

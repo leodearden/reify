@@ -22,6 +22,14 @@ module dcr_dimension_rejection_channel_fires
 //
 // The rejection capability this PRD extends therefore EXISTS and FIRES today;
 // PRD 5 widens it to ~13 more readers, it does not invent a new channel.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 0 / `reify eval` EXIT 1, UNCHANGED from decompose. The
+//   eval exit 1 is still the stackup classifier's E_StackupDimMismatch, NOT
+//   ctor conformance: `contributor` is a builtin fn, not a struct ctor.
+//   `reify check` still prints the same error and exits 0, so the INV-SF-2
+//   outlier persists. The binding this file documents is untouched by δ.
 
 structure def DcrDimensionRejectionChannelFires {
     let good = contributor(10mm, 0.1mm)

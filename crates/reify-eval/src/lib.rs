@@ -74,7 +74,9 @@ pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
-pub use engine_constraints::GdtCallout;
+pub use engine_constraints::{
+    ConstraintUpgrade, GdtCallout, replace_superseded_constraint_diagnostics,
+};
 // Task β (#5039): required-args cell_eval_ctx free-function constructor
 // (INV-EVAL-2; PRD eval-cell-commit-substrate.md §2.5, §8).
 mod cell_eval_ctx;
@@ -1324,11 +1326,65 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
+///
+/// # Verdict invariant
+///
+/// A definite verdict never carries a reason: a MUST NOT of
+/// [`reify_ir::ConstraintChecker::check`], asserted wherever a checker result
+/// becomes an entry. The converse, that every Indeterminate carries one, is
+/// only a SHOULD for a checker, so it is asserted on the engine's own verdicts
+/// alone: [`Self::new`] and [`Self::set_verdict`] assert both directions.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
+    /// decided it. Reports render it verbatim and never substitute a guess.
+    pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+}
+
+impl ConstraintCheckEntry {
+    /// An entry for a verdict the engine itself decided.
+    pub fn new(
+        id: reify_core::ConstraintNodeId,
+        label: Option<String>,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) -> Self {
+        debug_assert_reason_matches_verdict(&id, satisfaction, indeterminate_reason.as_ref());
+        Self {
+            id,
+            label,
+            satisfaction,
+            indeterminate_reason,
+        }
+    }
+
+    /// The only sanctioned way to overwrite a verdict after construction: the
+    /// reason moves with the satisfaction, so a re-check can never leave a
+    /// stale reason on a definite verdict or a reasonless Indeterminate.
+    pub fn set_verdict(
+        &mut self,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) {
+        debug_assert_reason_matches_verdict(&self.id, satisfaction, indeterminate_reason.as_ref());
+        self.satisfaction = satisfaction;
+        self.indeterminate_reason = indeterminate_reason;
+    }
+}
+
+fn debug_assert_reason_matches_verdict(
+    id: &reify_core::ConstraintNodeId,
+    satisfaction: Satisfaction,
+    indeterminate_reason: Option<&reify_ir::IndeterminateReason>,
+) {
+    debug_assert_eq!(
+        indeterminate_reason.is_some(),
+        satisfaction == Satisfaction::Indeterminate,
+        "constraint {id}: a reason accompanies exactly an Indeterminate verdict",
+    );
 }
 
 /// Result of a full build (eval + geometry).
@@ -1550,12 +1606,17 @@ fn guard_state_fingerprint(
 ///   passed to `EvalContext::with_meta` so that `MetaAccess` expressions resolve
 ///   to the `Value::String` declared for `<entity>.<key>` in the source module's
 ///   `meta {}` blocks (or `Value::Undef` if no such entry exists).
+///
+/// Every engine eval ctx therefore resolves kernel-free selector ctors at ANY
+/// expression depth (#7875), not only as a whole cell default.
 pub(crate) fn eval_ctx_with_meta<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     meta_map: &'a HashMap<String, HashMap<String, String>>,
 ) -> reify_expr::EvalContext<'a> {
-    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+    reify_expr::EvalContext::new(values, functions)
+        .with_meta(meta_map)
+        .with_symbolic_selector_ctor(crate::geometry_ops::try_eval_symbolic_topology_selector)
 }
 
 /// Build the per-template meta-map consumed by `eval_ctx_with_meta`.

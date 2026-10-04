@@ -1163,23 +1163,17 @@ impl CpSatSolver {
         // dependency cannot accidentally acquire a second input. A shorter list
         // is not a shorter search (PRD2 §4.2).
         //
-        // `IterationLimit` for the truncated case is a deliberate, imperfect
-        // choice. It is the ONLY existing `BestFoundReason` variant that gates
-        // the engine's `W_SOLVER_OPTIMALITY_UNPROVEN` warning — engine_eval.rs
-        // (6127, 7539) matches on it explicitly, and `ConvergedWithinBudget` /
-        // `Unreported` do NOT fire the warning. Picking either of those would
-        // make a truncated enumeration SILENT, which is precisely what D5
-        // forbids. The cost is that `describe()` says "iteration limit reached;
-        // derivative-free solver cannot prove global optimality", which is
-        // inaccurate for an enumeration cap on an exact solver. An honest
-        // `BestFoundReason::EnumerationBudget` variant plus the two engine gate
-        // arms is task #6553 — cross-crate (reify-ir + reify-eval), outside
-        // this task's module scope.
+        // A truncated enumeration reports `EnumerationBudget`, which says what
+        // actually happened: an exact search stopped at its node cap with part of
+        // the discrete space never visited. The engine's
+        // `W_SOLVER_OPTIMALITY_UNPROVEN` gate fires on that reason, so the
+        // truncation stays LOUD as D5 requires, and the account the user reads is
+        // the enumeration's own.
         let optimality = if complete {
             OptimalityStatus::ProvenOptimal
         } else {
             OptimalityStatus::BestFound {
-                reason: BestFoundReason::IterationLimit,
+                reason: BestFoundReason::EnumerationBudget,
             }
         };
 
@@ -1355,14 +1349,15 @@ fn verdict_from_enumeration(
             // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
             //
             // β sets the flag and stops there. It does NOT copy
-            // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+            // `DimensionalSolver`'s `finalise_uniqueness` (solver.rs),
             // which demotes a non-unique STRICT-auto solve to
             // `Infeasible { ConstraintNonUnique }`. The engine's
-            // non-unique warning is gated on `ap.free`
-            // (engine_eval.rs:3355/5975), so nothing user-visible turns
-            // on the strict case yet, and CP-SAT is unreachable in
-            // production until the γ wiring — so the demotion POLICY
-            // belongs with the step that first makes it observable. See
+            // non-unique warning is gated on `ap.free` (engine_eval.rs:
+            // `push_merged_cluster_nonunique_warnings` and the
+            // per-template arms of `Engine::eval` and
+            // `Engine::eval_cached`), so nothing user-visible turns
+            // on the strict case yet, and the demotion POLICY belongs
+            // with the step that first makes it observable. See
             // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
             // and task #6554, which owns that observable half.
             //
@@ -1517,9 +1512,11 @@ mod cpsat_test_fixtures {
     ///
     /// Exists to pin that the distinction makes NO difference to what cpsat
     /// reports. `free` is what the engine gates its non-unique WARNING on
-    /// (engine_eval.rs:3355/5975), and `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686) goes further still and DEMOTES a non-unique strict solve
-    /// to `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), and
+    /// `DimensionalSolver`'s `finalise_uniqueness` (solver.rs) goes further
+    /// still and DEMOTES a non-unique strict solve to
+    /// `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
     /// the honest flag and stops there. That is a deliberate scope line, not an
     /// oversight, so it gets a fixture and a unit rather than silence.
     pub(super) fn strict_bool_auto(member: &str) -> AutoParam {
@@ -1771,10 +1768,10 @@ mod cpsat_test_fixtures {
 // ---------------------------------------------------------------------------
 // REGRESSION LOCKS for the CP-SAT forward-check's two dependent-cell hazards
 // (task #5467 / PRD2 α, §3 decision 9). Both are FIXED above; these units are
-// what keeps them fixed. CP-SAT is landed-but-unwired — unreachable in
-// production until PRD2 γ — so this module is the ONLY behavioural pin on
-// either, which is why every assertion names an expected VALUE or VARIANT
-// rather than settling for "did not panic".
+// what keeps them fixed. CP-SAT is reachable in production since #5469, and
+// `tests/registry_tests.rs` pins its routed behaviour, but this module is the
+// only pin on either hazard in isolation, which is why every assertion names
+// an expected VALUE or VARIANT rather than settling for "did not panic".
 //
 // LOCK 1 — the per-trial fold at the top of `backtrack`'s value loop.
 // `backtrack` computes `auto_refs = refs ∩ auto_param_ids`. For a constraint
@@ -3065,9 +3062,10 @@ mod solve_all_enumeration_tests {
 // second model absent and must not claim it did.
 //
 // Every unit here asserts a VALUE or a VARIANT alongside the flag, never the
-// flag alone: CP-SAT is landed-but-unwired until PRD2 γ, so these units are the
-// only thing standing between the flag and a silent regression, and a unit that
-// only checked `unique` would pass on a solver that returned the wrong model.
+// flag alone: these units, with the production-seam tests in
+// `tests/registry_tests.rs`, are what stand between the flag and a silent
+// regression, and a unit that only checked `unique` would pass on a solver that
+// returned the wrong model.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod unique_honesty_tests {
@@ -3078,8 +3076,7 @@ mod unique_honesty_tests {
     /// Unwrap `Solved`, or panic naming what actually came back.
     ///
     /// Returning BOTH halves is the point: a unit that read only `unique` would
-    /// pass on a solver that reported the right flag about the wrong model, and
-    /// with cpsat unwired nothing downstream would notice.
+    /// pass on a solver that reported the right flag about the wrong model.
     fn solved(result: SolveResult) -> (HashMap<ValueCellId, Value>, bool) {
         match result {
             SolveResult::Solved { values, unique } => (values, unique),
@@ -3248,13 +3245,15 @@ mod unique_honesty_tests {
     /// is pinned rather than left to be inferred from an absence.
     ///
     /// β's job is to make `unique` TRUE-OR-FALSE-AS-MEASURED. It stops there.
-    /// It does NOT copy `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686), which demotes a non-unique STRICT-auto solve all the
+    /// It does NOT copy `DimensionalSolver`'s `finalise_uniqueness`
+    /// (solver.rs), which demotes a non-unique STRICT-auto solve all the
     /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
     /// this task: the engine's non-unique warning is gated on `ap.free`
-    /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
-    /// case yet; and CP-SAT is unreachable in production until the γ wiring, so
-    /// the demotion POLICY belongs with the step that first makes it observable.
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), so
+    /// nothing user-visible turns on the strict case yet; and the demotion
+    /// POLICY belongs with the step that first makes it observable
+    /// (task #6554).
     ///
     /// If a later step adds that demotion, this unit fails — which is the
     /// correct outcome. It asserts today's contract, not a wish.
@@ -3963,13 +3962,11 @@ mod solve_ranked_override_tests {
             matches!(
                 optimality,
                 OptimalityStatus::BestFound {
-                    reason: BestFoundReason::IterationLimit
+                    reason: BestFoundReason::EnumerationBudget
                 }
             ),
-            "a search that stopped early cannot have proven anything global. \
-             `ProvenOptimal` here would be the loudest possible lie: it tells a \
-             user their design is optimal on the strength of a search that \
-             visited a quarter of it; got {optimality:?}",
+            "truncated enumeration must report BestFound {{ EnumerationBudget }}; \
+             got {optimality:?}",
         );
     }
 

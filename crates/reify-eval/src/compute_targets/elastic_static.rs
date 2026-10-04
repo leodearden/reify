@@ -851,10 +851,12 @@ pub fn solve_elastic_static_trampoline(
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
             // task 4565/β: gradient and curl are tet-only derivative channels;
-            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set, and
+            // task #6183 adds `shear_angles` (projected from gradient).
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
             ("rotation".to_string(), Value::Undef),
+            ("shear_angles".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1197,6 +1199,12 @@ pub fn solve_elastic_static_trampoline(
     let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
+    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
+    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
+    let shear_angles_field = super::sampled_shear_angles_field(
+        super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
+    );
     let grad_field = super::sampled_gradient_field(grad_sf);
     // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
     // here rather than resampled independently — note there is deliberately NO
@@ -1258,12 +1266,12 @@ pub fn solve_elastic_static_trampoline(
     //     `run_adaptive_refinement` live in `reify_solver_elastic::adaptive`,
     //     outside this task's locked scope, and cannot accept a pre-computed
     //     first estimate.
-    //  2. Serialized remeshes: `RealizedAdaptiveProblem` forces
-    //     `deterministic: true`, which sets `General.NumThreads = 1` in
-    //     `refine_volume_with_size_field`, and every remesh additionally
-    //     serializes on the process-global `reify_kernel_gmsh::init::GMSH_LOCK`.
-    //     Load-bearing, not incidental: it is what makes the loop's
-    //     per-iteration output bit-stable.
+    //  2. Serialized remeshes: since task #7447 `refine_volume_with_size_field`
+    //     pins `General.NumThreads = 1` unconditionally (gmsh deadlocks
+    //     evaluating a background size field from several mesher threads), and
+    //     every remesh additionally serializes on the process-global
+    //     `reify_kernel_gmsh::init::GMSH_LOCK`. Load-bearing, not incidental:
+    //     it is what makes the loop's per-iteration output bit-stable.
     //  3. `max_dofs` bounds whether a FURTHER refine happens, not how large a
     //     single remesh may grow the mesh — `run_adaptive_refinement` evaluates
     //     it only after `solve_and_estimate` returns. A sliver element yields a
@@ -1274,11 +1282,12 @@ pub fn solve_elastic_static_trampoline(
     //     meaning of the size field handed to gmsh and would need its own RED
     //     test against a real sliver mesh; deliberately NOT done as a
     //     drive-by amendment.
-    //  4. Each refine is a FULL remesh from the extracted boundary surface, not
-    //     an incremental subdivision, and the size field's surface projection
-    //     (`project_volume_to_surface_vertices`) is O(n_surf x n_vol). Both are
-    //     properties of the landed `reify-solver-elastic` primitive and are
-    //     surfaced to callers in the lane's post-loop Info diagnostic.
+    //  4. Each refine is a FULL remesh from the extracted boundary surface,
+    //     not an incremental subdivision — a property of the landed
+    //     `reify-solver-elastic` primitive, surfaced to callers in the lane's
+    //     post-loop Info diagnostic. (The second cost this note used to list,
+    //     an O(n_surf x n_vol) projection of the size field onto the surface,
+    //     is gone: task #7447 hands gmsh the volume field directly.)
     //
     // Cancellation IS handled: `RealizedAdaptiveProblem::solve_and_estimate`
     // polls the ambient cancel handle on every CG iteration and the post-loop
@@ -1434,12 +1443,11 @@ pub fn solve_elastic_static_trampoline(
                             // of elements is the observable signature of
                             // mark-driven local refinement — something the
                             // uniform fallback structurally cannot report,
-                            // since it never remeshes. Also records the two
-                            // costs inherited from the reify-solver-elastic
-                            // primitive so a caller can see them: each refine
-                            // is a FULL remesh from surface (not an
-                            // incremental subdivision), and the size field's
-                            // surface projection is O(n_surf x n_vol).
+                            // since it never remeshes. Also records the cost
+                            // inherited from the reify-solver-elastic primitive
+                            // so a caller can see it: each refine is a FULL
+                            // remesh from surface, not an incremental
+                            // subdivision.
                             //
                             // Phrased on `refine_count`, NOT on lane selection
                             // (reviewer_comprehensive amendment):
@@ -1470,9 +1478,7 @@ pub fn solve_elastic_static_trampoline(
                                      iteration(s)): elements {n_elements_before} -> \
                                      {n_elements_after}. Cost note: each refinement iteration \
                                      is a FULL remesh from the extracted boundary surface, not \
-                                     an incremental subdivision, and the per-element size field \
-                                     is projected onto that surface by an O(n_surf x n_vol) \
-                                     nearest-vertex scan",
+                                     an incremental subdivision",
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
@@ -1480,8 +1486,8 @@ pub fn solve_elastic_static_trampoline(
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
-                            // or non-manifold surface, zero classified corner
-                            // entities, ...). An `adaptive: true` request must
+                            // or non-manifold surface, no volume elements
+                            // produced, ...). An `adaptive: true` request must
                             // never regress from "an answer with
                             // uniform-fallback a-posteriori fields" to Failed,
                             // so re-run on the uniform lane.
@@ -1607,6 +1613,9 @@ pub fn solve_elastic_static_trampoline(
         // radian enters (Vector3<Angle>). Derived from the curl SampledField at
         // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
         ("rotation".to_string(), rotation_field),
+        // task #6183: Voigt engineering shears (Vector3<Angle>), derived from
+        // the gradient SampledField the same way. Shell path emits Undef.
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2216,7 +2225,9 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
 /// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
 /// byte-exact golden test). So this direction needs no `rotation` arm, and
-/// existing persisted entries gain a correct `.rotation` for free.
+/// existing persisted entries gain a correct `.rotation` for free. The same
+/// holds for `shear_angles` (task #6183), derived from the persisted `gradient`
+/// slab: no extract arm, no wire change.
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2479,9 +2490,18 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_divergence_field(sf),
         None => Value::Undef,
     };
-    let grad_field = match build_sf(er.gradient.clone(), "gradient") {
-        Some(sf) => super::sampled_gradient_field(sf),
-        None => Value::Undef,
+    // task #6183: shear_angles is derived from the SAME reconstructed gradient
+    // slab, never persisted — one `build_sf` feeds both, exactly as for
+    // curl/rotation below. This is the trust boundary for the slab's stride:
+    // nothing upstream checks that a decoded gradient is stride-9, so a
+    // malformed one leaves shear_angles honestly absent instead of panicking.
+    let (grad_field, shear_angles_field) = match build_sf(er.gradient.clone(), "gradient") {
+        Some(sf) => {
+            let shear = super::shear_angles_sf_from_gradient(&sf)
+                .map_or(Value::Undef, super::sampled_shear_angles_field);
+            (super::sampled_gradient_field(sf), shear)
+        }
+        None => (Value::Undef, Value::Undef),
     };
     // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
     // never persisted — the compute-contract wire header is frozen (`curl_len`
@@ -2555,6 +2575,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
         ("rotation".to_string(), rotation_field),
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -3134,8 +3155,8 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Detection predicate: `!converged && iterations < max_iter`
     //
-    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
-    // predicate as follows:
+    // `reify_solver_elastic::solver::cg_loop`'s exit-condition contract maps to
+    // this predicate as follows:
     //   - Convergence                          → converged = true       (predicate false)
     //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
     //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
@@ -3147,8 +3168,8 @@ pub(crate) fn solve_cantilever_fea(
     // The predicate is true for the overwhelmingly common cancel case.  A cancel
     // firing on the exact final iteration (iter + 1 == max_iter) makes
     // iterations == max_iter so the predicate is false — stress recovery runs
-    // on partial displacements, but the §6b post-solve cancel check
-    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // on partial displacements, but the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` still returns ComputeOutcome::Cancelled so
     // correctness is preserved.  The wasted stress-recovery work is accepted for
     // this rare edge case; it does not affect the common-case latency improvement.
     //
@@ -3156,9 +3177,9 @@ pub(crate) fn solve_cantilever_fea(
     // so it only reaches non-converged at iterations == max_iter — predicate
     // stays false there too, leaving the existing callers completely unaffected.
     //
-    // On the cancelled path the trampoline's §6b post-solve cancel check
-    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
-    // stress fields, so a stress-less struct is correct.
+    // On the cancelled path the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` returns ComputeOutcome::Cancelled and
+    // never reads stress fields, so a stress-less struct is correct.
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
@@ -3718,10 +3739,8 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// # Inherited costs
 ///
 /// Each `refine` is a FULL remesh from surface, not an incremental
-/// subdivision; and `project_volume_to_surface_vertices` is O(n_surf × n_vol)
-/// (its own comment notes a spatial index would be needed at production
-/// scale). Both are properties of the landed `reify-solver-elastic` primitive,
-/// not of this wiring, and are surfaced to callers in the post-loop Info
+/// subdivision — a property of the landed `reify-solver-elastic` primitive,
+/// not of this wiring, and surfaced to callers in the post-loop Info
 /// diagnostic.
 ///
 /// Confined to isotropic materials for the same reason as
@@ -3774,8 +3793,8 @@ impl RealizedAdaptiveProblem {
     /// initial mesh; that was inert and is removed rather than documented as
     /// future-proofing. `refine_marked_elements` →
     /// `refine_with_size_field_validated` →
-    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads ONLY
-    /// `options.deterministic` and `options.threads`; the per-vertex size field
+    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads NO field of
+    /// `options` at all since task #7447; the background volume size field
     /// supersedes any baseline, and that function's own comment says its
     /// `Mesh.MeshSizeMax` is "deliberately NOT `options.mesh_size`". Two things
     /// must be settled before any future revision wires it through: the units
@@ -3786,9 +3805,9 @@ impl RealizedAdaptiveProblem {
     /// against. This struct's `meshing_options` therefore carries only
     /// `deterministic`/`threads` to the remesher today.
     ///
-    /// `deterministic: true` is load-bearing, not decorative — it forces
-    /// `General.NumThreads = 1` in the remesher, which is what makes the
-    /// loop's per-iteration output bit-stable.
+    /// `deterministic: true` is kept as a statement of intent, but it is no
+    /// longer what buys bit-stability: since #7447 the remesher pins
+    /// `General.NumThreads = 1` unconditionally and reads the flag no more.
     ///
     /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
     /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
@@ -3843,7 +3862,7 @@ impl RealizedAdaptiveProblem {
 
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// zero classified corner entities, or libgmsh absent from this build —
+    /// a gmsh FFI error, or libgmsh absent from this build —
     /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
     /// distinct, already-modelled variants). The wiring site catches this and
     /// re-runs on the uniform lane rather than failing the solve.
@@ -3954,10 +3973,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// # Cost
     ///
-    /// A FULL remesh from surface, not an incremental subdivision, and
-    /// `project_volume_to_surface_vertices` is O(n_surf × n_vol). Both are
-    /// properties of the `reify-solver-elastic` primitive; the wiring site
-    /// surfaces them to callers in its post-loop diagnostic.
+    /// A FULL remesh from surface, not an incremental subdivision — a
+    /// property of the `reify-solver-elastic` primitive; the wiring site
+    /// surfaces it to callers in its post-loop diagnostic.
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
         let refined = reify_solver_elastic::refine_marked_elements(
             &self.surface,
@@ -6083,14 +6101,14 @@ mod tests {
     /// A gmsh-realized tet mesh can carry a surface vertex with no incident
     /// tet. On the realized solve path, node sets are chosen by COORDINATE
     /// (the x_min face → clamp, x_max face → tip —
-    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// `solve_cantilever_fea`'s realized arm), so an orphan
     /// sitting on the x_min face gets coordinate-selected into the Dirichlet
     /// clamp set even though it belongs to no element. `assemble_global_stiffness`
     /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
     /// zero. The CG solver's Jacobi preconditioner
     /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
     /// asserts a stored, non-zero diagonal at EVERY K row and panics
-    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// otherwise (documented in `solve_cg`'s `# Panics` section) — so restricting
     /// only BC *selection* to tet-referenced nodes is not enough; the orphan
     /// must never reach the solve mesh at all.
     ///
@@ -10226,6 +10244,15 @@ mod tests {
                     &make_sf("curl", 3, 500.0),
                 )),
             ),
+            // task #6183 σ: like rotation, shear_angles is not persisted, so hash
+            // identity holds only if the cache path re-derives it byte-for-byte.
+            (
+                "shear_angles".to_string(),
+                super::super::sampled_shear_angles_field(
+                    super::super::shear_angles_sf_from_gradient(&make_sf("gradient", 9, 400.0))
+                        .expect("stride-9 gradient fixture"),
+                ),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -13762,7 +13789,7 @@ mod tests {
 
     /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
     /// asserting the source kind on the way through.
-    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+    fn expect_sampled_field(v: &Value, what: &str) -> SampledField {
         match v {
             Value::Field { source, lambda, .. } => {
                 assert_eq!(
@@ -13783,7 +13810,7 @@ mod tests {
     // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
     // and the cache-reconstruction path below cannot drift apart from each
     // other or from the wrapper unit test.
-    use super::super::assert_rotation_is_half_of;
+    use super::super::{assert_rotation_is_half_of, assert_shear_angles_project_gradient};
 
     /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
     /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
@@ -13823,8 +13850,8 @@ mod tests {
             .get("rotation")
             .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
 
-        let curl_sf = rot6164_sampled(curl_v, "curl");
-        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        let curl_sf = expect_sampled_field(curl_v, "curl");
+        let rot_sf = expect_sampled_field(rot_v, "rotation");
         assert!(
             !curl_sf.data.is_empty(),
             "fixture sanity: the tet curl channel must be populated"
@@ -13948,11 +13975,11 @@ mod tests {
             panic!("value_from_elastic_result must return a StructureInstance")
         };
 
-        let curl_sf = rot6164_sampled(
+        let curl_sf = expect_sampled_field(
             d.fields.get("curl").expect("reconstructed curl field"),
             "curl",
         );
-        let rot_sf = rot6164_sampled(
+        let rot_sf = expect_sampled_field(
             d.fields
                 .get("rotation")
                 .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
@@ -13973,5 +14000,225 @@ mod tests {
              path's derive from the same curl data"
         );
         assert_eq!(rot_sf.name, live.name);
+    }
+
+    // ── task #6183 σ: the `shear_angles` derivative channel ───────────────────
+    //
+    // The Voigt engineering shears (γ_yz, γ_zx, γ_xy), the second named Angle
+    // crossing. Like `rotation` it is DERIVED at wrap time (from the `gradient`
+    // SampledField) in every production path and stored in none — see
+    // `shear_angles_sf_from_gradient`. These pin all three paths.
+
+    /// (a) TET path: `"shear_angles"` is the projection of the `"gradient"`
+    /// field, bit-exactly, on the bit-identical grid. The live
+    /// `debug_assert_eq!(sampled.len(), 5)` also guards "no 6th resample entry".
+    #[test]
+    fn shear_angles_channel_tet_path_projects_gradient() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let grad_v = fields
+            .get("gradient")
+            .expect("tet ElasticResult must carry a gradient field");
+        let shear_v = fields
+            .get("shear_angles")
+            .expect("tet ElasticResult must carry a shear_angles field (task #6183)");
+
+        let grad_sf = expect_sampled_field(grad_v, "gradient");
+        let shear_sf = expect_sampled_field(shear_v, "shear_angles");
+        assert!(
+            !grad_sf.data.is_empty(),
+            "fixture sanity: the tet gradient channel must be populated"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "tet");
+
+        match shear_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "shear_angles codomain must be Vector3<Angle> (task #6183)"
+            ),
+            other => panic!("shear_angles must be Value::Field, got {other:?}"),
+        }
+        match grad_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::tensor(2, 3, reify_core::Type::dimensionless_scalar()),
+                "gradient codomain must STAY Tensor<2,3,Real> — INV-AD-3: never retype \
+                 the tensor; angle readings are extracted by named channels"
+            ),
+            other => panic!("gradient must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path: `shear_angles` joins the tet-only derivative channels in
+    /// the honest-absence `Value::Undef` convention (PRD §7).
+    #[test]
+    fn shear_angles_channel_shell_path_is_undef() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("shear_angles")
+                    .expect("shell ElasticResult must carry a shear_angles key (task #6183)"),
+                Value::Undef
+            ),
+            "shell shear_angles must be Value::Undef — honest-absence (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path: a persisted record carries a `gradient`
+    /// slab and no shear slab, so `value_from_elastic_result` must derive
+    /// `shear_angles` bit-identically to the live tet path's derive.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_derives_from_gradient_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Non-symmetric, non-power-of-two gradient values, so an index swap or
+        // an antisymmetric leak cannot hide behind a coincidence.
+        let gradient: Vec<f64> = (0..n_nodes * 9).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        let shear_sf = expect_sampled_field(
+            d.fields
+                .get("shear_angles")
+                .expect("reconstructed ElasticResult must carry a shear_angles field (task #6183)"),
+            "shear_angles",
+        );
+        assert_eq!(
+            grad_sf.data, gradient,
+            "fixture sanity: the gradient slab must round-trip unchanged"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "cache");
+
+        let live = super::super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("fixture gradient slab is stride-9");
+        assert_eq!(
+            shear_sf.data, live.data,
+            "cache-reconstructed shear_angles must be bit-identical to the live tet \
+             path's derive from the same gradient data"
+        );
+        assert_eq!(shear_sf.name, live.name);
+    }
+
+    /// (d) CACHE-RECONSTRUCTION trust boundary: a decoded record whose
+    /// `gradient` slab is not stride-9 must not panic the evaluation. The
+    /// derived `shear_angles` is honestly absent (`Value::Undef`), while
+    /// `gradient` itself still reconstructs as before.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_malformed_gradient_is_undef() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        let n_nodes = 8usize;
+        let malformed_gradient: Vec<f64> = (0..n_nodes * 9 - 1).map(|i| i as f64).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: malformed_gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        assert_eq!(
+            grad_sf.data, malformed_gradient,
+            "the gradient slab must still reconstruct unchanged"
+        );
+        assert!(
+            matches!(
+                d.fields
+                    .get("shear_angles")
+                    .expect("reconstructed ElasticResult must carry a shear_angles key"),
+                Value::Undef
+            ),
+            "a non-stride-9 gradient slab must leave shear_angles Value::Undef"
+        );
     }
 }

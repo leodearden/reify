@@ -1,5 +1,6 @@
 use super::*;
 use crate::compile_builder::hash::hash_pragma;
+use crate::compile_builder::sketch_unsupported;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -2234,6 +2235,7 @@ pub(crate) fn compile_entity(
                     match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
                 }
 
+                let mut arm_children = Vec::with_capacity(m.arms.len());
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_ast::MemberDecl::Sub(sub) => {
@@ -2280,21 +2282,10 @@ pub(crate) fn compile_entity(
                                     realization_name_set_from_template(child_tmpl),
                                 );
                             }
-                            // Port directions, so that a dotted connect endpoint naming
-                            // an arm sub (`connect s.p -> t.p`) is direction-checked just
-                            // like one naming a plain sub (task #7175). Folded across the
-                            // cluster's arms rather than last-write-wins like the maps
-                            // above — see `merge_arm_port_directions` for why a direction
-                            // cannot be answered by whichever arm compiled last. Called
-                            // unconditionally: an arm whose child template did not
-                            // resolve must retract the cluster's entry, not skip it.
-                            merge_arm_port_directions(
-                                &mut scope.sub_port_directions,
-                                &sub.name,
-                                child_tmpl.map(port_direction_map_from_template),
-                            );
+                            arm_children.push(child_tmpl);
                         }
                         other => {
+                            arm_children.push(None);
                             // suggestion 6: only 'sub' arms are supported in task 2372.
                             // Param/Let arms are explicitly rejected here so they are never
                             // inserted into scope.names — preserving the cluster-isolation
@@ -2316,6 +2307,23 @@ pub(crate) fn compile_entity(
                                 )),
                             );
                         }
+                    }
+                }
+
+                // The maps read to REJECT a dotted connect endpoint — direction
+                // (#7175) and existence (#7880) — are folded over every arm's
+                // child rather than last-write-wins like the per-arm maps above:
+                // no single arm can answer for the cluster. A `None` arm (child
+                // unresolvable, or not a `sub`) reads as "not resolvable here".
+                if let Some(logical_name) = maybe_logical_name {
+                    scope.sub_port_directions.insert(
+                        logical_name.to_string(),
+                        cluster_port_directions(&arm_children),
+                    );
+                    if let Some(names) = cluster_declared_member_names(&arm_children) {
+                        scope
+                            .sub_declared_member_names
+                            .insert(logical_name.to_string(), names);
                     }
                 }
             }
@@ -2461,6 +2469,10 @@ pub(crate) fn compile_entity(
                     scope.sub_port_directions.insert(
                         sub.name.clone(),
                         port_direction_map_from_template(child_tmpl),
+                    );
+                    scope.sub_declared_member_names.insert(
+                        sub.name.clone(),
+                        declared_member_names_from_template(child_tmpl),
                     );
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
@@ -2725,6 +2737,11 @@ pub(crate) fn compile_entity(
             // `sub … at … where {}` twin runs the SAME check in the
             // `MemberDecl::Sub` arm below. ζ (task 4386) threads the compiled
             // relations onto `TopologyTemplate.relations` for the relate-solve.
+            // A member-level `sketch { … }` block: rejected loudly, once per
+            // block, until constrained-2d-sketch γ — see `sketch_unsupported`.
+            reify_ast::MemberDecl::Sketch(sketch) => {
+                diagnostics.push(sketch_unsupported::diagnostic(sketch.span));
+            }
             reify_ast::MemberDecl::Relate(relate) => {
                 relations.extend(check_relate_relations(
                     &relate.relations,
@@ -5300,33 +5317,83 @@ fn port_direction_map_from_template(
         .collect()
 }
 
-/// Fold ONE match-arm's port directions into that cluster's `sub_port_directions`
-/// entry, keeping only what every arm agrees on.
+/// Collect every member name a child `TopologyTemplate` declares — ports,
+/// value cells (params and lets), `where`-guarded members, named realizations,
+/// subs and match-arm clusters — for `CompilationScope::sub_declared_member_names`.
 ///
-/// All arms of a cluster declare the same sub NAME, so they all write one entry.
-/// The sibling maps at the same site take the last arm's answer (see
+/// A sibling of `port_direction_map_from_template` /
+/// `member_type_map_from_template`, but read to REJECT a dotted connect endpoint
+/// (#7880), so it errs wide: over-inclusion only keeps a silent pass silent,
+/// while under-inclusion is a false "undefined port" error. Fns and associated
+/// types are deliberately excluded: they are not value-bearing members a connect
+/// endpoint can denote.
+fn declared_member_names_from_template(tmpl: &TopologyTemplate) -> BTreeSet<String> {
+    let guarded_cells = tmpl
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter().chain(&g.else_members));
+    tmpl.ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .chain(
+            tmpl.value_cells
+                .iter()
+                .chain(guarded_cells)
+                .map(|vc| vc.id.member.as_str()),
+        )
+        .chain(tmpl.realizations.iter().filter_map(|r| r.name.as_deref()))
+        .chain(tmpl.sub_components.iter().map(|s| s.name.as_str()))
+        .chain(tmpl.match_arm_groups.iter().map(|g| g.name.as_str()))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A match-arm cluster's `sub_port_directions` entry, given each arm's child
+/// template (`None` for an arm whose child did not resolve): only what every
+/// arm agrees on.
+///
+/// All arms of a cluster declare the same sub NAME, so they share one entry.
+/// The per-arm maps at the same site take the last arm's answer (see
 /// `CompilationScope::match_arm_group_arm_member_types` for why that is
 /// tolerable for member TYPES, which are read to RESOLVE names). A direction is
 /// read to REJECT source, so last-write-wins would turn a connect that is legal
 /// under the selected arm into a hard error whenever the arms disagree.
 ///
 /// The entry is therefore the INTERSECTION over arms: a port survives only while
-/// every arm declares it with the SAME direction, and an arm whose child
-/// template did not resolve (`None`) empties the entry outright. Anything
-/// dropped falls back to the absence contract on `sub_port_directions` — "not
-/// resolvable here", hence unchecked — never to a default direction.
-fn merge_arm_port_directions(
-    directions: &mut HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
-    sub_name: &str,
-    arm: Option<BTreeMap<String, reify_core::PortDirection>>,
-) {
-    let arm = arm.unwrap_or_default();
-    match directions.get_mut(sub_name) {
-        Some(agreed) => agreed.retain(|port, dir| arm.get(port) == Some(dir)),
-        None => {
-            directions.insert(sub_name.to_string(), arm);
-        }
-    }
+/// every arm declares it with the SAME direction, and a `None` arm empties the
+/// entry outright. Anything dropped falls back to the absence contract on
+/// `sub_port_directions` — "not resolvable here", hence unchecked — never to a
+/// default direction.
+fn cluster_port_directions(
+    arm_children: &[Option<&TopologyTemplate>],
+) -> BTreeMap<String, reify_core::PortDirection> {
+    arm_children
+        .iter()
+        .map(|child| child.map_or_else(BTreeMap::new, port_direction_map_from_template))
+        .reduce(|mut agreed, arm| {
+            agreed.retain(|port, dir| arm.get(port) == Some(dir));
+            agreed
+        })
+        .unwrap_or_default()
+}
+
+/// The member names a match-arm cluster declares, given each arm's child
+/// template: the UNION over its arms, or `None` when any arm's child is
+/// unresolvable.
+///
+/// The mirror image of `cluster_port_directions`' INTERSECTION: both maps are
+/// read to REJECT source, so each fold keeps only what EVERY arm agrees is
+/// wrong — a contested direction is dropped (unchecked), and a name any arm
+/// declares is kept (not undeclared).
+fn cluster_declared_member_names(
+    arm_children: &[Option<&TopologyTemplate>],
+) -> Option<BTreeSet<String>> {
+    arm_children
+        .iter()
+        .try_fold(BTreeSet::new(), |mut names, child| {
+            names.extend(declared_member_names_from_template((*child)?));
+            Some(names)
+        })
 }
 
 /// Collect the `(declaring_trait, fn_name)` keys of a conformer template's
@@ -5385,50 +5452,13 @@ fn compile_match_arm_decl_group(
     // `compiled_templates` in every `find_template_with_prelude` call.
     prelude: &PreludeRegistries<'_, '_>,
 ) {
-    // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
-    // are supported in this task; complex expressions are deferred to task 2373.
-    let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
-            Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
-            Some((_, other_ty)) => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' has type {}, expected an enum",
-                        name, other_ty
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "discriminant must be an enum-typed param or let",
-                    )),
-                );
-                return;
-            }
-            None => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' not found in scope",
-                        name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "unresolved identifier",
-                    )),
-                );
-                return;
-            }
-        },
-        _ => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "match-arm discriminant must be a simple identifier in this version",
-                )
-                .with_label(DiagnosticLabel::new(
-                    m.discriminant.span,
-                    "only identifier discriminants are supported (task 2373 extends this)",
-                )),
-            );
-            return;
-        }
+    let Some(MatchArmDiscriminant {
+        cell_id: discriminant_cell_id,
+        enum_name: enum_type_name,
+        ty: discriminant_ty,
+    }) = resolve_match_arm_discriminant(&m.discriminant, scope, enum_defs, diagnostics)
+    else {
+        return;
     };
 
     // Extract the shared logical name from the first arm's member.
@@ -5504,8 +5534,7 @@ fn compile_match_arm_decl_group(
         return;
     }
 
-    let discriminant_ref =
-        CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
+    let discriminant_ref = CompiledExpr::value_ref(discriminant_cell_id, discriminant_ty);
 
     // Validate every arm's pattern against the discriminant enum's variants
     // before compiling guards. A typo like `Hexx` would otherwise compile to a
@@ -5824,6 +5853,82 @@ fn compile_match_arm_decl_group(
     }
 }
 
+/// The enum a decl-form `match` dispatches on: the discriminant cell, the base
+/// enum's name, and the cell's own declared type (a bare `Type::Enum`, or a
+/// `Type::Applied` that keeps a generic enum's type args).
+struct MatchArmDiscriminant {
+    cell_id: ValueCellId,
+    enum_name: String,
+    ty: Type,
+}
+
+/// Resolve a decl-form `match` discriminant to the enum it dispatches on, or
+/// push a diagnostic and return `None`.  Only simple `Ident` discriminants are
+/// supported in this task; complex expressions are deferred to task 2373.
+///
+/// Enum identity comes from [`base_enum_name`], the crate's single bare-vs-applied
+/// enum oracle (type_compat.rs): an annotated generic-enum param (`Type::Applied`)
+/// is accepted, a generic STRUCTURE's `Type::Applied` — spelled the same way — is
+/// not.  Task #6020 plans one discriminant-to-`EnumDef` resolver,
+/// `match_discriminant_enum` in expr.rs, shared with the expression-form match;
+/// this helper should route through it once it lands.
+fn resolve_match_arm_discriminant(
+    discriminant: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<MatchArmDiscriminant> {
+    match &discriminant.kind {
+        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
+            Some((cell_id, ty)) => match base_enum_name(ty, enum_defs) {
+                Some(enum_name) => Some(MatchArmDiscriminant {
+                    cell_id: cell_id.clone(),
+                    enum_name: enum_name.to_string(),
+                    ty: ty.clone(),
+                }),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' has type {}, expected an enum",
+                            name, ty
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            discriminant.span,
+                            "discriminant must be an enum-typed param or let",
+                        )),
+                    );
+                    None
+                }
+            },
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' not found in scope",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        discriminant.span,
+                        "unresolved identifier",
+                    )),
+                );
+                None
+            }
+        },
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "match-arm discriminant must be a simple identifier in this version",
+                )
+                .with_label(DiagnosticLabel::new(
+                    discriminant.span,
+                    "only identifier discriminants are supported (task 2373 extends this)",
+                )),
+            );
+            None
+        }
+    }
+}
+
 /// Type-check the members of a `relate {}` block (member-level
 /// `MemberDecl::Relate`) or its inline `sub … at … where {}` twin
 /// (`SubDecl.relate_relations`): every member must type to `Type::Relation`
@@ -5993,7 +6098,7 @@ fn build_arm_guard_expr(
     for variant in patterns {
         let variant_literal = CompiledExpr::literal(
             Value::enum_unit(enum_type_name.to_string(), variant.clone()),
-            Type::Enum(enum_type_name.to_string()),
+            discriminant_ref.result_type.clone(),
         );
         let eq = CompiledExpr::binop(
             BinOp::Eq,
