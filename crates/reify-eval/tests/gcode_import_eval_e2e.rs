@@ -6,7 +6,7 @@
 //! stub the body previously contained.
 //!
 //! **RED today:** the `{ [] }` body makes `imported` evaluate to an empty list,
-//! `profile_count` to 0, and the `profile_count > 0` constraint to Violated.
+//! `segment_count` to 0, and the `segment_count > 0` constraint to Violated.
 //! After the dispatch fix (step-2) these assertions go GREEN.
 //!
 //! Reads the shipped example file via `CARGO_MANIFEST_DIR` so this test is a
@@ -20,10 +20,11 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{
-    check_source_with_stdlib, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
+    check_source_with_stdlib, collect_errors, compile_source_with_stdlib, make_simple_engine,
+    parse_and_compile_with_stdlib,
 };
 
 // ── Path constant ──────────────────────────────────────────────────────────────
@@ -113,33 +114,56 @@ fn gcode_import_smoke_imported_is_nonempty_list() {
     }
 }
 
-/// `GcodeImportSmoke.profile_count` must be `Value::Int(n)` with `n >= 1`.
+/// `GcodeImportSmoke.segment_count` must be `Value::Int(n)` with `n >= 1`.
 ///
-/// Before the fix: `profile_count` is `Value::Int(0)` (count of the empty list).
-/// After the fix: `profile_count` is `Value::Int(1)` (one profile for the single
+/// Before the fix: `segment_count` is `Value::Int(0)` (count of the empty list).
+/// After the fix: `segment_count` is `Value::Int(1)` (one segment for the single
 /// contiguous `G1` move).
 #[test]
-fn gcode_import_smoke_profile_count_is_at_least_one() {
+fn gcode_import_smoke_segment_count_is_at_least_one() {
     let compiled = smoke_compiled();
     let mut engine = make_simple_engine();
     let result = engine.eval(compiled);
 
-    let id = ValueCellId::new("GcodeImportSmoke", "profile_count");
+    let id = ValueCellId::new("GcodeImportSmoke", "segment_count");
     let count = result
         .values
         .get(&id)
-        .unwrap_or_else(|| panic!("GcodeImportSmoke.profile_count cell missing"));
+        .unwrap_or_else(|| panic!("GcodeImportSmoke.segment_count cell missing"));
 
     match count {
         Value::Int(n) => {
             assert!(
                 *n >= 1,
-                "GcodeImportSmoke.profile_count should be >= 1, got {n} — \
+                "GcodeImportSmoke.segment_count should be >= 1, got {n} — \
                  gcode_import is still returning the stub {{ [] }} empty list"
             );
         }
-        other => panic!("expected Value::Int for GcodeImportSmoke.profile_count, got {other:?}"),
+        other => panic!("expected Value::Int for GcodeImportSmoke.segment_count, got {other:?}"),
     }
+}
+
+/// The imported waypoints are READABLE in the DSL with their declared types:
+/// `imported[0].waypoints[0].x` is a `Length`, so the shipped example's
+/// `first_x` cell evaluates to exactly 10 mm in SI metres.
+#[test]
+fn gcode_import_smoke_first_waypoint_x_is_typed_length() {
+    let compiled = smoke_compiled();
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let id = ValueCellId::new("GcodeImportSmoke", "first_x");
+    let first_x = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GcodeImportSmoke.first_x cell missing from eval result"));
+
+    assert_eq!(
+        *first_x,
+        Value::length(0.01),
+        "GcodeImportSmoke.first_x should be the first waypoint's x, 10 mm as an \
+         SI Length (0.01 m), got {first_x:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -153,8 +177,8 @@ fn gcode_import_smoke_profile_count_is_at_least_one() {
 ///
 /// 1. The `imported` let cell in `GcodeImportSmoke` compiles to
 ///    `CompiledExprKind::UserFunctionCall { function_name: "gcode_import" }` with
-///    `result_type == Type::List(_)` — confirming that the `.ri` declaration
-///    shadows the builtin name and the declared `List<Profile>` signature is intact.
+///    `result_type == List<GcodeMotionSegment>` — confirming that the `.ri`
+///    declaration shadows the builtin name and the declared signature is intact.
 ///
 /// 2. The `gcode_import` stdlib function body's result expression compiles to
 ///    `CompiledExprKind::FunctionCall` — confirming that `gcode_import_lower`
@@ -168,9 +192,10 @@ fn gcode_import_smoke_profile_count_is_at_least_one() {
 ///
 /// NOTE — inner-call type discard (load-bearing implicit): `gcode_import_lower`
 /// inside the body is inferred as `String` (first-arg fallback) rather than
-/// `List<Profile>`. This mis-inferred type is intentionally discarded by
-/// `compile_function` (no body-vs-declared-return-type check). The outer
-/// `UserFunctionCall` result_type (`List<Profile>`) is the authoritative one.
+/// `List<GcodeMotionSegment>`. This mis-inferred type is intentionally discarded
+/// by `compile_function` (no body-vs-declared-return-type check). The outer
+/// `UserFunctionCall` result_type (`List<GcodeMotionSegment>`) is the
+/// authoritative one.
 #[test]
 fn gcode_import_dispatch_ir_contract() {
     use reify_ir::CompiledExprKind;
@@ -209,11 +234,13 @@ fn gcode_import_dispatch_ir_contract() {
              UserFunctionCall(\"gcode_import\"), got: {other:?}"
         ),
     }
-    assert!(
-        matches!(&init_expr.result_type, Type::List(_)),
-        "GcodeImportSmoke.imported init expr should have result_type List<_> \
-         (from the declared gcode_import signature), got: {:?}",
-        init_expr.result_type
+    assert_eq!(
+        init_expr.result_type,
+        Type::List(Box::new(Type::StructureRef(
+            "GcodeMotionSegment".to_string()
+        ))),
+        "GcodeImportSmoke.imported init expr should have result_type \
+         List<GcodeMotionSegment> (from the declared gcode_import signature)"
     );
 
     // ── Part 2: body of the stdlib gcode_import function ──────────────────────
@@ -250,21 +277,61 @@ fn gcode_import_dispatch_ir_contract() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SECONDARY: constraint-satisfaction assertion — profile_count > 0 is Satisfied
+// TYPE-LEVEL gate — an imported segment is not a Profile
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A `GcodeMotionSegment` carries move-target waypoints with no time
+/// parameterisation, so it must not reach any `Profile` parameter. Each Profile
+/// consumer rejects it AT COMPILE TIME with `TypeNotConformingToTrait` naming
+/// both types, instead of compiling clean and evaluating to undef at runtime.
+#[test]
+fn imported_segment_is_rejected_at_every_profile_param() {
+    let calls = [
+        "profile_duration(seg)",
+        "evaluate_profile(seg, 0.0s)",
+        "evaluate_profile_dot(seg, 0.0s)",
+        "evaluate_profile_ddot(seg, 0.0s)",
+    ];
+    for call in calls {
+        let source = format!(
+            r#"structure def ImportedIsNotAProfile {{
+    let imported = gcode_import("G1 X10 Y10 F1800", MarlinDialect())
+    let seg = imported[0]
+    let r = {call}
+}}
+"#
+        );
+        let module = compile_source_with_stdlib(&source);
+        let errors = collect_errors(&module.diagnostics);
+        assert!(
+            errors.iter().any(|d| {
+                d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+                    && d.message.contains("GcodeMotionSegment")
+                    && d.message.contains("Profile")
+            }),
+            "`{call}` with an imported G-code segment should be rejected at compile \
+             time with TypeNotConformingToTrait naming GcodeMotionSegment and \
+             Profile; got errors: {errors:?}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECONDARY: constraint-satisfaction assertion — segment_count > 0 is Satisfied
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// **SECONDARY RED→GREEN signal (reify check path).**
 ///
-/// The `constraint profile_count > 0` in `GcodeImportSmoke` must surface as
+/// The `constraint segment_count > 0` in `GcodeImportSmoke` must surface as
 /// `Satisfaction::Satisfied` after the dispatch fix.
 ///
-/// Before the fix: `profile_count` is 0 → constraint is `Satisfied::Violated`.
-/// After the fix: `profile_count` is 1 → constraint is `Satisfaction::Satisfied`.
+/// Before the fix: `segment_count` is 0 → constraint is `Satisfied::Violated`.
+/// After the fix: `segment_count` is 1 → constraint is `Satisfaction::Satisfied`.
 ///
-/// This directly validates the task title: "its profile_count constraint is a
+/// This directly validates the task title: "its segment_count constraint is a
 /// real eval-time assertion."
 #[test]
-fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
+fn gcode_import_smoke_segment_count_constraint_is_satisfied() {
     let source = smoke_source();
     let check_result = check_source_with_stdlib(source);
 
@@ -280,11 +347,11 @@ fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
     assert!(
         !gcode_import_smoke_constraints.is_empty(),
         "expected at least one constraint entry for GcodeImportSmoke, got none — \
-         check that the example still has `constraint profile_count > 0`"
+         check that the example still has `constraint segment_count > 0`"
     );
 
     // The GcodeImportSmoke structure has exactly one inline constraint:
-    // `constraint profile_count > 0`. After the fix it must be Satisfied.
+    // `constraint segment_count > 0`. After the fix it must be Satisfied.
     let violated: Vec<_> = gcode_import_smoke_constraints
         .iter()
         .filter(|e| e.satisfaction == Satisfaction::Violated)
@@ -293,7 +360,7 @@ fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
         violated.is_empty(),
         "expected no Violated constraints in GcodeImportSmoke after gcode_import \
          dispatch fix; got: {violated:?}. gcode_import may still be returning \
-         the stub {{ [] }} body (profile_count == 0)."
+         the stub {{ [] }} body (segment_count == 0)."
     );
 
     let satisfied: Vec<_> = gcode_import_smoke_constraints
@@ -302,7 +369,7 @@ fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
         .collect();
     assert!(
         !satisfied.is_empty(),
-        "expected GcodeImportSmoke.profile_count > 0 to be Satisfied; \
+        "expected GcodeImportSmoke.segment_count > 0 to be Satisfied; \
          got: {:?}",
         gcode_import_smoke_constraints
     );
