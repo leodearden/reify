@@ -555,51 +555,6 @@ fn both_reflection_paths_tessellate_to_outward_wound_closed_manifold() {
 // Tessellation-orientation helpers
 // ---------------------------------------------------------------------------
 
-/// Compute the geometric normal of triangle (pa, pb, pc) from the emitted
-/// winding order: AB × AC. All inputs and the result are in f64.
-///
-/// Verbatim-shaped reuse of the same-named helper in
-/// `tessellation_winding_integration.rs`. Intentionally duplicated rather
-/// than hoisted to `tests/common/mod.rs` (reserved for helpers duplicated
-/// across MANY modules — see its header): this one is shared by exactly two
-/// sibling submodules of the same compile unit, and keeping the name
-/// identical documents the kinship for a reader rather than hiding it.
-fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
-    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-    [
-        ab[1] * ac[2] - ab[2] * ac[1],
-        ab[2] * ac[0] - ab[0] * ac[2],
-        ab[0] * ac[1] - ab[1] * ac[0],
-    ]
-}
-
-/// Per-axis (min+max)/2 over `verts` — the AABB-centre reference direction
-/// used by [`assert_outward_wound_closed_manifold`]'s outward-winding check.
-/// Robust to non-uniform vertex density across faces, unlike a vertex-cloud
-/// mean (same rationale as `tessellation_winding_integration.rs`'s
-/// `box_centroid`).
-fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
-    let mut min = [f64::MAX; 3];
-    let mut max = [f64::MIN; 3];
-    for v in verts {
-        for k in 0..3 {
-            let coord = v[k] as f64;
-            if coord < min[k] {
-                min[k] = coord;
-            }
-            if coord > max[k] {
-                max[k] = coord;
-            }
-        }
-    }
-    [
-        (min[0] + max[0]) / 2.0,
-        (min[1] + max[1]) / 2.0,
-        (min[2] + max[2]) / 2.0,
-    ]
-}
-
 /// Assert that `mesh` is a closed, orientable manifold whose triangles are
 /// ALL outward-wound and whose supplied per-vertex normals agree with that
 /// winding — the full T17 core obligation ([`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`]'s
@@ -642,7 +597,7 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
 
     // (b) Outward winding over the welded canonical positions.
     let (canon_verts, welded) = mesh.weld_positions();
-    let centre = aabb_centre(&canon_verts);
+    let centre = common::aabb_centre(&canon_verts);
 
     for t in 0..num_tris {
         let ia = welded[mesh.indices[t * 3] as usize] as usize;
@@ -655,7 +610,7 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
         let pa_f64 = [pa[0] as f64, pa[1] as f64, pa[2] as f64];
         let pb_f64 = [pb[0] as f64, pb[1] as f64, pb[2] as f64];
         let pc_f64 = [pc[0] as f64, pc[1] as f64, pc[2] as f64];
-        let normal = tri_winding_normal(pa_f64, pb_f64, pc_f64);
+        let normal = common::tri_winding_normal(pa_f64, pb_f64, pc_f64);
 
         let tri_centroid = [
             (pa_f64[0] + pb_f64[0] + pc_f64[0]) / 3.0,
@@ -707,7 +662,7 @@ fn assert_outward_wound_closed_manifold(mesh: &reify_ir::Mesh, what: &str) {
             mesh.vertices[i2 * 3 + 1] as f64,
             mesh.vertices[i2 * 3 + 2] as f64,
         ];
-        let winding_normal = tri_winding_normal(pa, pb, pc);
+        let winding_normal = common::tri_winding_normal(pa, pb, pc);
 
         let avg_supplied = [
             (supplied[i0 * 3] as f64 + supplied[i1 * 3] as f64 + supplied[i2 * 3] as f64) / 3.0,
