@@ -1735,8 +1735,10 @@ _PDOCCOVER_LEAF='tests/infra/test_reify_audit_pdoccover\.sh'
 # A root (the chunk corpus, each oracle pair) gets a NESTED positive, pinning
 # that the bash glob crosses `/` the way starts_with does, and a wrong-suffix
 # `.orig` negative that reds a copy which dropped the suffix. UNITS_PATH and
-# BASELINE_PATH are exact paths: the positive pins the path, the `.orig`
-# negative pins that it is not a prefix.
+# BASELINE_PATH are exact paths: the positive pins that the selector accepts the
+# path, the `.orig` negative that it is not a prefix. UNITS_PATH has no arm of
+# its own in pdoccover_input_path (units.rs is an in_oracle_scope path), so its
+# positive is what reds if the census file ever leaves the oracle roots.
 #
 # The derivations never fail on a miss (this suite runs under set -e +
 # pipefail, where a grep that finds nothing would abort the whole file): a
