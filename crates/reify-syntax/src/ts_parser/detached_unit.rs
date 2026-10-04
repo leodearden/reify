@@ -15,7 +15,7 @@ use tree_sitter::Node;
 pub(super) struct DetachedUnit<'t> {
     /// The `number_literal` the unit belongs to.
     pub(super) number: Node<'t>,
-    /// The first unit word after the gap: the fault's first leaf.
+    /// The first unit-shaped word after the gap: the fault's first leaf.
     pub(super) unit: Node<'t>,
     /// The `name` of the nearest binding whose value holds `number`, if there is one.
     pub(super) binding_name: Option<Node<'t>>,
@@ -54,6 +54,10 @@ fn first_leaf(node: Node<'_>) -> Node<'_> {
 /// An `identifier` or `ERROR` leaf whose text is in the grammar's `unit_name` class,
 /// `[A-Za-z_][A-Za-z0-9_]*` (`immediate_identifier`). An `ERROR` leaf's kind says nothing about
 /// its text, so the class is checked on the text itself.
+///
+/// This is a SHAPE test, not a unit lookup: the syntax layer has no unit registry, so a
+/// variable after a number (`2 x`, a missing operator) matches too. That is accepted here and
+/// answered in the wording, which the caller makes conditional on the word being a unit.
 fn is_unit_word(leaf: Node<'_>, source: &str) -> bool {
     if !(leaf.kind() == "identifier" || leaf.is_error()) {
         return false;

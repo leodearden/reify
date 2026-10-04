@@ -262,8 +262,12 @@ impl<'a> Lowering<'a> {
 
     /// The remedy for a fault that is a unit detached from its number (`1000.0 N/m`), which
     /// the contiguity invariant rejects on purpose (docs/prds/unit-expressions.md §3.1, task
-    /// #7190): ``" — unit `N` in `k` must follow its number with no whitespace: write
-    /// `1000.0N`"``. The ``in `k` `` clause is omitted when no binding holds the number.
+    /// #7190): ``" — if `N` in `k` is a unit, it must follow its number with no whitespace:
+    /// write `1000.0N`"``. The ``in `k` `` clause is omitted when no binding holds the number.
+    ///
+    /// The hint is conditional because the syntax layer has no unit registry: `2 x` with `x`
+    /// a variable (a missing operator) has the same shape, and an unconditional "write `2x`"
+    /// would steer that author into a quantity literal.
     ///
     /// Every interpolated token goes through [`Self::snippet`], so the hint keeps INV-SF-7's
     /// bounded-excerpt rule (#5392).
@@ -276,7 +280,7 @@ impl<'a> Lowering<'a> {
             .unwrap_or_default();
         let number = self.snippet(detached.number);
         Some(format!(
-            " — unit `{unit}`{binding} must follow its number with no whitespace: \
+            " — if `{unit}`{binding} is a unit, it must follow its number with no whitespace: \
              write `{number}{unit}`"
         ))
     }

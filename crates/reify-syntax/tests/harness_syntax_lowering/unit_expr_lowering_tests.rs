@@ -541,7 +541,7 @@ const HINT_MARK: &str = "must follow its number with no whitespace";
 
 /// The remedy suffix appended to a detached-unit diagnostic.
 fn detached_unit_hint(unit: &str, binding: &str, number: &str) -> String {
-    format!(" — unit `{unit}` in `{binding}` {HINT_MARK}: write `{number}{unit}`")
+    format!(" — if `{unit}` in `{binding}` is a unit, it {HINT_MARK}: write `{number}{unit}`")
 }
 
 /// The single diagnostic whose message starts with `prefix`.
@@ -707,6 +707,53 @@ fn structure_body_let_with_detached_unit_carries_the_hint() {
     );
 }
 
+/// With no binding around the number (a `constraint` refused by `invalid
+/// constraint`, a `minimize` reaching the generic structure-body arm) the
+/// ``in `B` `` clause is dropped and nothing stands in for it.
+#[test]
+fn detached_unit_outside_any_binding_omits_the_binding_clause() {
+    let hint = " — if `mm` is a unit, it must follow its number with no whitespace: write `5mm`";
+    for (source, prefix) in [
+        (
+            "structure A { constraint 5 mm > 0mm }",
+            "invalid constraint: ",
+        ),
+        (
+            "structure A { minimize 5 mm }",
+            "syntax error in structure body",
+        ),
+    ] {
+        let (_, _, errors) = parse_shape_spanned(source);
+        let (message, span) = only_error_starting_with(&errors, prefix);
+        assert_eq!(
+            span.start,
+            byte_of(source, " mm", 1),
+            "`{source}`: the diagnostic must point at `mm`; got {message:?}"
+        );
+        assert!(
+            message.ends_with(hint),
+            "`{source}`: expected suffix {hint:?}, got {message:?}"
+        );
+    }
+}
+
+/// The syntax layer has no unit registry, so a variable after a number — a
+/// missing operator — has the detached-unit shape too.  The hint is therefore
+/// conditional: it must never assert that `x` IS a unit, or applying it would
+/// turn `2 x` into the quantity literal `2x`.
+#[test]
+fn a_variable_after_a_number_gets_the_conditional_hint() {
+    let source = "structure A { let y = 2 x }";
+    let (_, _, errors) = parse_shape_spanned(source);
+    let (message, span) = only_error_starting_with(&errors, "syntax error in structure body");
+    assert_eq!(span.start, byte_of(source, " x", 1), "got {message:?}");
+    assert_eq!(
+        message,
+        "syntax error in structure body — if `x` in `y` is a unit, it must follow its \
+         number with no whitespace: write `2x`"
+    );
+}
+
 /// GREEN on arrival: the attached spelling is the accepted one, and this pins it
 /// at AST level inside a connect body — both spellings are pinned, the detached
 /// one by the diagnostics above.
@@ -760,6 +807,7 @@ fn attached_unit_in_connect_param_lowers_to_a_quantity() {
 fn detached_unit_hint_needs_a_number_directly_before_the_word_on_the_same_line() {
     for source in [
         "structure A {\n  param k : Real = 1000.0\n  N\n}",
+        "structure A {\r\n  param k : Real = 1000.0\r\n  N\r\n}",
         "structure A { let x = 5mm mm }",
         "structure A { let a = 1 1 }",
         "structure def S { let x = 5N ·m }",
