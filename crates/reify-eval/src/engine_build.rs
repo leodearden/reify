@@ -14095,6 +14095,10 @@ mod post_process_cross_sub_value_cells_tests;
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
 
+// ── mint_symbolic_geometry_handle_for_cell_from_graph cell-shape guard (#6460) ─
+#[cfg(test)]
+mod geometry_cell_mint_from_graph_tests;
+
 // ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
 //
 // White-box pin (direct private-field access from this submodule of the crate
