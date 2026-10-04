@@ -14,11 +14,16 @@ in-process through its public seams (the reader Protocol and main()'s
 `connect` parameter); this file spawns no subprocess and touches no live graph.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
+import re
 import sys
+import tempfile
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -523,6 +528,254 @@ class AdjudicationTemplateTest(unittest.TestCase):
         self.assertEqual(ambiguous["verdict"], RECORD_ONLY)
         self.assertIsNone(ambiguous["target_node_uuid"])
         self.assertIsNone(ambiguous["mint_name"])
+
+
+# ── Live-reader seam over a fake redis-like connection ──────────────────────
+
+_UUID_LITERAL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_LIST_PARAMETER = re.compile(r"CYPHER uuids=(\S+) ")
+
+
+class FakeResponseError(Exception):
+    """Stands in for redis.exceptions.ResponseError, which carries only a message."""
+
+
+def _table(records):
+    header = list(records[0]) if records else []
+    return header, [[record[column] for column in header] for record in records]
+
+
+class FakeFalkorConnection:
+    """A redis-like connection answering GRAPH.RO_QUERY from a FakeGraph.
+
+    Replies have FalkorDB's verbose shape [header, rows, stats]. Routing on
+    Cypher keywords below is fixture plumbing only: tests assert on the verb
+    and key of each recorded call, never on query text. The one exception is
+    deliberate: a list parameter must parse as JSON, because a single-quoted
+    list parameter crashed the shared FalkorDB 4.18.0 server.
+    """
+
+    def __init__(self, graph, fulltext_error=None, failures=()):
+        self.graph = graph
+        self.fulltext_error = fulltext_error
+        self.failures = list(failures)
+        self.calls = []
+
+    def execute_command(self, *args):
+        self.calls.append(args)
+        if self.failures:
+            raise self.failures.pop(0)
+        header, rows = self._answer(args[2])
+        return [header, rows, ["Cached execution: 0",
+                               "Query internal execution time: 0.1 milliseconds"]]
+
+    def _answer(self, query):
+        if "db.idx.fulltext.queryNodes" in query:
+            if self.fulltext_error:
+                raise FakeResponseError(self.fulltext_error)
+            return ["hits"], [[547]]
+        if "CONTAINS" in query:
+            return ["contains"], [[92]]
+        if "STARTS WITH" in query:
+            return _table([{"uuid": uuid, "name": name} for uuid, name in self.graph.nodes.items()
+                           if name.lower().startswith("task")])
+        parameter = _LIST_PARAMETER.match(query)
+        if parameter:
+            return _table(self._edge_rows(set(json.loads(parameter.group(1)))))
+        literals = _UUID_LITERAL.findall(query)
+        if "RELATES_TO" in query:
+            return _table(self._endpoints(literals[0]))
+        if literals:
+            return ["count"], [[int(literals[0] in self.graph.nodes)]]
+        return ["count"], [[len(self.graph.nodes)]]
+
+    def _edge_rows(self, wanted):
+        rows = []
+        for edge in self.graph.edges:
+            if edge.invalid_at or edge.expired_at:
+                continue
+            ends = {(edge.source, edge.target), (edge.target, edge.source)}
+            for node, other in sorted(ends):
+                if node in wanted:
+                    rows.append({
+                        "node_uuid": node, "edge_uuid": edge.uuid, "fact": edge.fact,
+                        "source_uuid": edge.source, "other_uuid": other,
+                        "other_name": self.graph.nodes[other],
+                        "created_at": "2026-08-01T00:00:00Z", "invalid_at": None,
+                        "expired_at": None, "first_episode": "ep-" + edge.uuid[:8],
+                        "episode_count": 2})
+        return rows
+
+    def _endpoints(self, edge_uuid):
+        return [{"source_uuid": e.source, "target_uuid": e.target,
+                 "invalid_at": e.invalid_at, "expired_at": e.expired_at}
+                for e in self.graph.edges if e.uuid == edge_uuid]
+
+
+FIXED_NOW = datetime(2026, 10, 4, 5, 6, 7, tzinfo=timezone.utc)
+CENSUS_NAME = "reify-task-conflations-2026-10-04T05-06-07Z.json"
+ADJUDICATION_NAME = "reify-task-conflations-2026-10-04T05-06-07Z.adjudication.json"
+
+
+def _run_main(argv, connection, clock=lambda: FIXED_NOW):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = census_tool.main(argv, connect=lambda url: connection, clock=clock)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+class FalkorReaderTest(unittest.TestCase):
+    def setUp(self):
+        self.world = ProposalWorld()
+        self.conn = FakeFalkorConnection(self.world.graph)
+        self.reader = census_tool.FalkorReader(self.conn, graph_key="reify", batch_size=2,
+                                               retry_delay=0)
+
+    def assertEveryCallIsReadOnly(self, calls):
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertEqual(call[:2], ("GRAPH.RO_QUERY", "reify"), call)
+
+    def test_every_public_method_and_the_census_cli_issue_only_ro_queries(self):
+        w = self.world
+        self.assertEqual(self.reader.node_count(), len(w.graph.nodes))
+        self.assertIn((w.t2590, "Task 2590"), self.reader.task_named_nodes())
+        rows = self.reader.edges_touching([w.t3019, w.t3017, w.t2590])
+        self.assertEqual({(r.node_uuid, r.which_end) for r in rows if r.edge_uuid == w.e_unique_source},
+                         {(w.t3019, "source"), (w.t3017, "target")})
+        self.assertTrue(self.reader.bm25_probe("orchestrator").serving)
+        self.assertEqual(self.reader.edge_endpoints(w.e_unary),
+                         census_tool.EdgeEndpoints(w.t2590, w.t2591, None, None))
+        self.assertIsNone(self.reader.edge_endpoints(_edge_uuid(999)))
+        self.assertTrue(self.reader.node_exists(w.t2919))
+        self.assertFalse(self.reader.node_exists(_node_uuid(999)))
+        with tempfile.TemporaryDirectory() as out:
+            code, _, _ = _run_main(["census", "--expect-node-count", str(len(w.graph.nodes)),
+                                    "--out-dir", out], self.conn)
+        self.assertEqual(code, 0)
+        self.assertEveryCallIsReadOnly(self.conn.calls)
+
+    def test_edges_are_read_in_batches(self):
+        w = self.world
+        before = len(self.conn.calls)
+        rows = self.reader.edges_touching([w.t3019, w.t3017, w.t2590, w.t500, w.t700])
+        self.assertEqual(len(self.conn.calls) - before, 3)
+        self.assertEqual({r.edge_uuid for r in rows},
+                         {w.e_unique_source, w.e_unary, w.e_absent, w.e_ambiguous_numbers})
+        unary = next(r for r in rows if r.edge_uuid == w.e_unary)
+        self.assertEqual((unary.first_episode, unary.episode_count), ("ep-" + w.e_unary[:8], 2))
+
+    def test_list_parameters_are_double_quoted_json(self):
+        self.reader.edges_touching([self.world.t3019, self.world.t2590])
+        queries = [call[2] for call in self.conn.calls]
+        self.assertTrue(queries)
+        for query in queries:
+            parameter = _LIST_PARAMETER.match(query)
+            self.assertIsNotNone(parameter, query)
+            self.assertNotIn("'", parameter.group(1))
+
+    def test_a_timeout_is_retried(self):
+        self.conn.failures = [FakeResponseError("Query timed out")]
+        self.assertEqual(self.reader.node_count(), len(self.world.graph.nodes))
+        self.assertEqual(len(self.conn.calls), 2)
+
+    def test_persistent_timeouts_raise_after_max_attempts(self):
+        self.conn.failures = [FakeResponseError("Query timed out")] * 5
+        with self.assertRaises(census_tool.GraphQueryTimeout):
+            self.reader.node_count()
+        self.assertEqual(len(self.conn.calls), 3)
+
+    def test_other_errors_propagate_without_retry(self):
+        self.conn.failures = [FakeResponseError("FalkorDB does not currently support =~")]
+        with self.assertRaises(FakeResponseError):
+            self.reader.node_count()
+        self.assertEqual(len(self.conn.calls), 1)
+
+    def test_untrusted_uuids_are_refused_before_any_query(self):
+        for bad in ('abc") RETURN 1 //', "deadbeef' OR 1=1", ""):
+            with self.assertRaises(ValueError):
+                self.reader.edges_touching([self.world.t3019, bad])
+            with self.assertRaises(ValueError):
+                self.reader.node_exists(bad)
+            with self.assertRaises(ValueError):
+                self.reader.edge_endpoints(bad)
+        self.assertEqual(self.conn.calls, [])
+
+    def test_untrusted_probe_token_is_refused_before_any_query(self):
+        with self.assertRaises(ValueError):
+            self.reader.bm25_probe("x') RETURN 1 //")
+        self.assertEqual(self.conn.calls, [])
+
+    def test_a_failing_fulltext_call_is_recorded_not_fatal(self):
+        self.conn.fulltext_error = "Procedure db.idx.fulltext.queryNodes failed"
+        probe = self.reader.bm25_probe("orchestrator")
+        self.assertIsNone(probe.fulltext_hits)
+        self.assertFalse(probe.serving)
+        self.assertIn("queryNodes failed", probe.error)
+        census = census_tool.build_census(self.reader, "reify", len(self.world.graph.nodes),
+                                          GENERATED_AT)
+        self.assertFalse(census["bm25_probe"]["serving"])
+        self.assertEqual(census["summary"]["foreign_facts"], 6)
+
+
+class CensusCliTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = Path(self._tmp.name) / "graph-census"
+        g = self.graph = FakeGraph()
+        self.t10 = g.node("Task 10")
+        self.t12 = g.node("Task 12")
+        g.edge(self.t10, g.node("Ladder"), "tasks 12α, 13β form the ladder")
+        self.conn = FakeFalkorConnection(g)
+
+    def census(self, expect=None, clock=lambda: FIXED_NOW):
+        expect = len(self.graph.nodes) if expect is None else expect
+        return _run_main(["census", "--expect-node-count", str(expect),
+                          "--out-dir", str(self.out), "--batch-size", "2"], self.conn, clock)
+
+    def test_writes_the_census_and_its_adjudication_template(self):
+        code, stdout, _ = self.census()
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()),
+                         sorted([CENSUS_NAME, ADJUDICATION_NAME]))
+        census_text = (self.out / CENSUS_NAME).read_text(encoding="utf-8")
+        adjudication_text = (self.out / ADJUDICATION_NAME).read_text(encoding="utf-8")
+        for text in (census_text, adjudication_text):
+            self.assertTrue(text.endswith("\n"))
+        self.assertIn("12α, 13β", census_text)
+        census = json.loads(census_text)
+        self.assertEqual(census["generated_at"], "2026-10-04T05:06:07Z")
+        self.assertEqual(census["summary"]["foreign_facts"], 1)
+        self.assertEqual(json.loads(adjudication_text)["census"], CENSUS_NAME)
+        self.assertIn(CENSUS_NAME, stdout)
+
+    def test_a_key_mismatch_writes_nothing_and_names_both_counts(self):
+        nodes = len(self.graph.nodes)
+        code, _, stderr = self.census(expect=nodes + 1)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(self.out.exists() and any(self.out.iterdir()))
+        self.assertIn(str(nodes), stderr)
+        self.assertIn(str(nodes + 1), stderr)
+
+    def test_existing_output_is_never_overwritten(self):
+        self.assertEqual(self.census()[0], 0)
+        before = {p.name: p.read_bytes() for p in self.out.iterdir()}
+        self.graph.edge(self.t10, self.t12, "Task 14 also appears")
+        code, _, stderr = self.census()
+        self.assertNotEqual(code, 0)
+        self.assertIn(CENSUS_NAME, stderr)
+        self.assertEqual({p.name: p.read_bytes() for p in self.out.iterdir()}, before)
+
+
+class ConnectFalkorTest(unittest.TestCase):
+    def test_missing_redis_package_is_named(self):
+        def no_module(name):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+        with self.assertRaises(census_tool.MissingDriverError) as ctx:
+            census_tool.connect_falkor("redis://localhost:6379", import_module=no_module)
+        self.assertIn("redis", str(ctx.exception))
 
 
 if __name__ == "__main__":
