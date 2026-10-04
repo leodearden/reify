@@ -73,6 +73,10 @@ FalkorDB reply quirks the reader respects
 - '=~' is unsupported (raises ResponseError).
 - A hard per-query TIMEOUT of 1000 ms, so edge reads are batched by node uuid
   and a 'timed out' error is retried a bounded number of times.
+- A SINGLE-quoted list-valued CYPHER parameter SIGSEGVs FalkorDB 4.18.0 and
+  restarts the shared server (esc-6582-1). List parameters are therefore
+  serialized as compact double-quoted JSON, byte-for-byte the form falkordb-py
+  (and so production Graphiti) sends.
 
 The live connection needs the `redis` package (dark-factory's venv python3);
 the module itself is stdlib-only so --help and the tests run anywhere.
@@ -80,13 +84,17 @@ the module itself is stdlib-only so --help and the tests run anywhere.
 
 import argparse
 import enum
+import importlib
 import itertools
+import json
 import re
 import sys
-from collections.abc import Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 1
@@ -405,8 +413,179 @@ def adjudication_template(census: dict, census_file_name: str) -> dict:
 # ── Live connection ─────────────────────────────────────────────────────────
 
 
-def connect_falkor(url: str):
-    raise NotImplementedError("live connection lands with the census subcommand")
+_UUID_SHAPE = re.compile("[0-9a-fA-F-]{8,64}")
+_PROBE_TOKEN = re.compile("[a-z0-9_]+")
+_EDGES_QUERY = (
+    "MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) "
+    "WHERE n.uuid IN $uuids AND e.invalid_at IS NULL AND e.expired_at IS NULL "
+    "RETURN n.uuid AS node_uuid, e.uuid AS edge_uuid, e.fact AS fact, "
+    "startNode(e).uuid AS source_uuid, m.uuid AS other_uuid, m.name AS other_name, "
+    "e.created_at AS created_at, e.invalid_at AS invalid_at, e.expired_at AS expired_at, "
+    "e.episodes[0] AS first_episode, size(e.episodes) AS episode_count"
+)
+
+
+class GraphQueryTimeout(Exception):
+    """A read query kept hitting FalkorDB's per-query TIMEOUT."""
+
+
+class MissingDriverError(RuntimeError):
+    """The `redis` package a live connection needs is not importable."""
+
+
+def _checked_uuid(value: str) -> str:
+    if not isinstance(value, str) or not _UUID_SHAPE.fullmatch(value):
+        raise ValueError(f"refusing to interpolate a non-uuid value into Cypher: {value!r}")
+    return value
+
+
+def _list_parameter(values: Sequence[str]) -> str:
+    return json.dumps(list(values), separators=(",", ":"))
+
+
+class FalkorReader:
+    """GraphReader over a redis-like connection; issues GRAPH.RO_QUERY only."""
+
+    def __init__(self, conn, graph_key: str, batch_size: int = 200, max_attempts: int = 3,
+                 retry_delay: float = 0.5):
+        self._conn = conn
+        self._graph_key = graph_key
+        self._batch_size = batch_size
+        self._max_attempts = max_attempts
+        self._retry_delay = retry_delay
+
+    def _ro(self, query: str) -> list[dict[str, Any]]:
+        last_timeout: Exception | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                reply = self._conn.execute_command("GRAPH.RO_QUERY", self._graph_key, query)
+            except Exception as exc:
+                # redis' ResponseError carries no structured code: FalkorDB's
+                # per-query TIMEOUT is recognisable only by its message.
+                if "timed out" not in str(exc):
+                    raise
+                last_timeout = exc
+                if attempt < self._max_attempts:
+                    time.sleep(self._retry_delay * attempt)
+                continue
+            header, rows = reply[0], reply[1]
+            return [dict(zip(header, row)) for row in rows]
+        raise GraphQueryTimeout(
+            f"query on {self._graph_key!r} timed out {self._max_attempts} times") from last_timeout
+
+    def _scalar(self, query: str) -> Any:
+        return next(iter(self._ro(query)[0].values()))
+
+    def node_count(self) -> int:
+        return int(self._scalar("MATCH (n) RETURN count(n) AS nodes"))
+
+    def task_named_nodes(self) -> list[tuple[str, str]]:
+        rows = self._ro("MATCH (n:Entity) WHERE toLower(n.name) STARTS WITH 'task' "
+                        "RETURN n.uuid AS uuid, n.name AS name")
+        return [(row["uuid"], row["name"]) for row in rows]
+
+    def edges_touching(self, node_uuids: Sequence[str]) -> list[EdgeRow]:
+        uuids = [_checked_uuid(uuid) for uuid in node_uuids]
+        rows: list[EdgeRow] = []
+        for batch in itertools.batched(uuids, self._batch_size):
+            records = self._ro(f"CYPHER uuids={_list_parameter(batch)} {_EDGES_QUERY}")
+            rows.extend(_edge_row(record) for record in records)
+        return rows
+
+    def bm25_probe(self, token: str) -> Bm25Probe:
+        if not _PROBE_TOKEN.fullmatch(token):
+            raise ValueError(f"refusing to interpolate probe token {token!r} into Cypher")
+        name_contains = int(self._scalar(
+            f"MATCH (n:Entity) WHERE toLower(n.name) CONTAINS '{token}' RETURN count(n) AS nodes"))
+        try:
+            hits = int(self._scalar(f"CALL db.idx.fulltext.queryNodes('Entity', '{token}') "
+                                    "YIELD node RETURN count(node) AS hits"))
+        except Exception as exc:
+            return Bm25Probe(token, None, name_contains, str(exc))
+        return Bm25Probe(token, hits, name_contains, None)
+
+    def edge_endpoints(self, edge_uuid: str) -> EdgeEndpoints | None:
+        uuid = _checked_uuid(edge_uuid)
+        rows = self._ro(f"MATCH (s:Entity)-[e:RELATES_TO]->(t:Entity) WHERE e.uuid = '{uuid}' "
+                        "RETURN s.uuid AS source_uuid, t.uuid AS target_uuid, "
+                        "e.invalid_at AS invalid_at, e.expired_at AS expired_at")
+        if not rows:
+            return None
+        row = rows[0]
+        return EdgeEndpoints(row["source_uuid"], row["target_uuid"], row["invalid_at"],
+                             row["expired_at"])
+
+    def node_exists(self, uuid: str) -> bool:
+        checked = _checked_uuid(uuid)
+        return int(self._scalar(
+            f"MATCH (n:Entity) WHERE n.uuid = '{checked}' RETURN count(n) AS nodes")) > 0
+
+
+def _edge_row(record: dict[str, Any]) -> EdgeRow:
+    episode_count = record["episode_count"]
+    return EdgeRow(
+        node_uuid=record["node_uuid"],
+        edge_uuid=record["edge_uuid"],
+        fact=record["fact"] or "",
+        which_end="source" if record["source_uuid"] == record["node_uuid"] else "target",
+        other_uuid=record["other_uuid"],
+        other_name=record["other_name"] or "",
+        created_at=record["created_at"],
+        invalid_at=record["invalid_at"],
+        expired_at=record["expired_at"],
+        first_episode=record["first_episode"],
+        episode_count=None if episode_count is None else int(episode_count),
+    )
+
+
+def connect_falkor(url: str, import_module: Callable[[str], Any] = importlib.import_module):
+    """A decode_responses redis connection to `url`; `redis` is imported only here."""
+    try:
+        redis = import_module("redis")
+    except ModuleNotFoundError as exc:
+        raise MissingDriverError(
+            "a live run needs the 'redis' package; run this tool with dark-factory's venv "
+            "python3, which has it") from exc
+    return redis.Redis.from_url(url, decode_responses=True)
+
+
+# ── Artifact files ──────────────────────────────────────────────────────────
+
+
+class OutputExistsError(Exception):
+    """An artifact path already exists; artifacts are never overwritten."""
+
+
+def _refuse_existing(paths: Iterable[Path]) -> None:
+    for path in paths:
+        if path.exists():
+            raise OutputExistsError(f"refusing to overwrite {path}")
+
+
+def write_new_json(path: Path, data: dict) -> None:
+    """Write `data` as indented UTF-8 JSON with a trailing newline; never overwrite."""
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    except FileExistsError as exc:
+        raise OutputExistsError(f"refusing to overwrite {path}") from exc
+
+
+def _census_report(census: dict, census_path: Path, adjudication_path: Path) -> str:
+    key, probe, summary = census["key_confirmation"], census["bm25_probe"], census["summary"]
+    proposed = " ".join(f"{verdict}={count}" for verdict, count in summary["proposed"].items())
+    return "\n".join([
+        f"census:       {census_path}",
+        f"adjudication: {adjudication_path}",
+        f"graph {census['graph_key']!r} at {census['generated_at']}: "
+        f"{key['observed_node_count']} nodes (expected {key['expected_node_count']})",
+        f"BM25 probe {probe['token']!r}: fulltext_hits={probe['fulltext_hits']} "
+        f"name_contains={probe['name_contains']} serving={probe['serving']} error={probe['error']}",
+        f"task nodes {summary['task_nodes']}, live edge rows scanned "
+        f"{summary['live_edge_rows_scanned']}, self-loops skipped {summary['self_loops_skipped']}",
+        f"foreign facts {summary['foreign_facts']} (adjacent signature "
+        f"{summary['adjacent_signature']}); proposed {proposed}",
+    ])
 
 
 # ── Command line ────────────────────────────────────────────────────────────
@@ -455,9 +634,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, connect=connect_falkor) -> int:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def run_census(args: argparse.Namespace, connect, clock: Callable[[], datetime]) -> int:
+    now = clock().astimezone(timezone.utc)
+    stem = f"{args.graph}-task-conflations-{now:%Y-%m-%dT%H-%M-%SZ}"
+    census_path = args.out_dir / f"{stem}.json"
+    adjudication_path = args.out_dir / f"{stem}.adjudication.json"
+    _refuse_existing([census_path, adjudication_path])
+    reader = FalkorReader(connect(args.redis_url), args.graph, batch_size=args.batch_size)
+    census = build_census(reader, args.graph, args.expect_node_count,
+                          f"{now:%Y-%m-%dT%H:%M:%SZ}", args.bm25_token)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    write_new_json(census_path, census)
+    write_new_json(adjudication_path, adjudication_template(census, census_path.name))
+    print(_census_report(census, census_path, adjudication_path))
+    return 0
+
+
+_REPORTED_ERRORS = (KeyConfirmationError, GraphQueryTimeout, MissingDriverError,
+                    OutputExistsError)
+
+
+def main(argv: list[str] | None = None, connect=connect_falkor,
+         clock: Callable[[], datetime] = _utc_now) -> int:
     args = build_parser().parse_args(argv)
-    raise NotImplementedError(f"subcommand {args.command!r} is not implemented yet")
+    try:
+        if args.command == "census":
+            return run_census(args, connect, clock)
+        raise NotImplementedError(f"subcommand {args.command!r} is not implemented yet")
+    except _REPORTED_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
