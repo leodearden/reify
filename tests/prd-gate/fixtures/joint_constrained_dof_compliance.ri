@@ -1,20 +1,13 @@
-// Fixture (task 7163): the user-observable signal that the six std.kinematic
-// joint structures carry compliance on their CONSTRAINED DOFs, one named field
-// per symmetry group, with `none` (the default) meaning ideal-rigid.
+// Fixture (task 7163): the six std.kinematic joint structures carry compliance
+// on their CONSTRAINED DOFs, one named field per symmetry group, with `none`
+// (the default) meaning ideal-rigid. A clean `reify check` of the constructor
+// cells is the compile signal.
 //
-// Before this task the constructor form below was unwritable. Measured on the
-// pre-task tree, `Prismatic(axis: …, radial_stiffness: some(…))` emitted
-//
-//     error[E_CTOR_UNKNOWN_FIELD]: … `radial_stiffness` …
-//
-// so a clean `reify check` of the six constructor cells is the compile signal.
-//
-// The connector-form edge at the bottom is NOT signalled by `reify check`: on
-// the pre-task tree an unknown connector-block param is silently DROPPED and the
-// file still checks clean (filed as a follow-up from 7163). Its signal is the
-// eval assertion in the companion Rust test
-// (crates/reify-eval-fea-tests/tests/flexure_joint_fields_e2e.rs), which reads
-// the declared stiffness back off the synthetic `__connector_0` instance.
+// `reify check` does not cover the connector-form edge at the bottom, because
+// connector-block params skip ctor conformance (#8125). Its signal is the eval
+// assertion in crates/reify-eval-fea-tests/tests/flexure_joint_fields_e2e.rs,
+// which reads the declared stiffness back off the synthetic `__connector_0`
+// instance.
 //
 // Every (cell, field) pair carries a DISTINCT magnitude, so a field wired to the
 // wrong slot reads back the wrong number rather than a coincidentally equal one.
