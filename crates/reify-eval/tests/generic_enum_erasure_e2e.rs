@@ -20,8 +20,13 @@
 //!      isolated recursive generic-enum decl (Tree<T> alone, no Demo
 //!      structure) emits no static-termination error (there is no
 //!      termination checker).
+//!   5. edit_param_err_override_of_applied_result_param_is_accepted — PRD
+//!      generic-enum-type-arg-retention §7 B12 / task θ #8017: `edit_param`
+//!      admits an `Err` override of a `param r : Result<Length, String>`.
+//!   6. cold_eval_honours_err_override_of_applied_result_param — same B12
+//!      defect on the `set_param_and_invalidate` + `eval` path (task θ #8017).
 
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
@@ -217,4 +222,144 @@ enum Tree<T> {
          (INV-5: no static-termination checker); got {:?}",
         errors
     );
+}
+
+// ── tests 5–6: B12 — override of an Applied-typed generic-enum param ─────────
+//
+// An annotated generic-enum param keeps `Type::Applied { name: "Result", .. }`
+// (`resolve_enum_type_with_args` uses the bare enum name), while the runtime
+// `Value::Enum` carries only the bare `type_name` and no type args (PRD
+// generic-enum-type-arg-retention INV-1). Both override entry points funnel
+// through `validate_param_override` → `value_type_kind_matches`.
+
+/// `Ok` default (5mm), so an `Err` override is distinguishable by value:
+/// `Demo.bore` is 5mm under the default and 6mm only if the override is honoured.
+const RESULT_PARAM_SOURCE: &str = r#"
+module theta_applied_result_override
+
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+structure def Demo {
+    param r : Result<Length, String> = Ok { value: 5mm }
+
+    let bore = match r {
+        Ok { value: v } => v,
+        Err { error: m } => 6mm
+    }
+}
+"#;
+
+/// The `Err` value the evaluator itself constructs: bare enum name, named
+/// payload, no type-arg tag (INV-1).
+fn err_override(msg: &str) -> Value {
+    Value::Enum {
+        type_name: "Result".into(),
+        variant: "Err".into(),
+        payload: vec![("error".into(), Value::String(msg.into()))],
+    }
+}
+
+/// Anti-vacuity precondition. B12 exists only for an `Applied`-typed cell: were
+/// `Demo.r` to resolve to a bare `Type::Enum`, the pre-θ arm would accept the
+/// override and tests 5–6 would pass without exercising θ.
+fn assert_r_cell_is_applied_result(compiled: &reify_compiler::CompiledModule) {
+    let demo = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Demo")
+        .expect("Demo template must be in the compiled module");
+    let r_cell = demo
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "r")
+        .expect("Demo.r value cell must be in the Demo template");
+    assert!(
+        matches!(&r_cell.cell_type, Type::Applied { name, .. } if name == "Result"),
+        "precondition: Demo.r must be typed Type::Applied {{ name: \"Result\", .. }}, got {:?}",
+        r_cell.cell_type
+    );
+}
+
+fn demo_value<'a>(result: &'a reify_eval::EvalResult, member: &str) -> &'a Value {
+    result
+        .values
+        .get(&ValueCellId::new("Demo", member))
+        .unwrap_or_else(|| panic!("Demo.{member} not found in eval result"))
+}
+
+fn assert_demo_bore_is(result: &reify_eval::EvalResult, expected_m: f64) {
+    match demo_value(result, "bore") {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - expected_m).abs() < 1e-12,
+                "expected Demo.bore ≈ {expected_m} m, got {si_value} m"
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "expected Demo.bore to carry LENGTH dimension, got {dimension:?}"
+            );
+        }
+        other => panic!("expected Value::Scalar for Demo.bore, got {:?}", other),
+    }
+}
+
+/// Asserts the `Err` override was honoured, on values (not warning prose):
+/// `Demo.r` holds `Result::Err` and `Demo.bore` took the Err arm's 6mm. Under
+/// the `Ok` default the same cells hold `Result::Ok` and 5mm.
+fn assert_err_override_took_effect(result: &reify_eval::EvalResult) {
+    match demo_value(result, "r") {
+        Value::Enum { variant, .. } => assert_eq!(
+            variant, "Err",
+            "Demo.r must hold the overriding Result::Err, not the Ok default"
+        ),
+        other => panic!("expected Value::Enum for Demo.r, got {:?}", other),
+    }
+    assert_demo_bore_is(result, 0.006);
+}
+
+// ── test 5: edit_param path ──────────────────────────────────────────────────
+
+/// B12, `Engine::edit_param`: overriding an `Applied`-typed `Result` param with
+/// an `Err` value is ACCEPTED and the incremental re-eval honours it. Pre-θ it
+/// returns `Err(EngineError::TypeKindMismatch)`: `value_type_kind_matches`
+/// admitted a `Value::Enum` only into a bare `Type::Enum` cell.
+#[test]
+fn edit_param_err_override_of_applied_result_param_is_accepted() {
+    let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
+    assert_r_cell_is_applied_result(&compiled);
+
+    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    assert_demo_bore_is(&engine.eval(&compiled), 0.005);
+
+    let edited = engine
+        .edit_param(ValueCellId::new("Demo", "r"), err_override("x"))
+        .unwrap_or_else(|e| panic!("B12: override of an Applied-typed Result param rejected: {e}"));
+
+    assert_err_override_took_effect(&edited);
+}
+
+// ── test 6: cold-eval path ───────────────────────────────────────────────────
+
+/// B12, `Engine::set_param_and_invalidate` + `Engine::eval`: the same `Err`
+/// override is honoured. Pre-θ the override is skipped with a type-kind warning
+/// and the `Ok` default survives (`Demo.bore` = 0.005, not 0.006).
+#[test]
+fn cold_eval_honours_err_override_of_applied_result_param() {
+    let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
+    assert_r_cell_is_applied_result(&compiled);
+
+    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    assert_demo_bore_is(&engine.eval(&compiled), 0.005);
+
+    engine.set_param_and_invalidate(&ValueCellId::new("Demo", "r"), err_override("x"));
+    let result = engine.eval(&compiled);
+
+    assert_err_override_took_effect(&result);
 }
