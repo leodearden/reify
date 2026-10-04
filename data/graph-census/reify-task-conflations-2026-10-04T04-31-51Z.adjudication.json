@@ -1,0 +1,705 @@
+{
+  "census": "reify-task-conflations-2026-10-04T04-31-51Z.json",
+  "adjudications": [
+    {
+      "candidate_id": "6d6d8985-bc01-41ca-9d31-1e9f992e9296@c94ada96-0307-412b-a321-aa75c8cf5042",
+      "verdict": "REPAIR",
+      "target_node_uuid": "98ce2904-fd42-4fc4-9fcc-a1ab7481dd97",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "8c9e990f-0baf-4a61-bf7b-9f36c75fb073@c94ada96-0307-412b-a321-aa75c8cf5042",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "3baeb93c-842d-47fd-9ea1-9cbf63a280ad@5555dce3-5c09-4db7-b22a-015f1d451340",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "36e0c23c-5b4e-4f7b-b809-39729c71902f@506a403c-16a3-49e5-a944-783534d69c7f",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 3191",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "1620132e-f14e-466b-8d35-80097322acdc@01c40a47-3326-48cb-8e31-ac7d615308f5",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 955",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2488db91-9992-4f02-84f8-c6867a1807d6@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "94575eda-dd74-4df7-ba9e-c556ad3f858a@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d9595ff2-5814-430a-89e7-659a44a34746@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f0761c0f-ea34-4785-bf67-d43718ed59ac@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f0815ef7-92c7-4f69-809f-2c234571ec1d@e045e96a-61e4-479a-b453-f51082a6ef30",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "70aef703-1c74-4366-b5e4-0f46548765e6@0830858c-891b-401f-89ac-8ee071ec041e",
+      "verdict": "REPAIR",
+      "target_node_uuid": "9b58c4b4-0217-4f68-a7db-9ac1653aa799",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e4e89204-2f4f-4b65-afd6-672ca0fe6db4@0830858c-891b-401f-89ac-8ee071ec041e",
+      "verdict": "REPAIR",
+      "target_node_uuid": "9b58c4b4-0217-4f68-a7db-9ac1653aa799",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "87448b96-e5c3-40f1-ac8f-1d79da5bb148@feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "faa8d843-190f-449b-b443-06fabcca0060@feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "0eb5ef53-1736-4d88-9be5-b3ee84f3e9e4@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2347",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "679942f0-5e01-460a-be0f-558bc9cfddd9@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2347",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e54c4519-e4d7-475c-a3f7-3645481f3312@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "ec3649b7-eb26-4b24-a573-b6100672ac78@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2352",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "6676d6c7-cad0-4cdb-8297-d427d757b590@4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "verdict": "REPAIR",
+      "target_node_uuid": "6983c2f5-7241-49e8-ae95-73064dafde9b",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e54c4519-e4d7-475c-a3f7-3645481f3312@4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e7870d2f-2872-4888-b333-3edeb027a21c@5af14450-4b37-4cf3-a20a-2ee956b1b425",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "283173b4-1ba7-4d5e-82e5-ec6d505f6a97@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "887ee27c-36fc-47d3-a5f9-70a726d07ba2@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f04d4eb1-8550-45eb-b81e-0a07b5429635@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "61fefaef-9f5d-4cbe-8b56-fa2fba87b66f@91d0de4c-40a0-40b4-9b2c-6bcb02a8eadf",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f4bbaaca-837e-409f-bf0a-0fa1b25e2c87@9d3cb428-0159-4ee5-92cb-669b5e9bbf76",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "715c046d-58bb-4a25-ba46-5f8a1df931f4@3c6e72c4-4907-4db2-9f8c-189606274e9e",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "873164ed-5501-4a46-9661-92451ed9ce66@15d2d1ec-bfc1-4a8d-b9fc-d50d1fca03d5",
+      "verdict": "REPAIR",
+      "target_node_uuid": "adbb2c5c-eff7-4660-9373-710838f961e1",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "94f57155-447d-420f-bcb4-0dcee25508c3@553903f4-5c8b-4167-b896-8907b41e7a83",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "cd8a87a2-823f-499f-9ab0-1808c374976c@cc5d2895-3622-4520-ace1-f56220cc0cbc",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4993",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2f7c6873-5070-49d3-bca6-8e8125bf5d97@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2919",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "442c14ea-a580-443f-b9ae-9d4a4d29bb0c@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2919",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "4b782505-333f-4667-a931-136c57912dd3@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2919",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d0b345d7-6cae-4e6b-9b5e-904fbd963904@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 2919",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "14525eaf-9078-4332-ac8a-d34ba35a71d4@fa0d3c48-cef1-411f-96bd-57df98f08229",
+      "verdict": "REPAIR",
+      "target_node_uuid": "662d2214-d1cb-497f-b336-0bc7dea488cd",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2bdbeab3-035a-43fe-bb0f-fa8077ee4881@8797a07f-8999-4d7c-bdff-978b56da1254",
+      "verdict": "REPAIR",
+      "target_node_uuid": "b6f11870-36c8-4a7c-aebb-06e4c6be51fd",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2c333dd7-8f26-49f7-911f-6b369776f6ad@904c8cb0-7842-4fad-9029-9a8e7dd96681",
+      "verdict": "REPAIR",
+      "target_node_uuid": "8ce7cbb2-6cce-4f46-b41b-c4fab092718e",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "309fd159-ea8b-49c3-9ef5-924a7995f1a9@3d1d07be-9be2-4257-8147-79c1a0d9eb7e",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "3248c0c3-0051-4f46-8813-50c8772b6a3e@ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "verdict": "REPAIR",
+      "target_node_uuid": "a885e689-458f-4f23-b18d-9cc5f21e18a7",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e4b1e85b-43b9-44a0-b30b-88499433a2db@ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "verdict": "REPAIR",
+      "target_node_uuid": "a885e689-458f-4f23-b18d-9cc5f21e18a7",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "ed5d66c0-fd80-4bd3-950f-66befc53e1cc@65297fdf-001d-40fe-81cc-e77c6034411a",
+      "verdict": "REPAIR",
+      "target_node_uuid": "f147cc66-543e-4c7c-8430-f8b3b4cc8d46",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "6a0a25d3-107d-4fa2-8d6b-14dfde5d2fb9@7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4043",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "b475f624-001f-4d23-9ee1-1f3d2bf0d9b0@7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4043",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e858fb65-9737-412e-98a2-fc204d57520d@7c9f87f9-27cf-45f4-bc40-2f5e2b1c9b00",
+      "verdict": "REPAIR",
+      "target_node_uuid": "a91bc002-6c57-47ac-8437-967470ef014d",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2a0a345e-1965-475e-ac4b-a8b8218d2932@28445c5a-2d99-45b1-a5c4-91895f62776e",
+      "verdict": "REPAIR",
+      "target_node_uuid": "96a1c7ff-37f3-450b-a43b-ed09a0fadf5a",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "614bf88e-bc0e-465d-9ff6-219f4f01af80@350f4486-d6af-48a7-a044-6e68af13ead2",
+      "verdict": "REPAIR",
+      "target_node_uuid": "51ce2543-607c-4c54-82b1-2a951b5b7db7",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "07a2750a-9b05-4f98-a9aa-89d45d0d98b7@9626ea29-52e3-492f-b5bb-7a0f3598ebf0",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 3838",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d7c79cee-9488-40f4-8cb0-819709958f0a@871817d6-0d3f-430c-8b28-d7de3f57f6f9",
+      "verdict": "REPAIR",
+      "target_node_uuid": "7c0000d6-957a-4148-8903-1e2e342eaea8",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "446e106b-1ab6-4744-8c58-dd6bf9b3f8b5@008e4082-df3b-4e46-ad8d-6165ca4e9154",
+      "verdict": "REPAIR",
+      "target_node_uuid": "3f618312-6b4e-4526-a369-3dff85f4305b",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "7cc6280a-858d-4684-bef6-2c96d78877a8@5f3588ed-6c24-4a5c-8c1f-39de705e5899",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4011",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "75abeea1-4883-48e5-a8d7-e5b9e2e4c24d@70808ce7-7e94-4e18-9f81-48c20a2978d0",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4000",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "a0056eca-5754-4751-8cc7-b85bc9812ff6@d63f74cf-bdfc-45c6-89db-91b5b01b6c9c",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4000",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "b409ad2b-8620-4cac-8ea1-9c08bb01a11b@322dacfa-b800-431e-b524-b81fef8824f8",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "bfb026e9-aba7-4a0d-9279-b4aff2e32c82@4f51a19b-34db-43d9-8abf-92a2b729d898",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "02c89fb4-9ffe-4ea2-afd0-dd874e64b868@519ba511-58ac-448f-97cb-5ae1c0318d1b",
+      "verdict": "REPAIR",
+      "target_node_uuid": "65e0aa42-31c6-4521-9510-a49d23530ce1",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "7f438458-5e84-49fa-8fd4-bbe0a17bdcaa@5d651daf-70ca-46e2-8d63-21095f630446",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f8937569-075a-4270-bd44-d615d1bc1980@5d651daf-70ca-46e2-8d63-21095f630446",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4072",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "f4481d01-028c-45b5-898c-87142a73ff50@31883cdf-ded1-4ef7-976b-9c3af993af55",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "2c4815cf-2e52-475c-8bc0-e383483aa44e@dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "verdict": "REPAIR",
+      "target_node_uuid": "2b1faa7f-02f9-4f5a-bd1b-9257b0a3c733",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "7f3dcc9f-7870-449f-8927-f6af0141d773@dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "verdict": "REPAIR",
+      "target_node_uuid": "2b1faa7f-02f9-4f5a-bd1b-9257b0a3c733",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "42fc36ec-b2f9-4148-ac10-c55af52d1309@87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4359",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "89cf3323-9e24-4e61-865a-9a729abcbe26@87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "verdict": "REPAIR",
+      "target_node_uuid": "98934b0f-834c-4459-bfbe-9aebc0758501",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "b16ed8cb-16d4-4b6a-835a-f656083af3a6@c89768ad-e490-4943-89de-d99e4c13db3f",
+      "verdict": "REPAIR",
+      "target_node_uuid": "358f141c-fe67-4772-85b8-bc50b4b33c07",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "00bc56ef-dfdc-4491-a8e6-aefbf0aaee2b@7a971822-6dc3-43e2-a4e9-4e736e9deaab",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "e8670300-baf5-447e-96d1-088847b15bb7@155f9ac1-4764-4cf4-acbc-61c75dd33895",
+      "verdict": "REPAIR",
+      "target_node_uuid": "037c1291-d7b2-4bc9-9122-8893b111377f",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "c5c4c429-95cf-440e-87cb-d43cb56302c1@dab5be4e-0596-4938-aa8e-a64e87e192d8",
+      "verdict": "REPAIR",
+      "target_node_uuid": "9ec38fe7-9b92-43ff-835d-6cb8a83bcd02",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d9580f01-f9d8-4486-a821-ec5ec0a384ca@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "ea185157-ab72-4e6a-824d-1cc413856e67@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4616",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "ea50e06c-e823-4afc-9601-4fda31a94162@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "4508fbd0-2231-4176-9701-e84465c8234e@018ab3e0-d6cb-470a-9afa-acbb8e824966",
+      "verdict": "REPAIR",
+      "target_node_uuid": "36fc51e9-c14f-4849-9da3-f2bc9a1ebdee",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "8047cd8b-d05e-4012-b9e9-9ae95bf48555@67da01ce-e974-49f4-8a60-043a1736a430",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4646",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "10379740-90a8-475e-a821-b66c51dc21e3@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4759",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "51ce0475-9af9-41fc-b67c-d1cceb314a5d@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4759",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "92cc574a-a541-46f8-b729-ae45aefb09bb@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 4759",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "6b05b9a8-762f-477b-8c26-f3b468545a57@e3094483-341a-4019-a806-05f250445798",
+      "verdict": "REPAIR",
+      "target_node_uuid": "32720857-1ced-41e2-8fff-1a327aa03908",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "091d397e-8d1b-4c36-96ba-c13e7a900659@9af4459c-8c9d-4a2d-83dc-45ffde6f3644",
+      "verdict": "REPAIR",
+      "target_node_uuid": "28dfb48b-73af-4cb4-9ba1-1a2f8b6a2dd8",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "9b104db8-726f-433f-94c2-0609e9efe611@28dfb48b-73af-4cb4-9ba1-1a2f8b6a2dd8",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "ab22c3eb-7583-434f-a6ae-0fdbe43f8815@9cefc69a-4606-4585-8bec-09f124a42ab6",
+      "verdict": "REPAIR",
+      "target_node_uuid": "54bb136d-9c66-4544-be9d-123de488b972",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "5188769f-0383-4512-89a8-0ef26913a113@621610c6-f54e-49c6-8adc-c61ce748c066",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "99a0c152-de47-4cb5-a802-6a0b1eb6ad6a@5cfe33d2-5972-4fc8-bab1-651c29d95a4d",
+      "verdict": "REPAIR",
+      "target_node_uuid": "4883ee96-a75c-4c93-9195-35d209638cd2",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "c0db6ca9-23ae-42d9-9973-49c419e4701d@4883ee96-a75c-4c93-9195-35d209638cd2",
+      "verdict": "REPAIR",
+      "target_node_uuid": "4361b3c2-a424-4cf7-9c45-e2c2fa8a93d8",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "0851f0e4-4445-453e-a5d5-5aab1b1e03d8@5bee6475-14cd-42bb-a3cc-4dd278798352",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "75dab54d-d842-4a11-bc30-10857fd698e3@e3843994-0930-4eac-bdd0-3a85063f7d91",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "c420de2a-a71b-43e4-b68c-0c8383c3c5a9@b8582c44-33d8-414b-a72d-bc71bd5e6a73",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "63092fd2-a428-4182-9d7c-1fa79eab17a3@dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "verdict": "REPAIR",
+      "target_node_uuid": "32e21534-072b-4b6d-ae46-fb70fe30d7d5",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "d597a7de-32fa-4839-85ca-969cf505ccbf@dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "verdict": "REPAIR",
+      "target_node_uuid": "32e21534-072b-4b6d-ae46-fb70fe30d7d5",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "22beeeed-ef7b-4971-aec2-821fc0df3e25@36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 5632",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "7a913250-ef6a-469d-9dd6-dc46df41e70a@36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 5632",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "86c54448-f4e0-4ba7-8b67-1aa07f61d5cb@e60968e8-8969-44ed-9cac-682f7e5ec64a",
+      "verdict": "REPAIR",
+      "target_node_uuid": "18a5d534-7612-44e9-b9cb-2fc45eec5257",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "b85a4078-5f63-4fd8-b056-47f0eb93552a@38553292-8e79-4bc3-a285-b4b8b34d5a22",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "88178776-38d3-4c38-a615-5fa131bf9fc3@5dd532a2-f4b0-4636-9dad-d05dbcca9f42",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 6085",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "1f42756f-5444-476d-9c94-d98e920bec6b@67d09d80-37d9-4942-94c2-6b7a6a67f845",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "8a51e13b-dc00-426f-9026-70116b746a7d@61f65121-f4ab-4d59-8007-c23f55157a49",
+      "verdict": "REPAIR",
+      "target_node_uuid": "b11f678f-ab66-4f89-9fe7-53d80b5070fa",
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "9a8e780b-82b2-4823-a612-d5b723bfc9cc@b500ca10-d01c-4a24-b743-4b17ed3a4d1e",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 6164",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "3a9d9ec5-7acc-4c82-89fd-e8a7214dc04d@de3c7a7b-db4f-43b0-8447-a5661152d995",
+      "verdict": "RECORD_ONLY",
+      "target_node_uuid": null,
+      "mint_name": null,
+      "rationale": ""
+    },
+    {
+      "candidate_id": "0aff7cb9-a416-42de-94fc-05a4cae08b04@037c1291-d7b2-4bc9-9122-8893b111377f",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 6665",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "dd325db1-c237-4272-886f-72e1257f6f59@037c1291-d7b2-4bc9-9122-8893b111377f",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 6665",
+      "rationale": ""
+    },
+    {
+      "candidate_id": "02462fc4-ce8d-48c3-9486-56f4370b3928@48ae3d4f-d6d6-44ed-a7bb-ed706d83d480",
+      "verdict": "REPAIR",
+      "target_node_uuid": null,
+      "mint_name": "Task 6289",
+      "rationale": ""
+    }
+  ]
+}
