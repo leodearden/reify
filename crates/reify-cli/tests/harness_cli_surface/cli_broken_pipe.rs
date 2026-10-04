@@ -43,8 +43,11 @@ fn version_into_closed_stdout_is_terminated_by_sigpipe_without_panic() {
     assert_terminated_by_sigpipe_without_panic(&output, "reify --version");
 }
 
+/// `check` writes its report only after parse, compile, eval and the kernel build, and it
+/// discards write errors, so this pins the disposition well past the startup path.
 #[test]
-fn cache_stats_into_closed_stdout_is_terminated_by_sigpipe_without_panic() {
-    let output = run_with_closed_stdout(&["cache", "stats"]);
-    assert_terminated_by_sigpipe_without_panic(&output, "reify cache stats");
+fn check_into_closed_stdout_is_terminated_by_sigpipe_without_panic() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+    let output = run_with_closed_stdout(&["check", fixture]);
+    assert_terminated_by_sigpipe_without_panic(&output, "reify check bracket.ri");
 }

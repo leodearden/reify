@@ -5,7 +5,10 @@
 //!
 //! Invariant: the disposition is process-wide, so after this call ANY write to a pipe or
 //! socket with no reader terminates reify. Today stdout/stderr are its only such writers (no
-//! child-stdin pipe, no socket); a future writer of that kind must account for it.
+//! child-stdin pipe, no socket), and that includes the stdio servers: a `reify lsp` or
+//! `reify mcp-server` whose client has closed its end is terminated by SIGPIPE on its next
+//! write instead of getting an EPIPE error back. A future writer of that kind must account
+//! for it.
 //! Behavioural pin: `crates/reify-cli/tests/harness_cli_surface/cli_broken_pipe.rs`.
 
 /// Call first in `main`, before any output and before any thread is spawned.
