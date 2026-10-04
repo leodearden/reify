@@ -1,11 +1,11 @@
-//! G-code → motion-profile lowering for the `gcode_import` stdlib builtin
+//! G-code → motion-segment lowering for the `gcode_import` stdlib builtin
 //! (PRD `docs/prds/v0_3/trajectory-input-shaping.md` §7.2, §11 task ο).
 //!
 //! Two layers live here:
 //!
 //! 1. A pure, registry-free `lower_gcode(source, dialect) -> GcodeImportResult`
 //!    that bridges the `reify-gcode` AST (Marlin/Klipper) to a list of motion
-//!    profiles — one per contiguous motion segment — plus typed diagnostics.
+//!    segments — one per contiguous motion run — plus typed diagnostics.
 //!    Everything testable about lowering, segmentation, and diagnostics is
 //!    asserted at this layer (no `Value` construction required).
 //!
@@ -140,38 +140,38 @@ pub(crate) struct Waypoint {
 /// prior segment (or the origin for the first segment) and is intentionally not
 /// re-recorded here. A consumer reconstructing an absolute path must therefore
 /// chain segments against that external running position rather than treating a
-/// single profile as self-contained.
+/// single segment as self-contained.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MotionProfile {
+pub(crate) struct MotionSegment {
     pub waypoints: Vec<Waypoint>,
 }
 
-/// The outcome of lowering a g-code source: zero or more motion profiles, an
-/// optional parse error (which short-circuits to zero profiles), and any
+/// The outcome of lowering a g-code source: zero or more motion segments, an
+/// optional parse error (which short-circuits to zero segments), and any
 /// non-fatal warnings collected during lowering.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GcodeImportResult {
-    pub profiles: Vec<MotionProfile>,
+    pub segments: Vec<MotionSegment>,
     pub parse_error: Option<ParseError>,
     pub warnings: Vec<GcodeImportWarning>,
 }
 
 impl GcodeImportResult {
-    /// An empty result: no profiles, no parse error, no warnings.
+    /// An empty result: no segments, no parse error, no warnings.
     fn empty() -> Self {
         GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: None,
             warnings: Vec::new(),
         }
     }
 
-    /// A short-circuited result carrying a parse error and no profiles. The
+    /// A short-circuited result carrying a parse error and no segments. The
     /// `reify_gcode::ParseError` is reused verbatim as the `E_GcodeParseError`
     /// carrier (1-indexed line + dialect-specific reason).
     fn from_parse_error(error: ParseError) -> Self {
         GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: Some(error),
             warnings: Vec::new(),
         }
@@ -237,12 +237,12 @@ impl PosState {
     }
 }
 
-/// Lower a g-code source to motion profiles using the chosen dialect parser.
+/// Lower a g-code source to motion segments using the chosen dialect parser.
 ///
 /// Marlin/Klipper drive the corresponding `reify_gcode` parser; a parse failure
-/// short-circuits to [`GcodeImportResult::from_parse_error`] (no profiles). An
+/// short-circuits to [`GcodeImportResult::from_parse_error`] (no segments). An
 /// `Unsupported` selector skips parsing and emits a `DialectUnsupported`
-/// warning with no profiles.
+/// warning with no segments.
 pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImportResult {
     match dialect {
         GcodeImportDialect::Marlin => match reify_gcode::parse_marlin(source) {
@@ -256,7 +256,7 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
         // An unrecognised dialect skips parsing entirely and surfaces a single
         // DialectUnsupported warning naming the offending selector.
         GcodeImportDialect::Unsupported(name) => GcodeImportResult {
-            profiles: Vec::new(),
+            segments: Vec::new(),
             parse_error: None,
             warnings: vec![GcodeImportWarning::DialectUnsupported(name)],
         },
@@ -274,22 +274,22 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
 /// - `SetPosition` (G92) rebases the running position; `Feedrate` (standalone
 ///   F) updates the running feedrate. Both are in-segment state — no split.
 /// - `IgnoredMCode`/`SetVelocityLimit`/`InputShaper` close the open segment
-///   (emitting a profile only when it holds ≥1 waypoint). The running position
+///   (emitting a segment only when it holds ≥1 waypoint). The running position
 ///   persists across the split.
 ///
 /// Waypoints are move targets (a segment does not re-record its starting
-/// position — see [`MotionProfile`]). The trailing open segment is flushed at
+/// position — see [`MotionSegment`]). The trailing open segment is flushed at
 /// end-of-input.
 fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
-    let mut profiles: Vec<MotionProfile> = Vec::new();
-    let mut segment: Vec<Waypoint> = Vec::new();
+    let mut segments: Vec<MotionSegment> = Vec::new();
+    let mut open_segment: Vec<Waypoint> = Vec::new();
     let mut warnings: Vec<GcodeImportWarning> = Vec::new();
     let mut cur = PosState::origin();
 
     for cmd in commands {
         match cmd {
             GcodeCommand::LinearMove(m) => {
-                segment.push(cur.apply_move(m.x, m.y, m.z, m.e, m.feedrate));
+                open_segment.push(cur.apply_move(m.x, m.y, m.z, m.e, m.feedrate));
             }
             // Chord-flattening: a G2/G3 arc is lowered to its endpoint waypoint
             // exactly like a linear move — the i/j/k center offsets and the
@@ -299,7 +299,7 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
             // consumer can tell the path was approximated.
             GcodeCommand::ArcMove(a) => {
                 warnings.push(GcodeImportWarning::ArcFlattened);
-                segment.push(cur.apply_move(a.x, a.y, a.z, a.e, a.feedrate));
+                open_segment.push(cur.apply_move(a.x, a.y, a.z, a.e, a.feedrate));
             }
             // G92 set-position rebases the running position in place: each
             // supplied axis is set to its new logical value; omitted axes are
@@ -325,9 +325,9 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
                 cur.feedrate = Some(f.value);
             }
             // Non-motion commands close the current motion segment (PRD §7.2):
-            // emit a profile only when the open segment holds at least one
+            // emit a segment only when the open segment holds at least one
             // motion waypoint, so back-to-back splitters never produce empty
-            // profiles. The running position persists across the split.
+            // segments. The running position persists across the split.
             //
             // An `INPUT_SHAPER` directive additionally raises a ShaperConflict
             // warning: its presence signals a file-declared shaper that the
@@ -339,9 +339,9 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
                 if matches!(cmd, GcodeCommand::InputShaper(_)) {
                     warnings.push(GcodeImportWarning::ShaperConflict);
                 }
-                if !segment.is_empty() {
-                    profiles.push(MotionProfile {
-                        waypoints: std::mem::take(&mut segment),
+                if !open_segment.is_empty() {
+                    segments.push(MotionSegment {
+                        waypoints: std::mem::take(&mut open_segment),
                     });
                 }
             }
@@ -349,12 +349,14 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     }
 
     // Flush the trailing open segment at end-of-input.
-    if !segment.is_empty() {
-        profiles.push(MotionProfile { waypoints: segment });
+    if !open_segment.is_empty() {
+        segments.push(MotionSegment {
+            waypoints: open_segment,
+        });
     }
 
     GcodeImportResult {
-        profiles,
+        segments,
         parse_error: None,
         warnings,
     }
@@ -371,13 +373,13 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
 /// - `args[0]` is a [`Value::String`] (the g-code source text);
 /// - `args[1]` is a [`Value::StructureInstance`] (the dialect selector). Its
 ///   `type_name` routes the parser — `"MarlinDialect"` / `"KlipperDialect"`;
-///   any other name falls to [`GcodeImportDialect::Unsupported`] (zero profiles,
+///   any other name falls to [`GcodeImportDialect::Unsupported`] (zero segments,
 ///   an empty list).
 ///
 /// A parse error short-circuits to [`Value::Undef`]: the `eval_builtin` path has
 /// no diagnostic sink to carry an `E_GcodeParseError` (deferred per the
 /// `mechanism.rs` precedent), so a hard parse failure can only surface as the
-/// bad-value sentinel. On a clean parse each lowered profile becomes a
+/// bad-value sentinel. On a clean parse each lowered segment becomes a
 /// registry-free `GcodeMotionSegment` instance (see [`segment_to_value`]) and
 /// the set is returned as a `Value::List`. Collected warnings are likewise undeliverable here and are
 /// dropped (they are asserted at the pure-function level instead).
@@ -410,11 +412,11 @@ pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    Value::List(result.profiles.iter().map(segment_to_value).collect())
+    Value::List(result.segments.iter().map(segment_to_value).collect())
 }
 
-/// Encode one lowered [`MotionProfile`] as a `GcodeMotionSegment` instance.
-fn segment_to_value(segment: &MotionProfile) -> Value {
+/// Encode one lowered [`MotionSegment`] as a `GcodeMotionSegment` instance.
+fn segment_to_value(segment: &MotionSegment) -> Value {
     let waypoints = segment.waypoints.iter().map(waypoint_to_value).collect();
     mint_registry_free_instance(
         SEGMENT_TYPE_NAME,
@@ -485,11 +487,11 @@ mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A three-move Marlin run with no non-motion commands lowers to exactly
-    /// ONE motion profile whose ordered waypoints are the absolute move
+    /// ONE motion segment whose ordered waypoints are the absolute move
     /// targets (0,0) → (10,0) → (10,10). Establishes the `GcodeImportDialect`
-    /// enum, the `GcodeImportResult` type, and the per-profile waypoint shape.
+    /// enum, the `GcodeImportResult` type, and the per-segment waypoint shape.
     #[test]
-    fn marlin_three_linear_moves_lower_to_one_profile() {
+    fn marlin_three_linear_moves_lower_to_one_segment() {
         let src = "G1 X0 Y0\nG1 X10 Y0\nG1 X10 Y10";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
@@ -499,12 +501,12 @@ mod tests {
             result.parse_error
         );
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "a contiguous motion run must lower to exactly one profile"
+            "a contiguous motion run must lower to exactly one segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 3, "expected three ordered waypoints");
         assert_eq!((wps[0].x, wps[0].y), (0.0, 0.0), "waypoint 0 = G1 X0 Y0");
         assert_eq!((wps[1].x, wps[1].y), (10.0, 0.0), "waypoint 1 = G1 X10 Y0");
@@ -516,35 +518,35 @@ mod tests {
     }
 
     /// An ignored M-code interleaved between two moves splits the contiguous
-    /// run into TWO profiles. The running machine position persists across the
-    /// split (the second profile's waypoint is the absolute `G1 X20` target).
+    /// run into TWO segments. The running machine position persists across the
+    /// split (the second segment's waypoint is the absolute `G1 X20` target).
     #[test]
-    fn marlin_ignored_mcode_splits_into_two_profiles() {
+    fn marlin_ignored_mcode_splits_into_two_segments() {
         let src = "G1 X10\nM104 S200\nG1 X20";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "the ignored M104 must split the run into two profiles"
+            "the ignored M104 must split the run into two segments"
         );
         assert_eq!(
-            result.profiles[0].waypoints.len(),
+            result.segments[0].waypoints.len(),
             1,
-            "first profile holds the pre-M104 move"
+            "first segment holds the pre-M104 move"
         );
-        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(result.segments[0].waypoints[0].x, 10.0, "G1 X10");
         assert_eq!(
-            result.profiles[1].waypoints.len(),
+            result.segments[1].waypoints.len(),
             1,
-            "second profile holds the post-M104 move"
+            "second segment holds the post-M104 move"
         );
-        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+        assert_eq!(result.segments[1].waypoints[0].x, 20.0, "G1 X20");
     }
 
     /// A `G92` set-position and a standalone `F` feedrate line interleaved
-    /// between two moves do NOT split the run (single profile). The `G92`
+    /// between two moves do NOT split the run (single segment). The `G92`
     /// rebases the running position so a subsequent move that omits the rebased
     /// axis inherits the rebased value, and the standalone `F` updates the
     /// running feedrate consumed by that move.
@@ -555,12 +557,12 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
             "G92 and standalone F must not split the segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 2, "two motion waypoints in the single segment");
         assert_eq!((wps[0].x, wps[0].y), (10.0, 0.0), "first move target");
         // `G92 X0` rebased x→0; the `G1 Y10` move omits X, so it inherits the
@@ -579,9 +581,9 @@ mod tests {
 
     /// A parse failure short-circuits: the `reify_gcode::ParseError` is carried
     /// verbatim in `parse_error` (1-indexed line + `UnknownCommand` reason) and
-    /// no profiles are emitted (even the valid line-1 move is discarded).
+    /// no segments are emitted (even the valid line-1 move is discarded).
     #[test]
-    fn marlin_parse_error_is_carried_with_no_profiles() {
+    fn marlin_parse_error_is_carried_with_no_segments() {
         let src = "G1 X10\nG99 BOGUS";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
@@ -595,8 +597,8 @@ mod tests {
             err.kind
         );
         assert!(
-            result.profiles.is_empty(),
-            "a parse error short-circuits to zero profiles"
+            result.segments.is_empty(),
+            "a parse error short-circuits to zero segments"
         );
     }
 
@@ -611,9 +613,9 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "INPUT_SHAPER splits the run into two profiles"
+            "INPUT_SHAPER splits the run into two segments"
         );
         let shaper_warnings = result
             .warnings
@@ -636,9 +638,9 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "SET_VELOCITY_LIMIT splits the run into two profiles"
+            "SET_VELOCITY_LIMIT splits the run into two segments"
         );
         let shaper_warnings = result
             .warnings
@@ -651,11 +653,11 @@ mod tests {
         );
     }
 
-    /// An unsupported dialect selector skips parsing entirely: zero profiles
+    /// An unsupported dialect selector skips parsing entirely: zero segments
     /// and exactly one `DialectUnsupported` warning naming the offending
     /// dialect.
     #[test]
-    fn unsupported_dialect_yields_no_profiles_and_one_warning() {
+    fn unsupported_dialect_yields_no_segments_and_one_warning() {
         let result = lower_gcode(
             "G1 X10\nG1 X20",
             GcodeImportDialect::Unsupported("FooDialect".to_string()),
@@ -663,7 +665,7 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert!(
-            result.profiles.is_empty(),
+            result.segments.is_empty(),
             "an unsupported dialect parses nothing"
         );
         assert_eq!(result.warnings.len(), 1, "exactly one warning");
@@ -681,7 +683,7 @@ mod tests {
     /// waypoint (the `I`/`J` center offsets are discarded, so no intermediate
     /// arc points appear), the move's in-line feedrate propagates, and exactly
     /// one `ArcFlattened` warning is raised. The arc is motion (not a splitter),
-    /// so the preceding `G1` and the arc share one profile.
+    /// so the preceding `G1` and the arc share one segment.
     #[test]
     fn arc_move_is_chord_flattened_to_endpoint_with_warning() {
         let src = "G1 X0 Y0 F600\nG2 X10 Y0 I5 J0 F1200";
@@ -689,12 +691,12 @@ mod tests {
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "the arc is motion, not a splitter: G1 + G2 form one profile"
+            "the arc is motion, not a splitter: G1 + G2 form one segment"
         );
 
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(
             wps.len(),
             2,
@@ -726,42 +728,42 @@ mod tests {
     }
 
     /// Two consecutive non-motion commands between moves never emit an empty
-    /// middle profile: the `if !segment.is_empty()` guard means the second
+    /// middle segment: the `if !open_segment.is_empty()` guard means the second
     /// splitter (whose segment was already flushed) produces nothing. The run
-    /// lowers to exactly TWO profiles, one per surrounding move.
+    /// lowers to exactly TWO segments, one per surrounding move.
     #[test]
-    fn back_to_back_splitters_emit_no_empty_middle_profile() {
+    fn back_to_back_splitters_emit_no_empty_middle_segment() {
         let src = "G1 X10\nM104 S200\nM109 S200\nG1 X20";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             2,
-            "back-to-back M-codes must not produce an empty middle profile"
+            "back-to-back M-codes must not produce an empty middle segment"
         );
-        assert_eq!(result.profiles[0].waypoints.len(), 1, "first move only");
-        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
-        assert_eq!(result.profiles[1].waypoints.len(), 1, "second move only");
-        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+        assert_eq!(result.segments[0].waypoints.len(), 1, "first move only");
+        assert_eq!(result.segments[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(result.segments[1].waypoints.len(), 1, "second move only");
+        assert_eq!(result.segments[1].waypoints[0].x, 20.0, "G1 X20");
     }
 
     /// A source ending with an M-code flushes exactly the preceding waypoints
-    /// and produces no empty trailing profile: the splitter closes the open
+    /// and produces no empty trailing segment: the splitter closes the open
     /// segment, and end-of-input then finds an already-empty segment (nothing
-    /// to flush). One profile holding both leading moves results.
+    /// to flush). One segment holding both leading moves results.
     #[test]
-    fn trailing_splitter_flushes_without_empty_trailing_profile() {
+    fn trailing_splitter_flushes_without_empty_trailing_segment() {
         let src = "G1 X10\nG1 X20\nM104 S200";
         let result = lower_gcode(src, GcodeImportDialect::Marlin);
 
         assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
         assert_eq!(
-            result.profiles.len(),
+            result.segments.len(),
             1,
-            "the trailing M-code must not create an empty trailing profile"
+            "the trailing M-code must not create an empty trailing segment"
         );
-        let wps = &result.profiles[0].waypoints;
+        let wps = &result.segments[0].waypoints;
         assert_eq!(wps.len(), 2, "both pre-M104 moves flush together");
         assert_eq!(wps[0].x, 10.0, "G1 X10");
         assert_eq!(wps[1].x, 20.0, "G1 X20");
