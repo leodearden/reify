@@ -1728,10 +1728,11 @@ impl OcctKernel {
     ///
     /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
     /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
-    /// arm, and the handle's `BRepKind` is classified from that real shape —
-    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
-    /// not `Solid`. The history records describe the parent ↔ result correspondence
-    /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
+    /// arm, and the handle's `BRepKind` is classified from that real shape by
+    /// `store_classified` — so a disjoint fuse registers as the multi-body
+    /// `BRepKind::Compound`, not `Solid`. The history records describe the
+    /// parent ↔ result correspondence emitted by
+    /// `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
     /// topology attributes onto the result handles.
@@ -1762,7 +1763,11 @@ impl OcctKernel {
 
     /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_cut` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1787,7 +1792,11 @@ impl OcctKernel {
 
     /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_common` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
