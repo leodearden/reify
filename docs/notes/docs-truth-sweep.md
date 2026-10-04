@@ -187,9 +187,12 @@ Wiring the raise in dark-factory would make dark-factory learn reify's detector
 registry and binary path. An escalation write is not a task write, so reify
 can make it. Reify ships the sweep, the units and the installer; nothing is
 wired on the dark-factory side. The URL is read from `.mcp.json` rather than
-hard-coded, so there is no fourth copy of the port. The Python takes the
-endpoint as a required argument with no default, so no test can file into the
-live queue by omission.
+hard-coded, so the port value is not copied again. The MCP client and the
+`.mcp.json` parse live in `scripts/escalation_mcp.py`, which
+`scripts/pprdstatus-escalate.py` shares. `scripts/await-merge-landing.py` still
+has its own copy of both. Routing it through the shared module is #8178. The
+Python takes the endpoint as a required argument with no default, so no test
+can file into the live queue by omission.
 
 **Why `promote_to_l2`, not a born-at-L2 filing or level 1:**
 
@@ -217,7 +220,7 @@ the next, re-raising docs already seen.
 | Exit | Meaning | State file |
 |---|---|---|
 | 0 | every member checked; raised, correctly silent, or printed under `--dry-run` | recorded (except under `--dry-run`) |
-| 1 | a raise was due but `escalate_info` or `promote_to_l2` could not be filed (an `accepted_unpersisted` member counts as not filed, and is never promoted), or the observed set could not be written | untouched after a failed raise, so the next run retries |
+| 1 | a raise was due but `escalate_info` or `promote_to_l2` could not be filed, or the observed set could not be written. A reply with no record id, or an `accepted_unpersisted` reply from either tool, counts as not filed, and an unfiled member is never promoted. A booked sitting's ids are printed before the state write, so a write failure never hides them. | untouched after a failed raise, so the next run retries |
 | 125 | nothing was checked or raised: a member's run printed no parseable findings array (detector failure, or a refusal of an empty task corpus), the state file is unreadable, `.mcp.json` declares no endpoint, or no fresh runnable `reify-audit` could be had | untouched |
 
 The endpoint is resolved **before** the detectors run, so a misconfigured
@@ -282,5 +285,5 @@ systemctl --user disable --now reify-docs-truth-sweep.timer
 **Installer library.** The installer is built on
 `scripts/lib_systemd_user_install.sh`, the consolidation that
 `scripts/install-jcodemunch-index-units.sh`'s header names. Migrating that
-installer and `scripts/install-warm-lane-units.sh` onto the library is a filed
-follow-up, not part of #6347.
+installer and `scripts/install-warm-lane-units.sh` onto the library is #7362,
+not part of #6347.

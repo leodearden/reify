@@ -2,7 +2,8 @@
 # scripts/lib_systemd_user_install.sh — SOURCED skeleton for installers of
 # reify-owned systemd --user timer units: tagged log helpers, the --user bus
 # probe, the linger advisory, and the copy/daemon-reload/enable primitive.
-# Consumer: scripts/install-docs-truth-sweep-units.sh.
+# Consumer: scripts/install-docs-truth-sweep-units.sh. Migrating
+# install-jcodemunch-index-units.sh and install-warm-lane-units.sh onto it is #7362.
 
 if [ "${_LIB_SYSTEMD_USER_INSTALL_SOURCED:-}" = "1" ]; then
     return 0 2>/dev/null || true
