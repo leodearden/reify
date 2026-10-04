@@ -51,15 +51,7 @@
 //! fixture bodies produced, and each local `fn` is `dead_code` in every binary
 //! that compiles it without calling it, so both are allowed.
 
-#![allow(dead_code, unused_imports)]
-
-// Spelled with the explicit `mesh_fixtures::` module path: `mesh_fixtures` is
-// deliberately not glob-exported from `reify_test_support`'s crate root, so the
-// root path does not carry these names.
-pub use reify_test_support::mesh_fixtures::{
-    F32_STORAGE_REL, assert_rel, prismatic_box_mesh, tessellated_cylinder_mesh,
-    tessellated_cylinder_volume, unit_cube_mesh, unwelded_prismatic_box_mesh,
-};
+#![allow(dead_code)]
 
 use reify_ir::Mesh;
 
