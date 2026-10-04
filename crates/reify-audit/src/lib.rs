@@ -1746,17 +1746,13 @@ pub trait JCodemunchOps {
 ///    produces zero findings without opening a socket.
 /// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
 ///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
-/// 3. `pdiag-baseline-gen`, a structural census that still has to populate
-///    [`AuditContext`]'s field.
+/// 3. `pdiag-baseline-gen` and `ptodo-baseline-gen`, structural censuses that
+///    still have to populate [`AuditContext`]'s field.
 ///
 /// Lives here rather than in each bin because it was copy-pasted into three of
 /// them, so every future change to the trait had to be replayed by hand in
 /// three places — a silent drift hazard with no compiler backstop until one
-/// copy stopped building. Two of the three now bind this one.
-///
-/// The third, `src/bin/ptodo-baseline-gen.rs`, still carries a private copy
-/// that re-opens that hazard in the one bin that still has it — a residual
-/// defect, not a design choice, tracked as #7132.
+/// copy stopped building. All three now bind this one.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;
 
