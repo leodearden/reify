@@ -2041,11 +2041,20 @@ select_pdiag_ratchet
 # the esc-7376-2 shape #7691 closed for PDIAG. This selector runs the same file
 # on the task lane whenever the branch could have moved the verdict.
 #
-# Trigger: the merge-base diff ADDS or MODIFIES a path pdoccover_input_path
-# (below) accepts. Those are the four inputs pdoccover::load_inputs,
+# Trigger: the merge-base diff touches a path pdoccover_input_path (below)
+# accepts. Those are the four inputs pdoccover::load_inputs,
 # load_oracle_sources and committed_baseline read; the verdict depends on
-# nothing else in the tree. A and M are the triggering statuses
-# (git diff --no-renames --diff-filter=AM).
+# nothing else in the tree.
+#
+# Diff-status policy: --no-renames and NO --diff-filter. Every status on an
+# input path changes content PDOCCOVER reads, and each can red the gate: a
+# deleted chunk (undocumented-name, stale ledger rows), a deleted oracle file
+# (fabricated-name), a deleted units.rs (census-empty), a deleted baseline
+# (every row new). That is the deliberate divergence from select_pdiag_ratchet,
+# whose D can only yield a Medium OrphanRow. --no-renames is load-bearing: a
+# chunk moved out of the corpus carries its trigger only on its D side, which a
+# rename entry would hide behind its destination. Pinned by
+# test_verify_scope.sh's B-PDOCCOVER-del-* and B-PDOCCOVER-rename-out.
 #
 # Appends into the SAME SELECTED_INFRA_GLOBS as select_pdiag_ratchet, so it
 # INHERITS that header's properties and its STALE-BINARY DECISION exactly as
@@ -2081,7 +2090,7 @@ select_pdoccover_ratchet() {
     [ "$SCOPE" = "branch" ] || return 0
     [ -n "$_MERGE_BASE" ] || return 0
     local _changed _path
-    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames "$_MERGE_BASE" 2>/dev/null)" || return 0
     while IFS= read -r _path; do
         [ -n "$_path" ] || continue
         if pdoccover_input_path "$_path"; then
