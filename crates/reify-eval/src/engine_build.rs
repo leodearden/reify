@@ -10711,9 +10711,12 @@ impl Engine {
     /// an in-walk symbolic `GeometryHandle` with a byte-identical
     /// `upstream_values_hash` (GHR-β invariant preserved).
     ///
-    /// The lookup key is `RealizationNodeData.geometry_cell` — the graph-side link
-    /// from a realization to its backing `Type::Geometry` value cell, set at
-    /// graph-construction time in `EvaluationGraph::from_templates`.
+    /// The lookup key is `RealizationNodeData.geometry_cell`, set at
+    /// graph-construction time in `EvaluationGraph::from_templates`. It answers
+    /// only for a SCALAR `Type::Geometry` cell. A geometry-list cell is linked
+    /// N:1 (task #5385), and for length 1 that is indistinguishable from 1:1 by
+    /// link count; its value is never one element's handle, but is assembled by
+    /// the list regroup and by `tessellate_snapshot`'s baseline mint.
     pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
         cell_id: &reify_core::identity::ValueCellId,
         graph: &crate::graph::EvaluationGraph,
@@ -10728,6 +10731,13 @@ impl Engine {
             values.get(cell_id),
             Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
         ) {
+            return None;
+        }
+        if graph
+            .value_cells
+            .get(cell_id)
+            .is_none_or(|cell| cell.cell_type != reify_core::Type::Geometry)
+        {
             return None;
         }
         // Find the realization whose geometry_cell link points at this cell.
