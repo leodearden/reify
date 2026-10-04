@@ -951,10 +951,8 @@ structure Root { sub a : Assembly {} }
 //   B. guarded  `param m : Real = auto` → `compile_guarded_members`' Param arm
 //   C. guarded  `let m : Real = auto`   → `compile_guarded_members`' Let arm
 //
-// C and its variants were live E_OBJECTIVE_INERT false positives until the
-// guarded `Let` lowering was fixed (#6888). They are kept so that a regression
-// there shows up again as a compile Error on legal code; A and B are the
-// controls that attribute such a regression to the `Let` arm rather than to
+// A regression in C's `Let` arm shows up as `E_OBJECTIVE_INERT` on legal
+// code; A and B are the controls that attribute it to that arm rather than to
 // guards in general.
 //
 // SCOPE BOUNDARY. These tests do not assert that `m` resolves to a solved
@@ -1083,9 +1081,7 @@ structure GuardedAutoParamShape {
 ///
 /// The program is legal: the author wrote an auto and an objective over it.
 /// The guarded `Let` arm lowers `m` to `ValueCellKind::Auto`, so obligation (5)
-/// bails. Before #6888 fixed that arm this drew a compile Error whose message —
-/// "`m` … is never `auto`" — was factually false about the source in front of
-/// the reader.
+/// bails.
 #[test]
 fn guarded_auto_let_read_by_an_objective_is_compile_clean() {
     let src = r#"module guarded_auto_let
@@ -1134,9 +1130,8 @@ structure GuardedElseAutoLet {
     );
 }
 
-/// PROBE C, `auto(free)` spelling. Before #6888 it was a distinct live false
-/// positive with its own `E_OBJECTIVE_INERT`. Pinned so the guarded `Let` arm
-/// cannot regress to honouring the bare `auto` spelling alone.
+/// PROBE C, `auto(free)` spelling. Pinned so the guarded `Let` arm cannot
+/// regress to honouring the bare `auto` spelling alone.
 ///
 /// These two are the whole reachable space, not a sample. `auto` inside a
 /// larger expression — `let m : Real = auto * 2.0` — does not parse in a

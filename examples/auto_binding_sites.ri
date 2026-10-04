@@ -19,18 +19,7 @@
 //
 //   (3) LET (ε):
 //         let m : Length = auto
-//       Resolved by parent constraint: AllFourSites.m == 10mm
-//
-//       The GUARDED form — `where g > 0.0 { let m : Length = auto }` — compiles to
-//       the same ValueCellKind::Auto { free } cell as the unguarded one above (task
-//       6888 fixed the guards.rs MemberDecl::Let arm, which used to produce a Let
-//       cell bound to Undef and threw the `: Length` annotation away). It is
-//       deliberately NOT a fifth site here: the solver's auto-resolution pass
-//       traverses neither guarded-group members nor guarded constraints, so a
-//       guarded auto cell still evaluates to undef and would break this file's
-//       "every site resolves to 10mm" contract. Compiler-level coverage of the
-//       guarded shape lives in
-//       crates/reify-compiler/tests/harness_auto_binding/guarded_auto_let_tests.rs.
+//       Resolved by parent constraint: AllFourSites.m == 10mm (guarded form: end of file)
 //
 //   (4) Connect-param (ε, §4.3/§7):
 //         connect a -> b : EpsilonConnector { gain = auto }
@@ -117,3 +106,11 @@ structure AllFourSites {
     port b : in EpsilonSignal {}
     connect a -> b : EpsilonConnector { gain = auto }
 }
+
+// Site (3)'s GUARDED form — `where g > 0.0 { let m : Length = auto }` — compiles
+// to the same ValueCellKind::Auto { free } cell as the unguarded one. It is
+// deliberately NOT a fifth site here: the solver's auto-resolution pass
+// traverses neither guarded-group members nor guarded constraints, so a guarded
+// auto cell still evaluates to undef and would break this file's "every site
+// resolves to 10mm" contract. Compiler-level coverage of the guarded shape lives
+// in crates/reify-compiler/tests/harness_auto_binding/guarded_auto_let_tests.rs.

@@ -1,13 +1,10 @@
 //! Compiler tests for `auto` let bindings inside a guarded (`where`) block — task 6888.
 //!
 //! The UNGUARDED counterpart of binding site 3 (`let m : Length = auto`) is covered by the
-//! sibling `auto_binding_sites_remaining_tests.rs`. The guarded `MemberDecl::Let` arm in
-//! `guards.rs` never consulted `extract_auto_free`, so `where g > 0.0 { let m : Length = auto }`
-//! compiled to a `ValueCellKind::Let` cell bound to the `ExprKind::Auto` fallback literal
-//! `Undef` — silently discarding both the `auto` and the `: Length` annotation. The discarded
-//! annotation is observable as a `dimension mismatch in comparison: Real vs Scalar[m]` error on
-//! any in-block constraint that uses the cell dimensionally, which is what the `constraint`
-//! line in each source below pins.
+//! sibling `auto_binding_sites_remaining_tests.rs`. A guarded auto let lowers to a
+//! `ValueCellKind::Auto` cell typed by its declared annotation, and that type is already in
+//! scope for a constraint in the same block, which is what the `constraint` line in each
+//! source below pins.
 //!
 //! These are compiler-IR assertions only: a guarded auto cell is NOT resolved by the solver
 //! today (the auto-resolution pass traverses neither guarded-group members nor guarded
@@ -62,8 +59,7 @@ fn member_named<'a>(members: &'a [ValueCellDecl], name: &str) -> &'a ValueCellDe
 }
 
 /// Pin the full auto-cell shape: an `Auto { free }` solver cell carrying the DECLARED
-/// annotation and no default expression. Asserting all three together is what rules out a
-/// fix that sets `kind` correctly while still taking `cell_type` from the `Undef` fallback.
+/// annotation and no default expression.
 fn assert_auto_cell(member: &ValueCellDecl, entity: &str, name: &str, free: bool) {
     assert_eq!(
         member.id,
@@ -175,28 +171,33 @@ fn nested_guarded_auto_let_mints_auto_cell() {
     assert_auto_cell(member_named(&inner.members, "m"), "GE", "m", false);
 }
 
-// ── (e) missing annotation ────────────────────────────────────────────────────
-
-/// An auto let is a solver cell, so an untyped one has no type to solve for. The guarded arm
-/// swallowed it entirely: no diagnostic, and a silent `Let` cell bound to `Undef`.
-#[test]
-fn untyped_guarded_auto_let_emits_missing_annotation_error() {
-    let source = "structure GD { param g : Real = 1.0  where g > 0.0 { let m = auto } }";
-    let module = compile_source_with_stdlib(source);
-
-    let errors = errors_only(&module);
+/// The guarded auto-let annotation is resolved twice — once by the name-registration prepass,
+/// once by the member pass — so every error it can raise must still reach the user exactly
+/// once. Returns that single error's message.
+fn single_error_message(module: &CompiledModule) -> &str {
+    let errors = errors_only(module);
     assert_eq!(
         errors.len(),
         1,
         "expected exactly one error diagnostic, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+    &errors[0].message
+}
+
+// ── (e) missing annotation ────────────────────────────────────────────────────
+
+/// An auto let is a solver cell, so an untyped one has no type to solve for: it is rejected
+/// and mints no cell.
+#[test]
+fn untyped_guarded_auto_let_emits_missing_annotation_error() {
+    let source = "structure GD { param g : Real = 1.0  where g > 0.0 { let m = auto } }";
+    let module = compile_source_with_stdlib(source);
+
+    let message = single_error_message(&module);
     assert!(
-        errors[0]
-            .message
-            .contains("auto let binding requires a type annotation"),
-        "unexpected error message: {:?}",
-        errors[0].message
+        message.contains("auto let binding requires a type annotation"),
+        "unexpected error message: {message:?}"
     );
 
     let group = only_group(template_of(&module, "GD"));
@@ -208,5 +209,21 @@ fn untyped_guarded_auto_let_emits_missing_annotation_error() {
             .iter()
             .map(|m| m.id.member.as_str())
             .collect::<Vec<_>>()
+    );
+}
+
+// ── (f) `Keyed<T>` annotation ─────────────────────────────────────────────────
+
+#[test]
+fn guarded_auto_let_with_keyed_annotation_errors_once() {
+    let source = "structure def Vent { param area : Length = 1mm } \
+                  structure GK { param g : Real = 1.0  \
+                  where g > 0.0 { let y : Keyed<Vent> = auto } }";
+    let module = compile_source_with_stdlib(source);
+
+    let message = single_error_message(&module);
+    assert!(
+        message.contains("sub-only collection kind"),
+        "expected the Keyed value-position rejection, got: {message:?}"
     );
 }
