@@ -95,8 +95,7 @@ FAMILY = (
             "still-active PRD: correct its prose",
             "completed plan: stamp a terminal Status (SHIPPED / SUPERSEDED naming the "
             "successor / WITHDRAWN) per .claude/skills/prd/project.md \"PRD terminal status\"",
-            "dated snapshot or capability manifest: leave the body as authored; never "
-            "retroactively edit it",
+            "dated snapshot: leave the body as authored; never retroactively edit it",
         ),
     ),
     FamilyMember(
