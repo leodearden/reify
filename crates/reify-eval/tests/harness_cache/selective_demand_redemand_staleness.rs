@@ -54,11 +54,13 @@
 
 use crate::differential;
 
+use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::Value;
+use reify_ir::geometry::GeometryHandleId;
 use reify_test_support::{compile_source, MockGeometryKernel};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -832,44 +834,199 @@ fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_re
     }
 }
 
-/// One element of a geometry-list cell that is backed by REAL kernel geometry.
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry-LIST lets on a REUSE pass under selective demand (task #6460).
+//
+// Under selective demand a `tessellate_snapshot` whose demanded realizations'
+// inputs are unchanged since the previous pass is hash-exempt: it re-executes
+// nothing, so it cannot hand back kernel handles for ANY geometry cell — the
+// scalar let `a` comes back SYMBOLIC (`kernel_handle: None`) on such a pass.
+// The contract these tests pin is therefore PARITY: on the same pass a geometry
+// list is backed exactly as `a` is, and carries the identity of the
+// realizations it was last built from (same `realization_ref`s in index order,
+// same `upstream_values_hash`). Never `[Undef; n]`, never a pre-edit identity.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A second, no-op `tessellate_snapshot` under all-visible selective demand
+/// must keep `holes` resolved to the three realizations the first pass built.
 ///
-/// Constructible only through [`live_geometry_list`], which refuses any element
-/// whose `kernel_handle` is `None` — so holding one of these IS the evidence
-/// that a kernel handle was present. The kernel handle id itself is checked and
-/// then dropped: it is ephemeral and session-scoped, and no assertion here
-/// compares ids across rebuilds.
-#[derive(Clone, Debug)]
-struct LiveGeometryHandle {
-    realization_ref: RealizationNodeId,
-    upstream_values_hash: [u8; 32],
+/// Full scope re-executes every realization on every pass, so it serves the
+/// list live both times; the selective second pass re-executes nothing, which
+/// is where `holes` came back as `List([Undef; 3])` while `a` stayed resolved.
+#[test]
+fn a_repeat_no_op_tessellate_under_all_visible_selective_demand_keeps_the_geometry_list_resolved() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
+    let (mut engine, _visible) = selective_geom_list_engine(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess1 must return Some after eval()");
+    let before = live_geometry_list(
+        &tess1,
+        &holes_id,
+        3,
+        "tess1: the first selective pass must realize all three elements",
+    );
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess2 must return Some");
+    assert_reuse_pass_keeps_geometry_list(
+        &engine,
+        &tess2,
+        &before,
+        "tess2, a repeat no-op tessellate",
+    );
 }
 
-/// The live handles backing a `len`-element geometry-list cell in
-/// `result.values`, in order. `ctx` labels the call site in panic messages.
+/// Hiding the list's consumer and un-hiding it must not cost the list its
+/// resolution on the next pass.
 ///
-/// THE `kernel_handle: Some(_)` CHECK IS THE POINT (review esc-5385-20).
-/// `kernel_handle` is the ONLY discriminator between the two producers of a
-/// `Value::GeometryHandle`: the kernel-backed hydration path
-/// (`post_process_geometry_handle_cells` / `hydrate_geometry_handles_into_values`)
-/// writes `Some(id)`, while `mint_symbolic_geometry_handles_into_values` writes
-/// `None` and recomputes `upstream_values_hash` from the CURRENT params —
-/// deliberately byte-identical to what the build path would produce. So a
-/// symbolic refill after the all-or-nothing regroup DROPPED the list satisfies
-/// every other assertion available here: the cell is a list, no element is
-/// `Undef`, the elements are distinct realizations, and the hashes changed
-/// across an `edit_param`. Without this check these tests — the only
-/// `MockGeometryKernel`-backed witnesses in this file — cannot tell real
-/// geometry from a placeholder, which is the whole claim they exist to pin.
+/// Hiding `merged` takes `Value(holes)` out of the demand cone, so
+/// `mark_demand_pruned_pending` marks it `Pending`; un-hiding makes it demanded
+/// AND `Pending`, which is Part B's refresh-candidate shape in
+/// `refresh_and_gate_demanded_realizations`. Part B re-evaluates `holes` from
+/// its `generate(..)` default, which yields `List([Undef; 3])` — not
+/// `is_undef()`, so it passes the shallow write-back into `snapshot.values`.
+/// The tessellate after the un-hide must still serve the same three handles,
+/// backed as `a` is.
+#[test]
+fn redemand_geometry_list_survives_hide_unhide() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
+    let (mut engine, visible) = selective_geom_list_engine(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess1 must return Some after eval()");
+    let before = live_geometry_list(
+        &tess1,
+        &holes_id,
+        3,
+        "tess1: the first selective pass must realize all three elements",
+    );
+
+    engine.set_demand_selective([realization_node(&compiled, "a")]);
+    engine.set_demand_selective(visible);
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess2 must return Some after the un-hide");
+    assert_reuse_pass_keeps_geometry_list(
+        &engine,
+        &tess2,
+        &before,
+        "tess2, after hiding and un-hiding `merged`",
+    );
+}
+
+/// The reuse pass after an edit must serve the EDITED list, not the identity
+/// the list had before the edit.
 ///
-/// Single walk for both consumers so the check cannot be enforced at one call
-/// site and forgotten at the other.
-fn live_geometry_list(
+/// A fix that made the reuse pass replay the first pass's handles would pass
+/// both tests above; this one rejects it. `r` feeds every `cylinder(r, h)`, so
+/// the pass after `edit_param` re-executes all three elements with new
+/// `upstream_values_hash`es, and the no-op pass after THAT must carry those.
+#[test]
+fn the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit_one() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
+    let (mut engine, _visible) = selective_geom_list_engine(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess1 must return Some after eval()");
+    let before = live_geometry_list(
+        &tess1,
+        &holes_id,
+        3,
+        "tess1: the first selective pass must realize all three elements",
+    );
+
+    engine
+        .edit_param(
+            ValueCellId::new(GEOM_LIST_ENTITY, "r"),
+            Value::length(0.007),
+        )
+        .expect("edit_param(r, 7mm) must succeed");
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess2 must return Some after edit_param");
+    assert!(
+        engine.last_dispatch_count() > 0,
+        "tess2 must re-execute the edited realizations, or the edit never reached them"
+    );
+    let edited = live_geometry_list(
+        &tess2,
+        &holes_id,
+        3,
+        "tess2: the pass after edit_param must re-realize all three elements",
+    );
+    // PER ELEMENT, for the reason given in
+    // `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed`.
+    for (k, (old, new)) in before.iter().zip(&edited).enumerate() {
+        assert_ne!(
+            old.upstream_values_hash, new.upstream_values_hash,
+            "tess2: element {k}'s upstream_values_hash did not change after \
+             edit_param(r, 7mm) — served stale rather than re-realized"
+        );
+    }
+
+    let tess3 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess3 must return Some");
+    assert_reuse_pass_keeps_geometry_list(
+        &engine,
+        &tess3,
+        &edited,
+        "tess3, the no-op pass after the edited one",
+    );
+}
+
+/// The entity [`differential::SELECTIVE_DEMAND_GEOM_LIST_SRC`] declares.
+const GEOM_LIST_ENTITY: &str = "SelectiveGeomList";
+
+/// Whether real kernel geometry stands behind a `Value::GeometryHandle`. See
+/// [`live_geometry_list`] for why `kernel_handle` is the only discriminator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandleBacking {
+    Kernel,
+    Symbolic,
+}
+
+impl HandleBacking {
+    fn of(kernel_handle: &Option<GeometryHandleId>) -> Self {
+        match kernel_handle {
+            Some(_) => Self::Kernel,
+            None => Self::Symbolic,
+        }
+    }
+}
+
+/// One element of a geometry-list cell: the realization identity it carries,
+/// and whether kernel geometry backs it. The kernel handle id itself is
+/// dropped: it is ephemeral and session-scoped, and no assertion here compares
+/// ids across passes.
+#[derive(Clone, Debug)]
+struct ResolvedGeometryHandle {
+    realization_ref: RealizationNodeId,
+    upstream_values_hash: [u8; 32],
+    backing: HandleBacking,
+}
+
+/// The handles of a `len`-element geometry-list cell in `result.values`, in
+/// order, of EITHER backing. `ctx` labels the call site in panic messages.
+///
+/// The single shape walk: every other geometry-list helper here goes through
+/// it, so an `Undef` element is refused the same way at every call site.
+fn resolved_geometry_list(
     result: &reify_eval::TessellateResult,
     cell: &ValueCellId,
     len: usize,
     ctx: &str,
-) -> Vec<LiveGeometryHandle> {
+) -> Vec<ResolvedGeometryHandle> {
     let value = result
         .values
         .get(cell)
@@ -889,22 +1046,12 @@ fn live_geometry_list(
             Value::GeometryHandle {
                 realization_ref,
                 upstream_values_hash,
-                kernel_handle: Some(_),
-            } => LiveGeometryHandle {
+                kernel_handle,
+            } => ResolvedGeometryHandle {
                 realization_ref: realization_ref.clone(),
                 upstream_values_hash: *upstream_values_hash,
+                backing: HandleBacking::of(kernel_handle),
             },
-            Value::GeometryHandle {
-                realization_ref,
-                kernel_handle: None,
-                ..
-            } => panic!(
-                "{ctx}: `{cell}[{k}]` is a SYMBOLIC handle (kernel_handle: None) for \
-                 realization {realization_ref:?} — no kernel geometry backs it, so the \
-                 list only looks realized. A dropped list refilled by \
-                 `mint_symbolic_geometry_handles_into_values` lands here.\n\
-                 full value: {items:?}",
-            ),
             Value::Undef => panic!(
                 "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
                  unresolved.\nfull value: {items:?}",
@@ -912,6 +1059,133 @@ fn live_geometry_list(
             other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
         })
         .collect()
+}
+
+/// The backing of the SCALAR geometry cell `cell` in `result.values`.
+fn geometry_handle_backing(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    ctx: &str,
+) -> HandleBacking {
+    match result.values.get(cell) {
+        Some(Value::GeometryHandle { kernel_handle, .. }) => HandleBacking::of(kernel_handle),
+        other => panic!("{ctx}: `{cell}` should be a GeometryHandle; got: {other:?}"),
+    }
+}
+
+/// The realization named `name` in `compiled`, looked up BY NAME so that no
+/// test hardcodes a realization index.
+fn realization_node(compiled: &CompiledModule, name: &str) -> NodeId {
+    compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.realizations.iter())
+        .find(|r| r.name.as_deref() == Some(name))
+        .map(|r| NodeId::Realization(r.id.clone()))
+        .unwrap_or_else(|| panic!("fixture must compile a realization named {name:?}"))
+}
+
+/// An evaluated `UnifiedDag` engine over
+/// [`differential::SELECTIVE_DEMAND_GEOM_LIST_SRC`] with EVERY realization
+/// visible under SELECTIVE demand, plus that visible set so a test can hide
+/// part of it and restore it.
+fn selective_geom_list_engine(compiled: &CompiledModule) -> (Engine, Vec<NodeId>) {
+    let visible: Vec<NodeId> = ["a", "holes#0", "holes#1", "holes#2", "merged"]
+        .into_iter()
+        .map(|name| realization_node(compiled, name))
+        .collect();
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(compiled);
+    engine.set_demand_selective(visible.clone());
+    assert!(
+        !engine.demand_is_full_scope(),
+        "precondition — full_scope must be OFF, or every pass re-executes \
+         everything and the reuse pass is never reached"
+    );
+    (engine, visible)
+}
+
+/// `result`, from a pass that re-executed nothing, must serve `holes` as the
+/// same realizations with the same identities as `expected`, backed exactly as
+/// the scalar geometry let `a` is on that pass.
+fn assert_reuse_pass_keeps_geometry_list(
+    engine: &Engine,
+    result: &reify_eval::TessellateResult,
+    expected: &[ResolvedGeometryHandle],
+    ctx: &str,
+) {
+    assert_eq!(
+        engine.last_dispatch_count(),
+        0,
+        "{ctx}: this pass must be the hash-exempt reuse pass (nothing re-executed) \
+         or the test is not on #6460's path"
+    );
+    let holes = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
+    let got = resolved_geometry_list(result, &holes, expected.len(), ctx);
+    let scalar_backing =
+        geometry_handle_backing(result, &ValueCellId::new(GEOM_LIST_ENTITY, "a"), ctx);
+    for (k, (got, want)) in got.iter().zip(expected).enumerate() {
+        assert_eq!(
+            (&got.realization_ref, got.upstream_values_hash),
+            (&want.realization_ref, want.upstream_values_hash),
+            "{ctx}: `holes[{k}]` must be the same realization, in the same order, \
+             with the same identity as the pass that built it"
+        );
+        assert_eq!(
+            got.backing, scalar_backing,
+            "{ctx}: `holes[{k}]` — a geometry list is backed exactly as the scalar \
+             geometry let `a` is on the same pass"
+        );
+    }
+}
+
+/// The live handles backing a `len`-element geometry-list cell in
+/// `result.values`, in order. `ctx` labels the call site in panic messages.
+///
+/// THE `kernel_handle: Some(_)` CHECK IS THE POINT (review esc-5385-20).
+/// `kernel_handle` is the ONLY discriminator between the two producers of a
+/// `Value::GeometryHandle`: the kernel-backed hydration path
+/// (`post_process_geometry_handle_cells` / `hydrate_geometry_handles_into_values`)
+/// writes `Some(id)`, while `mint_symbolic_geometry_handles_into_values` writes
+/// `None` and recomputes `upstream_values_hash` from the CURRENT params —
+/// deliberately byte-identical to what the build path would produce. So a
+/// symbolic refill after the all-or-nothing regroup DROPPED the list satisfies
+/// every other assertion available here: the cell is a list, no element is
+/// `Undef`, the elements are distinct realizations, and the hashes changed
+/// across an `edit_param`. Without this check these tests — the only
+/// `MockGeometryKernel`-backed witnesses in this file — cannot tell real
+/// geometry from a placeholder, which is the whole claim they exist to pin.
+///
+/// Every live-list assertion goes through this one function, so the check
+/// cannot be enforced at one call site and forgotten at another.
+fn live_geometry_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<ResolvedGeometryHandle> {
+    let handles = resolved_geometry_list(result, cell, len, ctx);
+    if let Some((k, symbolic)) = handles
+        .iter()
+        .enumerate()
+        .find(|(_, h)| h.backing == HandleBacking::Symbolic)
+    {
+        panic!(
+            "{ctx}: `{cell}[{k}]` is a SYMBOLIC handle (kernel_handle: None) for \
+             realization {:?} — no kernel geometry backs it, so the list only looks \
+             realized. A dropped list refilled by \
+             `mint_symbolic_geometry_handles_into_values` lands here.\n\
+             full value: {:?}",
+            symbolic.realization_ref,
+            result.values.get(cell),
+        );
+    }
+    handles
 }
 
 /// The backing realization ids of a live `len`-element geometry-list cell, in
