@@ -23,7 +23,7 @@
 
 use crate::common::{self, BBox};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Build a closed circular wire profile of the given radius at the given
 /// z height (centred on the Z-axis) via `GeometryOp::Arc` (full 2π).
@@ -177,5 +177,213 @@ fn loft_with_history_rejects_single_profile() {
             );
         }
         other => panic!("expected GeometryError::OperationFailed, got {:?}", other),
+    }
+}
+
+// ─── task #6188: FACE profiles (the kind the compiler emits) ────────────────
+
+/// A `CircleProfile` FACE (XY plane, +Z normal) of the given radius, lifted to
+/// height `z` — the shape `translate(circle(r), 0, 0, z)` realizes.
+fn circle_face_at(kernel: &mut OcctKernelHandle, radius: f64, z: f64) -> GeometryHandleId {
+    let face = kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(radius),
+        })
+        .expect("CircleProfile should build")
+        .id;
+    if z == 0.0 {
+        return face;
+    }
+    kernel
+        .execute(&GeometryOp::Translate {
+            target: face,
+            dx: 0.0,
+            dy: 0.0,
+            dz: z,
+        })
+        .expect("Translate of the circle face should succeed")
+        .id
+}
+
+/// A small box solid lifted to height `z`.
+fn box_solid_at(kernel: &mut OcctKernelHandle, z: f64) -> GeometryHandleId {
+    let solid = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(0.002),
+            height: Value::Real(0.002),
+            depth: Value::Real(0.002),
+        })
+        .expect("Box should build")
+        .id;
+    kernel
+        .execute(&GeometryOp::Translate {
+            target: solid,
+            dx: 0.0,
+            dy: 0.0,
+            dz: z,
+        })
+        .expect("Translate of the box should succeed")
+        .id
+}
+
+/// Conical frustum volume `π·h·(r1² + r1·r2 + r2²)/3`.
+fn frustum_volume(r1: f64, r2: f64, h: f64) -> f64 {
+    std::f64::consts::PI * h * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0
+}
+
+fn volume_of(kernel: &OcctKernelHandle, handle: GeometryHandleId) -> f64 {
+    kernel
+        .query(&GeometryQuery::Volume(handle))
+        .expect("volume query should succeed")
+        .as_f64()
+        .expect("volume value should be numeric")
+}
+
+/// Assert `actual` is within 1% of the frustum between two coaxial parallel
+/// circles. Basis: a two-section ThruSections between such circles is exactly
+/// a frustum's lateral surface, and ThruSections / BRepGProp error is orders
+/// below 1e-3 relative.
+fn assert_frustum_volume(actual: f64, r1: f64, r2: f64, h: f64) {
+    let expected = frustum_volume(r1, r2, h);
+    let rel = (actual - expected).abs() / expected;
+    assert!(
+        rel < 0.01,
+        "lofted volume {actual} m³ deviates {:.4}% from the frustum {expected} m³",
+        rel * 100.0
+    );
+}
+
+/// Plain `execute(Loft)` (the `loft_profiles` path) over two circle FACES.
+#[test]
+fn loft_of_face_profiles_realizes_a_frustum() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let p1 = circle_face_at(&mut kernel, 0.02, 0.0);
+    let p2 = circle_face_at(&mut kernel, 0.01, 0.1);
+
+    let lofted = kernel
+        .execute(&GeometryOp::Loft {
+            profiles: vec![p1, p2],
+        })
+        .expect("loft of two circle faces should succeed")
+        .id;
+
+    assert_frustum_volume(volume_of(&kernel, lofted), 0.02, 0.01, 0.1);
+    let BBox { zmin, zmax, .. } =
+        common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(lofted)));
+    assert!(
+        ((zmax - zmin) - 0.1).abs() < 1e-6,
+        "loft z-span must equal the 0.1 m section spacing, got [{zmin}, {zmax}]"
+    );
+}
+
+/// `loft_with_history` (the `make_loft_with_history` path the engine drives)
+/// over two circle FACES, with the same history contract as the wire case.
+#[test]
+fn loft_with_history_accepts_face_profiles() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let p1 = circle_face_at(&mut kernel, 0.02, 0.0);
+    let p2 = circle_face_at(&mut kernel, 0.01, 0.1);
+
+    let (lofted, history) = kernel
+        .loft_with_history(&[p1, p2])
+        .expect("loft_with_history of two circle faces should succeed");
+
+    assert_frustum_volume(volume_of(&kernel, lofted), 0.02, 0.01, 0.1);
+    assert!(
+        !history.start_cap_face_indices.is_empty(),
+        "expected a start cap, got {:?}",
+        history.start_cap_face_indices
+    );
+    assert!(
+        !history.end_cap_face_indices.is_empty(),
+        "expected an end cap, got {:?}",
+        history.end_cap_face_indices
+    );
+    assert!(
+        !history.face_generated.is_empty(),
+        "expected ≥1 face_generated record, got {:?}",
+        history.face_generated
+    );
+    let result_face_count = kernel
+        .extract_faces(lofted)
+        .expect("extract_faces on the lofted result should succeed")
+        .len() as u32;
+    for r in &history.face_generated {
+        assert!(
+            (r.parent_index as usize) < 2,
+            "face_generated parent_index {} must be < profiles.len()=2",
+            r.parent_index
+        );
+        assert!(
+            r.result_subshape_index < result_face_count,
+            "face_generated result_subshape_index {} out of range; result has {} faces",
+            r.result_subshape_index,
+            result_face_count
+        );
+    }
+}
+
+/// A circle FACE lofted to a single VERTEX apex realizes a cone.
+#[test]
+fn loft_of_face_profile_to_vertex_apex_realizes_a_cone() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let base = circle_face_at(&mut kernel, 0.02, 0.0);
+    let lifted_box = box_solid_at(&mut kernel, 0.1);
+    let apex = *kernel
+        .extract_vertices(lifted_box)
+        .expect("extract_vertices on the lifted box should succeed")
+        .first()
+        .expect("a box has vertices");
+
+    let cone = kernel
+        .execute(&GeometryOp::Loft {
+            profiles: vec![base, apex],
+        })
+        .expect("loft of a circle face to a vertex apex should succeed")
+        .id;
+
+    let vol = volume_of(&kernel, cone);
+    assert!(vol > 0.0, "cone must have positive volume, got {vol}");
+    let BBox { zmin, zmax, .. } = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(cone)));
+    assert!(
+        zmax - zmin >= 0.09,
+        "cone must span ≥0.09 m in Z (base at 0, apex at ≥0.1), got [{zmin}, {zmax}]"
+    );
+}
+
+/// A SOLID section is refused with a diagnostic naming its shape type.
+#[test]
+fn loft_rejects_a_solid_profile_naming_its_shape_type() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let p1 = circle_face_at(&mut kernel, 0.02, 0.0);
+    let solid = box_solid_at(&mut kernel, 0.1);
+
+    let err = kernel
+        .execute(&GeometryOp::Loft {
+            profiles: vec![p1, solid],
+        })
+        .expect_err("loft with a solid section must error");
+    match err {
+        GeometryError::OperationFailed(msg) => assert!(
+            msg.contains("unsupported profile shape type 'Solid'"),
+            "error must name the unsupported 'Solid' section type, got: {msg}"
+        ),
+        other => panic!("expected GeometryError::OperationFailed, got {other:?}"),
     }
 }
