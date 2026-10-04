@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod analysis;
+pub mod blocking_work;
 pub mod bridge;
 pub mod completion;
 pub mod convert;
