@@ -91,7 +91,7 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
@@ -176,6 +176,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
+| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm the snapshot, or fused-memory for this `--project-root`, actually holds tasks |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -188,6 +189,8 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
   reify-audit: PDCHECK delivered_checks dead-path lane skipped — tasks.db absent at '<project-root>/.taskmaster/tasks/tasks.db': …; this is NOT a clean bill of health
   ```
   (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
+
+PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
 
 See `references/modes.md` §4 notes for detail.
 

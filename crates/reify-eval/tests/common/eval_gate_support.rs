@@ -1,40 +1,19 @@
-//! Shared primitives every reify-eval corpus-wide invariant gate needs.
+//! The ONE engine constructor every reify-eval corpus-wide invariant gate
+//! evaluates through ([`gate_engine`]).
 //!
-//! Two helpers live here and nowhere else: the corpus walker
-//! ([`collect_ri_files`]) and the ONE engine constructor those gates evaluate
-//! through ([`gate_engine`]). Both are needed by more than one integration-test
-//! crate root — `no_stale_undef_invariant_gate` (its deliberately-undef fixture
-//! test, its task-5578/6662 `build()`-surface suite, and the
-//! `survey_optimized_callers` walk) and `harness_corpus_gates`'s unified corpus
-//! sweep — and a module cannot be shared across integration-test crate roots,
-//! so each root declares this file with
-//! `#[path = "common/eval_gate_support.rs"] mod eval_gate_support;`.
+//! It is needed by more than one integration-test crate root —
+//! `no_stale_undef_invariant_gate` (its deliberately-undef fixture test and its
+//! task-5578/6662 `build()`-surface suite) and `harness_corpus_gates`'s unified
+//! corpus sweep — and a module cannot be shared across integration-test crate
+//! roots, so each root declares this file with
+//! `#[path = "common/eval_gate_support.rs"] mod eval_gate_support;`. Corpus
+//! discovery is not here: it lives in `reify_test_support::examples_corpus`.
 //!
 //! That `#[path]` form, rather than `mod common;`, follows the established
 //! `common/differential.rs` precedent (`harness_cache.rs`): declaring
 //! `tests/common/mod.rs` would pull its 312 unrelated lines into every consumer's
 //! compile unit for nothing. Like `differential.rs`, this file is deliberately
-//! NOT declared in `common/mod.rs`, and carries its own `#![allow(dead_code)]`
-//! because each consumer uses only a subset of it and the workspace builds under
-//! `-D warnings`.
-#![allow(dead_code)]
-
-/// Recursively collect every `.ri` file under `dir` (including subdirectories).
-/// Unreadable entries/directories are silently skipped — this only ever walks
-/// our own repo directories, which are expected to be readable.
-pub fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_ri_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-            out.push(path);
-        }
-    }
-}
+//! NOT declared in `common/mod.rs`.
 
 /// The ONE engine-construction site every corpus-wide invariant gate routes
 /// through — the deliberately-undef fixture test, the unified corpus sweep's

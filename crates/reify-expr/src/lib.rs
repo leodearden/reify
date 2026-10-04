@@ -571,8 +571,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // `list`, expect each call to return a list, and concatenate
                 // the per-element results into a single flat list. Intercepted
                 // here (rather than in `reify_stdlib::eval_builtin`) because
-                // applying the lambda requires `EvalContext` — the same reason
-                // map/filter/fold are dispatched from `eval_method_call`.
+                // applying the lambda requires `EvalContext`.
                 //
                 // Convention: silent `Value::Undef` on type errors (non-list
                 // input, non-lambda second arg, lambda result not a list,
@@ -920,12 +919,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             method,
             args,
         } => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
                 return Value::Undef;
             }
-            let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-            eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
+            eval_method_call(&obj, method, &expr.result_type)
         }
 
         CompiledExprKind::OptionNone => Value::Option(None),
@@ -2515,27 +2516,6 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
-/// Shared positive-count core for BOTH `generate` forms — the free-function
-/// `eval_generate_dispatch` and the method-form `eval_method_call` `"generate"`
-/// arm (task 3994).  Applies `lambda` to the indices `0..count` (each passed as
-/// `Value::Int(idx)`) and collects the results into a `Value::List`
-/// (length-preserving — an `Undef` body result becomes an `Undef` element).
-///
-/// `(0..count)` is empty when `count <= 0`, so a non-positive `count` yields `[]`.
-/// The NEGATIVE-count POLICY therefore lives at each call site, NOT here: the
-/// free-function form rejects `count < 0` with `GenerateNegativeCount` BEFORE
-/// calling this, while the method form passes its count straight through and
-/// inherits the silent-`[]` empty-range semantics (a deliberate, documented
-/// divergence — see the two call sites).  Extracting the loop keeps the two forms
-/// from drifting apart on the shared apply-per-index behaviour.
-fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
-    Value::List(
-        (0..count)
-            .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
-            .collect(),
-    )
-}
-
 /// Evaluate the free-function `generate(n, |i| expr)` combinator (task 3994,
 /// structural-query ζ).  Applies the lambda to indices `0..n-1` in order and
 /// collects the results into a `Value::List`.
@@ -2555,14 +2535,9 @@ fn generate_index_list(count: i64, lambda: &Value, ctx: &EvalContext) -> Value {
 ///     `Undef` body result becomes an `Undef` element).  `n == 0` → `[]`.
 ///   - any other shape → `Value::Undef` (silent-Undef discipline, like `flat_map`).
 ///
-/// Models the positive-count loop on the existing method-form `generate` arm
-/// (`eval_method_call`, the `"generate"` case).
-///
 /// A negative count is a runtime contract failure (PRD §2.3): it emits the named
 /// `DiagnosticCode::GenerateNegativeCount` (a `Severity::Error` → CLI stderr +
-/// non-zero exit) and yields `Undef`.  This DIVERGES deliberately from the
-/// method-form arm, which silently yields `[]` for a negative count (`(0..neg)`
-/// is an empty range).
+/// non-zero exit) and yields `Undef`.
 #[inline(never)]
 fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Silent-Undef discipline: wrong arity returns Undef instead of panicking.
@@ -2586,9 +2561,12 @@ fn eval_generate_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
                 );
                 return Value::Undef;
             }
-            // `(0..*n)` is empty for `n == 0` (→ `[]`). Shared with the method
-            // form via `generate_index_list` (the negative case is handled above).
-            generate_index_list(*n, lambda, ctx)
+            // `(0..*n)` is empty for `n == 0` (→ `[]`).
+            Value::List(
+                (0..*n)
+                    .map(|idx| apply_lambda(lambda, &[Value::Int(idx)], ctx))
+                    .collect(),
+            )
         }
         _ => Value::Undef,
     }
@@ -3511,16 +3489,11 @@ fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
     }
 }
 
-/// Evaluate a method call on a collection value, or a datum-projection member
-/// access on a datum receiver (Axis/Plane/Frame/Direction → see
-/// [`eval_datum_projection`]).
-fn eval_method_call(
-    obj: &Value,
-    method: &str,
-    args: &[Value],
-    result_type: &Type,
-    ctx: &EvalContext,
-) -> Value {
+/// Evaluate a zero-argument member projection (collection, range, complex,
+/// tensor, or datum — see [`eval_datum_projection`]). Reify has no method-call
+/// syntax (GR-040), so the compiler never emits an argument-bearing `MethodCall`,
+/// and the `eval_expr` site refuses one before calling this.
+fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
     // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
@@ -3548,109 +3521,27 @@ fn eval_method_call(
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
-        "contains" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let needle = &args[0];
-            match obj {
-                Value::List(items) => Value::Bool(items.contains(needle)),
-                Value::Set(items) => Value::Bool(items.contains(needle)),
-                Value::Range {
-                    lower,
-                    upper,
-                    lower_inclusive,
-                    upper_inclusive,
-                } => {
-                    // Undef needle propagates immediately.
-                    if needle.is_undef() {
-                        return Value::Undef;
-                    }
-                    // Check lower bound (if present).
-                    if let Some(lo) = lower {
-                        let cmp_result = if *lower_inclusive {
-                            eval_cmp(lo, needle, |a, b| a <= b)
-                        } else {
-                            eval_cmp(lo, needle, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    // Check upper bound (if present).
-                    if let Some(hi) = upper {
-                        let cmp_result = if *upper_inclusive {
-                            eval_cmp(needle, hi, |a, b| a <= b)
-                        } else {
-                            eval_cmp(needle, hi, |a, b| a < b)
-                        };
-                        match cmp_result {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => return Value::Bool(false),
-                            _ => return Value::Undef,
-                        }
-                    }
-                    Value::Bool(true)
-                }
+        "lower" => match obj {
+            Value::Range { lower, .. } => match lower {
+                Some(lo) => Value::Option(Some(lo.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "upper" => match obj {
+            Value::Range { upper, .. } => match upper {
+                Some(hi) => Value::Option(Some(hi.clone())),
+                None => Value::Option(None),
+            },
+            _ => Value::Undef,
+        },
+        "span" => match obj {
+            Value::Range { lower, upper, .. } => match (lower, upper) {
+                (Some(lo), Some(hi)) => eval_sub(hi, lo),
                 _ => Value::Undef,
-            }
-        }
-        "lower" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, .. } => match lower {
-                    Some(lo) => Value::Option(Some(lo.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "upper" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { upper, .. } => match upper {
-                    Some(hi) => Value::Option(Some(hi.clone())),
-                    None => Value::Option(None),
-                },
-                _ => Value::Undef,
-            }
-        }
-        "span" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Range { lower, upper, .. } => match (lower, upper) {
-                    (Some(lo), Some(hi)) => eval_sub(hi, lo),
-                    _ => Value::Undef,
-                },
-                _ => Value::Undef,
-            }
-        }
-        "union" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.union(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
-        "intersection" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.intersection(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
+            },
+            _ => Value::Undef,
+        },
         "keys" => match obj {
             Value::Map(entries) => Value::List(entries.keys().cloned().collect()),
             _ => Value::Undef,
@@ -3659,24 +3550,6 @@ fn eval_method_call(
             Value::Map(entries) => Value::List(entries.values().cloned().collect()),
             _ => Value::Undef,
         },
-        "contains_key" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
-                _ => Value::Undef,
-            }
-        }
-        "difference" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => Value::Set(a.difference(b).cloned().collect()),
-                _ => Value::Undef,
-            }
-        }
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
@@ -3707,161 +3580,9 @@ fn eval_method_call(
             }
             _ => Value::Undef,
         },
-        "map" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let results: Vec<Value> = items
-                        .iter()
-                        .map(|item| apply_lambda(lambda, std::slice::from_ref(item), ctx))
-                        .collect();
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
-        "all" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(false) => return Value::Bool(false),
-                            Value::Bool(true) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(true)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "any" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut has_undef = false;
-                    for item in items {
-                        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
-                            Value::Bool(true) => return Value::Bool(true),
-                            Value::Bool(false) => {}
-                            Value::Undef => has_undef = true,
-                            _ => return Value::Undef,
-                        }
-                    }
-                    if has_undef {
-                        Value::Undef
-                    } else {
-                        Value::Bool(false)
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "fold" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let init = &args[0];
-            let lambda = &args[1];
-            // Validate lambda arity upfront (fold requires exactly 2 params: acc, item)
-            if let Value::Lambda { params, .. } = lambda
-                && params.len() != 2
-            {
-                return Value::Undef;
-            }
-            match obj {
-                Value::List(items) => {
-                    let mut acc = init.clone();
-                    for item in items {
-                        acc = apply_lambda(lambda, &[acc, item.clone()], ctx);
-                        if acc.is_undef() {
-                            return Value::Undef;
-                        }
-                    }
-                    acc
-                }
-                _ => Value::Undef,
-            }
-        }
-        "concat" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            match (obj, &args[0]) {
-                (Value::List(a), Value::List(b)) => {
-                    let mut result = a.clone();
-                    result.extend(b.iter().cloned());
-                    Value::List(result)
-                }
-                _ => Value::Undef,
-            }
-        }
-        // Method-form `xs.generate(count, |i| …)` (receiver must be a `List`;
-        // contents ignored). It SHARES the positive-count core
-        // (`generate_index_list`) with the free-function `generate(n, |i| …)` form
-        // (`eval_generate_dispatch`), but DELIBERATELY DIVERGES on a negative
-        // count: the method form yields `[]` silently (the `(0..count)`
-        // empty-range), whereas the free function emits the named
-        // `GenerateNegativeCount` diagnostic (task 3994 / PRD §2.3). Reconciling
-        // the two negative-count policies is intentionally out of scope (a flagged
-        // follow-up); the free-function form is the spec deliverable. A user moving
-        // between the forms gets `[]` here vs. a diagnostic there for the same
-        // invalid count — both individually correct and tested.
-        "generate" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let count = match &args[0] {
-                Value::Int(n) => *n,
-                _ => return Value::Undef,
-            };
-            let lambda = &args[1];
-            match obj {
-                Value::List(_) => generate_index_list(count, lambda, ctx),
-                _ => Value::Undef,
-            }
-        }
-        "filter" => {
-            if args.len() != 1 {
-                return Value::Undef;
-            }
-            let lambda = &args[0];
-            match obj {
-                Value::List(items) => {
-                    let mut results = Vec::new();
-                    for item in items {
-                        let pred = apply_lambda(lambda, std::slice::from_ref(item), ctx);
-                        match pred {
-                            Value::Bool(true) => results.push(item.clone()),
-                            Value::Bool(false) => {} // skip
-                            Value::Undef => results.push(item.clone()), // conservative: retain when predicate is unknown
-                            _ => return Value::Undef, // type error: non-Bool predicate
-                        }
-                    }
-                    Value::List(results)
-                }
-                _ => Value::Undef,
-            }
-        }
         // Complex number methods are in complex.rs.
         "magnitude" | "phase" | "conjugate" | "re" | "im" => {
-            match complex::eval_complex_method(obj, method, args) {
+            match complex::eval_complex_method(obj, method) {
                 Some(v) => v,
                 None => Value::Undef,
             }

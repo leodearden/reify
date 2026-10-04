@@ -7,6 +7,14 @@
 //! "mechanized, not a hand audit": every row and every count in that artifact
 //! is produced by the code in this module, with zero hand-derived entries.
 //!
+//! Task #7543 added the corpus's SECOND half: the Reify snippets embedded as
+//! raw-string literals in tracked `.rs` under `crates/`, which
+//! `git ls-files -- '*.ri'` cannot reach. Both halves come from one git-index
+//! primitive ([`scan_tracked_corpus`]) and are swept by one pipeline, so they cannot
+//! disagree about what a ctor-conformance site is; [`corpus_parity`] is what
+//! makes a narrowed walker fail loudly instead of writing a falsely-thin
+//! artifact.
+//!
 //! # Why this lives HERE and not in a new `tests/*.rs` binary
 //!
 //! `tests/infra/test_harness_kloc_cap.sh` rule (b) flags any NEW standalone
@@ -23,37 +31,53 @@
 //! # Why the expensive walk is `#[ignore]`d and the decisions are not
 //!
 //! Compiling the ~261 `examples/` files is documented as "the single most
-//! expensive thing this binary does" (`examples_smoke.rs`); the ~660 tracked
-//! files are ~2.5× that, and paying it on every merge gate would directly fight the
-//! merge-gate-compile-cost PRD. So the full corpus walk is ONE `#[ignore]`d
-//! generator, run on demand — while everything it *decides* (corpus
-//! enumeration, span→line, ctor-name recovery, field/expected/found
-//! extraction, D9 classification, markdown rendering) is factored into pure
-//! helpers that ARE gate-resident and unit-tested here against synthetic
-//! inputs, plus one cheap end-to-end sweep over a 3-file synthetic corpus.
+//! expensive thing this binary does" (`examples_smoke.rs`); the ~700 tracked
+//! `.ri` are ~2.5× that. The sweep now has a SECOND half on top of it (task
+//! #7543): the Reify snippets embedded as raw-string literals in the ~1,870
+//! tracked `.rs` under `crates/`, which yield ~3,300 admitted snippets to
+//! compile —
+//! measured by the generator itself, which prints both halves' counts on every
+//! run. Paying any of that on every merge gate would directly fight the
+//! merge-gate-compile-cost PRD. So both walks live behind ONE `#[ignore]`d
+//! generator, run on demand — while everything they *decide* (corpus
+//! enumeration for both halves and the parity gate between them, raw-string
+//! extraction and snippet admission, span→line and snippet→host line mapping,
+//! ctor-name recovery, field/expected/found extraction, D9 classification,
+//! disposition resolution, markdown rendering) is factored into pure helpers
+//! that ARE gate-resident and unit-tested here against synthetic inputs, plus
+//! two cheap end-to-end sweeps — a 3-file synthetic `.ri` corpus and a
+//! synthetic Rust host — and a handful of pinned live files per half.
 //! The pipeline is therefore regression-guarded on every gate run at near-zero
-//! cost, without the walk itself ever running there.
+//! cost, without either walk ever running there.
 //!
 //! # Retiring this module
 //!
-//! This is a CENSUS, not a permanent gate, and it has a defined end of life.
-//! Its product is one 280-line document with 18 rows, consumed by task #5305
-//! (γ, corpus fix-forward). Once γ has landed, the machinery here — corpus
-//! enumeration, span→line, D9 classification, the markdown renderer, the stamp
-//! guard — has no remaining product, yet stays compiled and run on every merge
-//! gate. That is a real standing cost in a compile unit whose own header cites
-//! `docs/prds/merge-gate-compile-cost.md`: it takes this unit to 14,629 lines
-//! against the 20,000 `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`
-//! (raw `wc -l` summed over the root and its `#[path]` members, which is how
-//! rule (a) there measures — re-measured on this branch, not carried over).
+//! This is a CENSUS, not a permanent gate. Its product is one document in two
+//! halves, and both named consumers have landed: task #5305 (γ, corpus
+//! fix-forward) consumed the tracked-`.ri` sites, and task #5306 (δ, the
+//! severity flip) fixed the inline sites its flip exposed and kept the rest as
+//! deliberate Error pins. What remains is a standing two-half census that a
+//! future change to `CTOR_FIELD_CONFORMANCE_SEVERITY`, or to the walker's scope,
+//! consults. Its machinery — corpus enumeration for both halves, the parity
+//! gate, span→line, D9 classification, the markdown renderer, the stamp guard —
+//! stays compiled and run on every merge gate, a real standing cost in a compile
+//! unit whose own header cites `docs/prds/merge-gate-compile-cost.md`. Measure
+//! that cost with `harness_layout_unit_lines` (`tests/infra/harness-layout-lib.sh`)
+//! rather than trusting a figure written here: the unit sits above the advisory
+//! warn line of `tests/infra/test_harness_kloc_cap.sh`, acknowledged by a
+//! `_KLOC_WARN_KNOWN` row whose retiring split is #7709.
 //!
-//! Retirement is therefore a THREE-FILE deletion, and all three must go
-//! together:
+//! Retirement is a FOUR-FILE change now, and all four must go together:
 //!
 //! 1. this file;
 //! 2. its `#[path] mod ctor_conformance_corpus_survey;` declaration in
 //!    `crates/reify-compiler/tests/harness_compilation_surface.rs`;
-//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`.
+//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`;
+//! 4. `crates/reify-test-support/src/rust_fixture_scan.rs` plus its `pub mod`
+//!    line — but ONLY if nothing else has picked it up by then. It is a
+//!    library-crate module with no dependency on this survey, written to be
+//!    reusable, so check `cargo tree`/callers before deleting rather than
+//!    assuming this was its only consumer.
 //!
 //! The ctor-conformance admission set this survey filters through no longer
 //! lives here: it is `reify_test_support::ctor_conformance`, read by every
@@ -74,12 +98,20 @@ use std::process::Command;
 // (`crates/reify-test-support/src/git_env.rs`.)
 use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
 use reify_test_support::is_ctor_conformance_code;
+// The reusable inline-fixture walker (task #7543): `is_inline_fixture_host`
+// decides what the second corpus half contains, and the collector/admission
+// filter decide what an embedded snippet IS. It lives in reify-test-support
+// rather than here because this harness unit is already at 80% of the
+// `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`, and because a Rust
+// mini-lexer is a second-consumer shape, not a survey concern.
+use reify_test_support::rust_fixture_scan;
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
 ///
-/// Same rooting idiom as `examples_smoke.rs`'s `EXAMPLES_DIR`, pointed one
-/// level higher: β's whole point is that the sweep is NOT examples-scoped.
+/// Same rooting idiom as `reify_test_support::examples_corpus::examples_dir()`,
+/// pointed one level higher: β's whole point is that the sweep is NOT
+/// examples-scoped.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 // ─── step 21/22: one sanitized git constructor for every call site ───────────
@@ -210,8 +242,8 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 /// Every TRACKED `.ri` file in the repository, as repo-relative
 /// forward-slash paths, sorted and deduplicated.
 ///
-/// Shells out to `git ls-files -z -- '*.ri'` at the workspace root rather than
-/// walking the filesystem, for three reasons:
+/// Goes through [`scan_tracked_corpus`] — `git ls-files -z` at the workspace
+/// root — rather than walking the filesystem, for three reasons:
 ///
 /// 1. The task defines the corpus as "all **tracked** `.ri`", and both the PRD
 ///    and the capability manifest cite `git ls-files '*.ri'` as the enumerating
@@ -229,9 +261,9 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 ///
 /// Enumerated ONCE per process, behind the same `OnceLock` that
 /// [`stdlib_structure_defs`] and [`fea_owned_defs`] use: the tracked corpus
-/// cannot change while the test binary runs, and the five gate-resident tests
-/// below plus the generator would otherwise spawn six separate
-/// `git ls-files` subprocesses and re-sort ~676 paths each time.
+/// cannot change while the test binary runs, and the gate-resident probes
+/// below plus the generator would otherwise spawn a `git ls-files` subprocess
+/// and re-sort ~700 paths each time.
 fn tracked_ri_corpus() -> &'static [String] {
     static CORPUS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     CORPUS.get_or_init(scan_tracked_ri_corpus)
@@ -239,7 +271,85 @@ fn tracked_ri_corpus() -> &'static [String] {
 
 /// The uncached enumeration behind [`tracked_ri_corpus`].
 fn scan_tracked_ri_corpus() -> Vec<String> {
-    let out = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"])
+    scan_tracked_corpus("*.ri")
+}
+
+/// A BROKEN-ENUMERATION floor for the `.ri` half, deliberately far below the
+/// live count (701 measured 2026-09-16) rather than just under it.
+///
+/// A constant rather than a literal at the assertion site because
+/// [`CorpusHalf::floor`] reads it too: the gate-resident probe and the
+/// corpus-parity gate must red at the SAME threshold, or one of them is
+/// describing a corpus the other would accept.
+const RI_CORPUS_FLOOR: usize = 100;
+
+/// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
+/// the live count (1,870 of 1,932 tracked `.rs`, measured 2026-09-16 — every
+/// one under `crates/`, the 62 exclusions being the two out-of-scope roots).
+///
+/// Same reasoning as the `.ri` floor below: it catches a wrong root, a wrong
+/// pathspec or a silent git failure, and must NOT red the merge gate when a
+/// test-consolidation task legitimately deletes a few hundred host files. The
+/// artifact header carries the live count.
+///
+/// What this floor structurally CANNOT catch is a NARROWED host predicate: the
+/// file-NAME scope this half started with admitted 1,307 of the same 1,932
+/// tracked files and cleared 300 exactly as comfortably as the correct scope
+/// does. A narrowing is caught instead by
+/// [`rust_fixture_scan::is_inline_fixture_host`]'s own path-shape contract and
+/// by the per-[`HostShape`] live members required of
+/// [`tracked_rust_hosts_reach_the_named_site_host_and_every_shape`] and
+/// [`INLINE_FIXTURE_PINNED_HOSTS`].
+const RUST_HOST_CORPUS_FLOOR: usize = 300;
+
+/// Every tracked `*.rs` that can host an inline Reify fixture, as repo-relative
+/// forward-slash paths, sorted and deduplicated — the second corpus half
+/// (task #7543).
+///
+/// The `.ri` half enumerates FILES whose whole content is Reify; this half
+/// enumerates files that may CARRY Reify inside a raw-string literal, which
+/// `git ls-files -- '*.ri'` cannot reach. That is every tracked `.rs` under
+/// `crates/`, not a test-file subset: a production `src/*.rs` with a
+/// `#[cfg(test)] mod tests` carries fixtures like any other, and deciding
+/// scope by file NAME is what once hid 563 of these hosts. Both halves come
+/// from the same primitive, and both are cached behind the same `OnceLock` for
+/// the same reason [`tracked_ri_corpus`] is.
+fn tracked_rust_hosts() -> &'static [String] {
+    static HOSTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(scan_tracked_rust_hosts)
+}
+
+/// The uncached enumeration behind [`tracked_rust_hosts`].
+///
+/// The same git-index primitive as the `.ri` half, filtered by the SHARED
+/// [`rust_fixture_scan::is_inline_fixture_host`] predicate — the one place that
+/// decides what an in-scope host is, so the enumeration and the walker cannot
+/// disagree. The filter is a path-shape test only; whether a host actually
+/// carries Reify is decided per literal, at extraction. The primitive's
+/// non-empty assertion covers a broken `*.rs` enumeration; a post-FILTER collapse (every host rejected) is the
+/// corpus-parity gate's business, which runs before any sweep.
+fn scan_tracked_rust_hosts() -> Vec<String> {
+    scan_tracked_corpus("*.rs")
+        .into_iter()
+        .filter(|p| rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect()
+}
+
+/// The SINGLE git-index primitive both corpus halves are enumerated through.
+///
+/// Routing both halves through one primitive is what makes the corpus-parity
+/// gate's shared floor structural: neither half can acquire its own
+/// enumeration strategy, its own sort order, or its own failure policy.
+///
+/// A filesystem walk was rejected for the same reason `git ls-files` was chosen
+/// for the `.ri` half: it would admit UNTRACKED files, which no commit
+/// reproduces — and the artifact is stamped against a commit.
+///
+/// Panics if git is unavailable, exits non-zero, or reports nothing. A
+/// silently-empty corpus would render a falsely-clean survey, which is the one
+/// failure mode this artifact must never have.
+fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
+    let out = git_at_workspace_root(&["ls-files", "-z", "--", pathspec])
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -248,7 +358,7 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
         });
     assert!(
         out.status.success(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` in {WORKSPACE_ROOT} \
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` in {WORKSPACE_ROOT} \
          exited {:?}: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
@@ -265,10 +375,165 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
     paths.dedup();
     assert!(
         !paths.is_empty(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` returned nothing in \
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` returned nothing in \
          {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
     );
     paths
+}
+
+/// `Some(hosts)` when git can be spawned, `None` when it cannot — the
+/// [`tracked_ri_corpus_if_git_available`] idiom for the second half.
+fn tracked_rust_hosts_if_git_available() -> Option<&'static [String]> {
+    git_is_available().then(tracked_rust_hosts)
+}
+
+#[test]
+fn tracked_rust_hosts_clears_the_broken_enumeration_floor() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    assert!(
+        hosts.len() >= RUST_HOST_CORPUS_FLOOR,
+        "tracked Rust host corpus must have >= {RUST_HOST_CORPUS_FLOOR} entries — a floor \
+         that catches a BROKEN enumeration (wrong root, wrong pathspec, silent git failure), \
+         not a legitimate shrink; the artifact header carries the live count. Got {}",
+        hosts.len()
+    );
+}
+
+#[test]
+fn tracked_rust_hosts_entries_all_end_in_dot_rs() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let bad: Vec<&String> = hosts.iter().filter(|p| !p.ends_with(".rs")).collect();
+    assert!(
+        bad.is_empty(),
+        "every host entry must end in '.rs', got {} that do not: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_rust_hosts_all_satisfy_the_shared_host_predicate() {
+    // The enumeration and the walker must agree on what an in-scope host IS,
+    // and `is_inline_fixture_host` is the one place that decides — so this
+    // asserts the filter was actually applied, not merely declared.
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let bad: Vec<&String> = hosts
+        .iter()
+        .filter(|p| !rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "every host entry must satisfy `rust_fixture_scan::is_inline_fixture_host`, \
+         got {} that do not: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_rust_hosts_is_sorted_and_deduplicated() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let mut expected = hosts.to_vec();
+    expected.sort();
+    expected.dedup();
+    assert_eq!(
+        hosts,
+        expected.as_slice(),
+        "tracked_rust_hosts must return a sorted, deduplicated list"
+    );
+}
+
+#[test]
+fn tracked_rust_hosts_paths_are_repo_relative_forward_slash() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    for p in hosts {
+        assert!(
+            !p.starts_with('/') && !p.starts_with("./") && !p.contains('\\'),
+            "host entries must be repo-relative forward-slash paths, got {p:?}"
+        );
+    }
+}
+
+#[test]
+fn tracked_rust_hosts_reach_the_named_site_host_and_every_shape() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    assert!(
+        hosts.iter().any(|p| p == NAMED_SITE_HOST),
+        "the host of the two sites #7543's VERIFY criterion names must be enumerated"
+    );
+    // The LIVE counterpart to `inline_fixture_pinned_hosts_name_all_four_
+    // enumeration_shapes`: that one pins the pin list, this one pins what the
+    // git-index enumeration actually returns, so a re-narrowed host predicate
+    // reds here even if the pin list is left alone.
+    for shape in <HostShape as strum::IntoEnumIterator>::iter() {
+        assert!(
+            hosts.iter().any(|p| host_shape(p) == shape),
+            "the {shape:?} host shape must be enumerated; {} hosts enumerated",
+            hosts.len()
+        );
+    }
+}
+
+#[test]
+fn tracked_rust_hosts_is_disjoint_from_the_ri_corpus() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    let ri: std::collections::BTreeSet<&String> = tracked_ri_corpus().iter().collect();
+    let overlap: Vec<&String> = tracked_rust_hosts()
+        .iter()
+        .filter(|p| ri.contains(*p))
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "the two corpus halves must be disjoint — a member surveyed twice would \
+         be double-counted in the artifact; got {overlap:?}"
+    );
+}
+
+#[test]
+fn both_corpus_halves_come_from_the_same_git_primitive() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    // Exercising the generalized seam with each pathspec is what makes the
+    // parity gate's shared floor STRUCTURAL: neither half can acquire its own
+    // enumeration strategy without this failing.
+    assert_eq!(
+        scan_tracked_corpus("*.ri"),
+        tracked_ri_corpus(),
+        "the `.ri` half must be `scan_tracked_corpus(\"*.ri\")` verbatim"
+    );
+    let hosts_via_seam: Vec<String> = scan_tracked_corpus("*.rs")
+        .into_iter()
+        .filter(|p| rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect();
+    assert_eq!(
+        hosts_via_seam,
+        tracked_rust_hosts(),
+        "the host half must be `scan_tracked_corpus(\"*.rs\")` filtered through \
+         the shared host predicate, and nothing else"
+    );
 }
 
 #[test]
@@ -277,11 +542,11 @@ fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
-    // A BROKEN-ENUMERATION floor, deliberately far below the live count (677
-    // measured 2026-09-01) rather than just under it. The corpus is expected to
-    // churn in BOTH directions: a fixture-consolidation task that legitimately
-    // deletes a few dozen `.ri` has nothing to do with this survey and must not
-    // red the merge gate with a message that reads like a defect.
+    // Why the floor is where it is: see `RI_CORPUS_FLOOR`. The corpus is
+    // expected to churn in BOTH directions, and a fixture-consolidation task
+    // that legitimately deletes a few dozen `.ri` has nothing to do with this
+    // survey and must not red the merge gate with a message that reads like a
+    // defect.
     //
     // The NAME is scoped to exactly that floor and no further. An earlier name
     // ("…is_non_empty_and_covers_the_whole_tracked_tree") also claimed the
@@ -293,9 +558,9 @@ fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
     // belongs in the artifact this module generates, which states it as a
     // measured header field.
     assert!(
-        corpus.len() >= 100,
-        "tracked .ri corpus must have >= 100 entries — a floor that catches a BROKEN \
-         enumeration (wrong root, wrong pathspec, silent git failure), not a legitimate \
+        corpus.len() >= RI_CORPUS_FLOOR,
+        "tracked .ri corpus must have >= {RI_CORPUS_FLOOR} entries — a floor that catches a \
+         BROKEN enumeration (wrong root, wrong pathspec, silent git failure), not a legitimate \
          shrink; the artifact header carries the live count. Got {}",
         corpus.len()
     );
@@ -404,6 +669,284 @@ fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
             "corpus entries must be repo-relative forward-slash paths, got {p:?}"
         );
     }
+}
+
+// ─── corpus parity: neither half may narrow without the gate seeing it ───────
+
+/// The two enumerated corpus halves the survey sweeps.
+///
+/// `EnumIter` is load-bearing exactly as it is on [`Owner`]: [`corpus_parity`]
+/// iterates the DECLARATION rather than a local literal, so a future third
+/// half cannot be added to the survey and left silently unwired in the gate.
+/// `strum` is already a `[dev-dependencies]` entry of this crate, so this costs
+/// no new dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
+enum CorpusHalf {
+    /// Tracked `.ri` files, whose whole content is Reify source.
+    TrackedRi,
+    /// Tracked `.rs` files that may CARRY Reify inside a raw-string literal.
+    InlineRustHost,
+}
+
+impl CorpusHalf {
+    /// This half's BROKEN-ENUMERATION floor.
+    fn floor(self) -> usize {
+        match self {
+            CorpusHalf::TrackedRi => RI_CORPUS_FLOOR,
+            CorpusHalf::InlineRustHost => RUST_HOST_CORPUS_FLOOR,
+        }
+    }
+
+    /// The file extension every member of this half must carry.
+    fn extension(self) -> &'static str {
+        match self {
+            CorpusHalf::TrackedRi => ".ri",
+            CorpusHalf::InlineRustHost => ".rs",
+        }
+    }
+
+    /// How this half is named in a parity failure and in the artifact header.
+    fn label(self) -> &'static str {
+        match self {
+            CorpusHalf::TrackedRi => "tracked .ri corpus",
+            CorpusHalf::InlineRustHost => "inline Rust fixture hosts",
+        }
+    }
+}
+
+/// Whether every declared corpus half is enumerated well enough to sweep.
+///
+/// A PURE function over the two enumerations, taken as data: that is what lets
+/// the gate be exercised with a half stubbed to the empty set without stubbing
+/// anything global, and it is what the generator calls BEFORE any sweep so a
+/// narrowed walker fails loudly instead of writing a falsely-thin artifact.
+///
+/// Checks, in order: every declared [`CorpusHalf`] present in the input; each
+/// half at or above its floor; every member carrying its half's extension; and
+/// the halves pairwise disjoint. EVERY violation is accumulated into one
+/// message rather than returning the first — the same
+/// both-directions-reported-together convention
+/// [`assert_no_unwaived_ctor_conformance_sites`] uses, and for the same
+/// reason: a caller who fixes the first complaint and re-runs should not
+/// discover the second one turn later.
+///
+/// The floors are BROKEN-ENUMERATION floors (see [`RI_CORPUS_FLOOR`] and
+/// [`RUST_HOST_CORPUS_FLOOR`]), set far below the live counts — 701 `.ri` and
+/// 1,870 hosts measured 2026-09-16 — and not tracking numbers. A legitimate
+/// fixture or test cull must not be a merge-gate red; only an enumeration that
+/// broke can get near them. A floor cannot see a NARROWED host predicate at
+/// all — see [`RUST_HOST_CORPUS_FLOOR`] for what does.
+fn corpus_parity(halves: &[(CorpusHalf, &[String])]) -> Result<(), String> {
+    use strum::IntoEnumIterator;
+    let mut violations: Vec<String> = Vec::new();
+
+    for declared in CorpusHalf::iter() {
+        if !halves.iter().any(|(half, _)| *half == declared) {
+            violations.push(format!(
+                "{} is declared but absent from the parity input — it would be swept \
+                 and rendered without ever being checked",
+                declared.label()
+            ));
+        }
+    }
+
+    for (half, members) in halves {
+        if members.len() < half.floor() {
+            violations.push(format!(
+                "{} holds {} member(s), below its broken-enumeration floor of {}",
+                half.label(),
+                members.len(),
+                half.floor()
+            ));
+        }
+        let foreign: Vec<&String> = members
+            .iter()
+            .filter(|p| !p.ends_with(half.extension()))
+            .collect();
+        if !foreign.is_empty() {
+            violations.push(format!(
+                "{} holds {} member(s) not ending in '{}' — a walker that widened into \
+                 the wrong pathspec: {:?}",
+                half.label(),
+                foreign.len(),
+                half.extension(),
+                &foreign[..foreign.len().min(5)]
+            ));
+        }
+    }
+
+    for (i, (a, a_members)) in halves.iter().enumerate() {
+        for (b, b_members) in halves.iter().skip(i + 1) {
+            let seen: std::collections::BTreeSet<&String> = a_members.iter().collect();
+            let shared: Vec<&String> = b_members.iter().filter(|p| seen.contains(*p)).collect();
+            if !shared.is_empty() {
+                violations.push(format!(
+                    "{} and {} both enumerate {} member(s), which would be surveyed and \
+                     counted twice: {:?}",
+                    a.label(),
+                    b.label(),
+                    shared.len(),
+                    &shared[..shared.len().min(5)]
+                ));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.join("; "))
+    }
+}
+
+/// A well-formed input for every declared [`CorpusHalf`], derived from the enum
+/// rather than written out — so a future third half is covered here with no
+/// edit, the same reason [`Owner::render_order`] is derived.
+#[cfg(test)]
+fn synthetic_halves() -> Vec<(CorpusHalf, Vec<String>)> {
+    use strum::IntoEnumIterator;
+    CorpusHalf::iter()
+        .map(|half| {
+            let members = (0..half.floor() + 5)
+                .map(|i| format!("synthetic/{half:?}/f{i}{}", half.extension()))
+                .collect();
+            (half, members)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn as_parity_input(halves: &[(CorpusHalf, Vec<String>)]) -> Vec<(CorpusHalf, &[String])> {
+    halves.iter().map(|(h, m)| (*h, m.as_slice())).collect()
+}
+
+#[test]
+fn corpus_parity_accepts_two_well_formed_halves() {
+    let halves = synthetic_halves();
+    assert_eq!(
+        corpus_parity(&as_parity_input(&halves)),
+        Ok(()),
+        "adequately-sized, correctly-extensioned, disjoint halves must pass"
+    );
+}
+
+#[test]
+fn corpus_parity_reds_when_any_half_is_stubbed_to_the_empty_set() {
+    use strum::IntoEnumIterator;
+    // VERIFY criterion (b) verbatim — and it must hold for EITHER half stubbed,
+    // not just the new one, which is why this iterates the enum.
+    for stubbed in CorpusHalf::iter() {
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == stubbed {
+                members.clear();
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves))
+            .expect_err(&format!("an empty {stubbed:?} half must red the gate"));
+        assert!(
+            err.contains(stubbed.label()),
+            "the failure must NAME the half that collapsed; {stubbed:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_on_a_half_below_its_floor() {
+    use strum::IntoEnumIterator;
+    for narrowed in CorpusHalf::iter() {
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == narrowed {
+                members.truncate(narrowed.floor() - 1);
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves)).expect_err(&format!(
+            "a below-floor {narrowed:?} half must red the gate"
+        ));
+        assert!(
+            err.contains(narrowed.label()),
+            "a non-empty but narrowed half must be named too; {narrowed:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_when_a_member_carries_the_other_halfs_extension() {
+    use strum::IntoEnumIterator;
+    // The shape of a walker that widened into the wrong pathspec.
+    for wrong in CorpusHalf::iter() {
+        let foreign = CorpusHalf::iter()
+            .find(|h| h.extension() != wrong.extension())
+            .expect("at least two halves with distinct extensions");
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == wrong {
+                members[0] = format!("synthetic/intruder{}", foreign.extension());
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves))
+            .expect_err(&format!("a foreign-extension member in {wrong:?} must red"));
+        assert!(
+            err.contains(wrong.label()) && err.contains(wrong.extension()),
+            "the failure must name the half and the extension it broke; got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_when_the_halves_overlap() {
+    let mut halves = synthetic_halves();
+    let shared = halves[0].1[0].clone();
+    halves[1].1.push(shared.clone());
+    let err = corpus_parity(&as_parity_input(&halves))
+        .expect_err("a member enumerated into both halves must red the gate");
+    // The intruder necessarily also breaks the second half's extension rule;
+    // `corpus_parity` accumulates every violation, so both are reported and
+    // this assertion can still name the overlap specifically.
+    assert!(
+        err.contains(&shared),
+        "the failure must name the doubly-enumerated member; got {err:?}"
+    );
+}
+
+#[test]
+fn corpus_parity_reds_when_a_declared_half_is_absent_from_the_input() {
+    use strum::IntoEnumIterator;
+    // Derived from `CorpusHalf::iter()`, never a local literal — the same
+    // failure mode `Owner::render_order` guards against, for the same reason: a
+    // future third half added to the enum and forgotten at the wiring site
+    // would otherwise be swept, rendered and never parity-checked.
+    for omitted in CorpusHalf::iter() {
+        let halves = synthetic_halves();
+        let input: Vec<(CorpusHalf, &[String])> = halves
+            .iter()
+            .filter(|(half, _)| *half != omitted)
+            .map(|(half, members)| (*half, members.as_slice()))
+            .collect();
+        let err = corpus_parity(&input)
+            .expect_err(&format!("an unwired {omitted:?} half must red the gate"));
+        assert!(
+            err.contains(omitted.label()),
+            "the failure must name the half nobody wired; got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_holds_over_the_two_live_enumerations() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    assert_eq!(
+        corpus_parity(&[
+            (CorpusHalf::TrackedRi, tracked_ri_corpus()),
+            (CorpusHalf::InlineRustHost, tracked_rust_hosts()),
+        ]),
+        Ok(()),
+        "the live wiring must satisfy the gate it is checked by"
+    );
 }
 
 // ─── step 3/4: source-position helpers ───────────────────────────────────────
@@ -782,6 +1325,10 @@ struct SurveySite {
     /// D9 owner class. Assigned by the corpus sweep via [`d9_owner`]; the
     /// builder leaves it `Unknown`, the conservative default.
     owner: Owner,
+    /// The 1-based line WITHIN the embedded snippet, for a row that came from
+    /// an inline Rust fixture; `None` for a tracked `.ri` row, where
+    /// [`SurveySite::line`] already IS the file line.
+    snippet_line: Option<u32>,
 }
 
 /// The `emit_arg_type_mismatch` prose prefix that introduces the offending param
@@ -933,6 +1480,7 @@ fn survey_site_from_diagnostic(
         severity: format!("{:?}", d.severity),
         message: d.message.clone(),
         owner: Owner::Unknown,
+        snippet_line: None,
     })
 }
 
@@ -1436,11 +1984,12 @@ fn every_fea_family_shaped_stdlib_module_is_classified() {
 
 /// The `structure def <Name>` declarations in `dir/<stem>.ri` for each `stem`.
 ///
-/// Anchored at COLUMN 0 rather than matched as a substring, deliberately: a
-/// naive scan of `stdlib/fea_multi_case.ri` harvests `already` as a def name
-/// from the prose "…(its structure def already declares…" in a comment at line
-/// 292. Every real declaration in the stdlib is at column 0, and a `//` line is
-/// skipped outright, so both halves of that guard are cheap.
+/// Anchored at the START OF A LINE rather than matched as a substring,
+/// deliberately: a naive scan of `stdlib/fea_multi_case.ri` harvests `already`
+/// as a def name from the prose "…(its structure def already declares…" in a
+/// comment at line 292. Leading whitespace is trimmed first, so an INDENTED
+/// declaration counts; a `//` line still fails the keyword strip after trimming,
+/// which is what keeps that guard intact.
 ///
 /// # Panics
 ///
@@ -1469,18 +2018,32 @@ fn scan_structure_defs(
 
 /// Add every `structure def <Name>` declared by `source` to `defs`.
 ///
-/// The column-0 anchor and the `pub `/`priv ` visibility prefixes are the whole
-/// grammar: measured over the tracked corpus, all 719 declarations sit at column
-/// 0 and 10 of them carry `pub `. Missing the visibility prefix would drop
-/// `pub structure def Actuator` from the known set and demote its sites to
-/// [`Owner::UnresolvedDef`] — conservative, but needless noise in γ's triage.
+/// The line-start anchor and the `pub `/`priv ` visibility prefixes are the whole
+/// grammar. Leading whitespace is trimmed before the strip, because this scanner
+/// serves BOTH corpus halves and they are indented differently: all 719
+/// declarations in the tracked `.ri` corpus sit at column 0, so the trim is a
+/// measured no-op there (that corpus has zero indented declarations), but Reify
+/// embedded in a Rust raw-string literal is routinely indented to match the
+/// surrounding Rust — 480 of the 2,228 declarations across `crates/**/*.rs` carry
+/// leading whitespace. Anchoring at column 0 hid every one of those from the
+/// known-def set and demoted each site constructing them to
+/// [`Owner::UnresolvedDef`], a factually false owner attribution in an artifact
+/// whose Provenance section promises machine-derived rows.
+///
+/// Missing the visibility prefix would likewise drop `pub structure def Actuator`
+/// from the known set and demote its sites — conservative, but needless noise in
+/// γ's triage.
 fn collect_structure_defs_into(source: &str, defs: &mut std::collections::BTreeSet<String>) {
     const DEF_KEYWORD: &str = "structure def ";
     const VISIBILITY_PREFIXES: &[&str] = &["pub ", "priv "];
     for line in source.lines() {
-        // Column-0 anchor: skips comments and any nested/indented prose. A naive
-        // substring scan of `stdlib/fea_multi_case.ri` harvests `already` from
-        // the comment "…(its structure def already declares…".
+        // Line-start anchor, after trimming indentation: a declaration may be
+        // INDENTED (the inline-fixture shape), but a comment or a mid-line
+        // mention still fails the keyword strip. A naive SUBSTRING scan of
+        // `stdlib/fea_multi_case.ri` harvests `already` from the comment
+        // "…(its structure def already declares…"; that line still opens with
+        // `// ` after the trim, so it still fails `strip_prefix(DEF_KEYWORD)`.
+        let line = line.trim_start();
         let after_vis = VISIBILITY_PREFIXES
             .iter()
             .find_map(|p| line.strip_prefix(p))
@@ -1767,6 +2330,13 @@ fn scan_structure_defs_ignores_structure_def_prose_inside_comments() {
         "prose inside a comment must not enter the def set, got {defs:?}"
     );
     assert!(defs.contains("Real1"), "a real column-0 def must be found");
+    assert!(
+        defs.contains("Indented"),
+        "an INDENTED declaration must be found too: the scanner serves the inline-Rust \
+         corpus half, where a `structure def` is routinely indented to match the \
+         surrounding Rust. Anchoring at column 0 hid 480 such declarations and demoted \
+         every site constructing them to `Owner::UnresolvedDef`. Got {defs:?}"
+    );
 }
 
 #[test]
@@ -1846,10 +2416,12 @@ fn structure_def_scanner_reads_the_visibility_prefixes() {
     let got: Vec<&str> = defs.iter().map(String::as_str).collect();
     assert_eq!(
         got,
-        vec!["Actuator", "Hidden", "Plain"],
+        vec!["Actuator", "Hidden", "Indented", "Plain"],
         "`pub`/`priv` prefixes are part of the declaration grammar (10 `pub structure \
-         def` sites in the tracked corpus); comments, indented prose and mid-line \
-         mentions are not declarations"
+         def` sites in the tracked corpus), and an INDENTED declaration is a real \
+         declaration \u{2014} it is the shape Reify takes inside a Rust raw-string literal, \
+         where 480 of 2,228 `crates/**/*.rs` declarations carry leading whitespace. \
+         Comments and mid-line mentions are still not declarations"
     );
 }
 
@@ -2080,13 +2652,9 @@ struct SurveyRun {
 /// make a row's owner depend on the order members were handed in — the exact
 /// non-determinism the artifact's byte-reproducibility rules out.
 fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
-    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
-    use reify_core::{ModulePath, Severity};
-
-    let fea = fea_owned_defs();
     // Seeded with the stdlib so a site constructing a stdlib def resolves even
     // when the declaring stdlib file is not part of the corpus handed in; every
-    // swept member then contributes its own declarations below.
+    // swept member then contributes its own declarations.
     let mut structure_defs = stdlib_structure_defs().clone();
     let mut run = SurveyRun {
         total: rel_paths.len(),
@@ -2105,56 +2673,105 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-
-        // Declarations are harvested from the raw text BEFORE the parse gate:
-        // a member that fails to parse can still legitimately declare a def that
-        // another member constructs, and dropping it would demote that other
-        // member's rows to `UnresolvedDef` for no reason.
-        collect_structure_defs_into(&source, &mut structure_defs);
-
-        let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
-        if !parsed.errors.is_empty() {
-            run.not_surveyed
-                .push((rel.clone(), "parse-error".to_owned()));
-            continue;
-        }
-
-        let compiled = compile_with_stdlib(&parsed);
-        run.surveyed += 1;
-        if compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && !is_ctor_conformance_code(d.code))
-        {
-            run.partial.push((rel.clone(), "compile-error".to_owned()));
-        }
-        for d in compiled
-            .diagnostics
-            .iter()
-            .filter(|d| is_ctor_conformance_code(d.code))
-        {
-            let Some(site) = survey_site_from_diagnostic(rel, &source, d) else {
-                continue;
-            };
-            run.sites.push(site);
-        }
+        let sweep = sweep_member(rel, &source, &stem, &mut structure_defs);
+        run.record(rel.clone(), sweep);
     }
 
-    // Second pass: every declaration in the corpus is now known.
+    finish_run(&mut run, &structure_defs);
+    run
+}
+
+/// What sweeping ONE corpus member yields, whichever half it came from.
+enum MemberSweep {
+    /// The member did not parse, so it contributes no sites.
+    ParseError,
+    /// The member compiled. `partial` is set when an Error-severity diagnostic
+    /// OTHER than the sweep's own ctor-conformance signal fired — see
+    /// [`SurveyRun::partial`] for why that signal is excluded.
+    Compiled {
+        sites: Vec<SurveySite>,
+        partial: bool,
+    },
+}
+
+/// The per-member pipeline BOTH corpus halves run, stated once so the halves
+/// cannot drift: harvest `structure def`s → `parse_with_stdlib` →
+/// `compile_with_stdlib` → the partial rule → [`survey_site_from_diagnostic`]
+/// over every [`is_ctor_conformance_code`] diagnostic.
+///
+/// Declarations are harvested from the raw text BEFORE the parse gate: a member
+/// that fails to parse can still legitimately declare a def that another member
+/// constructs, and dropping it would demote that other member's rows to
+/// `UnresolvedDef` for no reason.
+///
+/// A site's `line` is relative to `source`; a caller whose member is embedded
+/// in a larger file maps it.
+fn sweep_member(
+    file: &str,
+    source: &str,
+    stem: &str,
+    structure_defs: &mut std::collections::BTreeSet<String>,
+) -> MemberSweep {
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::{ModulePath, Severity};
+
+    collect_structure_defs_into(source, structure_defs);
+
+    let parsed = parse_with_stdlib(source, ModulePath::single(stem));
+    if !parsed.errors.is_empty() {
+        return MemberSweep::ParseError;
+    }
+
+    let compiled = compile_with_stdlib(&parsed);
+    let partial = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && !is_ctor_conformance_code(d.code));
+    let sites = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| is_ctor_conformance_code(d.code))
+        .filter_map(|d| survey_site_from_diagnostic(file, source, d))
+        .collect();
+    MemberSweep::Compiled { sites, partial }
+}
+
+impl SurveyRun {
+    /// Account for one swept member under `member`, its coverage key.
+    fn record(&mut self, member: String, sweep: MemberSweep) {
+        match sweep {
+            MemberSweep::ParseError => {
+                self.not_surveyed.push((member, "parse-error".to_owned()));
+            }
+            MemberSweep::Compiled { sites, partial } => {
+                self.surveyed += 1;
+                if partial {
+                    self.partial.push((member, "compile-error".to_owned()));
+                }
+                self.sites.extend(sites);
+            }
+        }
+    }
+}
+
+/// The tail BOTH corpus halves run once every member is swept.
+///
+/// D9 owner assignment is a second pass because a site in the first swept
+/// member may construct a def declared in the last one. The total order makes
+/// the artifact byte-reproducible regardless of the order members were handed
+/// in; `code` and `message` break the remaining ties so two sites at the same
+/// `(file, line, field)` still sort deterministically.
+fn finish_run(run: &mut SurveyRun, structure_defs: &std::collections::BTreeSet<String>) {
+    let fea = fea_owned_defs();
     for site in &mut run.sites {
-        site.owner = d9_owner(site.def.as_deref(), fea, &structure_defs);
+        site.owner = d9_owner(site.def.as_deref(), fea, structure_defs);
     }
-
-    // Total order, so the artifact is byte-reproducible regardless of the order
-    // members were handed in. `code` and `message` break the remaining ties so
-    // two sites at the same (file, line, field) still sort deterministically.
     run.sites.sort_by(|a, b| {
         (&a.file, a.line, &a.field, &a.code, &a.message)
             .cmp(&(&b.file, b.line, &b.field, &b.code, &b.message))
     });
     run.not_surveyed.sort();
     run.partial.sort();
-    run
 }
 
 /// The known-SITE member: PRD §7 boundary-test row 2, reused verbatim from
@@ -2548,6 +3165,447 @@ fn survey_corpus_orders_sites_deterministically() {
     );
 }
 
+// ─── the second half: Reify snippets embedded in Rust test source ────────────
+
+/// Sweep the Reify snippets embedded in `host_rel_paths` (resolved against
+/// `root`) and collect every ctor-conformance site.
+///
+/// Calls the SAME [`sweep_member`] per member and the same [`finish_run`] tail
+/// that [`survey_corpus`] calls, so the two corpus halves cannot disagree about
+/// what a ctor-conformance site IS or about which member is partial. Exactly
+/// two things differ: what a MEMBER is, and how a diagnostic's line is mapped.
+///
+/// # A member is a snippet, not a host file
+///
+/// The coverage denominator counts SNIPPETS, plus one entry for a host that
+/// could not be read at all. Counting hosts instead would report a host
+/// carrying ten snippets, one of which failed to parse, as fully surveyed.
+/// A raw string that is not Reify at all (JSON, a Rust-source fixture) is not a
+/// member and is not counted: there is nothing to survey and nothing to
+/// disclose. A Reify-SHAPED `format!` template IS a member — it is Reify a
+/// reader would expect the census to cover — and is recorded under its own
+/// `format-template` reason rather than left to land as a noise `parse-error`.
+///
+/// # Position
+///
+/// A row's `file`/`line` is the HOST `.rs` position a human opens; the
+/// snippet-relative coordinate is kept alongside in
+/// [`SurveySite::snippet_line`]. [`survey_site_from_diagnostic`] is handed the
+/// SNIPPET text, so the line it computes is snippet-relative and is mapped up
+/// with `host_line + snippet_line - 1` —
+/// [`rust_fixture_scan::InlineSnippet::host_line`] is the host line of the
+/// snippet's line 1, which makes that mapping uniform.
+///
+/// # Not `reify_test_support::compile_source_with_stdlib`
+///
+/// That helper PANICS on parse errors. Recording them is the whole point of the
+/// coverage accounting here — inline fixtures include deliberately-unparseable
+/// negative cases, and a panic would take the sweep down with them.
+///
+/// A snippet carrying no `module` declaration compiles under
+/// `ModulePath::single(<host stem>)` and emits `W_MODULE_DECL_MISSING`, a
+/// non-ctor code the shared [`is_ctor_conformance_code`] filter already drops.
+fn survey_inline_corpus(root: &std::path::Path, host_rel_paths: &[String]) -> SurveyRun {
+    let mut structure_defs = stdlib_structure_defs().clone();
+    let mut run = SurveyRun::default();
+
+    for rel in host_rel_paths {
+        let path = root.join(rel);
+        let Ok(host_source) = std::fs::read_to_string(&path) else {
+            run.total += 1;
+            run.not_surveyed
+                .push((rel.clone(), "read-error".to_owned()));
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        let scan = rust_fixture_scan::inline_ri_snippets(&host_source);
+        run.total += scan.snippets.len() + scan.format_templates.len();
+        for template in &scan.format_templates {
+            run.not_surveyed.push((
+                format!("{rel}:{}", template.host_line),
+                INLINE_TEMPLATE_REASON.to_owned(),
+            ));
+        }
+
+        for snippet in &scan.snippets {
+            let mut sweep = sweep_member(rel, &snippet.text, &stem, &mut structure_defs);
+            if let MemberSweep::Compiled { sites, .. } = &mut sweep {
+                for site in sites {
+                    let snippet_line = site.line;
+                    site.snippet_line = Some(snippet_line);
+                    site.line = snippet.host_line + snippet_line - 1;
+                }
+            }
+            run.record(format!("{rel}:{}", snippet.host_line), sweep);
+        }
+    }
+
+    finish_run(&mut run, &structure_defs);
+    run
+}
+
+/// One synthetic Rust host carrying, in order: an admitted Reify snippet that
+/// WARNS, a non-Reify blob, a Reify-shaped snippet that cannot parse, a
+/// `format!` template, and a Reify-shaped snippet hidden inside a doc comment.
+///
+/// The outer literal needs a DOUBLED hash count because the warning snippet
+/// already uses `r##"` (the shape `crates/reify-eval/src/engine_build/tests.rs`
+/// uses live).
+#[cfg(test)]
+const INLINE_SYNTH_HOST: &str = r####"// A synthetic host for the inline sweep.
+fn warns() {
+    let source = r##"
+structure def W {
+    param z : Length = 5.0
+}
+"##;
+    let _ = source;
+}
+
+fn not_reify() {
+    let json = r#"{"capabilities":{}}"#;
+    let _ = json;
+}
+
+fn unparseable() {
+    let broken = r#"
+module test.inline_broken
+((( this is not reify at all ]]] §§§
+"#;
+    let _ = broken;
+}
+
+fn templated() {
+    let t = format!(r#"
+structure def T {{
+    param q : Length = {WIDTH}
+}}
+"#);
+    let _ = t;
+}
+
+/// A doc comment carrying r#"structure def Ghost { param g : Length = 9.0 }"#
+/// must contribute nothing at all.
+fn documented() {}
+"####;
+
+/// The 1-based line of the ONE line of `host` containing `needle`.
+///
+/// Every expected host line below is COMPUTED with this rather than
+/// hand-counted, so a fixture edit fails on its anchor instead of silently
+/// invalidating an expectation.
+#[cfg(test)]
+fn host_line_of(host: &str, needle: &str) -> u32 {
+    let hits: Vec<u32> = host
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .map(|(i, _)| i as u32 + 1)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "fixture anchor {needle:?} must appear on exactly one line, found {hits:?}"
+    );
+    hits[0]
+}
+
+/// Write [`INLINE_SYNTH_HOST`] into a temp dir and return
+/// `(dir, [host, missing host])` — the same tempfile idiom as [`synth_corpus`].
+#[cfg(test)]
+fn inline_synth_corpus() -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("host.rs"), INLINE_SYNTH_HOST).expect("write synthetic host");
+    (dir, vec!["absent_host.rs".to_owned(), "host.rs".to_owned()])
+}
+
+#[test]
+fn survey_inline_corpus_finds_the_snippet_site_at_its_host_position() {
+    let (dir, hosts) = inline_synth_corpus();
+    let run = survey_inline_corpus(dir.path(), &hosts);
+
+    assert_eq!(
+        run.sites.len(),
+        1,
+        "exactly one ctor-conformance site across the synthetic host, got: {:#?}",
+        run.sites
+    );
+    let site = &run.sites[0];
+
+    assert_eq!(
+        site.file, "host.rs",
+        "a row's `file` is the HOST .rs path a human opens, not a synthesised snippet name"
+    );
+    assert_eq!(
+        site.line,
+        host_line_of(INLINE_SYNTH_HOST, "param z : Length"),
+        "a row's `line` is the HOST line of the offending declaration"
+    );
+    let snippet_line = site
+        .snippet_line
+        .expect("an inline row must carry its snippet-relative coordinate");
+    let snippet_start = host_line_of(INLINE_SYNTH_HOST, "structure def W {");
+    assert_eq!(
+        snippet_start + snippet_line - 1,
+        site.line,
+        "host_line_of_snippet_start + snippet_line - 1 must reconstruct the host line"
+    );
+    assert_eq!(site.field.as_deref(), Some("z"));
+    assert_eq!(
+        site.owner,
+        d9_owner(
+            site.def.as_deref(),
+            fea_owned_defs(),
+            stdlib_structure_defs()
+        ),
+        "the inline half must classify by the same `d9_owner` the .ri half uses"
+    );
+}
+
+#[test]
+fn survey_inline_corpus_records_every_unsurveyable_snippet_with_its_reason() {
+    let (dir, hosts) = inline_synth_corpus();
+    let run = survey_inline_corpus(dir.path(), &hosts);
+
+    let reason_for = |key: &str| -> Option<&str> {
+        run.not_surveyed
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, r)| r.as_str())
+    };
+
+    let broken_key = format!(
+        "host.rs:{}",
+        host_line_of(INLINE_SYNTH_HOST, "module test.inline_broken")
+    );
+    assert_eq!(
+        reason_for(&broken_key),
+        Some("parse-error"),
+        "an unparseable snippet is RECORDED at `<host>:<line>`, never dropped; \
+         not_surveyed = {:#?}",
+        run.not_surveyed
+    );
+
+    let template_key = format!(
+        "host.rs:{}",
+        host_line_of(INLINE_SYNTH_HOST, "structure def T {{")
+    );
+    assert_eq!(
+        reason_for(&template_key),
+        Some("format-template"),
+        "a `format!` template is disclosed under its own reason rather than \
+         landing as a noise parse-error; not_surveyed = {:#?}",
+        run.not_surveyed
+    );
+
+    assert_eq!(
+        reason_for("absent_host.rs"),
+        Some("read-error"),
+        "an unreadable host is recorded rather than panicking the sweep"
+    );
+
+    assert_eq!(
+        run.total,
+        run.surveyed + run.not_surveyed.len(),
+        "the coverage denominator must still account for every member exactly once"
+    );
+}
+
+#[test]
+fn survey_inline_corpus_orders_sites_deterministically() {
+    let (dir, hosts) = inline_synth_corpus();
+    let forward = survey_inline_corpus(dir.path(), &hosts);
+    let mut reversed = hosts.clone();
+    reversed.reverse();
+    let backward = survey_inline_corpus(dir.path(), &reversed);
+    assert_eq!(
+        forward.sites, backward.sites,
+        "site ordering must not depend on the order hosts are handed in"
+    );
+    assert_eq!(forward.not_surveyed, backward.not_surveyed);
+}
+
+/// The SAME member text, swept once as a tracked `.ri` file and once as an
+/// inline snippet, classifies identically in both halves: the same coverage
+/// bucket and the same site columns.
+///
+/// This pins the property rather than one predicate. δ's step 7 (f16a387d06)
+/// changed the `.ri` sweep's partial rule so that the sweep's own
+/// ctor-conformance Error no longer marks a member partial, and the inline sweep,
+/// a copy of that loop, silently kept the old rule. Any future drift in either
+/// half reds here.
+#[test]
+fn both_corpus_halves_classify_a_member_identically() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut host = String::new();
+    for (name, text) in [
+        ("site", SYNTH_CONFORMANCE_SITE),
+        ("err", SYNTH_COMPILE_ERROR),
+    ] {
+        std::fs::write(dir.path().join(format!("{name}.ri")), text).expect("write .ri member");
+        host.push_str(&format!(
+            "fn {name}_member() {{\n    let source = r#\"\n{text}\"#;\n    let _ = source;\n}}\n\n"
+        ));
+    }
+    std::fs::write(dir.path().join("host.rs"), &host).expect("write synthetic host");
+    assert_eq!(
+        rust_fixture_scan::inline_ri_snippets(&host).snippets.len(),
+        2,
+        "both members must be admitted as inline snippets, or the inline half of \
+         this comparison is vacuous:\n{host}"
+    );
+
+    let ri = survey_corpus(dir.path(), &["err.ri".to_owned(), "site.ri".to_owned()]);
+    let inline = survey_inline_corpus(dir.path(), &["host.rs".to_owned()]);
+
+    assert_eq!(
+        ri.partial,
+        vec![("err.ri".to_owned(), "compile-error".to_owned())],
+        "the `.ri` half marks only the compile-error member partial; the site \
+         member's only Error is the sweep's own signal"
+    );
+    let err_key = format!(
+        "host.rs:{}",
+        host_line_of(&host, "module test.compile_error")
+    );
+    assert_eq!(
+        inline.partial,
+        vec![(err_key, "compile-error".to_owned())],
+        "the inline half must mark the SAME member partial and not the site \
+         member, exactly as the `.ri` half does"
+    );
+
+    let [ri_site] = ri.sites.as_slice() else {
+        panic!(
+            "the `.ri` half must find exactly one site, got {:#?}",
+            ri.sites
+        );
+    };
+    let [inline_site] = inline.sites.as_slice() else {
+        panic!(
+            "the inline half must find exactly one site, got {:#?}",
+            inline.sites
+        );
+    };
+    let columns = |s: &SurveySite| {
+        (
+            s.code.clone(),
+            s.severity.clone(),
+            s.field.clone(),
+            s.expected.clone(),
+            s.found.clone(),
+            s.def.clone(),
+            s.def_origin,
+            s.owner,
+            s.message.clone(),
+        )
+    };
+    assert_eq!(
+        columns(inline_site),
+        columns(ri_site),
+        "one member text must yield one site shape, whichever half swept it"
+    );
+    assert_eq!(
+        inline_site.snippet_line,
+        Some(ri_site.line),
+        "the inline site's snippet-relative line is the `.ri` site's line"
+    );
+}
+
+/// A verbatim copy of the two PRE-δ `purpose_compile_tests.rs` fixtures that
+/// task #7543's VERIFY names (`git show a8d7f5fb24:crates/reify-compiler/tests/
+/// harness_compilation_surface/purpose_compile_tests.rs`, lines 1441-1576),
+/// trimmed to each fixture's `let source` binding with nesting and indentation
+/// kept.
+///
+/// Synthetic because δ fixed the live sites in f247bade44, retyping them to
+/// `Real`, so post-δ main no longer carries them. The artifact committed at
+/// 2f7cafa18a, generated at the pre-δ base, lists them as
+/// `purpose_compile_tests.rs:1453/1454/1567`.
+#[cfg(test)]
+const PRE_DELTA_PURPOSE_FIXTURES_HOST: &str = r##"mod guarded {
+    use super::*;
+
+    #[test]
+    fn guarded_where_arm_lowers_to_implies() {
+        let source = r#"
+structure Frame {
+    param material : Length = 1.0
+    param youngs_modulus : Length = 200.0
+}
+
+purpose p(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+    }
+}
+"#;
+    }
+
+    #[test]
+    fn guarded_else_arm_lowers_to_not_implies() {
+        let source = r#"
+structure Frame {
+    param z : Length = 5.0
+}
+
+purpose p(subject : Structure) {
+    where 0.0 > 1.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+"#;
+    }
+}
+"##;
+
+/// The inline sweep still sees the purpose_compile_tests sites that task
+/// #7543's VERIFY names, at their host lines, and resolves each to the census.
+///
+/// A characterization witness that is independent of the live corpus. See
+/// [`PRE_DELTA_PURPOSE_FIXTURES_HOST`] for why it is synthetic.
+#[test]
+fn survey_inline_corpus_still_sees_the_sites_task_7543_verify_names() {
+    let host = PRE_DELTA_PURPOSE_FIXTURES_HOST;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("purpose_compile_tests.rs"), host)
+        .expect("write synthetic host");
+    let run = survey_inline_corpus(dir.path(), &["purpose_compile_tests.rs".to_owned()]);
+
+    let mut found: Vec<(&str, u32)> = run
+        .sites
+        .iter()
+        .map(|s| (s.field.as_deref().unwrap_or("—"), s.line))
+        .collect();
+    found.sort();
+    let mut expected = vec![
+        ("material", host_line_of(host, "param material : Length")),
+        (
+            "youngs_modulus",
+            host_line_of(host, "param youngs_modulus : Length"),
+        ),
+        ("z", host_line_of(host, "param z : Length")),
+    ];
+    expected.sort();
+    assert_eq!(found, expected, "sites: {:#?}", run.sites);
+
+    for site in &run.sites {
+        assert_eq!(
+            (site.expected.as_deref(), site.found.as_deref()),
+            (Some("Scalar[m]"), Some("Real")),
+            "a bare number at a `Length` param: {}",
+            site.message
+        );
+        assert_eq!(disposition_of(site), Disposition::InlineCensus);
+    }
+}
+
 // ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
 
 /// Repo-relative `.ri` files that task #5305 (γ) migrated to ctor-conformance
@@ -2656,6 +3714,258 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
     );
 }
 
+// ─── the inline half's gate-resident coverage pin ────────────────────────────
+
+/// `(repo_relative_host, minimum_admitted_snippets)` for the inline hosts whose
+/// extraction is pinned on the merge gate.
+///
+/// # The failure mode the corpus-parity gate CANNOT see
+///
+/// [`corpus_parity`] watches the ENUMERATIONS: it reds when a walker returns an
+/// empty or under-floor set of paths. It knows nothing about what comes out of
+/// those paths. A regression in [`rust_fixture_scan::raw_string_literals`] or in
+/// [`rust_fixture_scan::looks_like_reify_source`] leaves the host enumeration
+/// fully intact — every path present, every floor cleared, parity green — while
+/// admitting zero snippets from every one of them. The artifact would then
+/// regenerate with an empty inline section and read as an honest census of
+/// nothing. This pin is the only thing standing in front of that, which is why
+/// its floor counts ADMITTED SNIPPETS rather than paths.
+///
+/// # One live member of every [`HostShape`], on purpose
+///
+/// [`NAMED_SITE_HOST`] is a `tests` DIRECTORY host and carries the sites this
+/// task's VERIFY criterion names; `engine_build/tests.rs` is
+/// `src/**/tests.rs`, the shape
+/// `reify_test_support::ignore_hygiene::walk_test_rs_files` structurally cannot
+/// reach; `compute_representation_bounds_tests.rs` is `src/**/*_tests.rs`, 10
+/// of whose 12 members a `tests.rs`-exact clause missed; and `analysis.rs` is a
+/// production `src/*.rs` whose `#[cfg(test)]` module carries Reify fixtures.
+/// A narrowing that dropped any one shape would leave the others still passing,
+/// which is exactly how the first three were lost without a red gate.
+///
+/// # The floors are BROKEN-EXTRACTION floors
+///
+/// Measured live at 38, 21, 7 and 17 admitted snippets respectively. The floors
+/// sit far below that for the same reason [`CorpusHalf::floor`] does: a
+/// legitimate fixture edit that deletes a few snippets must not red the merge
+/// gate. These numbers detect a BREAK, not drift.
+///
+/// # Why this pin names no site
+///
+/// It asserts only that snippets are still EXTRACTED, reach the compile phase,
+/// and report resolving host lines. It names no param, no def and no site count.
+/// δ (#5306) fixed conformance sites inside these very hosts in f247bade44, and
+/// any assertion about which sites are found would have redded this gate then,
+/// as it would on the next fixture or severity change — which is why a future
+/// reader must not "helpfully" tighten this into a residual pin. The mechanism is pinned synthetically by
+/// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
+/// live census belongs in the artifact, which is regenerated on demand, not on
+/// the gate.
+const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[
+    (NAMED_SITE_HOST, 20),
+    ("crates/reify-eval/src/engine_build/tests.rs", 10),
+    (
+        "crates/reify-eval/src/tolerance_combine/compute_representation_bounds_tests.rs",
+        3,
+    ),
+    ("crates/reify-lsp/src/analysis.rs", 8),
+];
+
+/// The Rust test host that carried the inline sites task #7543's VERIFY
+/// criterion names, until δ fixed them in f247bade44
+/// ([`PRE_DELTA_PURPOSE_FIXTURES_HOST`] keeps a verbatim pre-δ copy).
+///
+/// A named constant rather than a literal in two places: the pin above lists it
+/// and [`inline_fixture_pinned_hosts_name_all_four_enumeration_shapes`] requires
+/// it,
+/// and a pin that drifted from its own requirement would still pass.
+const NAMED_SITE_HOST: &str =
+    "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
+
+/// The four PATH SHAPES an in-scope host can take, as a total classification.
+///
+/// Total and mutually exclusive, so "the pin names a live member of each" is a
+/// statement about the whole scope rather than about a hand-picked subset.
+/// Only the first is reachable by `reify_test_support::ignore_hygiene::
+/// walk_test_rs_files`, and only the first two survived the host predicate's
+/// original `tests`-directory-or-`tests.rs` clause — which is why a
+/// re-narrowing shows up HERE and nowhere else: the corpus-parity floor is
+/// cleared just as comfortably by a predicate admitting 1,307 of the 1,932
+/// tracked `.rs` as by the one admitting all 1,870 under `crates/`.
+///
+/// `EnumIter` is load-bearing for the same reason it is on [`CorpusHalf`]: both
+/// shape gates iterate the DECLARATION, so a fifth shape cannot be added here
+/// and left unpinned by a hand-maintained list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
+enum HostShape {
+    TestsDirectory,
+    SrcTestsRs,
+    SrcStarTestsRs,
+    ProductionSrc,
+}
+
+fn host_shape(rel: &str) -> HostShape {
+    let path = std::path::Path::new(rel);
+    let file = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
+    if path.components().any(|c| c.as_os_str() == "tests") {
+        HostShape::TestsDirectory
+    } else if file == "tests.rs" {
+        HostShape::SrcTestsRs
+    } else if file.ends_with("_tests.rs") {
+        HostShape::SrcStarTestsRs
+    } else {
+        HostShape::ProductionSrc
+    }
+}
+
+/// [`INLINE_FIXTURE_PINNED_HOSTS`] names a live member of every [`HostShape`],
+/// and every entry is a real file the shared host predicate admits.
+///
+/// Asserted SEPARATELY from the extraction pin below so an emptied or
+/// narrowed pin list fails HERE, loudly, instead of making every per-host
+/// assertion iterate zero times and pass vacuously.
+#[test]
+fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
+    let hosts: Vec<&str> = INLINE_FIXTURE_PINNED_HOSTS
+        .iter()
+        .map(|(h, _)| *h)
+        .collect();
+
+    assert!(
+        hosts.contains(&NAMED_SITE_HOST),
+        "the pin must name {NAMED_SITE_HOST} — the host of the sites this task's \
+         VERIFY criterion names; pinned: {hosts:?}"
+    );
+    for shape in <HostShape as strum::IntoEnumIterator>::iter() {
+        assert!(
+            hosts.iter().any(|h| host_shape(h) == shape),
+            "the pin must name a live {shape:?} host. This is the assertion the \
+             corpus-parity gate structurally cannot make: a predicate re-narrowed \
+             to one shape still clears every floor, so only a per-shape live member \
+             sees it; pinned: {hosts:?}"
+        );
+    }
+
+    for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
+        assert!(
+            rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(host)),
+            "pinned host {host} must satisfy the same `is_inline_fixture_host` \
+             predicate the corpus enumeration filters through, else the pin covers a \
+             file the census never sweeps"
+        );
+        assert!(
+            std::path::Path::new(WORKSPACE_ROOT).join(host).is_file(),
+            "pinned host {host} does not exist under {WORKSPACE_ROOT}"
+        );
+        assert!(
+            *floor > 0,
+            "pinned host {host} carries a zero floor, which no extraction can fail"
+        );
+    }
+}
+
+/// Every [`INLINE_FIXTURE_PINNED_HOSTS`] entry still yields its floor of
+/// admitted snippets, reaches the compile phase, and reports only host lines
+/// that resolve.
+///
+/// Priced like [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`]: a
+/// handful of real files, not a corpus walk, so it costs one stdlib prelude
+/// compile and stays gate-resident without reversing the landed
+/// `docs/prds/merge-gate-compile-cost.md` decision.
+///
+/// Deliberately does NOT pin the param names at the sites VERIFY names. δ
+/// (#5306) fixed those sites in f247bade44, which is exactly how a residual pin
+/// would have redded this gate;
+/// [`survey_inline_corpus_still_sees_the_sites_task_7543_verify_names`] pins
+/// them against a verbatim pre-δ copy instead. The MECHANISM is pinned
+/// synthetically by
+/// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
+/// live census is the artifact, not a gate.
+#[test]
+fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
+    let mut failures: Vec<String> = Vec::new();
+
+    for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
+        let host_path = std::path::Path::new(WORKSPACE_ROOT).join(host);
+        let host_source = std::fs::read_to_string(&host_path)
+            .unwrap_or_else(|e| panic!("pinned host {host} is unreadable: {e}"));
+        let host_lines = host_source.lines().count() as u32;
+
+        let admitted = rust_fixture_scan::inline_ri_snippets(&host_source)
+            .snippets
+            .len();
+        if admitted < *floor {
+            failures.push(format!(
+                "  {host}: {admitted} admitted snippet(s), floor is {floor} — the host is \
+                 still enumerated, so the corpus-parity gate is green and blind to this; \
+                 an admission-filter or raw-string-lexer regression looks exactly like it"
+            ));
+        }
+
+        let run = survey_inline_corpus(std::path::Path::new(WORKSPACE_ROOT), &[(*host).to_owned()]);
+
+        for (member, reason) in &run.not_surveyed {
+            if reason == "read-error" {
+                failures.push(format!(
+                    "  {member}: read-error — every extracted snippet must reach the \
+                     compile phase, else this pin passes vacuously"
+                ));
+            }
+        }
+        assert_eq!(
+            run.total,
+            run.surveyed + run.not_surveyed.len(),
+            "the coverage denominator must account for every member of {host} exactly once"
+        );
+
+        // Every reported host line is a `file:line` a human will open, so a line
+        // past the end of the host is a dangling pointer — the same
+        // postcondition `line_of_span` enforces for `.ri` rows.
+        let mut reported: Vec<(String, u32)> = run
+            .sites
+            .iter()
+            .map(|s| (format!("site {}", s.file), s.line))
+            .collect();
+        reported.extend(
+            run.not_surveyed
+                .iter()
+                .chain(run.partial.iter())
+                .filter_map(|(member, reason)| {
+                    let (_, line) = member.rsplit_once(':')?;
+                    Some((format!("{reason} {member}"), line.parse().ok()?))
+                }),
+        );
+        for (what, line) in reported {
+            if line < 1 || line > host_lines {
+                failures.push(format!(
+                    "  {what}: host line {line} does not resolve — {host} has \
+                     {host_lines} line(s)"
+                ));
+            }
+        }
+
+        for site in &run.sites {
+            if site.snippet_line.is_none() {
+                failures.push(format!(
+                    "  site {}:{}: an inline row must carry its snippet-relative \
+                     coordinate",
+                    site.file, site.line
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} inline-extraction regression(s):\n{}",
+        failures.len(),
+        failures.join("\n"),
+    );
+}
+
 // ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
 
 /// Per-SITE, owner-attributed deferrals for the ctor-conformance sites that
@@ -2708,7 +4018,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
 /// That list is `examples/`-keyed BY CONSTRUCTION: its own doc forbids the
-/// repo-relative spelling, and the gate consuming it walks `EXAMPLES_DIR` only.
+/// repo-relative spelling, and the gate consuming it walks `examples_dir()` only.
 /// It cannot name a path under `tests/prd-gate/fixtures/` at all. The two tables
 /// are joined at exactly one place — the disposition resolver — and
 /// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] keeps
@@ -2815,7 +4125,7 @@ const EXAMPLES_PREFIX: &str = "examples/";
 ///
 /// The single place the two tables' key forms are bridged. The debt list is
 /// `examples/`-keyed by construction — its own doc forbids the repo-relative
-/// spelling, and the gate that consumes it walks `EXAMPLES_DIR` only — so
+/// spelling, and the gate that consumes it walks `examples_dir()` only — so
 /// neither table can change shape and the join has to happen here. A file
 /// outside `examples/` can never match a debt entry, which is exactly why
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
@@ -2996,6 +4306,23 @@ enum Disposition {
     /// A knob-governed site that no table names: it is actionable, and nobody has
     /// claimed it.
     Unattributed,
+    /// A row from the INLINE half of the corpus: a Reify snippet embedded in a
+    /// Rust test fixture.
+    ///
+    /// A CENSUS state, not a triage state. δ (#5306) fixed the inline sites its
+    /// severity flip exposed (f247bade44) and kept the rest as deliberate Error
+    /// pins, so a surviving inline site is one its host test asserts, tolerates,
+    /// or never compiles. It is neither pending work nor waived, and no task owns
+    /// it: its host test owns the verdict. The rows are listed so the class stays
+    /// countable and cannot recur unnoticed on the next severity change.
+    ///
+    /// Resolved FIRST, ahead of the scope and param early returns and ahead of
+    /// all three tables, so the entire inline half answers to ONE rule. Any later
+    /// placement lets an inline row be read as `Unattributed` (which panics
+    /// [`assert_no_unwaived_ctor_conformance_sites`] over sites no `.ri` table
+    /// can name) or as `Deferred` (which would let an inline row satisfy a `.ri`
+    /// waiver entry and keep a landed task's waiver looking live forever).
+    InlineCensus,
 }
 
 impl Disposition {
@@ -3022,6 +4349,11 @@ impl Disposition {
                     .to_owned()
             }
             Disposition::Unattributed => "unattributed — actionable".to_owned(),
+            Disposition::InlineCensus => {
+                "census — inline Rust fixture: enumerated, not ruled; its host test owns \
+                 the verdict"
+                    .to_owned()
+            }
         }
     }
 }
@@ -3116,6 +4448,13 @@ impl Disposition {
 /// reads as STALE and the assertion goes RED naming them — loudly re-scoped,
 /// never vacuously green.
 fn disposition_of(site: &SurveySite) -> Disposition {
+    // FIRST, ahead of the severity and scope returns and of all three tables:
+    // the inline half is a census in its entirety, so it answers to one rule.
+    // See `Disposition::InlineCensus` for what each later placement would break.
+    if site.snippet_line.is_some() {
+        return Disposition::InlineCensus;
+    }
+
     if site.severity != CTOR_CONFORMANCE_SITE_SEVERITY || !names_a_ctor_argument(site) {
         return Disposition::NotApplicable;
     }
@@ -3312,6 +4651,224 @@ fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
     );
 }
 
+// ─── the inline half is a CENSUS, not a gate ─────────────────────────────────
+
+/// One inline row, as [`survey_inline_corpus`] builds them: a HOST `.rs` file
+/// and host line, plus the snippet-relative coordinate that MAKES it inline.
+#[cfg(test)]
+fn synth_inline_site(file: &str, field: Option<&str>, severity: &str) -> SurveySite {
+    SurveySite {
+        file: file.to_owned(),
+        line: 1450,
+        def: None,
+        def_origin: DefOrigin::SpanNotIdentifier,
+        field: field.map(str::to_owned),
+        expected: Some("Scalar[m]".to_owned()),
+        found: Some("Real".to_owned()),
+        code: "ArgTypeMismatch".to_owned(),
+        severity: severity.to_owned(),
+        // The `check_param_default_conformance` wording measured live at the two
+        // sites VERIFY names, with the param this row actually carries.
+        message: format!(
+            "argument '{p}' has type 'Real' but param '{p}' requires type 'Scalar[m]'",
+            p = field.unwrap_or("z"),
+        ),
+        owner: Owner::Unknown,
+        snippet_line: Some(2),
+    }
+}
+
+/// Every inline row resolves to [`Disposition::InlineCensus`] — whatever its
+/// severity, and whatever its param extraction recovered.
+///
+/// This is the single most dangerous interaction in task #7543.
+/// [`assert_no_unwaived_ctor_conformance_sites`] panics on any site resolving
+/// to [`Disposition::Unattributed`], and the inline half surfaces sites whose
+/// verdict their host tests own — δ (#5306) kept them as deliberate Error pins —
+/// and that no `.ri` table can name. Routing them through the resolver — rather than adding a second
+/// severity-or-origin filter at the assertion — is what keeps the artifact's
+/// `disposition` column and that assertion unable to disagree, exactly as the
+/// assertion's own doc requires.
+///
+/// The `field: None` case is the one that pins the arm's PLACEMENT: the existing
+/// `let Some(param) = … else { return Unattributed }` early return would
+/// otherwise claim an inline row whose param extraction missed. The
+/// Warning-severity case pins it further up still, ahead of the scope early
+/// return, so the whole inline half resolves by ONE rule rather than by two that
+/// could drift.
+#[test]
+fn every_inline_row_resolves_to_the_census_disposition() {
+    for (field, severity, what) in [
+        (
+            Some("z"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+            "an in-scope row with its param recovered",
+        ),
+        (
+            None,
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+            "an in-scope row whose param extraction missed",
+        ),
+        (Some("z"), "Warning", "an out-of-scope-severity inline row"),
+    ] {
+        let site = synth_inline_site(NAMED_SITE_HOST, field, severity);
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::InlineCensus,
+            "{what} must resolve to the census disposition; anything else either \
+             panics the generator or claims an owner that #7543 does not have"
+        );
+    }
+}
+
+/// The same site WITHOUT its snippet coordinate is still `Unattributed`.
+///
+/// Without this the census arm could be passing vacuously — resolving every site
+/// it is handed, inline or not, and silently disarming γ's whole signal.
+#[test]
+fn the_census_disposition_is_keyed_on_the_snippet_coordinate_alone() {
+    let mut site = synth_inline_site(
+        "examples/definitely_not_waived_anywhere.ri",
+        Some("z"),
+        CTOR_CONFORMANCE_SITE_SEVERITY,
+    );
+    site.snippet_line = None;
+    assert_eq!(
+        disposition_of(&site),
+        Disposition::Unattributed,
+        "a tracked `.ri` row that no table names must still be actionable — the \
+         census arm must key on `snippet_line`, nothing else"
+    );
+}
+
+/// An inline row cannot MASK a genuinely stale waiver.
+///
+/// [`assert_no_unwaived_ctor_conformance_sites`] reads its waived set as
+/// exactly the [`Disposition::Deferred`] rows. An inline row carrying a real
+/// waiver entry's `(file, param)` must therefore NOT resolve to `Deferred` —
+/// which is what fixes the census arm's position ahead of the table lookups
+/// as well as ahead of the early returns. Placed after them, an inline row would
+/// keep a landed task's entry looking live forever.
+#[test]
+fn an_inline_row_never_satisfies_a_waiver_entry() {
+    let (residual_file, residual_param, ..) = CTOR_CONFORMANCE_CORPUS_RESIDUAL[0];
+    let (debt_key, debt_param, _) =
+        reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT[0];
+
+    for (file, param) in [
+        (residual_file.to_owned(), residual_param),
+        (format!("{EXAMPLES_PREFIX}{debt_key}"), debt_param),
+    ] {
+        let site = synth_inline_site(&file, Some(param), CTOR_CONFORMANCE_SITE_SEVERITY);
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::InlineCensus,
+            "an inline row at {file} :: param '{param}' must not be read as waived; \
+             the waiver tables key on `.ri` files, and letting an inline row satisfy \
+             one would keep a landed task's entry looking live forever"
+        );
+    }
+}
+
+/// One synthetic `.ri` site per waiver-table AND rejection-table entry, so the
+/// STALE direction of [`assert_no_unwaived_ctor_conformance_sites`] is satisfied
+/// and the UNEXPLAINED direction is the only thing a test below can trip.
+///
+/// A param-less rejection entry gets ε's arity wording, the only in-scope
+/// wording that recovers no param.
+#[cfg(test)]
+fn waiver_satisfying_ri_sites() -> Vec<SurveySite> {
+    let residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .map(|(file, param, ..)| synth_site(file, 1, "Waived", param, Owner::Unknown));
+    let debt = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .map(|(key, param, _)| {
+            synth_site(
+                &format!("{EXAMPLES_PREFIX}{key}"),
+                1,
+                "Waived",
+                param,
+                Owner::Unknown,
+            )
+        });
+    let rejection = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .map(|(file, param, _)| {
+            let mut site = synth_site(file, 1, "Widget", param.unwrap_or("—"), Owner::Unknown);
+            if param.is_none() {
+                site.field = None;
+                site.code = "CtorArity".to_owned();
+                site.message =
+                    format!("{CTOR_ARITY_PREFIX}Widget() expects at most 1 argument, got 2");
+            }
+            site
+        });
+    residual.chain(debt).chain(rejection).collect()
+}
+
+/// Adding the inline half to a run that already satisfies every waiver leaves
+/// [`assert_no_unwaived_ctor_conformance_sites`] passing.
+///
+/// The baseline half of this test is load-bearing: it proves the run WOULD pass
+/// without the inline rows, so a failure after adding them is attributable to
+/// them and to nothing else.
+#[test]
+fn the_unwaived_assertion_survives_the_inline_half() {
+    let baseline = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        sites: waiver_satisfying_ri_sites(),
+        ..SurveyRun::default()
+    };
+    assert_no_unwaived_ctor_conformance_sites(&baseline);
+
+    let mut with_inline = baseline;
+    with_inline.sites.extend([
+        synth_inline_site(
+            NAMED_SITE_HOST,
+            Some("material"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+        ),
+        synth_inline_site(
+            NAMED_SITE_HOST,
+            Some("youngs_modulus"),
+            CTOR_CONFORMANCE_SITE_SEVERITY,
+        ),
+        synth_inline_site(NAMED_SITE_HOST, None, CTOR_CONFORMANCE_SITE_SEVERITY),
+    ]);
+    assert_no_unwaived_ctor_conformance_sites(&with_inline);
+}
+
+/// [`Disposition::InlineCensus`] renders its own non-empty cell.
+///
+/// An empty or duplicated cell would make the artifact's disposition column
+/// silently ambiguous about which half a row came from — the column exists to
+/// tell a reader whether a row is work.
+#[test]
+fn the_census_disposition_renders_a_distinct_cell() {
+    let census = Disposition::InlineCensus.label();
+    assert!(
+        !census.trim().is_empty(),
+        "the census disposition must render a real cell, not a blank"
+    );
+    for other in [
+        Disposition::Unattributed,
+        Disposition::NotApplicable,
+        Disposition::IntendedRejection,
+        Disposition::Deferred {
+            owning_task: "#5306",
+            why: "any",
+        },
+    ] {
+        assert_ne!(
+            census,
+            other.label(),
+            "the census cell must be distinguishable from {other:?}"
+        );
+    }
+}
+
 /// True when `cite` is the repo's canonical `#NNNN` task-cite form.
 ///
 /// Greek-letter aliases (`task ε`), PRD-relative indices (`task-5`) and prose
@@ -3429,7 +4986,7 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
         "these site(s) are described by BOTH CTOR_CONFORMANCE_CORPUS_RESIDUAL and \
          CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
          Pick one. CTOR_CONFORMANCE_MIGRATION_DEBT owns sites under examples/, because \
-         the gate that consumes it walks EXAMPLES_DIR only and its keys are relative to \
+         the gate that consumes it walks examples_dir() only and its keys are relative to \
          that directory. CTOR_CONFORMANCE_CORPUS_RESIDUAL owns everything else.",
         overlap.join("\n"),
     );
@@ -3841,9 +5398,242 @@ fn opt_cell(value: Option<&String>) -> String {
 /// The header key that introduces the drift disclosure.
 ///
 /// One spelling, so the renderer and the tests asserting on its presence — and
-/// on its ABSENCE, which is the stronger claim — cannot disagree about what a
+/// on its absence from an undrifted run — cannot disagree about what a
 /// disclosure looks like.
-const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
+///
+/// Names no extension: a drifted member can now be either half's — a tracked
+/// `.ri`, or a `.rs` host whose bytes an inline row describes.
+const DRIFT_DISCLOSURE_KEY: &str = "**Drifted corpus members since the anchor:**";
+
+/// One cell of a site table, derived from the site.
+type SiteCell = fn(&SurveySite) -> String;
+
+/// The site-table columns BOTH halves render, in order.
+///
+/// One list, so the two halves cannot acquire independently-drifting layouts —
+/// which is the whole reason the renderer is shared rather than copied. The
+/// header row and the body rows are both generated from it, so they also cannot
+/// disagree about column order or count.
+const SHARED_SITE_COLUMNS: &[(&str, SiteCell)] = &[
+    ("site", |s| format!("`{}:{}`", cell(&s.file), s.line)),
+    ("def", |s| opt_cell(s.def.as_ref())),
+    ("def source", |s| cell(s.def_origin.label())),
+    ("field", |s| opt_cell(s.field.as_ref())),
+    ("expected", |s| opt_cell(s.expected.as_ref())),
+    ("found", |s| opt_cell(s.found.as_ref())),
+    ("code", |s| format!("`{}`", cell(&s.code))),
+    ("severity", |s| cell(&s.severity)),
+    ("hint (advisory)", |s| {
+        cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref()))
+    }),
+    (DISPOSITION_COLUMN, |s| cell(&disposition_of(s).label())),
+    ("message", |s| cell(&s.message)),
+];
+
+/// [`SHARED_SITE_COLUMNS`] for `half`.
+///
+/// The inline half inserts EXACTLY ONE extra column, immediately after `site`:
+/// its rows' `site` cell is the HOST `.rs` position, and a reader needs the
+/// snippet-relative coordinate as well to find the declaration inside the
+/// literal. Everything else is shared verbatim.
+fn site_columns(half: CorpusHalf) -> Vec<(&'static str, SiteCell)> {
+    let mut columns = SHARED_SITE_COLUMNS.to_vec();
+    if half == CorpusHalf::InlineRustHost {
+        columns.insert(
+            1,
+            (SNIPPET_LINE_COLUMN, |s| {
+                s.snippet_line
+                    .map_or_else(|| "—".to_owned(), |n| n.to_string())
+            }),
+        );
+    }
+    columns
+}
+
+/// `run`'s sites bucketed by [`Owner`], in [`Owner::render_order`], each bucket
+/// in the artifact's `(file, line, field)` order.
+///
+/// Derived from the enum for BOTH halves rather than listed per half: a future
+/// `Owner` variant then appears in both or in neither, which is the same
+/// silent-drop failure `Owner::render_order` itself exists to prevent.
+fn sites_by_owner(sites: &[SurveySite]) -> Vec<(Owner, Vec<&SurveySite>)> {
+    Owner::render_order()
+        .into_iter()
+        .map(|owner| {
+            let mut group: Vec<&SurveySite> = sites.iter().filter(|s| s.owner == owner).collect();
+            group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
+            (owner, group)
+        })
+        .collect()
+}
+
+/// Append `half`'s site table for `group`.
+fn push_site_table(md: &mut String, half: CorpusHalf, group: &[&SurveySite]) {
+    use std::fmt::Write as _;
+
+    let columns = site_columns(half);
+    for (name, _) in &columns {
+        let _ = write!(md, "| {name} ");
+    }
+    md.push_str("|\n|");
+    for _ in &columns {
+        md.push_str("---|");
+    }
+    md.push('\n');
+    for site in group {
+        for (_, render) in &columns {
+            let _ = write!(md, "| {} ", render(site));
+        }
+        md.push_str("|\n");
+    }
+}
+
+/// Append a `| file | reason |` coverage table, or `empty_note` when there is
+/// nothing to disclose.
+///
+/// Shared by both halves and by both of each half's buckets: a bounded sweep
+/// that does not state what it skipped reads as full coverage, and one renderer
+/// means neither half can quietly stop saying so.
+fn push_coverage_table(md: &mut String, rows: &[(String, String)], empty_note: &str) {
+    use std::fmt::Write as _;
+
+    if rows.is_empty() {
+        md.push_str(empty_note);
+        return;
+    }
+    md.push_str("| file | reason |\n|---|---|\n");
+    for (file, reason) in rows {
+        let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
+    }
+    md.push('\n');
+}
+
+/// The heading of the inline half's coverage subsection.
+const INLINE_COVERAGE_HEADING: &str = "### Inline coverage";
+
+/// The coverage reason a `format!` template is recorded under.
+///
+/// One spelling, because [`push_inline_limitation`] COUNTS the rows carrying it
+/// to state how many snippets the walker reached: a drifted spelling there would
+/// silently turn a real figure into zero.
+const INLINE_TEMPLATE_REASON: &str = "format-template";
+
+/// Append named limitation 1 — what the inline walker reaches, and what it does
+/// not.
+///
+/// Every quantity comes from `inline`, never from prose: a hand-typed count is
+/// right on the day it is written and silently wrong afterwards, and this
+/// artifact's own provenance section promises zero hand-derived counts. The
+/// UNREACHED classes are therefore named by the Rust construct — or, for a host
+/// the walker never opens, the PATH — to grep for, and deliberately carry no
+/// frozen number: the reader counts them at the stamped commit, against a
+/// corpus this generator does not enumerate. Both dimensions have to be
+/// disclosed, because a missed LITERAL shape and an unopened HOST are equally
+/// invisible to a reader of the rows above, and the next change to the walker's
+/// scope or to the conformance severity needs this list rather than a search.
+fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
+    use std::fmt::Write as _;
+
+    let templates = inline
+        .not_surveyed
+        .iter()
+        .filter(|(_, reason)| reason == INLINE_TEMPLATE_REASON)
+        .count();
+
+    let _ = write!(
+        md,
+        "1. {INLINE_LIMITATION_KEY}, and only as those.**\n\
+           The *Inline Rust fixtures* section above sweeps every tracked `.rs` under\n\
+           `crates/` — test file or production source alike, since a `#[cfg(test)] mod\n\
+           tests` hosts fixtures like any other — for raw-string literals (`r\"…\"`,\n\
+           `r#\"…\"#`) whose text reads as Reify declaration grammar, and compiles each\n\
+           through the same pipeline as a tracked `.ri`. That reached **{total} inline\n\
+           member(s)**, of which **{templates}** were `format!` template(s) — listed\n\
+           above under their own coverage reason rather than dropped, because a\n\
+           template's `{{…}}` holes are not Reify syntax and a parse failure on one would\n\
+           say nothing about conformance.\n\
+           What a raw-string walker does **not** reach, each named by the construct to\n\
+           grep for: Reify text carried in an ORDINARY `\"…\"` string literal (including\n\
+           the backslash-continued multi-line form); text assembled by `concat!`; and text\n\
+           built at run time by a `String` helper (`push_str`, `join`). Those are\n\
+           unreached BY CONSTRUCTION, not by oversight — recovering them needs\n\
+           const-evaluation or execution where this needs only a lexer — so a site in one\n\
+           of those shapes is absent from the section above rather than reported clean.\n\
+           `include_str!` and `read_to_string` goldens, by contrast, need no machinery at\n\
+           all: their target `.ri` files are tracked, so the FIRST half already\n\
+           enumerated them.\n\
+           Unreached HOST files are the other half of this residual, and they are a SCOPE\n\
+           decision rather than a walker limitation: `gui/src-tauri/**/*.rs` (the Tauri\n\
+           sidecar) and `tree-sitter-reify/**/*.rs` (the grammar crate) are separate cargo\n\
+           and grammar projects, so the host predicate anchors at `crates/` and never\n\
+           opens them. Enumerate them with\n\
+           `git ls-files -- 'gui/src-tauri/**/*.rs' 'tree-sitter-reify/**/*.rs'`; a\n\
+           conformance site inside one is absent from the section above, not clean.\n",
+        total = inline.total,
+    );
+}
+
+/// Append the whole `## Inline Rust fixtures` section.
+///
+/// A section of its own, not extra rows in `## Sites`, because the two halves
+/// answer different questions: a `.ri` row is a file a reader opens and may have
+/// to fix, while an inline row is a census entry whose verdict its host test
+/// owns ([`Disposition::InlineCensus`]). Merging them would make the artifact's
+/// site count unsizeable and its owner groups mean two different things at once.
+fn push_inline_section(md: &mut String, inline: &SurveyRun) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(md, "{INLINE_SECTION_HEADING}\n");
+    md.push_str(
+        "Reify snippets embedded in Rust test sources as raw-string literals, swept by\n\
+         the SAME pipeline as the tracked `.ri` corpus above. A row's `site` cell is the\n\
+         HOST `.rs` position to open; the `snippet line` cell locates the declaration\n\
+         inside the literal.\n\n\
+         Every row here carries the `census` disposition: its host test owns the\n\
+         verdict, and the rows are enumerated rather than ruled on so the class stays\n\
+         countable and cannot recur unnoticed on the next severity change.\n\n",
+    );
+
+    if inline.sites.is_empty() {
+        md.push_str(
+            "**No ctor-conformance sites were found in the inline Rust fixtures.** This is\n\
+             an explicit zero, not a truncated run — see the coverage subsection below for\n\
+             what was and was not swept.\n\n",
+        );
+    }
+    for (owner, group) in sites_by_owner(&inline.sites) {
+        let _ = writeln!(md, "### {} — {} site(s)\n", owner.title(), group.len());
+        if group.is_empty() {
+            md.push_str("_(none)_\n\n");
+            continue;
+        }
+        push_site_table(md, CorpusHalf::InlineRustHost, &group);
+        md.push('\n');
+    }
+
+    let _ = writeln!(md, "{INLINE_COVERAGE_HEADING}\n");
+    let _ = writeln!(
+        md,
+        "Of {} inline member(s) — one per extracted snippet, plus one per host that \
+         could not be read at all — **{} were swept** and **{} were not**. A further \
+         **{}** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host \
+         line the snippet's own line 1 sits on.\n",
+        inline.total,
+        inline.surveyed,
+        inline.not_surveyed.len(),
+        inline.partial.len()
+    );
+    md.push_str("#### Not swept (contributed no sites)\n\n");
+    push_coverage_table(
+        md,
+        &inline.not_surveyed,
+        "_(none — every extracted snippet reached the compile phase)_\n\n",
+    );
+    md.push_str(
+        "#### Partially swept (sites collected, but the snippet also failed to compile)\n\n",
+    );
+    push_coverage_table(md, &inline.partial, "_(none)_\n\n");
+}
 
 /// Render the survey artifact.
 ///
@@ -3862,7 +5652,7 @@ const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
 /// That stamp is the merge base, never the branch tip ([`survey_stamp`]). When
 /// tracked `.ri` have drifted from it, they are NAMED in the header rather than
 /// refused, so the snapshot stays honest by disclosure ([`SurveyStamp`]).
-fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
+fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> String {
     use std::fmt::Write as _;
 
     let mut md = String::new();
@@ -3876,11 +5666,27 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
     );
     md.push_str("**Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)\n");
-    let _ = writeln!(md, "**Sites:** {site_count}");
+    // Stated as two numbers, never their sum: the halves carry different
+    // dispositions and different owners, and one total erases both.
     let _ = writeln!(
         md,
-        "**Corpus:** {} tracked `.ri`; {} surveyed, {} not surveyed, {} partial",
+        "**Sites:** {site_count} in the tracked `.ri` corpus; {} in inline Rust fixtures",
+        inline.sites.len()
+    );
+    let _ = writeln!(
+        md,
+        "**Corpus:** {} members of the `{}` (enumeration parity floor {}); {} snippets \
+         extracted from the `{}` (enumeration parity floor {} hosts)",
         run.total,
+        CorpusHalf::TrackedRi.label(),
+        CorpusHalf::TrackedRi.floor(),
+        inline.total,
+        CorpusHalf::InlineRustHost.label(),
+        CorpusHalf::InlineRustHost.floor(),
+    );
+    let _ = writeln!(
+        md,
+        "**`.ri` coverage:** {} surveyed, {} not surveyed, {} partial",
         run.surveyed,
         run.not_surveyed.len(),
         run.partial.len()
@@ -3889,20 +5695,23 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
     // Rendered ONLY when something drifted: an undrifted run must carry no
     // disclosure at all, so the artifact grows no permanent "0 files drifted"
     // row and two undrifted runs stay byte-comparable.
-    if !stamp.drifted_ri.is_empty() {
+    if !stamp.drifted.is_empty() {
         let _ = write!(
             md,
             "\n\
-            {DRIFT_DISCLOSURE_KEY} {n} tracked `.ri` differ between the anchor and the\n\
-            commit surveyed, so for those files the anchor names OLDER bytes than the rows\n\
-            below describe. They are disclosed rather than refused because they are\n\
-            COMMITTED: each is reachable from the surveyed commit, so a reader can read back\n\
-            exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
-            is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
+            {DRIFT_DISCLOSURE_KEY} {n} tracked corpus members — `.ri` files, `.rs` hosts,\n\
+            or both — differ between the anchor and the commit surveyed, so for those files\n\
+            the anchor names OLDER bytes than the rows below describe. The list is filtered\n\
+            to the two corpora, so it names exactly the files whose bytes a row could\n\
+            describe and no unrelated churn. They are disclosed rather than refused because\n\
+            they are COMMITTED: each is reachable from the surveyed commit, so a reader can\n\
+            read back exactly what was swept. (Uncommitted bytes are reachable from no\n\
+            commit, which is why a dirty tree is refused outright instead — see\n\
+            `stamp_decision`.)\n\
             \n",
-            n = stamp.drifted_ri.len(),
+            n = stamp.drifted.len(),
         );
-        for path in &stamp.drifted_ri {
+        for path in &stamp.drifted {
             let _ = writeln!(md, "- `{}`", cell(path));
         }
     }
@@ -3950,7 +5759,7 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
         and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,\n\
         `CTOR_CONFORMANCE_MIGRATION_DEBT` in `reify_test_support::ctor_conformance_debt`)\n\
-        rather than typed here. It has four states, and they call for four DIFFERENT\n\
+        rather than typed here. It has five states, and they call for five DIFFERENT\n\
         actions:\n\
         \n\
         - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
@@ -3972,7 +5781,15 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         `deferred` on ownership: no task retires it, so it names none. **Leave it alone**;\n\
         migrating the site deletes δ's own signal and reds that CLI gate.\n\
         - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
-        actionable state, and after γ the corpus holds none.\n\
+        actionable state, and after γ the tracked `.ri` corpus holds none.\n\
+        - **`census`** is every row from the **inline** half — a Reify snippet embedded\n\
+        in a Rust test fixture — and its host test owns the verdict. δ (#5306) fixed the\n\
+        inline sites its severity flip exposed and kept the rest as deliberate Error\n\
+        pins, so a surviving row is one its host test asserts, tolerates, or never\n\
+        compiles. Rows are listed so the class stays countable and cannot recur\n\
+        unnoticed on the next severity change. **Do not read a census row as unclaimed\n\
+        work, and do not read it as waived either** — no waiver table names it, because\n\
+        the tables key on `.ri` files.\n\
         \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
@@ -4047,30 +5864,11 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
             md.push_str("_(none)_\n\n");
             continue;
         }
-        md.push_str(
-            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |\n\
-             |---|---|---|---|---|---|---|---|---|---|---|\n",
-        );
-        for s in group {
-            let _ = writeln!(
-                md,
-                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} | {} |",
-                cell(&s.file),
-                s.line,
-                opt_cell(s.def.as_ref()),
-                cell(s.def_origin.label()),
-                opt_cell(s.field.as_ref()),
-                opt_cell(s.expected.as_ref()),
-                opt_cell(s.found.as_ref()),
-                cell(&s.code),
-                cell(&s.severity),
-                cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref())),
-                cell(&disposition_of(s).label()),
-                cell(&s.message),
-            );
-        }
+        push_site_table(&mut md, CorpusHalf::TrackedRi, &group);
         md.push('\n');
     }
+
+    push_inline_section(&mut md, inline);
 
     // ── coverage + limitations ──────────────────────────────────────────────
     md.push_str("## Coverage and limitations\n\n");
@@ -4087,43 +5885,21 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
     );
 
     md.push_str("### Not surveyed (contributed no sites)\n\n");
-    if run.not_surveyed.is_empty() {
-        md.push_str("_(none — every tracked member reached the compile phase)_\n\n");
-    } else {
-        md.push_str("| file | reason |\n|---|---|\n");
-        for (file, reason) in &run.not_surveyed {
-            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
-        }
-        md.push('\n');
-    }
+    push_coverage_table(
+        &mut md,
+        &run.not_surveyed,
+        "_(none — every tracked member reached the compile phase)_\n\n",
+    );
 
     md.push_str(
         "### Partially surveyed (sites collected, but the file also failed to compile)\n\n",
     );
-    if run.partial.is_empty() {
-        md.push_str("_(none)_\n\n");
-    } else {
-        md.push_str("| file | reason |\n|---|---|\n");
-        for (file, reason) in &run.partial {
-            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
-        }
-        md.push('\n');
-    }
+    push_coverage_table(&mut md, &run.partial, "_(none)_\n\n");
 
+    md.push_str("### Named limitations\n\n");
+    push_inline_limitation(&mut md, inline);
     md.push_str(
-        "### Named limitations\n\
-        \n\
-        1. **Inline Rust-string `.ri` fixtures are not file-enumerable.** The task's\n\
-           second half — the Rust test suite's inline fixtures and goldens — lives inside\n\
-           `const SOURCE: &str = r#\"…\"#` literals, which `git ls-files` cannot reach and\n\
-           which could only be swept by changing the compiler (out of scope for this\n\
-           read-only survey). Their coverage is **transitive, and stated as such rather\n\
-           than claimed**: the `--scope all --profile both` merge gate is green at the\n\
-           base commit above, and the landed α/ε gates\n\
-           (`no_example_emits_ctor_field_conformance_diagnostics`, the\n\
-           `struct_ctor_field_conformance_tests` suite) already assert on the\n\
-           ctor-conformance codes.\n\
-        2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
+        "2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
            `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated\n\
            user imports and runs `SimpleConstraintChecker`. Multi-module corpus members\n\
            (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
@@ -4197,6 +5973,7 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
             "argument '{field}' has type 'String' but param '{field}' requires type 'FaceSelector'"
         ),
         owner,
+        snippet_line: None,
     }
 }
 
@@ -4212,7 +5989,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
             synth_site("b.ri", 7, "Widget", "label", Owner::NonFea),
         ],
     };
-    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("deadbeef"));
 
     // The stated count is COMPUTED, never typed — that is the task's
     // "site count stated" signal, and it must equal the rows actually drawn.
@@ -4249,7 +6026,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
         partial: vec![],
         sites: every_class,
     };
-    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("deadbeef"));
     assert_eq!(
         rendered_site_rows(&md),
         run.sites.len(),
@@ -4293,7 +6070,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
             unresolved,
         ],
     };
-    let md = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("cafe1234"));
 
     // Anchor every ordering probe on the rendered `### <title>` heading, never on
     // a bare substring: the artifact's own `## Format` prose mentions "FEA"
@@ -4379,8 +6156,12 @@ fn render_survey_orders_rows_deterministically_within_a_group() {
     sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
     assert_eq!(
-        render_survey(&mk(shuffled), &SurveyStamp::at("sha")),
-        render_survey(&mk(sorted), &SurveyStamp::at("sha")),
+        render_survey(
+            &mk(shuffled),
+            &SurveyRun::default(),
+            &SurveyStamp::at("sha")
+        ),
+        render_survey(&mk(sorted), &SurveyRun::default(), &SurveyStamp::at("sha")),
         "rows must render in (file, line, field) order regardless of input order"
     );
 }
@@ -4397,7 +6178,7 @@ fn render_survey_escapes_pipes_and_newlines_so_a_message_cannot_break_the_table(
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     let row = md
         .lines()
@@ -4431,6 +6212,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         severity: "Error".to_owned(),
         message: "E_CTOR_ARITY: Bar() expects at most 1 argument, got 2".to_owned(),
         owner: Owner::Unknown,
+        snippet_line: None,
     };
     let run = SurveyRun {
         total: 1,
@@ -4439,7 +6221,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
     let row = md
         .lines()
         .find(|l| l.starts_with("| `a.ri:1`"))
@@ -4483,7 +6265,7 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         partial: vec![],
         sites: vec![],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
     assert!(
         md.contains("**Sites:** 0"),
         "the count must still be stated"
@@ -4521,7 +6303,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     assert!(
         md.contains(DefOrigin::SpanNotIdentifier.label()),
@@ -4541,7 +6323,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![synth_site("b.ri", 2, "Widget", "label", Owner::NonFea)],
     };
-    let md = render_survey(&recovered, &SurveyStamp::at("sha"));
+    let md = render_survey(&recovered, &SurveyRun::default(), &SurveyStamp::at("sha"));
     assert!(
         md.contains(DefOrigin::CallSiteAnchor.label()),
         "a recovered def must still say HOW it was recovered:\n{md}"
@@ -4558,18 +6340,18 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
     let run = one_site_run();
     let drifted = SurveyStamp {
         anchor: "cafe1234".to_owned(),
-        drifted_ri: vec![
+        drifted: vec![
             "tests/prd-gate/fixtures/one.ri".to_owned(), // pg-drift:allow — synthetic drift path; no such fixture exists and nothing compiled reads one.ri
             "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
         ],
     };
-    let md = render_survey(&run, &drifted);
+    let md = render_survey(&run, &SurveyRun::default(), &drifted);
 
     assert!(
         md.contains(DRIFT_DISCLOSURE_KEY),
         "a drifted stamp must disclose; got:\n{md}"
     );
-    for path in &drifted.drifted_ri {
+    for path in &drifted.drifted {
         assert!(
             md.contains(path.as_str()),
             "the disclosure must name {path} — a path it drops is a path no \
@@ -4577,7 +6359,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
         );
     }
     assert!(
-        md.contains(&format!("{} tracked", drifted.drifted_ri.len())),
+        md.contains(&format!("{} tracked", drifted.drifted.len())),
         "the stated count must be COMPUTED from the disclosed list, never \
          typed; got:\n{md}"
     );
@@ -4597,7 +6379,7 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
     // rendered before the disclosure existed: no "0 files drifted" noise row,
     // so two runs generated on `main` stay byte-comparable with each other.
     let run = one_site_run();
-    let without = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    let without = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("cafe1234"));
     assert!(
         !without.contains(DRIFT_DISCLOSURE_KEY),
         "an undrifted stamp must render no disclosure at all; got:\n{without}"
@@ -4608,9 +6390,10 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
     // than by eyeballing the two renderings.
     let with = render_survey(
         &run,
+        &SurveyRun::default(),
         &SurveyStamp {
             anchor: "cafe1234".to_owned(),
-            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
+            drifted: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
         },
     );
     let at = with
@@ -4652,7 +6435,7 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
         partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
         sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     assert!(
         md.contains("## How to regenerate"),
@@ -4683,6 +6466,25 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
 #[cfg(test)]
 const DISPOSITION_COLUMN: &str = "disposition (γ ruling)";
 
+/// The heading that opens the INLINE half's section of the artifact.
+///
+/// One spelling, read by the renderer and by every test that locates the
+/// section — including the ones asserting a row is NOT in the `.ri` half, which
+/// is the stronger claim and the one a drifted spelling would silently pass.
+const INLINE_SECTION_HEADING: &str = "## Inline Rust fixtures";
+
+/// The header label of the inline table's snippet-relative coordinate column.
+const SNIPPET_LINE_COLUMN: &str = "snippet line";
+
+/// The bold lead of named limitation 1, which states what the inline walker
+/// reaches and — the part that matters — what it does not.
+///
+/// One spelling, read by the renderer and by every test that locates the
+/// limitation. Locating it by key rather than by ordinal means inserting a
+/// limitation above it cannot silently re-point the assertions at neighbouring
+/// prose.
+const INLINE_LIMITATION_KEY: &str = "**Inline Reify snippets are reached as RAW-STRING LITERALS";
+
 /// The disposition cell of the site row anchored at `row_anchor`.
 #[cfg(test)]
 fn disposition_cell(md: &str, row_anchor: &str) -> String {
@@ -4690,21 +6492,29 @@ fn disposition_cell(md: &str, row_anchor: &str) -> String {
         .lines()
         .find(|l| l.starts_with("| site |"))
         .unwrap_or_else(|| panic!("the site table header must be rendered:\n{md}"));
+    cell_by_column(md, header, DISPOSITION_COLUMN, row_anchor)
+}
+
+/// The cell of `row_anchor`'s row lying under `column` of `header`.
+///
+/// Located BY COLUMN NAME, never by a hard-coded index: a column inserted to the
+/// left of the one under test would otherwise silently shift every assertion
+/// onto a neighbour and keep passing.
+#[cfg(test)]
+fn cell_by_column(md: &str, header: &str, column: &str, row_anchor: &str) -> String {
     let idx = header
         .split('|')
         .map(str::trim)
-        .position(|c| c == DISPOSITION_COLUMN)
-        .unwrap_or_else(|| {
-            panic!("the site table header must carry a `{DISPOSITION_COLUMN}` column:\n{header}")
-        });
+        .position(|c| c == column)
+        .unwrap_or_else(|| panic!("the table header must carry a `{column}` column:\n{header}"));
     let row = md
         .lines()
         .find(|l| l.starts_with(row_anchor))
-        .unwrap_or_else(|| panic!("no site row anchored at {row_anchor:?}:\n{md}"));
+        .unwrap_or_else(|| panic!("no row anchored at {row_anchor:?}:\n{md}"));
     row.split('|')
         .map(str::trim)
         .nth(idx)
-        .unwrap_or_else(|| panic!("row {row:?} has no cell at the disposition index {idx}"))
+        .unwrap_or_else(|| panic!("row {row:?} has no cell at the `{column}` index {idx}"))
         .to_owned()
 }
 
@@ -4779,6 +6589,7 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
             partial: vec![],
             sites,
         },
+        &SurveyRun::default(),
         &SurveyStamp::at("sha"),
     );
 
@@ -4943,24 +6754,453 @@ fn git_read(args: &[&str]) -> String {
 /// `#[ignore]`d generator — depends on a `main` ref existing. The gate-resident
 /// guard `committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`
 /// deliberately does not, so a checkout without `main` cannot red the gate.
-fn survey_stamp() -> SurveyStamp {
+fn survey_stamp(ri: &[String], hosts: &[String]) -> SurveyStamp {
     let anchor = git_read(&["merge-base", "main", "HEAD"]);
     // `--untracked-files=no` is deliberate: `git ls-files` never surfaces an
     // untracked file, so an untracked scratch file cannot change one row of the
     // survey and must not trigger a spurious refusal. A staged addition still
     // appears as `A ` and is still caught.
     let dirty = git_read(&["status", "--porcelain", "--untracked-files=no"]);
-    let ri_drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri"]);
-    stamp_decision(&anchor, &dirty, &ri_drift)
+    // Both extensions, because a row can now describe the bytes of either half.
+    // The read is therefore far wider than the disclosure: every unrelated `.rs`
+    // churn in the repo lands in it, which is why the result is narrowed to the
+    // two corpora before it reaches the header.
+    let drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri", "*.rs"]);
+    let drifted = drift_within_corpus(&drift, &surveyed_corpus_union(ri, hosts));
+    stamp_decision(&anchor, &dirty, &drifted)
         .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"))
 }
 
-/// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
+// ─── rendering the second half ───────────────────────────────────────────────
+
+/// The slice of `md` from `heading` up to the next `## ` heading.
+///
+/// Section-scoped, so an assertion that a row is in the inline half cannot be
+/// satisfied by the `.ri` half carrying it — which a whole-document `contains`
+/// would happily do.
+#[cfg(test)]
+fn section_of(md: &str, heading: &str) -> String {
+    let start = md
+        .find(heading)
+        .unwrap_or_else(|| panic!("the artifact must carry a {heading:?} section:\n{md}"));
+    let body = &md[start + heading.len()..];
+    let end = body.find("\n## ").map_or(body.len(), |i| i + 1);
+    body[..end].to_owned()
+}
+
+/// One INLINE row, as [`survey_inline_corpus`] builds them.
+#[cfg(test)]
+fn synth_inline_row(
+    file: &str,
+    line: u32,
+    snippet_line: u32,
+    field: &str,
+    owner: Owner,
+) -> SurveySite {
+    let mut site = synth_inline_site(file, Some(field), CTOR_CONFORMANCE_SITE_SEVERITY);
+    site.line = line;
+    site.snippet_line = Some(snippet_line);
+    site.owner = owner;
+    site
+}
+
+/// A populated inline run covering every [`Owner`] group and every coverage
+/// reason the inline sweep can record.
+#[cfg(test)]
+fn synth_inline_run() -> SurveyRun {
+    SurveyRun {
+        total: 7,
+        surveyed: 4,
+        not_surveyed: vec![
+            ("gone.rs".to_owned(), "read-error".to_owned()),
+            ("host.rs:200".to_owned(), "parse-error".to_owned()),
+            ("host.rs:300".to_owned(), "format-template".to_owned()),
+        ],
+        partial: vec![("host.rs:400".to_owned(), "compile-error".to_owned())],
+        sites: vec![
+            synth_inline_row("host.rs", 1453, 2, "material", Owner::Unknown),
+            synth_inline_row("host.rs", 1517, 3, "youngs_modulus", Owner::NonFea),
+            synth_inline_row("other.rs", 42, 7, "z", Owner::FeaDeferredToV06),
+            synth_inline_row("other.rs", 99, 1, "q", Owner::UnresolvedDef),
+        ],
+    }
+}
+
+/// The inline half renders in its OWN section, and its rows never leak into the
+/// `.ri` half's.
+#[test]
+fn render_survey_renders_the_inline_half_in_its_own_section() {
+    let ri = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        sites: vec![synth_site("a.ri", 1, "Widget", "label", Owner::NonFea)],
+        ..SurveyRun::default()
+    };
+    let md = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let sites = section_of(&md, "## Sites");
+
+    assert!(
+        inline.contains("host.rs:1453"),
+        "an inline row must render in the inline section:\n{inline}"
+    );
+    assert!(
+        !sites.contains("host.rs:1453"),
+        "an inline row must NOT leak into the `.ri` half's `## Sites` section — the \
+         two halves answer different questions and are sized separately:\n{sites}"
+    );
+    assert!(
+        !inline.contains("a.ri:1"),
+        "a tracked `.ri` row must NOT leak into the inline section:\n{inline}"
+    );
+}
+
+/// The inline section is grouped by the same derived [`Owner::render_order`].
+///
+/// Derived, not re-listed: a future `Owner` variant added to the enum must
+/// appear in BOTH halves or in neither. A local literal in either renderer is
+/// exactly how one half would silently drop a group.
+#[test]
+fn render_survey_groups_the_inline_half_by_the_same_owner_render_order() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+
+    let mut cursor = 0usize;
+    for owner in Owner::render_order() {
+        let at = inline[cursor..].find(owner.title()).unwrap_or_else(|| {
+            panic!(
+                "the inline section must carry an `{}` group, in `Owner::render_order` \
+                 order:\n{inline}",
+                owner.title()
+            )
+        });
+        cursor += at + owner.title().len();
+    }
+}
+
+/// Every inline row carries its snippet-relative coordinate, in a column located
+/// BY NAME.
+#[test]
+fn render_survey_gives_the_inline_half_a_snippet_line_column() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let header = inline
+        .lines()
+        .find(|l| l.starts_with("| site |"))
+        .unwrap_or_else(|| panic!("the inline table header must be rendered:\n{inline}"));
+
+    for (anchor, expected) in [("| `host.rs:1453`", "2"), ("| `other.rs:42`", "7")] {
+        assert_eq!(
+            cell_by_column(&inline, header, SNIPPET_LINE_COLUMN, anchor),
+            expected,
+            "the `{SNIPPET_LINE_COLUMN}` cell must carry the coordinate WITHIN the \
+             snippet; the `site` cell already carries the host position, and a reader \
+             needs both to find the declaration inside the literal:\n{inline}"
+        );
+    }
+}
+
+/// The stated inline site count equals the inline rows actually rendered.
+///
+/// Mirrors [`render_survey_states_a_site_count_that_equals_the_rendered_rows`]
+/// for the second half: a header number that can disagree with the table below
+/// it is worse than no number.
+#[test]
+fn render_survey_states_an_inline_site_count_that_equals_the_rendered_rows() {
+    let inline_run = synth_inline_run();
+    let md = render_survey(&SurveyRun::default(), &inline_run, &SurveyStamp::at("sha"));
+    // Scoped to the GROUP tables: the coverage subsection below them renders
+    // `| `member` | `reason` |` rows of its own, which are members and not
+    // sites, and counting those would make the assertion meaningless.
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let groups = inline
+        .split_once(INLINE_COVERAGE_HEADING)
+        .map_or(inline.as_str(), |(before, _)| before);
+
+    let rendered = groups.lines().filter(|l| l.starts_with("| `")).count();
+    assert_eq!(
+        rendered,
+        inline_run.sites.len(),
+        "the inline section rendered {rendered} row(s) for {} site(s):\n{inline}",
+        inline_run.sites.len()
+    );
+    let claimed: usize = groups
+        .lines()
+        .filter_map(|l| l.strip_prefix("### "))
+        .filter_map(|l| l.rsplit_once(" — "))
+        .filter_map(|(_, tail)| tail.split_whitespace().next()?.parse::<usize>().ok())
+        .sum();
+    assert_eq!(
+        claimed, rendered,
+        "the per-group counts must sum to the rendered rows:\n{inline}"
+    );
+}
+
+/// A zero-inline-site run renders an EXPLICIT zero, not an empty section.
+///
+/// An empty section reads as a truncated run. The `.ri` half already states its
+/// zero explicitly; the second half must not be the one that reads as silence.
+#[test]
+fn render_survey_renders_the_zero_inline_site_case_explicitly() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &SurveyRun::default(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    assert!(
+        inline.contains("No ctor-conformance sites"),
+        "the zero-inline case must say so in words:\n{inline}"
+    );
+}
+
+/// The inline section carries its OWN coverage subsection, naming every
+/// unsurveyable snippet with its reason.
+#[test]
+fn render_survey_lists_every_unsurveyable_inline_snippet_with_its_reason() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+
+    for (member, reason) in [
+        ("gone.rs", "read-error"),
+        ("host.rs:200", "parse-error"),
+        ("host.rs:300", "format-template"),
+        ("host.rs:400", "compile-error"),
+    ] {
+        assert!(
+            inline.contains(member) && inline.contains(reason),
+            "the inline coverage subsection must name `{member}` with reason \
+             `{reason}` — a bounded sweep that does not state what it skipped reads \
+             as full coverage:\n{inline}"
+        );
+    }
+}
+
+/// The header states BOTH corpus sizes and BOTH parity floors.
+///
+/// A reader sizing the census has to be able to tell a thin artifact from a thin
+/// CORPUS, and the floors are what make "thin" checkable rather than a feeling.
+#[test]
+fn render_survey_header_states_both_corpus_sizes_and_both_parity_floors() {
+    let ri = SurveyRun {
+        total: 689,
+        surveyed: 616,
+        ..SurveyRun::default()
+    };
+    let md = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+    let header = section_of(&md, "# Struct-ctor field-type conformance — corpus survey");
+
+    for half in [CorpusHalf::TrackedRi, CorpusHalf::InlineRustHost] {
+        assert!(
+            header.contains(half.label()),
+            "the header must name the `{}` half:\n{header}",
+            half.label()
+        );
+        assert!(
+            header.contains(&half.floor().to_string()),
+            "the header must state the `{}` half's parity floor ({}):\n{header}",
+            half.label(),
+            half.floor()
+        );
+    }
+}
+
+/// The `**Sites:**` line distinguishes the two totals rather than summing them.
+///
+/// One unattributed number would be the single most misleading thing the header
+/// could say: the two halves have different dispositions, different owners and
+/// different actionability, and adding them erases all three.
+#[test]
+fn render_survey_states_the_two_site_totals_separately() {
+    let ri = SurveyRun {
+        total: 3,
+        surveyed: 3,
+        sites: vec![
+            synth_site("a.ri", 1, "W", "f", Owner::NonFea),
+            synth_site("b.ri", 2, "W", "g", Owner::NonFea),
+        ],
+        ..SurveyRun::default()
+    };
+    let inline_run = synth_inline_run();
+    let md = render_survey(&ri, &inline_run, &SurveyStamp::at("sha"));
+    let sites_line = md
+        .lines()
+        .find(|l| l.starts_with("**Sites:**"))
+        .unwrap_or_else(|| panic!("the header must carry a `**Sites:**` line:\n{md}"));
+
+    let sum = (ri.sites.len() + inline_run.sites.len()).to_string();
+    assert!(
+        !sites_line.split_whitespace().any(|w| w == sum),
+        "the `**Sites:**` line must not collapse the two halves into the single \
+         number {sum}: they carry different dispositions and different owners, and \
+         one total erases that; got {sites_line:?}"
+    );
+    assert!(
+        sites_line.contains(&ri.sites.len().to_string())
+            && sites_line.contains(&inline_run.sites.len().to_string()),
+        "the `**Sites:**` line must state BOTH totals; got {sites_line:?}"
+    );
+}
+
+/// Adding an inline half leaves the `.ri` half's section byte-identical.
+///
+/// The cross-contamination regression test. The two halves share the
+/// owner-grouping and table-body helpers, so a change made for one is a change
+/// made for both — this is what says which of those changes is allowed to be
+/// visible in the `.ri` half.
+#[test]
+fn render_survey_keeps_the_ri_half_byte_identical_when_an_inline_half_is_added() {
+    let ri = SurveyRun {
+        total: 5,
+        surveyed: 4,
+        not_surveyed: vec![("broken.ri".to_owned(), "parse-error".to_owned())],
+        partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
+        sites: vec![
+            synth_site("a.ri", 1, "Widget", "label", Owner::NonFea),
+            synth_site("b.ri", 2, "Beam", "material", Owner::FeaDeferredToV06),
+        ],
+    };
+    let without = render_survey(&ri, &SurveyRun::default(), &SurveyStamp::at("sha"));
+    let with = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+
+    assert_eq!(
+        section_of(&without, "## Sites"),
+        section_of(&with, "## Sites"),
+        "the `.ri` half's counts, groups and rows must not move when an inline half \
+         is added"
+    );
+}
+
+// ─── retiring the now-false named limitation 1 ───────────────────────────────
+
+/// The body of named limitation 1, from its key to the start of limitation 2.
+///
+/// Scoped rather than whole-document, because several of the strings this
+/// limitation must name — `format!` above all — also occur elsewhere in the
+/// artifact (the inline coverage table's `format-template` reason). A
+/// whole-document `contains` would be satisfied by those and would assert
+/// nothing about the limitation.
+#[cfg(test)]
+fn inline_limitation(md: &str) -> String {
+    let start = md.find(INLINE_LIMITATION_KEY).unwrap_or_else(|| {
+        panic!("named limitation 1 must open with {INLINE_LIMITATION_KEY:?}:\n{md}")
+    });
+    let body = &md[start..];
+    let end = body
+        .find("\n2. ")
+        .unwrap_or_else(|| panic!("limitation 1 must be followed by limitation 2:\n{body}"));
+    body[..end].to_owned()
+}
+
+/// The artifact names the walker's REAL residual, by identifier.
+///
+/// The positive claim only. An earlier draft also asserted the ABSENCE of the
+/// two prose claims this task disproved, and that pin was wrong in both
+/// directions: rewording "are not file-enumerable" to "are not enumerable as
+/// files" left it green with the disproved claim still in the artifact, while
+/// any innocuous rewrite of unrelated prose that happened to contain the phrase
+/// would red the merge gate. What the artifact must SAY is testable by
+/// identifier, which survives a full reword; what it must not say is not.
+#[test]
+fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+
+    // The residual is stated as CLASSES, each named by the Rust construct — or,
+    // for a host the walker never opens, the PATH — a reader would grep for, and
+    // each named INSIDE the limitation rather than anywhere in the document.
+    // Unreached LITERAL SHAPES alone are not the whole residual: the next scope
+    // or severity change needs this list rather than a search, so a host root
+    // outside the walker's scope
+    // has to be as greppable as an unreached construct, else a site the walker
+    // never opened is indistinguishable from one it found clean.
+    let limitation = inline_limitation(&md);
+    for residual in [
+        "raw-string literal",
+        "concat!",
+        "format!",
+        "include_str!",
+        "read_to_string",
+        "push_str",
+        "crates/",
+        "gui/src-tauri",
+        "tree-sitter-reify",
+    ] {
+        assert!(
+            limitation.contains(residual),
+            "the replacement limitation must name the `{residual}` class: a reader \
+             has to be able to tell a snippet the walker MISSED from one it found \
+             clean. Got:\n{limitation}"
+        );
+    }
+}
+
+/// The limitation's quantities come from the RUN, not from frozen prose.
+///
+/// A hand-typed count is a number nothing recomputes: it is right on the day it
+/// is written and silently wrong forever after. Two runs differing only in their
+/// inline half must therefore state different figures — and the difference has
+/// to be in the LIMITATION, which is the paragraph a reader consults to size
+/// what was missed.
+#[test]
+fn the_inline_limitation_states_figures_the_run_recomputed() {
+    let stamp = SurveyStamp::at("sha");
+    let small = render_survey(&SurveyRun::default(), &SurveyRun::default(), &stamp);
+    let large = render_survey(&SurveyRun::default(), &synth_inline_run(), &stamp);
+
+    assert_ne!(
+        inline_limitation(&small),
+        inline_limitation(&large),
+        "the limitation's stated quantities must be recomputed per run; if they are \
+         identical across runs with different inline halves, they were typed"
+    );
+    assert_ne!(
+        section_of(&small, INLINE_SECTION_HEADING),
+        section_of(&large, INLINE_SECTION_HEADING),
+        "so must the inline section's"
+    );
+}
+
+/// A drifted member of EITHER half is named in the rendered disclosure.
+#[test]
+fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
+    let drifted = SurveyStamp {
+        anchor: "cafe1234".to_owned(),
+        drifted: vec!["examples/a.ri".to_owned(), "crates/c/tests/h.rs".to_owned()],
+    };
+    let md = render_survey(&SurveyRun::default(), &SurveyRun::default(), &drifted);
+    for path in &drifted.drifted {
+        assert!(
+            md.contains(path.as_str()),
+            "a drifted {path} must be named in the disclosure:\n{md}"
+        );
+    }
+}
+
+/// **The survey generator.** Sweeps BOTH corpus halves and writes the artifact.
 ///
 /// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
 /// `examples/` walk that `examples_smoke.rs` already documents as "the single
-/// most expensive thing this binary does". Running it on every merge gate would
-/// directly fight `docs/prds/merge-gate-compile-cost.md`.
+/// most expensive thing this binary does" — and then, on top of that, every
+/// Reify snippet embedded in a tracked `.rs` under `crates/`, which is several
+/// times as many compiles again. Running it on every merge gate would directly fight
+/// `docs/prds/merge-gate-compile-cost.md`.
 ///
 /// The ignore reason is deliberately OPERATIONAL, not blocker-prose: per
 /// `docs/prds/reify-audit-ptodo-detector.md` §8 (row 8, the
@@ -4973,28 +7213,54 @@ fn survey_stamp() -> SurveyStamp {
 /// pure helpers above, each unit-tested on every gate run, plus one cheap
 /// three-file end-to-end sweep.
 #[test]
-#[ignore = "corpus survey generator over every tracked .ri (~660 files and growing); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs under crates/ (~1,870 files, ~3,300 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
+    let root = std::path::Path::new(WORKSPACE_ROOT);
     let corpus = tracked_ri_corpus();
-    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(&run, &survey_stamp());
+    let hosts = tracked_rust_hosts();
+
+    // BEFORE either sweep, deliberately: a walker that silently narrowed would
+    // otherwise spend the whole (expensive) run producing a falsely-thin
+    // artifact, and a thin artifact reads exactly like a clean one.
+    corpus_parity(&[
+        (CorpusHalf::TrackedRi, corpus),
+        (CorpusHalf::InlineRustHost, hosts),
+    ])
+    .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"));
+
+    let run = survey_corpus(root, corpus);
+    let inline = survey_inline_corpus(root, hosts);
+    let rendered = render_survey(&run, &inline, &survey_stamp(corpus, hosts));
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
     println!(
         "ctor-conformance survey: {} sites across {} tracked .ri ({} surveyed, \
-         {} not surveyed, {} partial) -> {}",
+         {} not surveyed, {} partial); {} sites across {} inline member(s) from \
+         {} .rs host(s) ({} swept, {} not swept, {} partial) -> {}",
         run.sites.len(),
         run.total,
         run.surveyed,
         run.not_surveyed.len(),
         run.partial.len(),
+        inline.sites.len(),
+        inline.total,
+        hosts.len(),
+        inline.surveyed,
+        inline.not_surveyed.len(),
+        inline.partial.len(),
         out.display()
     );
 
     // Asserted AFTER the write, deliberately: a failing run still leaves a
     // regenerated artifact on disk, so the operator can read the disposition
     // column to see which sites the panic is talking about.
+    //
+    // The `.ri` run ONLY, and correct by construction rather than by a filter
+    // here: an inline row resolves to [`Disposition::InlineCensus`], never
+    // `Unattributed`, so passing the inline run would assert nothing — while a
+    // severity or scope test written here would be a second, silently divergent
+    // copy of `disposition_of`'s scope statement.
     assert_no_unwaived_ctor_conformance_sites(&run);
 }
 
@@ -5087,7 +7353,7 @@ struct SurveyStamp {
     /// Empty is the ordinary case and renders NOTHING, so an undrifted artifact
     /// carries no disclosure at all — no permanent "0 files drifted" row, and
     /// runs generated on `main` stay byte-comparable with each other.
-    drifted_ri: Vec<String>,
+    drifted: Vec<String>,
 }
 
 impl SurveyStamp {
@@ -5095,9 +7361,67 @@ impl SurveyStamp {
     fn at(anchor: &str) -> Self {
         Self {
             anchor: anchor.to_owned(),
-            drifted_ri: Vec::new(),
+            drifted: Vec::new(),
         }
     }
+}
+
+/// The lines of `drift` — raw `git diff --name-only` output — that name a
+/// member of `corpus`, in git's own order and spelling.
+///
+/// The SINGLE parser of that output: [`stamp_decision`] takes the result of this
+/// already split and already filtered, so nothing else has to know that git
+/// writes a trailing newline even when it has nothing to report.
+fn drift_within_corpus(drift: &str, corpus: &std::collections::BTreeSet<&str>) -> Vec<String> {
+    drift
+        .lines()
+        .map(str::trim)
+        .filter(|path| corpus.contains(path))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The union of both corpus halves, as the membership set
+/// [`drift_within_corpus`] filters against.
+fn surveyed_corpus_union<'a>(
+    ri: &'a [String],
+    hosts: &'a [String],
+) -> std::collections::BTreeSet<&'a str> {
+    ri.iter().chain(hosts).map(String::as_str).collect()
+}
+
+/// The drift disclosure names exactly the files whose bytes a ROW describes.
+///
+/// Widening the git read from `'*.ri'` to `'*.ri' '*.rs'` makes it see every
+/// unrelated `.rs` churn in the repo — thousands of files no row mentions — so
+/// the filter is what keeps the header a disclosure rather than a changelog.
+#[test]
+fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
+    let ri = vec!["examples/a.ri".to_owned(), "stdlib/b.ri".to_owned()];
+    let hosts = vec!["crates/c/tests/h.rs".to_owned()];
+    let corpus = surveyed_corpus_union(&ri, &hosts);
+
+    let drift = "examples/a.ri\n\
+                 crates/c/tests/h.rs\n\
+                 crates/c/src/lib.rs\n\
+                 docs/prds/unrelated.md\n\
+                 \n";
+    assert_eq!(
+        drift_within_corpus(drift, &corpus),
+        vec!["examples/a.ri".to_owned(), "crates/c/tests/h.rs".to_owned(),],
+        "the disclosure must name BOTH halves' members and NOTHING else — a `.rs` \
+         outside the host corpus is churn no row describes, and listing it would \
+         flood the header"
+    );
+    assert!(
+        drift_within_corpus("", &corpus).is_empty(),
+        "git writes a trailing newline even with nothing to report"
+    );
+    assert!(
+        drift_within_corpus("  \n\n", &corpus).is_empty(),
+        "a whitespace-only read is an EMPTY read; this is the ONE place that \
+         parses git's `--name-only` output, so nothing downstream re-derives it"
+    );
 }
 
 /// Decide whether the git state just read may be stamped into the artifact
@@ -5108,15 +7432,17 @@ impl SurveyStamp {
 /// behind the `#[ignore]`d generator. Same split this module uses throughout.
 ///
 /// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
-/// * `dirty` — `git status --porcelain --untracked-files=no`.
-/// * `ri_drift` — `git diff --name-only <anchor> HEAD -- '*.ri'`.
+/// * `dirty` — `git status --porcelain --untracked-files=no`, raw.
+/// * `drifted` — the corpus members that differ between the anchor and `HEAD`,
+///   already parsed out of `git diff --name-only` and already narrowed to the
+///   two corpora by [`drift_within_corpus`].
 ///
-/// The first two can REFUSE; `ri_drift` never does — it is disclosed. See
+/// The first two can REFUSE; `drifted` never does — it is disclosed. See
 /// [`SurveyStamp`] for the reachability argument that splits them.
 ///
-/// Whitespace-only input is an EMPTY read: git writes a trailing newline even
+/// Whitespace-only `dirty` is an EMPTY read: git writes a trailing newline even
 /// when it has nothing to report.
-fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveyStamp, String> {
+fn stamp_decision(anchor: &str, dirty: &str, drifted: &[String]) -> Result<SurveyStamp, String> {
     let anchor = anchor.trim();
     if anchor.len() != FULL_SHA_LEN || !anchor.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
         return Err(format!(
@@ -5138,23 +7464,24 @@ fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveySta
 
     Ok(SurveyStamp {
         anchor: anchor.to_owned(),
-        drifted_ri: ri_drift
-            .lines()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(str::to_owned)
-            .collect(),
+        drifted: drifted.to_vec(),
     })
+}
+
+/// A drift list as [`drift_within_corpus`] hands one to [`stamp_decision`].
+#[cfg(test)]
+fn drifted_paths(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|p| (*p).to_owned()).collect()
 }
 
 #[test]
 fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // The one shape that may be stamped: a fully-resolved anchor, nothing
-    // uncommitted, and no tracked `.ri` differing between the anchor and the
+    // uncommitted, and no corpus member differing between the anchor and the
     // commit actually swept.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
     assert_eq!(
-        stamp_decision(anchor, "", ""),
+        stamp_decision(anchor, "", &[]),
         Ok(SurveyStamp::at(anchor)),
         "a resolved anchor over a clean, undrifted tree is exactly what the \
          header is allowed to claim"
@@ -5162,7 +7489,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // git writes a trailing newline even when it has nothing to report, and a
     // whitespace-only read is an EMPTY read — not a refusal.
     assert_eq!(
-        stamp_decision(anchor, "\n", "  \n"),
+        stamp_decision(anchor, "\n", &[]),
         Ok(SurveyStamp::at(anchor)),
         "whitespace-only git output means clean; it must not be read as dirty"
     );
@@ -5180,7 +7507,7 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
     // itself is deliberately NOT pinned here: asserting on its wording would
     // test the message rather than the behaviour.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, " M crates/reify-compiler/src/lib.rs\n", "")
+    let err = stamp_decision(anchor, " M crates/reify-compiler/src/lib.rs\n", &[])
         .expect_err("a dirty tree must refuse to stamp");
     assert!(
         err.contains("crates/reify-compiler/src/lib.rs"),
@@ -5190,7 +7517,7 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
     // A STAGED addition is still dirty — `--untracked-files=no` suppresses the
     // `??` rows only, never the `A `/` M` ones.
     assert!(
-        stamp_decision(anchor, "A  docs/prds/new.md\n", "").is_err(),
+        stamp_decision(anchor, "A  docs/prds/new.md\n", &[]).is_err(),
         "a staged-but-uncommitted addition must refuse too"
     );
 }
@@ -5205,7 +7532,7 @@ fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
     // this artifact names as its expected invalidator, whose whole diff is
     // `.ri` migrations.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let stamp = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
+    let stamp = stamp_decision(anchor, "", &drifted_paths(&["examples/one.ri", "examples/two.ri"]))
         .expect("a committed .ri drift is disclosed, never refused");
     assert_eq!(
         stamp.anchor, anchor,
@@ -5213,7 +7540,7 @@ fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
          anchor, because a branch tip is rewritable and this one is not"
     );
     assert_eq!(
-        stamp.drifted_ri,
+        stamp.drifted,
         vec!["examples/one.ri".to_owned(), "examples/two.ri".to_owned()],
         "every drifted path git reported must survive into the disclosure, in \
          git's own order and spelling — the disclosure is machine-generated, so \
@@ -5229,14 +7556,14 @@ fn stamp_decision_still_refuses_an_unreachable_state_even_alongside_drift() {
     // commit and an unresolved anchor names no commit at all; in both cases no
     // wording in the header could let a reader reconstruct what was surveyed.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, " M docs/prds/x.md\n", "examples/one.ri\n")
+    let err = stamp_decision(anchor, " M docs/prds/x.md\n", &drifted_paths(&["examples/one.ri"]))
         .expect_err("a dirty tree refuses whether or not a tracked .ri drifted");
     assert!(
         err.contains("docs/prds/x.md"),
         "the refusal must still name what is dirty; got: {err}"
     );
     assert!(
-        stamp_decision("HEAD", "", "examples/one.ri\n").is_err(),
+        stamp_decision("HEAD", "", &drifted_paths(&["examples/one.ri"])).is_err(),
         "an anchor that is not a resolved object name refuses whether or not a \
          tracked .ri drifted"
     );
@@ -5267,14 +7594,14 @@ fn stamp_decision_rejects_an_anchor_that_is_not_a_full_lowercase_sha() {
     ];
     for (anchor, why) in bad_anchors {
         assert!(
-            stamp_decision(anchor, "", "").is_err(),
+            stamp_decision(anchor, "", &[]).is_err(),
             "{anchor:?} must be rejected rather than stamped: {why}"
         );
     }
     // Sanity: the guard rejects for the RIGHT reason — the same inputs with a
     // well-formed anchor are accepted.
     assert!(
-        stamp_decision(&"a".repeat(FULL_SHA_LEN), "", "").is_ok(),
+        stamp_decision(&"a".repeat(FULL_SHA_LEN), "", &[]).is_ok(),
         "40 lowercase hex characters is the accepted shape"
     );
 }

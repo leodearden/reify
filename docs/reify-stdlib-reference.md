@@ -459,13 +459,15 @@ unaffected: `transform3_identity` builds `Length` zeros.
 **Scope: this seam only.** The gate above is *not* evidence that the transform
 family is uniformly `Length`-only. `transform3`'s signature above declares
 `translation: Vector3<Length>`, but the evaluator applies no dimension check to
-it — only a 3-component `Vector` shape check — and `transform_compose` /
-`transform_inverse` propagate whatever dimension they are handed. So
-`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
-and inverts without complaint; the rejection surfaces only downstream at
-`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
-rules `Transform` translation `Length` and stamps the constructor arms, and
-#5747 (R12/R8) narrows the affine and pose-decode readers.
+it — only a 3-component `Vector` shape check — and `transform_compose`
+propagates whatever dimension it is handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs and
+composes without complaint; the rejection surfaces only downstream, at
+`transform_log` or at the two consumers RULING #6089 gates: `transform_inverse`
+and `affine_from_transform` reject a non-`Length` translation with a
+`DimensionedArgRejected` Error naming `t.translation`. The constructor and
+compose narrowing is owned by #7625, and #5747 (R12/R8) narrows the affine and
+pose-decode readers.
 
 By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
 but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is

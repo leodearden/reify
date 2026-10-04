@@ -1,0 +1,18 @@
+module relate_metric_unit_compile
+
+// Compile-phase relate metric error: the arity-3 `angle` DRIVE form needs an
+// Angle metric; 5mm is a Length.
+
+structure Part {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+}
+
+structure Asm {
+    sub a : Part at auto
+    sub b : Part
+
+    relate {
+        angle(a.shank_axis, b.shank_axis, 5mm)
+    }
+}

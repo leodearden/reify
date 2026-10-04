@@ -53,13 +53,14 @@ impl ModuleCompile {
 ///
 /// # Why `_allow_parse_errors`
 ///
-/// `compile_source_with_stdlib` (`helpers.rs:236`) PANICS on parse errors. One
-/// malformed sample would then abort a whole corpus gate with a backtrace
-/// naming no file and no fence — defeating the "names file + fence ordinal +
-/// diagnostics" contract at exactly the moment it matters most. The
-/// `_allow_parse_errors` variant (`helpers.rs:354`) folds parse errors into
-/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so a
-/// malformed sample is reported as a normal, fully-attributed violation.
+/// `compile_source_with_stdlib` PANICS on parse errors. One malformed sample
+/// would then abort a whole corpus gate with a backtrace naming no file and no
+/// fence — defeating the "names file + fence ordinal + diagnostics" contract
+/// at exactly the moment it matters most. The
+/// `compile_source_with_stdlib_allow_parse_errors` variant returns parse
+/// errors in `.diagnostics` at Error severity, forwarded by the compiler
+/// itself, so a malformed sample is reported as a normal, fully-attributed
+/// violation.
 ///
 /// The extra `parse_with_stdlib` call is what separates the two layers. It is
 /// the SAME parse the helper performs internally, repeated rather than

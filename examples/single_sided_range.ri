@@ -9,7 +9,7 @@
 //
 // Absent-side *_inclusive = true (vacuous; contains() skips absent bounds at eval time).
 //
-// Verified by: crates/reify-compiler/tests/examples_smoke.rs
+// Verified by: crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
 //   (all_examples_parse_and_compile_with_stdlib — no Error-severity diagnostics).
 
 structure def SingleSidedRange {
