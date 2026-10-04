@@ -2889,8 +2889,9 @@ fn solve_core_with_sd_tolerance(
     // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
     // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
-    // check, so the initially_feasible fallback (L965 in original; below) does
-    // NOT mask the infeasibility by falling back to Solved.
+    // check, so the `initially_feasible` drift fallback below (in the
+    // `final_max_residual > FEASIBILITY_THRESHOLD` branch) does NOT mask the
+    // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
     // (task γ #4791: the cost_robustness_tradeoff two-anchor blend runs all three
@@ -9074,7 +9075,10 @@ mod tests {
     ///
     /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
-    /// branches of the fallback validation logic (solver.rs lines 637-659).
+    /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
+    /// the `initially_feasible` drift fallback in the
+    /// `final_max_residual > FEASIBILITY_THRESHOLD` branch (its undefined-objective
+    /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;

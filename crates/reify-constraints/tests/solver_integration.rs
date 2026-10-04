@@ -592,7 +592,9 @@ fn maximize_with_feasible_initial_point() {
             );
             // AutoParam bounds are hard constraints on output values — the solver
             // guarantees results stay within [lo, hi].
-            // Clamping logic: solver.rs ~line 617-625 (effective_bounds clamping loop).
+            // Clamping logic: the final-solution clamp into the resolved box in
+            // `solve_core_with_sd_tolerance` (solver.rs); that box never widens an
+            // explicit `AutoParam.bounds` (see `resolve_bounds`).
             // Because clamping is exact (val.clamp(lo, hi)), no epsilon tolerance needed.
             assert!(
                 si <= 0.050,

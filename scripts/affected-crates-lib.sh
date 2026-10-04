@@ -133,7 +133,7 @@ _is_noncrate() {
 # recognises and why the subset direction is the safe one. Re-run it rather than
 # editing this line from memory. Each crate is declared in its own right, never
 # left to arrive transitively through another seed's dep edge.
-_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui"
+_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support"
 
 # _is_crate_manifest <path> — returns 0 (true) if the path is a per-crate
 # Cargo manifest, i.e. a file whose edit can restructure the workspace crate

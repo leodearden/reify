@@ -436,13 +436,14 @@ impl FenceCompile {
 ///
 /// # Why `_allow_parse_errors`
 ///
-/// `compile_source_with_stdlib` (`helpers.rs:236`) PANICS on parse errors. One
+/// `compile_source_with_stdlib` PANICS on parse errors. One
 /// malformed fence would then abort the whole gate with a backtrace naming no
 /// file and no fence — defeating the "names file + fence ordinal +
 /// diagnostics" contract at exactly the moment it matters most. The
-/// `_allow_parse_errors` variant (`helpers.rs:354`) folds parse errors into
-/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so a
-/// malformed fence is reported as a normal, fully-attributed violation. Same
+/// `compile_source_with_stdlib_allow_parse_errors` variant returns parse
+/// errors in `.diagnostics` at Error severity, forwarded by the compiler
+/// itself, so a malformed fence is reported as a normal, fully-attributed
+/// violation. Same
 /// accumulate-rather-than-panic reasoning `examples_smoke.rs` applies in its
 /// parse phase.
 ///
@@ -623,7 +624,7 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 // reify-mcp does NOT depend on reify-compiler, so these files cannot be
 // `include_str!`-ed from here — they are read by path via the
 // `CARGO_MANIFEST_DIR` idiom that
-// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` (:15) and
+// `reify_test_support::examples_corpus::examples_dir()` and
 // `geometry_chunk_smoke.rs`'s `CHUNK_PATH` (:351) already use. A wrong path
 // fails loudly at read time rather than silently scanning nothing.
 // ---------------------------------------------------------------------------
@@ -1561,8 +1562,8 @@ fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
 /// A fence with a genuine PARSE error is a NAMED violation, not an
 /// unattributed panic.
 ///
-/// `compile_source_with_stdlib` (helpers.rs:236) panics on parse errors, which
-/// would abort the whole gate with a backtrace naming no file and no fence —
+/// `compile_source_with_stdlib` panics on parse errors, which would abort the
+/// whole gate with a backtrace naming no file and no fence —
 /// defeating the "names file + fence ordinal + diagnostics" contract at exactly
 /// the moment it matters most. The `_allow_parse_errors` variant folds parse
 /// errors into `.diagnostics` at Error severity instead, so a malformed fence

@@ -67,6 +67,8 @@ mod cli_check_connect_undeclared_member;
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
 mod cli_check_parametric_vec3;
+#[path = "harness_cli/cli_check_relate_family_exit.rs"]
+mod cli_check_relate_family_exit;
 #[path = "harness_cli/cli_check_result_prelude.rs"]
 mod cli_check_result_prelude;
 #[path = "harness_cli/cli_check_variant_construction.rs"]
@@ -179,6 +181,8 @@ mod cli_tensegrity_t0a_golden;
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
 mod cli_trait_assoc_fn_overload;
+#[path = "harness_cli/cli_transform_consumer_length_diag.rs"]
+mod cli_transform_consumer_length_diag;
 #[path = "harness_cli/cli_transform_twist_dimension_diag.rs"]
 mod cli_transform_twist_dimension_diag;
 #[path = "harness_cli/cli_type_hygiene_strict.rs"]

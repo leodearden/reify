@@ -697,9 +697,11 @@ class ProbeRun:
 _HARNESS_ERROR = "HARNESS_ERROR"
 
 
-# Substrings tree-sitter uses to report an errno-13 denial.  Either spelling may
-# appear depending on which layer surfaces the error, so both are accepted.
-_PERMISSION_DENIAL_MARKERS = ("Permission denied", "os error 13")
+# tree-sitter's two spellings of an errno-13 denial; either may appear depending
+# on which layer surfaces the error, so both are accepted.  The errno is anchored
+# with a negative lookahead rather than a required ")" so a bare end-of-string
+# `os error 13` still matches while EOWNERDEAD(130)..EHWPOISON(133) do not.
+_PERMISSION_DENIAL_RE = re.compile(r"Permission denied|os error 13(?![0-9])")
 
 # Substring marking a grammar *load* failure, as opposed to a parse failure.
 _GRAMMAR_LOAD_FAILURE_MARKER = "Failed to load language"
@@ -738,7 +740,12 @@ def grammar_cache_denied(run: ProbeRun) -> bool:
     are required, because neither half alone is safe to skip on: a genuine
     grammar regression is a *parse* error (exit 1, no load failure), and a load
     failure with no permission indicator is a missing or corrupt grammar.  Both
-    keep reaching _HARNESS_ERROR / exit 70.
+    keep reaching _HARNESS_ERROR / exit 70.  The denial is searched for only at
+    or after the load-failure marker, since tree-sitter renders the cause chain
+    after the top-level error, so an EACCES on some other file that precedes the
+    marker does not count.  Nothing narrower is enforced: a denial anywhere after
+    the marker counts, not only one inside its `Caused by:` block.  The errno is
+    matched whole.
 
     Keys on stderr rather than ``os.access(dir, os.W_OK)``, which consults DAC
     only and reports the directory writable under a landlock hook (measured: the
@@ -748,9 +755,10 @@ def grammar_cache_denied(run: ProbeRun) -> bool:
     harness_exit_code(), so a denied probe still yields HARNESS_ERROR / exit 70.
     """
     stderr = run.stderr
-    if _GRAMMAR_LOAD_FAILURE_MARKER not in stderr:
+    load_failure_at = stderr.find(_GRAMMAR_LOAD_FAILURE_MARKER)
+    if load_failure_at < 0:
         return False
-    return any(marker in stderr for marker in _PERMISSION_DENIAL_MARKERS)
+    return _PERMISSION_DENIAL_RE.search(stderr, load_failure_at) is not None
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
@@ -1053,6 +1061,8 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
         check      → [reify, check, <abs-fixture>]
         ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
+    The fixture is always the final argv token; fixture_argument() reads it back.
+
     Fixture-path resolution: build_command() resolves probe.fixture to an
     absolute path via os.path.join(repo_root, probe.fixture) so that the path
     survives any CWD change — in particular, grammar probes run with
@@ -1094,6 +1104,16 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
 
     # Should not reach here after load_probe_set validation, but be defensive.
     raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+def fixture_argument(command: List[str]) -> Optional[str]:
+    """Return the fixture a build_command() argv names, or None if it names none.
+
+    build_command() places the fixture as the final argument for every probe
+    kind; this reader is the one place that layout is read back.  An argv with
+    no argument names no fixture, because argv[0] is the program.
+    """
+    return command[-1] if len(command) >= 2 else None
 
 
 # ---------------------------------------------------------------------------

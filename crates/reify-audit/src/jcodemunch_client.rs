@@ -6,9 +6,9 @@
 //!
 //! ## Wire protocol
 //!
-//! MCP streamable-HTTP, protocol version `2024-11-05`. Same SSE/JSON
-//! dual-path and same `into_reader()` no-10 MiB cap discipline as
-//! `fused_memory_client.rs`.
+//! MCP streamable-HTTP, protocol version `2024-11-05`. The SSE/JSON body
+//! decode is shared via [`crate::mcp_wire::decode_body`]; same
+//! `into_reader()` no-10 MiB cap discipline as `fused_memory_client.rs`.
 //!
 //! ## Session lifecycle
 //!
@@ -1380,28 +1380,8 @@ impl JcodemunchClient {
             .read_to_string(&mut body)
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
-        let value = if ctype.contains("text/event-stream") {
-            let mut parsed: Option<Value> = None;
-            for line in body.lines() {
-                if let Some(rest) = line.strip_prefix("data:") {
-                    parsed = Some(serde_json::from_str(rest.trim()).map_err(|e| {
-                        LoadError::Protocol(format!(
-                            "SSE data parse: {e}; body={body}"
-                        ))
-                    })?);
-                    break;
-                }
-            }
-            parsed.ok_or_else(|| {
-                LoadError::Protocol(format!("no SSE data line in response: {body}"))
-            })?
-        } else if body.is_empty() {
-            return Ok((assigned, Value::Null));
-        } else {
-            serde_json::from_str(&body).map_err(|e| {
-                LoadError::Protocol(format!("body parse: {e}; body={body}"))
-            })?
-        };
+        let value = crate::mcp_wire::decode_body(&ctype, &body)
+            .map_err(|e| LoadError::Protocol(e.to_string()))?;
 
         if let Some(err) = value.get("error") {
             return Err(LoadError::Protocol(format!("JSON-RPC error: {err}")));

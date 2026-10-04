@@ -28,6 +28,7 @@ pub mod color;
 pub mod constraint;
 pub mod expr;
 pub mod geometry;
+pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
@@ -78,6 +79,7 @@ pub use geometry::{
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
 };
+pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
     check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,

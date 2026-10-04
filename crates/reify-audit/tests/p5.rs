@@ -122,6 +122,7 @@ mod tests {
             Pattern::PDiag,
             Pattern::PDocCover,
             Pattern::PDeliveredCheckPath,
+            Pattern::PManifestCite,
             Pattern::PPrdStatus,
         ] {
             match p {
@@ -139,6 +140,7 @@ mod tests {
                 Pattern::PDiag => {}
                 Pattern::PDocCover => {}
                 Pattern::PDeliveredCheckPath => {}
+                Pattern::PManifestCite => {}
                 Pattern::PPrdStatus => {}
             }
         }
@@ -147,6 +149,11 @@ mod tests {
         let refs = [
             EvidenceRef::File {
                 path: "x".to_string(),
+            },
+            EvidenceRef::FileLine {
+                path: "x".to_string(),
+                line: 1,
+                symbol: Some("y".to_string()),
             },
             EvidenceRef::Commit {
                 sha: "s".to_string(),
@@ -167,6 +174,7 @@ mod tests {
         for r in refs {
             match r {
                 EvidenceRef::File { path: _ } => {}
+                EvidenceRef::FileLine { path: _, line: _, symbol: _ } => {}
                 EvidenceRef::Commit { sha: _, subject: _ } => {}
                 EvidenceRef::MetadataFiles { entries: _ } => {}
                 EvidenceRef::RunsDb { table: _, key: _ } => {}

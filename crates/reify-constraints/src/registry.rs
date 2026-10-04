@@ -1170,7 +1170,7 @@ fn solve_lexicographic(
 
 /// Compute the realized cost obj* for a rank at the current solution.
 ///
-/// Mirrors `eval_objective_set` I3 fold (solver.rs:~436):
+/// Mirrors `eval_objective_set` I3 fold (solver.rs):
 ///   Minimize → acc += w·v
 ///   Maximize → acc -= w·v
 /// Returns `None` if any term evaluates to a non-finite value.

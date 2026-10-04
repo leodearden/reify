@@ -725,6 +725,8 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "open_menu",
   "press_tab",
   "set_fea_channel",
+  "scrub_range_input",
+  "edit_text_input",
   "set_window_size",
   "tab_order",
   "toggle_select",

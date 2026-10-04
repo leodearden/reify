@@ -22,6 +22,7 @@ import {
   DEFAULT_CONSTRAINT_HEIGHT,
 } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
+import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -86,7 +87,7 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //    would answer a malformed REQUEST with a true-looking OBSERVATION.
 //
 // The canonical enumeration is the exported `TYPE_GUARDED_RESOLVER_TOOLS`
-// below — FOURTEEN tool names, served by ELEVEN guard copies. It lives there
+// below — SIXTEEN tool names, served by TWELVE guard copies. It lives there
 // as a VALUE, not here as prose, so that a tool added without a guard fails a
 // test instead of merely making a comment stale; see its docblock. What the
 // flat list cannot express, and what this comment therefore carries, is the
@@ -104,7 +105,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //  * `resolveElement`'s single copy, on the whole-selector `selector`, SHARED
 //    by query_selector, get_layout_metrics and get_computed_style;
 //  * query_selector_all's own inline copy of that same `selector` guard — it
-//    needs the whole NodeList, so it never routes through `resolveElement`.
+//    needs the whole NodeList, so it never routes through `resolveElement`;
+//  * `driveFormControl`'s single copy, on the whole-selector `selector`, in
+//    ./formControl, SHARED by scrub_range_input and edit_text_input. It
+//    resolves STRICTLY — exactly one match, else an error — deliberately
+//    diverging from `resolveElement`'s first match, for the reason
+//    `pickFeaChannelSelect` gives: guessing between N form controls would
+//    misapply a value silently.
 //
 // (Grep `typeof .* !== 'string'` in this file and you will also hit wait_for's
 // `predicate.path is required for store kind` — that one is NOT in this list:
@@ -119,12 +126,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
 // own coverage or it can be reverted alone with the suite green. That makes the
 // unit of coverage the guard COPY, not the tool name: the `boundary guards above
-// the escape` block of debugBridge.test.tsx carries one row per copy — twelve
-// rows for eleven copies, since driveTreeNode's single copy interpolates two
+// the escape` block of debugBridge.test.tsx carries one row per copy — thirteen
+// rows for twelve copies, since driveTreeNode's single copy interpolates two
 // different testid prefixes and so earns a row each. A new tool joining this
 // list needs its own row unless it demonstrably SHARES an existing copy, as
-// collapse_tree_node shares expand_tree_node's and get_layout_metrics /
-// get_computed_style share query_selector's — in which case name the sharer.
+// collapse_tree_node shares expand_tree_node's, get_layout_metrics /
+// get_computed_style share query_selector's, and edit_text_input shares
+// scrub_range_input's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -145,7 +153,7 @@ export const RESOLVE_BY_TESTID_ERRORS = {
  * and the comments point at it instead of restating it.
  *
  * Order follows the rule's own prose: the seven `testId` tools, `open_menu`'s
- * `name`, the two tree tools' shared `path`, then the four whole-selector
+ * `name`, the two tree tools' shared `path`, then the six whole-selector
  * tools. NOT a dispatch table — nothing reads it at runtime.
  */
 export const TYPE_GUARDED_RESOLVER_TOOLS = [
@@ -163,6 +171,8 @@ export const TYPE_GUARDED_RESOLVER_TOOLS = [
   'query_selector_all',
   'get_layout_metrics',
   'get_computed_style',
+  'scrub_range_input',
+  'edit_text_input',
 ] as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -1261,6 +1271,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
       return { ok: true };
     },
+
+    scrub_range_input: (params) => driveFormControl(RANGE_INPUT, params),
+    edit_text_input: (params) => driveFormControl(TEXT_INPUT, params),
 
     type_in_editor: (params) => {
       const content = params.content as string;

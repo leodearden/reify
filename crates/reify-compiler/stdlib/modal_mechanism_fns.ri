@@ -56,8 +56,10 @@
 //                               sigma, damping, boundary_conditions). For a
 //                               lumped generalized-coordinate model the BCs and
 //                               reference_direction fields are unused (no 3D FEA
-//                               mesh), but the same ModalOptions type is accepted
-//                               for API consistency.
+//                               mesh), so `ModalResult.boundary_conditions` is
+//                               `undef`, not an echo of the caller's list. The
+//                               same ModalOptions type is accepted for API
+//                               consistency.
 //
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
 // modes are ordered ascending by frequency.  Each Mode carries `.frequency`
@@ -65,9 +67,11 @@
 // from the `ModalOptions.damping` descriptor the caller supplied — the same
 // formula the FEA `modal_analysis` path uses (task #6875).  ζ_i is 0 for
 // `NoDamping`, for an absent `damping` field, and for a rigid-joint ω = 0
-// mode.  `.shape` stays empty and `.participation_mass` stays zero: the
-// lumped generalized-coordinate model has one scalar DOF per body and so has
-// no 3D mode shape to report.
+// mode.  `.shape` and `.participation_mass` are `undef`, not an empty list or
+// zero: the lumped generalized-coordinate model has one scalar DOF per body,
+// so it has no per-node mode shape and no spatial direction to project a
+// participation mass onto.  `.mass_matrix_norm` / `.stiffness_matrix_norm` are
+// the Frobenius norms of the lumped diagonal M / K over the physical DOFs only.
 //
 // Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
 // (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF

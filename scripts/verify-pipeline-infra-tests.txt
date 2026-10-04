@@ -691,6 +691,12 @@ gui/vitest-worker-rpc-flake-reporter.ts    tests/infra/test_gui_vitest_rpc_harde
 # script OR the .py selects the wrapper.
 scripts/review-readme.sh    tests/infra/test_review_readme.sh
 tests/infra/test_review_readme.py    tests/infra/test_review_readme.sh
+# Task 7896: scripts/cargo-test-tally.py (one captured test log in, every
+# count out) is pinned by a .py suite behind a thin .sh wrapper — same pair
+# shape as flake_density_report / review_readme above, so an edit to the
+# script OR the .py selects the wrapper.
+scripts/cargo-test-tally.py    tests/infra/test_cargo_test_tally.sh
+tests/infra/test_cargo_test_tally.py    tests/infra/test_cargo_test_tally.sh
 # Task 6932: scripts/pprdstatus-escalate.py (the one-shot PPRDSTATUS escalation
 # raise) is pinned by a .py suite behind a thin .sh wrapper, same pair shape.
 scripts/pprdstatus-escalate.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh

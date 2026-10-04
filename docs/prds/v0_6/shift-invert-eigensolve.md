@@ -33,7 +33,7 @@ After this PRD:
 
 - **The shift is real.** A non-zero `sigma` / `shift_frequency` assembles and factors `K − σB` and
   returns the eigenvalues nearest σ, not the eigenvalues nearest zero. *(For B ≠ cI on the Lanczos
-  path, accurate only once #7602 lands; see the §6 amendment of 2026-09-29.)*
+  path, accurate since #7602 landed; see the §6 amendment of 2026-09-29.)*
 - **The unconservative read is closed.** A shifted solve records whether it skipped modes; the three
   `modes[0]` helpers (`critical_load`, `safety_factor_buckling`, `first_frequency`) raise a coded
   Error rather than reporting a mode from the middle of the spectrum as if it were the first.
@@ -302,6 +302,16 @@ and the two wiring leaves must cover both.
 >    product for every σ (K is SPD). So a Cholesky-symmetrised form `Lᵀ(K − σB)⁻¹BL⁻ᵀ` (with
 >    `K = LLᵀ`) keeps faer's Lanczos. That is consistent with §8's "no Krylov rewrite", but the design
 >    choice belongs to #7602.
+>
+> **RESOLVED 2026-10-01 (#7602).** The operator is now chosen per pencil. It stays Euclidean iff
+> B = cI. Otherwise it is Cholesky-symmetrised in an SPD metric W = G·Gᵀ (`LanczosMetric`):
+> W = K − σB when that is SPD (σ=0 ⇒ K), else W = K with a `(K − σB)⁻¹` correction applied through LU.
+> In that second arm K must be SPD, so `ShiftInvertFailure::KNotSpd` is now reachable at σ≠0. Every
+> returned Lanczos pair is re-checked on the operator it ran on
+> (`EigenSolverResult::residual_check_failures`), and `converged` requires zero failures. The faer QZ overflow panic is closed by a dev-profile
+> `overflow-checks = false` for `reify-solver-elastic`. C2, BT2 and BT4 hold again for B ≠ cI. C1/BT1
+> stay waived there. σ=0 results on such pencils now come from the symmetrised operator, and no landed
+> buckling or modal golden left its tolerance (measurements in #7602's commits).
 
 `EigenSolverOptions.sigma` is the shift **in eigenvalue (λ) space** for both callers. Unit conversion
 is the caller's job, not the eigensolver's (§7 seam table).
@@ -313,8 +323,8 @@ Every implementation of the generalized eigensolve must satisfy all six clauses:
   numerical tolerance. *Scoped to B = cI; waived for B ≠ cI, whose σ=0 Lanczos results are wrong and
   may be changed by #7602 (amendment above).*
 - **C2 — Selection.** The returned set is the `n_modes` eigenvalues of the pencil with smallest
-  |λ − σ| that the method converged. *Does not hold on the Lanczos path for B ≠ cI until #7602 lands
-  (amendment above).*
+  |λ − σ| that the method converged. *Did not hold on the Lanczos path for B ≠ cI until #7602 landed
+  (amendment above); it holds again since.*
 - **C3 — Order.** `eigenvalues` is ascending by |λ|, with `eigenvectors` columns permuted to match.
 - **C4 — Back-shift.** Eigenvalues are returned in the original λ space (`λ = σ + 1/μ` on the Lanczos
   path), never in shifted or μ space.
@@ -334,12 +344,13 @@ face both ways:
   reproduce the pre-PRD eigenvalues and order. *B = cI pencils only (C1 waiver above).*
 - **BT2 — cross-implementation agreement.** For a pencil sized to be solvable both ways, dense and
   Lanczos at the same σ≠0 return the same eigenvalue *set* to solver tolerance, the same order (C3),
-  and the same C5 provenance boolean. *Not expected to pass for B ≠ cI until #7602 lands.*
+  and the same C5 provenance boolean. *Was not expected to pass for B ≠ cI until #7602 landed; it
+  does since.*
 - **BT3 — selection really moved.** At a σ above λ₁ the returned set differs from the σ=0 set. This is
   the mechanical form of the G2 signal at the solver layer.
 - **BT4 — provenance is honest, both directions.** σ below λ₁ ⟹ `skipped == false` and `modes[0]`
-  equals the σ=0 first mode. σ above λ₁ ⟹ `skipped == true`. *The `modes[0]` equality does not hold
-  on the Lanczos path for B ≠ cI until #7602 lands (amendment above).*
+  equals the σ=0 first mode. σ above λ₁ ⟹ `skipped == true`. *The `modes[0]` equality did not hold
+  on the Lanczos path for B ≠ cI until #7602 landed (amendment above); it holds again since.*
 - **BT5 — singular shift.** σ placed on a known eigenvalue of a small analytic pencil produces the C6
   typed failure, not a panic and not a finite-looking wrong answer.
 - **BT6 — caller-facing.** Both trampolines convert their surface value into λ-space σ correctly, and
@@ -539,6 +550,15 @@ and the LIVE/AS-AUTHORED map, and applies the matching header to the capability 
    ("the existing σ=0 path … its goldens pass") **fails, at σ=0 as well**. β closed without the
    convergence diagnostic. That diagnostic, now a post-solve generalized-residual check, **moved to
    #7602** together with the operator fix. See the §6 amendment.
+
+   **RESOLVED 2026-10-01 (#7602).** The operator is Cholesky-symmetrised for B ≠ cI (§6 amendment
+   resolution), so faer's Lanczos still runs. A returned pair is verified iff
+   `‖S·y − μ·y‖ ≤ max(10·tol·μ_max, 1e-6·|μ|)·‖y‖` on the operator S the Lanczos ran. Here `μ_max` is
+   the largest returned `|μ|`, a lower bound on `‖S‖₂`. Failures are counted in
+   `EigenSolverResult::residual_check_failures` and make `converged` false; the pairs are still returned.
+   Both arms are relative on purpose. `μ = 1/(λ − σ)` carries the pencil's units, and an SI-unit modal
+   pencil has `|μ| ~ 1e-8`. An absolute `10·tol` arm, as first landed, passed every pair there however
+   wrong (review of #7602; pinned by `euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs`).
 2. **Residual threshold for §5.3 part 2.** The numerically-singular guard needs a concrete threshold.
    Derive it from the pencil's scale at implementation time; do not import a constant from another
    solver.

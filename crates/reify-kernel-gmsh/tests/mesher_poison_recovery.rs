@@ -106,6 +106,20 @@ fn assert_failed_at_the_mesher<T>(
     err
 }
 
+/// Options asking gmsh for more worker threads than either refine fixture here
+/// has classified curves: the open triangle classifies to 3, the cube to 14.
+/// gmsh 4.15.2 hangs once threads exceed the curve count unless refine
+/// pre-builds its view octree, so a literal keeps these guards from going
+/// vacuous on a small host; see
+/// `docs/notes/gmsh-postview-background-field-threading.md`.
+fn many_threads() -> MeshingOptions {
+    MeshingOptions {
+        threads: Some(32),
+        deterministic: false,
+        ..MeshingOptions::default()
+    }
+}
+
 /// Poison the shared mesher through `GmshKernel::mesh_to_volume`.
 fn poison_via_mesh_to_volume() {
     assert_failed_at_the_mesher(
@@ -131,7 +145,7 @@ fn poison_via_refine() {
         refine_volume_with_size_field(
             &unmeshable_open_triangle(),
             &uniform_unit_cube_size_field(0.5),
-            &MeshingOptions::default(),
+            &many_threads(),
             ElementOrderTag::P1,
         ),
     );
@@ -223,7 +237,7 @@ fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
     let recovered = refine_volume_with_size_field(
         &unit_cube_mesh(),
         &uniform_unit_cube_size_field(0.5),
-        &MeshingOptions::default(),
+        &many_threads(),
         ElementOrderTag::P1,
     )
     .expect(

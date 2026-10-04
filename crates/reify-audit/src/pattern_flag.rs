@@ -24,6 +24,7 @@ pub const PDSSENTINEL: &str = "PDSSENTINEL";
 pub const PDIAG: &str = "PDIAG";
 pub const PDOCCOVER: &str = "PDOCCOVER";
 pub const PDCHECK: &str = "PDCHECK";
+pub const PCITE: &str = "PCITE";
 pub const PPRDSTATUS: &str = "PPRDSTATUS";
 
 pub const TOKENS: &[&str] = &[
@@ -38,5 +39,6 @@ pub const TOKENS: &[&str] = &[
     PDIAG,
     PDOCCOVER,
     PDCHECK,
+    PCITE,
     PPRDSTATUS,
 ];

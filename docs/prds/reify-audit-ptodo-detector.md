@@ -614,6 +614,12 @@ is not. That is exactly why §6.6's "seed the baseline with the task DB present"
 load-bearing for δ-B in a way it was not for δ-A — a δ-B lane seeded from a worktree run
 looks green locally and goes red on `main`.
 
+**A discharged phantom-tracking line adds NO new kind (task #6816).** A `phantom-tracking`
+phrase on a line that ALSO carries a canonical `#NNNN` cite is discharged: it emits no
+structural kind and hands its on-line cites to the **unchanged** liveness lane (→ `orphaned` /
+`unknown-id` / `parked-on-anchor`), exactly as the comment-marker lane does. A `// G-allow:`
+line is left to its own lane. Ruling: §19(d).
+
 *Known divergence:* the `#[ignore]` γ lane has no `malformed-cite` branch — its reason
 policy is cite-first-then-blocker-prose and is byte-frozen (changing it would reclassify
 existing `#[ignore]` findings and perturb the §6.6 baseline). That is recorded here as a

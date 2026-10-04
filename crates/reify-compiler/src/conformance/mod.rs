@@ -55,6 +55,23 @@ use std::cell::RefCell;
 /// literal in expr.rs would have silently survived it (the C2(iv)
 /// severity-invariance failure mode). The same reasoning applies to any emit site
 /// added here later: read the const, never a literal.
+///
+/// # Language contract and deferred variants
+///
+/// The user-facing statement of what this knob governs is
+/// `docs/reify-language-spec.md` §4.9. Around it:
+///
+/// * **No eval-time check, by ruling.** The eval-time ctor inserts args
+///   verbatim; this compile-time surface is the single enforcement point
+///   (`docs/prds/struct-ctor-field-type-conformance.md` D7).
+/// * **Empty-collection args are skipped, not rejected.** They compile with no
+///   expected type; typed enforcement belongs to
+///   `docs/prds/expected-type-pushdown-return-field.md` (stub).
+/// * **Bare `TraitObject` fields are exempt** on the expression-position path.
+///   The exemption, its scope and its revisit condition live at
+///   `check_expr_struct_ctor_args` in `compile_builder/entities_phase.rs` (PRD D6).
+/// * **Construction-site gaps this knob does not yet reach** are listed under
+///   spec §4.9 "Known limitations", each with its owner.
 pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
@@ -1628,9 +1645,11 @@ where
 /// error. The guard runs before the match, making the anti-cascade contract uniform
 /// across all arms (current and future). Note: this guard is top-level only — an `Error`
 /// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
-/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
-/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
-/// arg-shape pass is tracked as future work.
+/// secondary wrapper-shape diagnostic on top of the root-cause error. Since task 5302,
+/// non-wrapper, non-trait param types reach the general concrete-leaf arm, which checks
+/// the families [`general_leaf_param_family_is_validated`] admits; the dedicated
+/// shape arms (Vector, Point, Matrix/Tensor, Field, Selector) and the enum branch
+/// check theirs. Every remaining family falls through silently (owner #7958).
 fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     // Anti-cascade: skip when either type carries the poison sentinel so no
     // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
@@ -2141,7 +2160,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
-///   inference.
+///   inference. Owner: #8101.
 /// * **`TypeParam`** — an unresolved generic param, whose real conformance is
 ///   decided when the type var is bound at instantiation (mirrors the arg-side
 ///   `TypeParam` skip inside [`reject_if_incompatible`]).
@@ -2160,7 +2179,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
 /// deliberate act the four families above went through: a per-family probe pair
 /// (clean fixture + value floor) plus a green corpus gate, with no new
-/// `SKIP_SET` entry.
+/// `SKIP_SET` entry. Owner: #7958 (INV-SF-5 `placeholders-owned-and-loud`).
 ///
 /// # Enum families (task 5465, family 4) — handled by the caller, not here
 ///

@@ -467,6 +467,86 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["channel"]
             }),
         },
+        ToolDef {
+            name: "scrub_range_input",
+            description: "Drive an <input type=range> slider through a gesture, frontend-mediated \
+                          with no dispatch_tool arm. It assigns the control's `.value` and dispatches \
+                          ONLY the DOM events the control's own handlers bind: one focus, then per \
+                          value (each of `frames`, then `value`) an `input` event and one animation \
+                          frame, then the commit. `commit: 'hold'` models a pointer still held (no \
+                          terminal event, so only previews fire); `commit: 'change'` models the \
+                          release (a `change` event, the durable write). It never calls a Tauri \
+                          command itself. `selector` must match exactly one element: zero or several \
+                          matches are errors, never a guess. A value the control cannot represent \
+                          (outside min/max, off the step) is refused before any event fires, and a \
+                          control that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged; or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=range> (e.g. '[data-testid=\"joint-row-0\"] input[type=\"range\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final value, as the control's own `.value` string (display units, e.g. '120' for 120 mm)."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate values typed before `value`, one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["change", "hold"],
+                        "description": "'change' releases the slider (durable write); 'hold' leaves it held."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
+            }),
+        },
+        ToolDef {
+            name: "edit_text_input",
+            description: "Type into an <input type=text> edit box, frontend-mediated with no \
+                          dispatch_tool arm. It assigns the control's `.value` and dispatches ONLY \
+                          the DOM events the control's own handlers bind: one focus, then per value \
+                          (each of `frames`, then `value`) an `input` event and one animation frame, \
+                          then the commit. Typing ends with `commit: 'enter'` (an Enter keydown) or \
+                          `commit: 'blur'` (a blur event); `commit: 'hold'` leaves the edit open. It \
+                          never calls a Tauri command itself. `selector` must match exactly one \
+                          element: zero or several matches are errors, never a guess. A value the \
+                          control cannot represent is refused before any event fires, and a control \
+                          that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged (a commit may \
+                          legitimately rewrite it to the at-rest display); or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=text> (e.g. '[data-testid=\"prop-row-Bracket.width\"] input[type=\"text\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final text (e.g. '150mm')."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate texts typed before `value` (e.g. ['1', '15', '150']), one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["enter", "blur", "hold"],
+                        "description": "'enter' or 'blur' ends the edit (durable write); 'hold' leaves it open."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
+            }),
+        },
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
