@@ -8982,13 +8982,43 @@ OcctStepComponent step_component_record(const TDF_Label& component) {
 /// Flattens the XCAF product DAG into a document's product/component records:
 /// every product once, at its first visit in DFS pre-order over the free
 /// roots, with its components in contiguous slots reserved before any child is
-/// visited. Products are addressed by index only — `doc_`'s vectors grow while
-/// visiting, so no reference into them is held across a recursive call.
+/// visited. Iterative, so assembly nesting depth costs heap, not call stack.
+/// `doc_`'s vectors and `pending_` grow while walking, so no reference into
+/// them is held across an `enter`.
 class StepProductWalk {
 public:
     explicit StepProductWalk(OcctStepDocument& doc) : doc_(doc) {}
 
-    std::uint32_t visit(const TDF_Label& label) {
+    /// Walks everything reachable from `root`; returns the root's index.
+    std::uint32_t visit(const TDF_Label& root) {
+        const std::uint32_t root_index = enter(root);
+        while (!pending_.empty()) {
+            PendingAssembly& top = pending_.back();
+            if (top.next == top.referred.size()) {
+                pending_.pop_back();
+                continue;
+            }
+            const std::size_t slot = top.first_component + top.next;
+            const TDF_Label child = top.referred[top.next];
+            ++top.next;
+            const std::uint32_t child_index = enter(child);
+            doc_.components[slot].product_index = child_index;
+        }
+        return root_index;
+    }
+
+private:
+    /// An assembly whose component slots are reserved; `referred[next..]` are
+    /// the products its remaining components still have to be resolved to.
+    struct PendingAssembly {
+        std::size_t first_component = 0;
+        std::vector<TDF_Label> referred;
+        std::size_t next = 0;
+    };
+
+    /// The product's index, recording it on first sight and queueing a new
+    /// assembly's components.
+    std::uint32_t enter(const TDF_Label& label) {
         const Standard_Integer known = visited_.FindIndex(label);
         if (known != 0) {
             return static_cast<std::uint32_t>(known - 1);
@@ -9000,40 +9030,37 @@ public:
         product.label = label;
         product.name = step_label_name(label);
         product.is_assembly = XCAFDoc_ShapeTool::IsAssembly(label) == Standard_True;
-        if (!product.is_assembly) {
+        if (product.is_assembly) {
+            reserve_components(product);
+        } else {
             product.solid_count = step_product_solid_count(label);
         }
         doc_.products.push_back(product);
-
-        if (doc_.products[index].is_assembly) {
-            visit_components(index);
-        }
         return static_cast<std::uint32_t>(index);
     }
 
-private:
-    void visit_components(std::size_t product_index) {
+    void reserve_components(OcctStepProduct& assembly) {
         TDF_LabelSequence component_labels;
-        XCAFDoc_ShapeTool::GetComponents(doc_.products[product_index].label, component_labels);
-        const std::size_t first = doc_.components.size();
-        doc_.products[product_index].first_component = static_cast<std::uint32_t>(first);
-        doc_.products[product_index].component_count =
-            static_cast<std::uint32_t>(component_labels.Length());
+        XCAFDoc_ShapeTool::GetComponents(assembly.label, component_labels);
+        PendingAssembly pending;
+        pending.first_component = doc_.components.size();
+        assembly.first_component = static_cast<std::uint32_t>(pending.first_component);
+        assembly.component_count = static_cast<std::uint32_t>(component_labels.Length());
         for (Standard_Integer i = 1; i <= component_labels.Length(); ++i) {
-            doc_.components.push_back(step_component_record(component_labels.Value(i)));
-        }
-        for (Standard_Integer i = 1; i <= component_labels.Length(); ++i) {
+            const TDF_Label& component = component_labels.Value(i);
             TDF_Label referred;
-            if (!XCAFDoc_ShapeTool::GetReferredShape(component_labels.Value(i), referred)) {
+            if (!XCAFDoc_ShapeTool::GetReferredShape(component, referred)) {
                 throw ContractViolation("an assembly component refers to no product");
             }
-            const std::uint32_t referred_index = visit(referred);
-            doc_.components[first + static_cast<std::size_t>(i - 1)].product_index = referred_index;
+            doc_.components.push_back(step_component_record(component));
+            pending.referred.push_back(referred);
         }
+        pending_.push_back(std::move(pending));
     }
 
     OcctStepDocument& doc_;
     TDF_LabelIndexedMap visited_;
+    std::vector<PendingAssembly> pending_;
 };
 
 /// Walks a transferred document into its flat records. Touches only that
