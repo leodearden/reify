@@ -44,6 +44,7 @@ from stub_escalation_mcp import (  # noqa: E402  (imported after sys.path manipu
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "docs-truth-sweep.py"
+ENTRYPOINT = REPO_ROOT / "scripts" / "docs-truth-sweep.sh"
 
 FAMILY_TOKENS = ("PPRDSTATUS", "PCITE")
 
@@ -403,6 +404,105 @@ class DocsTruthSweepTest(unittest.TestCase):
         self.assertEqual(server.requests, [])
         self.assertEqual(self.detector.invocations(), [])
         self.assert_state(None)
+
+
+class DeployedEntrypointTest(unittest.TestCase):
+    """scripts/docs-truth-sweep.sh run bare, exactly as the unit runs it, over a
+    temp project root (REIFY_TEST_REPO_ROOT) that is deliberately NOT a git
+    repo, so the freshness guard fails open and treats the stub as fresh."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.server = StubEscalationServer()
+        self.addCleanup(self.server.close)
+
+    def project_root(self, name="project"):
+        """A checkout-shaped root whose .mcp.json declares the stub endpoint."""
+        root = self.tmp / name
+        root.mkdir()
+        mcp_config = {"mcpServers": {"escalation": {"type": "http", "url": self.server.url}}}
+        (root / ".mcp.json").write_text(json.dumps(mcp_config))
+        return root
+
+    def install_detector(self, root, prd=()):
+        detector = StubReifyAudit(root / "target" / "release" / "reify-audit")
+        detector.returns(detector_stderr(list(prd)), len(prd), pattern="PPRDSTATUS")
+        detector.returns(detector_stderr([]), 0, pattern="PCITE")
+        return detector
+
+    def run_entrypoint(self, root, *args, path=None):
+        env = {**hermetic_env(), "REIFY_TEST_REPO_ROOT": str(root)}
+        if path is not None:
+            env["PATH"] = path
+        return subprocess.run(
+            ["bash", str(ENTRYPOINT), *args],
+            cwd=self.tmp,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+
+    def tool_names(self):
+        return [call["body"]["params"]["name"] for call in self.server.tool_calls()]
+
+    def test_a_drifted_corpus_books_one_sitting_and_records_the_state(self):
+        root = self.project_root()
+        detector = self.install_detector(root, prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_entrypoint(root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tool_names(), ["escalate_info", "promote_to_l2"])
+        self.assertTrue((root / "data" / "audit-runs" / "docs-truth-sweep.json").is_file())
+        for argv in detector.invocations():
+            self.assertIn(("--project-root", str(root)), list(zip(argv, argv[1:])), argv)
+
+    def test_an_unchanged_second_run_is_silent(self):
+        root = self.project_root()
+        self.install_detector(root, prd=[prd_finding("docs/prds/a.md")])
+        self.assertEqual(self.run_entrypoint(root).returncode, 0)
+        requests_after_first_run = len(self.server.requests)
+
+        result = self.run_entrypoint(root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.server.requests), requests_after_first_run)
+
+    def test_a_clean_corpus_is_silent(self):
+        root = self.project_root()
+        self.install_detector(root)
+
+        result = self.run_entrypoint(root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.server.requests, [])
+
+    def test_a_missing_binary_is_never_a_clean_run(self):
+        root = self.project_root()
+        stub_bin = self.tmp / "stub-bin"
+        stub_bin.mkdir()
+        cargo = stub_bin / "cargo"
+        cargo.write_text("#!/bin/sh\nexit 1\n")
+        cargo.chmod(0o755)
+
+        result = self.run_entrypoint(root, path=f"{stub_bin}:/usr/bin:/bin")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(root / "target" / "release" / "reify-audit"), result.stderr)
+        self.assertEqual(self.server.requests, [])
+
+    def test_arguments_pass_through_to_the_sweep(self):
+        root = self.project_root()
+        self.install_detector(root, prd=[prd_finding("docs/prds/a.md")])
+
+        result = self.run_entrypoint(root, "--dry-run")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(set(json.loads(result.stdout)), {"escalate_info", "promote_to_l2"})
 
 
 if __name__ == "__main__":
