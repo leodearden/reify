@@ -26,6 +26,7 @@
 //! | 0         | No High-severity findings |
 //! | 1–254     | Count of High-severity findings (capped at 254) |
 //! | 125       | Infrastructure/setup error (arg parse, IO, serialization, empty task corpus for a corpus-only run set) |
+//! | 255       | `--require-tasks-db` and the task DB cannot be opened at the resolved path |
 //!
 //! Exit code 125 is reserved for errors so it never collides with a
 //! finding-count result — callers (D-1 hook, T-5 skill) can branch on
@@ -95,6 +96,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
     let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
     let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
+    let _ = writeln!(out, "  --require-tasks-db       Refuse (exit 255, naming the resolved path) when the PTODO task");
+    let _ = writeln!(out, "                           DB cannot be opened, instead of degrading the DB-backed lanes");
     let _ = writeln!(out, "  --print-repo-id          Print the derived (or --jcodemunch-repo-overridden) jcodemunch");
     let _ = writeln!(out, "                           repo id for --project-root, then exit (no task/git/runs-db work)");
     let _ = writeln!(out, "  --help, -h               Show this help");
@@ -128,6 +131,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
     let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable,");
     let _ = writeln!(out, "             empty task corpus when every selected detector needs it)");
+    let _ = writeln!(out, "  exit 255:  --require-tasks-db and the task DB cannot be opened at the resolved path");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -182,6 +186,28 @@ fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Resu
 }
 
 // -----------------------------------------------------------------------
+// §6.7 amendment — the opt-in task-DB precondition
+// -----------------------------------------------------------------------
+
+/// Refuse when the task DB cannot be opened. Returns the already-rendered
+/// refusal message on `Err`.
+///
+/// Resolves and opens through the same two calls `ptodo::check_with_stats`
+/// uses to decide whether to degrade, so "required" and "would have degraded
+/// on open" cannot disagree, and `REIFY_PTODO_TASKS_DB` is honoured alike.
+fn enforce_tasks_db_present(project_root: &Path) -> Result<(), String> {
+    let path = ptodo::tasks_db_path(project_root);
+    ptodo::open_tasks_db(&path).map(drop).map_err(|e| {
+        format!(
+            "--require-tasks-db: task DB unreachable at '{}' — {e}; refusing rather \
+             than degrading the DB-backed lanes to a vacuous clean (point \
+             REIFY_PTODO_TASKS_DB or --project-root at a tasks.db)",
+            path.display()
+        )
+    })
+}
+
+// -----------------------------------------------------------------------
 // Exit-code convention
 // -----------------------------------------------------------------------
 
@@ -191,6 +217,14 @@ fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Resu
 /// D-1 hook and T-5 skill should branch on `exit == ERROR_EXIT` to detect
 /// misconfigured invocations separately from finding counts.
 const ERROR_EXIT: u8 = 125;
+
+/// `--require-tasks-db`'s refusal when the task DB cannot be opened.
+///
+/// Dedicated: outside the 1–254 High-count band, and distinct from
+/// [`ERROR_EXIT`], which PRD §6.7 forbids for DB absence. Its consumer is
+/// dark-factory 5796's cadenced sweep, which must tell a misconfigured DB
+/// path from a clean run without parsing stderr.
+const TASKS_DB_ABSENT_EXIT: u8 = 255;
 
 /// Count High-severity findings and clamp to u8.
 ///
@@ -275,6 +309,10 @@ struct Args {
     /// `--project-root` to stdout and exit, touching none of the
     /// task/runs-db/git machinery below.
     print_repo_id: bool,
+    /// `--require-tasks-db`: opt-in. When set, a task DB that cannot be
+    /// opened at the `ptodo::tasks_db_path`-resolved path is a refusal
+    /// ([`TASKS_DB_ABSENT_EXIT`]) rather than the §6.7 fail-soft.
+    require_tasks_db: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -323,6 +361,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         });
     let mut no_jcodemunch = false;
     let mut print_repo_id = false;
+    let mut require_tasks_db = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
@@ -434,6 +473,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--print-repo-id" => {
                 print_repo_id = true;
             }
+            "--require-tasks-db" => {
+                require_tasks_db = true;
+            }
             other => {
                 return Err(format!("unknown flag '{}'", other));
             }
@@ -455,6 +497,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         jcodemunch_index_dir,
         no_jcodemunch,
         print_repo_id,
+        require_tasks_db,
     })
 }
 
@@ -725,6 +768,15 @@ fn main() -> ExitCode {
     if args.pre_done && args.since.is_some() {
         eprintln!("reify-audit: error: --pre-done cannot be combined with --since");
         return ExitCode::from(ERROR_EXIT);
+    }
+
+    // Before any task load, runs.db open, git op, jcodemunch connect or
+    // detector, so a refusal costs milliseconds and emits no findings JSON.
+    if args.require_tasks_db
+        && let Err(msg) = enforce_tasks_db_present(Path::new(&args.project_root))
+    {
+        eprintln!("reify-audit: {msg}");
+        return ExitCode::from(TASKS_DB_ABSENT_EXIT);
     }
 
     // Load tasks: JSON-file fixture (tests) OR live fused-memory MCP (prod).
