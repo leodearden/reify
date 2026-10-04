@@ -56,6 +56,20 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Create a new `Engine` backed by a fresh `MockConstraintChecker` and a fresh
+/// `MockGeometryKernel` — [`make_engine`] plus a mock kernel. Suitable for
+/// structural surfacing tests; the mock's `tessellate` returns a canned mesh,
+/// so it pins surface shape but cannot validate placement. Construct the
+/// engine inline instead when a test needs the kernel's `operations_ref()`,
+/// since this factory moves the kernel into the engine.
+#[cfg(feature = "eval-helpers")]
+pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
+    reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(MockGeometryKernel::new())),
+    )
+}
+
 /// Parse, compile (asserting no errors), and evaluate `source` using a
 /// `MockConstraintChecker` engine. Returns the `EvalResult`.
 ///
