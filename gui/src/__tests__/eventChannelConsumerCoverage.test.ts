@@ -147,6 +147,8 @@ const NON_BRIDGE_CONSUMERS: Record<string, string> = {
 const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
   diagnostics:
     'Task 6227 deleted bridge.ts::onDiagnostics and set this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 could land in either merge order without editing this file. Landed by 6227; the row now reads `*(none)*` and is accounted for here by check (e) rather than by (b).',
+  'lsp-log':
+    'Task 6329 added this channel: server log lines (window/logMessage-shaped) are routed by main.rs::TauriNotificationSink, and no bridge.ts subscriber has ever existed for it. The absence is the design, not an oversight — NotificationSink::log_message is a REQUIRED trait method (no default no-op body) precisely so no sink can silently swallow a server log line, so the GUI arm emits whether or not the frontend is listening yet.',
 };
 
 /**

@@ -1,0 +1,28 @@
+// orient_exp_partial_migration.ri — CLI fixture pinning a KNOWN GAP in the
+// #6080 loud-migration mechanism.
+//
+// `vec3(0, 0, 1.5708rad)` is a HALF-migrated rotation vector: the non-zero
+// component was dimensioned, the two zeros were not. That mixes DIMENSIONLESS
+// and ANGLE components, and `construct::eval_vec` collapses a mixed-dimension
+// vec3 to `undef` at its OWN construction site — before `orient_exp` is ever
+// called. The `E_RotationVectorDimension` classifier inspects `orient_exp`'s
+// argument, so it never sees the offending vector and cannot fire.
+//
+// The observable result is therefore the OLD silent behaviour: `q = undef`, an
+// `OpContractViolation` note, and exit 0 — no `E_RotationVectorDimension` line.
+//
+// This is deliberately pinned rather than left untested: it is the single most
+// likely partial-migration typo, and it is the one case the loud-migration
+// mechanism does not cover. Diagnosing a mixed-dimension container at its
+// construction site is a separate, general concern (it belongs to `vec3`, not
+// to the orientation family) and is out of #6080's scope. WHEN that lands, this
+// test should be UPDATED to assert the new loud behaviour — not deleted.
+//
+// Lives in tests/fixtures/ (NOT examples/) to keep examples_smoke.rs green,
+// since this file intentionally evaluates to `undef`.
+
+module orient_exp_partial_migration
+
+structure def OrientExpPartialMigration {
+    let q = orient_exp(vec3(0, 0, 1.5708rad))
+}

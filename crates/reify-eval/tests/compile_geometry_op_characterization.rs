@@ -91,6 +91,11 @@ fn lit_len(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::length(v), reify_core::Type::length())
 }
 
+#[path = "common/angle_expr.rs"]
+mod angle_expr;
+// Aliased to this file's `lit_*` literal-constructor convention.
+use angle_expr::angle_literal as lit_angle;
+
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
 ///
@@ -1562,7 +1567,7 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("angle".to_string(), lit_angle(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
         // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
@@ -1574,7 +1579,7 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("angle".to_string(), lit_angle(1.0)),
         ],
         TransformKind::ApplyTransform => vec![(
             "transform".to_string(),
@@ -1778,7 +1783,7 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
         ModifyKind::Shell => vec![("thickness".to_string(), lit_len(0.002))],
         // `Draft`'s `angle` stays BARE: it is an ANGLE position owned by
         // `docs/prds/v0_6/angle-units-surface-convergence.md`, not by this leaf.
-        ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
+        ModifyKind::Draft => vec![("angle".to_string(), lit_angle(0.1))],
         ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
         ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
         ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
@@ -2082,9 +2087,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         faces: [],
-        angle: Real(
-            0.1,
-        ),
+        angle: Scalar {
+            si_value: 0.1,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         plane: GeometryHandleId(
             50,
         ),
@@ -2468,7 +2517,7 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
             ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![
             // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
@@ -2515,7 +2564,7 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
         PatternKind::Circular => vec![
             ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
             ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![(
             "plane".to_string(),
@@ -2675,7 +2724,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("ax".to_string(), lit(0.0)),
                 ("ay".to_string(), lit(0.0)),
                 ("az".to_string(), lit(1.0)),
-                ("angle".to_string(), lit(1.0)),
+                ("angle".to_string(), lit_angle(1.0)),
                 // Only the axis ORIGIN is LENGTH-semantic (task 5623);
                 // ax/ay/az/angle stay on `lit`. Golden unchanged.
                 ("ox".to_string(), lit_len(0.0)),
@@ -3028,8 +3077,8 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("cy".to_string(), lit_len(0.0)),
             ("cz".to_string(), lit_len(0.0)),
             ("radius".to_string(), lit_len(0.01)),
-            ("start_angle".to_string(), lit(0.0)),
-            ("end_angle".to_string(), lit(1.0)),
+            ("start_angle".to_string(), lit_angle(0.0)),
+            ("end_angle".to_string(), lit_angle(1.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),

@@ -45,25 +45,55 @@ plan_match() {
     done <<< "$dump"
     return 1
 }
+# Exported because occt_flock_gate_lib.sh's occt_plan_grep_or_dump — itself
+# exported so the bounds-file negative unit tests run the REAL helper in a
+# `bash -c` child — calls this one. A child that inherited the caller but not
+# the callee would fail with command-not-found, which a `! ...` negation reads
+# as a correct non-zero return, making every such rejection vacuous.
+export -f plan_match
 
 # plan_capture_complete <dump>
 #
-# Returns 0 iff <dump> contains BOTH structural markers that verify.sh
-# unconditionally emits in every --print-plan invocation:
-#   "# verify.sh plan"   — header (verify.sh:1099)
-#   "# --- commands"     — commands-block marker (verify.sh:1104)
+# Returns 0 iff <dump> is structurally whole, which takes THREE conditions —
+# both of the markers verify.sh unconditionally emits in every --print-plan
+# invocation, AND at least one non-empty line after the second one:
+#   "# verify.sh plan"   — header (verify.sh:3636)
+#   "# --- commands"     — commands-block marker (verify.sh:3661)
+#   <a non-empty line after the commands marker>
 #
-# Their joint presence certifies a non-truncated capture. Fork-free via
-# [[ == *glob* ]] (no pipe, no subshell, no EINTR surface).
+# WHY THE MARKER PAIR ALONE IS INSUFFICIENT: both markers sit in the plan
+# HEADER, and every line a caller actually asserts on lies in the command body
+# below them. A marker-pair oracle therefore certifies every truncation that
+# happens after the header — i.e. all of the region the assertions depend on —
+# so capture_print_plan returns without retrying and the missing line surfaces
+# as a spurious assertion FAIL rather than as the incomplete capture it is.
+#
+# The rule is deliberately "a non-empty line", not "a command line": verify.sh
+# emits either real command lines or the comment
+# "# (no commands — nothing to verify for this action/scope)" (verify.sh:3663),
+# so a docs-only scope has a legitimately command-free but complete plan.
+# Demanding a non-comment line would make every such plan retry to exhaustion.
+#
+# Fork-free: [[ == *glob* ]] plus the `while read` + `<<<` idiom used by
+# plan_match/plan_strip_comments — no pipe, no subshell, no EINTR surface.
 plan_capture_complete() {
-    local dump="$1"
-    [[ "$dump" == *"# verify.sh plan"* ]] && [[ "$dump" == *"# --- commands"* ]]
+    local dump="$1" _line _after_marker=0
+    [[ "$dump" == *"# verify.sh plan"* ]] || return 1
+    [[ "$dump" == *"# --- commands"* ]] || return 1
+    while IFS= read -r _line; do
+        if (( _after_marker )); then
+            [ -n "$_line" ] && return 0
+        elif [[ "$_line" == "# --- commands"* ]]; then
+            _after_marker=1
+        fi
+    done <<< "$dump"
+    return 1
 }
 
 # plan_narrow_active <dump>
 #
 # Extracts the NARROW_ACTIVE value from the --print-plan narrowing header
-# emitted by verify.sh:1101:
+# emitted by verify.sh:3658:
 #   # narrowing — NARROW_ACTIVE=N affected=...
 #
 # Prints the numeric value (0 or 1) to stdout; prints nothing if the line
@@ -208,10 +238,26 @@ plan_narrowing_axis_count() {
 
 # capture_print_plan <out_var> <max_attempts> <cmd...>
 #
-# Runs <cmd...> up to <max_attempts> times until plan_capture_complete
-# certifies a non-truncated capture. On success: assigns the complete dump
-# to <out_var> via printf -v and returns 0. On exhaustion: assigns the last
-# (possibly incomplete) capture to <out_var> and returns 1.
+# Runs <cmd...> up to <max_attempts> times until the capture is certified
+# whole. On success: assigns the complete dump to <out_var> via printf -v and
+# returns 0. On exhaustion: assigns the last (possibly incomplete) capture to
+# <out_var> and returns 1.
+#
+# A capture is whole when BOTH oracles agree: the child EXITED 0, and
+# plan_capture_complete certifies the text.
+#
+# CHILD EXIT STATUS IS THE PRIMARY ORACLE, because it is the only one that
+# reports the thing truncation actually is. Command substitution reads the
+# child's stdout to EOF, so a producer that reached normal exit necessarily
+# wrote its whole plan; a truncated capture requires the producer to DIE, and
+# that is precisely what a non-zero status says. A text oracle can only prove
+# the producer reached some point in its own output, never that it finished.
+#
+# plan_capture_complete is retained as the cheap structural cross-check for
+# the case rc alone would miss: verify.sh exits non-zero with no plan at all
+# when the nextest availability probe hard-fails (verify.sh:2314), and a
+# caller's assertion reads far better against a capture certified empty than
+# against a silent one.
 #
 # Always assigns <out_var> even on exhaustion so the caller's assertions
 # remain the visible failure surface rather than a set -e abort on rc=1.
@@ -226,10 +272,10 @@ plan_narrowing_axis_count() {
 capture_print_plan() {
     local _out_var="$1" _max="$2"
     shift 2
-    local _cap="" _i
+    local _cap="" _rc=0 _i
     for (( _i = 0; _i < _max; _i++ )); do
-        _cap="$("$@")"
-        if plan_capture_complete "$_cap"; then
+        _cap="$("$@")" && _rc=0 || _rc=$?
+        if [ "$_rc" -eq 0 ] && plan_capture_complete "$_cap"; then
             printf -v "$_out_var" '%s' "$_cap"
             return 0
         fi

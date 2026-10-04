@@ -80,6 +80,7 @@ impl ConstraintChecker for StatefulMockConstraintChecker {
                 id: id.clone(),
                 satisfaction,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }

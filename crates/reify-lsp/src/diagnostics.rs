@@ -66,12 +66,48 @@ impl Default for EvalState {
     }
 }
 
+/// One server log line, addressed to the client rather than to a stream.
+///
+/// A struct rather than a `(MessageType, String)` pair or a pre-formatted
+/// string so the severity stays a typed field the transport can map onto
+/// `window/logMessage`'s `type`, and so a reader at a call site sees which
+/// is which without counting tuple positions.
+///
+/// Owned, not borrowed: `crate::server::NotificationSink` is object-safe and
+/// its `ClientSink` implementation moves the line into a spawned task, so
+/// there is no caller frame for a borrow to outlive.
+///
+/// Lives with its producer rather than with its transport, and is
+/// re-exported by `crate::server` for the latter: a value whose two fields
+/// are a severity and a string is transport-neutral, and defining it there
+/// made this module — which claims on [`DiagnosticsResult::log_messages`]
+/// to know nothing about the transport — name that module anyway.
+pub struct LogLine {
+    pub typ: lsp_types::MessageType,
+    pub message: String,
+}
+
 /// Result from the stateful diagnostics pipeline.
 pub struct DiagnosticsResult {
     /// LSP diagnostics to publish.
     pub diagnostics: Vec<lsp_types::Diagnostic>,
     /// Exported geometry data (if geometry kernel is configured).
     pub geometry_output: Option<Vec<u8>>,
+    /// Server log lines the pipeline produced, for the caller to route.
+    ///
+    /// RETURNED rather than written, so this stage stays a pure function of
+    /// its inputs and knows nothing about the transport: threading a
+    /// `NotificationSink` down here would make the pipeline depend on it and
+    /// force every one of its in-crate test call sites to supply one, and
+    /// stashing lines on [`EvalState`] would be a hidden side-channel
+    /// through mutable shared state with an implicit drain point. Sitting
+    /// beside `diagnostics` puts them where a reader already looks.
+    ///
+    /// Decisively: this leaves ONE module — `server.rs` — owning both the
+    /// channel and the write-lock ordering invariant that governs when it
+    /// may be used, so every log site in the server is forwarded from the
+    /// same place, spelled the same way, for the same reason (task #6329).
+    pub log_messages: Vec<LogLine>,
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -179,6 +215,9 @@ pub fn compute_diagnostics_with_state(
     uri: &Url,
 ) -> DiagnosticsResult {
     let mut diagnostics = Vec::new();
+    // Server-log lines, returned for the caller to route — see
+    // `DiagnosticsResult::log_messages`.
+    let mut log_messages: Vec<LogLine> = Vec::new();
 
     // Derive module name from URI
     let module_name = uri
@@ -201,6 +240,7 @@ pub fn compute_diagnostics_with_state(
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
+            log_messages,
         };
     }
 
@@ -239,6 +279,7 @@ pub fn compute_diagnostics_with_state(
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
+            log_messages,
         };
     }
 
@@ -284,11 +325,13 @@ pub fn compute_diagnostics_with_state(
         #[cfg(debug_assertions)]
         if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
-            eprintln!(
-                "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
-                 — last_content_hash was set without a preceding eval(); \
-                 cold-start forced to prevent silent diagnostic loss (engine-init guard)"
-            );
+            log_messages.push(LogLine {
+                typ: lsp_types::MessageType::WARNING,
+                message: "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
+                          — last_content_hash was set without a preceding eval(); \
+                          cold-start forced to prevent silent diagnostic loss (engine-init guard)"
+                    .to_string(),
+            });
         }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -299,9 +342,12 @@ pub fn compute_diagnostics_with_state(
     let check_result = match state.engine.check_snapshot(&compiled) {
         Some(result) => result,
         None => {
-            eprintln!(
-                "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
-            );
+            log_messages.push(LogLine {
+                typ: lsp_types::MessageType::WARNING,
+                message:
+                    "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
+                        .to_string(),
+            });
             // check() re-runs eval() internally and includes its diagnostics in
             // CheckResult.diagnostics; drop our independently captured copy to
             // avoid double-emission.
@@ -646,6 +692,7 @@ pub fn compute_diagnostics_with_state(
     DiagnosticsResult {
         diagnostics,
         geometry_output: None,
+        log_messages,
     }
 }
 
@@ -1959,6 +2006,63 @@ structure S {
              surfacing the circular let-binding diagnostic; \
              got diagnostics: {:?}",
             result.diagnostics
+        );
+    }
+
+    /// The pipeline REPORTS its server-log lines by RETURNING them, so it
+    /// stays a pure function of its inputs and one module (`server.rs`)
+    /// owns the transport (task #6329).
+    ///
+    /// Reuses `cold_start_branch_taken_when_engine_uninitialized_with_matching_hash`'s
+    /// trigger exactly — inject `last_content_hash` while the engine is
+    /// still uninitialized — so the engine-init guard fires deterministically
+    /// from a state the suite already knows how to build, and so a future
+    /// change to the guard's precondition breaks both tests together rather
+    /// than silently making this one vacuous.
+    ///
+    /// `#[cfg(debug_assertions)]`-GATED, matching the guard itself. Tests
+    /// run in debug by default so it is live in the merge gate; under a
+    /// release-profile run the whole test disappears, and that absence is a
+    /// gate on the guard's own gating, not a silent hole.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn engine_init_guard_warning_is_returned_not_written_to_stderr() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = compile_like_production(&parsed);
+        state.last_content_hash = Some(compiled.content_hash);
+        assert!(
+            !state.is_engine_initialized(),
+            "engine must be uninitialized after EvalState::new() + hash injection"
+        );
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let guard_lines: Vec<_> = result
+            .log_messages
+            .iter()
+            .filter(|line| line.message.contains("engine-init guard"))
+            .collect();
+        assert_eq!(
+            guard_lines.len(),
+            1,
+            "expected the engine-init guard's warning to be RETURNED in \
+             DiagnosticsResult.log_messages for the caller to route, rather than written to \
+             stderr by the pipeline itself; got log_messages: {:?}",
+            result
+                .log_messages
+                .iter()
+                .map(|line| (line.typ, line.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            guard_lines[0].typ,
+            lsp_types::MessageType::WARNING,
+            "the engine-init guard reports a recoverable internal inconsistency (cold-start is \
+             forced, no diagnostics are lost), so WARNING — not ERROR"
         );
     }
 

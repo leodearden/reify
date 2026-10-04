@@ -150,10 +150,26 @@
 //! also the thematically right home — it already carries #5342's
 //! `helix_sweep_e2e`, whose `helix()` spine this design consumes.
 //!
-//! No other gate compiles `dev_capstan.ri` (printer.ri is compiled by
+//! What this module does NOT own is the design-file-AGNOSTIC half of its own
+//! fixture work — dimension-checked cell reads, diagnostic-to-cell identity and
+//! the two-step constraint-set assertion. That was written here, and moved to
+//! [`super::design_fixture`] with the design file as a parameter once
+//! [`super::idler_seat_e2e`] wanted it verbatim against `printer.ri` (#6135).
+//!
+//! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
+//! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
+//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the sibling
+//! [`super::idler_seat_e2e`] (#6135, the IdlerPulley end of the same standard)
+//! consumes them rather than loading the file a second time — so the file is
+//! read, parsed, stdlib-compiled, checked and OCCT-tessellated ONCE per test
+//! binary however many gates read it, and the single-compilation argument
+//! [`dev_capstan_compiled`] makes holds across both modules rather than only
+//! inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
+//! (printer.ri is compiled by
 //! `crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`
-//! for orientation-inference warnings), so this module is currently the only
-//! regression guard on `dev_capstan.ri` as a whole. That is why
+//! for orientation-inference warnings, and by `idler_seat_e2e` for its own
+//! kernel-free surface), so these fixtures are the only regression guard on
+//! `dev_capstan.ri` as a whole. That is why
 //! its two FILE-WIDE claims — evaluation Error-freedom (`check_dev_capstan`,
 //! against an enumerated `volume()` exception list) and "constraints ran and
 //! none is violated" (`capstan_design_file_checks_clean_without_a_kernel`) —
@@ -162,16 +178,24 @@
 
 use reify_core::{
     ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, ModulePath, Severity,
-    SourceSpan, ValueCellId,
+    ValueCellId,
 };
-use reify_eval::{CheckResult, ConstraintCheckEntry, TessellateResult};
-use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
-use std::collections::{HashMap, HashSet};
+use reify_eval::{CheckResult, TessellateResult};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+use std::collections::HashSet;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
+// The design-file-agnostic half of this module's fixture work — see the header.
+use super::design_fixture::{
+    assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
+};
+
 /// The real design file under test, reached from this crate's manifest dir.
-const DEV_CAPSTAN: &str = concat!(
+///
+/// `pub(super)` so the sibling [`super::idler_seat_e2e`] names the same path
+/// rather than spelling a second `concat!` for the same file.
+pub(super) const DEV_CAPSTAN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../prj/printer_v01/dev_capstan.ri"
 );
@@ -284,7 +308,12 @@ fn sub_cell_reads(expr: &CompiledExpr) -> Vec<(String, String)> {
 /// five. And it runs kernel-free, where the mouth gate and the prologue are
 /// both behind `OCCT_AVAILABLE` — exactly the failure mode
 /// [`dev_capstan_checked`] exists for.
-const DIN_15061_SEAT_RATIO: f64 = 0.53;
+///
+/// Shared with the sibling [`super::idler_seat_e2e`], which gates the same
+/// standard on the IdlerPulley's seat (#6135) and pins the ratio against THIS
+/// constant for the reason recorded above — so the external standard's number
+/// lives once in the compile unit rather than once per structure gated.
+pub(super) const DIN_15061_SEAT_RATIO: f64 = 0.53;
 
 /// Fractional clearance the DIN ratio buys at the seat mouth, straight out of
 /// it: the mouth is the section's full width `2·r_groove = 2·0.53·d = 1.06·d`,
@@ -403,11 +432,16 @@ const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 /// The tessellated design, computed once per test binary.
 ///
 /// The full parse → compile → spawn-OCCT → sweep → boolean → tessellate pipeline
-/// costs ~5 s and every test in this module only ever *reads* the result, so it is
+/// costs ~5 s and every reader only ever *reads* the result, so it is
 /// memoized rather than run per test (same `OnceLock` caching idiom as
 /// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`). Callers must
 /// have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
-fn dev_capstan() -> &'static TessellateResult {
+///
+/// `pub(super)`: the sibling [`super::idler_seat_e2e`] reads its `IdlerPulley`
+/// mesh out of THIS result. A second fixture over the same file would pay that
+/// ~5 s again and spawn a second OCCT kernel actor for a solid already in
+/// memory.
+pub(super) fn dev_capstan() -> &'static TessellateResult {
     static R: OnceLock<TessellateResult> = OnceLock::new();
     R.get_or_init(tessellate_dev_capstan)
 }
@@ -422,30 +456,37 @@ fn dev_capstan() -> &'static TessellateResult {
 /// is unavailable — which matters most for
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, whose entire claim
 /// is that the relation bites *outside* a full OCCT run.
-fn dev_capstan_checked() -> &'static CheckResult {
+///
+/// `pub(super)`: [`super::idler_seat_e2e`]'s lockstep gate reads this file's
+/// `IdlerPulley` cells off this same surface.
+pub(super) fn dev_capstan_checked() -> &'static CheckResult {
     static R: OnceLock<CheckResult> = OnceLock::new();
     R.get_or_init(check_dev_capstan)
 }
 
 /// The design file's compiled module, computed once per test binary — the
-/// single compilation EVERY other fixture and test in this module reads.
+/// single compilation EVERY fixture and test in the `harness_sweep` compile
+/// unit reads, this module's and [`super::idler_seat_e2e`]'s alike.
 ///
-/// Memoized for correctness first and cost second. Two gates read the compiled
+/// Memoized for correctness first and cost second. Three gates read the compiled
 /// module and the check surface *together*:
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts
-/// `drive_template.constraints` against `result.constraint_results`, and
+/// `drive_template.constraints` against `result.constraint_results`,
 /// [`check_dev_capstan`] maps diagnostic label spans back through
-/// `templates[].value_cells`. Both comparisons are only meaningful if the two
-/// sides came from the SAME compilation; reaching [`compile_dev_capstan`]
+/// `templates[].value_cells`, and `idler_seat_e2e::idler_copies_stay_in_lockstep`
+/// compares this module's `IdlerPulley` `content_hash` against the cells
+/// [`dev_capstan_checked`] evaluated. Those comparisons are only meaningful if
+/// the two sides came from the SAME compilation; reaching [`compile_dev_capstan`]
 /// twice would make them agree only by assuming the compiler is deterministic
-/// — an assumption neither gate states, and one that a future span-numbering
+/// — an assumption none of them states, and one that a future span-numbering
 /// or template-ordering change could quietly break. One `OnceLock` makes it a
-/// fact instead of an assumption.
+/// fact instead of an assumption, and `pub(super)` is what extends that fact
+/// across the module boundary instead of stopping at it.
 ///
 /// The cost side is the ordinary saving: the file is read, parsed and
 /// stdlib-compiled once rather than once per caller, and the parse/compile
 /// Error-freedom assertions inside [`compile_dev_capstan`] run once.
-fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
+pub(super) fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_dev_capstan)
 }
@@ -530,8 +571,9 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 /// a blanket ignore a cell they never touch (`flange_r`, a `ShuttlePlate` cell,
 /// a later `Fairlead` cell) could stop evaluating and nothing would observe it:
 /// the Error-freedom assertion would live solely in the OCCT-gated
-/// [`tessellate_dev_capstan`], and this module is the only regression guard on
-/// `dev_capstan.ri` as a whole. `capstan_design_file_checks_clean_without_a_kernel`
+/// [`tessellate_dev_capstan`], and this fixture is the only regression guard on
+/// `dev_capstan.ri` as a whole — for [`super::idler_seat_e2e`]'s reads of the
+/// file as much as for this module's. `capstan_design_file_checks_clean_without_a_kernel`
 /// closes the same gap on the CONSTRAINT half of that surface.
 fn check_dev_capstan() -> CheckResult {
     let compiled = dev_capstan_compiled();
@@ -542,25 +584,13 @@ fn check_dev_capstan() -> CheckResult {
     let result = engine.check(compiled);
 
     {
-        // WHICH cell a diagnostic is about, structurally. The emission carries the
-        // offending cell's `span` as its label
-        // (`crates/reify-eval/src/engine_eval.rs`), so the identity is recovered by
-        // mapping that span back through the compiled module's value cells — the
-        // same compilation `result` came from, which is what
-        // [`dev_capstan_compiled`] guarantees. Nothing here reads the message: the
-        // prose is another crate's, and a rewording of it must not move a
-        // diagnostic between the two arms below.
-        let cell_by_span: HashMap<SourceSpan, &ValueCellId> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.value_cells.iter())
-            .map(|cell| (cell.span, &cell.id))
-            .collect();
-        let labelled_cell = |d: &Diagnostic| -> Option<String> {
-            let label = d.labels.first()?;
-            let id = cell_by_span.get(&label.span)?;
-            Some(format!("{}.{}", id.entity, id.member))
-        };
+        // WHICH cell a diagnostic is about, structurally — built from the same
+        // compilation `result` came from, which is what [`dev_capstan_compiled`]
+        // guarantees. `exact` because the evaluator labels an unresolvable cell
+        // on the cell itself; mechanism and the never-read-the-message rule are
+        // [`CellSpans`]'s.
+        let cells = CellSpans::of(compiled);
+        let labelled_cell = |d: &Diagnostic| cells.exact(d);
 
         let (volume_errors, rest): (Vec<_>, Vec<_>) = result
             .diagnostics
@@ -666,183 +696,10 @@ fn tessellate_dev_capstan() -> TessellateResult {
     result
 }
 
-/// How strictly [`assert_constraints_ok`] reads a set of constraint results.
-///
-/// **This is the module's one statement of why a constraint failure is not a
-/// fixture's business**, and every other site links here rather than re-deriving
-/// it — nothing executable checks a restatement, so copies go stale. This enum
-/// is the natural home because it is the axis that exists *because* of it.
-///
-/// How `SimpleConstraintChecker` reports a failure alongside the typed
-/// `Satisfaction` result is that crate's business, not this module's: see
-/// `crates/reify-constraints/src/lib.rs`. The one consequence this module acts
-/// on is that a failure reaches the diagnostics as `ConstraintViolated`
-/// (`Violated`) or as a mere WARNING (`Indeterminate`) — so both fixtures,
-/// [`check_dev_capstan`] and [`tessellate_dev_capstan`], route the former OUT
-/// of their Error filters and neither can see the latter at all.
-///
-/// Routed out because a violated constraint is a DESIGN failure, not a pipeline
-/// one. Left in, it panics the shared fixture first — in every test at once,
-/// including the pure-geometry ones that have nothing to do with the relation
-/// that broke — under a message about evaluation or geometry that is false for
-/// that failure, and it shadows the diagnosis [`assert_constraints_ok`] exists
-/// to give (WHICH relation, at what strictness).
-///
-/// So NEITHER failure is a fixture's business: the satisfaction gates own both,
-/// and they read `constraint_results` directly rather than the diagnostics — which
-/// is what keeps their claims true however the checker chooses to report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Strictness {
-    /// Every result must be `Satisfied` — `Indeterminate` fails too.
-    ///
-    /// `Indeterminate` is what a constraint whose inputs failed to EVALUATE
-    /// reports: an undef leaf, or a cross-`sub` field reference that did not
-    /// resolve. It is therefore the failure mode a `Violated`-only filter is
-    /// blindest to — the constraint is still declared, still reported, and
-    /// checking nothing — and per the enum doc above it reaches the diagnostics
-    /// only as a WARNING, so no Error filter here sees it either. This strictness
-    /// is the only claim in the module that catches it.
-    AllSatisfied,
-    /// Only `Violated` fails — the weaker statement `reify check` itself makes.
-    NoneViolated,
-}
-
-/// Assert a `constraint_results` set is non-empty and holds at the strictness
-/// asked for, optionally scoped to one entity; returns the entries examined.
-///
-/// One helper rather than a copy per site because all three of this module's
-/// constraint claims — `capstan_surfaces_only_the_finished_drum` (scoped
-/// `Capstan`, plus its file-wide mirror), the `CapstanDrive` scope of
-/// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, and the file-wide
-/// `capstan_design_file_checks_clean_without_a_kernel` — are the same two-step
-/// statement, and the first step is the one that silently rots when copied:
-///
-///   * **Non-emptiness first.** A satisfaction filter over an empty set is
-///     vacuously green, and an empty `constraint_results` emits NO diagnostic,
-///     so nothing else in the module can see it. That guard has to hold at every
-///     site or the site that lost it stops asserting anything at all.
-///   * **Then the satisfaction filter**, at [`Strictness`] — the axis that
-///     genuinely differs between the sites, so it is a parameter rather than
-///     three hand-written filters that could drift apart.
-///
-/// `surface` names which evaluation surface the entries came from and `note`
-/// carries the site's own mechanical reading of a failure; both are only ever
-/// message text.
-fn assert_constraints_ok<'a>(
-    entries: &'a [ConstraintCheckEntry],
-    scope: Option<&str>,
-    strictness: Strictness,
-    surface: &str,
-    note: &str,
-) -> Vec<&'a ConstraintCheckEntry> {
-    let scoped: Vec<&ConstraintCheckEntry> = match scope {
-        Some(entity) => entries.iter().filter(|c| c.id.entity == entity).collect(),
-        None => entries.iter().collect(),
-    };
-    let what = match scope {
-        Some(entity) => format!("`{entity}` constraint results"),
-        None => "constraint results".to_string(),
-    };
-
-    assert!(
-        !scoped.is_empty(),
-        "no {what} at all on {surface} of {DEV_CAPSTAN} — every structure in the \
-         file declares constraints, so an empty set means the check never ran, or \
-         stopped covering this scope, and the satisfaction filter would then pass \
-         vacuously. {note} Entities checked: {:?}",
-        entries.iter().map(|c| &c.id.entity).collect::<Vec<_>>()
-    );
-
-    let bad: Vec<_> = scoped
-        .iter()
-        .filter(|c| match strictness {
-            Strictness::AllSatisfied => c.satisfaction != Satisfaction::Satisfied,
-            Strictness::NoneViolated => c.satisfaction == Satisfaction::Violated,
-        })
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "{DEV_CAPSTAN} must satisfy {what} at its defaults on {surface} — {} of {} \
-         did not, at {strictness:?} strictness. `Violated` means the design broke the \
-         relation; `Indeterminate` means an input cell failed to EVALUATE, so the \
-         constraint is present but checking nothing. {note} Results: {bad:#?}",
-        bad.len(),
-        scoped.len()
-    );
-
-    scoped
-}
-
-/// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
-/// dimension, and return its SI value (m / m³ / dimensionless).
-///
-/// Entity-parameterised so the cross-structure band↔stroke gate can read
-/// [`FAIRLEAD_ENTITY`] cells — and the instance-scoped `CapstanDrive.shuttle`
-/// form — through the same dimension-checked path (and the same "is the cell
-/// declared in …?" hint) the capstan cells go through, rather than carrying a
-/// second copy of the `Value::Scalar` match. Map-parameterised (rather than
-/// taking a `&TessellateResult`) so the kernel-free [`dev_capstan_checked`]
-/// surface reads its cells through the same helper.
-///
-/// Both structures are `sub`s of the file's `CapstanDrive` assembly, so their
-/// scalar cells are in the map under two key forms ([`sub_entity`]). Which one a
-/// caller wants is a real choice, not a formality: see the (0) claim in
-/// `capstan_active_band_is_covered_by_the_fairlead_stroke`.
-fn entity_cell(
-    values: &ValueMap,
-    entity: &str,
-    cell: &str,
-    expected_dim: DimensionVector,
-) -> f64 {
-    let id = ValueCellId::new(entity, cell);
-    match values.get(&id) {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) => {
-            assert_eq!(
-                *dimension, expected_dim,
-                "{entity}.{cell}: expected dimension {expected_dim:?}, got {dimension:?}"
-            );
-            *si_value
-        }
-        other => panic!(
-            "{entity}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
-             got {other:?} — is the cell declared in {DEV_CAPSTAN}?"
-        ),
-    }
-}
-
 /// [`entity_cell`] fixed to [`CAPSTAN_ENTITY`] — the majority of this module's
 /// reads.
 fn capstan_cell(values: &ValueMap, cell: &str, expected_dim: DimensionVector) -> f64 {
-    entity_cell(values, CAPSTAN_ENTITY, cell, expected_dim)
-}
-
-/// Read a dimensionless (`: Real`) cell of `entity` — a pure count such as
-/// `active_turns` or `dead_total` — and return it.
-///
-/// Separate from [`entity_cell`] because the evaluator does NOT wrap a
-/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`; a
-/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are accepted
-/// here anyway: they denote the same mathematical object, and this module's
-/// assertions are about the DESIGN, not about which representation the evaluator
-/// picks for a unitless number. A `Value::Scalar` carrying any real dimension is
-/// still rejected — that would mean the cell had silently acquired units.
-fn entity_real(values: &ValueMap, entity: &str, cell: &str) -> f64 {
-    let id = ValueCellId::new(entity, cell);
-    match values.get(&id) {
-        Some(Value::Real(v)) => *v,
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
-        other => panic!(
-            "{entity}.{cell} must be a dimensionless real (a count of turns), i.e. a \
-             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is the \
-             cell declared in {DEV_CAPSTAN}, and is it still `: Real`?"
-        ),
-    }
+    entity_cell(values, DEV_CAPSTAN, CAPSTAN_ENTITY, cell, expected_dim)
 }
 
 /// Arc length of a helix of radius `rho` making `turns` revolutions while
@@ -874,7 +731,14 @@ fn helix_arc_len(rho: f64, turns: f64, rise: f64) -> f64 {
 /// form's spine runs here. With an equal-radii seat (`groove_r == rope_dia/2`)
 /// it collapses onto `pitch_r` exactly, which is why #5580 could write
 /// `pitch_r` throughout without the distinction mattering.
-fn seat_arc_centre(pitch_r: f64, groove_r: f64, rope_dia: f64) -> f64 {
+///
+/// Shared with the sibling [`super::idler_seat_e2e`] (#6135), because the
+/// offset is CONSTRUCTION-INDEPENDENT: the Capstan sweeps a cutter profile
+/// along a helix and the IdlerPulley revolves a torus tube, but "push the arc
+/// centre outboard by however far the rope sinks into it" is the same one-line
+/// statement either way, and `pitch_r` is simply whichever circle that design
+/// wants the seated rope's centreline to land on.
+pub(super) fn seat_arc_centre(pitch_r: f64, groove_r: f64, rope_dia: f64) -> f64 {
     pitch_r + groove_r - rope_dia / 2.0
 }
 
@@ -1458,16 +1322,34 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
 
     let band = capstan_cell(&result.values, "band", DimensionVector::LENGTH);
     let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
-    let active_turns = entity_real(&result.values, CAPSTAN_ENTITY, "active_turns");
-    let dead_total = entity_real(&result.values, CAPSTAN_ENTITY, "dead_total");
+    let active_turns = entity_real(&result.values, DEV_CAPSTAN, CAPSTAN_ENTITY, "active_turns");
+    let dead_total = entity_real(&result.values, DEV_CAPSTAN, CAPSTAN_ENTITY, "dead_total");
     let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
-    let stroke = entity_cell(&result.values, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
+    let stroke = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        FAIRLEAD_ENTITY,
+        "stroke",
+        DimensionVector::LENGTH,
+    );
 
     // The instance-scoped spellings — what the DSL constraints resolve against.
     let capstan_inst = sub_entity(CAPSTAN_SUB);
     let shuttle_inst = sub_entity(SHUTTLE_SUB);
-    let band_inst = entity_cell(&result.values, &capstan_inst, "band", DimensionVector::LENGTH);
-    let stroke_inst = entity_cell(&result.values, &shuttle_inst, "stroke", DimensionVector::LENGTH);
+    let band_inst = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        &capstan_inst,
+        "band",
+        DimensionVector::LENGTH,
+    );
+    let stroke_inst = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        &shuttle_inst,
+        "stroke",
+        DimensionVector::LENGTH,
+    );
 
     // ---- (0) The template and instance spellings are the same number ----
     // Not a formality: an override through `sub capstan = Capstan(...)` would
@@ -1637,6 +1519,7 @@ fn capstan_surfaces_only_the_finished_drum() {
     // too. File-wide it is the weaker statement `reify check` itself makes.
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_ENTITY),
         Strictness::AllSatisfied,
         "the OCCT build surface",
@@ -1645,6 +1528,7 @@ fn capstan_surfaces_only_the_finished_drum() {
     );
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         None,
         Strictness::NoneViolated,
         "the OCCT build surface",
@@ -1860,6 +1744,7 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     // the doc comment above, not by execution order.
     let drive_constraints = assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_DRIVE_ENTITY),
         Strictness::AllSatisfied,
         "the kernel-free check surface",
@@ -1977,6 +1862,7 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
 
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         None,
         Strictness::NoneViolated,
         "the kernel-free check surface",
@@ -2001,6 +1887,7 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
     // kernel.
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_ENTITY),
         Strictness::AllSatisfied,
         "the kernel-free check surface",

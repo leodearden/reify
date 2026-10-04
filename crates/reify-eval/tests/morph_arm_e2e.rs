@@ -222,8 +222,29 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     // BRep. Only the 4092 attributed path threads one. Plain VolumeMesh demand
     // would leave boundary == None and honestly degrade to remesh (morphed would
     // stay 0) — so this registration is what lets the morph solve run at all.
-    // The solve DOES run today and reaches `morphed == 1` (measured 2026-09-08);
-    // an earlier quality-gate hard-fail on this fixture is no longer reproducible.
+    // The solve DOES run today and reaches `morphed == 1` — deterministically,
+    // since task 7411. Before 7411 the `snap.morphed == 1` assertion that closes
+    // this test intermittently read `remeshed_quality_soft_fail: 1` instead — a
+    // quality-gate SOFT fail, not the hard fail an earlier note here claimed,
+    // and it WAS reproducible: ~1.6% in lane _lane-9 (1 fail in 63 runs) and ~1%
+    // across task 6973's 132-invocation sweep, gate-blocking on task 6493
+    // (esc-6493-5) and task 6973 (esc-6973-3).
+    // Cause: the source tet mesh came from the attributed gmsh path under
+    // `General.NumThreads = available_parallelism()` and so varied run-to-run,
+    // while reify-mesh-morph judges the morphed mesh against ABSOLUTE floors —
+    // making the morph-or-remesh verdict a function of thread scheduling. Task
+    // 7411 pinned that producer deterministic
+    // (`reify-kernel-gmsh/src/kernel_real.rs`, `mesh_surface_to_volume_attributed`).
+    //
+    // IF `morphed == 1` REDS AGAIN, triage there first: run
+    // `reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`'s
+    // `attributed_producer_output_is_reproducible_across_repeated_calls`. Red
+    // there means the source mesh became unpinned again; green there means the
+    // regression is in the morph or quality-gate logic, not in mesh determinism.
+    // Either way, do NOT widen that `snap.morphed == 1` assertion to accept the
+    // remesh fallback (the exact regression tasks 6635/6637 fixed), and do NOT
+    // delete it. (The separate `fires_across_tick == 0` assertion further down
+    // carries its own do-not-widen instruction, for the unrelated #7332 latch.)
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),

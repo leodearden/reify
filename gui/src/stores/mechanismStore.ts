@@ -1,4 +1,5 @@
-import { createStore, produce } from 'solid-js/store';
+import { batch } from 'solid-js';
+import { createStore, produce, reconcile } from 'solid-js/store';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -102,14 +103,19 @@ export function createMechanismStore(deps: MechanismStoreDeps) {
       }
     }
 
-    setState(
-      produce((s) => {
-        s.descriptors = newDescriptors;
-        for (const key of toDelete) {
-          delete s.optimistic[key];
-        }
-      }),
-    );
+    // Reconciled, not assigned: every refresh deserializes fresh objects, and
+    // replacing them would remount every slider — including one held mid-drag.
+    batch(() => {
+      setState('descriptors', reconcile(newDescriptors, { key: 'cell_id' }));
+      setState(
+        'optimistic',
+        produce((optimistic) => {
+          for (const key of toDelete) {
+            delete optimistic[key];
+          }
+        }),
+      );
+    });
   }
 
   /**

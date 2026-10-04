@@ -8,21 +8,23 @@
 #![cfg(has_gmsh)]
 
 // The clamp probe and its serialising mutex are shared verbatim with
-// `tests/mesh_to_volume_clamp_hermeticity.rs`, the other half of this
+// `tests/mesh_size_option_hermeticity.rs`, the other half of this
 // discipline. Declared by path rather than through `common/mod.rs`, which
-// #6387 reduced to a re-export shim over `reify_test_support::fixtures` and
+// #6387 reduced to a re-export shim over `reify_test_support::mesh_fixtures` and
 // which is scheduled for deletion; see `common/clamp_probe.rs` for why one
 // copy matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
 use clamp_probe::{
-    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, poison_global_mesh_size_clamp, probe_triangle_count,
-    set_global_mesh_size_clamp,
+    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, assert_all_size_options_at_gmsh_defaults,
+    poison_global_mesh_size_clamp, probe_triangle_count, set_global_mesh_size_clamp,
 };
-use reify_ir::{ElementOrderTag, Mesh};
-use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
+use reify_kernel_gmsh::{
+    BackgroundSizeField, MeshingOptions, ffi, init, refine_volume_with_size_field,
+};
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
 /// `[0,scale]^3`.
@@ -37,9 +39,87 @@ fn scaled_cube_mesh(scale: f32) -> Mesh {
     cube
 }
 
-/// Remesh `cube` with the given per-vertex hints and return the P1 tet count.
-fn refine_tet_count(cube: &Mesh, vertex_sizes: &[f64], opts: &MeshingOptions) -> usize {
-    let vm = refine_volume_with_size_field(cube, vertex_sizes, opts, ElementOrderTag::P1)
+/// Kuhn decomposition of `[0, scale]^3` over an `n^3` lattice of cells —
+/// `(n+1)^3` vertices, `6n^3` tets, each cell cut into the six tets that share
+/// its main diagonal.
+///
+/// A sizing mesh only: it carries the size field into the kernel and is never
+/// compared against the result.
+fn kuhn_lattice_box_vm(scale: f64, n: usize) -> VolumeMesh {
+    let side = n + 1;
+    let vid = |i: usize, j: usize, k: usize| ((k * side + j) * side + i) as u32;
+    let coord = |i: usize| (scale * i as f64 / n as f64) as f32;
+
+    let mut vertices = Vec::with_capacity(3 * side * side * side);
+    for k in 0..side {
+        for j in 0..side {
+            for i in 0..side {
+                vertices.extend_from_slice(&[coord(i), coord(j), coord(k)]);
+            }
+        }
+    }
+
+    const AXIS_ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let mut indices = Vec::with_capacity(4 * 6 * n * n * n);
+    for ck in 0..n {
+        for cj in 0..n {
+            for ci in 0..n {
+                for order in AXIS_ORDERS {
+                    let mut step = [0_usize; 3];
+                    indices.push(vid(ci, cj, ck));
+                    for axis in order {
+                        step[axis] = 1;
+                        indices.push(vid(ci + step[0], cj + step[1], ck + step[2]));
+                    }
+                }
+            }
+        }
+    }
+
+    VolumeMesh {
+        vertices,
+        connectivity: VolumeConnectivity::Tet {
+            indices,
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// A [`BackgroundSizeField`] over `[0, scale]^3`, sized by position.
+///
+/// These tests were written against a per-SURFACE-vertex hint slice, which the
+/// kernel no longer takes (task #7447 — a boundary field discards every
+/// interior value). Each one's positional rule is preserved verbatim and
+/// evaluated at the vertices of a sizing lattice spanning the same box, so what
+/// moves is the plumbing, not which hint applies where.
+///
+/// The lattice puts a vertex plane at every quarter of the box, which is what
+/// the non-uniform fixture's split at `SCALE / 2` needs; a uniform field is
+/// unaffected by the resolution.
+fn box_size_field(scale: f64, size_at: impl Fn(f64, f64, f64) -> f64) -> BackgroundSizeField {
+    const LATTICE_CELLS: usize = 4;
+    let vm = kuhn_lattice_box_vm(scale, LATTICE_CELLS);
+    let sizes: Vec<f64> = vm
+        .vertices
+        .chunks_exact(3)
+        .map(|xyz| size_at(xyz[0] as f64, xyz[1] as f64, xyz[2] as f64))
+        .collect();
+    BackgroundSizeField::from_tet_mesh(&vm, &sizes)
+        .unwrap_or_else(|e| panic!("sizing lattice must yield a valid size field: {e:?}"))
+}
+
+/// Remesh `cube` under `size_field` and return the P1 tet count.
+fn refine_tet_count(cube: &Mesh, size_field: &BackgroundSizeField, opts: &MeshingOptions) -> usize {
+    let vm = refine_volume_with_size_field(cube, size_field, opts, ElementOrderTag::P1)
         .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
     vm.tet_indices().expect("P1 tet mesh").len() / 4
 }
@@ -103,12 +183,16 @@ fn split_by_centroid_x(vm: &reify_ir::VolumeMesh, split_x: f64) -> SplitStats {
 /// process-global mesh-size clamp has been poisoned by an earlier call**.
 ///
 /// gmsh's option table is process-global and survives `gmshClear()`, and three
-/// sibling entry points set `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax` and never
-/// restore them: `kernel_real::GmshKernel::mesh_to_volume`,
+/// sibling entry points USED TO set `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax`
+/// and restore neither: `kernel_real::GmshKernel::mesh_to_volume`,
 /// `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh. Any
-/// of those running earlier in the same process pins every element of a later
+/// of those running earlier in the same process pinned every element of a later
 /// `refine_volume_with_size_field` remesh to *its* size, making the per-vertex
-/// `vertex_sizes` hints completely inert (task #6211).
+/// `vertex_sizes` hints completely inert (task #6211). All three now enter and
+/// leave a `mesh_size_scope::MeshSizeScope` (#6968), so the leak is closed at
+/// its source; this test keeps reproducing it SYNTHETICALLY, by writing the
+/// hostile table itself, which is what makes it independent of whether any
+/// sibling is still capable of producing one.
 ///
 /// This test reproduces that leak **deterministically** — it writes the clamp
 /// itself via `ffi::option_set_number` rather than depending on which sibling
@@ -129,24 +213,47 @@ fn split_by_centroid_x(vm: &reify_ir::VolumeMesh, split_x: f64) -> SplitStats {
 ///    than merely that one particular poisoned run happened to come out
 ///    monotone.
 ///
+/// # What assertion 2 pins TODAY, which is not what it was written to pin
+///
+/// It was written against task #6211, when the thing standing between the
+/// poison and the mesher was `refine_volume_with_size_field`'s own
+/// `Mesh.MeshSizeMin`/`MeshSizeMax` writes. Since #6968 the poison is erased
+/// before those are reached: `MeshSizeScope::entered` (`refine_volume.rs`,
+/// immediately after `init::ensure_initialized()`) restores gmsh's defaults
+/// for all five size options on the way in. So assertion 2 now pins the
+/// SCOPE's inbound establishment, and with the scope armed the two legs are
+/// two identical defaults runs — green by construction.
+///
+/// That is not a reason to delete it. It is the only test here that reds if
+/// the inbound establishment disappears by ANY route, and it observes the
+/// EFFECT (a tet count) rather than reading the table, so it cannot be
+/// defeated by a leak through an option no test thought to name.
+///
+/// A guard for refine's OWN inbound writes specifically is not reachable from
+/// a test: it would have to poison the table AFTER the scope has entered and
+/// BEFORE the clamp writes run, and that is inside one `GMSH_LOCK`
+/// acquisition, with no seam. Said plainly rather than left as an assertion
+/// this test looks like it makes — `refine_volume.rs`'s own "NO TEST CAN TELL"
+/// note is the other half of it.
+///
 /// The clamp is rewritten before *every* call, because the fixed implementation
 /// sets both options on entry; a single up-front write would only exercise the
 /// first hint. The poison value is derived from `HINTS` rather than written as
 /// a literal — it is the COARSEST hint, i.e. the value that pins the output at
 /// the coarsest size the caller asked for, which is the leak's worst case.
 ///
+/// [`CLAMP_TEST_ORDER`] is still taken across the whole body, and what it buys
+/// is now the test's FALSIFIABILITY rather than today's correctness.
 /// `set_global_mesh_size_clamp` releases `GMSH_LOCK` before
-/// `refine_volume_with_size_field` takes it, so a sibling test could otherwise
-/// overwrite the clamp in that gap — and because the fix now *resets the clamp
-/// to defaults on every exit*, an interleaved sibling refine would erase the
-/// poison and turn the poisoned leg into a second defaults run, making
-/// assertion 2 hold trivially. That is a false PASS, not a false failure, so
-/// it cannot be left to chance: [`CLAMP_TEST_ORDER`] serialises the whole test
-/// body against its siblings, making poison → refine atomic. (Asserting the
-/// written value is still in place immediately before the call would instead
-/// need an `option_get_number` FFI getter, which does not exist and lives
-/// outside task #6211's locked files — it is part of task #6212's save/restore
-/// discipline.)
+/// `refine_volume_with_size_field` takes it. On a build where the inbound
+/// establishment is gone — the build this test exists to catch — a sibling
+/// landing in that gap would erase the poison and turn the poisoned leg into a
+/// second defaults run, so the test would pass exactly when it should fail.
+/// That is a false PASS, the worse direction for a regression guard, and the
+/// mutex makes poison → refine atomic against its siblings. (Reading the
+/// written value back immediately before the call, via the `option_get_number`
+/// task #6968 added, would not substitute: it reports the table at the moment
+/// it is called, not across the gap a sibling can land in.)
 #[test]
 fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
@@ -160,11 +267,9 @@ fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
         deterministic: true,
         ..Default::default()
     };
-    let n_surface_verts = cube.vertices.len() / 3;
-
     let mut tet_counts: Vec<usize> = Vec::with_capacity(HINTS.len());
     for hint in HINTS {
-        let sizes = vec![hint; n_surface_verts];
+        let sizes = box_size_field(1.0, |_, _, _| hint);
 
         // Re-establish the leaked state before each remesh (see docstring).
         poison_global_mesh_size_clamp(POISON);
@@ -176,7 +281,7 @@ fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
 
         assert_eq!(
             poisoned, from_defaults,
-            "the remesh must depend on `vertex_sizes` alone, not on the inbound \
+            "the remesh must depend on the size field alone, not on the inbound \
              process-global clamp: hint {hint} gave {poisoned} tets after a \
              Min=Max={POISON} poison but {from_defaults} tets from gmsh's \
              defaults (task #6211)",
@@ -203,99 +308,66 @@ fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
 ///
 /// Deliberately NOT a unit cube. Gmsh's mesher is scale-invariant here, so what
 /// matters is `SCALE / COARSE` — how many coarse-hint-sized elements span the
-/// domain, i.e. how much interior there is for the mesher to coarsen into.
-/// Measured: at `SCALE/COARSE = 2` (the old unit-cube fixture) the boundary
-/// triangulation constrains every interior tet and the capped and uncapped runs
-/// are indistinguishable to any assertion this test could make; at 4 they
-/// separate cleanly. See the "measured" section on the test below.
+/// domain, i.e. how much interior there is for the mesher to coarsen into, which
+/// is what lets the non-uniform test's no-coarsening assertion fail at all. At
+/// `SCALE/COARSE = 2` (the old unit-cube fixture) the boundary triangulation
+/// constrained every interior tet.
 const SCALE: f64 = 4.0;
 /// Hint on the marked half (`x < SPLIT_X`).
 const FINE: f64 = 0.25;
-/// Hint everywhere else. Also the value of the cap under test, since
-/// `Mesh.MeshSizeMax = max(vertex_sizes)` and this is the coarsest hint.
+/// Hint everywhere else. Also the value of the cap, since
+/// `Mesh.MeshSizeMax = size_field.max_size()` and this is the coarsest hint.
 const COARSE: f64 = 1.0;
 /// The marked/unmarked boundary — the box's mid-plane.
 const SPLIT_X: f64 = SCALE / 2.0;
-/// How far a realized element may exceed the cap before the test calls it
-/// uncapped.
+/// How far a realized unmarked element may exceed `COARSE` before the test
+/// calls the unmarked region coarsened.
 ///
-/// `Mesh.MeshSizeMax` bounds gmsh's *size field*, not the edge lengths it
-/// actually emits; Delaunay insertion overshoots the target where the interior
-/// is under-constrained, so some slack is unavoidable and a threshold at
-/// exactly `COARSE` would be a false-failure generator. This factor is picked
-/// from the measured separation, not from taste: on this fixture the largest
-/// unmarked element is `1.660 * COARSE` capped and `3.119 * COARSE` uncapped,
-/// so `2.0` sits with ~17% margin below the capped value and ~56% below the
-/// uncapped one. That is a wide band around a mesher-version-sensitive
-/// quantity — unlike the ~7% gap the old unit-cube fixture offered, which is
-/// why it pinned nothing.
+/// A size field sets the size gmsh *targets*, not the edge lengths it emits;
+/// Delaunay insertion overshoots the target where the interior is
+/// under-constrained, so some slack is unavoidable and a threshold at exactly
+/// `COARSE` would be a false-failure generator. Measured under the background
+/// size field (task #7447): the largest unmarked element is `1.6230 * COARSE`,
+/// leaving `2.0` with ~19% margin.
 const UNMARKED_MAX_SIZE_SLACK: f64 = 2.0;
 
-/// A NON-uniform size field refines only the marked region, and the cap the fix
-/// introduces (`Mesh.MeshSizeMax = max(vertex_sizes)`) keeps the unmarked
-/// region from coarsening arbitrarily past the coarsest hint.
+/// A NON-uniform size field refines only the marked region and leaves the
+/// unmarked region near the coarse hint it asked for.
 ///
 /// This is the production shape — `reify_solver_elastic::volume_refine::
-/// refine_with_size_field` always passes a localized field — and it is the case
-/// where the `max_hint` cap actually changes behaviour: with
-/// `Mesh.MeshSizeExtendFromBoundary = 0` the 3D mesher is otherwise free to
-/// coarsen the interior past anything the caller asked for. The uniform test
-/// above cannot see that, because there the cap coincides with the single hint.
+/// refine_with_size_field` always passes a localized field.
 ///
 /// Fine hints on `x < SPLIT_X`, coarse elsewhere. Asserts, all relative:
 ///
 /// 1. the marked half holds strictly more tets than the unmarked half;
-/// 2. **the cap binds** — no single unmarked-half element exceeds
-///    `UNMARKED_MAX_SIZE_SLACK * COARSE`. This is the assertion that fails if
-///    `Mesh.MeshSizeMax` is reverted to gmsh's uncapped default, so the cap is
-///    pinned by a fixture rather than only by a comment;
+/// 2. no single unmarked-half element exceeds
+///    `UNMARKED_MAX_SIZE_SLACK * COARSE` — the unmarked region tracks the size
+///    it was given rather than coarsening away from it;
 /// 3. the marked half's mean element size is strictly smaller than the
 ///    unmarked half's — localization, not a uniformly-finer mesh.
 ///
-/// # Measured: why this fixture, this statistic, this threshold
+/// # Assertion 2 is about the field, not about `Mesh.MeshSizeMax`
 ///
-/// Unmarked-half figures, normalised by `COARSE`, capped vs `Mesh.MeshSizeMax`
-/// forced to gmsh's uncapped default. `N = SCALE / COARSE` is how many
-/// coarse-hint elements span the box:
+/// It used to guard the cap. Under the 0D-corner-anchor path this fixture
+/// separated capped from uncapped by 1.9x on the max-edge column (`1.66` vs
+/// `3.12` at N=4), and assertion 2 failed if the cap were reverted to gmsh's
+/// default. Re-measured under the background size field (task #7447), capped vs
+/// `Mesh.MeshSizeMax` forced to `1.0e22`:
 ///
-/// | fixture                  | mean edge | max edge  | unmarked tets |
-/// |--------------------------|-----------|-----------|---------------|
-/// | N=2 (old unit cube)      | 0.78/0.88 | 1.68/1.66 |  85/61        |
-/// | N=4 (this fixture)       | 1.14/1.39 | 1.66/3.12 | 225/105       |
-/// | N=6                      | 1.25/1.93 | 1.89/4.82 | 584/150       |
+/// | leg      | mean edge       | max edge  | counts       |
+/// |----------|-----------------|-----------|--------------|
+/// | capped   | 0.3711 / 1.1307 | 1.6230    | 5160 / 231   |
+/// | uncapped | 0.3711 / 1.1307 | 1.6230    | 5160 / 231   |
 ///
-/// Two things follow, and both were wrong in the previous version of this test.
-///
-/// *The fixture*: at N=2 every column is indistinguishable capped vs uncapped —
-/// a unit cube has no interior, so the boundary triangulation alone decides
-/// element size and no assertion here could detect the cap's removal. N=4 is
-/// the smallest fixture measured to separate them, and costs ~90 ms.
-///
-/// *The statistic*: the MEAN is the wrong one. `Mesh.MeshSizeMax` bounds the
-/// size field, so it bounds the worst element, not the average; the mean only
-/// drifts with it. Worse, the old assertion `mean_edge[1] <= COARSE` is not a
-/// property the cap provides at all — it holds at N=2 for both runs and fails
-/// at N=4 *even capped* (1.14). It read as a contract statement while actually
-/// asserting "the domain is too small to coarsen". The MAX separates by 1.9x at
-/// N=4 and is the direct expression of "no element grows arbitrarily coarser
-/// than the caller asked for".
-///
-/// # Measured: what the cap costs
-///
-/// The cap is not free and its cost is not bounded — it grows with `N`, since
-/// the interior is exactly the part that was previously coarsening away:
-/// unmarked-half tets go 61 -> 85 (+39%) at N=2, 105 -> 225 (+114%) at N=4,
-/// 150 -> 584 (+289%) at N=6. That cost is paid on every iteration of an
-/// adaptive loop, and it is deliberate: those are the elements the caller's
-/// `vertex_sizes` asked for. Uncapped, the interior silently ignored the
-/// request — at N=6 the largest interior element was 4.8x the coarsest hint —
-/// which is the same "the size field is inert" failure family as #6211 itself,
-/// just confined to the interior. Cheaper only because it did less of what was
-/// asked.
+/// Bit-identical: the field itself now asks for the unmarked elements, so the
+/// cap has nothing left to bound here. Why it cannot bind anywhere — outside
+/// the sizing mesh included — is stated once, at the `Mesh.MeshSizeMax` write
+/// in `refine_volume.rs`; the region outside the sizing mesh is pinned by
+/// [`the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`].
 ///
 /// Run under a poisoned clamp for the same reason as the test above.
 #[test]
-fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
+fn non_uniform_size_field_refines_marked_region_and_does_not_coarsen_the_rest() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
     let cube = scaled_cube_mesh(SCALE as f32);
@@ -305,19 +377,16 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
         ..Default::default()
     };
 
-    // Fine hint on the x < SPLIT_X face, coarse on the rest.
-    let vertex_sizes: Vec<f64> = cube
-        .vertices
-        .chunks_exact(3)
-        .map(|xyz| if (xyz[0] as f64) < SPLIT_X { FINE } else { COARSE })
-        .collect();
-    assert!(
-        vertex_sizes.contains(&FINE) && vertex_sizes.contains(&COARSE),
-        "fixture must produce a genuinely non-uniform field, got {vertex_sizes:?}",
+    // Fine hint on the x < SPLIT_X side, coarse on the rest.
+    let size_field = box_size_field(SCALE, |x, _, _| if x < SPLIT_X { FINE } else { COARSE });
+    assert_eq!(
+        size_field.max_size(),
+        COARSE,
+        "fixture must be genuinely non-uniform — the coarsest emitted size sets the cap",
     );
 
     poison_global_mesh_size_clamp(COARSE);
-    let vm = refine_volume_with_size_field(&cube, &vertex_sizes, &opts, ElementOrderTag::P1)
+    let vm = refine_volume_with_size_field(&cube, &size_field, &opts, ElementOrderTag::P1)
         .expect("refine_volume_with_size_field must succeed for a non-uniform field");
 
     let stats = split_by_centroid_x(&vm, SPLIT_X);
@@ -340,14 +409,13 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
     assert!(
         max_edge[1] <= max_allowed,
         "the unmarked half's largest element {} must not exceed {max_allowed} \
-         ({UNMARKED_MAX_SIZE_SLACK}x the coarsest requested hint {COARSE}) — that is the \
-         contract Mesh.MeshSizeMax = max(vertex_sizes) states, and this assertion is what \
-         pins it: measured {} capped, {} uncapped on this fixture, so reverting the cap to \
-         gmsh's default fails this line (task #6211). Mean edge lengths {mean_edge:?}, \
-         counts {counts:?}",
+         ({UNMARKED_MAX_SIZE_SLACK}x the coarsest requested hint {COARSE}): the unmarked \
+         region must track the size the field gave it rather than coarsening away from it. \
+         Measured {} under the background size field, identical capped and uncapped — a \
+         failure here is a sizing regression, not a cap regression. Mean edge lengths \
+         {mean_edge:?}, counts {counts:?}",
         max_edge[1],
-        1.660 * COARSE,
-        3.119 * COARSE,
+        1.6230 * COARSE,
     );
     assert!(
         mean_edge[0] < mean_edge[1],
@@ -359,16 +427,115 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
     );
 }
 
+/// Edge length of the sub-box `[0, SIZING_SPAN]^3` the partial sizing mesh
+/// covers: one eighth of the `[0, SCALE]^3` box it sizes.
+const SIZING_SPAN: f64 = SCALE / 2.0;
+/// Lower bound, in centroid `x`, of the band the partial-sizing-mesh test
+/// reads. Every tet there lies at least `SCALE / 4` beyond the sizing mesh.
+const OUTSIDE_BAND_MIN_X: f64 = 3.0 * SCALE / 4.0;
+/// How far the outside band's mean edge may stray from the nearest-hint
+/// reference, as a fraction of it: the ±25% the solver-elastic localization
+/// test uses for its far band.
+const NEAREST_HINT_TOLERANCE: f64 = 0.25;
+
+/// Outside the region its sizing mesh covers, the background field takes the
+/// NEAREST node's hint. It does not fall back to the coarsest hint, which is
+/// the value of the `Mesh.MeshSizeMax` cap.
+///
+/// The sizing mesh covers only `[0, SIZING_SPAN]^3`, and its hints are laid out
+/// so the nearest one and the coarsest one disagree: `COARSE` on
+/// `x < SIZING_SPAN / 2`, `FINE` on the rest, so its face nearest the band read
+/// here carries `FINE` while `max_size()`, and so the cap, is `COARSE`. The band
+/// `x >= OUTSIDE_BAND_MIN_X` lies wholly outside the sizing mesh.
+///
+/// Its mean tet edge is compared with the same band remeshed under two
+/// whole-box uniform references, `FINE` and `COARSE`. It must sit within
+/// `NEAREST_HINT_TOLERANCE` of the `FINE` one, and the test first asserts that
+/// the `COARSE` one falls outside that window, so this outcome cannot be
+/// confused with the cap's. Measured (task #7447, libgmsh 4.15.2):
+///
+/// | remesh                                  | outside band mean edge (tets) |
+/// |-----------------------------------------|-------------------------------|
+/// | partial sizing mesh                     | 0.3380 (4440)                 |
+/// | uniform `FINE` reference                | 0.3377 (4437)                 |
+/// | uniform `COARSE` reference              | 1.1247 (111)                  |
+/// | partial, field's `UseClosest` forced 0  | 1.1471 — this test fails      |
+///
+/// The partial reading is identical with `Mesh.MeshSizeMax` forced to
+/// `1.0e22`: the cap does not bind here either. That is gmsh's `PostView`
+/// field extending its view by the nearest node (its `UseClosest` option,
+/// which `refine_volume_with_size_field` leaves at gmsh's default), and it is
+/// half of why the cap can never bind. The last row is the mutation check:
+/// with the extension off, the band falls to the cap and reads next to the
+/// `COARSE` reference. The whole argument is stated once, at the
+/// `Mesh.MeshSizeMax` write in `refine_volume.rs`; this test is what goes red
+/// if a gmsh upgrade stops extending the view that way.
+#[test]
+fn the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let cube = scaled_cube_mesh(SCALE as f32);
+    let opts = MeshingOptions {
+        mesh_size: Some(COARSE),
+        deterministic: true,
+        ..Default::default()
+    };
+    let outside_band_mean_edge = |size_field: &BackgroundSizeField, what: &str| -> f64 {
+        let vm = refine_volume_with_size_field(&cube, size_field, &opts, ElementOrderTag::P1)
+            .unwrap_or_else(|e| {
+                panic!("{what}: refine_volume_with_size_field must succeed: {e:?}")
+            });
+        let stats = split_by_centroid_x(&vm, OUTSIDE_BAND_MIN_X);
+        assert!(
+            stats.counts[1] > 0,
+            "{what}: the band x >= {OUTSIDE_BAND_MIN_X} must contain tets, counts {:?}",
+            stats.counts,
+        );
+        stats.mean_edge[1]
+    };
+
+    let partial = box_size_field(SIZING_SPAN, |x, _, _| {
+        if x < SIZING_SPAN / 2.0 { COARSE } else { FINE }
+    });
+    assert_eq!(
+        partial.max_size(),
+        COARSE,
+        "fixture: the coarsest hint, and so the cap, must be COARSE, away from the band",
+    );
+
+    let fine_reference = outside_band_mean_edge(&box_size_field(SCALE, |_, _, _| FINE), "FINE");
+    let coarse_reference =
+        outside_band_mean_edge(&box_size_field(SCALE, |_, _, _| COARSE), "COARSE");
+    let window = (1.0 - NEAREST_HINT_TOLERANCE) * fine_reference
+        ..=(1.0 + NEAREST_HINT_TOLERANCE) * fine_reference;
+    assert!(
+        !window.contains(&coarse_reference),
+        "fixture: the uniform COARSE reference ({coarse_reference}) must fall outside the \
+         nearest-hint window {window:?}, or this test cannot tell the nearest hint from the cap",
+    );
+
+    let observed = outside_band_mean_edge(&partial, "partial sizing mesh");
+    assert!(
+        window.contains(&observed),
+        "outside the sizing mesh the remesh must follow the NEAREST hint ({FINE}): band \
+         x >= {OUTSIDE_BAND_MIN_X} mean edge {observed}, window {window:?} around the uniform \
+         {FINE} reference {fine_reference}; the uniform {COARSE} reference reads \
+         {coarse_reference}. A reading near that means gmsh stopped extending the view by its \
+         nearest node, and the cap now decides these sizes: revisit the Mesh.MeshSizeMax note \
+         in refine_volume.rs (measured 0.3380 against a 0.3377 reference, task #7447)",
+    );
+}
+
 /// The OUTBOUND half of the #6211 fix: after `refine_volume_with_size_field`
 /// returns, a later *defaults-relying* gmsh call must mesh exactly as if the
 /// refine had never happened.
 ///
 /// The inbound half — the `Mesh.MeshSizeMin`/`MeshSizeMax` writes on entry — is
-/// pinned by the two tests above. The outbound half is `MeshSizeClampReset`,
-/// the RAII restore that runs on every exit path. Without a test at this end,
-/// deleting that struct and its `let _clamp_reset = …` binding leaves the whole
-/// workspace green: the module doc's "leaves nothing" guarantee would be
-/// unenforced and free to rot.
+/// pinned by the two tests above. The outbound half is `MeshSizeScope`, the
+/// RAII scope that restores every size option on every exit path. Without a
+/// test at this end, deleting that type and its `let _size_scope = …` binding
+/// leaves the whole workspace green: the module doc's "leaves nothing"
+/// guarantee would be unenforced and free to rot.
 ///
 /// The downstream victim is real, not hypothetical. `mesh_plane_2d(_, _, None,
 /// …)` deliberately writes no clamp of its own (`mesh_profile_2d.rs`: the
@@ -393,25 +560,27 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 ///
 ///    It used to carry a second job — normalising the
 ///    `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` trio
-///    a refine leaks (task #6212, still open) — which the probe now does for
-///    itself, unconditionally, so the measurement no longer depends on this
-///    warm-up having run.
+///    a refine leaked. Task #6968 closed that leak at the source, so a refine
+///    now restores the trio itself and neither this warm-up nor the probe has
+///    to compensate for it.
 /// 2. **Baseline**, from an explicitly-defaulted clamp.
 /// 3. **A fine refine** — `FINE_HINT` is 20x finer than the plane's own
 ///    extent, so a leak is loud rather than marginal.
 /// 4. **Re-measure.** Must equal the baseline exactly.
 ///
-/// If `MeshSizeClampReset` is removed, step 4 runs under `MeshSizeMax =
+/// If `MeshSizeScope` is removed, step 4 runs under `MeshSizeMax =
 /// FINE_HINT` and returns a far denser 2D mesh than step 2, and the equality
-/// fails. Needs no `option_get_number` getter: it observes the leak's effect,
-/// not the option table.
+/// Observes the leak's EFFECT rather than the option table, which is the
+/// stronger half of the pair: it fails on a leak by any route, not only via an
+/// option name a test thought to read. The complementary direct table read is
+/// [`refine_volume_leaves_every_size_option_at_gmsh_defaults`].
 ///
-/// # Measured, with `MeshSizeClampReset::armed` commented out of `refine_volume`
+/// # Measured, with `MeshSizeScope::entered` commented out of `refine_volume`
 ///
 /// baseline = **162** triangles, after `refine_at(FINE_HINT = 0.05)` = **944** —
 /// a 5.8x jump on an assertion that is an exact equality, so the margin is far
 /// outside any rounding. The 162 is the same baseline
-/// `mesh_to_volume_clamp_hermeticity.rs` measures in its own process, which is
+/// `mesh_size_option_hermeticity.rs` measures in its own process, which is
 /// the point of sharing [`probe_triangle_count`]: one instrument, one reading,
 /// whatever the process has been through.
 #[test]
@@ -424,23 +593,19 @@ fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
     const FINE_HINT: f64 = 0.05;
 
     let cube = unit_cube_mesh();
-    let n_surface_verts = cube.vertices.len() / 3;
     let refine_at = |hint: f64| {
         let opts = MeshingOptions {
             mesh_size: Some(hint),
             deterministic: true,
             ..Default::default()
         };
-        refine_volume_with_size_field(
-            &cube,
-            &vec![hint; n_surface_verts],
-            &opts,
-            ElementOrderTag::P1,
-        )
-        .unwrap_or_else(|e| panic!("refine_volume_with_size_field({hint}) must succeed: {e:?}"));
+        let size_field = box_size_field(1.0, |_, _, _| hint);
+        refine_volume_with_size_field(&cube, &size_field, &opts, ElementOrderTag::P1)
+            .unwrap_or_else(|e| panic!("refine_volume_with_size_field({hint}) must succeed: {e:?}"));
     };
 
-    // 1. Warm-up: normalise the #6212-leaked options for both measurements.
+    // 1. Warm-up: put Mesh.ElementOrder in its post-refine state for both
+    //    measurements. See the doc comment above.
     refine_at(0.5);
 
     // 2. Baseline, from a known-default clamp.
@@ -463,16 +628,15 @@ fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
          before a refine at hint {FINE_HINT} and {after_refine} after it. A larger count \
          means the refine's cap leaked outward and pinned an unrelated downstream mesh to \
          a size nobody requested — the outbound direction of task #6211, guarded by \
-         `MeshSizeClampReset` in refine_volume.rs",
+         `MeshSizeScope` in refine_volume.rs",
     );
 }
 
 /// A uniform size field smaller than the baseline produces a mesh with
 /// strictly more tetrahedra.
 ///
-/// Baseline: unit cube refined with every surface vertex assigned size 0.5.
-/// Refinement: the same call with every vertex assigned 0.25 (half the
-/// baseline). The refined volume mesh must have strictly more P1 tets than the
+/// Baseline: unit cube refined under a uniform 0.5 size field. Refinement: the
+/// same call under a uniform 0.25 field (half the baseline). The refined volume mesh must have strictly more P1 tets than the
 /// baseline, and `element_order` must echo the requested `ElementOrderTag::P1`.
 ///
 /// # Why the baseline is `refine_volume_with_size_field`, not `mesh_to_volume`
@@ -482,8 +646,8 @@ fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
 ///
 /// 1. It compared two *different* producers. They do not share sizing
 ///    semantics: `mesh_to_volume` applies a global target, while this function
-///    sets per-corner sizes with `Mesh.MeshSizeFromPoints=1` and lets gmsh
-///    interpolate. Measured on this cube at the same nominal 0.25, the two
+///    installs a background size field and lets gmsh read sizes from it.
+///    Measured on this cube at the same nominal 0.25, the two
 ///    disagree by ~2x (mesh_to_volume 382 tets, refine 176), so no inequality
 ///    between them pins a property of *this* function.
 /// 2. The inequality it asserted was an artefact of a bug. Before #6200
@@ -528,14 +692,8 @@ fn uniform_smaller_size_field_produces_more_tets() {
         ..Default::default()
     };
 
-    let n_surface_verts = cube.vertices.len() / 3;
-    assert!(
-        n_surface_verts > 0,
-        "unit cube must have at least one surface vertex"
-    );
-
     // Establish the baseline mesh: same producer, uniform 0.5 hint.
-    let baseline_sizes = vec![0.5_f64; n_surface_verts];
+    let baseline_sizes = box_size_field(1.0, |_, _, _| 0.5);
     let vm_baseline =
         refine_volume_with_size_field(&cube, &baseline_sizes, &opts, ElementOrderTag::P1)
             .expect("baseline refine_volume_with_size_field must succeed");
@@ -543,8 +701,8 @@ fn uniform_smaller_size_field_produces_more_tets() {
     let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
     assert!(n_base_tets > 0, "baseline must have at least one tet");
 
-    // Uniform 0.25 per-vertex hint: half the baseline hint.
-    let vertex_sizes = vec![0.25_f64; n_surface_verts];
+    // Uniform 0.25 hint: half the baseline hint.
+    let vertex_sizes = box_size_field(1.0, |_, _, _| 0.25);
 
     let result = refine_volume_with_size_field(&cube, &vertex_sizes, &opts, ElementOrderTag::P1);
     let vm_refined = result.expect(
@@ -569,5 +727,149 @@ fn uniform_smaller_size_field_produces_more_tets() {
         n_refined_tets > n_base_tets,
         "uniform 0.25 size field must produce strictly more tets than baseline 0.5: \
          baseline={n_base_tets}, refined={n_refined_tets}",
+    );
+}
+
+/// A refine that asks for many worker threads still returns a mesh.
+///
+/// This is the hang guard for the `PostView` octree warm-up in
+/// `refine_volume.rs`'s `BackgroundFieldGuard::install`, and a HANG is its red
+/// signal, not an assertion message: without the warm-up gmsh 4.15.2
+/// deadlocks inside `gmshModelMeshGenerate(3)` and the gate's timeout kills the
+/// binary.
+///
+/// `Some(32)` is a literal above this fixture's 14 classified curves, the count
+/// the deadlock tracks (measured without the warm-up: 14 threads pass, 15
+/// hang), so what gmsh is asked for does not vary with the host's core count.
+/// Mechanism and measurements: `docs/notes/gmsh-postview-background-field-threading.md`.
+///
+/// Deliberately no wall-clock upper bound: a regression manifests as an
+/// unbounded hang that the gate timeout already catches, so a duration
+/// assertion would add a flake and buy no coverage.
+#[test]
+fn refine_returns_a_mesh_when_the_caller_asks_for_many_threads() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let cube = unit_cube_mesh();
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        threads: Some(32),
+        deterministic: false,
+    };
+    let sizes = box_size_field(1.0, |_, _, _| 0.5);
+
+    let n_tets = refine_tet_count(&cube, &sizes, &opts);
+    assert!(
+        n_tets > 0,
+        "a multi-threaded refine must return a usable volume mesh, got {n_tets} tets",
+    );
+}
+
+/// `refine_volume_with_size_field` hands gmsh the caller's resolved thread
+/// count, read back from gmsh's option table after the call. The read is valid
+/// because `General.NumThreads` is a non-size process-global no scope restores:
+/// refine writes it and leaves it, exactly like `mesh_to_volume`. If a later
+/// task scopes `General.NumThreads`, this read must move inside that scope.
+///
+/// 3 threads is below the cube's 14 classified curves, so this test reds by
+/// assertion, never by hang.
+#[test]
+fn refine_hands_gmsh_the_callers_resolved_thread_count() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let cube = unit_cube_mesh();
+    let sizes = box_size_field(1.0, |_, _, _| 0.5);
+    let cases = [
+        (
+            MeshingOptions {
+                mesh_size: Some(0.5),
+                threads: Some(3),
+                deterministic: false,
+            },
+            3.0,
+        ),
+        (
+            MeshingOptions {
+                mesh_size: Some(0.5),
+                threads: Some(3),
+                deterministic: true,
+            },
+            1.0,
+        ),
+    ];
+
+    for (opts, expected_threads) in cases {
+        refine_volume_with_size_field(&cube, &sizes, &opts, ElementOrderTag::P1)
+            .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
+        let handed_to_gmsh = {
+            let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            ffi::option_get_number("General.NumThreads")
+                .expect("ffi::option_get_number(General.NumThreads) failed")
+        };
+        assert_eq!(
+            handed_to_gmsh, expected_threads,
+            "for {opts:?} gmsh must be asked for {expected_threads} threads",
+        );
+    }
+}
+
+/// `refine_volume_with_size_field` leaves EVERY mesh-size process-global at
+/// gmsh's default, not just the `Mesh.MeshSizeMin`/`MeshSizeMax` pair.
+///
+/// The sibling guard above
+/// ([`refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`])
+/// covers the pair by observing its effect on a defaults-relying probe. This
+/// one reads the option table directly, via the `ffi::option_get_number` added
+/// by #6968, and so covers the three size-SOURCE options a density probe
+/// cannot reach: their effect is invisible whenever `MeshSizeMin ==
+/// MeshSizeMax`, which is every reachable `mesh_to_volume` path.
+///
+/// The read-back itself is [`clamp_probe::assert_all_size_options_at_gmsh_defaults`],
+/// shared with the other three per-entry-point guards; it iterates the
+/// production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than naming
+/// options, which is what makes this a guard for the SEAM rather than for
+/// today's five: a sixth process-global added to the production list is
+/// asserted by all four writers on the day it is added, with no test edit.
+///
+/// # Measured leak this closes
+///
+/// Run against the pre-#6968 tree, with the production code otherwise
+/// untouched, an in-process probe of the same shape read back, after one
+/// `refine_volume_with_size_field(unit_cube_mesh(), hint 0.5, P1)`:
+///
+/// ```text
+/// Mesh.MeshSizeMin                = 0      (default 0)      OK
+/// Mesh.MeshSizeMax                = 1e22   (default 1e22)   OK
+/// Mesh.MeshSizeFromPoints         = 1      (default 1)      OK
+/// Mesh.MeshSizeFromCurvature      = 0      (default 0)      OK
+/// Mesh.MeshSizeExtendFromBoundary = 0      (default 1)      *** LEAK ***
+/// ```
+///
+/// On that tree exactly one of the three trio writes at `refine_volume.rs`
+/// deviated from a gmsh default: `MeshSizeFromPoints = 1` and
+/// `MeshSizeFromCurvature = 0` restated defaults and were no-ops, while
+/// `MeshSizeExtendFromBoundary = 0` against a default of `1` was the whole
+/// leak. The guard covered all five anyway, because "correct today, silently
+/// wrong the first time someone changes one of the other two" is precisely the
+/// failure mode #6968 exists to close — and task #7447 then did change one:
+/// with sizing moved onto a background field, refine now writes
+/// `MeshSizeFromPoints = 0`, so TWO of the three deviate today, and a leaked
+/// `0` would disable point-driven sizing for every later call in the process.
+/// This test is the behavioural guard for both.
+#[test]
+fn refine_volume_leaves_every_size_option_at_gmsh_defaults() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let cube = unit_cube_mesh();
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        ..Default::default()
+    };
+    let sizes = box_size_field(1.0, |_, _, _| 0.5);
+    refine_volume_with_size_field(&cube, &sizes, &opts, ElementOrderTag::P1)
+        .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
+
+    assert_all_size_options_at_gmsh_defaults(
+        "refine_volume_with_size_field",
+        "`MeshSizeScope` in refine_volume.rs",
     );
 }

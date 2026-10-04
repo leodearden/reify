@@ -1,16 +1,13 @@
 //! Shared test helpers.
 //!
 //! Most of this module is the `eval-helpers`-gated pipeline for parsing,
-//! compiling, and evaluating Reify source in tests. Alongside it sit un-gated
-//! helpers that need no engine: [`collect_value_ref_members`], which inspects
-//! an already-compiled expression, and [`missing_paths_under`], a filesystem
-//! path-existence filter shared by the test suites' skip-list guards.
-
-use std::path::Path;
+//! compiling, and evaluating Reify source in tests. Alongside it sits one
+//! un-gated helper that needs no engine: [`collect_value_ref_members`], which
+//! inspects an already-compiled expression.
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -39,54 +36,6 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
         }
     });
     members
-}
-
-/// Return the subset of `rel_paths` that have no filesystem entry at
-/// `dir.join(rel)`.
-///
-/// This is the single source of truth for the SKIP_SET dead-key check — the
-/// guard that catches a skip-list entry naming a file that has since been
-/// renamed or deleted, which would otherwise silently disable coverage
-/// forever. It replaced the per-file copies of this `Path::exists` filter that
-/// each such guard used to open-code. This doc is the only place their shared
-/// contract is stated: a call site carries a pointer back here, not a copy.
-///
-/// # Contracts callers may rely on
-///
-/// - **The full offending set is returned.** This never short-circuits on the
-///   first miss, so a caller can report every stale key in one panic instead
-///   of forcing an operator to fix them one run at a time.
-/// - **Input order is preserved** (`filter` is order-preserving), so callers
-///   need not sort to get a stable, reviewable failure message.
-///
-/// # Arity is the caller's problem
-///
-/// Skip lists carry per-file metadata of differing shape, so this takes a
-/// plain iterator of relative paths and callers project their own tuple away
-/// at the call boundary — `SKIP_SET.iter().map(|(rel, _)| *rel)`. That is what
-/// lets skip lists of differing arity share one implementation while staying
-/// private to their own crate: no cross-crate coupling of the skip lists is
-/// created or implied.
-///
-/// # Filesystem semantics
-///
-/// Existence is [`Path::exists`], which follows symlinks and does not
-/// distinguish a file from a directory. A broken symlink therefore reports as
-/// *missing* — pinned by
-/// `test_missing_paths_under_reports_dangling_symlink_as_missing` below.
-///
-/// Any other condition under which `Path::exists` answers `false` — an
-/// unreadable parent directory, say — likewise reports as *missing*. That is a
-/// consequence of `Path::exists`, not a separately pinned behaviour: no test
-/// below exercises it.
-pub fn missing_paths_under<'a>(
-    dir: &Path,
-    rel_paths: impl IntoIterator<Item = &'a str>,
-) -> Vec<&'a str> {
-    rel_paths
-        .into_iter()
-        .filter(|rel| !dir.join(rel).exists())
-        .collect()
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
@@ -311,23 +260,14 @@ pub fn prelude_backed_functions(
     merged
 }
 
-/// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
-/// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
-/// `diagnostics` list. Each parse error's span is attached as a label.
-fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnostic> {
-    parsed
-        .errors
-        .iter()
-        .map(|e| {
-            Diagnostic::error(e.message.clone())
-                .with_label(DiagnosticLabel::new(e.span, e.message.clone()))
-        })
-        .collect()
-}
-
-/// Parse and compile `source` WITHOUT asserting absence of parse errors,
-/// forwarding any parse-layer diagnostics into the returned module's
-/// `diagnostics` list (prepended ahead of compile-layer diagnostics).
+/// Parse and compile `source` WITHOUT asserting absence of parse errors.
+///
+/// The compiler itself forwards each parse error as one `Severity::Error`
+/// diagnostic ahead of the compile-layer diagnostics (`forward_parse_errors`,
+/// reify-compiler `compile_builder/pre_pass.rs`). This helper adds nothing, so
+/// the returned `diagnostics` are exactly what a production caller of
+/// `reify_compiler::compile` sees, and a test may COUNT them. Pinned by
+/// `crates/reify-test-support/tests/allow_parse_errors_helpers.rs`.
 ///
 /// Use this for tests that exercise rejection now emitted at the *parse*
 /// layer — e.g. out-of-range numeric literals, which task #4681 moved from a
@@ -340,26 +280,23 @@ fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnost
 /// produced, so downstream invariants like "the offending unit is NOT
 /// registered" remain observable.
 pub fn compile_source_allow_parse_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile(&reify_syntax::parse(source, ModulePath::single("test")))
 }
 
 /// Like [`compile_source_allow_parse_errors`] but parses with the stdlib
 /// prelude enum names pre-seeded and compiles with the full stdlib context
 /// (mirrors [`compile_source_with_stdlib`]).
+///
+/// Same contract: the returned `diagnostics` are exactly what a production
+/// caller of `reify_compiler::compile_with_stdlib` sees, each parse error
+/// forwarded once by the compiler as a `Severity::Error`.
 pub fn compile_source_with_stdlib_allow_parse_errors(
     source: &str,
 ) -> reify_compiler::CompiledModule {
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
+        source,
+        ModulePath::single("test"),
+    ))
 }
 
 /// Parse and compile `source`, then extract the first template.
@@ -816,6 +753,93 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
+/// Compile `source` — whose length-semantic argument(s) are deliberately
+/// BARE — via the LENIENT [`compile_source`] (not [`parse_and_compile`],
+/// which hard-asserts zero Error diagnostics and would panic before eval ever
+/// ran), then assert that the resulting compile-layer diagnostics are exactly
+/// what a bare length-semantic argument must produce: at least one Error, and
+/// every Error carrying `DiagnosticCode::ArgTypeMismatch`.
+///
+/// `what` names the family under test in BOTH assertions' panic messages —
+/// e.g. `"primitive/profile dimension"`, `"modify/sweep magnitude"`,
+/// `"pattern spacing"`.
+///
+/// # Why both halves matter
+///
+/// 1. At least one compile-layer Error must be present, so a caller cannot
+///    silently stop noticing if the compile-layer length slot regresses.
+/// 2. `DiagnosticCode::ArgTypeMismatch` must be the ONLY Error-severity
+///    compile diagnostic, so an unrelated compile Error cannot make a
+///    caller's downstream "no op reached the kernel" assertion pass for the
+///    wrong reason — compilation having broken, rather than a later eval gate
+///    having dropped the op.
+///
+/// # Panics
+/// Panics if no compile-layer Error diagnostic is produced, or if any
+/// compile-layer Error diagnostic carries a code other than
+/// `DiagnosticCode::ArgTypeMismatch`.
+#[track_caller]
+pub fn compile_expecting_only_arg_type_mismatch(
+    source: &str,
+    what: &str,
+) -> reify_compiler::CompiledModule {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a bare {what} must ALSO be rejected at compile time (ArgTypeMismatch), \
+         not only at eval; got no Error diagnostics in: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error for a bare {what}, else \
+         this caller's \"no op reached the kernel\" assertion could pass because \
+         compilation broke rather than because the eval gate dropped the op; \
+         unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
+    );
+    compiled
+}
+
+/// Build `compiled` against a fresh [`MockGeometryKernel`] as
+/// `ExportFormat::Step`, returning the EVAL-layer `BuildResult.diagnostics`
+/// — never the incoming compile-layer ones — and every
+/// [`reify_ir::GeometryOp`] that reached the kernel.
+///
+/// Those two slots are deliberately NARROWER than [`run_modify_pipeline`]'s
+/// `(BuildResult, Vec<GeometryOpRecord>)`: neither `geometry_output` nor a
+/// record's result handle answers a question a units-gate e2e asks.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn build_against_mock_kernel(
+    compiled: reify_compiler::CompiledModule,
+) -> (Vec<Diagnostic>, Vec<reify_ir::GeometryOp>) {
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: reify_eval::BuildResult = engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let ops = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    (result.diagnostics, ops)
+}
+
 /// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
 ///
 /// Resolves any value cell — `let` bindings and `param`s (defaulted or `auto`) alike —
@@ -916,10 +940,11 @@ fn require_default_expr<'a>(
     cell: &'a reify_compiler::ValueCellDecl,
     template_name: &str,
 ) -> &'a CompiledExpr {
-    cell.default_expr.as_ref().unwrap_or_else(|| {
+    let Some(expr) = cell.default_expr.as_ref() else {
         let cell_name = &cell.id.member;
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    };
+    expr
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
@@ -999,6 +1024,41 @@ pub fn get_let_expr<'a>(
         .name
         .as_str();
     get_let_expr_in(module, template_name, name)
+}
+
+/// Retrieve the compiled function named `name` from `module`.
+///
+/// # Panics
+/// - `"no function named '{name}' in module '{module.path}'; has: [...]"` if no function has
+///   that name — the panic lists the name of every function the module does carry.
+/// - `"ambiguous function name '{name}' in module '{module.path}'"` if more than one overload
+///   shares that name, listing each overload's params.
+#[track_caller]
+pub fn get_function_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledFunction {
+    let matching: Vec<_> = module.functions.iter().filter(|f| f.name == name).collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+            panic!(
+                "no function named '{name}' in module '{}'; has: {available:?}",
+                module.path
+            )
+        }
+        [only] => only,
+        many => {
+            let params: Vec<_> = many.iter().map(|f| &f.params).collect();
+            panic!(
+                "ambiguous function name '{name}' in module '{}': {} overloads share this name, \
+                 with params {params:?}; this lookup resolves on name alone, so disambiguate by \
+                 searching `module.functions` for the desired params",
+                module.path,
+                many.len()
+            )
+        }
+    }
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -1096,12 +1156,13 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 #[track_caller]
 pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
     let id = reify_core::ValueCellId::new(structure, member);
-    result.values.get(&id).cloned().unwrap_or_else(|| {
+    let Some(value) = result.values.get(&id) else {
         panic!(
             "{structure}.{member} not found in eval result; available: {:?}",
             result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
         )
-    })
+    };
+    value.clone()
 }
 
 /// Sorted `member` list of every cell `result` produced for `entity` — used to
@@ -1608,8 +1669,8 @@ mod tests {
     #[test]
     fn test_compile_template_by_name() {
         let source = r#"
-            structure Alpha { param x: Length = 1 }
-            structure Beta { param y: Length = 2 }
+            structure Alpha { param x: Length = 1mm }
+            structure Beta { param y: Length = 2mm }
         "#;
         let (template, _diags) = super::compile_template(source, "Beta");
         assert_eq!(template.name, "Beta", "should extract template named Beta");
@@ -1758,7 +1819,7 @@ mod tests {
     #[test]
     fn test_make_engine() {
         // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
-        let source = "structure S { param x: Length = 42 }";
+        let source = "structure S { param x: Length = 42mm }";
         let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);
@@ -1898,6 +1959,188 @@ mod tests {
         assert!(
             !compiled.templates.is_empty(),
             "bracket source should produce at least one template"
+        );
+    }
+
+    // ── compile_expecting_only_arg_type_mismatch ──────────────────────────
+
+    /// A source whose ONLY compile-layer Error is the bare-length
+    /// `ArgTypeMismatch` — the shape
+    /// [`super::compile_expecting_only_arg_type_mismatch`] exists to accept. Measured:
+    /// exactly one Error diagnostic, code `Some(DiagnosticCode::ArgTypeMismatch)`.
+    const BARE_FILLET_SRC: &str = r#"
+        structure def BareFillet {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+        }
+        "#;
+
+    /// [`BARE_FILLET_SRC`] with a SECOND, unrelated compile Error added inside
+    /// the SAME structure. Measured: TWO Error diagnostics — `ArgTypeMismatch`
+    /// AND `UnresolvedName` — because compilation does not abort on the first
+    /// error. The MIX is what discriminates the helper's `all` from an `any`;
+    /// an unrelated-error-ONLY source panics under both and would prove nothing.
+    const BARE_FILLET_PLUS_UNRELATED_ERROR_SRC: &str = r#"
+        structure def BareFilletAndStray {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+            let stray = totally_undefined_name
+        }
+        "#;
+
+    /// compile_expecting_only_arg_type_mismatch: a source whose sole compile
+    /// Error is the `ArgTypeMismatch` does not panic, AND the module comes back
+    /// with its diagnostics INTACT.
+    ///
+    /// The returned-unchanged half is part of the contract: a caller inspects
+    /// the module it got back rather than recompiling, so a helper that
+    /// swallowed the diagnostics it had just asserted on — or re-ran the STRICT
+    /// path — would break that caller while still passing its own assertions.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_returns_the_lenient_module() {
+        let compiled = super::compile_expecting_only_arg_type_mismatch(
+            BARE_FILLET_SRC,
+            "modify/sweep magnitude",
+        );
+
+        let errors = super::collect_errors(&compiled.diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the helper must hand back compile_source's output unchanged, diagnostics \
+             and all; got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "the surviving Error must be the COMPILE-layer ArgTypeMismatch; got: {:?}",
+            errors[0]
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 1 — a source with no
+    /// Error diagnostic at all (what a regressed compile-layer length slot would
+    /// look like) panics, and the panic interpolates the caller's `what` noun
+    /// verbatim. That interpolation is the only behavioural claim `what` makes,
+    /// and it is what lets a failure name the family under test rather than
+    /// only the shared helper.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(bracket_source(), "pattern spacing");
+        });
+
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "the panic must interpolate the caller's `what` noun verbatim; got: {message}"
+        );
+        assert!(
+            message.contains("got no Error diagnostics"),
+            "the panic must say WHICH arm fired — no compile Error at all, as distinct \
+             from the wrong one; got: {message}"
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 2 — an
+    /// `ArgTypeMismatch` accompanied by a SECOND, unrelated compile Error
+    /// panics, and the panic names both the intruder and the family.
+    ///
+    /// Driven by the MIXED source deliberately. Weaken the helper's second
+    /// assertion from `all` to `any` and it would ACCEPT this module, at which
+    /// point a caller's "no op reached the kernel" assertion starts
+    /// passing VACUOUSLY — the op absent because compilation broke, not because
+    /// the eval gate dropped it. That silent-vacuity failure is the whole
+    /// reason the assertion exists, and only a mixed fixture can see it.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_on_a_second_unrelated_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_PLUS_UNRELATED_ERROR_SRC,
+                "pattern spacing",
+            );
+        });
+
+        assert!(
+            message.contains("ONLY compile Error"),
+            "the panic must say WHICH arm fired — a second Error alongside the expected \
+             ArgTypeMismatch; got: {message}"
+        );
+        assert!(
+            message.contains("UnresolvedName"),
+            "the panic must NAME the unexpected error rather than merely report that one \
+             exists, or the reader cannot tell what broke compilation; got: {message}"
+        );
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "BOTH arms must interpolate the caller's `what` noun — a family-agnostic \
+             arm reports only that SOMETHING has a second compile Error; got: {message}"
+        );
+    }
+
+    // ── build_against_mock_kernel ─────────────────────────────────────────
+
+    /// build_against_mock_kernel: a clean single-op source yields NO Error
+    /// diagnostics in slot 1 and the emitted `Box` op in slot 2.
+    ///
+    /// Non-empty ops PAIRED with empty errors is what discriminates here: two
+    /// slots sourced from the same place, or returned the wrong way round,
+    /// cannot satisfy both halves at once.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_against_mock_kernel_returns_build_diagnostics_and_the_emitted_ops() {
+        let (diagnostics, ops) = super::build_against_mock_kernel(super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        ));
+
+        let errors = super::collect_errors(&diagnostics);
+        assert!(
+            errors.is_empty(),
+            "a dimensioned box must build with zero Error diagnostics; got: {errors:?}"
+        );
+        let boxes: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, reify_ir::GeometryOp::Box { .. }))
+            .collect();
+        assert_eq!(
+            boxes.len(),
+            1,
+            "slot 2 must carry the ops that actually reached the kernel; got: {ops:?}"
+        );
+    }
+
+    /// build_against_mock_kernel: composed with
+    /// [`super::compile_expecting_only_arg_type_mismatch`], slot 1 carries the
+    /// EVAL layer's `DimensionedArgRejected` and NOT the COMPILE layer's
+    /// `ArgTypeMismatch`.
+    ///
+    /// This is what proves slot 1 is `BuildResult.diagnostics` rather than the
+    /// incoming `compiled.diagnostics` forwarded through. The test above passes
+    /// either way, since a clean source has nothing at either layer; only a
+    /// fixture that is rejected at BOTH layers separates them. A caller that
+    /// filters on `DimensionedArgRejected` would find no needle in a helper that
+    /// returned the compile diagnostics — leaving PRD decision D2's two-layer
+    /// observability unobservable from here.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_against_mock_kernel_returns_eval_layer_diagnostics_not_compile_layer_ones() {
+        let (diagnostics, _ops) =
+            super::build_against_mock_kernel(super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_SRC,
+                "modify/sweep magnitude",
+            ));
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::DimensionedArgRejected)),
+            "slot 1 must be BuildResult.diagnostics — the EVAL-layer gate's \
+             DimensionedArgRejected; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+            "slot 1 must NOT be the incoming compile diagnostics forwarded through: the \
+             COMPILE-layer ArgTypeMismatch belongs to the returned module's own \
+             `diagnostics`, and merging the layers makes \"which layer rejected this?\" \
+             unanswerable from the code alone (PRD D2); got: {diagnostics:?}"
         );
     }
 
@@ -2582,6 +2825,72 @@ mod tests {
         assert_real_literal(expr, 1.5);
     }
 
+    // ── get_function_in ───────────────────────────────────────────────────
+
+    const DOUBLE_TRIPLE_FNS: &str =
+        "fn double(x: Real) -> Real { x + x }\nfn triple(x: Real) -> Real { x + x + x }";
+
+    /// Looks up the second-declared fn, so a lookup that returns the first
+    /// function regardless of name is observable.
+    #[test]
+    fn test_get_function_in_returns_named_function() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let f = super::get_function_in(&module, "triple");
+        assert_eq!(f.name, "triple");
+        assert_eq!(
+            f.params,
+            vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
+        );
+    }
+
+    #[test]
+    fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "quadruple");
+        });
+        for expected in [
+            "no function named 'quadruple'",
+            "fn_lookup",
+            "[\"double\", \"triple\"]",
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
+    /// Reify compiles same-named fns with distinct param types cleanly, so a
+    /// name-only lookup cannot pick one without silently pinning whichever
+    /// overload happens to be declared first.
+    #[test]
+    fn test_get_function_in_panics_on_overloaded_name() {
+        let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+        let module = super::compile_source_named(source, "fn_lookup");
+        super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "convert");
+        });
+        let real_param = format!(
+            "{:?}",
+            ("x".to_string(), reify_core::Type::dimensionless_scalar())
+        );
+        let int_param = format!("{:?}", ("x".to_string(), reify_core::Type::Int));
+        for expected in [
+            "ambiguous function name 'convert'",
+            "fn_lookup",
+            "2 overloads",
+            real_param.as_str(),
+            int_param.as_str(),
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
     // ── assert_no_type_cascade ────────────────────────────────────────────
 
     /// assert_no_type_cascade should not panic when the diagnostics slice
@@ -2834,112 +3143,6 @@ mod tests {
             result_none.is_empty(),
             "expected empty result for OptionNone; got {:?}",
             result_none
-        );
-    }
-
-    // ─── missing_paths_under contract ─────────────────────────────────────
-
-    /// Prefix for every temp dir these `missing_paths_under` tests create, so
-    /// SIGKILL debris under `/tmp` stays attributable to this suite (see
-    /// `temp_dirs::prefixed_tempdir`'s "Names stay attributable" section).
-    const MISSING_PATHS_TEMPDIR_PREFIX: &str = "reify-missing-paths-under-";
-
-    /// Materialise a "present" fixture at `dir.join(rel)`, creating any parent
-    /// directories the forward-slash-separated `rel` implies.
-    fn touch_under(dir: &std::path::Path, rel: &str) {
-        let path = dir.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .unwrap_or_else(|e| panic!("create parent dirs for fixture {rel:?}: {e}"));
-        }
-        std::fs::write(&path, "// present fixture\n")
-            .unwrap_or_else(|e| panic!("write fixture {rel:?}: {e}"));
-    }
-
-    /// missing_paths_under: over a mixed skip list, exactly the entries with no
-    /// file on disk come back — in input order.
-    ///
-    /// One case carries the whole contract on purpose. Entries are ordered
-    /// missing, present, missing, present, so neither a short-circuit on the
-    /// first miss nor an off-by-one can pass; the comparison is made WITHOUT
-    /// sorting, so an order-scrambling implementation cannot pass either; and
-    /// the keys are nested, forward-slash-separated paths — the real SKIP_SET
-    /// key shape — so `dir.join(rel)` resolution is exercised for a present
-    /// nested file, a missing sibling, and a path under an entirely absent
-    /// subdirectory.
-    #[test]
-    fn test_missing_paths_under_flags_only_missing_entries_in_input_order() {
-        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
-        let dir = guard.path();
-        touch_under(dir, "topology_selectors/fillet_top_edges.ri");
-        touch_under(dir, "present.ri");
-
-        let missing = super::missing_paths_under(
-            dir,
-            [
-                "topology_selectors/deleted_by_a_rename.ri",
-                "topology_selectors/fillet_top_edges.ri",
-                "auto/never_existed.ri",
-                "present.ri",
-            ],
-        );
-
-        assert_eq!(
-            missing,
-            vec![
-                "topology_selectors/deleted_by_a_rename.ri",
-                "auto/never_existed.ri"
-            ],
-            "expected exactly the two entries with no file on disk, in input order and \
-             compared without sorting: an implementation that short-circuited on the first \
-             miss would drop 'auto/never_existed.ri', and neither materialised fixture \
-             (nested or top-level) may be flagged; got {missing:?}"
-        );
-    }
-
-    /// missing_paths_under: an empty input iterator yields an empty `Vec`
-    /// rather than panicking, even when `dir` names a path that does not
-    /// exist. (Whether the call touches the filesystem at all is not something
-    /// this test can observe, so it does not claim it.)
-    #[test]
-    fn test_missing_paths_under_empty_input_yields_empty_vec() {
-        let empty: [&str; 0] = [];
-        let missing =
-            super::missing_paths_under(std::path::Path::new("/definitely/not/a/real/dir"), empty);
-
-        assert!(
-            missing.is_empty(),
-            "expected an empty input iterator to yield an empty Vec, even for a `dir` that \
-             does not exist; got {missing:?}"
-        );
-    }
-
-    /// missing_paths_under: a dangling symlink reports as *missing*, pinning the
-    /// documented `Path::exists` semantics — it follows symlinks, so a link whose
-    /// target is gone is indistinguishable from an absent path.
-    ///
-    /// This is the one documented filesystem behaviour with a real failure mode
-    /// behind it: an `examples/` entry that decays into a dangling link trips a
-    /// SKIP_SET guard exactly as a deleted file would.
-    #[cfg(unix)]
-    #[test]
-    fn test_missing_paths_under_reports_dangling_symlink_as_missing() {
-        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
-        let dir = guard.path();
-        touch_under(dir, "live_target.ri");
-        std::os::unix::fs::symlink(dir.join("live_target.ri"), dir.join("live_link.ri"))
-            .expect("create resolvable symlink fixture");
-        std::os::unix::fs::symlink(dir.join("deleted_target.ri"), dir.join("dangling_link.ri"))
-            .expect("create dangling symlink fixture");
-
-        let missing = super::missing_paths_under(dir, ["live_link.ri", "dangling_link.ri"]);
-
-        assert_eq!(
-            missing,
-            vec!["dangling_link.ri"],
-            "expected the symlink whose target is gone to report as missing and the one \
-             pointing at a live file not to — Path::exists resolves through the link; \
-             got {missing:?}"
         );
     }
 }

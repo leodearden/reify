@@ -23,9 +23,9 @@ use reify_test_support::{compile_source, compile_source_with_stdlib};
 /// `Type::Applied{name:"Result", args:[TypeParam("T"), TypeParam("E")]}`,
 /// with no Error-severity diagnostics.
 ///
-/// A trivial `{ true }` body is used because `compile_function` performs no
-/// body-vs-return-type compatibility check (verified), so this isolates the
-/// assertion to pure return-TYPE resolution.
+/// A trivial `{ true }` body is acceptable because this test asserts return-TYPE
+/// resolution only, and body-vs-return reconciliation (`fn_return_check`, #5991)
+/// does not reconcile a non-scalar declared type such as `Result<T, E>`.
 ///
 /// RED: the return-type `None` arm has no enum-with-args path, so this
 /// currently falls through to `push_signature_type_error` →
@@ -74,9 +74,9 @@ fn probe<T, E>(seed: T, err: E) -> Result<T, E> { true }
 /// resolve to `Type::Option(Box::new(Type::Enum("Color")))`, with no Error
 /// diagnostics.
 ///
-/// A trivial `{ true }` body is used because `compile_function` performs no
-/// body-vs-return-type compatibility check (verified), so this isolates the
-/// assertion to pure return-TYPE resolution.
+/// A trivial `{ true }` body is acceptable because this test asserts return-TYPE
+/// resolution only, and body-vs-return reconciliation (`fn_return_check`, #5991)
+/// does not reconcile a non-scalar declared type such as `Option<Color>`.
 ///
 /// RED: `compile_function`'s return-type resolution does not install an
 /// `EnumNameScope`, so the inner `Color` type-arg resolution (behind

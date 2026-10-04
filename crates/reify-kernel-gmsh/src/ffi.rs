@@ -20,13 +20,25 @@
 //!
 //! # Diagnostics
 //!
-//! Beyond the lifecycle/mesh-I/O surface above, this module also binds two
-//! diagnostic-only surfaces: the gmsh logger CAPTURE family
+//! Beyond the lifecycle/mesh-I/O surface above, this module binds two more:
+//! the gmsh logger CAPTURE family
 //! ([`logger_start`]/[`logger_get`]/[`logger_stop`]) and
-//! [`get_element_types`], a dim-scoped element-type census. Both exist for
-//! debugging gmsh misbehaviour from Rust, not for production control flow —
-//! they are deliberately test-only consumers (see the `// G-allow:` markers
-//! on each wrapper, which keep a future dead-code sweep from deleting them).
+//! [`get_element_types`], a dim-scoped element-type census.
+//!
+//! [`get_element_types`] exists for debugging gmsh misbehaviour from Rust,
+//! not for production control flow — its only consumer is a test, which is
+//! what the `// G-allow:` marker on it records (that marker is what keeps a
+//! future dead-code sweep from deleting an otherwise unreferenced binding).
+//!
+//! The logger family is production code as of task #6969. It backs
+//! [`crate::log_capture::LogCapture`], which
+//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
+//! failure reports gmsh's own diagnosis rather than only the last ERROR
+//! line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
+//! production caller, `init::mesh_generate_with_recovery`, which
+//! reads the capture before it recycles libgmsh. Those three carry no
+//! marker: a non-test workspace caller is itself the exemption, so a marker
+//! claiming they have none would be both false and redundant.
 //!
 //! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
 //! finding 2 model surfaces instead of 6, HXT building 206 tets while the
@@ -94,6 +106,9 @@ unsafe extern "C" {
 
     /// `void gmshOptionSetNumber(const char* name, double value, int* ierr)`
     pub fn gmshOptionSetNumber(name: *const c_char, value: f64, ierr: *mut c_int);
+
+    /// `void gmshOptionGetNumber(const char* name, double* value, int* ierr)`
+    pub fn gmshOptionGetNumber(name: *const c_char, value: *mut f64, ierr: *mut c_int);
 
     /// `void gmshModelAdd(const char* name, int* ierr)`
     pub fn gmshModelAdd(name: *const c_char, ierr: *mut c_int);
@@ -272,6 +287,75 @@ unsafe extern "C" {
         size: f64,
         ierr: *mut c_int,
     );
+
+    // ---- post-processing views + mesh size fields ----
+    //
+    // Together these bind the BACKGROUND SIZE FIELD path: a view carries the
+    // size values, a `"PostView"` field reads the view, and that field becomes
+    // the model's background mesh size field. Unlike `gmshModelMeshSetSize`
+    // above, this transports a value per TETRAHEDRON of a caller-supplied
+    // sizing mesh, so an interior minimum survives — which the 0D-entity path
+    // structurally cannot represent (see `refine_volume`'s module doc).
+
+    /// `int gmshViewAdd(const char* name, const int tag, int* ierr)` — gmshc.h:3112
+    ///
+    /// Pass `tag = -1` to let gmsh assign a tag; the assigned tag is returned.
+    pub fn gmshViewAdd(name: *const c_char, tag: c_int, ierr: *mut c_int) -> c_int;
+
+    /// `void gmshViewRemove(const int tag, int* ierr)` — gmshc.h:3117
+    pub fn gmshViewRemove(tag: c_int, ierr: *mut c_int);
+
+    /// `void gmshViewAddListData(const int tag, const char* dataType, const int numEle, const double* data, const size_t data_n, int* ierr)` — gmshc.h:3205
+    pub fn gmshViewAddListData(
+        tag: c_int,
+        dataType: *const c_char,
+        numEle: c_int,
+        data: *const f64,
+        data_n: usize,
+        ierr: *mut c_int,
+    );
+
+    /// `void gmshViewProbe(const int tag, const double x, const double y, const double z, double ** values, size_t * values_n, double * distance, const int step, const int numComp, const int gradient, const double distanceMax, const double * xElemCoord, const size_t xElemCoord_n, const double * yElemCoord, const size_t yElemCoord_n, const double * zElemCoord, const size_t zElemCoord_n, const int dim, int * ierr)` — gmshc.h:3304
+    pub fn gmshViewProbe(
+        tag: c_int,
+        x: f64,
+        y: f64,
+        z: f64,
+        values: *mut *mut f64,
+        values_n: *mut usize,
+        distance: *mut f64,
+        step: c_int,
+        numComp: c_int,
+        gradient: c_int,
+        distanceMax: f64,
+        xElemCoord: *const f64,
+        xElemCoord_n: usize,
+        yElemCoord: *const f64,
+        yElemCoord_n: usize,
+        zElemCoord: *const f64,
+        zElemCoord_n: usize,
+        dim: c_int,
+        ierr: *mut c_int,
+    );
+
+    /// `int gmshModelMeshFieldAdd(const char* fieldType, const int tag, int* ierr)` — gmshc.h:1678
+    ///
+    /// Pass `tag = -1` to let gmsh assign a tag; the assigned tag is returned.
+    pub fn gmshModelMeshFieldAdd(fieldType: *const c_char, tag: c_int, ierr: *mut c_int) -> c_int;
+
+    /// `void gmshModelMeshFieldRemove(const int tag, int* ierr)` — gmshc.h:1683
+    pub fn gmshModelMeshFieldRemove(tag: c_int, ierr: *mut c_int);
+
+    /// `void gmshModelMeshFieldSetNumber(const int tag, const char* option, const double value, int* ierr)` — gmshc.h:1696
+    pub fn gmshModelMeshFieldSetNumber(
+        tag: c_int,
+        option: *const c_char,
+        value: f64,
+        ierr: *mut c_int,
+    );
+
+    /// `void gmshModelMeshFieldSetAsBackgroundMesh(const int tag, int* ierr)` — gmshc.h:1732
+    pub fn gmshModelMeshFieldSetAsBackgroundMesh(tag: c_int, ierr: *mut c_int);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +536,44 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
         ierr,
         gmshOptionSetNumber(cname.as_ptr(), value, &mut ierr)
     )
+}
+
+/// Read a numerical option back out of gmsh's process-global option table.
+///
+/// The reader whose absence forced every pre-#6968 mesh-size guard in this
+/// crate to infer an option leak from mesh DENSITY rather than read the table:
+/// each of their docstrings states the constraint, and it was incidental
+/// rather than fundamental — `gmshOptionGetNumber` has been in the shipped
+/// `libgmsh.so` all along. A direct read is decisive where a density probe is
+/// vacuous, because `Mesh.MeshSizeExtendFromBoundary` has no measurable effect
+/// while `Mesh.MeshSizeMin == Mesh.MeshSizeMax`.
+///
+/// For OBSERVATION only. The restore discipline in
+/// [`crate::mesh_size_scope`] targets gmsh's DEFAULTS, never the values found
+/// on entry, so nothing in `src/` needs to read an option back — see that
+/// module for why "as found" is the wrong target even when it is observable.
+///
+/// An unknown option name is an `Err`, not a plausible-looking number — and
+/// that is this wrapper's doing rather than gmsh's out-param discipline.
+/// MEASURED against the shipped `libgmsh.so` 4.15.2, from a C probe that
+/// pre-seeded the out-param with `-999`:
+/// `gmshOptionGetNumber("Mesh.NoSuchOptionReify", &v, &ierr)` sets `ierr = 1`
+/// and OVERWRITES `v` with `0`. The `?` on `check_ierr` below is therefore the
+/// only thing standing between a guard and a `0.0` gmsh never supplied — a
+/// thoroughly plausible reading for `Mesh.MeshSizeMin`, which is why a wrapper
+/// that returned `value` regardless of `ierr` would make every guard built on
+/// it fail OPEN on a typo'd option name.
+pub fn option_get_number(name: &str) -> Result<f64, GeometryError> {
+    let cname = CString::new(name).map_err(|e| {
+        GeometryError::OperationFailed(format!("option_get_number: invalid CString: {e}"))
+    })?;
+    let mut value: f64 = 0.0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshOptionGetNumber(cname.as_ptr(), &mut value, &mut ierr);
+    }
+    check_ierr("gmshOptionGetNumber", ierr)?;
+    Ok(value)
 }
 
 /// Add a new model with the given name and make it the current model.
@@ -910,7 +1032,13 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 }
 
 /// Start capturing gmsh's Info/Warning/Progress message stream into an
-/// in-memory buffer, drained by [`logger_get`].
+/// in-memory buffer. [`logger_get`] READS that buffer without consuming it;
+/// [`logger_stop`] is the drain (measured — see both of their docs, and
+/// `tests/log_capture_tests.rs`'s guard test, which annotates twice under one
+/// arm). [`crate::log_capture::LogCapture`] rests on that split both ways: it
+/// may fold the capture into more than one error while armed, and the empty
+/// post-drop read that witnesses its stop would witness nothing if a read
+/// emptied the buffer by itself.
 ///
 /// This capture is INDEPENDENT of the `"General.Terminal"` option — every
 /// production mesher in this crate (`kernel_real::mesh_to_volume`,
@@ -923,8 +1051,6 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 /// across one `mesh_generate(3)` call with `General.Terminal = 0` — the
 /// capture buffer is a separate switch gmsh keeps regardless of that
 /// option.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_start() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
 }
@@ -934,8 +1060,6 @@ pub fn logger_start() -> Result<(), GeometryError> {
 /// Measured: calling [`logger_get`] after `logger_stop` returns an empty
 /// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
 /// merely pause capture.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_stop() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
 }
@@ -945,15 +1069,20 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 ///
 /// Measured edge cases: if the logger was never started, this returns an
 /// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
-/// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
+/// has drained the buffer. Across a library recycle (measured on libgmsh
+/// 4.15.2, task #6969): between `gmshFinalize` and the next `gmshInitialize`
+/// this returns `ierr=1`, and AFTER the re-initialize the lines captured
+/// before the finalize are still present — the buffer outlives the library
+/// that logged into it. Gmsh documents neither, which is why
+/// `init::mesh_generate_with_recovery` reads before it tears the
+/// library down rather than relying on either. `gmshLoggerGet` returns a
+/// `char***` — gmsh
 /// allocates both the outer array of `log_n` pointers and every string it
 /// points at, so both levels are freed here (the outer array via
 /// [`take_gmsh_buf`], each string via `gmshFree`) before `check_ierr`,
 /// mirroring the free-before-check ordering in [`get_nodes_all`] and
 /// [`get_elements_by_type`] (this avoids leaking the buffers on the `ierr
 /// != 0` path, since `check_ierr` returns early via `?`).
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     let mut log_ptr: *mut *mut c_char = ptr::null_mut();
     let mut log_n: usize = 0;
@@ -1013,4 +1142,174 @@ pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> 
     let types: Vec<i32> = unsafe { take_gmsh_buf(types_ptr, types_n) };
     check_ierr("gmshModelMeshGetElementTypes", ierr)?;
     Ok(types)
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing views + mesh size fields — the background-size-field path
+// ---------------------------------------------------------------------------
+
+/// Add a post-processing view named `name` and return its assigned tag.
+///
+/// Views are PROCESS-GLOBAL and survive `gmshClear()`; pair every successful
+/// call with [`view_remove`] (an RAII guard, not a trailing call — an early
+/// `?` return otherwise leaks the view into every later mesh in the process).
+pub fn view_add(name: &str) -> Result<i32, GeometryError> {
+    let cname = CString::new(name)
+        .map_err(|e| GeometryError::OperationFailed(format!("view_add: invalid CString: {e}")))?;
+    let mut ierr: c_int = 0;
+    // -1 => let gmsh assign the tag.
+    let tag = unsafe { gmshViewAdd(cname.as_ptr(), -1, &mut ierr) };
+    check_ierr("gmshViewAdd", ierr)?;
+    Ok(tag)
+}
+
+/// Remove the view with tag `tag`.
+pub fn view_remove(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!("gmshViewRemove", ierr, gmshViewRemove(tag, &mut ierr))
+}
+
+/// Attach list-based data to view `tag`.
+///
+/// `data_type` concatenates the field type (`"S"` scalar / `"V"` vector /
+/// `"T"` tensor) with the element type (`"P"` point … `"S"` tetrahedron), so
+/// `"SS"` is a scalar field on tetrahedra.
+///
+/// # Buffer layout — a silent-failure surface
+///
+/// Per gmshc.h:3200-3204 the doubles for one element are grouped by AXIS, not
+/// by point: `[x1..xn, y1..yn, z1..zn, v1..vn]`, repeated per element. For
+/// `"SS"` that is 16 doubles: `[x0,x1,x2,x3, y0,y1,y2,y3, z0,z1,z2,z3,
+/// s0,s1,s2,s3]`. This is NOT the grouping the ASCII `.pos` "parsed" format
+/// uses, which interleaves per point. Feeding a per-point buffer here returns
+/// `ierr = 0` and yields a plausible-but-wrong mesh (measured: 1689 tets
+/// against 2633 on otherwise identical input), so the layout is fixed in one
+/// place — [`crate::BackgroundSizeField`] — and pinned by a byte-exact test.
+///
+/// `num_ele` is the element COUNT while `data.len()` is the total double
+/// count (`num_ele * 16` for `"SS"`); gmsh does not cross-check the two.
+pub fn view_add_list_data(
+    tag: i32,
+    data_type: &str,
+    num_ele: usize,
+    data: &[f64],
+) -> Result<(), GeometryError> {
+    let ctype = CString::new(data_type).map_err(|e| {
+        GeometryError::OperationFailed(format!("view_add_list_data: invalid CString: {e}"))
+    })?;
+    let num_ele = c_int::try_from(num_ele).map_err(|_| {
+        GeometryError::OperationFailed(format!(
+            "view_add_list_data: element count {num_ele} exceeds the C int range"
+        ))
+    })?;
+    gmsh_call!(
+        "gmshViewAddListData",
+        ierr,
+        gmshViewAddListData(
+            tag,
+            ctype.as_ptr(),
+            num_ele,
+            data.as_ptr(),
+            data.len(),
+            &mut ierr,
+        )
+    )
+}
+
+/// Probe the scalar view `tag` at `point`: one interpolated value per time
+/// step, or an EMPTY `Vec` (not an error) when no element of the view
+/// contains `point` — the closest-node fallback is disabled.
+///
+/// Read-only with respect to the view's data, but it does make gmsh build the
+/// view's lazy lookup structure, which `refine_volume` relies on; see
+/// `docs/notes/gmsh-postview-background-field-threading.md`.
+pub fn view_probe(tag: i32, point: [f64; 3]) -> Result<Vec<f64>, GeometryError> {
+    const ALL_STEPS: c_int = -1;
+    const SCALAR: c_int = 1;
+    const NO_GRADIENT: c_int = 0;
+    const EXACT_MATCH_ONLY: f64 = 0.0;
+    const ANY_DIM: c_int = -1;
+    let [x, y, z] = point;
+    let mut values_ptr: *mut f64 = ptr::null_mut();
+    let mut values_n: usize = 0;
+    let mut distance: f64 = 0.0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshViewProbe(
+            tag,
+            x,
+            y,
+            z,
+            &mut values_ptr,
+            &mut values_n,
+            &mut distance,
+            ALL_STEPS,
+            SCALAR,
+            NO_GRADIENT,
+            EXACT_MATCH_ONLY,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ANY_DIM,
+            &mut ierr,
+        );
+    }
+    // SAFETY: values_ptr is either null or was just populated by the
+    // gmshViewProbe call above, owning at least values_n contiguous,
+    // initialised elements. Taken before the ierr check so the error path
+    // frees it too.
+    let values = unsafe { take_gmsh_buf(values_ptr, values_n) };
+    check_ierr("gmshViewProbe", ierr)?;
+    Ok(values)
+}
+
+/// Add a mesh size field of type `field_type` (e.g. `"PostView"`) and return
+/// its assigned tag.
+///
+/// Fields are process-global on the same terms as views; see [`view_add`].
+pub fn field_add(field_type: &str) -> Result<i32, GeometryError> {
+    let ctype = CString::new(field_type)
+        .map_err(|e| GeometryError::OperationFailed(format!("field_add: invalid CString: {e}")))?;
+    let mut ierr: c_int = 0;
+    // -1 => let gmsh assign the tag.
+    let tag = unsafe { gmshModelMeshFieldAdd(ctype.as_ptr(), -1, &mut ierr) };
+    check_ierr("gmshModelMeshFieldAdd", ierr)?;
+    Ok(tag)
+}
+
+/// Remove the mesh size field with tag `tag`.
+pub fn field_remove(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshFieldRemove",
+        ierr,
+        gmshModelMeshFieldRemove(tag, &mut ierr)
+    )
+}
+
+/// Set numerical `option` on field `tag`.
+///
+/// For a `"PostView"` field, select the source view with `"ViewTag"` and the
+/// tag [`view_add`] returned — NOT `"ViewIndex"`, which is a position in the
+/// currently-loaded view list and goes stale (silently, selecting a different
+/// view) as views are removed.
+pub fn field_set_number(tag: i32, option: &str, value: f64) -> Result<(), GeometryError> {
+    let copt = CString::new(option).map_err(|e| {
+        GeometryError::OperationFailed(format!("field_set_number: invalid CString: {e}"))
+    })?;
+    gmsh_call!(
+        "gmshModelMeshFieldSetNumber",
+        ierr,
+        gmshModelMeshFieldSetNumber(tag, copt.as_ptr(), value, &mut ierr)
+    )
+}
+
+/// Make field `tag` the model's background mesh size field.
+pub fn field_set_as_background_mesh(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshFieldSetAsBackgroundMesh",
+        ierr,
+        gmshModelMeshFieldSetAsBackgroundMesh(tag, &mut ierr)
+    )
 }

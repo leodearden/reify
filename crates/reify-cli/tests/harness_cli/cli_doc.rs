@@ -4,12 +4,23 @@
 //! `CARGO_BIN_EXE_reify`) and asserts on exit code, stdout, and stderr.
 //! Exit-code conventions:
 //! - `0` — success.
-//! - `1` — parse / compile errors prevented doc generation.
-//! - `2` — CLI usage errors (bad flag, missing positional, conflicting flags).
+//! - `1` — any failure: parse / compile errors that prevented doc generation,
+//!   I/O failures, and CLI usage errors (bad flag, missing positional,
+//!   conflicting flags).
+//!
+//! Because `1` is now shared by all three, the `Usage: reify doc` banner on
+//! stderr is the discriminator between a CLI usage error and a genuine
+//! compile / I-O failure.  The tests below pin that contract in both
+//! directions through [`assert_usage_error`] and [`assert_not_usage_error`],
+//! which are the single place the discriminator is spelled out.
 
 use crate::common;
 
 use std::process::{Command, ExitStatus, Stdio};
+
+/// The discriminator itself: printed by every `reify doc` usage error and by
+/// no other failure.  Named once so a change to the contract is one edit.
+const USAGE_BANNER: &str = "Usage: reify doc";
 
 /// Run `reify doc <args...>` and return `(status, stdout, stderr)`.
 ///
@@ -30,19 +41,60 @@ fn run_doc(args: &[&str]) -> (ExitStatus, String, String) {
     (output.status, stdout, stderr)
 }
 
-#[test]
-fn doc_no_args_prints_usage_and_exits_two() {
-    let (status, stdout, stderr) = run_doc(&[]);
-
+/// Assert the whole usage-error contract: exit 1, the `guard_line` naming
+/// *which* guard rejected the invocation, and the [`USAGE_BANNER`].
+///
+/// `guard_line` is not redundant with the banner — the banner is printed by
+/// every guard, so a banner-only check stays green when the wrong guard fires
+/// (an argument-order refactor reporting the missing-`--out` error for a bad
+/// `--format`, say).  Pass the longest literal prefix that is unique to the
+/// guard under test.
+#[track_caller]
+fn assert_usage_error(status: ExitStatus, stderr: &str, guard_line: &str) {
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc with no args must exit 2 (usage error).\nstdout: {stdout}\nstderr: {stderr}"
+        Some(1),
+        "a usage error must exit 1, got {:?}.\nstderr: {stderr}",
+        status.code()
     );
     assert!(
-        stderr.contains("Usage: reify doc"),
-        "stderr should contain 'Usage: reify doc', got: {stderr}"
+        stderr.contains(guard_line),
+        "stderr should carry the specific guard line {guard_line:?}, got: {stderr}"
     );
+    assert!(
+        stderr.contains(USAGE_BANNER),
+        "a usage error must print the {USAGE_BANNER:?} banner \
+         (the exit-1 discriminator), got: {stderr}"
+    );
+}
+
+/// Mirror of [`assert_usage_error`] for genuine compile / parse / I-O
+/// failures: they exit 1 too, so the banner must stay OFF stderr or the
+/// discriminator carries no information.
+#[track_caller]
+fn assert_not_usage_error(stderr: &str) {
+    assert!(
+        !stderr.contains(USAGE_BANNER),
+        "a genuine failure must not print the {USAGE_BANNER:?} banner \
+         (it is the usage-error discriminator now that both exit 1), got: {stderr}"
+    );
+}
+
+#[test]
+fn doc_no_args_prints_usage_and_exits_one() {
+    let (status, _stdout, stderr) = run_doc(&[]);
+
+    assert_usage_error(status, &stderr, "Error: missing input file");
+}
+
+/// Flags parsed, but no input positional — a distinct arm from the no-args
+/// case above, and the one usage error reachable only after the flag walk
+/// completes.  Both land on the same guard, so both report it identically.
+#[test]
+fn doc_missing_input_positional_exits_one() {
+    let (status, _stdout, stderr) = run_doc(&["--compact"]);
+
+    assert_usage_error(status, &stderr, "Error: missing input file");
 }
 
 #[test]
@@ -86,6 +138,7 @@ fn doc_compile_error_exits_one_with_stderr() {
         stderr.contains("error:"),
         "stderr should contain 'error:' from a compile diagnostic, got: {stderr}"
     );
+    assert_not_usage_error(&stderr);
     // No doc body should reach stdout when compilation fails.
     assert!(
         !stdout.contains("<!DOCTYPE html>"),
@@ -110,6 +163,7 @@ fn doc_missing_file_exits_one() {
         stderr.contains("Error reading"),
         "stderr should contain 'Error reading' for missing file, got: {stderr}"
     );
+    assert_not_usage_error(&stderr);
 }
 
 #[test]
@@ -131,6 +185,7 @@ fn doc_parse_error_exits_one_with_stderr() {
         stderr.contains("Parse error:"),
         "stderr should contain 'Parse error:' for a parse failure, got: {stderr}"
     );
+    assert_not_usage_error(&stderr);
     // No doc body should reach stdout when parsing fails.
     assert!(
         !stdout.contains("<!DOCTYPE html>"),
@@ -271,86 +326,50 @@ fn doc_default_format_is_real_html() {
 }
 
 #[test]
-fn doc_split_with_json_exits_two() {
+fn doc_split_with_json_exits_one() {
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "json", "--split", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "json", "--split", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format json --split must exit 2 (usage error).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("--split"),
-        "stderr should mention '--split', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("markdown only") || stderr.contains("markdown"),
-        "stderr should explain that --split is markdown-only, got: {stderr}"
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: --split is only valid with --format markdown",
     );
 }
 
 #[test]
-fn doc_split_with_html_exits_two() {
+fn doc_split_with_html_exits_one() {
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "html", "--split", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "html", "--split", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format html --split must exit 2 (usage error).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("--split"),
-        "stderr should mention '--split', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("markdown only") || stderr.contains("markdown"),
-        "stderr should explain that --split is markdown-only, got: {stderr}"
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: --split is only valid with --format markdown",
     );
 }
 
 #[test]
-fn doc_compact_with_markdown_exits_two() {
+fn doc_compact_with_markdown_exits_one() {
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "--compact", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "markdown", "--compact", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format markdown --compact must exit 2 (usage error).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("--compact"),
-        "stderr should mention '--compact', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("json only") || stderr.contains("json"),
-        "stderr should explain that --compact is json-only, got: {stderr}"
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: --compact is only valid with --format json",
     );
 }
 
 #[test]
-fn doc_compact_with_html_exits_two() {
+fn doc_compact_with_html_exits_one() {
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "html", "--compact", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "html", "--compact", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format html --compact must exit 2 (usage error).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("--compact"),
-        "stderr should mention '--compact', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("json only") || stderr.contains("json"),
-        "stderr should explain that --compact is json-only, got: {stderr}"
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: --compact is only valid with --format json",
     );
 }
 
@@ -493,72 +512,65 @@ fn doc_o_flag_writes_html_without_extra_trailing_newline() {
     );
 }
 
+/// The I/O third of the three-way exit-1 contract: a failed write exits 1
+/// just as a usage error does, so the banner must stay OFF stderr or the
+/// discriminator carries no information.  Compile, parse and missing-file
+/// failures are pinned above; this is the write half, which no other test
+/// reaches.  `-o` writes the body directly and creates no parent directories,
+/// so a path under a missing subdirectory fails at the write itself.
 #[test]
-fn doc_format_without_value_exits_two() {
-    // Pins the `--format` requires-a-value branch in cmd_doc's arg loop.
-    // Easy regression to introduce when refactoring; this test catches it.
-    let (status, stdout, stderr) = run_doc(&["--format"]);
+fn doc_o_write_failure_exits_one_without_banner() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let out_path = dir.path().join("nonexistent-subdir").join("doc.html");
+    let out_str = out_path.to_str().expect("tmp path is utf-8");
+    let path = common::fixture_path("bracket.ri");
+
+    let (status, stdout, stderr) = run_doc(&["-o", out_str, &path]);
 
     assert_eq!(
         status.code(),
-        Some(2),
-        "reify doc --format with no value must exit 2.\n\
-         stdout: {stdout}\nstderr: {stderr}"
+        Some(1),
+        "an unwritable -o path must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains("--format requires a value"),
-        "stderr should contain '--format requires a value', got: {stderr}"
+        stderr.contains("Error writing"),
+        "stderr should contain 'Error writing' for a failed -o write, got: {stderr}"
     );
+    assert_not_usage_error(&stderr);
 }
 
 #[test]
-fn doc_format_with_invalid_value_exits_two() {
-    // Pins the unknown-`--format` value path: must exit 2 with a usage-error on
+fn doc_format_without_value_exits_one() {
+    // Pins the `--format` requires-a-value branch in cmd_doc's arg loop.
+    // Easy regression to introduce when refactoring; this test catches it.
+    let (status, _stdout, stderr) = run_doc(&["--format"]);
+
+    assert_usage_error(status, &stderr, "Error: --format requires a value");
+}
+
+#[test]
+fn doc_format_with_invalid_value_exits_one() {
+    // Pins the unknown-`--format` value path: must exit 1 with a usage-error on
     // stderr naming the bad value and the valid choices.
     // The input positional is required because cmd_doc's missing-input check
     // runs *before* format resolution, so omitting it would test the wrong branch.
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "xml", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "xml", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format xml must exit 2 (usage error).\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("unknown --format value"),
-        "stderr should contain 'unknown --format value', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("xml"),
-        "stderr should name the offending value 'xml', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("expected html|markdown|json"),
-        "stderr should guide the user to valid choices 'expected html|markdown|json', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("Usage: reify doc"),
-        "stderr should contain 'Usage: reify doc' (DOC_USAGE line), got: {stderr}"
+    // The whole line: it names the offending value AND the valid choices.
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: unknown --format value: xml (expected html|markdown|json)",
     );
 }
 
 #[test]
-fn doc_o_without_value_exits_two() {
+fn doc_o_without_value_exits_one() {
     // Pins the `-o` requires-a-value branch in cmd_doc's arg loop.
-    let (status, stdout, stderr) = run_doc(&["-o"]);
+    let (status, _stdout, stderr) = run_doc(&["-o"]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc -o with no path must exit 2.\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("-o requires a path"),
-        "stderr should contain '-o requires a path', got: {stderr}"
-    );
+    assert_usage_error(status, &stderr, "Error: -o requires a path");
 }
 
 #[test]
@@ -607,42 +619,42 @@ fn doc_split_markdown_writes_files_to_directory() {
 }
 
 #[test]
-fn doc_split_without_output_path_exits_two() {
+fn doc_split_without_output_path_exits_one() {
     // Regression guard: step 28's Split arm requires `-o <dir>`.  This test
     // pins that behaviour; if a future refactor accidentally allows
     // `--split` without `-o`, this test fails loudly.
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "--split", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--format", "markdown", "--split", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --format markdown --split without -o must exit 2.\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("--split requires -o"),
-        "stderr should explain that --split requires -o, got: {stderr}"
-    );
+    assert_usage_error(status, &stderr, "Error: --split requires -o <directory>");
 }
 
 #[test]
-fn doc_unknown_flag_exits_two() {
+fn doc_unknown_flag_exits_one() {
     let path = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = run_doc(&["--frobnicate", &path]);
+    let (status, _stdout, stderr) = run_doc(&["--frobnicate", &path]);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc with an unknown flag must exit 2.\nstdout: {stdout}\nstderr: {stderr}"
+    // The whole line, so it also pins that the offending flag is named back.
+    assert_usage_error(
+        status,
+        &stderr,
+        "Error: unknown flag for `doc`: --frobnicate",
     );
-    assert!(
-        stderr.contains("unknown flag"),
-        "stderr should contain 'unknown flag', got: {stderr}"
-    );
-    assert!(
-        stderr.contains("--frobnicate"),
-        "stderr should name the offending flag '--frobnicate', got: {stderr}"
+}
+
+/// A second positional argument is a usage error: the flag walk accepts
+/// exactly one input path.  Pinned because, with usage errors and genuine
+/// failures now sharing exit 1, a regression here (returning SUCCESS, or
+/// dropping the banner) would otherwise be invisible to this suite.
+#[test]
+fn doc_extra_positional_exits_one() {
+    let path = common::fixture_path("bracket.ri");
+    let (status, _stdout, stderr) = run_doc(&[&path, &path]);
+
+    assert_usage_error(
+        status,
+        &stderr,
+        &format!("Error: unexpected extra positional argument: {path}"),
     );
 }
 
@@ -668,7 +680,7 @@ fn doc_listed_in_top_level_usage() {
 // --stdlib / --out tests (step-5 / task-3565)
 // ---------------------------------------------------------------------------
 
-/// Panic-safe temp dir for this file's `--out` tests. Bind it as the FIRST
+/// Panic-safe temp dir for the `--stdlib` render test. Bind it as the FIRST
 /// binding in the test body so it outlives the `run_doc(..)` subprocess and
 /// every assertion that reads back `index.html`. Binding rules and the
 /// `REIFY_KEEP_TEMP_DIRS` post-mortem knob — which retains the generated HTML
@@ -678,20 +690,45 @@ fn stdlib_out_dir(suffix: &str) -> reify_test_support::TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify-test-stdlib-doc-{suffix}-"))
 }
 
-/// `reify doc --stdlib --out <dir>` must exit 0, write `<dir>/index.html`
-/// whose contents include ElasticMaterial, Bounded, and Manifold, and write
-/// at least one other `*.html` file under `<dir>` (a per-symbol page).
-#[test]
-fn doc_stdlib_produces_html_pages() {
-    let guard = stdlib_out_dir("produces");
+/// The whole `--stdlib` guard contract: `reify doc --stdlib --out <dir>
+/// {extra_args}` is a usage error reported by `guard_line`, and `<dir>` is
+/// never created.
+#[track_caller]
+fn assert_stdlib_guard_rejects(suffix: &str, extra_args: &[&str], guard_line: &str) {
+    let guard = stdlib_out_dir(suffix);
+    let out_dir = guard.path().join("never-written");
+    let dir_str = out_dir.to_string_lossy().into_owned();
+    let mut args = vec!["--stdlib", "--out", dir_str.as_str()];
+    args.extend_from_slice(extra_args);
+    let (status, _stdout, stderr) = run_doc(&args);
+
+    assert_usage_error(status, &stderr, guard_line);
+    assert!(
+        !out_dir.exists(),
+        "a rejected --stdlib invocation must not create {out_dir:?}"
+    );
+}
+
+/// The whole `--stdlib` success contract: exit 0, a `<dir>/index.html` whose
+/// contents include ElasticMaterial, Bounded, and Manifold, and at least one
+/// other `*.html` file under `<dir>` (a per-symbol page).
+///
+/// `extra_args` follow `--out <dir>`; every invocation that reaches the stdlib
+/// renderer owes the same contract, so each is checked against this one copy.
+#[track_caller]
+fn assert_stdlib_render_succeeds(suffix: &str, extra_args: &[&str]) {
+    let guard = stdlib_out_dir(suffix);
     let out_dir = guard.path().to_path_buf();
     let dir_str = out_dir.to_string_lossy().into_owned();
-    let (status, stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str]);
+    let mut args = vec!["--stdlib", "--out", dir_str.as_str()];
+    args.extend_from_slice(extra_args);
+    let (status, stdout, stderr) = run_doc(&args);
 
     assert_eq!(
         status.code(),
         Some(0),
-        "reify doc --stdlib --out <dir> must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+        "reify doc --stdlib --out <dir> {extra_args:?} must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     // index.html must exist and contain the known symbol names.
@@ -731,6 +768,18 @@ fn doc_stdlib_produces_html_pages() {
     );
 }
 
+/// The default (`--format` absent) arm of the `--stdlib` renderer.
+#[test]
+fn doc_stdlib_produces_html_pages() {
+    assert_stdlib_render_succeeds("produces", &[]);
+}
+
+/// The explicit `--format html` arm of the `--stdlib` renderer.
+#[test]
+fn doc_stdlib_explicit_html_format_produces_html_pages() {
+    assert_stdlib_render_succeeds("explicit-html", &["--format", "html"]);
+}
+
 /// Recursive walk helper: collect all .html files under `dir`.
 fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut results = Vec::new();
@@ -747,36 +796,67 @@ fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     results
 }
 
-/// `reify doc --stdlib` without `--out` must exit 2 and print the usage hint.
+/// `reify doc --stdlib` without `--out` must exit 1: --stdlib writes a page
+/// per symbol, so it has nowhere to put them without an output directory.
 #[test]
-fn doc_stdlib_without_out_exits_two() {
+fn doc_stdlib_without_out_exits_one() {
     let (status, _stdout, stderr) = run_doc(&["--stdlib"]);
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --stdlib without --out must exit 2.\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Usage: reify doc"),
-        "stderr must contain 'Usage: reify doc'; got: {stderr}"
-    );
+
+    assert_usage_error(status, &stderr, "Error: --stdlib requires --out <dir>");
 }
 
-/// `reify doc --stdlib --out <dir> --format json` must exit 2 because
+/// `reify doc --stdlib --out <dir> --format json` must exit 1 because
 /// --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_json_format() {
-    let guard = stdlib_out_dir("rejects-json");
-    let out_dir = guard.path().to_path_buf();
-    let dir_str = out_dir.to_string_lossy().into_owned();
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str, "--format", "json"]);
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "reify doc --stdlib --format json must exit 2.\nstderr: {stderr}"
+    assert_stdlib_guard_rejects(
+        "rejects-json",
+        &["--format", "json"],
+        "Error: --stdlib only supports --format html (the default)",
     );
-    assert!(
-        stderr.contains("Usage: reify doc"),
-        "stderr must contain 'Usage: reify doc'; got: {stderr}"
+}
+
+/// `reify doc --stdlib --out <dir> <input.ri>` must exit 1: --stdlib renders
+/// the standard library, so an input positional is a usage error.
+#[test]
+fn doc_stdlib_with_input_positional_exits_one() {
+    let path = common::fixture_path("bracket.ri");
+    assert_stdlib_guard_rejects(
+        "with-input",
+        &[path.as_str()],
+        "Error: --stdlib does not accept an input file positional",
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --split` must exit 1: --stdlib already
+/// writes one page per symbol, so --split is a usage error.
+#[test]
+fn doc_stdlib_rejects_split() {
+    assert_stdlib_guard_rejects(
+        "rejects-split",
+        &["--split"],
+        "Error: --split is not valid with --stdlib",
+    );
+}
+
+/// `reify doc --stdlib --out <dir> --compact` must exit 1: --compact is a
+/// json-only knob and --stdlib is HTML-only.
+#[test]
+fn doc_stdlib_rejects_compact() {
+    assert_stdlib_guard_rejects(
+        "rejects-compact",
+        &["--compact"],
+        "Error: --compact is not valid with --stdlib",
+    );
+}
+
+/// An unknown `--format` under `--stdlib` is a usage error, not a silent HTML
+/// render.
+#[test]
+fn doc_stdlib_rejects_unknown_format() {
+    assert_stdlib_guard_rejects(
+        "rejects-xml",
+        &["--format", "xml"],
+        "Error: --stdlib only supports --format html (the default)",
     );
 }

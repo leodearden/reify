@@ -85,7 +85,7 @@ module_visibility/
 
 ## Note on the bulk examples smoke test
 
-`crates/reify-compiler/tests/examples_smoke.rs` compiles every `examples/**/*.ri`
+`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` compiles every `examples/**/*.ri`
 **single-file** (`compile_with_stdlib`, no module DAG).
 
 - `producer.ri` — self-contained; compiles clean single-file. **Not skipped.**

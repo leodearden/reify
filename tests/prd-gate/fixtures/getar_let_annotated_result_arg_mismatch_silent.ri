@@ -1,0 +1,18 @@
+module getar_let_annotated_result_arg_mismatch_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — §10 OUT OF SCOPE
+// evidence (let-annotation form of S-2). MEASURED 2026-09-29, both binaries:
+//   check EXIT 0, "All constraints satisfied."; eval `W.a = Result::Ok`,
+//   `W.b = Result::Ok`.
+// Unlike the `param` form (getar_result_arg_mismatch_assign_silent.ri, which
+// γ closes through ctor conformance), a `let` annotation is checked by
+// `check_let_annotation_type` (crates/reify-compiler/src/entity.rs), which
+// returns early for non-scalar declared types — task #4705 (done) landed the
+// scalar/collection halves only. γ does NOT close this; the decompose session
+// files the enum-annotation follow-up against #4705 and names this fixture.
+// EXPECTED after that follow-up: check EXIT 1 (let-annotation mismatch).
+
+structure def W {
+    param a : Result<Length, String> = Ok { value: 5mm }
+    let b : Result<Force, String> = a
+}

@@ -120,6 +120,8 @@ pub(crate) fn datum_projection_result_type(
         },
         Type::Frame(_) => match member {
             "x" | "y" | "z" => Resolved(Type::Direction),
+            // The RULING #6089 type, not an incidental choice; narrowing the
+            // eval-side `frame3` constructor to it is task #7625.
             "origin" => Resolved(Type::point3(Type::length())),
             // A frame's three principal planes (η adds yz_plane/zx_plane).
             "xy_plane" | "yz_plane" | "zx_plane" => Resolved(Type::Plane),

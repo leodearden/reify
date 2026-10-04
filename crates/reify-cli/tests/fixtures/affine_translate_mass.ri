@@ -1,0 +1,26 @@
+// affine_translate_mass.ri — CLI eval fixture: a MASS translation is rejected.
+//
+// affine_translate(5kg, 0kg, 0kg) returns Value::Undef (a translation is a
+// DISPLACEMENT and must be LENGTH — task 5747, units-length ζ / R12), and the
+// post-Undef geometry diagnose hook must emit on stderr:
+//   error: affine_translate: dx/dy/dz argument expects Length, got Mass Scalar;
+//          pass a dimensioned length such as `5mm`
+// `reify eval` exits 1 — this is the genuine 0 -> 1 flip. Before ζ the same
+// source exited 0 and printed
+//   affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[5, 0, 0])
+// i.e. the MASS dimension was silently discarded and 5 kg became 5 METRES.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Error diagnostic.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module affine_translate_mass`"), whose text
+// contains the substring "affine_translate" and would independently supply an
+// assertion needle for free — the trap task 6155 documented in
+// affine_scale_dim.ri's own header.
+
+module affine_translate_mass
+
+structure def AffineTranslateMass {
+    let m = affine_translate(5kg, 0kg, 0kg)
+}

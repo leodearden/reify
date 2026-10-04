@@ -325,7 +325,7 @@ impl DimensionVector {
     ///
     /// Do not "fix" a future collision by adding another alias row. A
     /// dimension-checked reader compares vectors, not names — `accept_arg` keys
-    /// on `*dimension == spec.dimension` (`reify-eval/src/arg_acceptance.rs`) and
+    /// on `*dimension == spec.dimension` (`crates/reify-ir/src/arg_acceptance.rs`) and
     /// `ArgSpec.type_name` is display-only — so an alias row cannot separate two
     /// quantities that share a vector. That is the ruling's core argument, and it
     /// is pinned executably by the separation tests in

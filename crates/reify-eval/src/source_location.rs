@@ -16,7 +16,7 @@
 //! the `Entity.member` form.
 
 use reify_compiler::CompiledModule;
-use reify_core::SourceLocationInfo;
+use reify_core::{SourceLocationInfo, ValueCellId};
 
 /// Find the innermost (smallest-span) [`reify_syntax::Declaration::Structure`] or
 /// [`reify_syntax::Declaration::Occurrence`] in `parsed` whose byte span contains
@@ -209,9 +209,20 @@ pub fn resolve_entity_at_source_position(
 /// Accepts two forms:
 /// - **Template name** (no `.`) — returns the first value cell's span as a
 ///   proxy for the entity location.
-/// - **`Entity.member`** (splits on the first `.`) — returns that cell's span.
-///   If the member part itself contains a `.` the input will not match any
-///   value cell (members never contain dots), so `None` is returned.
+/// - **`Entity.member`** (any `.` present) — parsed by `ValueCellId`'s
+///   `FromStr`, then returns that cell's span. An id that parser refuses —
+///   an empty half, or a member still holding a `.` — yields `None`.
+///
+/// The `Entity.member` grammar is DELEGATED to reify-core, not restated here.
+/// It is subtle enough to get wrong twice: the refusal is not "members never
+/// contain dots" (they do — a port body member is minted as
+/// `ValueCellId(entity, "<port>.<param>")` by the port `composite_name` mint in
+/// `compile_entity`, reify-compiler/src/entity.rs, and a keyed member carries
+/// its key in the same slot, via `keyed_member_cell` in reify-ir/src/value.rs).
+/// It is that an instance-path id renders to the identical string, so the
+/// input cannot say which reading was meant. Two copies of that rule is how the
+/// GUI and MCP splits came to disagree (#6405); keeping one parser is the fix,
+/// so route new callers through `FromStr` too.
 ///
 /// Returns `None` when the entity or member is not found, or when the input
 /// does not match either accepted form (e.g., bare member name, empty string).
@@ -230,19 +241,20 @@ pub fn resolve_entity_source_location(
         return None;
     }
 
-    let span = if let Some((entity, member)) = entity_path.split_once('.') {
-        // "Entity.member" form — split on first dot only.
-        // Reject malformed inputs: empty entity, empty member, or a member
-        // that itself contains a dot (no value cell has a dotted member name).
-        if entity.is_empty() || member.is_empty() || member.contains('.') {
-            return None;
-        }
+    let span = if entity_path.contains('.') {
+        // "Entity.member" form. The grammar — which dot separates, and which
+        // inputs name no single cell — is OWNED by reify-core's `FromStr for
+        // ValueCellId`, so it is parsed here rather than re-derived. Every
+        // refusal (empty half, or a second dot that admits more than one
+        // (entity, member) reading) collapses to `None`, this function's one
+        // way of saying "no location".
+        let cell: ValueCellId = entity_path.parse().ok()?;
         compiled
             .templates
             .iter()
-            .filter(|t| t.name == entity)
+            .filter(|t| t.name == cell.entity)
             .flat_map(|t| t.value_cells.iter())
-            .find(|vc| vc.id.member == member)
+            .find(|vc| vc.id.member == cell.member)
             .map(|vc| vc.span)?
     } else {
         // Plain template-name form (no '.') — proxy to the first value cell.

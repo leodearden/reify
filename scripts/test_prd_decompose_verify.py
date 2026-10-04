@@ -95,6 +95,13 @@ _LEAF_FALSE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.
 _LEAF_TRUE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
 _PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
 
+_LEAF_FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
+
+
+def _reify_missing_fixture_stderr(fixture: str) -> str:
+    """reify's own rendering of a missing fixture, which names it (reify-cli main.rs)."""
+    return f"Error reading {fixture}: No such file or directory (os error 2)"
+
 
 # ---------------------------------------------------------------------------
 # prereq-1 / TestScaffold: basic importability
@@ -448,6 +455,113 @@ class TestBindPremises(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # step-05 (RED): synthesize_batch() blocking semantics + captured-output mandate
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# #6876 step-11 (RED): the "value" assertion kind
+# ---------------------------------------------------------------------------
+
+class TestValueAssertionKind(unittest.TestCase):
+    """Binding a premise that asserts something about the PRINTED VALUE.
+
+    `ir` is exit-code-only on the clean branch, so a premise of the shape "eval
+    exits 0 AND prints a finite in-range number" bound as `ir` asserts only the
+    first half.  `value` is the kind that can see the second half; this pins
+    that an Enumerator emitting `assertion_kind="value"` reaches it.
+
+    The non-vacuity rules are NOT re-implemented here — they are α's, inherited
+    through pcc.load_probe_set, and that is exactly what these tests measure.
+    """
+
+    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
+    _SPEC = {
+        "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+        "min": 0.01,
+        "max": 0.03,
+    }
+
+    def _premise(self, match=None, fixture=None, assertion_kind="value"):
+        return pdv.Premise(
+            text="damping_ratio evaluates to a finite in-range number",
+            assertion_kind=assertion_kind,
+            fixture=fixture if fixture is not None else self._FIXTURE,
+            match=match if match is not None else {"stdout_value": dict(self._SPEC)},
+            capability="damping ratio is finite and in range",
+        )
+
+    # ── premise_to_probe ──────────────────────────────────────────────────────
+
+    def test_value_binds_value_probe_kind(self):
+        self.assertEqual(
+            pdv.premise_to_probe(self._premise())["probe_kind"], "value"
+        )
+
+    def test_value_binds_observation_present(self):
+        """The asserted value IS present — the same polarity the rejection row
+        documents: probe that the assertion HOLDS, not that a failure is absent."""
+        self.assertEqual(
+            pdv.premise_to_probe(self._premise())["expected"]["observation"],
+            "present",
+        )
+
+    def test_match_is_passed_through_verbatim(self):
+        """α owns the predicate's shape; D3 must not reshape it on the way."""
+        match = {"stdout_value": dict(self._SPEC)}
+        probe = pdv.premise_to_probe(self._premise(match=match))
+        self.assertEqual(probe["expected"]["match"], match)
+
+    def test_fixture_path_is_preserved(self):
+        probe = pdv.premise_to_probe(self._premise())
+        self.assertEqual(probe["fixture"], self._FIXTURE)
+
+    def test_unknown_assertion_kind_still_rejected_and_lists_value(self):
+        with self.assertRaises(ValueError) as ctx:
+            pdv.premise_to_probe(self._premise(assertion_kind="nonsense"))
+        message = str(ctx.exception)
+        self.assertIn("nonsense", message)
+        for kind in ("rejection", "parses", "resolves", "produces", "ir", "value"):
+            self.assertIn(kind, message)
+
+    # ── bind_premises → α round-trip ──────────────────────────────────────────
+
+    def test_bind_premises_round_trips_through_alpha(self):
+        result = pdv.bind_premises([self._premise()])
+        probes = pcc.load_probe_set(json.dumps(result))
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0].probe_kind, "value")
+        self.assertEqual(
+            probes[0].expected["match"]["stdout_value"], self._SPEC
+        )
+
+    def test_bind_premises_rejects_a_value_premise_with_no_predicate(self):
+        """Inherited from α's single validation site, not re-checked here."""
+        with self.assertRaises(ValueError) as ctx:
+            pdv.bind_premises([self._premise(match={})])
+        self.assertIn("stdout_value", str(ctx.exception))
+
+    def test_bind_premises_rejects_a_value_premise_with_no_constraint(self):
+        with self.assertRaises(ValueError) as ctx:
+            pdv.bind_premises([
+                self._premise(match={"stdout_value": {"pattern": r"X = ([0-9.]+)"}})
+            ])
+        message = str(ctx.exception)
+        self.assertIn("probe[0]", message)
+        for constraint in ("min", "max", "finite"):
+            self.assertIn(constraint, message)
+
+    # ── REGRESSION: the five existing bindings are unchanged ──────────────────
+
+    def test_existing_bindings_unchanged(self):
+        expected = {
+            "rejection": ("check", "present"),
+            "parses": ("grammar", "present"),
+            "resolves": ("check", "present"),
+            "produces": ("ir", "present"),
+            "ir": ("ir", "absent"),
+        }
+        for kind, (probe_kind, observation) in expected.items():
+            with self.subTest(assertion_kind=kind):
+                self.assertEqual(pdv._ASSERTION_KIND_MAP[kind], (probe_kind, observation))
+
 
 class TestSynthesizeBatch(unittest.TestCase):
     """Tests for BatchVerdict + synthesize_batch() blocking semantics.
@@ -866,7 +980,7 @@ class TestMainCLI(unittest.TestCase):
         """An executed FAIL whose probe could not find its target file."""
         return self._result_record(
             capability, "FAIL", exit_code=1,
-            stderr="Error: No such file or directory (os error 2)",
+            stderr=_reify_missing_fixture_stderr("/fixture.ri"),
         )
 
     def test_synthesize_only_evidence_free_fails_exits_0(self):
@@ -1102,6 +1216,28 @@ class TestBoundaryE2e(unittest.TestCase):
         self.assertFalse(bv.blocks,
                          f"leaf-true-premise.json must PASS; blocking: {bv.blocking}; "
                          f"report: {bv.report}")
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
+    def test_real_alpha_missing_fixture_is_fixture_absent(self):
+        """Real α + reify on a never-written fixture is fixture-absent, not blocking.
+
+        Pins the fixture anchor against what α actually records, so #7257's
+        false block cannot quietly return.
+        """
+        with tempfile.TemporaryDirectory(prefix="pdv_e2e_absent_") as tmpdir:
+            fixture = os.path.join(tmpdir, "never_written.ri")
+            results = self._run_probes_with_alpha({"probes": [
+                {"capability": "ir absent", "probe_kind": "ir", "fixture": fixture,
+                 "expected": {"observation": "present",
+                              "match": {"stderr_contains": "E_NEVER"}}},
+                {"capability": "check absent", "probe_kind": "check",
+                 "fixture": fixture,
+                 "expected": {"observation": "present", "match": {"exit_code": 0}}},
+            ]})
+        bv = pdv.synthesize_batch({"prover": results, "adversary": []})
+        self.assertEqual(sorted(bv.fixture_absent), ["check absent", "ir absent"],
+                         bv.report)
+        self.assertFalse(bv.blocks, bv.report)
 
 
 # ---------------------------------------------------------------------------
@@ -1523,31 +1659,35 @@ console.log(LOG_MARK + JSON.stringify(globalThis.__LOG_LINES || []));
 
 
 # ---------------------------------------------------------------------------
-# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
+# _HeadSliceHelperMixin — shared node harness for a single pure helper sliced
+# out of prd-decompose-verify.mjs (task #7369 review, SPOT): TestMjsNormalize-
+# Leaves and TestMjsDroppedLeafLabels each used to hand-roll the same slice/
+# extract/run/parse boilerplate. A subclass supplies only the helper's name,
+# any one-time setup JS it needs (default: none), and the `cases` object
+# literal to evaluate.
 # ---------------------------------------------------------------------------
 
-class TestMjsNormalizeLeaves(unittest.TestCase):
-    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
-    sliced directly out of prd-decompose-verify.mjs (everything BEFORE the
-    `const _wfResult = await` IIFE anchor) and evaluated via `new Function` —
-    no injected-globals mock, no IIFE execution.
-
-    Guards the mega-leaf trap (task #4960): when Workflow args arrive
-    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
-    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
-    stringified array and restore per-leaf fan-out, while leaving every
-    non-string input byte-for-byte unchanged (real array / single object /
-    undefined / null).
-
-    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
-    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
-    exits non-zero, and the test fails on the returncode assertion.
+class _HeadSliceHelperMixin:
+    """Extracts ONE named function from everything in the .mjs BEFORE the
+    `const _wfResult = await` IIFE anchor (so the IIFE itself never runs), via
+    `new Function`, and runs it under node — no injected-globals mock.
     """
 
-    _MARK = "NORMALIZE_LEAVES_RESULT:"
+    _MARK = "HEAD_SLICE_RESULT:"
+
+    def _helper_name(self) -> str:
+        raise NotImplementedError
+
+    def _setup_js(self) -> str:
+        """Extra JS emitted after helper-extraction, before `cases` is built."""
+        return ""
+
+    def _cases_js(self) -> str:
+        raise NotImplementedError
 
     def _harness_source(self) -> str:
         mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        helper = self._helper_name()
         return f"""\
 import {{ readFileSync }} from "node:fs";
 
@@ -1564,46 +1704,26 @@ if (anchorIdx === -1) {{
 let head = src.slice(0, anchorIdx);
 head = head.replace("export const meta", "const meta");
 
-let normalizeLeaves;
+let {helper};
 try {{
-    normalizeLeaves = new Function(head + "\\nreturn normalizeLeaves;")();
+    {helper} = new Function(head + "\\nreturn {helper};")();
 }} catch (e) {{
     console.error("HELPER_EXTRACT_FAILED: " + e.message);
     process.exit(1);
 }}
-if (typeof normalizeLeaves !== "function") {{
-    console.error("HELPER_NOT_A_FUNCTION: " + typeof normalizeLeaves);
+if (typeof {helper} !== "function") {{
+    console.error("HELPER_NOT_A_FUNCTION: " + typeof {helper});
     process.exit(1);
 }}
 
-function run(rawArgs) {{
-    const warnCalls = [];
-    const warn = (...a) => {{ warnCalls.push(a.map(String).join(" ")); }};
-    const result = normalizeLeaves(rawArgs, warn);
-    return {{
-        length: Array.isArray(result) ? result.length : null,
-        isArray: Array.isArray(result),
-        warnCalls,
-    }};
-}}
-
-const L = [{{ signal: "leaf-1" }}, {{ signal: "leaf-2" }}, {{ signal: "leaf-3" }}];
-
-const cases = {{
-    stringified_array: run(JSON.stringify(L)),
-    real_array_passthrough: run(L),
-    non_json_string: run("not json {{["),
-    json_non_array_object: run(JSON.stringify({{ a: 1 }})),
-    undefined_input: run(undefined),
-    empty_string: run(""),
-    single_object_leaf: run({{ signal: "solo" }}),
-}};
+{self._setup_js()}
+const cases = {self._cases_js()};
 
 console.log(MARK + JSON.stringify(cases));
 """
 
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
-    def test_normalize_leaves_pure_helper_contract(self):
+    def _run_cases(self) -> dict:
+        """Run the harness under node; return the parsed `cases` object."""
         harness_src = self._harness_source()
         result = subprocess.run(
             ["node", "--input-type=module"],
@@ -1621,7 +1741,63 @@ console.log(MARK + JSON.stringify(cases));
             marker_lines,
             f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
         )
-        cases = json.loads(marker_lines[-1][len(self._MARK):])
+        return json.loads(marker_lines[-1][len(self._MARK):])
+
+
+# ---------------------------------------------------------------------------
+# task #4960 (RED): normalizeLeaves() pure-helper contract — mega-leaf trap
+# ---------------------------------------------------------------------------
+
+class TestMjsNormalizeLeaves(unittest.TestCase, _HeadSliceHelperMixin):
+    """Pure-unit tests for the normalizeLeaves(rawArgs, warn) helper, source-
+    sliced directly out of prd-decompose-verify.mjs via _HeadSliceHelperMixin
+    — no injected-globals mock, no IIFE execution.
+
+    Guards the mega-leaf trap (task #4960): when Workflow args arrive
+    JSON-stringified, `Array.isArray(args)` is false and the whole stringified
+    batch collapses into ONE leaf. normalizeLeaves must detect a JSON-
+    stringified array and restore per-leaf fan-out, while leaving every
+    non-string input byte-for-byte unchanged (real array / single object /
+    undefined / null).
+
+    FAILS until normalizeLeaves is added to the .mjs: the head-slice eval
+    throws ReferenceError('normalizeLeaves is not defined'), the Node harness
+    exits non-zero, and the test fails on the returncode assertion.
+    """
+
+    def _helper_name(self) -> str:
+        return "normalizeLeaves"
+
+    def _setup_js(self) -> str:
+        return """\
+function run(rawArgs) {
+    const warnCalls = [];
+    const warn = (...a) => { warnCalls.push(a.map(String).join(" ")); };
+    const result = normalizeLeaves(rawArgs, warn);
+    return {
+        length: Array.isArray(result) ? result.length : null,
+        isArray: Array.isArray(result),
+        warnCalls,
+    };
+}
+
+const L = [{ signal: "leaf-1" }, { signal: "leaf-2" }, { signal: "leaf-3" }];
+"""
+
+    def _cases_js(self) -> str:
+        return """{
+    stringified_array: run(JSON.stringify(L)),
+    real_array_passthrough: run(L),
+    non_json_string: run("not json {["),
+    json_non_array_object: run(JSON.stringify({ a: 1 })),
+    undefined_input: run(undefined),
+    empty_string: run(""),
+    single_object_leaf: run({ signal: "solo" }),
+}"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
+    def test_normalize_leaves_pure_helper_contract(self):
+        cases = self._run_cases()
 
         # (a) stringified array -> real per-leaf fan-out, no degradation warning.
         self.assertEqual(
@@ -1674,6 +1850,149 @@ console.log(MARK + JSON.stringify(cases));
         # edge: single object leaf (non-string, non-array) -> one leaf, unchanged.
         self.assertEqual(cases["single_object_leaf"]["length"], 1)
         self.assertEqual(cases["single_object_leaf"]["warnCalls"], [])
+
+
+# ---------------------------------------------------------------------------
+# task #7369 (RED before the fix): droppedLeafLabels() names the actual null
+# positions, not an arithmetic guess at where they are
+# ---------------------------------------------------------------------------
+
+class TestMjsDroppedLeafLabels(unittest.TestCase, _HeadSliceHelperMixin):
+    """Pure-unit tests for the droppedLeafLabels(leaves, leaf_verdicts) helper,
+    source-sliced directly out of prd-decompose-verify.mjs via
+    _HeadSliceHelperMixin — same technique as TestMjsNormalizeLeaves above.
+
+    Guards the defect described in task #7369: the pre-fix expression derived
+    each dropped leaf's label from `j >= (leaves.length - dropped - i)`, an
+    arithmetic guess at a TAIL position that bears no relation to where the
+    nulls actually are. Measured on this branch before the fix (node
+    simulation of the exact pre-fix expression):
+        5 leaves, dropped at indices 0 and 4 -> ["<dropped-leaf:4>","<dropped-leaf:4>"]
+            (index 0 never named; index 4 named twice)
+        5 leaves, single drop at index 1     -> ["<dropped-leaf:?>"]
+            (index is knowable; reported unknown)
+    The fix derives each label directly from the null's own position in
+    leaf_verdicts, so it is correct regardless of contiguity — the tail-only
+    case (single drop at the last index) passed even before the fix and would
+    not have caught this, hence the non-contiguous cases below.
+
+    Also covers (task #7369 review): the object-leaf label branches (signal /
+    text / neither-fallback), and the null-safety fix for leafLabelFor — a
+    leaf element that is itself null/undefined, or a leaves array shorter than
+    leaf_verdicts, must label via the index fallback rather than throwing.
+
+    And (task #7369 review round 2): the pipeline()-contract defense. Every
+    case above trusts that leaf_verdicts is exactly leaves.length long — the
+    contract the real pipeline() runtime is documented to uphold, but which
+    this repo cannot pin. If leaf_verdicts ever comes back SHORTER than
+    leaves (a hypothetical compacting runtime), the leaves past its end have
+    no hole to find; droppedLeafLabels must name that gap explicitly rather
+    than silently under-counting.
+    """
+
+    def _helper_name(self) -> str:
+        return "droppedLeafLabels"
+
+    def _setup_js(self) -> str:
+        return """\
+const LEAVES = ["leaf0", "leaf1", "leaf2", "leaf3", "leaf4"];
+const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
+"""
+
+    def _cases_js(self) -> str:
+        return """{
+    // non-contiguous: dropped at 0 and 4 (the case the pre-fix arithmetic got wrong twice over)
+    non_contiguous_head_and_tail: droppedLeafLabels(
+        LEAVES, [null, {blocks: false}, {blocks: false}, {blocks: false}, null]),
+    // knowable single mid-array drop (pre-fix reported "?" here)
+    single_drop_mid_array: droppedLeafLabels(
+        LEAVES, [{blocks: false}, null, {blocks: false}, {blocks: false}, {blocks: false}]),
+    // tail-contiguous single drop — passed even before the fix; regression guard
+    single_drop_tail: droppedLeafLabels(
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}, null]),
+    // no drops at all
+    no_drops: droppedLeafLabels(
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}, {blocks: false}]),
+    // object leaves: signal / text / neither-fallback branches of leafLabelFor
+    object_leaf_signal: droppedLeafLabels(
+        OBJECT_LEAVES, [null, {blocks: false}, {blocks: false}]),
+    object_leaf_text: droppedLeafLabels(
+        OBJECT_LEAVES, [{blocks: false}, null, {blocks: false}]),
+    object_leaf_neither: droppedLeafLabels(
+        OBJECT_LEAVES, [{blocks: false}, {blocks: false}, null]),
+    // null-safety: a leaf element that is itself null/undefined must not throw
+    null_leaf_element: droppedLeafLabels(
+        [null, "a"], [null, {blocks: false}]),
+    short_leaves_array: droppedLeafLabels(
+        ["a"], [null, null]),
+    // contract violation: leaf_verdicts came back SHORTER than leaves (a
+    // hypothetical compacting pipeline()) — the missing tail must be named,
+    // not silently invisible.
+    contract_violation_shrunk_array: droppedLeafLabels(
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}]),
+    // shrinkage combined with a real hole inside the surviving prefix — both
+    // must be reported.
+    contract_violation_with_real_drop: droppedLeafLabels(
+        LEAVES, [null, {blocks: false}, {blocks: false}]),
+}"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
+    def test_dropped_leaf_labels_pure_helper_contract(self):
+        cases = self._run_cases()
+
+        # The defect: index 0 never named, index 4 named twice.
+        self.assertEqual(
+            cases["non_contiguous_head_and_tail"],
+            ["<dropped-leaf:0:leaf0>", "<dropped-leaf:4:leaf4>"],
+            "each dropped index must be named exactly once, at its own position",
+        )
+
+        # The defect: a knowable mid-array index was reported as "?".
+        self.assertEqual(
+            cases["single_drop_mid_array"], ["<dropped-leaf:1:leaf1>"],
+            "a knowable dropped index must never fall back to '?'",
+        )
+
+        # Regression guard: the one case the pre-fix arithmetic got right by luck.
+        self.assertEqual(cases["single_drop_tail"], ["<dropped-leaf:4:leaf4>"])
+
+        # No drops -> no labels, and the count always matches the null count.
+        self.assertEqual(cases["no_drops"], [])
+        # Emitted label count must equal the number of nulls in each fixture.
+        self.assertEqual(len(cases["non_contiguous_head_and_tail"]), 2)
+        self.assertEqual(len(cases["single_drop_mid_array"]), 1)
+        self.assertEqual(len(cases["single_drop_tail"]), 1)
+        self.assertEqual(len(cases["no_drops"]), 0)
+
+        # Object-leaf branches: signal, then text, then the leaf-${idx} fallback.
+        self.assertEqual(cases["object_leaf_signal"], ["<dropped-leaf:0:sig-a>"])
+        self.assertEqual(cases["object_leaf_text"], ["<dropped-leaf:1:txt-b>"])
+        self.assertEqual(cases["object_leaf_neither"], ["<dropped-leaf:2:leaf-2>"])
+
+        # leafLabelFor must be total: a null leaf element, or a leaves array
+        # shorter than leaf_verdicts (so leaves[j] is undefined), must label
+        # via the index fallback rather than throwing.
+        self.assertEqual(cases["null_leaf_element"], ["<dropped-leaf:0:leaf-0>"])
+        self.assertEqual(
+            cases["short_leaves_array"],
+            ["<dropped-leaf:0:a>", "<dropped-leaf:1:leaf-1>"],
+        )
+
+        # Contract violation (task #7369 review round 2): leaf_verdicts came
+        # back shorter than leaves — 5 leaves, only 3 verdict slots, none of
+        # them null. The 2 missing leaves must still surface as a named,
+        # counted hole instead of vanishing.
+        self.assertEqual(
+            cases["contract_violation_shrunk_array"],
+            ["<dropped-leaf:contract-violation:2>"],
+            "a leaf_verdicts array shorter than leaves must name the gap, not vanish it",
+        )
+        # Shrinkage stacks with a real hole in the surviving prefix: both the
+        # named null at index 0 and the contract-violation gap must appear.
+        self.assertEqual(
+            cases["contract_violation_with_real_drop"],
+            ["<dropped-leaf:0:leaf0>", "<dropped-leaf:contract-violation:2>"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1957,7 +2276,7 @@ class TestFixtureAbsent(unittest.TestCase):
             "capability": capability,
             "probe_kind": "ir",
             "verdict": verdict,
-            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "command": ["reify", "eval", _LEAF_FIXTURE],
             "exit_code": exit_code,
             "stdout": "",
             "stderr": stderr,
@@ -1966,9 +2285,9 @@ class TestFixtureAbsent(unittest.TestCase):
     # ── (1) the verbatim stderr from the observed run ────────────────────────
 
     def test_observed_enoent_stderr_is_not_a_falsification(self):
-        """'Error: No such file or directory (os error 2)' → fixture-absent."""
+        """reify's 'Error reading <fixture>: ... (os error 2)' → fixture-absent."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertNotIn("fixture-absent cap", bv.blocking)
         self.assertFalse(bv.blocks)
@@ -1976,16 +2295,21 @@ class TestFixtureAbsent(unittest.TestCase):
 
     # ── (2) both signature forms, case-insensitively ─────────────────────────
 
-    def test_bare_no_such_file_signature(self):
-        """A bare 'No such file or directory' is enough."""
+    def test_bare_phrase_without_the_fixture_is_not_enough(self):
+        """A bare 'No such file or directory' names no path, so it still blocks."""
         rec = self._result("bare-enoent cap", stderr="No such file or directory")
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
-        self.assertIn("bare-enoent cap", bv.fixture_absent)
-        self.assertFalse(bv.blocks)
+        self.assertTrue(bv.blocks)
+        self.assertIn("bare-enoent cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
 
     def test_signature_match_is_case_insensitive(self):
         """Lower-cased diagnostics match too — the signature is normalized."""
-        rec = self._result("lowercase-enoent cap", stderr="no such file or directory")
+        rec = self._result(
+            "lowercase-enoent cap",
+            stderr=f"error reading {_LEAF_FIXTURE}: no such file or directory")
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("lowercase-enoent cap", bv.fixture_absent)
         self.assertFalse(bv.blocks)
@@ -1994,7 +2318,8 @@ class TestFixtureAbsent(unittest.TestCase):
 
     def test_bare_os_error_2_signature(self):
         """Rust renders ENOENT as 'os error 2'; that alone classifies fixture-absent."""
-        rec = self._result("os-error-2 cap", stderr="failed to open input: os error 2")
+        rec = self._result("os-error-2 cap",
+                           stderr=f"failed to open input {_LEAF_FIXTURE}: os error 2")
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("os-error-2 cap", bv.fixture_absent)
         self.assertFalse(bv.blocks)
@@ -2040,7 +2365,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_record_counts_as_executed(self):
         """The probe DID run — it just could not find its fixture."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.executed, 1)
         self.assertEqual(bv.total, 1)
@@ -2048,7 +2373,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_named_in_its_own_report_section(self):
         """The capability stays visible, under a fixture-absent label."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("fixture-absent cap", bv.report)
         self.assertIn("FIXTURE ABSENT", bv.report)
@@ -2056,7 +2381,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_not_counted_as_malformed(self):
         """The two categories are distinct: one ran without a target, one never ran."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.malformed, [])
 
@@ -2096,12 +2421,14 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
     #: (label, stderr) for errnos whose decimal rendering begins with "2" but
     #: which are NOT ENOENT.  Every one is a real failure that must block.
     HOSTILE_ERRNOS = (
-        ("ENOTDIR", "Not a directory (os error 20)"),
-        ("EISDIR", "Is a directory (os error 21)"),
-        ("EINVAL", "Invalid argument (os error 22)"),
-        ("EMFILE", "Too many open files (os error 24)"),
-        ("ENOSPC", "No space left on device (os error 28)"),
+        ("ENOTDIR", f"Error reading {_LEAF_FIXTURE}: Not a directory (os error 20)"),
+        ("EISDIR", f"Error reading {_LEAF_FIXTURE}: Is a directory (os error 21)"),
+        ("EINVAL", f"Error reading {_LEAF_FIXTURE}: Invalid argument (os error 22)"),
+        ("EMFILE", f"Error reading {_LEAF_FIXTURE}: Too many open files (os error 24)"),
+        ("ENOSPC",
+         f"Error reading {_LEAF_FIXTURE}: No space left on device (os error 28)"),
     )
+    ERRNO_212 = f"probe aborted reading {_LEAF_FIXTURE} (os error 212)"
 
     def _result(self, capability: str, verdict: str = "FAIL",
                 stderr: str = "", exit_code: int = 1) -> dict:
@@ -2114,7 +2441,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
             "capability": capability,
             "probe_kind": "ir",
             "verdict": verdict,
-            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "command": ["reify", "eval", _LEAF_FIXTURE],
             "exit_code": exit_code,
             "stdout": "",
             "stderr": stderr,
@@ -2139,7 +2466,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
 
     def test_three_digit_two_hundred_errno_still_blocks(self):
         """A 3-digit errno beginning with 2 must not be read as ENOENT either."""
-        rec = self._result("errno-212 cap", stderr="probe aborted (os error 212)")
+        rec = self._result("errno-212 cap", stderr=self.ERRNO_212)
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertTrue(bv.blocks)
         self.assertIn("errno-212 cap", bv.blocking)
@@ -2154,7 +2481,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
         so a future regression points at the signature table, not at the
         classification pipeline downstream of it.
         """
-        table = self.HOSTILE_ERRNOS + (("errno-212", "probe aborted (os error 212)"),)
+        table = self.HOSTILE_ERRNOS + (("errno-212", self.ERRNO_212),)
         for label, stderr in table:
             with self.subTest(errno=label):
                 rec = self._result(f"{label} cap", stderr=stderr)
@@ -2169,12 +2496,13 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
 
         The anchor must permit a bare trailing `os error 2` at end-of-string
         (no closing paren) — requiring `)` would break the spelling asserted by
-        TestFixtureAbsent.test_bare_os_error_2_signature.
+        TestFixtureAbsent.test_bare_os_error_2_signature.  The phrase-only
+        spelling is the perror shape, `<program>: <path>: <strerror>`.
         """
         spellings = (
-            ("paren", "Error: No such file or directory (os error 2)"),
-            ("bare-errno-eos", "failed to open input: os error 2"),
-            ("phrase-only", "No such file or directory"),
+            ("paren", _reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+            ("bare-errno-eos", f"failed to open input {_LEAF_FIXTURE}: os error 2"),
+            ("phrase-only", f"cat: {_LEAF_FIXTURE}: No such file or directory"),
         )
         for label, stderr in spellings:
             with self.subTest(spelling=label):
@@ -2195,12 +2523,122 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
         Textually adjacent to ENOENT's phrase ("No such ...") and numerically
         adjacent to the 2X block, so it pins both edges at once.
         """
-        rec = self._result("enodev cap", stderr="No such device (os error 19)")
+        rec = self._result(
+            "enodev cap",
+            stderr=f"Error reading {_LEAF_FIXTURE}: No such device (os error 19)")
         self.assertFalse(pdv.fixture_absent_evidence(rec))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertTrue(bv.blocks)
         self.assertIn("enodev cap", bv.blocking)
         self.assertEqual(bv.fixture_absent, [])
+
+
+# ---------------------------------------------------------------------------
+# task #7304 (RED): the ENOENT must name the probe's own fixture
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
+    """Fixture-absent needs an ENOENT on a stderr line naming the probe's fixture.
+
+    "Fixture absent" means the OS reported the probe's TARGET missing.  ENOENT
+    text that is quoted, about another path, or on a line without the target
+    says nothing about the target, so the FAIL it rides on must keep blocking.
+    """
+
+    def _result(self, capability: str, stderr: str, verdict: str = "FAIL",
+                command=None) -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": ["reify", "check", _LEAF_FIXTURE] if command is None else command,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    def _assert_blocks(self, rec: dict) -> None:
+        cap = rec["capability"]
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn(cap, bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_genuine_fail_quoting_the_enoent_text_blocks(self):
+        self._assert_blocks(self._result(
+            "quoted enoent cap",
+            'AssertionError: expected the import diagnostic to read '
+            '"No such file or directory (os error 2)", got "module \'lib\' not found"'))
+
+    def test_enoent_about_a_different_file_blocks(self):
+        self._assert_blocks(self._result(
+            "other file cap",
+            _reify_missing_fixture_stderr("tests/prd-gate/fixtures/helper_lib.ri")))
+
+    def test_bare_errno_without_a_path_blocks(self):
+        self._assert_blocks(self._result("bare errno cap", "failed to spawn: os error 2"))
+
+    def test_relay_mislabelled_harness_enoent_blocks(self):
+        """A FAIL whose argv is α's own invocation: the ENOENT is about α's script."""
+        self._assert_blocks(self._result(
+            "relayed harness cap",
+            "python3: can't open file 'scripts/prd-capability-check.py': "
+            "[Errno 2] No such file or directory",
+            command=["python3", "scripts/prd-capability-check.py",
+                     "--json", "/tmp/ps.json"]))
+
+    def test_fixture_and_enoent_on_different_lines_blocks(self):
+        self._assert_blocks(self._result(
+            "split lines cap",
+            f"warning: in {_LEAF_FIXTURE}: unused parameter\n"
+            + _reify_missing_fixture_stderr("tests/prd-gate/fixtures/other.ri")))
+
+    def test_argv_without_an_argument_blocks(self):
+        self._assert_blocks(self._result(
+            "no argument cap", "bash: reify: No such file or directory",
+            command=["reify"]))
+
+    def test_enoent_line_after_warnings_is_fixture_absent(self):
+        rec = self._result(
+            "warned absent cap",
+            "warning: W_X: something\n" + _reify_missing_fixture_stderr(_LEAF_FIXTURE))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+
+    def test_longer_path_ending_in_the_fixture_name_blocks(self):
+        """A relayed short fixture is a path token, not a suffix of any path."""
+        for other in ("tests/prd-gate/fixtures/subleaf.ri", "/other/leaf.ri"):
+            with self.subTest(other=other):
+                self._assert_blocks(self._result(
+                    f"suffix {other} cap", _reify_missing_fixture_stderr(other),
+                    command=["reify", "check", "leaf.ri"]))
+
+    def test_fixture_delimited_as_a_whole_token_is_fixture_absent(self):
+        for label, stderr in (
+            ("reify", _reify_missing_fixture_stderr("leaf.ri")),
+            ("perror", "cat: leaf.ri: No such file or directory"),
+            ("quoted", "can't open file 'leaf.ri': [Errno 2] No such file or directory"),
+            ("backticked", "failed to read `leaf.ri` (os error 2)"),
+        ):
+            with self.subTest(spelling=label):
+                rec = self._result(f"{label} cap", stderr,
+                                   command=["reify", "check", "leaf.ri"])
+                self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+
+    def test_missing_grammar_fixture_still_blocks(self):
+        """tree-sitter's missing-file report names neither the path nor ENOENT.
+
+        Pins today's fail-closed outcome for grammar probes (#8122), whose
+        fixture-absent case the reify-specific anchor cannot see.
+        """
+        self._assert_blocks(dict(
+            self._result(
+                "grammar absent cap",
+                "Error: No files were found at or matched by the provided "
+                "pathname/glob",
+                command=["tree-sitter", "parse", "--quiet", _LEAF_FIXTURE]),
+            probe_kind="grammar"))
 
 
 # ---------------------------------------------------------------------------
@@ -2396,6 +2834,8 @@ console.log(MARK + JSON.stringify(schemas));
 
 _MJS_RESULT_MARK = "SCENARIO_RESULT:"
 _MJS_PHASES_MARK = "SCENARIO_PHASES:"
+_MJS_LOGS_MARK = "SCENARIO_LOGS:"
+_MJS_PIPELINE_ERRORS_MARK = "SCENARIO_PIPELINE_ERRORS:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -2418,6 +2858,8 @@ import {{ readFileSync }} from "node:fs";
 const MJS_PATH = "{mjs_abs}";
 const RESULT_MARK = "{_MJS_RESULT_MARK}";
 const PHASES_MARK = "{_MJS_PHASES_MARK}";
+const LOGS_MARK = "{_MJS_LOGS_MARK}";
+const PIPELINE_ERRORS_MARK = "{_MJS_PIPELINE_ERRORS_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
@@ -2431,13 +2873,35 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
     return {{}};
 }};
 
-// ── mock: pipeline(items, ...stages) — threads each item through in order ────
+// ── mock: pipeline(items, ...stages) — threads each item through in order,
+// dropping to null (at the item's own index) if any stage throws — mirrors
+// the documented real-pipeline contract the aggregation code relies on: the
+// workflow-authoring reference states "A stage that throws drops that item
+// to null and skips its remaining stages", implemented there via
+// Promise.allSettled + an index-preserving map. Record the caught error the
+// same way the real runtime does (`pipeline[<index>] failed: <message>`)
+// instead of discarding it — otherwise a genuine .mjs stage defect (a
+// TypeError from a renamed field, a bad JSON.stringify arg) is invisible in
+// these scenario tests, indistinguishable from an intentionally-thrown mock.
+//
+// This is a HARNESS self-check, not SUT behavior — the real .mjs never calls
+// this catch block, only this mock does — so it is recorded into its own
+// __PIPELINE_ERRORS channel rather than __LOG_LINES (task #7369 review round
+// 2). __LOG_LINES stays a faithful, harness-untouched record of exactly what
+// the .mjs itself passed to log(), so a future assertion over it (an exact
+// line count, an "the .mjs logged nothing on this path" check) can't be
+// tripped up by text this harness injected.
 globalThis.pipeline = async (items, ...stages) => {{
     const results = [];
     for (const item of items) {{
         let val = item;
-        for (const stage of stages) {{
-            val = await stage(val, item, results.length);
+        try {{
+            for (const stage of stages) {{
+                val = await stage(val, item, results.length);
+            }}
+        }} catch (e) {{
+            globalThis.__PIPELINE_ERRORS.push(`pipeline[${{results.length}}] failed: ` + e.message);
+            val = null;
         }}
         results.push(val);
     }}
@@ -2447,6 +2911,7 @@ globalThis.pipeline = async (items, ...stages) => {{
 globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
 globalThis.__LOG_LINES = [];
 globalThis.log = (..._a) => {{ globalThis.__LOG_LINES.push(_a.map(String).join(" ")); }};
+globalThis.__PIPELINE_ERRORS = [];
 globalThis.phase = (..._a) => {{}};
 globalThis.args = {leaves_js};
 globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
@@ -2459,6 +2924,8 @@ const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
 const result = await new AsyncFunction(src)();
 console.log(RESULT_MARK + JSON.stringify(result));
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
+console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
+console.log(PIPELINE_ERRORS_MARK + JSON.stringify(globalThis.__PIPELINE_ERRORS));
 """
 
 
@@ -2517,6 +2984,42 @@ class _MjsScenarioMixin:
         verdict = json.loads(res_lines[-1][len(_MJS_RESULT_MARK):])
         phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
         return verdict, phases
+
+    def _run_scenario_logs(self, leaves_js: str, responses_js: str):
+        """Return the captured globalThis.log() lines for a scenario.
+
+        Kept separate from _run_scenario rather than widening its (verdict,
+        phases) return tuple — that tuple is unpacked at ~15 call sites across
+        this file that have no use for log lines. _run_node_module is cached
+        on the exact generated source (see its docstring), so calling this
+        with the same (leaves_js, responses_js) already passed to
+        _run_scenario in the same test costs no extra node spawn.
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        log_lines = [ln for ln in out.splitlines()
+                     if ln.startswith(_MJS_LOGS_MARK)]
+        self.assertTrue(log_lines, f"no logs marker; stdout: {out!r}")
+        return json.loads(log_lines[-1][len(_MJS_LOGS_MARK):])
+
+    def _run_scenario_pipeline_errors(self, leaves_js: str, responses_js: str):
+        """Return the harness mock pipeline()'s own caught-error records.
+
+        This is a HARNESS self-check channel, not SUT output (task #7369
+        review round 2): it reads __PIPELINE_ERRORS, which only the scenario
+        mock's catch block writes to, never the .mjs itself — kept separate
+        from _run_scenario_logs's __LOG_LINES so that channel stays a faithful
+        record of exactly what prd-decompose-verify.mjs passed to log().
+        Cached the same way as _run_scenario_logs (see its docstring).
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        error_lines = [ln for ln in out.splitlines()
+                       if ln.startswith(_MJS_PIPELINE_ERRORS_MARK)]
+        self.assertTrue(error_lines, f"no pipeline-errors marker; stdout: {out!r}")
+        return json.loads(error_lines[-1][len(_MJS_PIPELINE_ERRORS_MARK):])
 
 
 # ---------------------------------------------------------------------------
@@ -2730,13 +3233,22 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
 }"""
 
     def _assert_consumer_contract(self, verdict):
-        """The pre-existing keys β/D4 consume must survive every change."""
-        for key in ("blocks", "leaf_verdicts", "summary"):
+        """The pre-existing keys β/D4 consume must survive every change.
+
+        `blocking`/`disposition` joined this contract in the task #7369
+        review: `blocking` is the field that finally carries dropped-leaf
+        labels to a caller, and `disposition` is the documented PASS/BLOCKS/
+        INCOMPLETE headline — both must be present on every return path, not
+        just the aggregation-tail one.
+        """
+        for key in ("blocks", "blocking", "leaf_verdicts", "summary", "disposition"):
             self.assertIn(key, verdict,
                           f"consumer-contract key {key!r} missing; got {sorted(verdict)}")
         self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["blocking"], list)
         self.assertIsInstance(verdict["leaf_verdicts"], list)
         self.assertIsInstance(verdict["summary"], str)
+        self.assertIsInstance(verdict["disposition"], str)
 
     # ── (A) a mixed batch is INCOMPLETE, not PASS ────────────────────────────
 
@@ -2852,6 +3364,118 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(leaf.get("total"), 0)
         self.assertEqual(leaf.get("blocking"), ["null-synthesize leaf (zeta)"])
 
+    # ── (E) a leaf the pipeline itself dropped is named in `blocking` (#7369) ─
+
+    _E_LEAVES = '[{ signal: "ok leaf (eta)" }, { signal: "doomed leaf (theta)" }]'
+    _E_RESPONSES = """{
+    enumerate: (prompt) => {
+        if (prompt.includes("doomed")) { throw new Error("enumerator exploded"); }
+        return { premises: [{
+            text: "revolute rejects non-axis arg",
+            assertion_kind: "rejection",
+            fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            match: { exit_code: 1 },
+            capability: "arg-vs-param rejection (mock)",
+        }] };
+    },
+    prove: { prover: [{
+        capability: "arg-vs-param rejection (mock)",
+        probe_kind: "check", verdict: "PASS",
+        command: ["reify", "check", "f.ri"], exit_code: 1,
+        stdout: "", stderr: "type mismatch",
+    }], adversary: [] },
+    adversary: { prover: [], adversary: [] },
+    synthesize: { blocks: false, blocking: [], report: "",
+                  malformed: [], fixture_absent: [], executed: 1, total: 1 },
+}"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_is_named_in_batch_level_blocking(self):
+        """The dropped leaf's label must escape droppedLeafLabels() and reach
+        the return value a caller actually consumes (task #7369 review):
+        computing the label and then discarding it was behaviorally a no-op,
+        observable only by the pure-unit test on the helper itself.
+        """
+        verdict, _ = self._run_scenario(self._E_LEAVES, self._E_RESPONSES)
+        self._assert_consumer_contract(verdict)
+        self.assertTrue(verdict["blocks"], "a pipeline-dropped leaf must fail closed")
+        self.assertEqual(verdict.get("disposition"), "BLOCKS")
+        self.assertIn("blocking", verdict,
+                      f"batch verdict has no blocking; keys {sorted(verdict)}")
+        # "doomed leaf (theta)" is leaves[1] — the label must carry that index.
+        self.assertEqual(verdict["blocking"], ["<dropped-leaf:1:doomed leaf (theta)>"])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_does_not_shrink_leaves_total(self):
+        """`leaves_total` must count the SUBMITTED batch, not just the leaves
+        that survived to `filtered` (task #7369 review): before this fix,
+        leaves_total was filtered.length, so this exact 2-leaf/1-dropped
+        scenario reported leaves_total: 1 — reading as full coverage — while
+        `blocking` simultaneously named a leaf that was never adjudicated.
+        Only "ok leaf (eta)" (leaves[0]) actually ran a probe, so
+        leaves_probed must stay 1 even though leaves_total is now 2.
+        """
+        verdict, _ = self._run_scenario(self._E_LEAVES, self._E_RESPONSES)
+        self.assertEqual(verdict.get("leaves_total"), 2,
+                         "leaves_total must count the whole submitted batch, dropped or not")
+        self.assertEqual(verdict.get("leaves_probed"), 1,
+                         "the dropped leaf never ran a probe and must not count as probed")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_logs_the_caught_error(self):
+        """The mock pipeline()'s catch must record the throw, not swallow it
+        (task #7369 review): a genuine .mjs stage defect and an intentionally
+        -thrown mock error both used to look identical — a dropped leaf with
+        no trace of why. Assert the throw path actually fired, the way the
+        real runtime's own `pipeline[<index>] failed: <message>` record would
+        let a reader confirm it, instead of only inferring it from the verdict.
+
+        This is a harness self-check: it verifies the scenario mock's own
+        catch block, not any behavior of prd-decompose-verify.mjs, so it
+        reads the dedicated __PIPELINE_ERRORS channel (task #7369 review round
+        2) rather than __LOG_LINES — the latter is reserved for the .mjs's own
+        log() output and must never carry harness-injected text.
+        """
+        errors = self._run_scenario_pipeline_errors(self._E_LEAVES, self._E_RESPONSES)
+        combined = "\n".join(errors)
+        self.assertIn(
+            "pipeline[1] failed: enumerator exploded", combined,
+            f"expected the caught enumerator error at index 1; got {errors!r}",
+        )
+
+    # ── (F) zero leaves — the empty-batch early return owes the same contract ─
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_zero_leaf_batch_has_full_consumer_contract(self):
+        """The empty-batch early return must not omit fields a consumer would
+        reasonably read off any other return path (task #7369 review): before
+        this test, `blocking`/`disposition`/the counters existed only on the
+        aggregation-tail path, so `verdict.blocking.length` or
+        `verdict.disposition === 'PASS'` was `undefined` on a zero-leaf batch
+        instead of the vacuously-true answer.
+        """
+        verdict, phases = self._run_scenario("[]", "{}")
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("disposition"), "PASS")
+        self.assertFalse(verdict["blocks"])
+        self.assertEqual(verdict.get("blocking"), [])
+        self.assertEqual(verdict.get("leaves_total"), 0)
+        self.assertEqual(verdict.get("leaves_probed"), 0)
+        self.assertEqual(phases, [], "zero leaves must never invoke any agent stage")
+
+        # _assert_consumer_contract only pins a hand-picked subset of keys —
+        # exactly the kind of subset check that let the zero-leaf path drift
+        # from the aggregation tail's key set in the first place (task #7369
+        # review round 2). Pin the FULL key set instead, against a populated
+        # scenario that goes through the normal tail: this single assertion
+        # subsumes any per-key list and cannot itself drift, because both
+        # paths now build through the shared batchVerdict() constructor.
+        populated, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        self.assertEqual(
+            set(verdict), set(populated),
+            "zero-leaf return must expose the same keys as the aggregation tail",
+        )
+
 
 # ---------------------------------------------------------------------------
 # task #7257 step-15 (RED): the user-observable signal, end to end
@@ -2892,7 +3516,8 @@ class TestUserObservableSignal(unittest.TestCase):
                 {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
                  "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
                  "exit_code": 1, "stdout": "",
-                 "stderr": "Error: No such file or directory (os error 2)"},
+                 "stderr": _reify_missing_fixture_stderr(
+                     "tests/prd-gate/fixtures/not-yet.ri")},
             ],
             "adversary": [
                 # (4) an evidence-backed falsification whose command is a STRING
@@ -3112,8 +3737,10 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
 
     def test_fail_with_the_same_enoent_stderr_is_still_fixture_absent(self):
         """The carve-out still applies where its rationale applies — to a probe."""
-        rec = self._executed("missing deliverable cap", "FAIL",
-                             stderr="Error: No such file or directory (os error 2)")
+        rec = dict(
+            self._executed("missing deliverable cap", "FAIL",
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+            command=["reify", "check", _LEAF_FIXTURE])
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertFalse(bv.blocks)
         self.assertEqual(bv.fixture_absent, ["missing deliverable cap"])
@@ -3187,7 +3814,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
         """The drift that motivated the extraction."""
         bv = pdv.synthesize_batch({"prover": [self._rec(
             "fixture-absent cap", "FAIL",
-            "Error: No such file or directory (os error 2)")], "adversary": []})
+            _reify_missing_fixture_stderr("f.ri"))], "adversary": []})
         self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
         self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
 
@@ -3211,7 +3838,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
                                     1, self._STDOUT, "stderr text")
         for stderr, category in (
             ("type mismatch: expected axis", "blocking"),
-            ("Error: No such file or directory (os error 2)", "fixture-absent"),
+            (_reify_missing_fixture_stderr("f.ri"), "fixture-absent"),
         ):
             with self.subTest(category=category):
                 bv = pdv.synthesize_batch({"prover": [

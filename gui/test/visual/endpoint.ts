@@ -3,26 +3,47 @@ import * as net from 'node:net';
 const DEFAULT_DEBUG_PORT = 3939;
 
 /**
- * Resolve the reify-debug port from the environment.
- *
- * Accepts only pure decimal digit strings (no whitespace, no trailing chars),
- * matching the Rust `parse_debug_port` contract in `debug_server.rs`.
- * Falls back to DEFAULT_DEBUG_PORT (3939) for unset / empty / non-digit /
- * out-of-range input.
+ * A TCP port from a raw env value, or undefined unless it is 1..65535 written
+ * as pure decimal digits — strict, so whitespace-padded (" 4500 ") and
+ * trailing garbage ("4500x") that parseInt would silently accept are rejected.
+ * Same grammar as the Rust `parse_tcp_port` in `gui/src-tauri/src/tcp_port.rs`;
+ * keep the two in lockstep.
+ */
+function parsePort(raw: string | undefined): number | undefined {
+  if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+  const parsed = parseInt(raw, 10);
+  return parsed >= 1 && parsed <= 65535 ? parsed : undefined;
+}
+
+/**
+ * Resolve the reify-debug port the GUI binds: what `parsePort` accepts, else
+ * DEFAULT_DEBUG_PORT (3939), mirroring the fallback of `parse_debug_port` in
+ * `gui/src-tauri/src/debug_server.rs`.
  *
  * Cross-ref: `gui/sidecar/src/session.ts` `resolveReifyDebugUrl` uses identical
- * validation logic; `gui/src-tauri/src/debug_server.rs` `parse_debug_port` is
- * the Rust source-of-truth.  Keep all three in lockstep if rules change.
+ * logic.  Keep all three in lockstep if the rules change.
  */
 export function resolveDebugPort(env: Record<string, string | undefined> = process.env): number {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return DEFAULT_DEBUG_PORT;
-  // Strict digits-only — rejects whitespace-padded (" 4500 ") and trailing
-  // garbage ("4500x") that parseInt would silently accept.
-  if (!/^\d+$/.test(raw)) return DEFAULT_DEBUG_PORT;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return DEFAULT_DEBUG_PORT;
-  return parsed;
+  return parsePort(env['REIFY_DEBUG_PORT']) ?? DEFAULT_DEBUG_PORT;
+}
+
+/** The GUI ports a harness run chooses for itself and hands to the launcher. */
+export type PerRunPortVar = 'REIFY_DEBUG_PORT' | 'REIFY_VITE_PORT';
+
+/**
+ * Resolve one GUI port for a single harness run: a valid `env[name]` is
+ * honoured; unset or invalid, a free port is allocated, so concurrent runs
+ * never contend for a shared default (:3939, :1420).  The caller must pass the
+ * result to the launched GUI — reify-gui binds REIFY_DEBUG_PORT and retargets
+ * its devUrl to REIFY_VITE_PORT (gui/src-tauri/src/dev_url.rs).  Same rule as
+ * `resolve_port <VAR>` in lib_e2e_smoke.sh.
+ */
+export async function resolvePerRunPort(
+  name: PerRunPortVar,
+  env: Record<string, string | undefined> = process.env,
+  allocate: () => Promise<number> = allocateFreePort,
+): Promise<number> {
+  return parsePort(env[name]) ?? allocate();
 }
 
 export function debugUrlForPort(port: number): string {

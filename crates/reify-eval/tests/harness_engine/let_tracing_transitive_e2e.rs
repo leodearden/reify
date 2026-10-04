@@ -24,7 +24,7 @@ use reify_eval::EvalResult;
 // same three helpers (review suggestion 5). `SOLVER_TOL` deliberately stays
 // local: it is derived from THIS fixture's cost surface, below.
 use crate::underdetermined_support::{
-    eval_through_production_registry, scalar_si, underdetermined,
+    eval_through_production_registry, scalar_si, underdetermined, workspace_root,
 };
 
 /// Absolute tolerance for the resolved autos.
@@ -34,23 +34,14 @@ use crate::underdetermined_support::{
 /// `c(a,b) = (a+b−10)² + (a−b−2)²` — positive definite, unique global minimum
 /// `c = 0` at (6,4), with `∇²c = 4·I`, i.e. `c ≈ 2(δa² + δb²)` near the root.
 /// A `Solved` verdict requires `c ≤ FEASIBILITY_THRESHOLD = 1e-12`
-/// (`crates/reify-constraints/src/solver.rs:14`), which forces
-/// `|δa|, |δb| ≤ √(5e-13) ≈ 7.07e-7`. So 1e-6 is IMPLIED BY THE SOLVE
+/// (`const FEASIBILITY_THRESHOLD` in `crates/reify-constraints/src/solver.rs`),
+/// which forces `|δa|, |δb| ≤ √(5e-13) ≈ 7.07e-7`. So 1e-6 is IMPLIED BY THE SOLVE
 /// SUCCEEDING AT ALL, with ~30% headroom — it is not a threshold chosen to fit
 /// an observed run.
 ///
 /// If this ever fails, that is a CONVERGENCE signal to investigate or
 /// escalate, NOT an invitation to widen the constant.
 const SOLVER_TOL: f64 = 1e-6;
-
-/// Workspace root, two levels above `crates/reify-eval`.
-fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf()
-}
 
 /// Repo-relative path of the PRD α fixture. Named so the panic below and this
 /// module's header cannot drift apart from the actual `read_to_string`.

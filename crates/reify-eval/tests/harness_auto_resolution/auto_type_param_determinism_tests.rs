@@ -37,6 +37,9 @@ use reify_compiler::auto_type_param::{
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{DiagnosticCode, Severity, SourceSpan};
 use reify_ir::Satisfaction;
+use reify_test_support::examples_corpus::{
+    discover_ri_files, examples_dir, filter_skipped, relative_to_examples_dir,
+};
 use reify_test_support::{
     MockConstraintChecker, check_source_with_stdlib, missing_paths_under,
     parse_and_compile_with_stdlib,
@@ -49,11 +52,6 @@ const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/bearing_auto_seal.ri"
 );
-
-/// Absolute path to the workspace `examples/` directory.
-/// Mirrors `EXAMPLES_DIR` in
-/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`.
-const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
 /// Conservative absolute floor, chosen below current corpus size to leave
 /// headroom for ordinary SKIP_SET churn without flaking this guard. If the
@@ -351,76 +349,24 @@ fn run_pipeline(
     run_pipeline_with_default(module, Satisfaction::Satisfied)
 }
 
-/// Strip `EXAMPLES_DIR` prefix and return a portable forward-slash-separated
-/// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`
-/// — update both when this changes.
-fn relative_to_examples_dir(path: &Path) -> String {
-    let rel = path.strip_prefix(EXAMPLES_DIR).unwrap_or_else(|e| {
-        panic!(
-            "auto_type_param_determinism_tests: '{}' is not under EXAMPLES_DIR ({}): {}",
-            path.display(),
-            EXAMPLES_DIR,
-            e
-        )
-    });
-    rel.to_string_lossy()
-        .replace(std::path::MAIN_SEPARATOR, "/")
-}
-
-/// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted.
-/// Mirrors `discover_ri_files` from `examples_smoke.rs` — update both when
-/// this changes.
-fn discover_ri_files() -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    collect_ri_files(Path::new(EXAMPLES_DIR), &mut paths);
-    paths.sort();
-    paths
-}
-
-/// Recursively collect `*.ri` files under `dir` into `out`.
-/// Mirrors `collect_ri_files` from `examples_smoke.rs` — update both when
-/// this changes.
-fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
-        panic!(
-            "auto_type_param_determinism_tests: cannot read directory '{}': {}",
-            dir.display(),
-            e
-        )
-    });
-    for entry in entries {
-        let entry = entry.expect("IO error reading examples dir entry");
-        let path = entry.path();
-        if path.is_dir() {
-            collect_ri_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-            out.push(path);
-        }
-    }
-}
-
-/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
-/// [`relative_to_examples_dir`]), each paired with its precomputed relative
-/// key. The single source of the SKIP_SET-filtered "exercised" quantity —
-/// both `v0_1_example_corpus_compile_and_check_time_is_bounded` and
-/// [`discovery_floor_tracks_the_live_corpus`] call this instead of
-/// re-deriving the filter, so they can never disagree about what
-/// "exercised" means.
+/// The subset of `paths` not skipped by [`SKIP_SET`], each paired with its
+/// precomputed [`relative_to_examples_dir`] key.
+///
+/// A one-line projection over the shared
+/// [`reify_test_support::examples_corpus::filter_skipped`], which carries the
+/// contract: it is the single source of the SKIP_SET-filtered "exercised"
+/// quantity, so both `v0_1_example_corpus_compile_and_check_time_is_bounded`
+/// and [`discovery_floor_tracks_the_live_corpus`] call this rather than
+/// re-deriving the filter and can never disagree about what "exercised" means.
+///
+/// The projection discards SKIP_SET's [`SkipKind`] and reason, which the filter
+/// has no use for — only the key matters. Keeping the projection at the call
+/// boundary is what lets this crate's 3-tuple SKIP_SET and reify-compiler's
+/// 2-tuple one share one implementation while each stays private to its own
+/// crate; the same shape [`missing_skip_set_paths`] uses for the existence
+/// filter.
 fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
-    paths
-        .iter()
-        .filter_map(|p| {
-            let rel = relative_to_examples_dir(p);
-            if skip.contains(rel.as_str()) {
-                None
-            } else {
-                Some((p, rel))
-            }
-        })
-        .collect()
+    filter_skipped(paths, SKIP_SET.iter().map(|(name, _, _)| *name))
 }
 
 // ─── step-1: fixture compiles with three Seal candidates ─────────────────────
@@ -647,7 +593,7 @@ fn per_file_violations(
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
 
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
 
     // Resolve the skip-filtered candidate list — and fail fast on the
     // discovery-floor check below — before paying for the per-file
@@ -776,7 +722,7 @@ fn per_file_gate_violation_contract() {
 /// owns that failure mode and reports it with an actionable message instead.
 #[test]
 fn compile_correctness_skips_still_fail_to_compile() {
-    let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
+    let missing = missing_skip_set_paths(SKIP_SET, examples_dir());
     let mut stale: Vec<String> = Vec::new();
 
     for (rel, kind, _reason) in SKIP_SET {
@@ -784,7 +730,7 @@ fn compile_correctness_skips_still_fail_to_compile() {
             continue;
         }
 
-        let path = Path::new(EXAMPLES_DIR).join(rel);
+        let path = examples_dir().join(rel);
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
@@ -839,14 +785,14 @@ fn missing_skip_set_paths<'a>(
 /// between the two skip lists is claimed (see the `SKIP_SET` doc above).
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
+    let missing = missing_skip_set_paths(SKIP_SET, examples_dir());
     assert!(
         missing.is_empty(),
         "SKIP_SET entry/entries name a relative path that does not exist under {}: {}. \
          A stale key silently narrows this file's perf-gate coverage forever (for a \
          SkipKind::PerfBudget key, nothing else in this file would ever notice) — \
          delete the entry or fix the path.",
-        EXAMPLES_DIR,
+        examples_dir().display(),
         missing
             .iter()
             .map(|s| format!("'{s}'"))
@@ -907,7 +853,7 @@ fn missing_skip_set_paths_contract() {
 /// silently lose this cross-coverage.
 #[test]
 fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
     let rel_paths: Vec<String> = paths.iter().map(|p| relative_to_examples_dir(p)).collect();
 
     assert!(
@@ -943,7 +889,7 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
 /// that the key string equals the one `exercised_paths` filters on.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
     let total = paths.len();
     let exercised = exercised_paths(&paths).len();
 

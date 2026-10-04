@@ -146,6 +146,8 @@
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
+#                     Delta paths that do not exist are skipped, never created: silently
+#                     for a git-diff deletion, with a [warn] for an explicit --touch path.
 #                     No base resolved from any of the three tiers → nothing is
 #                     delta-touched, so every tracked source keeps the 2020-01-01
 #                     stamp; warns, and `_assert_delta_touch_base_substantiated`
@@ -277,6 +279,8 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
+                      A path that does not exist (a dangling symlink included) is
+                      skipped with a [warn], never created.
   --lane-lock         Accepted; IMPLIED under --fresh-checkout, which turns seed's own
                       acquire ON by default (esc-5214/task 5354 fail-safe); still the
                       explicit opt-in under --reset-in-place.  That default settles
@@ -749,11 +753,26 @@ _assert_delta_touch_base_substantiated() {
     return 1
 }
 
-# Delta path set accumulated during --fresh-checkout: the explicit --touch paths
-# plus every path _touch_git_delta actually touched. Consumed by
-# _assert_delta_newer_than_build_outputs at the end of the block, so both delta
-# sources are visible at one call site without re-running `git diff` a third time.
+# Delta path set accumulated during --fresh-checkout: exactly the paths
+# _touch_existing_delta_path touched — the explicit --touch paths that existed
+# (_touch_explicit_delta) plus the git-diff paths that existed (_touch_git_delta).
+# Consumed by _assert_delta_newer_than_build_outputs at the end of the block, so
+# both delta sources are visible at one call site without re-running `git diff`
+# a third time.
 _DELTA_PATHS=()
+
+# Touch one delta path to now and record it in _DELTA_PATHS, iff it exists.
+# Returns 0 when touched, 1 when absent (each caller owns its miss policy). Never
+# creates: -e follows symlinks, so a dangling link is absent too (task #7231).
+# A touch that FAILS on an existing path exits the seed (fail-closed → cold
+# rebuild). The exit is explicit because callers test this function in an `if`,
+# which suspends errexit for its whole body: a bare `touch` would be swallowed.
+_touch_existing_delta_path() {
+    local path="$1"
+    [ -e "$path" ] || return 1
+    touch "$path" || exit 1
+    _DELTA_PATHS+=("$path")
+}
 
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
 # Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
@@ -772,15 +791,27 @@ _touch_git_delta() {
     if [ -n "$diff_out" ]; then
         while IFS= read -r rel_path; do
             [ -z "$rel_path" ] && continue
-            local abs_path="$LANE_DIR/$rel_path"
-            if [ -e "$abs_path" ]; then
-                touch "$abs_path"
-                _DELTA_PATHS+=("$abs_path")
+            # A path the branch deleted is listed but absent: expected, skipped silently.
+            if _touch_existing_delta_path "$LANE_DIR/$rel_path"; then
                 count=$((count + 1))
             fi
         done <<< "$diff_out"
     fi
     info "Touched $count git delta path(s) from $sha"
+}
+
+# Touch each explicit --touch path. One that does not exist is a caller error:
+# warned and skipped, never created (task #7231).
+_touch_explicit_delta() {
+    local path count=0
+    for path in "$@"; do
+        if _touch_existing_delta_path "$path"; then
+            count=$((count + 1))
+        else
+            warn "--touch path does not exist — skipped, NOT created: $path"
+        fi
+    done
+    info "Touched $count of $# explicit --touch path(s)"
 }
 
 # ── main: record-base mode ────────────────────────────────────────────────────
@@ -1292,9 +1323,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
 
     # Touch the delta to now: explicit --touch paths first
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
-        info "Touching ${#TOUCH_PATHS[@]} explicit delta path(s) to now ..."
-        touch "${TOUCH_PATHS[@]}"
-        _DELTA_PATHS+=("${TOUCH_PATHS[@]}")
+        _touch_explicit_delta "${TOUCH_PATHS[@]}"
     fi
 
     # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):

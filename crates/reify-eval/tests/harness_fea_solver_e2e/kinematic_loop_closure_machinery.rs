@@ -25,7 +25,6 @@ use reify_ir::{Value, ValueMap};
 use reify_stdlib::loop_closure::loop_residual_twist;
 use reify_test_support::{
     CapturingSubscriberBuilder, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
-    prime_tracing_callsite_cache,
 };
 
 /// Source for the KCC-γ step-13 planar-in-loop e2e fixture: a structure with a
@@ -150,10 +149,6 @@ fn loop_closure_machinery_solves_single_prismatic_loop_e2e() {
 /// `±π/4` rotational range.
 #[test]
 fn loop_closure_machinery_solves_planar_in_loop_e2e() {
-    // Prime the tracing callsite cache so the per-test `with_default`
-    // subscriber actually receives events under parallel cargo runs.
-    prime_tracing_callsite_cache();
-
     // Compile + eval the joint Maps.
     let compiled = parse_and_compile_with_stdlib(PLANAR_LOOP_SOURCE);
     let mut engine = make_simple_engine();

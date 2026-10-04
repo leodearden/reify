@@ -7,6 +7,8 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+mod discrete_fallback;
+mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
 pub mod sketch;
@@ -24,7 +26,7 @@ pub use decompose::{SubProblem, decompose_into_components};
 // primitives).  These re-exports preserve the original
 // `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
 // (reify-eval tests, reify-constraints integration tests) compile unchanged.
-pub use registry::SolverRegistry;
+pub use registry::{ObjectiveConsumption, SolverRegistry, objective_consumption};
 pub use reify_stdlib::loop_closure_solver::{
     LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
@@ -46,6 +48,18 @@ pub use sketch::{
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
     SketchSystem, SketchValueField, SolvedSketchEntity,
 };
+// Task #6672 (solver-unification ε): the forward-mode AD adapter.  The module
+// is private and the crate root is the ONLY path to it, so
+// `reify_constraints::residual_jacobian` is not merely the preferred spelling
+// — it is the reachable one.  `Jacobian` names `reify_expr` types in its
+// public shape (`BranchRecord`, `KinkSite`), and `residual_jacobian_with_seeds`
+// — the variant an iterating consumer hoists its `Seeds` through — names one
+// more; a consumer reads those from reify-expr, which η (#6675), μ (#6680) and
+// λ (#6679) all depend on anyway.  Passing them through a second crate root is
+// a surface to add when a consumer asks for it, not before.
+pub use dual_jacobian::{
+    Jacobian, JacobianError, residual_jacobian, residual_jacobian_with_seeds,
+};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
@@ -54,16 +68,45 @@ pub use solver::build_centrality_objective;
 pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    IndeterminateReason, Satisfaction, TransientReason, Value,
+};
+
+/// Does any leaf operand of `expr` resolve to `Undef` in `values`?
+///
+/// This is the canonical has-undefined-leaf predicate: collect every leaf
+/// `ValueRef` (and `CrossSubGeometryRef` — see the `CrossSubGeometryRef` note
+/// on [`classify_undef`]) and ask whether any of them is undefined in
+/// `values`. [`classify_undef`] below is built on exactly this check, and
+/// `reify-eval`'s `Engine::dispatch_constraints` (task 6169 ζ) calls this
+/// function directly so its RepresentationWithin decline stays exact rather
+/// than an independently-maintained copy that could silently diverge from
+/// `classify_undef`'s has-undef half (task 6480).
+///
+/// Allocates: walks the expression tree and collects every leaf id per
+/// call; intended for diagnostic/decline paths, not per-evaluation hot
+/// loops.
+pub fn has_undefined_leaf(expr: &reify_ir::CompiledExpr, values: &reify_ir::ValueMap) -> bool {
+    any_undef(&expr.collect_value_refs(), values)
+}
+
+/// Borrow-only definedness check over an already-collected leaf-id slice;
+/// avoids the `get_or_undef` clone since only a boolean is needed here. An
+/// absent id counts as undefined, matching `get_or_undef`'s
+/// absence-maps-to-`Value::Undef` semantics.
+fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bool {
+    ids.iter().any(|id| values.get(id).is_none_or(Value::is_undef))
+}
 
 /// Classify `Value::Undef` by leaf-ValueRef definedness.
 ///
 /// Returns:
-/// - `(true, names)` — at least one leaf is `Undef`; `names` lists the undefined
-///   cell names (deduped, sorted alphabetically) via `ValueCellId::Display`.
-/// - `(false, kinds)` — all leaves are defined (or the expression has no ValueRefs);
-///   `kinds` lists the distinct `value_kind_label` strings of the defined leaf values
-///   (deduped, sorted alphabetically).
+/// - `UndefInputs { cells }` — at least one leaf is `Undef`; `cells` lists the
+///   undefined cells, deduped and ordered by their `ValueCellId::Display` name.
+/// - `OperatorUndefinedForKinds { kinds }` — all leaves are defined (or the
+///   expression has no ValueRefs); `kinds` lists the distinct `value_kind_label`
+///   strings of the defined leaf values (deduped, sorted alphabetically).
 ///
 /// ## CrossSubGeometryRef
 /// `CompiledExpr::collect_value_refs()` collects both `ValueRef` and
@@ -78,36 +121,27 @@ use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, Constr
 fn classify_undef(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
-) -> (bool, Vec<String>) {
-    use std::collections::HashSet;
-
+) -> TransientReason {
     let leaf_ids = expr.collect_value_refs();
-    let mut undef_names: Vec<String> = Vec::new();
-    let mut undef_seen: HashSet<String> = HashSet::new();
-    let mut defined_kinds: Vec<String> = Vec::new();
-    let mut kinds_seen: HashSet<String> = HashSet::new();
 
-    for id in &leaf_ids {
-        let v = values.get_or_undef(id);
-        if v.is_undef() {
-            let name = id.to_string();
-            if undef_seen.insert(name.clone()) {
-                undef_names.push(name);
-            }
-        } else {
-            let kind = value_kind_label(&v);
-            if kinds_seen.insert(kind.clone()) {
-                defined_kinds.push(kind);
-            }
-        }
+    if !any_undef(&leaf_ids, values) {
+        let mut kinds: Vec<String> = leaf_ids
+            .iter()
+            .map(|id| value_kind_label(&values.get_or_undef(id)))
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        return TransientReason::OperatorUndefinedForKinds { kinds };
     }
 
-    if !undef_names.is_empty() {
-        undef_names.sort();
-        (true, undef_names)
-    } else {
-        defined_kinds.sort();
-        (false, defined_kinds)
+    // Ordered as rendered; the id breaks ties because rendering is not injective.
+    let cells: std::collections::BTreeSet<(String, reify_core::ValueCellId)> = leaf_ids
+        .into_iter()
+        .filter(|id| values.get(id).is_none_or(Value::is_undef))
+        .map(|id| (id.to_string(), id))
+        .collect();
+    TransientReason::UndefInputs {
+        cells: cells.into_iter().map(|(_, id)| id).collect(),
     }
 }
 
@@ -149,9 +183,9 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     ctx
                 };
                 let value = reify_expr::eval_expr(expr, &ctx);
-                let (satisfaction, diagnostics) = match value {
+                let (satisfaction, diagnostics, indeterminate_reason) = match value {
                     Value::Bool(true) => {
-                        (Satisfaction::Satisfied, ConstraintDiagnostics::default())
+                        (Satisfaction::Satisfied, ConstraintDiagnostics::default(), None)
                     }
                     Value::Bool(false) => (
                         Satisfaction::Violated,
@@ -161,39 +195,21 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                     .with_code(DiagnosticCode::ConstraintViolated),
                             ],
                         },
+                        None,
                     ),
                     Value::Undef => {
-                        let (has_undef, items) = classify_undef(expr, input.values);
-                        let msg = if has_undef {
-                            format!(
-                                "constraint {} indeterminate: undefined inputs: {}",
-                                id,
-                                items.join(", ")
-                            )
-                        } else {
-                            // All leaves are defined (or the expr has no ValueRefs) but
-                            // the operator produced Undef; report the distinct operand kinds.
-                            if items.is_empty() {
-                                format!(
-                                    "constraint {} indeterminate: operator undefined for these operand kinds",
-                                    id
-                                )
-                            } else {
-                                format!(
-                                    "constraint {} indeterminate: operator undefined for these operand kinds: {}",
-                                    id,
-                                    items.join(", ")
-                                )
-                            }
-                        };
+                        let reason =
+                            IndeterminateReason::Transient(classify_undef(expr, input.values));
+                        let message = format!("constraint {} indeterminate: {}", id, reason);
                         (
                             Satisfaction::Indeterminate,
                             ConstraintDiagnostics {
                                 messages: vec![
-                                    Diagnostic::warning(msg)
+                                    Diagnostic::warning(message)
                                         .with_code(DiagnosticCode::ConstraintIndeterminate),
                                 ],
                             },
+                            Some(reason),
                         )
                     }
                     _ => (
@@ -207,6 +223,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                 .with_code(DiagnosticCode::ConstraintViolated),
                             ],
                         },
+                        None,
                     ),
                 };
 
@@ -214,6 +231,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                     id: id.clone(),
                     satisfaction,
                     diagnostics,
+                    indeterminate_reason,
                 }
             })
             .collect()
@@ -226,7 +244,7 @@ mod tests {
 
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+    use reify_ir::{BinOp, CompiledExpr, IndeterminateReason, TransientReason, Value, ValueMap};
 
     fn mm(v: f64) -> Value {
         Value::Scalar {
@@ -248,6 +266,20 @@ mod tests {
         let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
         let two_mm = CompiledExpr::literal(mm(2.0), Type::length());
         CompiledExpr::binop(BinOp::Gt, thickness, two_mm, Type::Bool)
+    }
+
+    /// Pins the public `has_undefined_leaf` contract directly, independent
+    /// of the message-formatting tests that only exercise it transitively
+    /// through `classify_undef`. In particular this covers the degenerate
+    /// edge — an expression with no ValueRef leaves is vacuously
+    /// all-defined — which `classify_undef` routes into its `(false, [])`
+    /// arm.
+    #[test]
+    fn has_undefined_leaf_direct_contract() {
+        let literal_only = CompiledExpr::literal(Value::Int(42), Type::Int);
+        assert!(!has_undefined_leaf(&literal_only, &ValueMap::new()));
+
+        assert!(has_undefined_leaf(&thickness_gt_2mm(), &ValueMap::new()));
     }
 
     #[test]
@@ -635,5 +667,114 @@ mod tests {
             results[0].diagnostics.messages[0].code,
             Some(DiagnosticCode::ConstraintViolated),
         );
+    }
+
+    fn check_single(id: ConstraintNodeId, expr: &CompiledExpr, values: &ValueMap) -> ConstraintResult {
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(id, expr)]),
+            values,
+            functions: &[],
+            determinacy: None,
+        };
+        let mut results = SimpleConstraintChecker.check(&input);
+        assert_eq!(results.len(), 1);
+        results.remove(0)
+    }
+
+    fn transient(reason: TransientReason) -> Option<IndeterminateReason> {
+        Some(IndeterminateReason::Transient(reason))
+    }
+
+    #[test]
+    fn undefined_inputs_reason_is_deduped_and_ordered_by_name() {
+        // (width + width) > thickness: width leads the leaf order twice, so
+        // the recorded cells only come out name-ordered if the checker sorts.
+        let width = || CompiledExpr::value_ref(vcid("Bracket", "width"), Type::length());
+        let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
+        let doubled = CompiledExpr::binop(BinOp::Add, width(), width(), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, doubled, thickness, Type::Bool);
+
+        let result = check_single(cnid("Bracket", 0), &expr, &ValueMap::new());
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::UndefInputs {
+                cells: vec![vcid("Bracket", "thickness"), vcid("Bracket", "width")],
+            })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Bracket#constraint[0] indeterminate: undefined inputs: \
+             Bracket.thickness, Bracket.width"
+        );
+    }
+
+    #[test]
+    fn operator_undefined_reason_records_the_operand_kinds() {
+        let len_cell = vcid("Obj", "len_val");
+        let fit_cell = vcid("Obj", "fit_val");
+        let len_ref = CompiledExpr::value_ref(len_cell.clone(), Type::length());
+        let fit_ref = CompiledExpr::value_ref(fit_cell.clone(), Type::Enum("Fit".to_string()));
+        let expr = CompiledExpr::binop(BinOp::Gt, len_ref, fit_ref, Type::Bool);
+        let mut values = ValueMap::new();
+        values.insert(len_cell, mm(1.0));
+        values.insert(fit_cell, Value::enum_unit("Fit", "Loose"));
+
+        let result = check_single(cnid("Obj", 0), &expr, &values);
+
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds {
+                kinds: vec!["Enum<Fit>".to_string(), "Scalar<m>".to_string()],
+            })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Obj#constraint[0] indeterminate: operator undefined for these \
+             operand kinds: Enum<Fit>, Scalar<m>"
+        );
+    }
+
+    #[test]
+    fn operator_undefined_reason_without_cell_operands_records_no_kinds() {
+        let tensor = CompiledExpr::literal(
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Type::dimensionless_scalar(),
+        );
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, tensor, one_mm, Type::Bool);
+
+        let result = check_single(cnid("Obj", 0), &expr, &ValueMap::new());
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds { kinds: vec![] })
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].message,
+            "constraint Obj#constraint[0] indeterminate: operator undefined for these \
+             operand kinds"
+        );
+    }
+
+    #[test]
+    fn definite_verdicts_record_no_indeterminate_reason() {
+        let mut thick = ValueMap::new();
+        thick.insert(vcid("Bracket", "thickness"), mm(5.0));
+        let mut thin = ValueMap::new();
+        thin.insert(vcid("Bracket", "thickness"), mm(1.0));
+        let non_bool = CompiledExpr::literal(Value::Int(42), Type::Int);
+
+        for (expr, values, expected) in [
+            (thickness_gt_2mm(), thick, Satisfaction::Satisfied),
+            (thickness_gt_2mm(), thin, Satisfaction::Violated),
+            (non_bool, ValueMap::new(), Satisfaction::Violated),
+        ] {
+            let result = check_single(cnid("Bracket", 0), &expr, &values);
+            assert_eq!(result.satisfaction, expected);
+            assert_eq!(result.indeterminate_reason, None);
+        }
     }
 }

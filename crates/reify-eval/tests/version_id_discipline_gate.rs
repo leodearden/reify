@@ -468,8 +468,7 @@ impl Engine {
 /// Recursively collect every `.rs` file under `dir` (including
 /// subdirectories). Unreadable entries/directories are silently skipped —
 /// this only ever walks our own crate's `src/` directory, which is
-/// expected to be readable. Mirrors `no_stale_undef_invariant_gate.rs`'s
-/// `collect_ri_files`, filtering `.rs` instead of `.ri`.
+/// expected to be readable.
 fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

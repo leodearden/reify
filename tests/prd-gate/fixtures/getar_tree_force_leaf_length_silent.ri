@@ -1,0 +1,21 @@
+module getar_tree_force_leaf_length_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf δ RED
+// before-image (soundness hole S-3). MEASURED 2026-09-29 with
+// target/debug/reify built 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 0, "All constraints satisfied.";
+//   `reify eval`  EXIT 0, prints `W.t = Tree::Node`.
+// The annotation pins T = Force, and the pin IS applied: `pin_subst` gives
+// the declared field type `Tree<T>` as `Applied{Tree,[Force]}`. What passes
+// is the payload-vs-field check itself — `enum_payload_compatible`
+// (crates/reify-compiler/src/type_compat.rs) accepts the child's erased
+// `Enum("Tree")` against `Applied{Tree,[Force]}` by NAME ONLY, so the Length
+// inside each Leaf is never compared with Force.
+// EXPECTED after δ: `reify check` EXIT 1, a payload-type diagnostic
+// (E_VARIANT_PAYLOAD_TYPE class) naming T = Force vs Length.
+
+enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }
+
+structure def W {
+    param t : Tree<Force> = Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } }
+}

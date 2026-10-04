@@ -279,7 +279,7 @@ fn geometry_let_in_scope_for_subsequent_let() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let pattern = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
+    let pattern = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
 }"#;
     let compiled = compile_source(source);
     let errors: Vec<_> = compiled
@@ -718,7 +718,7 @@ fn multiple_geometry_lets_all_produce_realizations() {
     param r: Length = 5mm
     param h: Length = 10mm
     let base = cylinder(r, h)
-    let pattern = circular_pattern(base, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
+    let pattern = circular_pattern(base, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
     let mirrored = mirror(base, 0mm, 0mm, 0mm, 0, 1, 0)
 }"#;
     let compiled = parse_and_compile(source);
@@ -764,7 +764,7 @@ fn rotate_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = rotate(hole, 0, 0, 1, 90)
+    let result = rotate(hole, 0, 0, 1, 90deg)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -804,7 +804,7 @@ fn rotate_around_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = rotate_around(hole, 0mm, 0mm, 0mm, 0, 0, 1, 90)
+    let result = rotate_around(hole, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
 }"#;
     // C6 MIGRATION (task 5750): only the PIVOT `px`/`py`/`pz` is dimensioned.
     // The `0, 0, 1` that follows is the axis DIRECTION — a dimensionless unit
@@ -832,7 +832,7 @@ fn circular_pattern_let_bound_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)
+    let result = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -905,7 +905,7 @@ fn revolve_let_bound_profile_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let profile = cylinder(r, h)
-    let result = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)
+    let result = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
 }"#;
     // C6 MIGRATION (task 5750): only the axis ORIGIN `ox`/`oy`/`oz` is
     // dimensioned. The `0, 0, 1` that follows is the axis DIRECTION — a
@@ -993,7 +993,7 @@ fn draft_let_bound_target_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let body = cylinder(r, h)
-    let result = draft(body, 5, 0)
+    let result = draft(body, 5deg, 0)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -1245,7 +1245,7 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
     param r: Length = 5mm
     param h: Length = 10mm
     let a = translate(b, 1mm, 0mm, 0mm)
-    let b = rotate(a, 0, 0, 1, 90)
+    let b = rotate(a, 0, 0, 1, 90deg)
 }"#;
     // With the sibling-let pre-check (task #4668), a bare Ident arg that names a
     // sibling geometry realization is emitted as GeomRef::Sub — no inline recursion,
@@ -1304,7 +1304,7 @@ fn translate_inline_geometry_arg_ops() {
 
 #[test]
 fn chained_transforms_step_indices() {
-    // let a = cylinder(r, h); let b = translate(a, 1mm, 0mm, 0mm); let c = rotate(b, 0, 0, 1, 90)
+    // let a = cylinder(r, h); let b = translate(a, 1mm, 0mm, 0mm); let c = rotate(b, 0, 0, 1, 90deg)
     // With sibling-let pre-check (task #4668): b → Sub("b") in c's rotate op; no inlining.
     // c's realization: [Rotate(Sub("b"))]
     // (b itself has [Translate(Sub("a"))]; a itself has [Cylinder])
@@ -1313,7 +1313,7 @@ fn chained_transforms_step_indices() {
     param h: Length = 10mm
     let a = cylinder(r, h)
     let b = translate(a, 1mm, 0mm, 0mm)
-    let c = rotate(b, 0, 0, 1, 90)
+    let c = rotate(b, 0, 0, 1, 90deg)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -2106,8 +2106,8 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
     let source = r#"structure AirBearing {
     param length: Length = 100mm
     param od: Length = 50mm
-    param axis: Length = 0
-    let body = if axis == 0 then box(length, od, od) else cylinder(od, length)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then box(length, od, od) else cylinder(od, length)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2271,8 +2271,8 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
     let source = r#"structure S {
     param length: Length = 100mm
     param od: Length = 50mm
-    param axis: Length = 0
-    let body = if axis == 0 then box(length, od, length) else box(od, length, od)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then box(length, od, length) else box(od, length, od)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2332,8 +2332,8 @@ fn geometry_valued_if_then_else_union_tree_lowers_to_conditional_box_ops() {
     param b: Length = 20mm
     param c: Length = 30mm
     param d: Length = 40mm
-    param axis: Length = 0
-    let body = if axis == 0 then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
+    param axis: Length = 0mm
+    let body = if axis == 0mm then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2440,8 +2440,8 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
     param a: Length = 10mm
     param b: Length = 20mm
     param tx: Length = 5mm
-    param axis: Length = 0
-    let body = if axis == 0 then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
 }"#;
 
     let compiled = compile_with_diagnostics(source);

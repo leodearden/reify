@@ -11,6 +11,7 @@
 //! declared BEFORE its consumer (source-order compilation).
 
 use reify_core::{DiagnosticCode, Type};
+use reify_test_support::examples_corpus::examples_dir;
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 // ─── Step-3 RED: bare-unique qualified access ─────────────────────────────────
@@ -376,11 +377,6 @@ structure def UseT<T> {
 
 // ─── Step-11 RED: end-to-end via the CI example file ──────────────────────────
 
-/// Absolute path to the workspace `examples/` directory, resolved at compile
-/// time from this crate's manifest directory (two levels up) — the same scheme
-/// `examples_smoke.rs` uses.
-const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
-
 /// End-to-end: the CI example `examples/trait_assoc_type_qualified.ri` compiles
 /// clean WITH the stdlib prelude (the same path `examples_smoke` exercises), and
 /// its consumer structure's bare (`Beam::Material`) and paren-disambiguated
@@ -390,7 +386,7 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// RED until step-12 creates the file: `read_to_string` fails and the test panics.
 #[test]
 fn example_file_qualified_assoc_compiles_and_resolves() {
-    let path = std::path::Path::new(EXAMPLES_DIR).join("trait_assoc_type_qualified.ri");
+    let path = examples_dir().join("trait_assoc_type_qualified.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
 

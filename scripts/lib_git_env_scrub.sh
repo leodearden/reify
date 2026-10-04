@@ -83,14 +83,13 @@ _REIFY_LIB_GIT_ENV_SCRUB_SH_SOURCED=1
 # DELIBERATELY NOT EXPORTED.  Both consumers below are shell FUNCTIONS resolved
 # in the sourcing shell, and every real caller (scripts/verify.sh,
 # tests/infra/run_all.sh, the isolation test's arm B) sources this file itself
-# — so nothing needs child visibility.  Exporting it would inject a ninth
+# — so nothing needs child visibility.  Exporting it would inject one more
 # ambient variable into all ~103 run_all.sh pool members, which
 # tests/infra/run-all-ambient-vars.manifest declares itself "the single
-# acknowledged ledger" of; that ledger's set-equality guard derives the live set
-# from verify.sh's plan-line prefix and dark-factory's verify_env block, so a
-# var injected from a sourced lib would be a SILENT hole in it rather than a
-# detected drift.  Keeping the assignment shell-local is what keeps the ledger
-# honest without an entry.
+# acknowledged ledger" of; that ledger's set-equality guard now observes what
+# run_all.sh and every lib it sources inject into a member (task 7234), so it
+# would detect the export and demand a manifest row.  Since no child needs it,
+# the assignment stays shell-local and needs no entry.
 REIFY_GIT_ENV_SCRUB_VARS="GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX"
 
 # reify_git_env_scrub <cmd> [args...] — run <cmd> with every

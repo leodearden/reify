@@ -93,7 +93,7 @@
 //! `solve_cg`) is identical to the rest of the FEA validation suite.
 
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
-use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
+use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions, refine_volume_with_size_field};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
     CgSolverOptions, ConvergenceStatus, DORFLER_THETA, DirichletBc, ElementOrder, ElementStiffness,
@@ -517,8 +517,8 @@ fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> Vol
 /// returning (and remaps `conns` to the compacted indices). A real Gmsh
 /// remesh can emit boundary vertices that survive `classify_surfaces` but
 /// are not incident to any volume tet — the same orphaned-vertex artifact
-/// `reify_solver_elastic::volume_refine::project_volume_to_surface_vertices`
-/// already guards against (there, via an `f64::INFINITY` sentinel; here, via
+/// `reify_kernel_gmsh::BackgroundSizeField::from_tet_mesh` already tolerates
+/// (there, by reading sizes only at vertices a tet references; here, by
 /// dropping the vertex outright). Left in `nodes`, an orphaned vertex gets no
 /// stiffness-matrix contribution at all, silently inflating `n_dofs` and — if
 /// any Dirichlet BC or point load ever targets it — panicking downstream in
@@ -660,7 +660,7 @@ impl FeaAdaptiveProblem {
 impl AdaptiveProblem for FeaAdaptiveProblem {
     type Error = RefineError;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         let (nodes, conns) = nodes_conns_from_volume_mesh(&self.volume_mesh);
         let n_nodes = nodes.len();
 
@@ -695,11 +695,12 @@ impl AdaptiveProblem for FeaAdaptiveProblem {
         let zz = compute_zz_indicator(&stress_elements, &self.volume_mesh, &self.material);
         self.last_nodal_stress = recover_nodal_stress_p1(n_nodes, &stress_elements);
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs: 3 * n_nodes,
-        }
+            qoi: None,
+        })
     }
 
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
@@ -828,7 +829,7 @@ fn fea_adaptive_problem_solve_and_estimate_matches_mesh_shape_under_nonuniform_s
     let n_nodes = 5 * 3 * 3; // (nx+1)*(ny+1)*(nz+1) for nx=4,ny=2,nz=2
     let n_elements = 6 * 4 * 2 * 2; // 6 tets per hex cell
 
-    let estimate = problem.solve_and_estimate();
+    let estimate = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
 
     assert_eq!(
         estimate.n_dofs,
@@ -841,15 +842,15 @@ fn fea_adaptive_problem_solve_and_estimate_matches_mesh_shape_under_nonuniform_s
         "per_element must have one entry per mesh element",
     );
     assert!(
-        estimate.global_indicator.is_finite(),
-        "global_indicator must be finite, got {}",
-        estimate.global_indicator,
+        estimate.relative_error.is_finite(),
+        "relative_error must be finite, got {}",
+        estimate.relative_error,
     );
     assert!(
-        estimate.global_indicator > 0.0,
+        estimate.relative_error > 0.0,
         "cantilever bending is a non-uniform stress state, so the ZZ \
          indicator must be strictly positive; got {}",
-        estimate.global_indicator,
+        estimate.relative_error,
     );
 }
 
@@ -864,19 +865,19 @@ fn fea_adaptive_problem_solve_and_estimate_matches_mesh_shape_under_nonuniform_s
 fn fea_adaptive_problem_solve_and_estimate_patch_test_yields_near_zero_indicator() {
     let mut problem = patch_test_box_problem();
 
-    let estimate = problem.solve_and_estimate();
+    let estimate = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
 
     // Conservative bound: CG converges to 1e-8 relative residual and the
     // patch-test property is coordinate-perturbation-agnostic (it holds for
     // any conforming P1 tessellation, so the VolumeMesh's f32 vertex
-    // rounding does not break it) — the residual global_indicator should sit
+    // rounding does not break it) — the residual relative_error should sit
     // many orders below this eps, dominated by CG's own tolerance.
     let eps = 1e-4;
     assert!(
-        estimate.global_indicator.abs() <= eps,
+        estimate.relative_error.abs() <= eps,
         "Zienkiewicz patch test: prescribing an exact linear field on the \
          whole boundary must yield a ~zero global indicator; got {} (eps={eps})",
-        estimate.global_indicator,
+        estimate.relative_error,
     );
 }
 
@@ -928,17 +929,18 @@ fn box_surface_mesh(lx: f64, ly: f64, lz: f64) -> Mesh {
 }
 
 /// Seed an initial [`VolumeMesh`] from a closed `surface` via a UNIFORM
-/// per-vertex size field — the real-gmsh counterpart to the procedural
+/// background size field — the real-gmsh counterpart to the procedural
 /// [`box_p1_mesh`] fixtures above.
 ///
 /// `refine` performs a full remesh FROM `surface` (see
-/// `reify_solver_elastic::volume_refine`'s module doc), and its nearest-
-/// surface-vertex size projection is only meaningful when the mesh being
-/// refined already came from that same surface — established by
-/// `tests/volume_refine_tests.rs::localized_size_reduction_refines_marked_region_only`,
-/// which seeds via `GmshKernel::mesh_to_volume` rather than a procedural
-/// mesh. A uniform size field is the initial-seed equivalent of that
-/// baseline call.
+/// `reify_solver_elastic::volume_refine`'s module doc) under a background
+/// size field built on the current volume mesh's own tets, and a background
+/// field only sizes the region its tets cover. Seeding from that same
+/// `surface` makes the seed fill exactly the region `surface` bounds, so
+/// every point gmsh queries for a size during a refine lies inside some field
+/// tet — the field-support argument `volume_refine::boundary_surface_mesh`'s
+/// doc makes for the realized path, where the surface is extracted from the
+/// volume mesh instead.
 ///
 /// # Panics
 ///
@@ -950,10 +952,58 @@ fn seed_volume_from_surface(
     uniform_size: f64,
     options: &MeshingOptions,
 ) -> VolumeMesh {
-    let n_surf_verts = surface.vertices.len() / 3;
-    let sizes = vec![uniform_size; n_surf_verts];
-    refine_volume_with_size_field(surface, &sizes, options, ElementOrderTag::P1)
+    let size_field = uniform_field_over_aabb(surface, uniform_size);
+    refine_volume_with_size_field(surface, &size_field, options, ElementOrderTag::P1)
         .expect("seed_volume_from_surface: initial gmsh mesh must succeed")
+}
+
+/// A uniform [`BackgroundSizeField`] of `size` over `surface`'s axis-aligned
+/// bounding box, as the 6-tet Kuhn decomposition of that box.
+///
+/// The box covers everything gmsh meshes, so every size comes from the field
+/// itself rather than from gmsh extending the sizing mesh by its nearest node,
+/// which is what it does outside one (pinned by reify-kernel-gmsh's
+/// `the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`).
+/// A uniform field needs no more resolution than six tets.
+fn uniform_field_over_aabb(surface: &Mesh, size: f64) -> BackgroundSizeField {
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for xyz in surface.vertices.chunks_exact(3) {
+        for a in 0..3 {
+            lo[a] = lo[a].min(xyz[a]);
+            hi[a] = hi[a].max(xyz[a]);
+        }
+    }
+    // Corner order matches `kuhn_6tet_unit_cube_vm`: a CCW ring per z-level.
+    let corners = [
+        [lo[0], lo[1], lo[2]],
+        [hi[0], lo[1], lo[2]],
+        [hi[0], hi[1], lo[2]],
+        [lo[0], hi[1], lo[2]],
+        [lo[0], lo[1], hi[2]],
+        [hi[0], lo[1], hi[2]],
+        [hi[0], hi[1], hi[2]],
+        [lo[0], hi[1], hi[2]],
+    ];
+    let vm = VolumeMesh {
+        vertices: corners.iter().flatten().copied().collect(),
+        #[rustfmt::skip]
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 6,
+                0, 1, 5, 6,
+                0, 3, 2, 6,
+                0, 3, 7, 6,
+                0, 4, 5, 6,
+                0, 4, 7, 6,
+            ],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    BackgroundSizeField::from_tet_mesh(&vm, &vec![size; corners.len()])
+        .expect("uniform_field_over_aabb: a uniform field over the AABB must be valid")
 }
 
 /// Centroid of tet element `conn` over `nodes`.
@@ -998,16 +1048,15 @@ fn nearest_element_size_at(
 /// `(element_index, centroid)` satisfies `in_region` — the region-averaged
 /// counterpart to [`nearest_element_size_at`]'s single-point sample.
 ///
-/// A single far element's characteristic size is sensitive to exactly where
-/// it lands within gmsh's size-field interpolation: [`box_surface_mesh`] has
-/// only 8 vertices, so the size hints `refine_marked_elements` projects onto
-/// the surface are necessarily coarse, and a lone sample point can pick up
-/// more of that coarse interpolation's gradient than the "roughly unchanged"
-/// claim intends. Averaging over a whole region is the same robust
-/// methodology `tests/volume_refine_tests.rs::avg_tet_edge_in_region_x_ge`
-/// already relies on for its own "unmarked region roughly unchanged" check —
-/// against that identical 8-vertex box surface, the regional average holds
-/// within tolerance even though a single-point sample would not.
+/// A single element's characteristic size depends on exactly where it lands
+/// in the independent tetrahedralization gmsh builds on every remesh: the
+/// size hints reach gmsh as a per-vertex background field over the
+/// pre-refine mesh's tets (each vertex taking the MIN of its incident
+/// elements' hints), so an element near a marked region samples that field's
+/// gradient, and element sizes scatter around the target even where the
+/// field is flat. Averaging over a whole region is the same methodology
+/// `tests/volume_refine_tests.rs::mean_tet_edge_where` relies on for its own
+/// far-band "unmarked region roughly unchanged" check.
 ///
 /// # Panics
 ///
@@ -1083,7 +1132,7 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
     }
 
     let mut problem = refine_test_box_problem();
-    let estimate = problem.solve_and_estimate();
+    let estimate = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
     let marked = mark_dorfler(&estimate.per_element, DORFLER_THETA);
     assert!(
         !marked.is_empty(),
@@ -1151,12 +1200,16 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
 /// the boundary surface (there is no incremental/local-split path), so gmsh
 /// regenerates an independent tetrahedralization on every call. The
 /// far-region average size is therefore only heuristically stable, and a
-/// fixed ±25% band on an 8-vertex box surface with coarse size hints is
+/// fixed ±25% band on a coarse (`mesh_size = 0.25`) unit box — where each
+/// vertex of a marked element takes that element's halved hint, so the fine
+/// region reaches up to one coarse element past the marked set — is
 /// plausibly flaky across gmsh versions/platforms — being in the always-on
 /// set would turn any such flake into a recurring red gate. The
 /// version-independent claims (element count strictly grows, marked-region
 /// size strictly shrinks) already carry the CI gate above; this on-demand
-/// check adds the softer regional-stability claim without that risk.
+/// check adds the softer regional-stability claim without that risk. Its
+/// band and its `FAR_REGION_X` predate #7447's background-field refiner;
+/// re-measuring them is task #7891.
 #[test]
 #[ignore = "flaky: far-region average characteristic size after a full gmsh \
             remesh-from-surface is only heuristically stable across gmsh \
@@ -1169,7 +1222,7 @@ fn fea_adaptive_problem_refine_far_region_size_roughly_unchanged() {
     }
 
     let mut problem = refine_test_box_problem();
-    let estimate = problem.solve_and_estimate();
+    let estimate = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
     let marked = mark_dorfler(&estimate.per_element, DORFLER_THETA);
     assert!(
         !marked.is_empty(),
@@ -1182,10 +1235,9 @@ fn fea_adaptive_problem_refine_far_region_size_roughly_unchanged() {
         is_marked[m] = true;
     }
 
-    // "Far" region: the domain half opposite the x=0 clamp (mirroring
-    // tests/volume_refine_tests.rs's own half-domain x >= 0.5 split), which
-    // for this cantilever-bending fixture is far from where mark_dorfler
-    // concentrates its top-indicator elements. See avg_size_in_region's doc
+    // "Far" region: the domain half opposite the x=0 clamp, which for this
+    // cantilever-bending fixture is far from where mark_dorfler concentrates
+    // its top-indicator elements. See avg_size_in_region's doc
     // for why this must be a region average, not a single-point sample.
     const FAR_REGION_X: f64 = 0.5;
     let far_region = |e: usize, c: [f64; 3]| c[0] >= FAR_REGION_X && !is_marked[e];
@@ -1232,7 +1284,7 @@ fn fea_adaptive_problem_refine_far_region_size_roughly_unchanged() {
 // own control flow.
 
 /// Wraps an [`AdaptiveProblem`] and records every `solve_and_estimate`
-/// call's `global_indicator` into `history`, in iteration order — the
+/// call's `relative_error` into `history`, in iteration order — the
 /// instrumented wrapper [`run_adaptive_refinement`] is driven through below
 /// so the per-iteration trajectory (not just the final status) can be
 /// asserted.
@@ -1253,10 +1305,10 @@ impl<P: AdaptiveProblem> RecordingProblem<P> {
 impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
     type Error = P::Error;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
-        let estimate = self.inner.solve_and_estimate();
-        self.history.push(estimate.global_indicator);
-        estimate
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
+        let estimate = self.inner.solve_and_estimate()?;
+        self.history.push(estimate.relative_error);
+        Ok(estimate)
     }
 
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
@@ -1274,18 +1326,19 @@ impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
 ///
 /// `mesh_size = 0.25` is not an arbitrary choice: it is the specific
 /// resolution measured during impl to give a genuine (non-noise) global-
-/// indicator drop on the FIRST Dörfler refine — currently ≈15%, though the
-/// absolute indicator values move whenever the mesher is recalibrated, which
-/// is why callers key their targets off a measured seed rather than off a
-/// number quoted here. Coarser/finer meshes and other θ values were also
-/// measured and
-/// found noisier (the volume-weighted-average ZZ recovery is not the full
-/// SPR scheme — see `error_estimator.rs`'s module doc — and a full remesh
-/// from surface regenerates an independent tetrahedralization each refine,
-/// so the global indicator does not decrease monotonically over MANY
-/// iterations at CI-affordable resolution); this fixture's role is the
-/// cheap, always-on "one clean refine converges" sanity check, not a deep
-/// rate study (that is step-9/10's `#[ignore]`'d heavy test).
+/// indicator drop on the FIRST Dörfler refine — 41.9% since #7447 (0.3412 ->
+/// 0.1983, 761 -> 4166 tets; it was ≈15% before), though the absolute
+/// indicator values move whenever the mesher is recalibrated, which is why
+/// callers key their targets off a measured seed rather than off a number
+/// quoted here. Coarser/finer meshes and other θ values were also measured
+/// before #7447 and found noisier (the volume-weighted-average ZZ recovery
+/// is not the full SPR scheme — see `error_estimator.rs`'s module doc — and
+/// a full remesh from surface regenerates an independent tetrahedralization
+/// each refine, so the global indicator did not decrease monotonically over
+/// MANY iterations at CI-affordable resolution; the post-#7447 rate study's
+/// 3-point sequences do). This fixture's role is the cheap, always-on "one
+/// clean refine converges" sanity check, not a deep rate study (that is
+/// step-9/10's `#[ignore]`'d heavy test).
 fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
     let mesh_size = 0.25_f64;
@@ -1339,7 +1392,9 @@ fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
 /// The 0.95 factor is what makes the trajectory non-vacuous: it must undercut
 /// the seed (else iteration 0 converges immediately) while staying above the
 /// once-refined indicator (else the budget's iteration cap trips first). The
-/// measured first-refine drop is ≈15%, so 5% leaves margin on both sides.
+/// measured first-refine drop is 41.9% since #7447 (≈15% before), so the
+/// once-refined indicator sits at 0.58x the seed: 5% still undercuts the
+/// seed, and the target is still met by exactly one refine.
 #[test]
 fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1359,7 +1414,7 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
     // [`convergence_status_reports_converged_when_target_is_reachable_immediately`],
     // and avoids a second full gmsh remesh + FEA solve + ZZ recovery.
     let mut inner = cantilever_gmsh_problem();
-    let seed_indicator = inner.solve_and_estimate().global_indicator;
+    let seed_indicator = inner.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors").relative_error;
 
     let mut problem = RecordingProblem::new(inner);
     let budget = RefinementBudget {
@@ -1409,7 +1464,7 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 // gap its meaning" (see the module doc's part (c)): drive a MULTI-iteration
 // adaptive sequence and a MULTI-iteration uniform sequence (mark every
 // element every step) from the SAME coarse cantilever, fit [`loglog_slope`]
-// to each sequence's `(dof, global_indicator)` pairs, and assert both trend
+// to each sequence's `(dof, relative_error)` pairs, and assert both trend
 // down and the adaptive rate is not materially worse than the uniform rate on
 // this smooth solution.
 //
@@ -1418,45 +1473,64 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 // convention already used for step-1/step-3/step-7. GREEN (next commit)
 // defines it.
 //
-// # Calibration note: noise floor measured during impl
+// # Calibration note: before #7447 (task #3002 impl, 8-corner-anchor refiner)
 //
 // An empirical sweep (mesh_size 0.15-0.4, sequence lengths up to 7 points —
 // see the `project_3002_zz_indicator_noisy_across_iterations` memory note)
-// confirms `compute_zz_indicator`'s volume-weighted-average recovery,
-// combined with `refine_marked_elements`'s full-remesh-every-iteration from a
-// fixed 8-vertex surface, makes the per-iteration `global_indicator` NOISY at
-// CI-affordable resolution: individual mesh sizes can show a flat or even
-// slightly INCREASING trend (e.g. `mesh_size=0.3` measured
-// `adaptive_slope ≈ +0.034`, `uniform_slope ≈ +0.001` — neither converging),
-// and which sequence "wins" the gap is mesh-size-sensitive. This is the same
-// noise floor already documented on [`cantilever_gmsh_problem`]'s doc comment
-// (no configuration gives a clean MONOTONE multi-iteration drop).
+// found the per-iteration `relative_error` NOISY at CI-affordable resolution
+// under the refiner of the time, whose remesh honoured only the 8 box
+// corners' size hints and so was quasi-uniform: individual mesh sizes could
+// show a flat or even slightly INCREASING trend (e.g. `mesh_size=0.3`
+// measured `adaptive_slope ≈ +0.034`, `uniform_slope ≈ +0.001`), and which
+// sequence "won" the gap was mesh-size-sensitive. At `mesh_size = 0.25`, a
+// fixed 6-refine adaptive (7 points) and 2-refine uniform (3 points) sequence
+// measured `adaptive_slope ≈ -0.0545`, `uniform_slope ≈ -0.0138`. The
+// thresholds were calibrated below those values: `CLEARLY_NEGATIVE_SLOPE =
+// -0.005` and `GAP_MARGIN = 0.02` (the assertion lets adaptive be up to
+// `GAP_MARGIN` shallower than uniform). Both constants are unchanged since.
 //
-// A least-squares `loglog_slope` fit over a LONGER sequence (7 adaptive
-// points, 3 uniform points) at `mesh_size = 0.25` — the SAME resolution
-// already calibrated in step-7/8 for a clean single-step drop — recovers the
-// theory-predicted direction despite the individual-step noise: measured
-// `adaptive_slope ≈ -0.0545`, `uniform_slope ≈ -0.0138` (both comfortably
-// negative, and the adaptive rate clearly steeper). The thresholds below are
-// calibrated conservatively BELOW these measured values, not blind-tuned:
-// `CLEARLY_NEGATIVE_SLOPE = -0.005` (both measured slopes clear it by >2x)
-// and `GAP_MARGIN = 0.02` (the measured gap is ≈0.041, so the margin leaves
-// ≈50% headroom for host/gmsh-version variation while still requiring a
-// real, non-vacuous gap).
+// # Calibration note: after #7447 (background size field, DOF-bounded)
 //
-// Iteration counts are asymmetric by design: uniform marks EVERY element
-// each step (h/2 everywhere), so its element/dof count grows much faster
-// than Dörfler-marked adaptive — 3+ uniform refines pushed the default
-// `CgSolverOptions` (max_iter=1000) to non-convergence in the calibration
-// sweep at finer starting resolutions, so this test caps the uniform
-// sequence at 2 refines (3 points) while the more-slowly-growing adaptive
-// sequence safely runs 6 refines (7 points) for a more robust least-squares
-// fit.
+// Since #7447 the refiner drives gmsh from a background size field, so a
+// refine really applies h/2 at every marked element: per refine the
+// cantilever grows 761 -> 4166 -> 32237 tets adaptively and 761 -> 8595 ->
+// 88808 uniformly. Fixed step counts became infeasible (on the #7447 branch
+// a 6-refine adaptive run did not finish in >30 min), so
+// [`run_refinement_sequence`] stops refining once a solve reaches
+// [`RATE_STUDY_MAX_DOFS`]. Measured 2026-09-25 (libgmsh 4.15.2; two runs,
+// identical pairs — tet, dof and CG counts are load-independent because gmsh
+// is pinned to one thread):
+//
+// | sequence | (dofs, relative_error) pairs                         | slope   |
+// |----------|------------------------------------------------------|---------|
+// | adaptive | (756, 0.3412) (3171, 0.1983) (19917, 0.1539)         | -0.2386 |
+// | uniform  | (756, 0.3412) (6315, 0.1892) (53760, 0.1332)         | -0.2205 |
+//
+// Both sequences drop monotonically; both slopes clear
+// `CLEARLY_NEGATIVE_SLOPE` by >40x; adaptive is 0.018 STEEPER than uniform,
+// 0.038 inside `GAP_MARGIN`. The adaptive slope moved from -0.0545 to
+// -0.2386: from 16% to 72% of the -1/3 rate P1 theory predicts for the
+// energy-norm error against dof count on a smooth solution.
+//
+// The cap is 10_000 because the last solve lands one refine past it, and the
+// CG budget is `CgSolverOptions::default()`'s 1000 iterations: the largest
+// solve here (53760 dofs, uniform) took 751. Any cap above 19917 lets the
+// adaptive sequence refine once more, to 118599 dofs; a probe at a 30_000
+// cap measured that fourth point at relative_error 0.0953 (adaptive slope
+// -0.2380, unchanged) but its CG took 886 of 1000 iterations and the study
+// took 11 min, against 49-62 s at 10_000 (three runs, host load ~64-171 on
+// 32 cores).
 
-/// Run `n_steps` refinement iterations (`n_steps + 1` solves total) over
-/// `problem`, collecting `(n_dofs, global_indicator)` pairs in iteration
-/// order — the raw material [`loglog_slope`] fits a convergence-rate
-/// exponent to.
+/// A [`run_refinement_sequence`] stops refining once a solve reaches this
+/// many DOFs — the same at-or-over rule as [`RefinementBudget::max_dofs`],
+/// so a sequence's last solve is at most one refine past it. See the
+/// "after #7447" calibration note above for how the value was measured.
+const RATE_STUDY_MAX_DOFS: usize = 10_000;
+
+/// Run up to `max_steps` refinement iterations over `problem`, stopping
+/// early once a solve reaches [`RATE_STUDY_MAX_DOFS`], collecting
+/// `(n_dofs, relative_error)` pairs in iteration order — the raw material
+/// [`loglog_slope`] fits a convergence-rate exponent to.
 ///
 /// When `uniform` is `true`, every element is marked each iteration (the
 /// "refine everywhere" baseline, h/2 globally); when `false`, elements are
@@ -1466,14 +1540,16 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 /// can reuse it unchanged.
 fn run_refinement_sequence<P: AdaptiveProblem>(
     problem: &mut P,
-    n_steps: usize,
+    max_steps: usize,
     uniform: bool,
 ) -> Vec<(f64, f64)> {
-    let mut pairs = Vec::with_capacity(n_steps + 1);
-    for i in 0..=n_steps {
-        let est = problem.solve_and_estimate();
-        pairs.push((est.n_dofs as f64, est.global_indicator));
-        if i == n_steps {
+    let mut pairs = Vec::with_capacity(max_steps + 1);
+    for i in 0..=max_steps {
+        let est = problem.solve_and_estimate().unwrap_or_else(|_| {
+            panic!("solve_and_estimate must succeed on the Z-Z path (iteration {i})")
+        });
+        pairs.push((est.n_dofs as f64, est.relative_error));
+        if i == max_steps || est.n_dofs >= RATE_STUDY_MAX_DOFS {
             break;
         }
         let marked = if uniform {
@@ -1492,7 +1568,7 @@ fn run_refinement_sequence<P: AdaptiveProblem>(
 /// ([`cantilever_gmsh_problem`], `mesh_size = 0.25`), an adaptive
 /// (Dörfler-marked) refinement sequence and a uniform (mark-everything)
 /// refinement sequence must BOTH show a clearly-negative `(dof,
-/// global_indicator)` log-log slope, and the adaptive slope must not be
+/// relative_error)` log-log slope, and the adaptive slope must not be
 /// materially worse than the uniform slope — a smooth solution is the
 /// control case where adaptive refinement should be at least competitive
 /// with uniform, giving meaning to the L-shaped case's later directional gap
@@ -1502,8 +1578,8 @@ fn run_refinement_sequence<P: AdaptiveProblem>(
 /// See the section doc above for the calibration basis of
 /// `CLEARLY_NEGATIVE_SLOPE` and `GAP_MARGIN`.
 #[test]
-#[ignore = "heavy: 10 real gmsh remesh+solve iterations across two sequences; \
-            on-demand/nightly rate study (mirrors \
+#[ignore = "heavy: two DOF-bounded real gmsh remesh+solve sequences (solves up \
+            to ~5e4 DOFs); on-demand/nightly rate study (mirrors \
             analytical_validation.rs::cantilever_faithful_convergence_study)"]
 fn cantilever_adaptive_vs_uniform_rate_gap() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1519,6 +1595,10 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
 
     let adaptive_slope = loglog_slope(&adaptive_pairs);
     let uniform_slope = loglog_slope(&uniform_pairs);
+    eprintln!(
+        "CALIBRATION adaptive_slope={adaptive_slope} uniform_slope={uniform_slope} \
+         adaptive_pairs={adaptive_pairs:?} uniform_pairs={uniform_pairs:?}"
+    );
 
     assert!(
         adaptive_slope <= CLEARLY_NEGATIVE_SLOPE,
@@ -1546,8 +1626,8 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
 // elasticity-singularity benchmark. This cheap, always-on section checks
 // only the two preconditions the (heavier, #[ignore]'d) step-13/14 rate-gap
 // study depends on: (1) the ZZ indicator actually LOCALIZES at the
-// re-entrant corner on a single coarse solve, and (2) a FEW
-// `run_adaptive_refinement` iterations produce a well-formed
+// re-entrant corner on a single coarse solve, and (2) one
+// `run_adaptive_refinement` refinement produces a well-formed
 // `ConvergenceStatus` and a substantially improved global indicator.
 
 /// Outer leg length of the [`l_shaped_gmsh_problem`] L-cross-section. Kept
@@ -1570,10 +1650,11 @@ const L_SHAPE_LZ: f64 = 1.0;
 /// tetrahedralization each remesh, not a smooth function of the target edge
 /// length (the same "NOISY" ZZ recovery already documented on
 /// [`cantilever_gmsh_problem`] and the step-9/10 rate study). `0.163` is the
-/// specific value from that sweep giving the best simultaneous localization
-/// ratio (comfortably above `K = 1.5`) and single-refine drop (the highest
-/// "clean" — i.e. not immediately followed by a regressing second refine —
-/// value found, ~8.94%).
+/// specific value from that task-#3002 sweep (pre-#7447 refiner) giving the
+/// best simultaneous localization ratio (comfortably above `K = 1.5`) and
+/// single-refine drop (the highest "clean" — i.e. not immediately followed by
+/// a regressing second refine — value found, ~8.94%). The test's `DROP_FACTOR`
+/// note records the #7447 background-field reading.
 const L_SHAPE_MESH_SIZE: f64 = 0.163;
 
 /// Closed-surface L-shaped prism: an L cross-section (outer legs of length
@@ -1722,8 +1803,8 @@ fn l_shaped_gmsh_problem() -> FeaAdaptiveProblem {
 
 /// L-shaped re-entrant-corner indicator localization + cheap CI-gate proxy
 /// (module doc part (a)). A single coarse solve must show the ZZ indicator
-/// concentrating at the re-entrant corner; a FEW `run_adaptive_refinement`
-/// iterations (NOT the full rate study — step-13/14's `#[ignore]`'d heavy
+/// concentrating at the re-entrant corner; one `run_adaptive_refinement`
+/// refinement (NOT the full rate study — step-13/14's `#[ignore]`'d heavy
 /// test) must show a well-formed `ConvergenceStatus` and a substantially
 /// improved global indicator.
 #[test]
@@ -1734,7 +1815,7 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
     }
 
     let mut problem = l_shaped_gmsh_problem();
-    let estimate0 = problem.solve_and_estimate();
+    let estimate0 = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
 
     let (nodes, conns) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
     const NEAR_RADIUS: f64 = 0.15;
@@ -1759,9 +1840,11 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
     );
 
     let mut recording = RecordingProblem::new(problem);
+    // One refinement — see the DROP_FACTOR calibration note below for the
+    // measured per-solve table that rules out more.
     let budget = RefinementBudget {
         target_accuracy: 1e-6,
-        max_refinement_iterations: 3,
+        max_refinement_iterations: 1,
         max_dofs: 1_000_000,
     };
     let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
@@ -1794,23 +1877,35 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
         recording.history.len(),
         recording.history,
     );
-    let first = estimate0.global_indicator;
+    let first = estimate0.relative_error;
     let last = *recording.history.last().unwrap();
-    // Calibration note: measured during impl, same noise floor as
-    // cantilever_gmsh_problem/cantilever_adaptive_vs_uniform_rate_gap. A
-    // sweep over mesh_size (0.10-0.40) and leg proportions found a single
-    // clean Dörfler refine's global-indicator drop tops out around 8-9% for
-    // this fixture (best clean run: 8.94%) — comparable to
-    // cantilever_gmsh_problem's own single-refine drop (~8.9%, see that
-    // fixture's doc), and well short of a blind 10% guess. `run_adaptive_
-    // refinement`'s stall check (STALL_MIN_RELATIVE_DROP = 10%) means the
-    // FIRST refine's drop determines this test's outcome: if it doesn't
-    // clear 10% the loop stalls immediately and `last` IS that first-refine
-    // value, so this threshold cannot be worked around with more iterations.
-    // DROP_FACTOR is calibrated conservatively below the measured ceiling
-    // (0.94 ⇒ >= 6% drop required, comfortable margin under the ~9% ceiling
-    // for host/gmsh-version variation) while still requiring a real,
-    // non-vacuous improvement.
+    // Calibration note. DROP_FACTOR = 0.94 (>= 6% drop required) was set at
+    // task #3002 against the pre-#7447 refiner, whose best clean single
+    // Dörfler refine dropped the global indicator only ~8-9% on this fixture
+    // (best: 8.94%, from a sweep over mesh_size 0.10-0.40 and leg
+    // proportions). It stays fixed as a floor for a real, non-vacuous
+    // improvement.
+    //
+    // Since #7447 the refiner drives gmsh from a background size field, so a
+    // Dörfler refine really applies h/2 at every marked element and the mesh
+    // grows 5-7x per refine. Measured 2026-09-25 (libgmsh 4.15.2; tet, dof and
+    // CG counts are load-independent because gmsh is pinned to one thread):
+    //
+    // | solve | marked         | tets  | dofs  | CG iters | relative_error | drop  | wall  |
+    // |-------|----------------|-------|-------|----------|----------------|-------|-------|
+    // | 0     | —              | 2221  | 1896  | 206      | 0.3369         | —     |       |
+    // | 1     | 495 of 2221    | 11242 | 7629  | 320      | 0.2194         | 34.9% | 1.6 s |
+    // | 2     | 3068 of 11242  | 74168 | 43452 | 617      | 0.1590         | 27.5% | 60 s  |
+    //
+    // (`wall` is the whole test at a budget ending on that solve, host load
+    // ~175-187 on 32 cores.) Neither drop trips the stall check
+    // (STALL_MIN_RELATIVE_DROP = 10%). The former `max_refinement_iterations:
+    // 3` reaches a fourth solve after a third 5-7x refine; on the #7447
+    // branch before this recalibration it ran >20 min with RSS >1 GB without
+    // finishing. Two refinements already take half the 120 s slow-timeout,
+    // so the budget is one: `last` is solve 1, a 34.9% drop (0.651 x first)
+    // against DROP_FACTOR's 0.94. The pre-refine localization ratio measures
+    // 5.33 (K = 1.5).
     const DROP_FACTOR: f64 = 0.94;
     assert!(
         last <= DROP_FACTOR * first,
@@ -1839,7 +1934,7 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 //
 // [`l_shaped_gmsh_problem`]'s finer starting mesh (`L_SHAPE_MESH_SIZE =
 // 0.163`, vs [`cantilever_gmsh_problem`]'s `0.25`) makes it MORE sensitive to
-// the same "NOISY per-iteration global_indicator" artifact already
+// the same "NOISY per-iteration relative_error" artifact already
 // documented on [`cantilever_adaptive_vs_uniform_rate_gap`]: a sweep over
 // `n_adaptive_steps` found the fitted adaptive slope is NOT monotonically
 // better with more iterations — `n=3` (4 pts) -> -0.092, `n=4` (5 pts) ->
@@ -1853,6 +1948,13 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 // `CgSolverOptions` (max_iter=1000) to non-convergence at this finer starting
 // resolution — exactly the failure mode step-9/10's own doc comment warned
 // of, confirmed by measurement here too.
+//
+// Those step counts and every figure in this section predate #7447. Since
+// #7447, [`run_refinement_sequence`] also stops once a solve reaches
+// [`RATE_STUDY_MAX_DOFS`], so the step counts passed below — for the
+// L-prism and for the cantilever reference — are ceilings, not lengths, and
+// the sequences are shorter than described here. Re-measuring this study
+// under the background-field refiner is task #7891.
 //
 // # Reformulation note: part (ii) is a GAP comparison, not a direct
 // uniform-vs-uniform comparison
@@ -1903,11 +2005,11 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 /// in-test measurement is used instead of a hardcoded constant).
 fn adaptive_vs_uniform_gap<P: AdaptiveProblem>(
     mut make_problem: impl FnMut() -> P,
-    n_adaptive_steps: usize,
-    n_uniform_steps: usize,
+    max_adaptive_steps: usize,
+    max_uniform_steps: usize,
 ) -> (f64, f64, f64) {
-    let adaptive_pairs = run_refinement_sequence(&mut make_problem(), n_adaptive_steps, false);
-    let uniform_pairs = run_refinement_sequence(&mut make_problem(), n_uniform_steps, true);
+    let adaptive_pairs = run_refinement_sequence(&mut make_problem(), max_adaptive_steps, false);
+    let uniform_pairs = run_refinement_sequence(&mut make_problem(), max_uniform_steps, true);
     let adaptive_slope = loglog_slope(&adaptive_pairs);
     let uniform_slope = loglog_slope(&uniform_pairs);
     (adaptive_slope, uniform_slope, uniform_slope - adaptive_slope)
@@ -1921,9 +2023,10 @@ fn adaptive_vs_uniform_gap<P: AdaptiveProblem>(
 /// lengths and margins, and for why part (ii) is a gap-vs-gap comparison
 /// rather than a direct uniform-vs-uniform one.
 #[test]
-#[ignore = "heavy: 7 real gmsh remesh+solve iterations on the L-prism plus a \
-            fresh 10-iteration cantilever reference measurement; on-demand/nightly \
-            rate study (mirrors cantilever_adaptive_vs_uniform_rate_gap, step-9/10)"]
+#[ignore = "heavy: DOF-bounded real gmsh remesh+solve sequences on the L-prism \
+            plus a fresh DOF-bounded cantilever reference measurement; \
+            on-demand/nightly rate study (mirrors \
+            cantilever_adaptive_vs_uniform_rate_gap, step-9/10)"]
 fn l_shaped_adaptive_vs_uniform_rate_gap() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
         eprintln!("skipping: libgmsh not available in this build");
@@ -2011,12 +2114,13 @@ fn l_shaped_adaptive_vs_uniform_rate_gap() {
 // vertex count.
 //
 // `PLATE_MESH_SIZE = 0.09` is the specific value measured during impl to give
-// BOTH a genuine localization signal (measured ratio ≈1.51, against the
-// test's conservatively-calibrated `K = 1.3` — see the test's own comment for
-// why `K` sits well below the measured value rather than pinned to it) AND a
-// genuine (not noise-dominated) peak-von-Mises INCREASE on the first Dörfler
-// refine — the same "sweep for a clean, robust configuration" methodology
-// already used for `L_SHAPE_MESH_SIZE`. Coarser meshes (`>= 0.15`)
+// BOTH a genuine localization signal (measured ratio ≈1.51 at the fixture's
+// original task-#3002 calibration, 7.80 on the #7447 background-field seed;
+// against the test's conservatively-calibrated `K = 1.3` — see the test's own
+// comment for why `K` sits below the measured value rather than pinned to it)
+// AND a genuine (not noise-dominated) peak-von-Mises INCREASE on the first
+// Dörfler refine — the same "sweep for a clean, robust configuration"
+// methodology already used for `L_SHAPE_MESH_SIZE`. Coarser meshes (`>= 0.15`)
 // under-resolve the hole boundary badly enough that the coarse-mesh peak sits
 // far below `3·σ_far` and a single refine's recovered peak barely moves;
 // `0.09` starts close enough to the hole's curvature scale (`hole_radius /
@@ -2026,6 +2130,30 @@ fn l_shaped_adaptive_vs_uniform_rate_gap() {
 // see the test's `FAR_RADIUS_LO`/`FAR_RADIUS_HI` comment for the bounded-shell
 // reasoning that excludes the loaded edge's own discretization artifact from
 // the "far field" baseline.
+//
+// # Calibration note: one refine, not two (#7447)
+//
+// Since #7447 the refiner drives gmsh from a background size field, so a
+// Dörfler refine really applies h/2 at every marked element. The test's
+// original `max_refinement_iterations: 2` was set against the pre-#7447
+// quasi-uniform refiner; on the #7447 tree it reaches a third solve whose
+// CG exhausts `CgSolverOptions::default()`'s 1000 iterations, and
+// `solve_p1_pipeline` panics. Measured 2026-09-25 (libgmsh 4.15.2; tet, dof
+// and CG counts are load-independent because gmsh is pinned to one thread):
+//
+// | solve | marked        | tets  | dofs  | CG iters (cap 1000) | relative_error | peak VM |
+// |-------|---------------|-------|-------|---------------------|----------------|---------|
+// | 0     | —             | 2841  | 2559  | 379                 | 0.0812         | 3.035   |
+// | 1     | 425 of 2841   | 10494 | 8028  | 606                 | 0.0697         | 3.070   |
+// | 2     | 2679 of 10494 | 61468 | 39111 | 1000, unconverged   | —              | —       |
+//
+// The budget is therefore one refinement: it keeps a real refine
+// (`history.len() == 2`), every solve converges inside the default CG cap,
+// and the test ran in 2.3-3.2 s wall (4/4 runs, host load ~113-115 on 32
+// cores).
+// The recovered peak (`peak VM`, `PEAK_REGION_RADIUS`-restricted) rises
+// 3.035 -> 3.070, under `BAND`'s 3.45 bound. Both peaks already sit above
+// `3·σ_far`: what the test pins is the increase and the upper band.
 //
 // A single anchor node's z-DOF (nearest `(PLATE_HALF_WIDTH, 0, 0)`) is pinned
 // to remove an otherwise-unconstrained rigid-body Z-translation: neither
@@ -2327,7 +2455,7 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
     }
 
     let mut problem = plate_with_hole_gmsh_problem();
-    let estimate0 = problem.solve_and_estimate();
+    let estimate0 = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
     let (nodes, conns) = nodes_conns_from_volume_mesh(&problem.volume_mesh);
 
     // Restricting the peak search to a small ring around the hole excludes
@@ -2365,11 +2493,12 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
         near_mean / far_mean,
     );
 
-    // K=1.3 is calibrated conservatively below the ~1.51 ratio measured
-    // during impl at (PLATE_MESH_SIZE, NEAR_RADIUS, FAR_RADIUS_LO/HI) above —
-    // leaving comfortable headroom (mirroring the L-shaped localization
-    // test's own measured-ratio-vs-K margin), rather than pinning K to the
-    // measured value itself.
+    // K=1.3 was calibrated conservatively below the ~1.51 ratio measured at
+    // task #3002's impl at (PLATE_MESH_SIZE, NEAR_RADIUS, FAR_RADIUS_LO/HI)
+    // above — leaving comfortable headroom (mirroring the L-shaped
+    // localization test's own measured-ratio-vs-K margin), rather than
+    // pinning K to the measured value itself. The #7447 background-field
+    // seed measures 7.80 (see the fixture's calibration notes).
     const K: f64 = 1.3;
     assert!(
         near_mean >= K * far_mean,
@@ -2379,9 +2508,11 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
     );
 
     let mut recording = RecordingProblem::new(problem);
+    // One refinement — see the fixture's "one refine, not two (#7447)"
+    // calibration note for the measured per-solve table.
     let budget = RefinementBudget {
         target_accuracy: 1e-6,
-        max_refinement_iterations: 2,
+        max_refinement_iterations: 1,
         max_dofs: 1_000_000,
     };
     let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
@@ -2475,10 +2606,10 @@ fn convergence_status_reports_max_dofs_when_next_refine_would_exceed_budget() {
     }
 
     let mut problem = cantilever_gmsh_problem();
-    let seed = problem.solve_and_estimate();
+    let seed = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
     eprintln!(
-        "CALIBRATION seed.global_indicator={} seed.n_dofs={}",
-        seed.global_indicator, seed.n_dofs,
+        "CALIBRATION seed.relative_error={} seed.n_dofs={}",
+        seed.relative_error, seed.n_dofs,
     );
 
     let budget = RefinementBudget {
@@ -2546,13 +2677,13 @@ fn convergence_status_reports_converged_when_target_is_reachable_immediately() {
     }
 
     let mut problem = cantilever_gmsh_problem();
-    let seed = problem.solve_and_estimate();
+    let seed = problem.solve_and_estimate().expect("the Z-Z solve_and_estimate path never errors");
 
     let budget = RefinementBudget {
         // Doubling the measured seed indicator keeps this comfortably above
         // it regardless of exact host/gmsh-version numeric drift, rather
         // than hardcoding a specific measured value.
-        target_accuracy: seed.global_indicator * 2.0,
+        target_accuracy: seed.relative_error * 2.0,
         max_refinement_iterations: 5,
         max_dofs: 1_000_000,
     };

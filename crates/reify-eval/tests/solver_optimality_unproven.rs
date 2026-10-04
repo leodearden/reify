@@ -34,7 +34,8 @@ use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{
-    ConstraintSolver, OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, Value,
+    BestFoundReason, ConstraintSolver, OptimalityStatus, RankedCandidate, RankedSolveResult,
+    ResolutionProblem, SolveResult, Value,
 };
 use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 use std::collections::HashMap;
@@ -66,6 +67,39 @@ impl ConstraintSolver for EmptyRankedSolver {
             // the two `should_panic` tests below must still fire on the SAME
             // messages, at the same two seams.
             completeness: reify_ir::Completeness::not_attempted(),
+        }
+    }
+}
+
+// ── #6553 mock: a solver that stopped at an enumeration cap ───────────────────
+
+/// A solver whose `solve_ranked` reports `BestFound { EnumerationBudget }` — what an
+/// exact CP-SAT enumeration returns when it hits its node cap with part of the
+/// discrete space unvisited.
+///
+/// Shaped after `EmptyRankedSolver` above, but I2-respecting: one candidate, so the
+/// engine reaches the gate rather than tripping the non-empty assert. The values map
+/// is empty because this test observes a DIAGNOSTIC, not resolved params.
+struct EnumerationBudgetRankedSolver;
+
+impl ConstraintSolver for EnumerationBudgetRankedSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        SolveResult::Solved {
+            values: HashMap::new(),
+            unique: false,
+        }
+    }
+
+    fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
+        RankedSolveResult::Ranked {
+            candidates: vec![RankedCandidate {
+                values: HashMap::new(),
+                objective_score: Some(0.0),
+                unique: false,
+            }],
+            optimality: OptimalityStatus::BestFound {
+                reason: BestFoundReason::EnumerationBudget,
+            },
         }
     }
 }
@@ -555,5 +589,68 @@ fn engine_does_not_derive_unique_from_completeness_at_alpha() {
     assert_eq!(
         exhaustive_diags, not_attempted_diags,
         "diagnostics must not depend on the completeness verdict at task α"
+    );
+}
+
+// ── Per-template gate, EnumerationBudget arm (task #6553) ─────────────────────
+
+/// [#6553] A per-template objective solve that stopped at an enumeration cap emits
+/// `SolverOptimalityUnproven` — and says so in the enumeration's OWN words.
+///
+/// Two claims, and the second is the point of the task. That a warning fires at all
+/// is B6's loudness requirement (PRD `docs/prds/v0_6/discrete-cost-minimisation.md`
+/// §4.2). That the message carries `EnumerationBudget.describe()` and NOT
+/// `IterationLimit.describe()` is the honesty requirement: before #6553 the CP-SAT
+/// producer borrowed `IterationLimit`, so a "warning fired" assertion alone would
+/// have passed against the very defect being fixed.
+///
+/// Both describe() strings are computed from the enum rather than spelled as literals,
+/// so this pins variant-to-string ROUTING without pinning prose — the same stance
+/// `ranked_solve_result.rs` takes when it declines to substring-check wording.
+#[test]
+fn enumeration_budget_objective_emits_solver_optimality_unproven_warning() {
+    let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(EnumerationBudgetRankedSolver));
+
+    let result = engine.eval(&compiled);
+
+    let optimality_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SolverOptimalityUnproven))
+        .collect();
+    assert!(
+        !optimality_warnings.is_empty(),
+        "expected a DiagnosticCode::SolverOptimalityUnproven warning for a solve that \
+         stopped at its enumeration budget (D5: truncation is never silent), \
+         got diagnostics: {:#?}",
+        result.diagnostics
+    );
+    let w = optimality_warnings[0];
+    assert_eq!(
+        w.severity,
+        Severity::Warning,
+        "SolverOptimalityUnproven must be Severity::Warning, got {:?}",
+        w.severity
+    );
+    assert!(
+        w.message.contains("W_SOLVER_OPTIMALITY_UNPROVEN"),
+        "warning message must contain 'W_SOLVER_OPTIMALITY_UNPROVEN', got: {:?}",
+        w.message
+    );
+
+    // The honesty contract: the reason the user reads must be the enumeration's own.
+    assert!(
+        w.message
+            .contains(BestFoundReason::EnumerationBudget.describe()),
+        "warning must carry EnumerationBudget.describe(), got: {:?}",
+        w.message
+    );
+    assert!(
+        !w.message
+            .contains(BestFoundReason::IterationLimit.describe()),
+        "warning must NOT carry IterationLimit.describe(), got: {:?}",
+        w.message
     );
 }

@@ -5,6 +5,21 @@
 **Closes:** `docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md` cluster **P15 io-export-import** (5 of 6 rows; the 6th, `Scalar<Money>`-degrades, is a shared type-resolver gap left to the resolver cluster).
 **Source doc:** `docs/reify-stdlib-reference.md` §9.
 
+> **ζ superseded (step-assembly-import ο #8067).** Task ζ (#4289) and §4.5's single-shape
+> `step_import(path) -> Solid` builtin are superseded by `docs/prds/v0_6/step-assembly-import.md`
+> (its α rewrites #4289). STEP import there is a foreign-module provider (that PRD's C3): a
+> generated module exposing the product structure, not one `Solid`. Do not re-file a
+> single-shape `step_import`; the ζ block in §4.5 and §10 is retained as historical record only.
+> The other leaves (α–ε) are unaffected.
+
+> **Docs-truth note (step-assembly-import ο #8067).** `docs/prds/v0_6/step-assembly-import.md` ξ
+> (#8066) corrects only the `STEPInput` and `Provenance` rows of `docs/reify-stdlib-reference.md`
+> §9. Every other §9 row ξ leaves untouched is named here for the docs-truth program:
+> `STEPOutput.path`, `STLOutput.path`, `ThreeMFOutput.path`, `STEPOutput.subject`,
+> `ThreeMFOutput.subject`, `DisplayOutput.subject` (`Structure`/`Geometry` vs `Solid`),
+> `DisplayStyle.color`, `DisplayStyle.finish`, and `PointCloudInput`/`PointCloudFormat` (deferred
+> PRD `io-import-pointcloud.md`).
+
 ---
 
 ## 1. Goal — what a user observes

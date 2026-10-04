@@ -44,6 +44,21 @@
 //!   B = I), spectrum = K's diagonal. n=5, so **dense path only**. A and C are
 //!   both positive-definite, and a positive-definite pencil cannot reach the
 //!   negative half of the contract at all; D exists for exactly that half.
+//! - **Fixture E** — 80-DOF 1D Laplacian again (K = tridiag(-1,2,-1)) but with
+//!   B = I **plus** symmetric corner entries at (0,79)/(79,0), so B's sparsity
+//!   pattern is NOT a subset of K's. n=80, so **Lanczos**, enforced the same way
+//!   (`n_converged > 0`). The pattern difference is the whole fixture: on C
+//!   (B = I ⊆ K) the union of the two patterns equals K's own, so a `K − 0·B`
+//!   assembly is indistinguishable from K and a σ=0 identity test passes
+//!   vacuously. On E the union is strictly larger and the extra entries induce
+//!   real Cholesky fill, so a σ=0 solve wrongly routed through the shifted
+//!   assembly is observable.
+//!
+//! - **Non-identity B** (#7602) — `graded_diagonal_b_pencil(80)` (SPD B) and
+//!   `indefinite_b_pencil(136)` from the shared test-support seam, plus an
+//!   80-DOF Neumann (singular) K with the graded B. All take **Lanczos**, and
+//!   all run the Cholesky-symmetrized operator: C1's pre-PRD identity is waived
+//!   for B ≠ cI (PRD §6 2026-09-29 amendment), while C2–C6 hold.
 //!
 //! Fixtures A and C and the 1e-12 / 1e-8 tolerances are ported from the landed
 //! `crates/reify-solver-elastic/tests/eigensolve_synthetic.rs`, where they are
@@ -59,27 +74,38 @@
 //! `analytical_validation` and `modal_benchmarks` from this package, and no
 //! exclusion is added for this one — these are small analytic pencils, and
 //! excluding them would remove the contract harness from the merge gate that β
-//! (#7259) is held to.
+//! (#7259) is held to. β adds its σ≠0 arms HERE rather than in a new binary,
+//! for that reason: a separate binary would need its own filter and override
+//! entries, and would put the two halves of one contract on different gates.
 //!
-//! It needs no `.config/nextest.toml` override, and that was MEASURED rather
-//! than assumed (task #7258). Under the repo nextest config the slowest single
-//! test is **1.146 s debug** (whole binary: 1.162 s over 10 tests), against the
-//! `[profile.default]` per-test ceiling of
-//! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
-//! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
-//! so that default ceiling is what applies, leaving a ~1000x margin on the debug
-//! figure — the one taken under ordinary lane contention, and ample against the
-//! worst contention multiplier this repo has recorded.
+//! It needs no `.config/nextest.toml` override, and that is MEASURED rather
+//! than assumed — re-measured after each batch of new arms, rather than
+//! presumed to survive on an earlier margin. Under the repo nextest config, after
+//! #7602's six non-identity-B arms, the slowest single test is **6.415 s debug**
+//! (`dense_and_lanczos_agree_on_a_non_identity_b`, four 80-DOF solves), whole
+//! binary **6.434 s over 21 tests**, against the `[profile.default]` per-test
+//! ceiling of `slow-timeout = { period = "120s", terminate-after = 10 }` =
+//! 1200 s. No `[[profile.default.overrides]]` block matches
+//! `binary(eigensolve_shift_contract)`, so that default ceiling is what applies,
+//! leaving a **~187x margin** on the debug figure — taken under heavy host
+//! contention (load average ≈ 93 on 32 cores), and ample against the worst
+//! contention multiplier this repo has recorded. No override is added.
 //!
-//! (The pre-amendment measurement was 3.000 s release / 9.836 s debug for the
-//! slowest test. Folding BT2's σ=0 arm into BT1 removed a duplicate 80-DOF QZ
-//! and a duplicate 80-DOF Lanczos solve, so the release figure above is a valid
-//! upper bound without a re-measure: the change only removes work.)
+//! (Earlier figures, ordinary lane contention: α 1.495 s slowest / 1.513 s over
+//! 10 tests; β 2.449 s / 2.461 s over 15 tests.)
 
+use faer::Side;
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
+use reify_solver_elastic::SplitCholesky;
+use reify_solver_elastic::eigensolve::test_support::{
+    graded_diagonal_b_pencil, identity, indefinite_b_pencil, laplacian_lambda, laplacian_lambdas,
+    laplacian_pencil,
+};
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, LanczosMetric, ShiftInvertFailure, SparseFactorRef,
+    SparseMetricOp, SparseStiffnessOp, lanczos_shift_invert, lanczos_shift_invert_in_metric,
+    solve_eigen_dense, solve_eigen_shift_invert, try_solve_eigen_shift_invert,
 };
 
 // ---------------------------------------------------------------------------
@@ -105,23 +131,12 @@ fn fixture_a_expected() -> [f64; 5] {
 }
 
 /// Fixture C: K = tridiag(-1,2,-1) (80×80), B = I. n=80 > 64 so Lanczos runs.
+const FIXTURE_C_N: usize = 80;
+
+/// Fixture C, from the crate's shared seam so the pencil and its closed form
+/// have ONE definition across the four test sites that drive them.
 fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 80usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 {
-            k_trips.push(Triplet::new(i, i - 1, -1.0));
-        }
-        if i + 1 < n {
-            k_trips.push(Triplet::new(i, i + 1, -1.0));
-        }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_C_N)
 }
 
 /// Fixture D: K = diag(−2, −0.5, 1, 3, 4), B = I (5×5). Dense path only.
@@ -154,14 +169,60 @@ fn fixture_d_spectrum() -> [f64; 5] {
     [-2.0, -0.5, 1.0, 3.0, 4.0]
 }
 
-/// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian:
-/// `λ_k = 2(1 − cos(kπ/81))` for k=1..=5.
-fn fixture_c_expected_5() -> [f64; 5] {
+/// Fixture E: K = tridiag(-1,2,-1) (80×80), B = I **plus corner entries** at
+/// (0,79) and (79,0). n=80 > 64 so Lanczos runs.
+///
+/// The PATTERN-UNION fixture, and the corner entries are the entire point.
+/// Fixture C's B = I is a sparsity-pattern SUBSET of K, so the union of the two
+/// patterns equals K's own and a `K − 0·B` assembly would be indistinguishable
+/// from K itself — a σ=0 identity test on fixture C therefore passes VACUOUSLY,
+/// whether or not σ=0 is really special-cased.
+///
+/// Here the union is strictly larger than K's pattern: (0,79) and (79,0) are
+/// present in B and absent from K. A `K − 0·B` routed through the shifted
+/// assembly would store them as EXPLICIT ZEROS, which changes the Cholesky
+/// fill-in (the corners connect the two ends of the tridiagonal band, inducing
+/// real fill) and therefore the rounding. So a σ=0 solve that wrongly went
+/// through the shifted path is observable here as a bit-level difference, which
+/// is what makes `sigma_zero_factors_k_itself_not_k_minus_zero_b` a genuine
+/// tripwire rather than a tautology.
+///
+/// K is unchanged from fixture C and so still SPD, which is what keeps the σ=0
+/// Cholesky succeeding. B stays symmetric, and with the corner entries at 1.0
+/// it is I + (e₀e₇₉ᵀ + e₇₉e₀ᵀ), whose eigenvalues are {2, 0, 1, …, 1} — still
+/// positive semi-definite, so no closed form is claimed for the pencil and none
+/// is needed: this fixture's only job is the pattern difference.
+fn fixture_e() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
     let n = 80usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 {
+            k_trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n {
+            k_trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+    }
+    let mut b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    // The two off-pattern entries: present in B, absent from K.
+    b_trips.push(Triplet::new(0, n - 1, 1.0));
+    b_trips.push(Triplet::new(n - 1, 0, 1.0));
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+    (k, b)
+}
+
+/// Closed-form `λ_k = 2(1 − cos(kπ/81))` of fixture C, k = 1..=80. 1-INDEXED,
+/// matching the formula and the way the modes are named throughout this file.
+fn fixture_c_lambda(k: usize) -> f64 {
+    laplacian_lambda(FIXTURE_C_N, k)
+}
+
+/// Closed-form smallest 5 eigenvalues of fixture C.
+fn fixture_c_expected_5() -> [f64; 5] {
+    laplacian_lambdas(FIXTURE_C_N)
 }
 
 // ---------------------------------------------------------------------------
@@ -923,5 +984,818 @@ fn equidistant_shift_selects_deterministically() {
             "equidistant σ=0.225: run {run} returned a different eigenvector column for \
              the same eigenvalue — the column permutation is not deterministic",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C1 structural tripwire — σ=0 factors K ITSELF, never K − 0·B
+// ---------------------------------------------------------------------------
+
+/// **C1, structurally.** At σ=0 the sparse path must factor the row-major `K`
+/// verbatim — NOT a `K − 0·B` assembly that happens to be numerically equal.
+///
+/// # Why this cannot be a tolerance test
+///
+/// `K − 0·B` is not a no-op at the sparsity level. An assembly over the UNION of
+/// the two patterns stores an entry wherever EITHER operand has one, so every
+/// off-pattern entry of B arrives as an EXPLICIT ZERO. Explicit zeros change the
+/// symbolic factorization — different fill-in, a different elimination tree,
+/// therefore a different summation order and different rounding. The result is
+/// *close*, which is exactly the problem: it would drift the four pinned σ=0
+/// golden suites (the `euler_column_pin_pin` BC families at their 0.09–0.11
+/// bounds, `buckling_smoke`, `buckling_persistent_cache_round_trip`, and the
+/// modal goldens) by an amount no tolerance here would catch.
+///
+/// So the assertion is BIT-IDENTITY against a reference route the test builds
+/// itself out of `SplitCholesky::try_new(&k)` on the row-major K, driving
+/// `lanczos_shift_invert_in_metric`. No baseline constants are hardcoded
+/// anywhere — the reference is constructed, not recorded — and the claim is the
+/// narrow one: the same faer calls, with the same arguments, in the same order,
+/// produce the same bits. It is NOT a claim that iterative convergence is
+/// byte-reproducible in general.
+///
+/// # The reference moved with #7602
+///
+/// Fixture E's B is I plus corner entries, so B ≠ cI, and under the PRD §6
+/// 2026-09-29 amendment such a pencil runs the Cholesky-symmetrized operator at
+/// every σ: C1's pre-PRD identity is waived for B ≠ cI, so the reference is the
+/// metric core rather than the Euclidean one. The INTENT is unchanged — σ=0
+/// factors K ITSELF, never a `K − 0·B` union assembly whose explicit zeros
+/// change the fill — and "fix the guard, do not re-baseline" still governs the
+/// σ=0 branch.
+///
+/// # This test is GREEN the day it lands, deliberately
+///
+/// It is written BEFORE the σ≠0 work rather than after, because its job is to go
+/// RED the moment that work erodes the σ=0 branch. If it ever fails, the σ=0
+/// guard in `try_solve_eigen_shift_invert` is wrong — **fix the guard, never
+/// re-baseline this test.**
+///
+/// Fixture E, not C, for the reason spelled out on `fixture_e`: C's B = I is a
+/// pattern subset of K, so on C the union assembly and K itself are the same
+/// matrix and this test would pass vacuously.
+#[test]
+fn sigma_zero_factors_k_itself_not_k_minus_zero_b() {
+    let (k, b) = fixture_e();
+    let opts = EigenSolverOptions {
+        n_modes: 4,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let via_entry_point = try_solve_eigen_shift_invert(&k, &b, opts.clone())
+        .expect("fixture E's K is the SPD tridiagonal Laplacian; σ=0 must succeed");
+
+    // Enforce the Lanczos path claim (PRD §5.5 trap), exactly as BT1 does.
+    assert!(
+        via_entry_point.n_converged > 0,
+        "fixture E must exercise Lanczos (n_converged > 0); got 0, which means routing \
+         fell through to the dense fallback and this tripwire no longer guards the \
+         sparse σ=0 branch at all",
+    );
+
+    // The reference route, built here rather than recorded: factor the ROW-MAJOR
+    // K directly and drive the metric core with it.
+    let g = SplitCholesky::try_new(&k)
+        .expect("fixture E's K is SPD, so its Cholesky must succeed");
+    let m_op = SparseMetricOp { m: b.as_ref() };
+    let reference =
+        lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&g), &m_op, opts);
+
+    assert_eq!(
+        via_entry_point.eigenvalues, reference.eigenvalues,
+        "C1 violated STRUCTURALLY: at σ=0 the entry point returned {:?} but factoring \
+         the row-major K itself returns {:?}. Equal-to-a-tolerance is not enough here — \
+         a difference in these bits means σ=0 is being routed through a K−0·B assembly \
+         whose explicit zeros changed the Cholesky fill-in, which silently moves every \
+         pinned σ=0 golden. Fix the σ=0 guard; do NOT re-baseline.",
+        via_entry_point.eigenvalues, reference.eigenvalues,
+    );
+
+    // The eigenVECTORS too: an eigenvalue-only check passes on a result whose
+    // columns were permuted or re-converged differently.
+    assert_eq!(
+        via_entry_point.eigenvectors.nrows(),
+        reference.eigenvectors.nrows(),
+        "C1: eigenvector row counts differ between the entry point and the reference",
+    );
+    assert_eq!(
+        via_entry_point.eigenvectors.ncols(),
+        reference.eigenvectors.ncols(),
+        "C1: eigenvector column counts differ between the entry point and the reference",
+    );
+    for col in 0..reference.eigenvectors.ncols() {
+        for row in 0..reference.eigenvectors.nrows() {
+            let got = via_entry_point.eigenvectors[(row, col)];
+            let want = reference.eigenvectors[(row, col)];
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "C1 violated STRUCTURALLY: eigenvector[{row}][{col}] is {got:.17e} from the \
+                 entry point but {want:.17e} from factoring the row-major K itself — σ=0 \
+                 is not on today's exact path. Fix the σ=0 guard; do NOT re-baseline.",
+            );
+        }
+    }
+
+    // Provenance is part of the identity: σ=0 reports the σ it used and an
+    // ESTABLISHED `false` (the open interval strictly between 0 and 0 is empty).
+    assert_eq!(
+        via_entry_point.shift, 0.0,
+        "C1: a σ=0 solve must report shift == 0.0",
+    );
+    assert!(
+        !via_entry_point.shift_skipped_modes,
+        "C1: at σ=0 nothing can be skipped — the interval strictly between 0 and 0 is empty",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT3 on the Lanczos path — C2 selection, C3 order, C4 back-shift at σ≠0
+// ---------------------------------------------------------------------------
+
+/// σ for the Lanczos σ≠0 arms: midway between λ₉ and λ₁₀ of fixture C.
+///
+/// Placed ABOVE several modes on purpose. A σ below λ₁ would leave the nearest
+/// set equal to the bottom of the spectrum, so a path that ignored σ entirely
+/// would still return the right eigenvalues and C2 would go untested.
+///
+/// `K − σB` is indefinite here (nine eigenvalues lie below σ), which is exactly
+/// the case that forces the Cholesky-then-LU fallback rather than exercising
+/// only the Cholesky arm.
+fn sigma_between_lambda_9_and_10() -> f64 {
+    0.5 * (fixture_c_lambda(9) + fixture_c_lambda(10))
+}
+
+/// **BT3, Lanczos.** At a σ above several modes the shift-invert path selects
+/// the |λ − σ|-nearest set (C2), presents it ascending by |λ| (C3), returns it
+/// in the ORIGINAL λ space (C4), and reports the σ it actually used.
+///
+/// C2 and C3 are asserted separately and must not be conflated: the nearest set
+/// here is {λ₉, λ₁₀}, and presentation order is by |λ| — which for this pencil
+/// coincides with ascending λ, so the order assertion is about the RULE, not
+/// about this fixture's arithmetic.
+///
+/// The "different from the σ=0 answer" assertion is what makes the selection
+/// claim non-vacuous: without it a path that quietly ignored σ would still
+/// satisfy every closed-form comparison, because it would return λ₁ and λ₂ and
+/// those are genuinely eigenvalues of this pencil.
+///
+/// Nothing is asserted here about `shift_skipped_modes` — step-6 owns C5, and
+/// pinning it now would make that step's RED vacuous.
+#[test]
+fn lanczos_selects_the_nearest_set_and_back_shifts_at_nonzero_sigma() {
+    let (k, b) = fixture_c();
+    let sigma = sigma_between_lambda_9_and_10();
+    let opts = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    };
+
+    let got = solve_eigen_shift_invert(&k, &b, opts.clone());
+
+    // Enforce the Lanczos path claim (PRD §5.5 trap) rather than asserting it
+    // in prose: n_converged is 0 on the dense fallback.
+    assert!(
+        got.n_converged > 0,
+        "BT3 Lanczos must exercise Lanczos (n_converged > 0); got 0, which means routing \
+         fell through to the dense fallback and this test says nothing about the \
+         shift-invert implementation",
+    );
+
+    // C5's own field is the honest report of which σ was solved at.
+    assert_eq!(
+        got.shift, sigma,
+        "BT3 Lanczos: the result must report the σ it actually used ({sigma}), not {}",
+        got.shift,
+    );
+
+    // C2 — the nearest set, against the closed form.
+    assert_matches_closed_form(
+        &got.eigenvalues,
+        &[fixture_c_lambda(9), fixture_c_lambda(10)],
+        1e-8,
+        "BT3 Lanczos C2 at σ between λ₉ and λ₁₀",
+    );
+
+    // C2, non-vacuously — the answer really moved off the bottom of the spectrum.
+    let at_zero = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: 0.0,
+            ..opts.clone()
+        },
+    );
+    assert_matches_closed_form(
+        &at_zero.eigenvalues,
+        &[fixture_c_lambda(1), fixture_c_lambda(2)],
+        1e-8,
+        "BT3 Lanczos control: σ=0 must still return the bottom of the spectrum",
+    );
+    for (i, (&shifted, &unshifted)) in got
+        .eigenvalues
+        .iter()
+        .zip(at_zero.eigenvalues.iter())
+        .enumerate()
+    {
+        assert!(
+            (shifted - unshifted).abs() > 1e-3,
+            "BT3 Lanczos: eigenvalue[{i}] is {shifted} at σ={sigma} and {unshifted} at σ=0 — \
+             the shifted solve returned the SAME set as the unshifted one, so σ was ignored",
+        );
+    }
+
+    // C3 — presentation order, asserted separately from selection.
+    assert_order_ascending_by_abs_lambda(&got.eigenvalues, "BT3 Lanczos C3 at σ≠0");
+
+    // C4 — back-shifted into the original λ space, with the eigenvector columns
+    // pinned to the same permutation as the eigenvalues. A result still in μ
+    // space, or back-shifted with the wrong sign, fails here even though the
+    // closed-form check above could be passed by a coincidence.
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &got.eigenvalues,
+        &got.eigenvectors,
+        1e-8,
+        "BT3 Lanczos C4 at σ≠0",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT4 — C5 provenance on the Lanczos path
+// ---------------------------------------------------------------------------
+
+/// σ below λ₁ of fixture C: half the first eigenvalue.
+///
+/// `K − σB` is still positive definite here, so the shifted Cholesky succeeds
+/// and its success ESTABLISHES `shift_skipped_modes == false` by Sylvester's law
+/// of inertia — the evidence C5 requires, rather than an assumption.
+fn sigma_below_lambda_1() -> f64 {
+    0.5 * fixture_c_lambda(1)
+}
+
+/// **BT4, Lanczos.** The C5 discriminator must answer `false` where `false` is
+/// established and `true` where modes really were passed.
+///
+/// BOTH arms are load-bearing and neither is redundant: the first alone is
+/// passed by a predicate that always returns `false`, the second alone by one
+/// that always returns `true`. Only together do they pin a discriminator that
+/// actually discriminates — and today's `conservative_shift_provenance` (which
+/// is `sigma != 0.0`) is exactly the always-`true` predicate the second arm
+/// cannot catch.
+#[test]
+fn lanczos_provenance_distinguishes_below_and_above_lambda_one() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let unshifted = solve_eigen_shift_invert(&k, &b, base.clone());
+
+    // (a) σ below λ₁ — nothing can have been skipped, and the shifted Cholesky
+    // proves it.
+    let below = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_below_lambda_1(),
+            ..base.clone()
+        },
+    );
+    assert!(
+        below.n_converged > 0,
+        "BT4(a) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+    );
+    assert!(
+        !below.shift_skipped_modes,
+        "BT4(a) Lanczos: C5 violated — σ = {} lies below λ₁ = {}, so K − σB is positive \
+         definite, its Cholesky succeeds, and by Sylvester's law of inertia no eigenvalue \
+         lies between 0 and σ. `false` is ESTABLISHED here, not assumed; got true",
+        sigma_below_lambda_1(),
+        fixture_c_lambda(1),
+    );
+    assert!(
+        (below.eigenvalues[0] - unshifted.eigenvalues[0]).abs() < 1e-9,
+        "BT4(a) Lanczos: modes[0] at σ={} is {:.15} but the σ=0 first mode is {:.15} — a \
+         shift below λ₁ must leave the first mode intact",
+        sigma_below_lambda_1(),
+        below.eigenvalues[0],
+        unshifted.eigenvalues[0],
+    );
+
+    // (b) σ above several modes — eight eigenvalues lie strictly between 0 and σ
+    // and none of them comes back, so the honest answer is `true`.
+    let above = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_between_lambda_9_and_10(),
+            ..base
+        },
+    );
+    assert!(
+        above.n_converged > 0,
+        "BT4(b) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+    );
+    assert!(
+        above.shift_skipped_modes,
+        "BT4(b) Lanczos: C5 violated — σ = {} lies above λ₁…λ₈ and the returned set is \
+         {:?}, so modes WERE passed; got false",
+        sigma_between_lambda_9_and_10(),
+        above.eigenvalues,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT2 — cross-implementation agreement at σ≠0 (the acceptance criterion)
+// ---------------------------------------------------------------------------
+
+/// **BT2.** Dense and Lanczos, same pencil, same σ≠0, same answer.
+///
+/// This is the acceptance criterion for the Lanczos shift implementation, and it
+/// is an INSTANTIATION of [`assert_implementations_agree`] — the body α wrote
+/// for exactly this — not a new harness.
+///
+/// # Why these two σ and not others: the C5 predicates are not the same predicate
+///
+/// The two paths decide `shift_skipped_modes` by different means, and
+/// [`assert_implementations_agree`] compares the answers:
+///
+/// - **Dense is ABSENCE-based.** It has the whole spectrum, so it asks "does
+///   some eigenvalue lie between 0 and σ *and not come back*?"
+/// - **Lanczos is POSITION-based.** It has no spectrum, only which
+///   factorization succeeded, so by Sylvester it asks "does some eigenvalue lie
+///   between 0 and σ?" — with no absence clause available to it.
+///
+/// Cholesky SUCCESS implies nothing lies in the interval, which implies the
+/// absence-based answer is also `false`, so the two always coincide below λ₁.
+/// Cholesky FAILURE only implies something lies in the interval; that something
+/// may still have been RETURNED, and in that configuration dense says `false`
+/// while Lanczos says `true`. Lanczos OVER-reports, which is the conservative
+/// direction C5 permits ("`false` only when established") — a fixture-design
+/// constraint on this test, **not a defect in either side, and not something to
+/// be "fixed" by weakening one of them.** `provenance_counts_absence_not_position`
+/// is the dense-path test that pins that very configuration.
+///
+/// So the above-λ₁ σ here is chosen well above the bottom of the spectrum with a
+/// small `n_modes` — σ between λ₉ and λ₁₀, n_modes=2 — so the selected window
+/// genuinely does not reach back down past σ and the two predicates agree.
+#[test]
+fn dense_and_lanczos_agree_at_nonzero_sigma() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    for (sigma, label) in [
+        (sigma_below_lambda_1(), "σ below λ₁"),
+        (sigma_between_lambda_9_and_10(), "σ between λ₉ and λ₁₀"),
+    ] {
+        let opts = EigenSolverOptions {
+            sigma,
+            ..base.clone()
+        };
+        let dense = solve_eigen_dense(&k, &b, opts.clone());
+        let lanczos = solve_eigen_shift_invert(&k, &b, opts);
+
+        assert!(
+            lanczos.n_converged > 0,
+            "BT2 at {label}: must exercise Lanczos (n_converged > 0); got 0, so this is a \
+             dense-vs-dense comparison and proves nothing",
+        );
+        assert_implementations_agree(
+            &dense,
+            &lanczos,
+            1e-8,
+            &format!("BT2 dense vs Lanczos at {label} (σ = {sigma})"),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BT5 — C6 singular shift on the Lanczos path
+// ---------------------------------------------------------------------------
+
+/// **BT5, Lanczos.** A σ sitting exactly ON an eigenvalue is a TYPED failure
+/// carrying σ — not a panic, not `Err(KNotSpd)`, and above all not a
+/// finite-looking spectrum.
+///
+/// α's BT5 covers only the dense path and says so: its fixture A is 5×5 and
+/// routes to the dense fallback, where no `K − σB` is ever formed and σ on an
+/// eigenvalue is simply a selection key. The Lanczos arm needs an n>64 fixture,
+/// so this uses fixture C, whose closed-form spectrum supplies an eigenvalue to
+/// sit exactly on.
+///
+/// # Both directions, because either alone is passed by a broken guard
+///
+/// (a) alone is passed by a guard that fires at every σ≠0; (b) alone by one that
+/// never fires. Together they pin a guard that discriminates.
+///
+/// # Why part (b) of the PRD §5.3 detection is not optional
+///
+/// faer's `LuError::SymbolicSingular` reports STRUCTURAL rank deficiency only —
+/// no pivot exists anywhere in the pattern. It cannot fire on this fixture:
+/// `K − σB` keeps a full diagonal for every finite σ, so the symbolic structure
+/// is full-rank however close σ gets to an eigenvalue. Partial-pivot LU on a
+/// numerically tiny pivot returns `Ok`, and part A alone would let σ-on-an-
+/// eigenvalue through as plausible numbers. Hence the post-factorization guard.
+///
+/// # No threshold constant is pinned here
+///
+/// The assertions are behavioural — typed failure / no typed failure — and the
+/// threshold is DERIVED in the implementation from the pencil's own scale. It
+/// is not restated here, because a test that hardcoded it would have to be
+/// re-baselined every time the derivation was corrected, which is exactly the
+/// pressure that turns a guard into a rubber stamp. Achievability was checked
+/// and clears by ~11 orders in both directions: this pencil's λ-space resolution
+/// floor is n·ε·‖K−σB‖_∞/‖B‖_∞ ≈ 80 · 2.22e-16 · 3.99 ≈ 7.1e-14, the
+/// σ-on-eigenvalue case collapses to |λ−σ| ~ 1e-16, and the healthy case sits at
+/// |λ−σ| ≈ 1.4e-2.
+#[test]
+fn lanczos_reports_a_singular_shift_as_a_typed_failure() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    // (a) σ exactly on λ₃, computed in f64 so it really is the same value the
+    // pencil has.
+    let sigma_on_eigenvalue = fixture_c_lambda(3);
+    let got = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_on_eigenvalue,
+            ..base.clone()
+        },
+    );
+    match got {
+        Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
+            // Carrying σ is what makes this a TYPED failure rather than a bare
+            // error: a caller can name the offending shift without re-deriving
+            // it from its own options.
+            assert_eq!(
+                sigma, sigma_on_eigenvalue,
+                "BT5(a) Lanczos: the failure must carry the σ that was passed \
+                 ({sigma_on_eigenvalue}), not {sigma}",
+            );
+        }
+        Err(ShiftInvertFailure::KNotSpd) => panic!(
+            "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits on λ₃ of an SPD K — this is a \
+             singular SHIFT, and the non-SPD arm is the wrong fault with the wrong remedy \
+             (see ShiftInvertFailure::ShiftAtEigenvalue)",
+        ),
+        Ok(result) => panic!(
+            "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits exactly on λ₃, so K − σB is \
+             singular and there is no shift-invert operator to apply; got a finite-looking \
+             spectrum {:?} instead of a typed failure. A plausible answer to an unanswerable \
+             question is the silent-substitution class C6 exists to close.",
+            result.eigenvalues,
+        ),
+    }
+
+    // (b) the healthy σ from BT3 on the SAME fixture still succeeds, so the
+    // guard cannot be one that fires unconditionally at every σ≠0.
+    let healthy = sigma_between_lambda_9_and_10();
+    let ok = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: healthy,
+            ..base
+        },
+    );
+    match ok {
+        Ok(result) => {
+            assert!(
+                result.n_converged > 0,
+                "BT5(b) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+            );
+        }
+        Err(e) => panic!(
+            "BT5(b) Lanczos: σ = {healthy} is nowhere near an eigenvalue of this pencil \
+             (the nearest is ~1.4e-2 away, eleven orders above the resolution floor), so \
+             it must solve; got {e:?} — the guard fires unconditionally and has made every \
+             shifted solve unreachable",
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PRD §5.3 PART A, pinned separately from part B
+// ---------------------------------------------------------------------------
+
+/// Fixture C with DOF `gap` structurally disconnected in BOTH operands.
+///
+/// `K` keeps `tridiag(−1, 2, −1)` everywhere except row/column `gap`, which
+/// carries no entry at all — not an explicit zero, absent from the pattern —
+/// and `B` is `I` with the same hole. `K − σB` therefore has a structurally
+/// EMPTY row for every σ, so LU's pivot search finds nothing and faer answers
+/// `LuError::SymbolicSingular`.
+///
+/// This is the shape fixture C cannot have. A full diagonal keeps the symbolic
+/// structure full-rank however close σ gets to an eigenvalue, which is exactly
+/// why part B exists — and equally why part A needs a fixture of its own.
+fn laplacian_with_a_structural_gap(
+    n: usize,
+    gap: usize,
+) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let mut k_trips = Vec::with_capacity(3 * n);
+    let mut b_trips = Vec::with_capacity(n);
+    for i in 0..n {
+        if i == gap {
+            continue;
+        }
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 && i - 1 != gap {
+            k_trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n && i + 1 != gap {
+            k_trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+        b_trips.push(Triplet::new(i, i, 1.0));
+    }
+    (
+        SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap(),
+        SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap(),
+    )
+}
+
+/// **PRD §5.3 part A** — a STRUCTURALLY rank-deficient `K − σB` is reported as
+/// `ShiftAtEigenvalue`, not as `KNotSpd` and not as a panic.
+///
+/// `lanczos_reports_a_singular_shift_as_a_typed_failure` drives part B only, and
+/// says so: its fixture keeps a full diagonal, so `LuError::SymbolicSingular`
+/// cannot fire on it. Without this test the part-A arm is unexecuted, and a
+/// mis-mapping there — returning `KNotSpd`, or falling into the `Generic` panic
+/// — would leave every test in the suite green while a rank-deficient shifted
+/// pencil was reported in the non-SPD vocabulary this whole contract exists to
+/// keep separate ([`ShiftInvertFailure::ShiftAtEigenvalue`] carries the
+/// argument).
+///
+/// σ is deliberately NOT on an eigenvalue here: the fault is structural, so it
+/// must be reported at a σ that part B would wave through. That is what makes
+/// this test pin part A specifically rather than re-pinning part B by accident.
+#[test]
+fn structurally_singular_shifted_pencil_is_a_typed_shift_failure() {
+    let (k, b) = laplacian_with_a_structural_gap(FIXTURE_C_N, FIXTURE_C_N / 2);
+    let sigma = sigma_between_lambda_9_and_10();
+    let got = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma,
+        },
+    );
+    match got {
+        Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma: got_sigma }) => assert_eq!(
+            got_sigma, sigma,
+            "part A must carry the σ that was passed ({sigma}), not {got_sigma}",
+        ),
+        Err(e) => panic!(
+            "a structurally rank-deficient K − σB has no shift-invert operator to \
+             apply and must come back as ShiftAtEigenvalue; got {e:?}",
+        ),
+        Ok(result) => panic!(
+            "a structurally rank-deficient K − σB has no shift-invert operator to \
+             apply, so a spectrum is not an answer to give; got {:?}",
+            result.eigenvalues,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operator selection (#7602): Euclidean iff B = cI, else Cholesky-symmetrized
+// ---------------------------------------------------------------------------
+
+fn non_identity_opts(n_modes: usize, sigma: f64) -> EigenSolverOptions {
+    EigenSolverOptions {
+        n_modes,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    }
+}
+
+/// Shift-invert accuracy scales with `|λ − σ|` (λ = σ + 1/μ), and a pure
+/// relative bound is ill-posed where a pencil has λ = 0 exactly, so the
+/// non-identity-B arms compare to `1e-9·max(|a|, |b|, |a − σ|, 1e-12)`.
+fn within_mixed_bound(a: f64, b: f64, sigma: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max((a - sigma).abs()).max(1e-12)
+}
+
+fn assert_multiset_within_mixed_bound(got: &[f64], want: &[f64], sigma: f64, ctx: &str) {
+    assert_eq!(got.len(), want.len(), "{ctx}: mode counts differ — {got:?} vs {want:?}");
+    let sorted = |v: &[f64]| -> Vec<f64> {
+        let mut s = v.to_vec();
+        s.sort_by(f64::total_cmp);
+        s
+    };
+    for (&g, &w) in sorted(got).iter().zip(sorted(want).iter()) {
+        assert!(
+            within_mixed_bound(g, w, sigma),
+            "{ctx}: λ = {g:.15} vs dense {w:.15} at σ = {sigma} is outside the mixed \
+             bound; got {got:?}, dense {want:?}",
+        );
+    }
+}
+
+/// **C1 STANDS for B = cI.** For a scalar multiple of the identity,
+/// `(K − σB)⁻¹B` is Euclidean-symmetric and the sparse entry point must keep
+/// TODAY's operator, bit for bit: the result at σ=0 is identical to driving the
+/// Euclidean core with a Cholesky of the row-major K.
+///
+/// The tripwire that the #7602 dispatch leaves B = cI alone: green before it,
+/// and it must stay green after it.
+#[test]
+fn scalar_identity_b_keeps_the_euclidean_operator() {
+    let (k, b_identity) = fixture_c();
+    let n = k.nrows();
+    let two_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 2.0)).collect();
+    let b_two = SparseRowMat::try_new_from_triplets(n, n, &two_trips).unwrap();
+    assert_eq!(b_identity.to_dense(), identity(n).to_dense());
+
+    for (b, label) in [(&b_identity, "B = I"), (&b_two, "B = 2I")] {
+        let opts = non_identity_opts(4, 0.0);
+        let via_entry_point = try_solve_eigen_shift_invert(&k, b, opts.clone())
+            .unwrap_or_else(|e| panic!("{label}: K is SPD, σ=0 must succeed; got {e:?}"));
+        assert!(
+            via_entry_point.n_converged > 0,
+            "{label}: must exercise Lanczos (n_converged > 0)",
+        );
+
+        let llt = k.sp_cholesky(Side::Lower).expect("K is SPD");
+        let reference = lanczos_shift_invert(
+            &SparseStiffnessOp {
+                factor: SparseFactorRef::Cholesky(&llt),
+                n,
+            },
+            &SparseMetricOp { m: b.as_ref() },
+            opts,
+        );
+
+        assert_eq!(
+            via_entry_point.eigenvalues, reference.eigenvalues,
+            "{label}: C1 violated — B = cI must keep the Euclidean operator bit for bit",
+        );
+        assert_eq!(
+            via_entry_point.eigenvectors.ncols(),
+            reference.eigenvectors.ncols(),
+            "{label}: eigenvector column counts differ",
+        );
+        for col in 0..reference.eigenvectors.ncols() {
+            for row in 0..reference.eigenvectors.nrows() {
+                let (got, want) = (
+                    via_entry_point.eigenvectors[(row, col)],
+                    reference.eigenvectors[(row, col)],
+                );
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{label}: C1 violated — eigenvector[{row}][{col}] is {got:.17e} from the \
+                     entry point but {want:.17e} from the Euclidean core",
+                );
+            }
+        }
+    }
+}
+
+/// **BT2, non-identity B.** Dense and Lanczos agree on an SPD B ≠ cI, below λ₁
+/// (σ = 5e-4, λ₁ ≈ 1.002e-3) and inside the spectrum (σ = 0.5).
+///
+/// At σ = 0.5 with n_modes = 2 the window {0.462, 0.502} leaves absent modes
+/// below it on both paths, so the dense (absence) and Lanczos (Sylvester) C5
+/// predicates agree. The eigenvalues are ≤ 0.51, so the absolute 1e-9 here is a
+/// relative bound of at least 2e-9.
+#[test]
+fn dense_and_lanczos_agree_on_a_non_identity_b() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    for sigma in [5e-4, 0.5] {
+        let opts = non_identity_opts(2, sigma);
+        let dense = solve_eigen_dense(&k, &b, opts.clone());
+        let lanczos = solve_eigen_shift_invert(&k, &b, opts);
+        assert!(
+            lanczos.n_converged > 0,
+            "BT2 graded σ = {sigma}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert_implementations_agree(
+            &dense,
+            &lanczos,
+            1e-9,
+            &format!("BT2 dense vs Lanczos, graded B, σ = {sigma}"),
+        );
+    }
+}
+
+/// **BT4, non-identity B.** A σ below the first mode skips nothing (the shifted
+/// Cholesky succeeds) and leaves the first mode intact, on both an SPD and an
+/// indefinite B.
+///
+/// Indefinite pencil at σ = 3e-4: its smallest positive λ ≈ 6.46e-4 and its
+/// nearest negative λ ≈ −0.0176, so `K − σB` is SPD.
+#[test]
+fn lanczos_provenance_below_the_first_mode_on_non_identity_b() {
+    let graded = graded_diagonal_b_pencil(80);
+    let indefinite = indefinite_b_pencil(136);
+    for ((k, b), n_modes, sigma, label) in [
+        (&graded, 2, 5e-4, "graded"),
+        (&indefinite, 3, 3e-4, "indefinite"),
+    ] {
+        let unshifted = solve_eigen_shift_invert(k, b, non_identity_opts(n_modes, 0.0));
+        let below = solve_eigen_shift_invert(k, b, non_identity_opts(n_modes, sigma));
+        assert!(
+            below.n_converged > 0,
+            "BT4 {label}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert!(
+            !below.shift_skipped_modes,
+            "BT4 {label}: σ = {sigma} lies below the first mode, so nothing was skipped",
+        );
+        assert!(
+            within_mixed_bound(below.eigenvalues[0], unshifted.eigenvalues[0], sigma),
+            "BT4 {label}: modes[0] at σ = {sigma} is {:.15} but at σ = 0 it is {:.15}",
+            below.eigenvalues[0],
+            unshifted.eigenvalues[0],
+        );
+    }
+}
+
+/// The 1-D Neumann Laplacian: diagonal 1 at both ends and 2 inside, off-diagonal
+/// −1. SINGULAR — its null vector is the constant, so λ = 0 is an exact
+/// eigenvalue of any pencil it heads.
+fn neumann_laplacian(n: usize) -> SparseRowMat<usize, f64> {
+    let mut trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        let diagonal = if i == 0 || i + 1 == n { 1.0 } else { 2.0 };
+        trips.push(Triplet::new(i, i, diagonal));
+        if i > 0 {
+            trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n {
+            trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
+}
+
+/// A shift below every mode makes `K − σB` SPD, and that arm needs NO factor of
+/// K: a singular K (free-free modal with a negative shift) still solves, λ = 0
+/// included.
+#[test]
+fn a_definite_shift_needs_no_factor_of_a_singular_k() {
+    let k = neumann_laplacian(80);
+    let (_, b) = graded_diagonal_b_pencil(80);
+    let sigma = -0.1;
+    let opts = non_identity_opts(2, sigma);
+    let lanczos = match try_solve_eigen_shift_invert(&k, &b, opts.clone()) {
+        Ok(result) => result,
+        Err(e) => panic!("K − σB is SPD at σ = {sigma}, so the solve must succeed; got {e:?}"),
+    };
+    assert!(
+        lanczos.n_converged > 0,
+        "singular K, σ = {sigma}: must exercise Lanczos (n_converged > 0)",
+    );
+    let dense = solve_eigen_dense(&k, &b, opts);
+    assert_multiset_within_mixed_bound(
+        &lanczos.eigenvalues,
+        &dense.eigenvalues,
+        sigma,
+        "singular K, σ = -0.1",
+    );
+}
+
+/// A shift above a mode makes `K − σB` indefinite, and for B ≠ cI that arm runs
+/// in the K inner product, which needs K SPD: a singular K is reported as
+/// `KNotSpd` at σ ≠ 0.
+#[test]
+fn an_indefinite_shift_on_a_singular_k_is_k_not_spd() {
+    let k = neumann_laplacian(80);
+    let (_, b) = graded_diagonal_b_pencil(80);
+    match try_solve_eigen_shift_invert(&k, &b, non_identity_opts(2, 0.05)) {
+        Err(ShiftInvertFailure::KNotSpd) => {}
+        Err(e) => panic!("expected KNotSpd, got {e:?}"),
+        Ok(result) => panic!(
+            "K − σB is indefinite and K is singular, so there is no SPD metric to run \
+             in; expected KNotSpd, got the spectrum {:?}",
+            result.eigenvalues,
+        ),
     }
 }

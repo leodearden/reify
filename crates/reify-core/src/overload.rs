@@ -1,4 +1,5 @@
-//! The three-tier overload-resolution ladder — one definition, two consumers.
+//! The three-tier overload-resolution ladder — one definition, shared by the
+//! compile-time and eval-time resolvers (plus one tier-3-only consumer).
 //!
 //! This module is the NORMATIVE home of the per-slot predicates that decide
 //! whether a candidate function's declared parameter type accepts a given
@@ -56,13 +57,14 @@
 //! THIS arg?". Everything above the slot stays with the caller:
 //!
 //! - the arity check (`f.params.len() == arg_types.len()`);
-//! - computing `is_generic = !f.type_params.is_empty()` for the candidate;
+//! - computing the candidate's `is_generic` (for a `CompiledFunction`,
+//!   `!f.type_params.is_empty()`);
 //! - the per-candidate `.all()` over slots;
 //! - the final classification over the surviving set — `reify-compiler`
 //!   reports `Resolved` / `Ambiguous` / `NoMatch` by set size, while
 //!   `reify-expr` takes first-match-wins.
 //!
-//! Those differ legitimately between the two consumers. The DISJUNCT LISTS —
+//! Those differ legitimately between the two resolvers. The DISJUNCT LISTS —
 //! the thing that actually drifted — do not, and live here.
 //!
 //! # Why the API is per-SLOT and not per-candidate
@@ -97,8 +99,17 @@
 //! # Consumers
 //!
 //! `reify_compiler::type_compat::resolve_function_overload` (compile time) and
-//! `reify_expr::find_matching_compiled_function` (eval time). Any new consumer
-//! must honour the tier-2-is-a-filter contract above.
+//! `reify_expr::find_matching_compiled_function` (eval time) — the drift pair
+//! this module exists for.
+//!
+//! Plus one tier-3-only consumer: reify-compiler's compile-time
+//! trait-assoc-fn dispatch (`obj.(Trait::fn)(args)`, the `TraitMethodCall` arm
+//! in `crates/reify-compiler/src/expr.rs`). It applies tier 3 plus an exact
+//! tie-break with no tier 2, so the tier-2 filter contract is trivially
+//! honoured. It passes `is_generic = true` because its candidates' genericity
+//! is not recorded; the rationale lives at that call site.
+//!
+//! Any new consumer must honour the tier-2-is-a-filter contract above.
 
 use crate::ty::Type;
 
@@ -483,8 +494,8 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 
 /// Tier 3 of the ladder — the broadest per-slot gate (WILDCARD).
 ///
-/// `is_generic` is the CANDIDATE's genericity (`!f.type_params.is_empty()`),
-/// computed caller-side.
+/// `is_generic` is the CANDIDATE's genericity, computed caller-side — for a
+/// `CompiledFunction` candidate, `!f.type_params.is_empty()`.
 ///
 /// For a GENERIC candidate, a type-param-carrying param is a resolution
 /// wildcard (matches any arg) — mirroring the trait-object wildcard. Gated on

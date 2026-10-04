@@ -138,6 +138,15 @@ use reify_ir::geometry::{
     debug_assert_query_many_invariant as debug_assert_query_many_invariant_mod,
 };
 
+// ── indeterminate (flat form) ────────────────────────────────────────────────
+use reify_ir::{IndeterminateReason, StructuralReason, TransientReason};
+
+// ── indeterminate (module-path form) ─────────────────────────────────────────
+use reify_ir::indeterminate::{
+    IndeterminateReason as IndeterminateReasonMod, StructuralReason as StructuralReasonMod,
+    TransientReason as TransientReasonMod,
+};
+
 // ── kernel_validation (flat form) ────────────────────────────────────────────
 use reify_ir::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
@@ -575,6 +584,16 @@ fn geometry_types_in_scope() {
 }
 
 #[test]
+fn indeterminate_types_in_scope() {
+    let _: fn() -> Option<IndeterminateReason> = || None;
+    let _: fn() -> Option<TransientReason> = || None;
+    let _: fn() -> Option<StructuralReason> = || None;
+    let _: fn() -> Option<IndeterminateReasonMod> = || None;
+    let _: fn() -> Option<TransientReasonMod> = || None;
+    let _: fn() -> Option<StructuralReasonMod> = || None;
+}
+
+#[test]
 fn kernel_validation_constants() {
     assert!(!BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.is_empty());
     assert!(!SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.is_empty());
@@ -919,11 +938,16 @@ use reify_ir::value::dimension_unit_label as dimension_unit_label_mod;
 /// §11 Q2 offered two resolutions — widen to `pub` (its suggested one) or keep
 /// it private and assert S3 structurally — and delegated the choice to λ/μ. λ
 /// took the suggested one, so task μ can observe S3 directly instead of through
-/// a structural proxy. But μ has not landed, so NO real call site has exercised
-/// this signature yet; `value.rs`'s own doc comment says the
-/// `&DimensionVector -> Cow<'static, str>` shape may still change or narrow
-/// back to `pub(crate)`. That is exactly why this sits below the banner rather
-/// than in the contract: it is a visibility RECORD, not a stability promise.
+/// a structural proxy.
+///
+/// Task #6674 landed the first real call site — `Value`'s `Display` impl, which
+/// sources the `reify eval` cell's unit label from this function — so the
+/// SIGNATURE is no longer unexercised. That consumer is IN-CRATE, so it says
+/// nothing about the part this file actually records: the CROSS-CRATE `pub`
+/// widening λ made for μ still has no non-test caller outside the crate. This
+/// therefore stays below the banner rather than moving into the contract — it
+/// remains a visibility RECORD, not a stability promise, and narrowing back to
+/// `pub(crate)` would still be a normal edit.
 ///
 /// WHY the record has to live in an integration test at all. This is a
 /// *visibility* assertion, and visibility is only observable from OUTSIDE the

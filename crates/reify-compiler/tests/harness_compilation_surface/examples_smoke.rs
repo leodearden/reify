@@ -8,11 +8,13 @@
 
 use std::path::{Path, PathBuf};
 
+use reify_test_support::ctor_conformance_debt::{
+    CTOR_CONFORMANCE_MIGRATION_DEBT, debt_entry_matches, is_migration_debt_diagnostic,
+    param_name_from_ctor_diagnostic,
+};
+use reify_test_support::examples_corpus::{discover_ri_files, examples_dir, filter_skipped};
 use reify_test_support::missing_paths_under;
-
-/// Absolute path to the workspace `examples/` directory, resolved at compile
-/// time from this crate's manifest directory (two levels up).
-const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
+use reify_test_support::is_ctor_conformance_code;
 
 /// Discovery-regression TRIPWIRE, NOT a corpus-size target: catches a walk
 /// bug, a bad path resolution, or a refactor that stops [`discover_ri_files`]
@@ -140,55 +142,6 @@ const SKIP_SET: &[(&str, &str)] = &[
     ),
 ];
 
-/// Per-SITE waivers for ctor-conformance diagnostics that a shipped example
-/// still emits because its call site has not been migrated yet, and cannot be
-/// migrated by the task that promoted the family.
-///
-/// Each entry is `(relative_path, param_name, owning_task)`:
-/// * `relative_path` is the same forward-slash `relative_to_examples_dir` key
-///   form `SKIP_SET` uses (`"trajectory/printer_print_envelope.ri"`, never the
-///   repo-relative `"examples/trajectory/..."` spelling);
-/// * `param_name` is the offending ctor param, parsed back out of the
-///   diagnostic by [`param_name_from_ctor_diagnostic`];
-/// * `owning_task` is the live task that owns retiring the entry, in the
-///   canonical `#NNNN` cite form required by the repo's citation convention.
-///
-/// # This is NOT `SKIP_SET`, and must never be merged into it
-///
-/// `SKIP_SET` is for files that cannot reach a clean compile AT ALL — the file
-/// is dropped from the walk entirely, so it gets no coverage of any kind.
-/// `printer_print_envelope.ri` compiles cleanly; it merely carries two
-/// un-migrated call sites. It stays fully walked, and every OTHER diagnostic it
-/// emits still fails the gate.
-///
-/// # The waiver is per-SITE, never per-file
-///
-/// Matching is on the `(file, param)` PAIR. A future diagnostic in the same file
-/// at a different param is unwaived and fails the gate, as does a diagnostic at
-/// one of these params that carries a different, non-`argument '<name>'`
-/// wording.
-///
-/// # Retirement
-///
-/// Task #5847 owns deleting BOTH entries in the same diff that dimensions
-/// `trajectory/printer_print_envelope.ri:154` / `:155` (esc-5627-5 option A).
-/// The sites cannot be dimensioned in isolation without collapsing the TOTS
-/// solve, which is the whole reason the debt exists rather than the migration
-/// simply having been done. Leaving the entries behind after that lands is
-/// caught by [`ctor_conformance_migration_debt_entries_are_all_live`].
-pub(super) const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
-    (
-        "trajectory/printer_print_envelope.ri",
-        "velocity_limit",
-        "#5847",
-    ),
-    (
-        "trajectory/printer_print_envelope.ri",
-        "acceleration_limit",
-        "#5847",
-    ),
-];
-
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity
 /// diagnostic, and panic once at the end with a report covering ALL failures.
@@ -199,7 +152,7 @@ pub(super) const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
 fn all_examples_parse_and_compile_with_stdlib() {
     let mut failures: Vec<(String, String)> = Vec::new();
 
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
     let total = paths.len();
     assert!(
         total >= MIN_DISCOVERED_RI_FILES,
@@ -275,7 +228,7 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
     // gate in
     // auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded,
     // which is fail-fast for the same reason.
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
     let exercised = exercised_paths(&paths).len();
     assert!(
         exercised >= MIN_EXERCISED_RI_FILES,
@@ -366,10 +319,7 @@ one diagnostic.";
 /// other bulk guards.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    let missing = missing_paths_under(
-        Path::new(EXAMPLES_DIR),
-        SKIP_SET.iter().map(|(rel, _)| *rel),
-    );
+    let missing = missing_paths_under(examples_dir(), SKIP_SET.iter().map(|(rel, _)| *rel));
     if missing.is_empty() {
         return;
     }
@@ -386,138 +336,30 @@ fn skip_set_entries_exist_under_examples_dir() {
         "SKIP_SET entry/entries name a relative path that does not exist under {}:\n{}\n\
          A stale key silently disables coverage for a file that is no longer skipped — \
          delete the entry or fix the path.",
-        EXAMPLES_DIR,
+        examples_dir().display(),
         lines.join("\n")
     );
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-/// Strip the `EXAMPLES_DIR` prefix from `path` and return a portable,
-/// forward-slash-separated relative path string.
+/// The subset of `paths` not skipped by [`SKIP_SET`], each paired with its
+/// precomputed
+/// [`reify_test_support::examples_corpus::relative_to_examples_dir`] key.
 ///
-/// For example:
-/// - `<EXAMPLES_DIR>/bracket.ri`                   → `"bracket.ri"`
-/// - `<EXAMPLES_DIR>/fields/composed_stiffness.ri` → `"fields/composed_stiffness.ri"`
+/// A one-line projection over the shared
+/// [`reify_test_support::examples_corpus::filter_skipped`], which carries the
+/// contract: it is the single source of the SKIP_SET-filtered "exercised"
+/// quantity, so every consumer here calls this rather than re-deriving the
+/// filter and they can never disagree about what "exercised" means.
 ///
-/// This is the canonical form used as SKIP_SET keys and in failure reports,
-/// so that same-basename files in different subdirectories are unambiguous.
-///
-/// # Panics
-///
-/// Panics if `path` does not begin with the lexical `EXAMPLES_DIR` prefix.
-/// **Callers must pass paths produced by [`discover_ri_files`]** — i.e. paths
-/// that are constructed by walking `EXAMPLES_DIR` without canonicalization.
-/// Canonicalized paths (which resolve `..` components) will not match the
-/// lexical prefix string and will panic.
-fn relative_to_examples_dir(path: &Path) -> String {
-    let rel = path.strip_prefix(EXAMPLES_DIR).unwrap_or_else(|e| {
-        panic!(
-            "examples_smoke: '{}' is not under EXAMPLES_DIR ({}): {}",
-            path.display(),
-            EXAMPLES_DIR,
-            e
-        )
-    });
-    rel.to_string_lossy()
-        .replace(std::path::MAIN_SEPARATOR, "/")
-}
-
-/// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted by
-/// their full path for deterministic output.
-fn discover_ri_files() -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    collect_ri_files(std::path::Path::new(EXAMPLES_DIR), &mut paths);
-    paths.sort();
-    paths
-}
-
-/// Recursively collect `*.ri` files under `dir` into `out`.
-fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
-        panic!(
-            "examples_smoke: cannot read directory '{}': {}",
-            dir.display(),
-            e
-        )
-    });
-    for entry in entries {
-        let entry = entry.expect("IO error reading examples dir entry");
-        let path = entry.path();
-        if path.is_dir() {
-            collect_ri_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-            out.push(path);
-        }
-    }
-}
-
-/// The subset of `paths` not present in [`SKIP_SET`] (keyed by
-/// [`relative_to_examples_dir`]), each paired with its precomputed relative
-/// key. The single source of the SKIP_SET-filtered "exercised" quantity —
-/// every consumer (both corpus-walking `#[test]`s and
-/// [`discovery_floor_tracks_the_live_corpus`]) calls this instead of
-/// re-deriving the filter, so they can never disagree about what "exercised"
-/// means.
+/// The projection discards SKIP_SET's second tuple element (the human-readable
+/// reason), which the filter has no use for — only the key matters. Keeping the
+/// projection at the call boundary is what lets this crate's 2-tuple SKIP_SET
+/// and reify-eval's 3-tuple one share one implementation while each stays
+/// private to its own crate.
 fn exercised_paths(paths: &[PathBuf]) -> Vec<(&PathBuf, String)> {
-    use std::collections::HashSet;
-
-    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
-    paths
-        .iter()
-        .filter_map(|p| {
-            let rel = relative_to_examples_dir(p);
-            if skip.contains(rel.as_str()) {
-                None
-            } else {
-                Some((p, rel))
-            }
-        })
-        .collect()
-}
-
-/// Verify that `relative_to_examples_dir` strips the `EXAMPLES_DIR` prefix and
-/// returns a portable forward-slash-separated relative path for both top-level
-/// and nested `.ri` files.
-#[test]
-fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_files() {
-    let top_level = Path::new(EXAMPLES_DIR).join("bracket.ri");
-    let nested = Path::new(EXAMPLES_DIR).join("fields/composed_stiffness.ri");
-
-    assert_eq!(relative_to_examples_dir(&top_level), "bracket.ri");
-    assert_eq!(
-        relative_to_examples_dir(&nested),
-        "fields/composed_stiffness.ri"
-    );
-}
-
-/// Verify two invariants for every path returned by `discover_ri_files()`:
-///
-/// (a) `relative_to_examples_dir` accepts the path without panicking (i.e. the
-///     path is lexically rooted under `EXAMPLES_DIR`, as `discover_ri_files`
-///     guarantees).  If `discover_ri_files` ever starts canonicalizing paths
-///     (resolving `..`), the `strip_prefix` inside `relative_to_examples_dir`
-///     would break and this test would surface the regression before it silently
-///     corrupts SKIP_SET lookups or failure reports.
-///
-/// (b) The relative form round-trips back to the original absolute path when
-///     joined onto `EXAMPLES_DIR`: `Path::new(EXAMPLES_DIR).join(rel) == path`.
-///     This locks the SKIP_SET-key join-compatibility contract across the full
-///     corpus — both top-level (`bracket.ri`-style) and nested
-///     (`fields/composed_stiffness.ri`-style) entries.
-#[test]
-fn relative_to_examples_dir_accepts_all_discovered_paths() {
-    for path in discover_ri_files() {
-        // Will panic if path is not lexically rooted under EXAMPLES_DIR.
-        let rel = relative_to_examples_dir(&path);
-        assert_eq!(
-            Path::new(EXAMPLES_DIR).join(&rel),
-            path,
-            "round-trip failed: EXAMPLES_DIR.join({:?}) != original {:?}",
-            rel,
-            path
-        );
-    }
+    filter_skipped(paths, SKIP_SET.iter().map(|(name, _)| *name))
 }
 
 /// Freshness ratchet for [`MIN_EXERCISED_RI_FILES`]: this floor is a
@@ -548,7 +390,7 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// that the key string equals the one `exercised_paths` filters on.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
-    let paths = discover_ri_files();
+    let paths = discover_ri_files(examples_dir());
     let total = paths.len();
     let exercised = exercised_paths(&paths).len();
 
@@ -598,7 +440,7 @@ fn discovery_floor_tracks_the_live_corpus() {
 #[test]
 fn ctor_conformance_walk_exercises_exactly_the_exercised_paths_set() {
     let walk_exercised = ctor_conformance_corpus_walk().exercised;
-    let helper_exercised = exercised_paths(&discover_ri_files()).len();
+    let helper_exercised = exercised_paths(&discover_ri_files(examples_dir())).len();
 
     assert_eq!(
         walk_exercised, helper_exercised,
@@ -646,39 +488,28 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
         return;
     }
 
-    // Compile phase — filter to Error severity only.
+    // Compile phase — filter to Error severity only, less the per-SITE waivers.
+    //
+    // δ (#5306) flipped CTOR_FIELD_CONFORMANCE_SEVERITY to Error, which put the two
+    // un-migrated `trajectory/printer_print_envelope.ri` ctor sites in front of this
+    // gate. They stay WAIVED rather than fixed: esc-5305-3 (Leo) ruled explicitly
+    // against both migrating them here and taking a dependency edge on #5847, which
+    // owns dimensioning them — they cannot be dimensioned in isolation without
+    // collapsing the TOTS solve. `is_migration_debt_diagnostic` is the one place that
+    // rule is stated; it is keyed on `(file, param)` AND `ArgTypeMismatch` AND Error,
+    // so every OTHER diagnostic this file can emit still fails the gate.
     let compiled = compile_with_stdlib(&parsed);
     let errors: Vec<String> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| !is_migration_debt_diagnostic(rel_key, d))
         .map(|d| d.message.clone())
         .collect();
 
     if !errors.is_empty() {
         failures.push((rel_key.to_owned(), errors.join("\n")));
     }
-}
-
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// The admission set itself lives in the sibling `ctor_conformance_corpus_survey`
-/// module — a `#[path]` module of the SAME test binary — as
-/// `CTOR_CONFORMANCE_CODES`, and this gate reads it rather than restating it, so
-/// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
-/// be a hand-written copy kept in sync by convention.
-///
-/// A third copy remains in
-/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
-/// — a separate test binary, which this `#[path]` module cannot reach. That is
-/// NOT a floor: the `reify-test-support` hop that would collapse all three
-/// already exists and is already used by both files. It was left for follow-up
-/// only because it needs edits outside #5304's lock set. See
-/// `CTOR_CONFORMANCE_CODES`'s own doc comment for the full rationale and the
-/// intended destination.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    crate::ctor_conformance_corpus_survey::is_ctor_conformance_code(code)
 }
 
 /// One ctor-conformance diagnostic observed during the corpus walk.
@@ -722,7 +553,7 @@ fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
     static WALK: OnceLock<CtorConformanceWalk> = OnceLock::new();
     WALK.get_or_init(|| {
         let mut violations: Vec<CtorConformanceViolation> = Vec::new();
-        let paths = discover_ri_files();
+        let paths = discover_ri_files(examples_dir());
         let exercised_list = exercised_paths(&paths);
         let exercised = exercised_list.len();
 
@@ -737,49 +568,6 @@ fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
     })
 }
 
-/// The `emit_arg_type_mismatch` message prefix that introduces the offending
-/// param name (`crates/reify-compiler/src/conformance/mod.rs`).
-const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
-/// Recover the offending param name from a ctor-conformance diagnostic message.
-///
-/// A `Diagnostic` carries no structured param field, so the only handle the
-/// per-site waiver has is the wording: the text between the first pair of single
-/// quotes following the `argument '` prefix. Returns `None` for any message that
-/// does not have that shape (the non-`ArgTypeMismatch` ctor-conformance codes),
-/// which makes such a diagnostic unwaivable rather than silently waived.
-///
-/// This is a real coupling to diagnostic prose, and it is deliberately guarded
-/// rather than merely commented: if the wording ever drifts so extraction stops
-/// matching, [`ctor_conformance_migration_debt_entries_are_all_live`] goes red
-/// naming the entry that stopped matching.
-fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
-    let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
-    let rest = &message[start..];
-    let end = rest.find('\'')?;
-    Some(rest[..end].to_owned())
-}
-
-/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives the site
-/// `(file, param)`.
-///
-/// Both halves of the key must match: the file AND the param. An entry whose
-/// param does not match — including because extraction returned `None` — waives
-/// nothing.
-///
-/// Takes the two key halves rather than a [`CtorConformanceViolation`] so the
-/// sibling `ctor_conformance_corpus_survey` module can apply the SAME rule to a
-/// `SurveySite`, which carries the same pair under different field names. The
-/// rule stays defined exactly once.
-pub(super) fn debt_entry_matches(
-    entry: &(&str, &str, &str),
-    file: &str,
-    param: Option<&str>,
-) -> bool {
-    entry.0 == file && param == Some(entry.1)
-}
-
-/// Whether any debt entry waives `v`.
 fn violation_is_waived(v: &CtorConformanceViolation) -> bool {
     CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
@@ -839,7 +627,7 @@ fn ctor_conformance_migration_debt_entries_are_all_live() {
 #[test]
 fn ctor_conformance_migration_debt_entries_exist_under_examples_dir() {
     for (rel_path, param, owner) in CTOR_CONFORMANCE_MIGRATION_DEBT {
-        let path = Path::new(EXAMPLES_DIR).join(rel_path);
+        let path = examples_dir().join(rel_path);
         assert!(
             path.exists(),
             "CTOR_CONFORMANCE_MIGRATION_DEBT entry '{}' (param '{}', owner {}) does not exist \
@@ -847,7 +635,7 @@ fn ctor_conformance_migration_debt_entries_exist_under_examples_dir() {
             rel_path,
             param,
             owner,
-            EXAMPLES_DIR,
+            examples_dir().display(),
         );
     }
 }
@@ -943,7 +731,7 @@ fn ctor_conformance_one(
 // The guard lives HERE rather than in its own `tests/*.rs` binary on purpose.
 // It is the same class of catalogue-drift sanity check as
 // `skip_set_entries_exist_under_examples_dir` above, over the same directory
-// tree, and it reuses `EXAMPLES_DIR`. A new standalone integration binary in
+// tree, and it reuses the same shared corpus root. A new standalone integration binary in
 // `reify-compiler` would also be a re-accretion violation of the C1 harness
 // layout contract (PRD docs/prds/merge-gate-compile-cost.md §5; gated by
 // scripts/check-harness-baseline-registration.sh) — folding it into this
@@ -995,7 +783,7 @@ Re-verify with: cargo test -p reify-compiler --test harness_compilation_surface 
 /// through Nth drifted entry behind the first.
 #[test]
 fn best_practices_index_matches_corpus_directory() {
-    let dir = Path::new(EXAMPLES_DIR).join(CORPUS_SUBDIR);
+    let dir = examples_dir().join(CORPUS_SUBDIR);
     let index_path = dir.join(CORPUS_INDEX_NAME);
     let mut violations: Vec<String> = Vec::new();
 
