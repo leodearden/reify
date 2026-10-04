@@ -10,6 +10,7 @@ is the thin wrapper tests/infra/test_reify_audit_pprdstatus_wiring.sh, which
 invokes this file.
 
 HOW THE SCRIPT IS DRIVEN: every test runs the REAL script as a subprocess, with
+the shared stubs of tests/infra/stub_escalation_mcp.py:
   - a stub reify-audit: an executable written into a tempdir that records its
     argv and replays a canned stderr and exit code, shaped like the real
     binary's JSON-on-stderr contract; or, under --findings-file, that same
@@ -26,136 +27,27 @@ script's text.
 """
 
 import json
-import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from stub_escalation_mcp import (  # noqa: E402  (imported after sys.path manipulation)
+    EMPTY_CORPUS_REFUSAL,
+    RUNS_DB_FAILURE,
+    STUB_ESCALATION,
+    STUB_SESSION,
+    StubEscalationServer,
+    StubReifyAudit,
+    detector_stderr,
+    finding,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "pprdstatus-escalate.py"
-
-STUB_SESSION = "stub-session"
-STUB_ESCALATION = {"id": "esc-audit-1", "status": "queued", "level": 0}
-
-STUB_REIFY_AUDIT = """#!{python}
-import json, pathlib, sys
-here = pathlib.Path(__file__).resolve().parent
-(here / "argv.json").write_text(json.dumps(sys.argv[1:]))
-config = json.loads((here / "stub-config.json").read_text())
-sys.stderr.write(config["stderr"])
-sys.exit(config["exit"])
-"""
-
-# Two ways the binary exits 125 with no findings array: an infrastructure
-# failure, and its refusal of a PPRDSTATUS-only run over an empty task corpus.
-RUNS_DB_FAILURE = "reify-audit: error opening runs-db 'x': unable to open\n"
-EMPTY_CORPUS_REFUSAL = (
-    "reify-audit: the task corpus is empty and every selected detector needs it; "
-    "refusing rather than reporting an unchecked run as clean "
-    "(check --project-root and --fused-memory-url, or --tasks-file)\n"
-)
-
-
-def finding(path, kind="stale-status-header", pattern="PPrdStatus"):
-    """One finding, shaped like the binary's serde output."""
-    return {
-        "pattern": pattern,
-        "severity": "High",
-        "task_id": path,
-        "summary": f"{kind}: {path} — a canned summary",
-        "evidence": [{"File": {"path": path}}],
-    }
-
-
-def detector_stderr(findings, preamble=""):
-    """The binary's stderr: optional diagnostic lines, then the pretty array."""
-    return preamble + json.dumps(findings, indent=2, ensure_ascii=False) + "\n"
-
-
-class StubEscalationServer:
-    """A recording stand-in for the escalation server's streamable-HTTP MCP."""
-
-    def __init__(self, sse=False, tool_error=False):
-        self.sse = sse
-        self.tool_error = tool_error
-        self.requests = []
-        self._lock = threading.Lock()
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-
-    @property
-    def url(self):
-        return f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-
-    def record(self, body, session):
-        with self._lock:
-            self.requests.append({"body": body, "session": session})
-
-    def tool_calls(self):
-        return [r for r in self.requests if r["body"].get("method") == "tools/call"]
-
-    def methods(self):
-        return [r["body"].get("method") for r in self.requests]
-
-    def tool_result(self):
-        if self.tool_error:
-            return {"content": [{"type": "text", "text": "stub tool failure"}], "isError": True}
-        return {
-            "content": [{"type": "text", "text": json.dumps(STUB_ESCALATION)}],
-            "isError": False,
-        }
-
-    def _handler_class(self):
-        stub = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length) or b"{}")
-                stub.record(body, self.headers.get("mcp-session-id"))
-                method = body.get("method")
-                if method == "notifications/initialized":
-                    self.send_response(202)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                if method == "initialize":
-                    result = {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "serverInfo": {"name": "stub-escalation", "version": "0"},
-                    }
-                else:
-                    result = stub.tool_result()
-                self.reply({"jsonrpc": "2.0", "id": body.get("id"), "result": result})
-
-            def reply(self, message):
-                if stub.sse:
-                    payload = f"event: message\ndata: {json.dumps(message)}\n\n".encode()
-                    content_type = "text/event-stream"
-                else:
-                    payload = json.dumps(message).encode()
-                    content_type = "application/json"
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("mcp-session-id", STUB_SESSION)
-                self.end_headers()
-                self.wfile.write(payload)
-
-        return Handler
 
 
 class PprdstatusEscalateTest(unittest.TestCase):
@@ -165,15 +57,10 @@ class PprdstatusEscalateTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.project_root = self.tmp / "project"
         self.project_root.mkdir()
-        self.stub_dir = self.tmp / "stub"
-        self.stub_dir.mkdir()
-        self.stub = self.stub_dir / "reify-audit"
-        self.stub.write_text(STUB_REIFY_AUDIT.format(python=sys.executable))
-        self.stub.chmod(self.stub.stat().st_mode | stat.S_IXUSR)
+        self.detector = StubReifyAudit(self.tmp / "stub" / "reify-audit")
 
     def detector_returns(self, stderr, exit_code):
-        config = {"stderr": stderr, "exit": exit_code}
-        (self.stub_dir / "stub-config.json").write_text(json.dumps(config))
+        self.detector.returns(stderr, exit_code)
 
     def escalation_server(self, **kwargs):
         server = StubEscalationServer(**kwargs)
@@ -182,7 +69,7 @@ class PprdstatusEscalateTest(unittest.TestCase):
 
     def run_script(self, url, *extra):
         return self.run_script_with(
-            url, "--reify-audit", str(self.stub), "--project-root", str(self.project_root), *extra
+            url, "--reify-audit", str(self.detector.path), "--project-root", str(self.project_root), *extra
         )
 
     def run_script_on_findings_file(self, url, stderr):
@@ -199,7 +86,7 @@ class PprdstatusEscalateTest(unittest.TestCase):
         )
 
     def detector_was_run(self):
-        return (self.stub_dir / "argv.json").exists()
+        return bool(self.detector.invocations())
 
     def assert_one_batched_escalation(self, server, result, paths):
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -292,7 +179,7 @@ class PprdstatusEscalateTest(unittest.TestCase):
         self.assert_one_batched_escalation(server, result, ["docs/prds/a.md", "docs/prds/b.md"])
 
     def test_tool_error_is_a_failed_filing(self):
-        server = self.escalation_server(tool_error=True)
+        server = self.escalation_server(error_tools={"escalate_info"})
         self.detector_returns(detector_stderr([finding("docs/prds/a.md")]), 1)
 
         result = self.run_script(server.url)
@@ -365,7 +252,7 @@ class PprdstatusEscalateTest(unittest.TestCase):
 
         self.run_script(server.url)
 
-        argv = json.loads((self.stub_dir / "argv.json").read_text())
+        [argv] = self.detector.invocations()
         pairs = list(zip(argv, argv[1:]))
         self.assertIn(("--pattern", "PPRDSTATUS"), pairs, argv)
         self.assertIn("--no-jcodemunch", argv)
