@@ -135,6 +135,8 @@ mod cli_keyed_eval;
 mod cli_keyed_forall;
 #[path = "harness_cli/cli_materials_starter_library_golden.rs"]
 mod cli_materials_starter_library_golden;
+#[path = "harness_cli/cli_module_decl_remedy.rs"]
+mod cli_module_decl_remedy;
 #[path = "harness_cli/cli_module_visibility_example.rs"]
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
