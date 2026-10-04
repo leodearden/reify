@@ -1851,6 +1851,33 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_engine_with_mock_kernel_surfaces_the_mock_kernels_canned_mesh() {
+        let compiled = super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        );
+        let result = super::make_engine_with_mock_kernel().tessellate_realizations(&compiled);
+        let errors = super::collect_errors(&result.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "tessellating a dimensioned box must produce zero Error diagnostics; got: {errors:?}"
+        );
+        assert!(
+            !result.meshes.is_empty(),
+            "an engine with a geometry kernel must surface the `body` mesh; got none (a kernel-less engine returns empty meshes)"
+        );
+        let canned = super::mesh_aabb(&crate::mocks::minimal_valid_mesh(true));
+        for surface in &result.meshes {
+            assert_eq!(
+                super::mesh_aabb(&surface.mesh),
+                canned,
+                "surface {} must carry MockGeometryKernel's canned tetrahedron",
+                surface.entity_path
+            );
+        }
+    }
+
     /// Negative test: a constraint that is definitively false should produce
     /// `Satisfaction::Violated` under `SimpleConstraintChecker`, differentiating
     /// it from `MockConstraintChecker` (which only tracks, never really evaluates).
