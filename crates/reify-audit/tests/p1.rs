@@ -967,20 +967,19 @@ mod tests {
         );
     }
 
-    /// Step 7 (RED→GREEN via step 8) — `find_references` must disambiguate
-    /// by declaration site (file + name), not just by bare name.
+    /// P1 queries references per symbol and charges each answer to that
+    /// symbol's own declaration, so when a seam CAN disambiguate same-named
+    /// symbols, P1 does not re-conflate them. Declaration-site
+    /// disambiguation is an optional seam capability that the mock has and
+    /// the jcodemunch-backed impl lacks (see `JCodemunchOps::find_references`).
     ///
     /// One done task introduces two symbols both named "Builder" in different
     /// files: `crates/x/src/widget.rs` and `crates/y/src/widget.rs`. A single
     /// non-test caller is registered ONLY for the `(crates/y/..., "Builder")`
     /// pair. Expected: exactly one finding — for `crates/x/...` (no caller) —
     /// and the finding's evidence cites `crates/x/src/widget.rs`.
-    ///
-    /// RED: current bare-name keying in the mock (`HashMap<String, ...>`)
-    /// means `set_find_references("Builder", refs)` covers BOTH symbols,
-    /// suppressing both — the detector fires zero findings instead of one.
     #[test]
-    fn find_references_disambiguates_by_declaration_site() {
+    fn p1_attributes_each_reference_answer_to_its_own_declaration_site() {
         let done_at = NOW - 15 * DAY;
         let sha = task_sha("5000");
 
