@@ -786,43 +786,53 @@ mod tests {
         }))
     }
 
-    /// Drive `eval_gcode_import` and dig out every waypoint record of the
-    /// single lowered profile: `List -> profile Map -> "waypoints" List ->
-    /// waypoint Maps`. Panics with a pointed message at every level.
-    fn waypoint_maps(src: &str) -> Vec<BTreeMap<Value, Value>> {
+    /// Drive `eval_gcode_import` and dig out the fields of every waypoint of
+    /// the single lowered segment: `List -> GcodeMotionSegment instance ->
+    /// "waypoints" List -> GcodeWaypoint instances`. Panics with a pointed
+    /// message at every level.
+    fn waypoint_records(src: &str) -> Vec<PersistentMap<String, Value>> {
         let result = eval_gcode_import(&[Value::String(src.to_string()), marlin_dialect_value()]);
-        let Value::List(profiles) = result else {
-            panic!("expected a Value::List of profiles, got {result:?}")
+        let Value::List(segments) = result else {
+            panic!("expected a Value::List of segments, got {result:?}")
         };
-        assert_eq!(profiles.len(), 1, "expected exactly one profile: {profiles:?}");
-        let Value::Map(profile) = &profiles[0] else {
-            panic!("expected a Value::Map profile record, got {:?}", profiles[0])
+        assert_eq!(
+            segments.len(),
+            1,
+            "expected exactly one segment: {segments:?}"
+        );
+        let Value::StructureInstance(segment) = &segments[0] else {
+            panic!(
+                "expected a GcodeMotionSegment instance, got {:?}",
+                segments[0]
+            )
         };
-        let Some(Value::List(waypoints)) = profile.get(&Value::String("waypoints".to_string()))
-        else {
-            panic!("profile record should carry a \"waypoints\" list, got {profile:?}")
+        assert_eq!(segment.type_name, "GcodeMotionSegment");
+        let Some(Value::List(waypoints)) = segment.fields.get("waypoints") else {
+            panic!("segment should carry a \"waypoints\" list, got {segment:?}")
         };
         waypoints
             .iter()
             .map(|w| match w {
-                Value::Map(wp) => wp.clone(),
-                other => panic!("expected a Value::Map waypoint record, got {other:?}"),
+                Value::StructureInstance(wp) if wp.type_name == "GcodeWaypoint" => {
+                    wp.fields.clone()
+                }
+                other => panic!("expected a GcodeWaypoint instance, got {other:?}"),
             })
             .collect()
     }
 
-    /// [`waypoint_maps`] narrowed to a fixture that must lower to exactly one
-    /// waypoint.
-    fn sole_waypoint_map(src: &str) -> BTreeMap<Value, Value> {
-        let mut wps = waypoint_maps(src);
+    /// [`waypoint_records`] narrowed to a fixture that must lower to exactly
+    /// one waypoint.
+    fn sole_waypoint_record(src: &str) -> PersistentMap<String, Value> {
+        let mut wps = waypoint_records(src);
         assert_eq!(wps.len(), 1, "expected exactly one waypoint: {wps:?}");
         wps.remove(0)
     }
 
     /// Read one field out of a waypoint record, panicking if it is absent.
-    fn field(wp: &BTreeMap<Value, Value>, key: &str) -> Value {
-        wp.get(&Value::String(key.to_string()))
-            .unwrap_or_else(|| panic!("waypoint should carry a {key:?} key: {wp:?}"))
+    fn field(wp: &PersistentMap<String, Value>, key: &str) -> Value {
+        wp.get(key)
+            .unwrap_or_else(|| panic!("waypoint should carry a {key:?} field: {wp:?}"))
             .clone()
     }
 
@@ -844,24 +854,24 @@ mod tests {
     /// precisely what cannot discriminate a one-ULP difference.
     #[test]
     fn waypoint_feedrate_is_si_velocity() {
-        let wp = sole_waypoint_map("G1 X10 Y0 F1800");
+        let wp = sole_waypoint_record("G1 X10 Y0 F1800");
 
-        let got = wp
-            .get(&Value::String("feedrate".to_string()))
-            .unwrap_or_else(|| panic!("waypoint should carry a \"feedrate\" key: {wp:?}"));
-        match got {
+        let Value::Option(Some(got)) = field(&wp, "feedrate") else {
+            panic!("waypoint.feedrate should be Some(<velocity>) under F1800: {wp:?}")
+        };
+        match *got {
             Value::Scalar {
                 si_value,
                 dimension,
             } => {
                 assert_eq!(
-                    *si_value, 0.03,
+                    si_value, 0.03,
                     "F1800 mm/min is exactly 0.03 m/s under the divisor form \
                      (1800.0 / 60_000.0); got {si_value} — a multiply by the \
                      rounded reciprocal yields 0.030000000000000002 instead"
                 );
                 assert_eq!(
-                    *dimension,
+                    dimension,
                     DimensionVector::VELOCITY,
                     "feedrate should carry the VELOCITY dimension, got {dimension:?}"
                 );
@@ -874,8 +884,8 @@ mod tests {
 
         // The positions ride along in the same record and stay SI Lengths.
         assert_eq!(
-            wp.get(&Value::String("x".to_string())),
-            Some(&Value::length(0.01)),
+            field(&wp, "x"),
+            Value::length(0.01),
             "X10 mm is 0.01 m: {wp:?}"
         );
     }
@@ -889,7 +899,7 @@ mod tests {
     /// reproduces. Deleting `* MM_TO_M` from the `z` or `e` insert, or
     /// applying a wrong factor there, would leave every other test in the
     /// module green; `e` is the axis a slicer-emitted program exercises
-    /// hardest. `sole_waypoint_map` additionally asserts a single waypoint, so
+    /// hardest. `sole_waypoint_record` additionally asserts a single waypoint, so
     /// nothing else reaches a second record's conversion.
     ///
     /// Fixture design: the four axes land on four DISTINCT magnitudes
@@ -902,7 +912,7 @@ mod tests {
     /// bits as the divisor form), so `assert_eq!` needs no tolerance.
     #[test]
     fn every_axis_and_every_waypoint_is_an_si_length() {
-        let wps = waypoint_maps("G1 X10 Y20 Z0.3 E5 F1800\nG1 X40");
+        let wps = waypoint_records("G1 X10 Y20 Z0.3 E5 F1800\nG1 X40");
         assert_eq!(wps.len(), 2, "two linear moves lower to two waypoints: {wps:?}");
 
         // Waypoint 0 — every axis named explicitly in the move.
@@ -948,26 +958,26 @@ mod tests {
         for (i, wp) in wps.iter().enumerate() {
             assert_eq!(
                 field(wp, "feedrate"),
-                Value::Scalar {
+                Value::Option(Some(Box::new(Value::Scalar {
                     si_value: 0.03,
                     dimension: DimensionVector::VELOCITY,
-                },
-                "waypoint[{i}] should carry the modal F1800 as 0.03 m/s"
+                }))),
+                "waypoint[{i}] should carry the modal F1800 as Some(0.03 m/s)"
             );
         }
     }
 
-    /// With no `F` word in effect the `feedrate` key is ABSENT from the
-    /// waypoint record — never a `0.0` velocity sentinel. Pins that the
-    /// SI conversion preserves `waypoint_to_value`'s `if let Some(f)` shape
-    /// rather than defaulting the missing feed to a real (and wrong) speed.
+    /// With no `F` word in effect the declared `feedrate : Option<Velocity>`
+    /// field is `none` — always present, never absent, and never a `0.0`
+    /// velocity sentinel that would default the missing feed to a real (and
+    /// wrong) speed.
     #[test]
-    fn waypoint_without_feed_has_no_feedrate_key() {
-        let wp = sole_waypoint_map("G1 X10 Y0");
-        assert!(
-            !wp.contains_key(&Value::String("feedrate".to_string())),
-            "no feed is in effect, so the record must carry NO \"feedrate\" key \
-             at all (not a 0.0 sentinel); got {wp:?}"
+    fn waypoint_without_feed_has_none_feedrate() {
+        let wp = sole_waypoint_record("G1 X10 Y0");
+        assert_eq!(
+            field(&wp, "feedrate"),
+            Value::Option(None),
+            "no feed is in effect, so feedrate must be none (not a 0.0 sentinel)"
         );
     }
 }

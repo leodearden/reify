@@ -2,7 +2,7 @@
 //! (task 4073).
 //!
 //! Guards that `gcode_import(source, dialect)` in a `.ri` structure actually
-//! returns a real `Value::List` of motion profiles — NOT the `{ [] }` empty-list
+//! returns a real `Value::List` of motion segments — NOT the `{ [] }` empty-list
 //! stub the body previously contained.
 //!
 //! **RED today:** the `{ [] }` body makes `imported` evaluate to an empty list,
@@ -12,10 +12,6 @@
 //! Reads the shipped example file via `CARGO_MANIFEST_DIR` so this test is a
 //! true guard of `examples/trajectory/gcode_import_smoke.ri`, not an inlined
 //! copy. Follows the idiom from `kinematic_examples_e2e.rs`.
-
-// Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
-// (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
-#![allow(clippy::mutable_key_type)]
 
 use std::sync::OnceLock;
 
@@ -384,7 +380,7 @@ fn gcode_import_smoke_segment_count_constraint_is_satisfied() {
 /// The `Value` payload `gcode_import` hands to the DSL must be SI and
 /// dimensioned, not raw native G-code millimetres. `gcode_import_smoke.ri`'s
 /// source is `"G1 X10 Y10"` — a single Marlin linear move to (10 mm, 10 mm) —
-/// so the one lowered profile carries exactly one waypoint at
+/// so the one lowered segment carries exactly one waypoint at
 /// (0.01 m, 0.01 m, 0 m) with zero extrusion.
 ///
 /// Asserted END-TO-END through the real compiler + evaluator (not just the
@@ -396,15 +392,13 @@ fn gcode_import_smoke_segment_count_constraint_is_satisfied() {
 /// leaving the regime unstated. The `si_value` comparison is EXACT
 /// (`assert_eq!`, no tolerance) because `10.0 * 1.0e-3 == 0.01` is bit-exact.
 ///
-/// Two further properties are pinned here deliberately, not incidentally:
-///
-/// 1. The profile record is a `Value::Map`, NOT a `Value::StructureInstance`.
-///    The Map shape is what keeps gcode profiles away from the
-///    StructureInstance-gated trajectory trampolines; minting a structure
-///    instance here would silently route them into half-wired code.
-/// 2. No `"feedrate"` key is present — the example's `G1` carries no `F` word,
-///    so the key-absent branch of `waypoint_to_value` must survive the
-///    conversion (never a `0.0` velocity sentinel).
+/// The runtime carrier is the declared type: a `GcodeMotionSegment` instance
+/// whose waypoints are `GcodeWaypoint` instances. What keeps segments out of
+/// the Profile trampolines is that declared type — a compile-time
+/// `TypeNotConformingToTrait`, pinned by
+/// `imported_segment_is_rejected_at_every_profile_param` — not the carrier
+/// shape. The example's `G1` carries no `F` word, so `feedrate` is `none`
+/// (never a `0.0` velocity sentinel).
 #[test]
 fn gcode_import_smoke_waypoints_are_si_lengths() {
     let compiled = smoke_compiled();
@@ -417,33 +411,25 @@ fn gcode_import_smoke_waypoints_are_si_lengths() {
         .get(&id)
         .unwrap_or_else(|| panic!("GcodeImportSmoke.imported cell missing from eval result"));
 
-    // List<Profile> → the single lowered profile.
-    let Value::List(profiles) = imported else {
+    let Value::List(segments) = imported else {
         panic!("expected Value::List for GcodeImportSmoke.imported, got {imported:?}")
     };
     assert_eq!(
-        profiles.len(),
+        segments.len(),
         1,
-        "the single `G1 X10 Y10` move lowers to exactly one profile, got {profiles:?}"
+        "the single `G1 X10 Y10` move lowers to exactly one segment, got {segments:?}"
     );
 
-    // The profile record must stay an untyped Value::Map (see doc above).
-    let Value::Map(profile) = &profiles[0] else {
+    let Value::StructureInstance(segment) = &segments[0] else {
         panic!(
-            "expected a Value::Map profile record (NOT a Value::StructureInstance — \
-             the Map carrier is what keeps gcode profiles out of the \
-             StructureInstance-gated trajectory trampolines), got {:?}",
-            profiles[0]
+            "expected a GcodeMotionSegment instance, got {:?}",
+            segments[0]
         )
     };
-    assert_eq!(
-        profile.get(&Value::String("kind".to_string())),
-        Some(&Value::String("motion_profile".to_string())),
-        "profile record should carry kind == \"motion_profile\", got {profile:?}"
-    );
+    assert_eq!(segment.type_name, "GcodeMotionSegment");
 
-    let Some(Value::List(waypoints)) = profile.get(&Value::String("waypoints".to_string())) else {
-        panic!("profile record should carry a Value::List under \"waypoints\", got {profile:?}")
+    let Some(Value::List(waypoints)) = segment.fields.get("waypoints") else {
+        panic!("segment should carry a Value::List under \"waypoints\", got {segment:?}")
     };
     assert_eq!(
         waypoints.len(),
@@ -451,16 +437,18 @@ fn gcode_import_smoke_waypoints_are_si_lengths() {
         "one `G1` move yields exactly one waypoint, got {waypoints:?}"
     );
 
-    let Value::Map(wp) = &waypoints[0] else {
-        panic!("expected a Value::Map waypoint record, got {:?}", waypoints[0])
+    let Value::StructureInstance(wp) = &waypoints[0] else {
+        panic!("expected a GcodeWaypoint instance, got {:?}", waypoints[0])
     };
+    assert_eq!(wp.type_name, "GcodeWaypoint");
 
     // x / y / z / e are SI metres carrying the LENGTH dimension.
     // 10 mm → 0.01 m; the untouched Z and E axes stay at the origin.
     for (axis, expected) in [("x", 0.01_f64), ("y", 0.01), ("z", 0.0), ("e", 0.0)] {
         let got = wp
-            .get(&Value::String(axis.to_string()))
-            .unwrap_or_else(|| panic!("waypoint record should carry an \"{axis}\" key: {wp:?}"));
+            .fields
+            .get(axis)
+            .unwrap_or_else(|| panic!("waypoint should carry an \"{axis}\" field: {wp:?}"));
         match got {
             Value::Scalar {
                 si_value,
@@ -484,11 +472,10 @@ fn gcode_import_smoke_waypoints_are_si_lengths() {
         }
     }
 
-    // The example's G1 carries no F word, so the feedrate key must be ABSENT
-    // (never a 0.0 velocity sentinel).
-    assert!(
-        !wp.contains_key(&Value::String("feedrate".to_string())),
-        "no F word is in effect for `G1 X10 Y10`, so the waypoint record must \
-         carry NO \"feedrate\" key at all; got {wp:?}"
+    assert_eq!(
+        wp.fields.get("feedrate"),
+        Some(&Value::Option(None)),
+        "no F word is in effect for `G1 X10 Y10`, so feedrate must be none \
+         (never a 0.0 sentinel); got {wp:?}"
     );
 }
