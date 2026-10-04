@@ -703,6 +703,8 @@ scripts/pprdstatus-escalate.py    tests/infra/test_reify_audit_pprdstatus_wiring
 tests/infra/test_reify_audit_pprdstatus_wiring.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
 # Task 6582: scripts/graph-task-conflation-census.py (the read-only census,
 # offline review and repair check of Task-N conflations on the reify Graphiti
-# graph) is pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+# graph) and its sibling grammar module scripts/task_reference_grammar.py are
+# pinned by a .py suite behind a thin .sh wrapper, same pair shape.
 scripts/graph-task-conflation-census.py    tests/infra/test_graph_task_conflation_census.sh
+scripts/task_reference_grammar.py    tests/infra/test_graph_task_conflation_census.sh
 tests/infra/test_graph_task_conflation_census.py    tests/infra/test_graph_task_conflation_census.sh

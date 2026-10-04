@@ -30,7 +30,8 @@ every candidate feeds irreversible edge surgery): a row is a candidate iff the
 fact names a local task number under the STRICT task-prefixed grammar
 (fact_task_refs: runs, ranges and Greek suffixes included, project-qualified
 refs excluded) AND none of the node's own numbers appears under the BROAD check
-(mentions_number: any digit-bounded occurrence). The tool proposes REPAIR or
+(mentions_number: any digit-bounded occurrence). Both live in the sibling
+module scripts/task_reference_grammar.py. The tool proposes REPAIR or
 RECORD_ONLY from structure; only a human adjudication assigns
 NOT_A_CONFLATION.
 
@@ -97,93 +98,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from task_reference_grammar import (
+    canonical_task_number,
+    fact_task_refs,
+    mentions_number,
+    node_task_numbers,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 1
 GENERATOR = "scripts/graph-task-conflation-census.py"
 ADJACENCY_DISTANCE = 2
-
-# ── Task-reference grammar ──────────────────────────────────────────────────
-#
-# Re-expresses the measured rules of fused-memory's canonical_labels.py (word-
-# glue lookbehind, '[ \t]'-padded '#'/':' separators, letter-start >=3-char
-# project qualifier, single-number node-name anchor), extended with the run,
-# range and Greek-suffix forms a census of free-text facts needs.
-
-_NUMBER = "[0-9]+(?![0-9])[A-Za-z\u0370-\u03ff]?"
-_RUN_JOINER = (
-    "(?:[ \t]*[,/+&\\-\u2013][ \t]*(?:(?:and|or)[ \t]+)?"
-    "|[ \t]+(?:and|or|to|through)[ \t]+)"
-)
-_MENTION_PATTERN = re.compile(
-    "(?P<project>(?<![\\w-])(?:dark[ _-]?factory|df)[ \t]+)?"
-    "(?<![\\w:-])tasks?(?:\\s+id)?(?:[ \t]*[#:/][ \t]*|\\s+)\\(?"
-    f"(?P<run>{_NUMBER}(?:{_RUN_JOINER}#?{_NUMBER})*)",
-    re.IGNORECASE,
-)
-_RANGE_JOINER = re.compile(
-    "[A-Za-z\u0370-\u03ff]?[ \t]*(?:-|\u2013|to|through)[ \t]*#?", re.IGNORECASE
-)
-_MAX_RANGE_SPAN = 100
-_QUALIFIED_REF_PATTERN = re.compile(
-    r"(?<![\w:/.-])([A-Za-z][A-Za-z0-9_-]{2,})[ \t]*:[ \t]*([0-9]+)(?![0-9])"
-)
-_TASK_VOCABULARY = frozenset({"task", "tasks"})
-_INTEGER = re.compile("[0-9]+")
-_TASK_NODE_PREFIX = re.compile(r"\s*tasks?(?![^\W\d])", re.IGNORECASE)
-_CANONICAL_TASK_NAME = re.compile(
-    r"\s*tasks?(?:[ \t]*[#:][ \t]*|\s+)(?:id\s+)?([0-9]+)\s*", re.IGNORECASE
-)
-
-
-@dataclass(frozen=True)
-class TaskRefs:
-    """Task numbers a fact names: reify-local ones, and project-qualified ones."""
-
-    local: frozenset[int]
-    cross_project: frozenset[int]
-
-
-def _run_numbers(run: str) -> set[int]:
-    matches = list(_INTEGER.finditer(run))
-    numbers = {int(m.group()) for m in matches}
-    for left, right in itertools.pairwise(matches):
-        if _RANGE_JOINER.fullmatch(run[left.end():right.start()]):
-            low, high = int(left.group()), int(right.group())
-            if 0 < high - low <= _MAX_RANGE_SPAN:
-                numbers.update(range(low, high + 1))
-    return numbers
-
-
-def fact_task_refs(text: str) -> TaskRefs:
-    """Task numbers named by task-prefixed mentions in `text` (STRICT)."""
-    local: set[int] = set()
-    cross_project: set[int] = set()
-    for mention in _MENTION_PATTERN.finditer(text):
-        bucket = cross_project if mention.group("project") else local
-        bucket.update(_run_numbers(mention.group("run")))
-    for ref in _QUALIFIED_REF_PATTERN.finditer(text):
-        if ref.group(1).lower() not in _TASK_VOCABULARY:
-            cross_project.add(int(ref.group(2)))
-    return TaskRefs(local=frozenset(local), cross_project=frozenset(cross_project))
-
-
-def mentions_number(text: str, number: int) -> bool:
-    """Whether `number` occurs digit-bounded in `text` (BROAD), not as a decimal's head."""
-    return re.search(f"(?<![0-9]){number}(?![0-9])(?!\\.[0-9])", text) is not None
-
-
-def node_task_numbers(name: str) -> frozenset[int]:
-    """Every integer in a Task-N-shaped node name; empty for any other name."""
-    if not _TASK_NODE_PREFIX.match(name):
-        return frozenset()
-    return frozenset(int(digits) for digits in _INTEGER.findall(name))
-
-
-def canonical_task_number(name: str) -> int | None:
-    """The number of a single-number canonical task node name ('Task 1997'), else None."""
-    match = _CANONICAL_TASK_NAME.fullmatch(name)
-    return int(match.group(1)) if match else None
-
 
 # ── Artifact vocabulary ─────────────────────────────────────────────────────
 

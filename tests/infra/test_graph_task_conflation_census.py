@@ -9,7 +9,9 @@ tests/infra/test_graph_task_conflation_census.sh, which invokes this file. A
 bare .py here would be silently never run.
 
 The tool's filename is hyphenated (repo script convention), so it is loaded by
-path via importlib rather than by a bare `import`. Every test drives the tool
+path via importlib rather than by a bare `import`; scripts/ is prepended to
+sys.path so the tool's sibling import of task_reference_grammar (the grammar
+module these tests also exercise directly) resolves. Every test drives the tool
 in-process through its public seams (the reader Protocol and main()'s
 `connect` parameter); this file spawns no subprocess and touches no live graph.
 """
@@ -27,7 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOL_PATH = REPO_ROOT / "scripts" / "graph-task-conflation-census.py"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+TOOL_PATH = SCRIPTS_DIR / "graph-task-conflation-census.py"
+
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 def _load_tool():
@@ -43,11 +48,12 @@ def _load_tool():
 
 
 census_tool = _load_tool()
+import task_reference_grammar as grammar  # noqa: E402  (needs SCRIPTS_DIR on sys.path)
 
 
 class FactTaskRefsTest(unittest.TestCase):
     def assertLocal(self, text, expected):
-        refs = census_tool.fact_task_refs(text)
+        refs = grammar.fact_task_refs(text)
         self.assertEqual(refs.local, frozenset(expected), text)
 
     def test_single_mentions_are_case_insensitive(self):
@@ -95,12 +101,12 @@ class FactTaskRefsTest(unittest.TestCase):
                      "DF Task 3673 is the analogue",
                      "gated on dark_factory:3673",
                      "gated on dark-factory:3673"):
-            refs = census_tool.fact_task_refs(text)
+            refs = grammar.fact_task_refs(text)
             self.assertEqual(refs.cross_project, frozenset({3673}), text)
             self.assertEqual(refs.local, frozenset(), text)
 
     def test_task_word_is_not_a_project_qualifier(self):
-        refs = census_tool.fact_task_refs("Task: 12 is pending")
+        refs = grammar.fact_task_refs("Task: 12 is pending")
         self.assertEqual(refs.cross_project, frozenset())
 
     def test_newline_between_task_and_hash_is_not_a_mention(self):
@@ -116,11 +122,11 @@ class MentionsNumberTest(unittest.TestCase):
                      "2590's verify",
                      "task/2590",
                      "tasks 2590α, 2591β"):
-            self.assertTrue(census_tool.mentions_number(text, 2590), text)
+            self.assertTrue(grammar.mentions_number(text, 2590), text)
 
     def test_digit_neighbours_and_decimals_are_not_presence(self):
         for text in ("task 12590", "task 25901", "ratio 2590.5", "no number here"):
-            self.assertFalse(census_tool.mentions_number(text, 2590), text)
+            self.assertFalse(grammar.mentions_number(text, 2590), text)
 
 
 class NodeTaskNumbersTest(unittest.TestCase):
@@ -135,23 +141,23 @@ class NodeTaskNumbersTest(unittest.TestCase):
             "tasks 4841–4847": {4841, 4847},
         }
         for name, expected in cases.items():
-            self.assertEqual(census_tool.node_task_numbers(name), frozenset(expected), name)
+            self.assertEqual(grammar.node_task_numbers(name), frozenset(expected), name)
 
     def test_non_task_names(self):
         for name in ("Taskmaster", "task tree", "task_id", "taskset 5", "Orchestrator 12"):
-            self.assertEqual(census_tool.node_task_numbers(name), frozenset(), name)
+            self.assertEqual(grammar.node_task_numbers(name), frozenset(), name)
 
 
 class CanonicalTaskNumberTest(unittest.TestCase):
     def test_canonical_names(self):
         for name in ("Task 1997", "task 1997", "task #1997", "Task: 1997",
                      "task id 1997", "  Task 1997  "):
-            self.assertEqual(census_tool.canonical_task_number(name), 1997, name)
+            self.assertEqual(grammar.canonical_task_number(name), 1997, name)
 
     def test_non_canonical_names(self):
         for name in ("task/1997", "tasks 1997/1998", "task 1997.2",
                      "task 1997 (x)", "Taskmaster", "task1997"):
-            self.assertIsNone(census_tool.canonical_task_number(name), name)
+            self.assertIsNone(grammar.canonical_task_number(name), name)
 
 
 # ── Census classification over a fake graph ─────────────────────────────────
