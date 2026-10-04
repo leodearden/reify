@@ -43,7 +43,7 @@
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
 //!   that contract C6 forced in alongside them. These mirror, at the compile
-//!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
+//!   layer, the family table in `crates/reify-ir/src/arg_acceptance.rs` —
 //!   the canonical enumeration of every position routed through the eval-layer
 //!   LENGTH chokepoint.
 //! - The ANGLE producer positions of PRD
@@ -68,7 +68,7 @@
 //!   unit-vector DIRECTION (`nx`/`ny`/`nz`, `ax`/`ay`/`az`, a pattern's or
 //!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
 //!   bare in correct `.ri`, so a slot there would reject valid code. Stated
-//!   binding at `crates/reify-eval/src/arg_acceptance.rs`'s "unit-vector
+//!   binding at `crates/reify-ir/src/arg_acceptance.rs`'s "unit-vector
 //!   DIRECTIONS" paragraph. The builtins whose arguments STRADDLE this line
 //!   carry the split on their own arm — deliberately UNCOUNTED here, because a
 //!   tally stated away from the arms is exactly the second copy nothing
@@ -274,7 +274,7 @@ pub(crate) enum ExpectedArg {
         /// Migration hint appended to the rejection message.
         ///
         /// Mirrors `ArgSpec::migration_hint` in
-        /// `crates/reify-eval/src/arg_acceptance.rs`, and carries the SAME
+        /// `crates/reify-ir/src/arg_acceptance.rs`, and carries the SAME
         /// `&'static str` — both sides read
         /// [`reify_core::units::LENGTH_MIGRATION_HINT`] /
         /// [`reify_core::units::ANGLE_MIGRATION_HINT`] /
@@ -606,7 +606,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // The pattern-origin row task 5652 deferred (it turned six then-valid
         // call sites into hard compile errors, a separable breaking-surface
         // migration) and this task closes. These mirror, at the compile layer,
-        // the `pattern` rows of `crates/reify-eval/src/arg_acceptance.rs`'s
+        // the `pattern` rows of `crates/reify-ir/src/arg_acceptance.rs`'s
         // family table: the mirror-plane origin (task 5214) and the
         // circular-pattern axis origin (task 5350). Arg names are COPIED from
         // `geometry.rs`'s lowering sites — the `("ox".to_string(), …)` triples
@@ -762,7 +762,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //
         // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work
         // item 1. These mirror, at the compile layer, the task-5743 `primitive`
-        // row of `crates/reify-eval/src/arg_acceptance.rs`'s family table: the
+        // row of `crates/reify-ir/src/arg_acceptance.rs`'s family table: the
         // positions `geometry_ops`' `required_length_values` already gates at
         // eval. The hazard they close is the silent one — `Value::as_f64` reads
         // a bare `20` as 20 SI METRES, so `box(20, 20, 10)` built a 20-metre
@@ -865,7 +865,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            args STRADDLE the boundary, and it draws the same
         //            ORIGIN-vs-DIRECTION split the circular pattern already
         //            draws for `ox`/`oy`/`oz` vs `ax`/`ay`/`az` — stated
-        //            binding at `crates/reify-eval/src/arg_acceptance.rs`'s
+        //            binding at `crates/reify-ir/src/arg_acceptance.rs`'s
         //            "unit-vector DIRECTIONS" paragraph. Pinned by
         //            `half_space_slots_the_point_but_never_the_normal`.
         "half_space" => const { &[
@@ -877,7 +877,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── Transform producers (task 5750) ─────────────────────────────────
         //
         // The task-5623 `transform` row of
-        // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
+        // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Arg names
         // from `geometry_transform.rs`'s `compile_transform_op`.
         //
         // Both names are single-form (`check_arg_count_exact`), so both arms
@@ -931,7 +931,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── Modify producers (task 5750) ─────────────────────────────────────
         //
         // The compile-layer half of the task-5744 `modify` row of
-        // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
+        // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Arg names
         // are copied from `geometry_modify.rs`'s `compile_modify_op` arms and
         // its shared `compile_modify_2arg` helper.
         //
@@ -1410,7 +1410,7 @@ pub(crate) fn check_builtin_arg_types(
 /// Emit a single `ArgTypeMismatch` error diagnostic.
 ///
 /// `migration_hint`, when `Some`, is appended as `"; {hint}"` — matching
-/// `ArgRejection::message`'s shape in `crates/reify-eval/src/arg_acceptance.rs`
+/// `ArgRejection::message`'s shape in `crates/reify-ir/src/arg_acceptance.rs`
 /// exactly, so the compile-time and runtime renderings of one authoring mistake
 /// are byte-identical (PRD decision D9). The LABEL is deliberately left
 /// un-hinted: it is the short inline caret annotation, and the hint belongs on
@@ -1829,7 +1829,7 @@ mod tests {
     //
     // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work item 1
     // (boundary row 9). These pin the compile-layer half of the two task-5743
-    // rows in `crates/reify-eval/src/arg_acceptance.rs`'s family table — the
+    // rows in `crates/reify-ir/src/arg_acceptance.rs`'s family table — the
     // 21 primitive fields and the 5 profile fields.
     //
     // The arg NAMES are copied from the lowering sites in `geometry.rs` (the
@@ -1966,7 +1966,7 @@ mod tests {
     /// a dimensionless unit vector whose components are legitimately bare in
     /// correct `.ri`, so slotting indices 3-5 would reject valid code — the same
     /// ORIGIN-vs-DIRECTION split already drawn for the circular pattern
-    /// (`crates/reify-eval/src/arg_acceptance.rs:116-119`).
+    /// (the family table in `crates/reify-ir/src/arg_acceptance.rs`).
     #[test]
     fn half_space_slots_the_point_but_never_the_normal() {
         assert_slots_at_every_arity(
@@ -2038,7 +2038,7 @@ mod tests {
     // ── Task 5750 (units-length η): MODIFY + SWEEP LENGTH slots ──────────────
     //
     // The compile-layer half of the two task-5744 rows in
-    // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Same
+    // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Same
     // name-copied-from-the-lowering-site discipline as the primitive block
     // above; sources are `geometry_modify.rs` and `geometry.rs`'s Sweep arms.
     //
@@ -2325,7 +2325,7 @@ mod tests {
 
     // ── Task 5750 (units-length η): TRANSFORM LENGTH slots ───────────────────
     //
-    // The task-5623 `transform` row of `crates/reify-eval/src/arg_acceptance.rs`'s
+    // The task-5623 `transform` row of `crates/reify-ir/src/arg_acceptance.rs`'s
     // family table. Not one of the four families this leaf's task text names —
     // it is pulled in by contract C6, whose named fixtures
     // (`translate_non_geometry_target_uses_fallback`,

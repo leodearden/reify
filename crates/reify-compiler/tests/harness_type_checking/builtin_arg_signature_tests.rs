@@ -658,7 +658,7 @@ fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
 /// All three, not just the first: the eval layer reads a multi-slot builtin's
 /// whole set in ONE `required_length_values` call precisely so an author fixes
 /// `width`, `height` and `depth` in a single edit rather than one per rebuild
-/// (`crates/reify-eval/src/arg_acceptance.rs`'s "all-at-once discipline"). The
+/// (`crates/reify-ir/src/arg_acceptance.rs`'s "all-at-once discipline"). The
 /// compile layer must not degrade that to a one-at-a-time drip, so the count is
 /// asserted, not just non-emptiness.
 ///

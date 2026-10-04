@@ -1325,7 +1325,7 @@ fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
 /// `Scalar` ctor slot.
 ///
 /// Shape: ``"pass a dimensioned <Dimension> literal such as `<example>`"``,
-/// COPIED from `ArgRejection::message` in `crates/reify-eval/src/arg_acceptance.rs`
+/// COPIED from `ArgRejection::message` in `crates/reify-ir/src/arg_acceptance.rs`
 /// so the compile-time and runtime diagnostics for the same authoring mistake
 /// read the same way. Copied and never imported: `reify-eval` depends on
 /// `reify-compiler`, so the reverse edge would be a dependency cycle (D9).
