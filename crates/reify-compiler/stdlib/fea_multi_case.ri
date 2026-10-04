@@ -511,8 +511,10 @@ structure def BodyForce : Load {
 //                  Default vec3(0, 0, -1) = −Z (canonical downward direction).
 //                  Caller is responsible for supplying a unit vector; non-unit
 //                  vectors silently scale effective gravity by |direction|.
-//                  `direction` is declared LAST (same rationale as PointLoad:
-//                  positional binding preserves existing callers that omit it).
+//                  `direction` is declared LAST for the same reason as
+//                  `PointLoad.direction`: ctor args bind BY NAME (task 4522),
+//                  and declaration order governs only UNLABELLED args, so a
+//                  positional `Gravity(m)` still binds `m` to `magnitude`.
 //
 // Future solver bridge (leaf β): body force contribution = ρ · magnitude · direction
 // component-wise per integration point (see docs/prds/v0_6 §4.2).
