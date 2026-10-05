@@ -144,7 +144,8 @@ pub(crate) fn route_capability(
     }
 }
 
-#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
+#[allow(dead_code)]
+// G-allow: no production caller yet (unit tests in geometry_ops/tests.rs only; the region path calls route_capability directly); wiring it into try_eval_geometry_query per PRD §5.4, or deleting it, is owned by #8192
 pub(crate) fn gate_query_capability(
     query: &reify_ir::GeometryQuery,
     produced_repr: reify_ir::ReprKind,
@@ -12039,7 +12040,7 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_ir::Value {
 /// | `Some(_)` → `Value::Transform`      | pass through unchanged                                |
 /// | `Some(_)` → `Value::Frame`          | lowered per the convention above                      |
 /// | anything else (incl. `Value::Undef`)| one `Diagnostic::error`; returns `Value::Undef`       |
-#[allow(dead_code)] // used in #[cfg(test)]; consumed by T5 (full-tree composition)
+// G-allow: same-file caller only (walk_placed_realizations, reached from engine_build.rs via surface_subtree); audit counts cross-file refs
 pub(crate) fn eval_sub_pose(
     pose: Option<&reify_ir::CompiledExpr>,
     values: &ValueMap,
