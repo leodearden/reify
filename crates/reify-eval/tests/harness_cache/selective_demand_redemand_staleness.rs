@@ -771,47 +771,23 @@ fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
 fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list()
 {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
-    let e = "SelectiveGeomList";
-    let holes_id = ValueCellId::new(e, "holes");
-
-    let element = |k: usize| -> NodeId {
-        let want = format!("holes#{k}");
-        compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.realizations.iter())
-            .find(|r| r.name.as_deref() == Some(&want))
-            .map(|r| NodeId::Realization(r.id.clone()))
-            .unwrap_or_else(|| panic!("fixture must compile a realization named {want:?}"))
-    };
+    let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
 
     // The ALL-VISIBLE arm is the control: it establishes that this surface
     // resolves the list under selective demand AT ALL, so a green SUBSET arm
     // cannot be read as "selective demand happened to do nothing on this
     // module".
-    for (label, roots) in [
+    for (label, visible) in [
         (
             "all three elements visible",
-            vec![element(0), element(1), element(2)],
+            &["holes#0", "holes#1", "holes#2"][..],
         ),
         (
             "the strict subset {holes#0, holes#2}",
-            vec![element(0), element(2)],
+            &["holes#0", "holes#2"][..],
         ),
     ] {
-        let mut engine = Engine::new(
-            Box::new(SimpleConstraintChecker),
-            Some(Box::new(MockGeometryKernel::new())),
-        );
-        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
-        engine.eval(&compiled);
-
-        engine.set_demand_selective(roots);
-        assert!(
-            !engine.demand_is_full_scope(),
-            "{label}: precondition — full_scope must be OFF, or the cone is not \
-             actually selective and the subset case is untested"
-        );
+        let (mut engine, _) = selectively_demanded_engine(&compiled, visible);
 
         let tess = engine
             .tessellate_snapshot(&compiled)
@@ -859,7 +835,7 @@ fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_re
 fn a_repeat_no_op_tessellate_under_all_visible_selective_demand_keeps_the_geometry_list_resolved() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
     let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
-    let (mut engine, _visible) = selective_geom_list_engine(&compiled);
+    let (mut engine, _visible) = selectively_demanded_engine(&compiled, &GEOM_LIST_ALL_VISIBLE);
 
     let tess1 = engine
         .tessellate_snapshot(&compiled)
@@ -897,7 +873,7 @@ fn a_repeat_no_op_tessellate_under_all_visible_selective_demand_keeps_the_geomet
 fn redemand_geometry_list_survives_hide_unhide() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
     let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
-    let (mut engine, visible) = selective_geom_list_engine(&compiled);
+    let (mut engine, visible) = selectively_demanded_engine(&compiled, &GEOM_LIST_ALL_VISIBLE);
 
     let tess1 = engine
         .tessellate_snapshot(&compiled)
@@ -934,7 +910,7 @@ fn redemand_geometry_list_survives_hide_unhide() {
 fn the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit_one() {
     let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
     let holes_id = ValueCellId::new(GEOM_LIST_ENTITY, "holes");
-    let (mut engine, _visible) = selective_geom_list_engine(&compiled);
+    let (mut engine, _visible) = selectively_demanded_engine(&compiled, &GEOM_LIST_ALL_VISIBLE);
 
     let tess1 = engine
         .tessellate_snapshot(&compiled)
@@ -984,6 +960,71 @@ fn the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit
         &tess3,
         &edited,
         "tess3, the no-op pass after the edited one",
+    );
+}
+
+/// A pass that re-executes only SOME of a list's elements must still serve the
+/// whole list, each element carrying its identity from the CURRENT values.
+///
+/// Hash exemption is decided per realization, so editing `w` re-executes
+/// `parts#1` and exempts `parts#0`. The list regroup is all-or-nothing, so it
+/// declines the list, and `tessellate_snapshot`'s symbolic baseline serves it.
+/// Only identities are pinned: serving the executed element kernel-backed
+/// would need a per-element regroup, and this test must not forbid one.
+#[test]
+fn a_partly_re_executed_geometry_list_is_served_whole_with_current_identities() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_HETEROGENEOUS_GEOM_LIST_SRC);
+    let entity = "SelectiveHeteroGeomList";
+    let parts_id = ValueCellId::new(entity, "parts");
+    let (mut engine, _) = selectively_demanded_engine(&compiled, &["parts#0", "parts#1"]);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess1 must return Some after eval()");
+    let before = live_geometry_list(
+        &tess1,
+        &parts_id,
+        2,
+        "tess1: the first selective pass must realize both elements",
+    );
+
+    engine
+        .edit_param(ValueCellId::new(entity, "w"), Value::length(0.02))
+        .expect("edit_param(w, 20mm) must succeed");
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tess2 must return Some after edit_param");
+
+    let dispatches = |k: usize| {
+        engine
+            .last_dispatch_count_by_realization()
+            .get(&before[k].realization_ref)
+            .copied()
+            .unwrap_or(0)
+    };
+    assert!(
+        dispatches(0) == 0 && dispatches(1) > 0,
+        "precondition — tess2 must re-execute `parts#1` alone, or the list is not \
+         partly re-executed: dispatches per element = [{}, {}]",
+        dispatches(0),
+        dispatches(1),
+    );
+
+    let after = resolved_geometry_list(&tess2, &parts_id, 2, "tess2, a partly re-executed pass");
+    for (k, (old, new)) in before.iter().zip(&after).enumerate() {
+        assert_eq!(
+            old.realization_ref, new.realization_ref,
+            "tess2: `parts[{k}]` must be the same realization, in the same order"
+        );
+    }
+    assert_eq!(
+        after[0].upstream_values_hash, before[0].upstream_values_hash,
+        "tess2: `parts[0]` reads only `r` and `h`, so its identity must be unchanged"
+    );
+    assert_ne!(
+        after[1].upstream_values_hash, before[1].upstream_values_hash,
+        "tess2: `parts[1]` reads `w`, so it must carry the edited identity, not the \
+         pre-edit one"
     );
 }
 
@@ -1087,13 +1128,18 @@ fn realization_node(compiled: &CompiledModule, name: &str) -> NodeId {
         .unwrap_or_else(|| panic!("fixture must compile a realization named {name:?}"))
 }
 
-/// An evaluated `UnifiedDag` engine over
-/// [`differential::SELECTIVE_DEMAND_GEOM_LIST_SRC`] with EVERY realization
-/// visible under SELECTIVE demand, plus that visible set so a test can hide
-/// part of it and restore it.
-fn selective_geom_list_engine(compiled: &CompiledModule) -> (Engine, Vec<NodeId>) {
-    let visible: Vec<NodeId> = ["a", "holes#0", "holes#1", "holes#2", "merged"]
-        .into_iter()
+/// Every realization [`differential::SELECTIVE_DEMAND_GEOM_LIST_SRC`] compiles.
+const GEOM_LIST_ALL_VISIBLE: [&str; 5] = ["a", "holes#0", "holes#1", "holes#2", "merged"];
+
+/// An evaluated `UnifiedDag` engine over `compiled` with exactly the
+/// realizations named `visible` demanded under SELECTIVE demand, plus their
+/// node ids so a test can hide part of the set and restore it.
+fn selectively_demanded_engine(
+    compiled: &CompiledModule,
+    visible: &[&str],
+) -> (Engine, Vec<NodeId>) {
+    let visible: Vec<NodeId> = visible
+        .iter()
         .map(|name| realization_node(compiled, name))
         .collect();
 
@@ -1106,8 +1152,8 @@ fn selective_geom_list_engine(compiled: &CompiledModule) -> (Engine, Vec<NodeId>
     engine.set_demand_selective(visible.clone());
     assert!(
         !engine.demand_is_full_scope(),
-        "precondition — full_scope must be OFF, or every pass re-executes \
-         everything and the reuse pass is never reached"
+        "precondition — full_scope must be OFF, or the demand is not actually \
+         selective and every pass re-executes everything"
     );
     (engine, visible)
 }
