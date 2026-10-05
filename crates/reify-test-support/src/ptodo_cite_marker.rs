@@ -1,5 +1,49 @@
-pub fn has_liveness_marker(_source: &str, _cite: &str) -> bool {
-    false
+//! Whether a task cite is liveness-checked by the PTODO detector.
+//!
+//! PTODO's liveness lane resolves cites only where a marker anchors them
+//! (comments, `#[ignore]` reasons, stub macros), so a task cite held in a Rust
+//! string literal, such as a struct field or a table row, is invisible to it.
+//! Such a cite is liveness-checked only through a marker comment in the same
+//! file citing the same task: when that task goes terminal, the marker is
+//! reported `orphaned` and the PTODO ratchet turns red.
+//!
+//! [`has_liveness_marker`] accepts a TODO-family marker comment whose
+//! parenthesised cite is exactly `cite`, but only when that cite is the line's
+//! sole `#`-then-digit occurrence and the line carries no `ptodo:allow` escape.
+//! Both rules come from `docs/prds/reify-audit-ptodo-detector.md`. Under §8.2
+//! one live cite tracks the whole line, so a co-cited live task would mask a
+//! closed one. Under §6.8 an escaped line is skipped entirely.
+//!
+//! The predicate is a conservative SUFFICIENT condition for PTODO to orphan the
+//! marker once the task closes. Every canonical cite begins with `#` and a
+//! digit, so it can demand more than PTODO needs but never less. A false
+//! refusal (a PRD-relative `§`-index on the marker line, say) is fixed by moving
+//! the other `#`-then-digit text off the marker line.
+//!
+//! A table whose rows carry task cites pins each distinct cite through this
+//! predicate over its own source.
+
+/// `true` iff some line of `source` is a marker comment that keeps `cite`
+/// liveness-checked by PTODO, per the module-level rules.
+pub fn has_liveness_marker(source: &str, cite: &str) -> bool {
+    let needle = format!("// TODO({cite})"); // ptodo:allow — the needle, not a marker
+    source
+        .lines()
+        .any(|line| is_sole_cite_marker(line, &needle))
+}
+
+fn is_sole_cite_marker(line: &str, needle: &str) -> bool {
+    line.contains(needle)
+        && !line.contains("ptodo:allow")
+        && hash_digit_occurrences(needle) == 1
+        && hash_digit_occurrences(line) == 1
+}
+
+fn hash_digit_occurrences(text: &str) -> usize {
+    text.as_bytes()
+        .windows(2)
+        .filter(|pair| pair[0] == b'#' && pair[1].is_ascii_digit())
+        .count()
 }
 
 #[cfg(test)]
@@ -52,6 +96,9 @@ mod tests {
     fn a_non_canonical_cite_never_has_a_marker() {
         let source = "// TODO(task 5404): x"; // ptodo:allow — fixture, not a marker
         assert!(!has_liveness_marker(source, "task 5404"));
+
+        let other_cite_on_the_line = "// TODO(task 5404): see #6048"; // ptodo:allow — fixture, not a marker
+        assert!(!has_liveness_marker(other_cite_on_the_line, "task 5404"));
     }
 
     #[test]
