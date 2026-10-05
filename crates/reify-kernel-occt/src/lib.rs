@@ -669,7 +669,7 @@ pub struct OcctKernel {
 /// [`BRepKind::Solid`]; the multi-body aggregates `COMPSOLID` and `COMPOUND` →
 /// [`BRepKind::Compound`]; `SHELL`/`WIRE`/`FACE`/`EDGE`/`VERTEX` → the
 /// same-named kind; anything unrecognized → [`BRepKind::Solid`] (`store`'s
-/// default). Used by [`OcctKernel::store_classified`].
+/// default).
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
@@ -825,15 +825,8 @@ impl OcctKernel {
     }
 
     /// Store `shape` stamped with the [`BRepKind`] of its real top-level type
-    /// (see [`brep_kind_of_shape`]), unlike [`Self::store`]'s fixed `Solid`.
-    ///
-    /// For ops whose result kind depends on their inputs: the binary booleans
-    /// and [`Self::fuse_all`], whose normalized results are a SOLID (one body),
-    /// a COMPSOLID (several) or an untouched COMPOUND (empty or mixed), so
-    /// anything but a single body is `Compound`; and SweepGuided/LoftGuided,
-    /// which leave an uncapped SHELL for non-face sections. A hardcoded `Solid`
-    /// would lie to every [`Self::repr_of`] consumer, including the
-    /// `run_local_feature_with_history` input guard, which rejects non-`Solid`.
+    /// (see [`brep_kind_of_shape`]), for ops whose result kind depends on
+    /// their inputs.
     fn store_classified(
         &mut self,
         shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
