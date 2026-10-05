@@ -84,6 +84,8 @@ std
   result
     mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
   fea              // StressInvariants — result of stress_invariants()
+  solver
+    elastic        // ElementOrder, ElasticOptions, ElasticResult, solve_elastic_static (§16)
 ```
 
 ---
@@ -1898,7 +1900,8 @@ fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> 
 **`ElasticResult` derivative channels.** Distinct from the operators above:
 these are *result channels* populated by `solve_elastic_static`, not operators
 you apply. They are documented here so the operator `curl` and the result
-channel `curl` sit adjacent and cannot be confused.
+channel `curl` sit adjacent and cannot be confused. The full `ElasticResult`
+declaration, and which channels each solve route fills, is in §16.3.
 
 ```
 ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
