@@ -2354,3 +2354,87 @@ let inv = stress_invariants(stress)
 // inv.i2 = 31 MPa²  (3.1e13 Pa²)  — I2 = 2·3 + 3·5 + 2·5
 // inv.i3 = 30 MPa³  (3.0e19 Pa³)  — I3 = 2·3·5
 ```
+
+---
+
+## 16. `std.solver.elastic` — linear-elastic static FEA
+
+`std.solver.elastic` (`crates/reify-compiler/stdlib/solver_elastic.ri`) declares the option and result types of the linear-elastic static solver and its entry point, `solve_elastic_static`. The types it consumes come from other modules, not covered in this section — read their source files: the material traits `ConstitutiveLaw` and `ElasticMaterial` from `std.materials.fea` (`crates/reify-compiler/stdlib/materials_fea.ri`), the orthotropic, transverse-isotropic and anisotropic materials from `std.constitutive` (`crates/reify-compiler/stdlib/constitutive.ri`), and the `Load` / `Support` marker traits of its load and support lists from `std.fea.types` (`crates/reify-compiler/stdlib/fea_types.ri`). The shapes, defaults and constraints of the declarations below are pinned by `crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_tests.rs`.
+
+### 16.1 Option and status enums
+
+```
+enum ElementOrder { P1, P2 }          // linear (4-node) or quadratic (10-node) tetrahedra
+enum ShellForce { Off, Auto, On }     // shell routing: never / classify by shell_threshold / always
+enum BudgetReason { TargetMissed, MaxIterations, MaxDofs, Stalled }
+enum ConvergenceStatus {
+    Converged { final_indicator: Real },    // final global relative energy-norm error
+    NotConverged { reason: BudgetReason }   // adaptive loop stopped short of target_accuracy
+}
+enum QoIDescriptor {}                 // empty stub — accepted and ignored
+```
+
+`BudgetReason` names what stopped the adaptive refinement loop: its budget ran out with the error estimate still above `target_accuracy` (`TargetMissed`), it hit the `max_refinement_iterations` cap (`MaxIterations`), the next refinement would exceed `max_dofs` (`MaxDofs`), or the error estimate stopped improving (`Stalled`). `QoIDescriptor` reserves a type for future goal-oriented error estimation; it has no variants yet.
+
+### 16.2 `ElasticOptions`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial. Which knobs the solver
+// reads today is stated in the table below, not in these comments.
+structure def ElasticOptions {
+    param element_order : ElementOrder = ElementOrder.P1
+    param mesh_size : Option<Length> = none
+    param max_iter : Int = 1000
+    param cg_tolerance : Real = 0.000001         // = 1e-6, dimensionless
+    param threads : Option<Int> = none
+    param shell_threshold : Real = 0.2           // dimensionless
+    param shell_voxel_size : Option<Length> = none
+    param shell_branch_prune_ratio : Real = 1.0  // dimensionless
+    param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
+    param deterministic : Bool = false
+    param target_accuracy : Real = 0.05          // dimensionless
+    param max_refinement_iterations : Int = 5
+    param max_dofs : Int = 5000000
+    param target_quantity_of_interest : Option<QoIDescriptor> = none
+    param adaptive : Bool = false
+
+    constraint max_iter > 0
+    constraint cg_tolerance > 0
+    constraint cg_tolerance < 1
+    constraint shell_threshold > 0
+    constraint shell_threshold < 1
+    constraint shell_branch_prune_ratio > 0
+    constraint !(force_tet && require_hex_wedge)
+    constraint target_accuracy > 0
+    constraint target_accuracy < 1
+    constraint max_refinement_iterations >= 0
+    constraint max_dofs > 0
+}
+```
+
+Every param has a default, so a bare `ElasticOptions()` is the standard setup; override knobs by name, e.g. `ElasticOptions(adaptive: true, target_accuracy: 0.02)`. The constraints cover every knob, including the ones `solve_elastic_static` does not read today:
+
+| Knob | Meaning | Read by `solve_elastic_static` today? |
+|---|---|---|
+| `element_order` | P1 or P2 tetrahedra | **No** — the static solve always assembles P1. `BucklingOptions` and `ModalOptions` declare their own `element_order`, which those solvers honour. |
+| `mesh_size` | target mesh edge length; `none` = solver's choice | **No** |
+| `max_iter` | conjugate-gradient (CG) iteration cap | **No** — the static solve uses its own fixed CG tolerance and iteration cap |
+| `cg_tolerance` | CG relative-residual convergence threshold | **No** — see `max_iter` |
+| `threads` | worker-thread count; `none` = host CPU count | **Yes**; small problems run single-threaded whatever the value |
+| `shell_threshold` | thickness/extent ratio below which `Auto` picks the shell route | **Yes**, on the box-dimension overloads; the `body : Solid` overload always solves as a solid |
+| `shell_voxel_size` | voxel size for medial-axis extraction; `none` = solver's choice | **No** — any value is discarded |
+| `shell_branch_prune_ratio` | medial-axis branch-pruning threshold | **No effect on the result** — read only by the shell route's medial-axis extraction step, which today runs on a stand-in slab rather than the body |
+| `shell_force` | shell routing: `Off` solid, `Auto` classify by `shell_threshold`, `On` shell | **Yes**, as `shell_threshold` |
+| `force_tet` | disable hex/wedge promotion | **No** — the static solve meshes tetrahedra only |
+| `require_hex_wedge` | make a fall-back to tetrahedra an error | **No** — see `force_tet` |
+| `deterministic` | single-threaded, fixed-order reductions: bit-identical results across runs and machines | **Yes** |
+| `target_accuracy` | relative energy-norm error target of the adaptive loop | **Yes**, with `adaptive: true`; a non-default value without it draws a warning |
+| `max_refinement_iterations` | refinement-iteration cap; `0` = coarse pass only | **Yes**, as `target_accuracy` |
+| `max_dofs` | degrees-of-freedom cap on a refined mesh | **Yes**, as `target_accuracy` |
+| `target_quantity_of_interest` | goal-oriented error-estimation hook | **No**, by design — `QoIDescriptor` is an empty stub |
+| `adaptive` | opt into a-posteriori adaptive refinement | **Yes**, on the solid route with an isotropic material; any other material draws a warning and gets a single solve. The shell route ignores it. |
+
+The declarations depart from PRD `docs/prds/v0_3/structural-analysis-fea.md` in two ways. The PRD's `Integer` (e.g. `iterations : Integer`) is spelled `Int`, Reify's builtin name. And the PRD's defaults for `mesh_size` (an automatic size) and `threads` (`num_cpus::get()`, every hardware thread) cannot be written as `.ri` defaults, so both ship as `Option<T> = none`, meaning "no preference": the solver picks the value (for `threads`, the host CPU count).
