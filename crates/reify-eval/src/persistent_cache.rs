@@ -1967,6 +1967,27 @@ pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
     }
 }
 
+/// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
+/// covers each wire-mirror arm.
+///
+/// Exposed `pub(crate)` so every persistence test that must cover all variants
+/// shares ONE list: a new variant is added here once.
+#[cfg(test)]
+pub(crate) fn all_fea_structured_detail() -> Vec<StructuredComputeDetail> {
+    use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+    vec![
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+        }),
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        }),
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+            selector_path: "top".into(),
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5416,22 +5437,6 @@ version = "9.9.9"
             global_relative_energy_error: Some(1.5e-3),
         });
         er
-    }
-
-    /// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
-    /// covers each wire-mirror arm.
-    fn all_fea_structured_detail() -> Vec<StructuredComputeDetail> {
-        vec![
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
-                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
-            }),
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
-                ids: vec![ElementId(3), ElementId(5)],
-            }),
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
-                selector_path: "top".into(),
-            }),
-        ]
     }
 
     #[test]

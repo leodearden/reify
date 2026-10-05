@@ -1467,20 +1467,7 @@ mod tests {
     /// stored its own empty list would silently drop a warm serve's overlays.
     #[test]
     fn persist_bridge_replays_structured_detail_on_every_persistable_target() {
-        use crate::StructuredComputeDetail;
-        use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
-
-        let written = vec![
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
-                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
-            }),
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
-                ids: vec![ElementId(3), ElementId(5)],
-            }),
-            StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
-                selector_path: "top".into(),
-            }),
-        ];
+        let written = crate::persistent_cache::all_fea_structured_detail();
 
         // ONE cache dir for every row, so each row's KEY selects its entry.
         let tmp = tempfile::TempDir::new().unwrap();
