@@ -911,7 +911,8 @@ mod seeded_gate_dimension {
 ///
 /// Liveness is the half this guard cannot check: a test cannot query
 /// Taskmaster. It is delegated deliberately. Each shipped [`Residual`] also
-/// carries a marker comment on its entry in the canonical PTODO form, so the
+/// carries a marker comment on its entry in the canonical PTODO form, meeting
+/// the rule in `reify_test_support::ptodo_cite_marker`, so the
 /// PTODO detector — which DOES resolve task state — performs the liveness
 /// check, and a residual whose
 /// owner closes orphans its cite and reds the fingerprint ratchet in
@@ -1500,9 +1501,9 @@ mod seeded_cites {
         );
     }
 
-    /// (iii) Every shipped residual's cite is ALSO written as a PTODO marker
-    /// comment in this file, so the PTODO detector performs the liveness check
-    /// this test cannot.
+    /// (iii) Every shipped residual's cite is ALSO written as a sole-cite PTODO
+    /// marker comment in this file (rule: `reify_test_support::ptodo_cite_marker`),
+    /// so the PTODO detector performs the liveness check this test cannot.
     ///
     /// This is a cite-liveness mechanism, not a docstring-wording pin: it checks
     /// that a structured identifier is visible to another gate.
