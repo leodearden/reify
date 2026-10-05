@@ -1224,7 +1224,7 @@ is_occt_crate() {
 #     the two files differ ONLY in their `sigma:` literal and header, so the
 #     mode-set difference between them IS the signal, task 7261)
 #   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
-#     keyed by (file, param) in ctor_conformance_corpus_survey.rs's
+#     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
 #     curvature_rad_literal.ri,
 #     dcr_load_ctor_dimension_silent.ri,

@@ -112,9 +112,9 @@ pub fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
 /// nothing.
 ///
 /// Takes the two key halves rather than a `CtorConformanceViolation` so the
-/// sibling `ctor_conformance_corpus_survey` module can apply the SAME rule to a
-/// `SurveySite`, which carries the same pair under different field names. The
-/// rule stays defined exactly once.
+/// ctor-conformance survey's `disposition` module (`harness_ctor_conformance_survey`)
+/// can apply the SAME rule to a `SurveySite`, which carries the same pair under
+/// different field names. The rule stays defined exactly once.
 pub fn debt_entry_matches(entry: &(&str, &str, &str), file: &str, param: Option<&str>) -> bool {
     entry.0 == file && param == Some(entry.1)
 }

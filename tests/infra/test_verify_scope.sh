@@ -412,7 +412,7 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
 # which prints `path:count` rather than a bare number.
 _PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
     | grep 'pg-drift:allow' | wc -l || true)"
-assert "PG-DRIFT: exactly three reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, plus ctor_conformance_corpus_survey.rs's two SYNTHETIC one.ri drift-render inputs); found $_PG_ALLOWED_MENTIONS" \
+assert "PG-DRIFT: exactly three reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, plus harness_ctor_conformance_survey/render.rs's two SYNTHETIC one.ri drift-render inputs); found $_PG_ALLOWED_MENTIONS" \
     test "$_PG_ALLOWED_MENTIONS" -eq 3
 # (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
 # this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
