@@ -30,8 +30,8 @@
 //! - `chunk_markdown` (#6956) — how a chunk's markdown divides into fenced code
 //!   blocks, the sections those fences cannot end, and the catalogue tables a
 //!   section carries; the one fence parser.
-//! - `call_scan` (#6956) — which calls a piece of Reify text makes, read as
-//!   text behind a comment stripper.
+//! - `call_scan` (#6956) — which names a chunk's markdown prose calls, read as
+//!   text.
 //! - `callable_registries` (#6956) — the compiler name registries a documented
 //!   call may belong to, and the one wording for a name that belongs to none.
 //! - `module_compile` (#6956) — what the compiler makes of one complete module,
@@ -39,8 +39,9 @@
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
-//! - `doc_forms` (#6974) — documented call forms, read from markdown spans and
-//!   parsed sources, and their pairing.
+//! - `doc_forms` (#6974) — documented call forms read from markdown spans, the
+//!   call forms of parsed sources and ```` ```reify ```` fences read by AST
+//!   walk, and their pairing.
 //! - `signature_fixtures` (#6974) — the compile-verified fixtures whose calls
 //!   stand for documented signatures, and what "compiles clean" means for them.
 //! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced

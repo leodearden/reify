@@ -1,25 +1,22 @@
-//! Which calls a piece of text makes, read as TEXT: the per-name call-site
-//! scan, and the distinct-called-names scan confirmed through it.
+//! Which names a chunk's markdown PROSE calls, read as TEXT because prose has
+//! no parser: the per-name presence predicate [`calls`], and the
+//! distinct-called-names scan [`called_names`] confirmed through it.
 //!
-//! Text scans, so they read a fence body, a chunk's markdown prose and an
-//! example `.ri` file alike, whether or not the text parses.
+//! Reify SOURCE — a chunk's ```` ```reify ```` fences, an example `.ri` file, a
+//! signature fixture — is never read here. It is parsed and walked by
+//! `doc_forms.rs` (`call_forms` / `fence_call_forms`), and arity is read only by
+//! `doc_forms`.
 
-/// Every call to `name` in `text`, as `(arity, byte offset just past the closing
-/// paren)`, in document order.
+/// Does `text` call `name`: a `name(` whose parens balance?
 ///
-/// `text` MUST already be comment-free — pass it through
-/// [`strip_reify_comments`] first. This function cannot tell a call from a
-/// mention of one.
-///
-/// Arity is TOP-LEVEL commas + 1 over the balanced argument list, so a nested
-/// call (`translate(box(a, b, c), …)`) contributes ONE argument and an empty list
-/// is arity 0. Two things are skipped rather than guessed at: a `name(` whose
-/// parens never balance (a call form wrapped across a markdown line), and a match
-/// preceded by an identifier character, so `min_clearance(` is not harvested out
-/// of a hypothetical `xmin_clearance(`.
-pub(crate) fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
+/// Two things are skipped rather than guessed at: a `name(` whose parens never
+/// balance (a call form wrapped across a markdown line), and a match preceded by
+/// an identifier character, so `min_clearance(` is not harvested out of a
+/// hypothetical `xmin_clearance(`. A text scan cannot tell a call from a
+/// mention of one inside an HTML comment, so stripping those is the caller's
+/// job.
+pub(crate) fn calls(text: &str, name: &str) -> bool {
     let needle = format!("{name}(");
-    let mut out = Vec::new();
     let mut cursor = 0usize;
 
     while let Some(rel) = text[cursor..].find(&needle) {
@@ -36,65 +33,38 @@ pub(crate) fn call_sites(text: &str, name: &str) -> Vec<(usize, usize)> {
         }
 
         let mut depth = 0usize;
-        let mut close = None;
-        for (i, c) in text[open..].char_indices() {
+        for c in text[open..].chars() {
             match c {
                 '(' => depth += 1,
                 ')' => {
                     // Cannot underflow: this scan starts AT the `(`, so `depth`
                     // is already >= 1 by the time any `)` is reached. Saturating
                     // here would be WRONG, not safer — it would make the
-                    // `== 0` test fire on a stray `)` and report a short arity.
+                    // `== 0` test fire on a stray `)` and accept an unbalanced
+                    // call form.
                     depth -= 1;
                     if depth == 0 {
-                        close = Some(open + i);
-                        break;
+                        return true;
                     }
                 }
                 _ => {}
             }
         }
-        let Some(close) = close else { continue };
-
-        let inner = &text[open + 1..close];
-        if inner.trim().is_empty() {
-            out.push((0, close + 1));
-            continue;
-        }
-        // Only `(`/`[` nest here. `<`/`>` are deliberately NOT treated as
-        // brackets: they appear in this chunk as comparisons far more often than
-        // as type parameters, and an unbalanced `>` would silently swallow the
-        // commas after it.
-        let mut depth = 0usize;
-        let mut arity = 1usize;
-        for c in inner.chars() {
-            match c {
-                '(' | '[' => depth += 1,
-                ')' | ']' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => arity += 1,
-                _ => {}
-            }
-        }
-        out.push((arity, close + 1));
     }
-    out
+    false
 }
 
 /// Every DISTINCT identifier CALLED as `name(` in `text`, in document order.
 ///
-/// `text` MUST already be comment-free — pass it through
-/// [`strip_reify_comments`] first.
+/// Complements [`calls`], which answers "is THIS name called". This answers
+/// "which names are called AT ALL" — the direction a phantom-signature check
+/// needs, because a phantom name is by definition one nobody thought to ask
+/// about. `rotate(geo, axis, angle)` and `translate(geo, vector)` (tasks #5347 /
+/// #5364) could only have been found by asking this one.
 ///
-/// Complements [`call_sites`], which answers "at what arities is THIS name
-/// called". This answers "which names are called AT ALL" — the direction a
-/// phantom-signature check needs, because a phantom name is by definition one
-/// nobody thought to ask about. `min_clearance(a, b)` was found by asking the
-/// first question; `rotate(geo, axis, angle)` and `translate(geo, vector)`
-/// (tasks #5347 / #5364) could only have been found by asking this one.
-///
-/// Each candidate is CONFIRMED through [`call_sites`] rather than trusted, so
-/// the two scanners cannot disagree about what a call is: a `name(` whose parens
-/// never balance (a call form wrapped across a markdown line) is skipped here by
+/// Each candidate is CONFIRMED through [`calls`] rather than trusted, so the two
+/// scanners cannot disagree about what a call is: a `name(` whose parens never
+/// balance (a call form wrapped across a markdown line) is skipped here by
 /// exactly the rule that skips it there. A run starting with a digit is a
 /// numeric literal juxtaposed with a paren, never a call.
 pub(crate) fn called_names(text: &str) -> Vec<String> {
@@ -120,7 +90,7 @@ pub(crate) fn called_names(text: &str) -> Vec<String> {
         if name.starts_with(|c: char| c.is_ascii_digit()) || out.contains(&name) {
             continue;
         }
-        if call_sites(text, &name).is_empty() {
+        if !calls(text, &name) {
             continue;
         }
         out.push(name);
@@ -130,17 +100,15 @@ pub(crate) fn called_names(text: &str) -> Vec<String> {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// Every doc↔fence and phantom-name assertion in the chunk modules is downstream
-// of one of these three scanners, so they are pinned directly here rather than
-// only through the chunks.
+// `oracle_xref_smoke.rs`'s prose gates — the call-form coverage class and the
+// registry-truth class — sit downstream of these two scanners, so they are
+// pinned directly here rather than only through the chunks.
 //
-// THE FAILURE THESE CLOSE IS SELF-CONCEALING. `called_names` is the sole
-// extraction path for every chunk module's phantom-name gate, and each of those
-// gates draws its anti-vacuity floors and sentinels from the same scanner's OWN
-// output. A regression that made a scanner over-skip would weaken the gate while
-// leaving every floor and sentinel satisfied, because both sides of the
-// comparison would shrink together. Only a direct test over a known input can
-// see that.
+// THE FAILURE THESE CLOSE IS SELF-CONCEALING. `called_names` is the extraction
+// path for the registry-truth class: a name the scanner stopped seeing is a name
+// that class never checks, so a regression that made a scanner over-skip would
+// weaken the gate while leaving it green. Only a direct test over a known input
+// can see that.
 
 #[test]
 fn calls_sees_a_call_and_the_call_nested_in_its_arguments() {
@@ -187,18 +155,18 @@ fn called_names_skips_a_numeric_literal_juxtaposed_with_a_paren() {
     );
 }
 
-/// A `name(` whose parens never balance is skipped, matching `call_sites`.
+/// A `name(` whose parens never balance is skipped, matching [`calls`].
 ///
 /// The two scanners CONFIRM each other by construction — `called_names` runs
-/// every candidate back through `call_sites` — and this pins that the
+/// every candidate back through `calls` — and this pins that the
 /// confirmation actually discriminates. A call form wrapped across a markdown
 /// line is the live shape this protects against: half a call is not a call, and
-/// counting it would let a fence "demonstrate" a form it never compiled.
+/// counting it would let a prose region claim a call form it never wrote out.
 ///
 /// The skip is PER NAME, not per line, which is the behaviour the assertion
 /// below fixes in place: in `translate(box(1mm, 1mm, 1mm),` the OUTER
 /// `translate(` never closes and is dropped, while the INNER `box(…)` closes on
-/// its own and is kept. That is the right call — `box` really is demonstrated
+/// its own and is kept. That is the right call — `box` really is called
 /// here — and it is worth pinning precisely because the coarser "drop the whole
 /// unbalanced line" reading is the one a reader assumes.
 #[test]
@@ -220,10 +188,9 @@ fn called_names_skips_a_call_whose_parens_never_balance() {
 /// Repeated calls collapse to ONE entry, and the order is the order of first
 /// appearance.
 ///
-/// Both halves matter to the callers: the registry loops assert per DISTINCT
-/// name, and every anti-vacuity floor over it counts `names.len()`, so a scanner
-/// that stopped deduping would inflate a floor into passing on one repeated
-/// constructor.
+/// Both halves matter to the caller: the registry-truth class reports per
+/// DISTINCT name, so a phantom mentioned twice is one line rather than two, and
+/// the lines come in the order a reader meets the names.
 #[test]
 fn called_names_dedups_and_preserves_document_order() {
     assert_eq!(
