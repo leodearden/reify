@@ -25,11 +25,11 @@ const TET_FACES: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
 /// its nodes are in the patch. Output follows `tets` order and, within a tet,
 /// a fixed local face order, so it is deterministic.
 ///
-/// [`crate::boundary_surface_mesh`] applies the same free-face rule (a sorted,
-/// orientation-free key tallied in element order) and parts ways with it on a
-/// face shared by three or more tets: it rejects such a non-manifold mesh with
-/// [`crate::RefineError::NonManifoldBoundary`], while this enumerator counts
-/// the face as not free and drops it without error.
+/// # Panics
+///
+/// A face whose nodes all satisfy `in_patch` is shared by three or more tets:
+/// the mesh is non-manifold there, so the face is neither boundary nor
+/// interior.
 pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) -> Vec<[usize; 3]> {
     let candidates: Vec<[usize; 3]> = tets
         .iter()
@@ -43,6 +43,17 @@ pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) 
     let mut tets_per_face: HashMap<[usize; 3], usize> = HashMap::with_capacity(candidates.len());
     for &face in &candidates {
         *tets_per_face.entry(orientation_free(face)).or_default() += 1;
+    }
+    if let Some(face) = candidates
+        .iter()
+        .map(|&face| orientation_free(face))
+        .find(|face| tets_per_face[face] > 2)
+    {
+        panic!(
+            "free_faces_within: face {face:?} is shared by {} tets, so the mesh is \
+             non-manifold there",
+            tets_per_face[&face],
+        );
     }
     candidates
         .into_iter()
@@ -75,6 +86,7 @@ pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) 
 ///
 /// - `f.len() != 3 * coords.len()`.
 /// - Any patch node is `>= coords.len()`.
+/// - A patch face is shared by three or more tets (see [`free_faces_within`]).
 pub fn apply_patch_resultant(
     f: &mut [f64],
     coords: &[[f64; 3]],
@@ -435,6 +447,13 @@ mod tests {
         );
 
         assert!(free_faces_within(&tets, |n| coords[n][0] == 0.5).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "face [0, 1, 2] is shared by 3 tets")]
+    fn free_faces_within_panics_on_a_face_shared_by_three_tets() {
+        let fan = [[0, 1, 2, 3], [0, 2, 1, 4], [1, 0, 2, 5]];
+        free_faces_within(&fan, |_| true);
     }
 
     #[test]
