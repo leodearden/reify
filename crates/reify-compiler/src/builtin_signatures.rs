@@ -37,15 +37,18 @@
 //! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
 //! - Pattern ORIGIN triples (task 5662) — `mirror`'s 7-arg and
 //!   `circular_pattern`'s 9-arg scalar forms, `ox`/`oy`/`oz`. The row task 5652
-//!   deferred; it mirrors the `pattern` rows of `arg_acceptance.rs`' family
-//!   table (mirror plane, task 5214; circular axis, task 5350).
+//!   deferred; it mirrors the eval-layer gates on the mirror-plane origin (task
+//!   5214) and the circular-pattern axis origin (task 5350).
 //! - The Contract C LENGTH families of PRD
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
 //!   that contract C6 forced in alongside them. These mirror, at the compile
-//!   layer, the family table in `crates/reify-ir/src/arg_acceptance.rs` —
-//!   the canonical enumeration of every position routed through the eval-layer
-//!   LENGTH chokepoint.
+//!   layer, the positions the eval-layer LENGTH chokepoint
+//!   (`crates/reify-ir/src/arg_acceptance.rs`) rejects a bare number at. That
+//!   set is no longer enumerated in prose: the Contract C closure guard,
+//!   `crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs`,
+//!   sweeps every builtin in `GEOMETRY_FUNCTION_NAMES` and asserts each numeric
+//!   position is either rejected there or carries a justification row.
 //! - The ANGLE producer positions of PRD
 //!   `docs/prds/v0_6/angle-units-surface-convergence.md` leaf ζ (task 5782):
 //!   the transform, sweep, curve, modify and pattern producers whose angle
@@ -68,10 +71,10 @@
 //!   unit-vector DIRECTION (`nx`/`ny`/`nz`, `ax`/`ay`/`az`, a pattern's or
 //!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
 //!   bare in correct `.ri`, so a slot there would reject valid code. Stated
-//!   binding at `crates/reify-ir/src/arg_acceptance.rs`'s "unit-vector
-//!   DIRECTIONS" paragraph. The builtins whose arguments STRADDLE this line
-//!   carry the split on their own arm — deliberately UNCOUNTED here, because a
-//!   tally stated away from the arms is exactly the second copy nothing
+//!   binding by the `UnitVectorComponent` rows of the closure guard's
+//!   `ALLOWLIST`. The builtins whose arguments STRADDLE this line carry the
+//!   split on their own arm — deliberately UNCOUNTED here, because a tally
+//!   stated away from the arms is exactly the second copy nothing
 //!   machine-checks that this section opens by warning against. It read
 //!   "three" until task 5662 added the fourth and fifth.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
@@ -606,8 +609,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // The pattern-origin row task 5652 deferred (it turned six then-valid
         // call sites into hard compile errors, a separable breaking-surface
         // migration) and this task closes. These mirror, at the compile layer,
-        // the `pattern` rows of `crates/reify-ir/src/arg_acceptance.rs`'s
-        // family table: the mirror-plane origin (task 5214) and the
+        // the eval-layer gates on the mirror-plane origin (task 5214) and the
         // circular-pattern axis origin (task 5350). Arg names are COPIED from
         // `geometry.rs`'s lowering sites — the `("ox".to_string(), …)` triples
         // in its n==7 and n==9 arms — never invented, so the two layers word one
@@ -625,7 +627,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            This is the FOURTH builtin whose args STRADDLE the
         //            ORIGIN-vs-DIRECTION boundary, after `half_space`,
         //            `revolve` and `rotate_around` — the split is stated binding
-        //            at `arg_acceptance.rs`' "unit-vector DIRECTIONS" paragraph.
+        //            by the `UnitVectorComponent` rows of the closure guard's
+        //            `ALLOWLIST` (`units_length_closure_guard.rs`).
         //            Pinned by `mirror_slots_the_origin_but_never_the_normal`.
         //
         // The `arg_count == 7` guard is SEMANTICALLY LOAD-BEARING, not
@@ -761,12 +764,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
         // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work
-        // item 1. These mirror, at the compile layer, the task-5743 `primitive`
-        // row of `crates/reify-ir/src/arg_acceptance.rs`'s family table: the
-        // positions `geometry_ops`' `required_length_values` already gates at
-        // eval. The hazard they close is the silent one — `Value::as_f64` reads
-        // a bare `20` as 20 SI METRES, so `box(20, 20, 10)` built a 20-metre
-        // part with no diagnostic at all before task 5743.
+        // item 1. These mirror, at the compile layer, the primitive fields task
+        // 5743 gated at eval: the positions `geometry_ops`'
+        // `required_length_values` already gates. The hazard they close is the
+        // silent one — `Value::as_f64` reads a bare `20` as 20 SI METRES, so
+        // `box(20, 20, 10)` built a 20-metre part with no diagnostic at all
+        // before task 5743.
         //
         // Arg NAMES are copied from the lowering sites in `geometry.rs` (the
         // `("width".to_string(), …)` pairs each arm builds), because the eval
@@ -865,9 +868,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            args STRADDLE the boundary, and it draws the same
         //            ORIGIN-vs-DIRECTION split the circular pattern already
         //            draws for `ox`/`oy`/`oz` vs `ax`/`ay`/`az` — stated
-        //            binding at `crates/reify-ir/src/arg_acceptance.rs`'s
-        //            "unit-vector DIRECTIONS" paragraph. Pinned by
-        //            `half_space_slots_the_point_but_never_the_normal`.
+        //            binding by the `UnitVectorComponent` rows of the closure
+        //            guard's `ALLOWLIST` (`units_length_closure_guard.rs`).
+        //            Pinned by `half_space_slots_the_point_but_never_the_normal`.
         "half_space" => const { &[
             length_arg(0, "px"),
             length_arg(1, "py"),
@@ -876,8 +879,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 
         // ── Transform producers (task 5750) ─────────────────────────────────
         //
-        // The task-5623 `transform` row of
-        // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Arg names
+        // The compile-layer half of task 5623's eval-layer gates on
+        // `translate`'s displacement and `rotate_around`'s pivot. Arg names
         // from `geometry_transform.rs`'s `compile_transform_op`.
         //
         // Both names are single-form (`check_arg_count_exact`), so both arms
@@ -930,10 +933,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 
         // ── Modify producers (task 5750) ─────────────────────────────────────
         //
-        // The compile-layer half of the task-5744 `modify` row of
-        // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Arg names
-        // are copied from `geometry_modify.rs`'s `compile_modify_op` arms and
-        // its shared `compile_modify_2arg` helper.
+        // The compile-layer half of task 5744's eval-layer gates on the modify
+        // magnitudes. Arg names are copied from `geometry_modify.rs`'s
+        // `compile_modify_op` arms and its shared `compile_modify_2arg` helper.
         //
         // The arity-agnostic arms here are subject to the HAZARD block above the
         // primitives. Two names in this block ALREADY accept more than one arity
@@ -958,9 +960,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // NOT slotted here, each for a stated reason:
         // - `offset_curve`'s 3rd argument (`"third"`) — a reference Surface
         //   handle OR a direction vec3, disambiguated at eval on the Value
-        //   variant. A direction's components are legitimately bare, and
-        //   `arg_acceptance.rs` names this position explicitly among the
-        //   deliberately-not-gated set.
+        //   variant. A direction's components are legitimately bare, and the
+        //   closure guard's `ALLOWLIST` (`units_length_closure_guard.rs`) names
+        //   this position explicitly among the deliberately-not-gated set.
         // - `shell`'s args 2.. (`face_{i}`) — face INDICES, not lengths.
         // - `chamfer` / `fillet` arg1 in the CURATED form — the edge selector.
 
@@ -1065,9 +1067,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 
         // ── 2-D profile producers (task 5750) ────────────────────────────────
         //
-        // The task-5743 `profile` row of the same family table. Same rules as
-        // the primitives above — including the HAZARD block; `polygon`'s
-        // variadic vertex stream is excluded for the reason recorded there.
+        // The compile-layer half of task 5743's eval-layer gates on the profile
+        // fields. Same rules as the primitives above — including the HAZARD
+        // block; `polygon`'s variadic vertex stream is excluded for the reason
+        // recorded there.
         //
         // rectangle(width, height)
         "rectangle" => const { &[length_arg(0, "width"), length_arg(1, "height")] },
@@ -1828,9 +1831,8 @@ mod tests {
     // ── Task 5750 (units-length η): PRIMITIVE + PROFILE LENGTH slots ─────────
     //
     // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work item 1
-    // (boundary row 9). These pin the compile-layer half of the two task-5743
-    // rows in `crates/reify-ir/src/arg_acceptance.rs`'s family table — the
-    // 21 primitive fields and the 5 profile fields.
+    // (boundary row 9). These pin the compile-layer half of task 5743's
+    // eval-layer gates on the 21 primitive fields and the 5 profile fields.
     //
     // The arg NAMES are copied from the lowering sites in `geometry.rs` (the
     // `("width".to_string(), …)` pairs), not invented here: the eval layer
@@ -1965,8 +1967,9 @@ mod tests {
     /// POINT with an un-gated outward NORMAL in one argument list. The normal is
     /// a dimensionless unit vector whose components are legitimately bare in
     /// correct `.ri`, so slotting indices 3-5 would reject valid code — the same
-    /// ORIGIN-vs-DIRECTION split already drawn for the circular pattern
-    /// (the family table in `crates/reify-ir/src/arg_acceptance.rs`).
+    /// ORIGIN-vs-DIRECTION split already drawn for the circular pattern (the
+    /// `UnitVectorComponent` rows of the closure guard's `ALLOWLIST` in
+    /// `units_length_closure_guard.rs`).
     #[test]
     fn half_space_slots_the_point_but_never_the_normal() {
         assert_slots_at_every_arity(
@@ -2037,10 +2040,10 @@ mod tests {
 
     // ── Task 5750 (units-length η): MODIFY + SWEEP LENGTH slots ──────────────
     //
-    // The compile-layer half of the two task-5744 rows in
-    // `crates/reify-ir/src/arg_acceptance.rs`'s family table. Same
-    // name-copied-from-the-lowering-site discipline as the primitive block
-    // above; sources are `geometry_modify.rs` and `geometry.rs`'s Sweep arms.
+    // The compile-layer half of task 5744's eval-layer gates on the modify and
+    // sweep magnitudes. Same name-copied-from-the-lowering-site discipline as
+    // the primitive block above; sources are `geometry_modify.rs` and
+    // `geometry.rs`'s Sweep arms.
     //
     // UNLIKE the primitives, this family contains the table's first genuinely
     // OVERLOADED names. `fillet` and `chamfer` each accept a 2-arg all-edges
@@ -2136,11 +2139,12 @@ mod tests {
     /// At arity 3 it is either a reference Surface handle or a direction vec3 —
     /// `geometry_modify.rs` stashes it under the neutral name `"third"` and
     /// defers the disambiguation to eval. A direction's components are
-    /// legitimately bare, and `arg_acceptance.rs` names this position
-    /// explicitly as deliberately-not-gated ("its own production diagnostic
-    /// already calls it a direction vec3"), so a LENGTH slot here would reject
-    /// correct `.ri`. Stated positively rather than left to the vec assertion
-    /// above, because it is a DECISION, not an omission.
+    /// legitimately bare, and the closure guard's `ALLOWLIST`
+    /// (`units_length_closure_guard.rs`) names this position explicitly as
+    /// deliberately-not-gated ("its own production diagnostic calls it a
+    /// direction vec3"), so a LENGTH slot here would reject correct `.ri`.
+    /// Stated positively rather than left to the vec assertion above, because
+    /// it is a DECISION, not an omission.
     #[test]
     fn offset_curve_third_argument_is_never_slotted() {
         let slotted: Vec<usize> = builtin_arg_slots("offset_curve", 3)
@@ -2325,9 +2329,9 @@ mod tests {
 
     // ── Task 5750 (units-length η): TRANSFORM LENGTH slots ───────────────────
     //
-    // The task-5623 `transform` row of `crates/reify-ir/src/arg_acceptance.rs`'s
-    // family table. Not one of the four families this leaf's task text names —
-    // it is pulled in by contract C6, whose named fixtures
+    // Task 5623's eval-layer gates on `translate`'s displacement and
+    // `rotate_around`'s pivot. Not one of the four families this leaf's task
+    // text names — it is pulled in by contract C6, whose named fixtures
     // (`translate_non_geometry_target_uses_fallback`,
     // `rotate_around_let_bound_target_ops`) force the decision either way, so
     // the row is completed rather than left half-open. Arg names from
@@ -2424,9 +2428,10 @@ mod tests {
     /// `scale` stays wholly slot-free — its factor is DIMENSIONLESS.
     ///
     /// A scale factor is a ratio, so demanding a Length of it would reject
-    /// correct `.ri` outright. `arg_acceptance.rs` names dimensionless scale
-    /// FACTORS explicitly among the deliberately-not-gated set. Pinned as a
-    /// seam control: `scale` sits in the same `compile_transform_op` match as
+    /// correct `.ri` outright. The closure guard's `ALLOWLIST`
+    /// (`units_length_closure_guard.rs`) names the dimensionless scale FACTOR
+    /// explicitly among the deliberately-not-gated set. Pinned as a seam
+    /// control: `scale` sits in the same `compile_transform_op` match as
     /// `translate` and `rotate_around`, so "the transform family is gated" must
     /// not be read as "every transform argument is gated".
     ///
