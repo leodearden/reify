@@ -2923,7 +2923,11 @@ struct CheckErrorExitAllowance {
     #[allow(dead_code)]
     disposition: CheckErrorAllowlistDisposition,
     /// PTODO-canonical cite (`#NNNN`) of the LIVE task that retires this entry.
-    /// Burn-down metadata, same as `disposition` above.
+    /// Burn-down metadata, same as `disposition` above.  PTODO never reads a
+    /// string literal, so this field is liveness-checked only through a marker
+    /// comment in this file citing the same task: that marker is load-bearing,
+    /// not a duplicate to delete, and `every_allowlist_cite_has_a_ptodo_liveness_marker`
+    /// turns red if it goes missing.
     #[allow(dead_code)]
     cite: &'static str,
 }
