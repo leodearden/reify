@@ -2152,6 +2152,43 @@ mod tests {
     }
 
     #[test]
+    fn string_literal_block_opener_does_not_mask_the_next_lines_code() {
+        // A `/*` inside a string opens no comment, so the `.with_code(` below
+        // stays visible to the window probe.
+        let src = file(&[
+            "    let d = Diagnostic::error(format!(\"p {}\", \"/*\"))",
+            "        .with_code(c);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn string_literal_line_comment_does_not_hide_a_real_block_opener() {
+        // A `//` inside a string ends nothing, so the real `/*` after it still
+        // masks the commented-out constructor.
+        let src = file(&[
+            "let u = \"a//b\"; /* begin",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(4, false)]);
+    }
+
+    /// A quote-aware tracker that read `'"'` as a string opener would hide the
+    /// real `/*` after it and census the commented-out constructor.
+    #[test]
+    fn char_literal_quote_does_not_desync_the_region_tracker() {
+        let src = file(&[
+            "let q = '\"'; /* begin",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(4, false)]);
+    }
+
+    #[test]
     fn commented_out_with_code_does_not_code_the_site() {
         // The CHOSEN rule, asserted explicitly: comment lines are invisible to
         // the `.with_code(` probe as well as to anchoring. A code that has been
