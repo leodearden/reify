@@ -25,14 +25,14 @@
     {
       "candidate_id": "36e0c23c-5b4e-4f7b-b809-39729c71902f@506a403c-16a3-49e5-a944-783534d69c7f",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "d52400b9-cb80-49de-a300-512715dcccea",
       "mint_name": "Task 3191",
       "rationale": "Episode: 'Task 3191 tracks moving these to a shared Display impl'. Node 'Task 319' is a truncation lookalike. No node exists for 3191."
     },
     {
       "candidate_id": "1620132e-f14e-466b-8d35-80097322acdc@01c40a47-3326-48cb-8e31-ac7d615308f5",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "3aae2d6b-200e-40a4-b45f-e0b35359ebbc",
       "mint_name": "Task 955",
       "rationale": "Episode: tasks 954/955/956 were bulk-cancelled in Stage 2. The fact is wholly about 955, not 923. Only a 'dep 955' concept node exists."
     },
@@ -102,42 +102,42 @@
     {
       "candidate_id": "0eb5ef53-1736-4d88-9be5-b3ee84f3e9e4@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "ef3c4fe7-fd33-4991-a48b-3c41dd4b2040",
       "mint_name": "Task 2347",
       "rationale": "Task 2342 is the reify-doc crate scaffold (task record), unrelated. The fact relates 2354 to 2347 (stdlib-trait-breadth audit). Move the 2342 end onto 2347, which has no node yet."
     },
     {
       "candidate_id": "679942f0-5e01-460a-be0f-558bc9cfddd9@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "ef3c4fe7-fd33-4991-a48b-3c41dd4b2040",
       "mint_name": "Task 2347",
       "rationale": "2347 is the stdlib-trait-breadth audit deliverable (episode); 2342 (reify-doc scaffold) is unrelated."
     },
     {
       "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "ef3c4fe7-fd33-4991-a48b-3c41dd4b2040",
       "mint_name": "Task 2347",
       "rationale": "Both ends of this edge are wrong. This row moves the 2342 (reify-doc) end onto 2347; the sibling row for the same edge moves the 2351 end onto 2352."
     },
     {
       "candidate_id": "e54c4519-e4d7-475c-a3f7-3645481f3312@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "ef3c4fe7-fd33-4991-a48b-3c41dd4b2040",
       "mint_name": "Task 2347",
       "rationale": "Both ends of this edge are wrong. This row moves the 2342 (reify-doc) end onto 2347; the sibling row for the same edge moves the 2354 end onto 2349."
     },
     {
       "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "e4bd2473-c309-4470-b323-beeb1ff22297",
       "mint_name": "Task 2352",
       "rationale": "Both ends of this edge are wrong. This row moves the 2351 end onto 2352, the fact's subject; the sibling row moves the 2342 end onto 2347."
     },
     {
       "candidate_id": "ec3649b7-eb26-4b24-a573-b6100672ac78@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "e4bd2473-c309-4470-b323-beeb1ff22297",
       "mint_name": "Task 2352",
       "rationale": "Episode names 2352 among the four audit deliverables (2347/2349/2352/2354); 2351 is not one but is its ±1 neighbour."
     },
@@ -221,35 +221,35 @@
     {
       "candidate_id": "cd8a87a2-823f-499f-9ab0-1808c374976c@cc5d2895-3622-4520-ace1-f56220cc0cbc",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "c7b1e51a-375c-4b77-a0e7-bf7c81968960",
       "mint_name": "Task 4993",
       "rationale": "Episode: the duplicate-node issue is task 4993, resolved via merge_entities. 2995 is a digit-swap lookalike of the episode's 4995/4993. No node exists for 4993."
     },
     {
       "candidate_id": "2f7c6873-5070-49d3-bca6-8e8125bf5d97@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "dd03198e-651a-4276-8984-2731bb1ae52e",
       "mint_name": "Task 2919",
       "rationale": "Episode: 'Task 2919 is FEA solver … deps=[2916,2917,2918]', and it states Stage 1 conflated 2919 with Shells tasks near 3016-3020. No canonical 2919 node exists."
     },
     {
       "candidate_id": "442c14ea-a580-443f-b9ae-9d4a4d29bb0c@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "dd03198e-651a-4276-8984-2731bb1ae52e",
       "mint_name": "Task 2919",
       "rationale": "Same episode: 2919 depends on 2916. Task 3019 is not involved."
     },
     {
       "candidate_id": "4b782505-333f-4667-a931-136c57912dd3@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "dd03198e-651a-4276-8984-2731bb1ae52e",
       "mint_name": "Task 2919",
       "rationale": "Fact 'Task 3017 is not task 2919' relates 3017 and 2919 (episode); Task 3019 is not involved."
     },
     {
       "candidate_id": "d0b345d7-6cae-4e6b-9b5e-904fbd963904@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "dd03198e-651a-4276-8984-2731bb1ae52e",
       "mint_name": "Task 2919",
       "rationale": "Task 2919 is the FEA solver task (episode); 3019 is unrelated."
     },
@@ -340,7 +340,7 @@
     {
       "candidate_id": "07a2750a-9b05-4f98-a9aa-89d45d0d98b7@9626ea29-52e3-492f-b5bb-7a0f3598ebf0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "5a837f19-da8e-4003-84ca-e5c6be15bc32",
       "mint_name": "Task 3838",
       "rationale": "Episode: main's task-3838 refactored eval_inverse_dynamics; 3836 is its ±2 neighbour. Only a 'commit 3838d4ab00' node matches the number."
     },
@@ -361,21 +361,21 @@
     {
       "candidate_id": "7cc6280a-858d-4684-bef6-2c96d78877a8@5f3588ed-6c24-4a5c-8c1f-39de705e5899",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "59c9d22b-c88d-4e95-83de-96ab4b53c23b",
       "mint_name": "Task 4011",
       "rationale": "Episode: 'T5 (4011…) monte_carlo_stackup builtin + required-seed enforcement'. The node is the 3996/3998/4001 series; no 4011 node exists."
     },
     {
       "candidate_id": "75abeea1-4883-48e5-a8d7-e5b9e2e4c24d@70808ce7-7e94-4e18-9f81-48c20a2978d0",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "f79ebe58-16ec-4fae-856a-249b20c8c2ea",
       "mint_name": "Task 4000",
       "rationale": "Task 4002 is the cancelled ObjectiveSet threading task (task record). The fact is about task 4000's post-merge verify; only the 'esc-4000-39' node matches 4000."
     },
     {
       "candidate_id": "a0056eca-5754-4751-8cc7-b85bc9812ff6@d63f74cf-bdfc-45c6-89db-91b5b01b6c9c",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "f79ebe58-16ec-4fae-856a-249b20c8c2ea",
       "mint_name": "Task 4000",
       "rationale": "Episode: 'Purposes α (task 4000) covers the --purpose flag consumer surface'; 4003 is Purposes β."
     },
@@ -438,7 +438,7 @@
     {
       "candidate_id": "42fc36ec-b2f9-4148-ac10-c55af52d1309@87317480-a56a-4d98-9aa1-4d94f0108f9f",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "5b1327dd-39ea-45f7-83f8-42e5548993ca",
       "mint_name": "Task 4359",
       "rationale": "Episode: #4362's formal deps include 4359; 4351 is not mentioned. Only concept nodes ('dep 4359', 'soft edge ζ(4359)') match, not a task node."
     },
@@ -480,21 +480,21 @@
     {
       "candidate_id": "d9580f01-f9d8-4486-a821-ec5ec0a384ca@f961c0b7-6ab0-46a6-90d1-35c469562e64",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "77cdfaef-1261-42ce-93bb-13c07873c81f",
       "mint_name": "Task 4616",
       "rationale": "Episode: the decision wired task 4616 (Gap C leaf) depends_on 4596 and 4599; 4615 is the ±1 lookalike and is not mentioned. Target the subject 4616, which has no node."
     },
     {
       "candidate_id": "ea185157-ab72-4e6a-824d-1cc413856e67@f961c0b7-6ab0-46a6-90d1-35c469562e64",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "77cdfaef-1261-42ce-93bb-13c07873c81f",
       "mint_name": "Task 4616",
       "rationale": "Task 4616 IS the Gap C honesty-diagnostic leaf (episode); 4615 is not mentioned."
     },
     {
       "candidate_id": "ea50e06c-e823-4afc-9601-4fda31a94162@f961c0b7-6ab0-46a6-90d1-35c469562e64",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "77cdfaef-1261-42ce-93bb-13c07873c81f",
       "mint_name": "Task 4616",
       "rationale": "Same episode: 4616's dependency on 4596 for the seal.thickness fixture. 4616 is the affected task; 4615 is the ±1 lookalike."
     },
@@ -508,28 +508,28 @@
     {
       "candidate_id": "8047cd8b-d05e-4012-b9e9-9ae95bf48555@67da01ce-e974-49f4-8a60-043a1736a430",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "ecfbf574-9cd3-422b-9ae0-b18522b4fb3c",
       "mint_name": "Task 4646",
       "rationale": "Episode: the stamp-out (#4646) supersedes 4640's interim. 4645 is a sibling in the batch, not the subject; no 4646 node exists."
     },
     {
       "candidate_id": "10379740-90a8-475e-a821-b66c51dc21e3@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "a1d79135-8cdc-4a5e-bc4c-485e69a3086e",
       "mint_name": "Task 4759",
       "rationale": "Episode: the stale-branch technique was 'Confirmed on task 4759'; 4755 is not mentioned. Only a 'Dep 4759' concept node exists."
     },
     {
       "candidate_id": "51ce0475-9af9-41fc-b67c-d1cceb314a5d@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "a1d79135-8cdc-4a5e-bc4c-485e69a3086e",
       "mint_name": "Task 4759",
       "rationale": "Episode: the rebase finding is task 4759's ('Confirmed on task 4759'); 4755 is not mentioned."
     },
     {
       "candidate_id": "92cc574a-a541-46f8-b729-ae45aefb09bb@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "a1d79135-8cdc-4a5e-bc4c-485e69a3086e",
       "mint_name": "Task 4759",
       "rationale": "Episode: the 4040 deletions were measured on task 4759's branch; 4755 is not mentioned."
     },
@@ -620,14 +620,14 @@
     {
       "candidate_id": "22beeeed-ef7b-4971-aec2-821fc0df3e25@36a77ef0-3842-4e78-a56e-8bd69ac71430",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "d39e96ef-f4d1-448b-87d3-7e9bb331ee68",
       "mint_name": "Task 5632",
       "rationale": "Episode: the Leo-authorized landing of reify task 5632; 5633 is the ±1 lookalike. Only commit and dependency nodes match 5632."
     },
     {
       "candidate_id": "7a913250-ef6a-469d-9dd6-dc46df41e70a@36a77ef0-3842-4e78-a56e-8bd69ac71430",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "d39e96ef-f4d1-448b-87d3-7e9bb331ee68",
       "mint_name": "Task 5632",
       "rationale": "Episode: task 5632 was landed via the merge queue; 5633 is the ±1 lookalike."
     },
@@ -648,7 +648,7 @@
     {
       "candidate_id": "88178776-38d3-4c38-a615-5fa131bf9fc3@5dd532a2-f4b0-4636-9dad-d05dbcca9f42",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "8d982903-21fb-4613-b661-8416e8f64bd9",
       "mint_name": "Task 6085",
       "rationale": "Task 6084 is the ERE-escaping fix (task record), unrelated. The fact is about the enforcement work's hard dependency on 6085; only a '6085 dependency' concept node exists."
     },
@@ -669,7 +669,7 @@
     {
       "candidate_id": "9a8e780b-82b2-4823-a612-d5b723bfc9cc@b500ca10-d01c-4a24-b743-4b17ed3a4d1e",
       "verdict": "REPAIR",
-      "target_node_uuid": null,
+      "target_node_uuid": "1f6414b8-aee3-4ed6-a7c5-0cd34955b896",
       "mint_name": "Task 6164",
       "rationale": "Episode: 6128 was consolidated into task 6164; the fact relates ruling 6164 to task 6164, and 6165 is the ±1 lookalike. The only 6164 node is the ruling itself (the other endpoint)."
     },
