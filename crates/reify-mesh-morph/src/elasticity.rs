@@ -206,8 +206,8 @@ pub enum ElasticityFailure {
 ///   `value = new_position[axis] - old_position[axis]` (delta, not absolute).
 ///   **Duplicate `node_index` entries are a precondition violation**: each
 ///   occurrence appends three more `DirichletBc` entries for the same DOFs,
-///   and `apply_dirichlet_row_elimination` asserts uniqueness in debug builds
-///   (boundary/dirichlet.rs:170-186). The natural producer
+///   and `apply_dirichlet_row_elimination` asserts uniqueness in its
+///   debug-build duplicate-DOF check. The natural producer
 ///   (`compute_dirichlet_bcs` via `BTreeMap`) always emits each node once.
 /// - `options` — supplies the fictitious-stiffness parameters
 ///   (`fictitious_youngs_modulus_base`, `fictitious_poisson_ratio`) used to
@@ -386,6 +386,12 @@ pub fn elasticity_morph_with_cg_opts(
         })
         .collect();
 
+    // Both modes below are serial by choice. The speed-ups that would change
+    // that — caching the factorisation of the tick-invariant post-BC K, and
+    // parallel assembly/CG (giving up the bit-determinism the tests below pin)
+    // — are recorded in docs/prds/v0_3/mesh-morphing.md §"Measured performance
+    // status"; whether to take either is decided by [MILESTONE] #7836.
+    //
     // AssemblyMode::Deterministic — bit-stable across runs and machines (load-
     // bearing for the FEA warm-start cache, PRD task #15). Parallel-mode
     // policy lives in PRD task #16's ElasticOptions resolution layer, not in
@@ -610,7 +616,10 @@ mod tests {
     ///   the propagated displacement.
     ///
     /// Adapts the `laplacian_smooth_with_one_iteration_*` cone fixture
-    /// (laplacian.rs:336-397).
+    /// (laplacian.rs's `cone_fixture` helper). The Laplacian quick-pass now
+    /// shares this test's semantics: since task #6637 it too extends the
+    /// boundary DISPLACEMENT field and returns `old + u`, so both solvers
+    /// reproduce a rigid boundary translation exactly.
     #[test]
     fn elasticity_morph_with_rigid_translation_on_cone_propagates_translation_to_interior_node_within_fp_tolerance()
      {
@@ -721,9 +730,10 @@ mod tests {
     /// Defends against a future refactor swapping `AssemblyMode::Deterministic`
     /// or `SolverMode::Deterministic` for their `Parallel` counterparts —
     /// those produce tolerance-equivalent but not bit-equal results across
-    /// thread counts (per solver.rs:33-50). Reuses the cone fixture from
+    /// thread counts (per the `Parallel` docs of `reify_solver_elastic::SolverMode`
+    /// and `reify_solver_elastic::AssemblyMode`). Reuses the cone fixture from
     /// step-9. Mirrors `laplacian_smooth_is_deterministic_across_runs_with_same_input`
-    /// (laplacian.rs:619-658).
+    /// (laplacian.rs).
     #[test]
     fn elasticity_morph_is_deterministic_across_runs_with_same_input() {
         let mesh = VolumeMesh {

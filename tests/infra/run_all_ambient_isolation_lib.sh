@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# tests/infra/run_all_ambient_isolation_lib.sh — the per-key hostile+baseline
-# ambient-isolation decision, extracted so it can be unit-tested in isolation
-# (task 5259, PRD docs/prds/merge-gate-health.md W4c).
+# tests/infra/run_all_ambient_isolation_lib.sh — what ambient env the
+# run_all.sh pool sees, and whether it matters: the per-key hostile+baseline
+# ambient-isolation decision (task 5259, PRD docs/prds/merge-gate-health.md
+# W4c) and the behavioural derivation of what run_all.sh itself injects (task
+# 7234), both extracted so they can be unit-tested in isolation.
 #
 # Provides:
 #   ambient_isolation_check_one <target> <key> <val> <manifest_keys>
@@ -33,6 +35,35 @@
 #     The function never calls assert() itself. On the FAIL branch the hostile
 #     run's captured output follows that line, every line `  | `-prefixed —
 #     see the branch's own comment for why bare re-emission is unsafe.
+#
+#   run_all_injected_env_keys <target>
+#
+#     Derives BEHAVIOURALLY which env vars <target> (a run_all.sh-shaped
+#     runner: `bash <target> <infra_dir>` spawns each <infra_dir>/test_*.sh)
+#     injects into a member it spawns — its own exports, those of every lib it
+#     sources (transitively), and any per-member spawn-prefix assignment.
+#     Runs <target> against a private one-member fixture whose member dumps
+#     its env, then diffs that dump's KEYS against the same member spawned
+#     directly. Both spawns start from the SAME minimal `env -i` baseline, so
+#     the answer is identical standalone and inside the merge gate's ambient
+#     env, and bash-maintained SHLVL/PWD/_ cancel with no exclusion list. The
+#     member is classified `pool` by a fixture manifest and the pool lock is
+#     private, so the nested run takes the real concurrent-pool spawn path
+#     without contending with the outer pool the caller holds a slot in.
+#
+#     stdout: the injected var NAMES, sorted and unique, one per line; rc 0.
+#     If the member never ran: rc 1, and on stderr one line naming <target>
+#     and its rc, then the runner's log with every line `  | `-prefixed (a
+#     nested run_all.sh prints `FAILED <names>` and may print slot/clock
+#     sentinels — same hazard as ambient_isolation_check_one's FAIL branch).
+#
+#     Accepted blind spots (the single place they are listed): keys the probe
+#     baseline itself carries (PATH, HOME, TMPDIR and the fixture knobs it
+#     sets); value rewrites of a baseline key; exports conditional on an
+#     inbound var the minimal baseline lacks; and run_all.sh's --scope
+#     host-infra and legacy all-serial paths, which are not probed. OLDPWD
+#     surfaces only if run_all.sh `cd`s in its own shell — and is then a real
+#     injection, since bash exports OLDPWD to children after a cd.
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/run_all_ambient_isolation_lib.sh"
@@ -122,4 +153,67 @@ ambient_isolation_check_one() {
     echo "AMBIENT-ISOLATION FAIL: $_key flips test_run_all.sh red only under the hostile ambient env (genuine isolation bug) [hostile rc=$_amb_rc]"
     printf '%s\n' "$_amb_out" | sed 's/^/  | /'
     return 1
+}
+
+# run_all_injected_env_keys <target>
+run_all_injected_env_keys() {
+    local _target="$1"
+    local _scratch
+    _scratch="$(mktemp -d "${TMPDIR:-/tmp}/reify-ambient-probe.XXXXXX")" || return 1
+
+    # The probe member dumps its env next to the fixture dir, addressed
+    # relative to its own location, so the baseline needs no carrier var
+    # (which would itself be a baseline key, and so a blind spot).
+    mkdir -p "$_scratch/infra"
+    cat > "$_scratch/infra/test_ambient_env_probe.sh" <<'SH'
+#!/usr/bin/env bash
+env -0 > "$(dirname "${BASH_SOURCE[0]}")/../member.env"
+SH
+    echo "test_ambient_env_probe.sh pool" > "$_scratch/classification.manifest"
+
+    # REIFY_RUN_ALL_POOL_LOCK is MANDATORY: the default host-global lock would
+    # contend with the outer pool the caller itself holds a slot in.
+    local -a _baseline=(
+        PATH="${PATH:-/usr/bin:/bin}"
+        HOME="${HOME:-}"
+        TMPDIR="${TMPDIR:-/tmp}"
+        RUN_ALL_CLASSIFICATION_MANIFEST="$_scratch/classification.manifest"
+        REIFY_RUN_ALL_POOL_LOCK="$_scratch/pool.lock"
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1
+        REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE=1
+    )
+
+    local _rc=0
+    env -i "${_baseline[@]}" bash "$_target" "$_scratch/infra" > "$_scratch/runner.log" 2>&1 || _rc=$?
+
+    if [ ! -s "$_scratch/member.env" ]; then
+        echo "run_all_injected_env_keys: the probe member never ran under $_target [rc=$_rc]; runner log follows" >&2
+        sed 's/^/  | /' "$_scratch/runner.log" >&2
+        rm -rf "$_scratch"
+        return 1
+    fi
+    mv "$_scratch/member.env" "$_scratch/via_runner.env"
+
+    env -i "${_baseline[@]}" bash "$_scratch/infra/test_ambient_env_probe.sh" > /dev/null 2>&1
+    if [ ! -s "$_scratch/member.env" ]; then
+        echo "run_all_injected_env_keys: the direct-spawn control member produced no env dump" >&2
+        rm -rf "$_scratch"
+        return 1
+    fi
+
+    local -A _control_keys=()
+    local _entry _key
+    while IFS= read -r -d '' _entry; do
+        _key="${_entry%%=*}"
+        [ -z "$_key" ] || _control_keys["$_key"]=1
+    done < "$_scratch/member.env"
+
+    while IFS= read -r -d '' _entry; do
+        _key="${_entry%%=*}"
+        [ -z "$_key" ] || [ -n "${_control_keys["$_key"]:-}" ] || printf '%s\n' "$_key"
+    done < "$_scratch/via_runner.env" | sort -u
+
+    rm -rf "$_scratch"
+    return 0
 }

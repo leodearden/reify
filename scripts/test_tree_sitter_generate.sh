@@ -9,6 +9,10 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TS_DIR="$ROOT/tree-sitter-reify"
 GENERATE_SCRIPT="$ROOT/scripts/tree-sitter-generate.sh"
 STAMP_FILE="$TS_DIR/src/.grammar_hash.stamp"
+# The content manifest of the generated outputs (`#6992`). A SIBLING of
+# STAMP_FILE, not a widening of it: the assertions in Test 1 below pin
+# STAMP_FILE at exactly 64 hex chars, and two more consumers do the same.
+OUTPUTS_STAMP_FILE="$TS_DIR/src/.generated_outputs.stamp"
 
 # Shared utilities (compute_sha256, etc.)
 source "$SCRIPT_DIR/lib.sh"
@@ -16,6 +20,14 @@ source "$SCRIPT_DIR/lib.sh"
 # This is a test script, not a build script — source shared test helpers from tests/infra/.
 [ -f "$ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$ROOT/tests/infra/test_helpers.sh"
+
+# ts_outputs_manifest_check — the ONE test-side verifier for
+# .generated_outputs.stamp, shared with tests/infra/test_tree_sitter_pipeline.sh.
+# The manifest has two writers (this script's target and build_support.rs); it
+# must not also grow a verifier per test file, or each would accept only the
+# shape its own writer emits.
+[ -f "$ROOT/tests/infra/ts_outputs_manifest_lib.sh" ] || { echo "ERROR: ts_outputs_manifest_lib.sh not found"; exit 1; }
+source "$ROOT/tests/infra/ts_outputs_manifest_lib.sh"
 
 # Ensure parser.c + stamp are restored on exit.
 trap '"$GENERATE_SCRIPT" --force >/dev/null 2>&1 || true' EXIT
@@ -26,8 +38,10 @@ echo "=== tree-sitter-generate.sh unit tests ==="
 echo ""
 echo "--- Test 1: stamp file created after generation ---"
 
-# Remove stamp if it exists, then run generation.
-rm -f "$STAMP_FILE"
+# Remove BOTH stamps if they exist, then run generation.  The outputs manifest
+# must be removed too: build.rs writes one as well, and an assertion satisfied by
+# another writer's leftover artifact tests nothing about this script.
+rm -f "$STAMP_FILE" "$OUTPUTS_STAMP_FILE"
 
 output=$("$GENERATE_SCRIPT" --force 2>&1)
 
@@ -43,6 +57,23 @@ assert "stamp contains a sha256 hash (64 hex chars)" \
 expected_hash=$(compute_sha256 "$TS_DIR/grammar.js" | awk '{print $1}')
 assert "stamp hash matches grammar.js sha256" \
     test "$stamp_content" = "$expected_hash"
+
+# The outputs manifest must be written alongside it, naming exactly the three
+# generated outputs with hashes matching the files on disk.  Without it the
+# grammar stamp attests grammar.js and nothing else, and a parser.c from a
+# different grammar rides along on a stamp that is, in its own terms, correct.
+assert "outputs manifest exists after generation" \
+    test -f "$OUTPUTS_STAMP_FILE"
+
+# ONE verifier, checking BOTH the name set and every hash, and shared with
+# tests/infra/test_tree_sitter_pipeline.sh so the two writers of this format
+# cannot each be graded by their own grader.  It is also the reason this is not
+# an inline loop any more: `_actual=$(compute_sha256 ... )` unguarded propagated
+# an unhashable output's exit status under `set -euo pipefail` and killed the
+# suite mid-run, so the remaining 40-odd assertions never executed and the
+# failure was reported as a script crash rather than as this assertion.
+assert "outputs manifest names the three outputs, each matching its file on disk" \
+    ts_outputs_manifest_check "$TS_DIR/src"
 
 # ── Test 2: staleness check skips generation when up to date ───────
 echo ""
@@ -195,6 +226,15 @@ assert ".generate.lock pattern appears in root .gitignore" \
 # The mkdir-based lock directory is also a runtime artifact.
 assert ".generate.lock.d appears in root .gitignore" \
     grep -q '\.generate\.lock\.d' "$ROOT/.gitignore"
+
+# The outputs manifest is a generated artifact too, and so is write_atomic's
+# temp file — a crash between write and rename must not leave the lane
+# reporting an untracked file.
+assert ".generated_outputs.stamp appears in root .gitignore" \
+    grep -q '\.generated_outputs\.stamp' "$ROOT/.gitignore"
+
+assert "stamp temp-file prefix appears in root .gitignore" \
+    grep -q 'tree-sitter-reify/src/\.tmp-' "$ROOT/.gitignore"
 
 # ── Test 13: uses portable_timeout from lib_portable.sh ──────────
 echo ""

@@ -363,10 +363,10 @@ Post-audit sites added after the original table was fixed (task #3641 scope):
 
 | Line | Owner | Param | Tightened Type | Classification | Resolved in |
 |------|-------|-------|----------------|----------------|-------------|
-| 286 | `ElasticResult` struct | `frame` | `Field<Point3<Length>, Matrix<3,3,Real>>` | tightened | task #3641 |
-| 343 | `ShellStress` struct | `top` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
-| 344 | `ShellStress` struct | `mid` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
-| 345 | `ShellStress` struct | `bottom` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened | task #3641 |
+| 286 | `ElasticResult` struct | `frame` | `Field<Point3<Length>, Matrix<3,3,Real>>` | tightened-by-#3641 | task #3641 |
+| 343 | `ShellStress` struct | `top` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened-by-#3641 | task #3641 |
+| 344 | `ShellStress` struct | `mid` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened-by-#3641 | task #3641 |
+| 345 | `ShellStress` struct | `bottom` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | tightened-by-#3641 | task #3641 |
 
 **Notes:**
 - `cg_tolerance` (relative residual norm), `shell_threshold` (thickness/extent ratio),
@@ -392,51 +392,87 @@ Source: `crates/reify-compiler/stdlib/analysis.ri`
 
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 30 | `AnalysisResult` trait | `von_mises_stress` | `Real` | `Stress` (= Pressure) | structural-contract | — |
-| 31 | `AnalysisResult` trait | `principal_stress_1` | `Real` | `Stress` | structural-contract | — |
-| 32 | `AnalysisResult` trait | `principal_stress_2` | `Real` | `Stress` | structural-contract | — |
-| 33 | `AnalysisResult` trait | `principal_stress_3` | `Real` | `Stress` | structural-contract | — |
-| 34 | `AnalysisResult` trait | `max_shear_stress` | `Real` | `Stress` | structural-contract | — |
-| 35 | `AnalysisResult` trait | `safety_factor_value` | `Real` | `Real` | structural-contract | — |
-| 46 | `Analysis` trait | `yield_strength` | `Real` | `Pressure` | structural-contract | — |
+| 47 | `AnalysisResult` trait | `von_mises_stress` | `Stress` (= Pressure) | `Stress` (= Pressure) | tightened-by-#6165 | task #6165 |
+| 48 | `AnalysisResult` trait | `principal_stress_1` | `Stress` | `Stress` | tightened-by-#6165 | task #6165 |
+| 49 | `AnalysisResult` trait | `principal_stress_2` | `Stress` | `Stress` | tightened-by-#6165 | task #6165 |
+| 50 | `AnalysisResult` trait | `principal_stress_3` | `Stress` | `Stress` | tightened-by-#6165 | task #6165 |
+| 51 | `AnalysisResult` trait | `max_shear_stress` | `Stress` | `Stress` | tightened-by-#6165 | task #6165 |
+| 52 | `AnalysisResult` trait | `safety_factor_value` | `Real` | `Real` | genuine-dimensionless | task #6165 |
+| 67 | `Analysis` trait | `yield_strength` | `Real` | `Pressure` | structural-contract | task #5807 |
 
-**Rationale for structural-contract classification:** The file-header explicitly states
-"All params use `Real` as a dimension-agnostic placeholder. The runtime builtins produce
+**Rationale — originally `structural-contract`, superseded for the five stress params.**
+The original classification rested on the analysis.ri file header, which stated:
+~~"All params use `Real` as a dimension-agnostic placeholder. The runtime builtins produce
 correctly-dimensioned values (e.g. Scalar<PRESSURE> for stresses, dimensionless Real for
 safety_factor_value). This trait is intended as a structural contract — it does not
-participate in dimension checking and will not reject dimensioned conforming values."
-Tightening e.g. `von_mises_stress : Real` to `von_mises_stress : Stress` would BREAK
-the contract: Real-typed conforming structures (which the runtime produces) would be
-rejected by the dimension checker. **No follow-up task is filed for this module.**
+participate in dimension checking and will not reject dimensioned conforming values."~~
+On that basis, tightening e.g. `von_mises_stress : Real` to `: Stress` was held to BREAK
+the contract, by rejecting the Real-typed conforming structures the runtime produces.
+
+**SUPERSEDED 2026-08-10 (Leo, ruling task 6165 — RULING Q7 posture 2):** that basis is
+rejected for the five stress params. The producing builtins (`von_mises`,
+`principal_stresses`, `max_shear`) already compile to `Scalar<PRESSURE>`, so under strict
+dimension equality a `Real` param holding that value was a hard lie rather than a wildcard
+— the same value read as `Scalar<PRESSURE>` through the builtin but as `Real` through a
+conformer. And the feared breakage was hypothetical: **zero conformers of either trait
+existed repo-wide** (re-measured at implementation time), so the migration was free. The
+quoted prose is **no longer present in `analysis.ri`** — the trait's doc comment now records
+the shipped dimensions and the bare-`0` zero-coercion convention (task-4485/β — do not spell
+`0Pa`), and points at dimension-checked-readers decision 9, which carries the single copy of
+the ruling rationale, the zero-conformers measurement and the posture-3 upgrade path.
+
+`safety_factor_value` is genuinely dimensionless, so it correctly stayed `Real` and is
+reclassified `genuine-dimensionless` rather than left open. `Analysis.yield_strength`
+remains a genuinely open `structural-contract` site — it belongs to dimension-checked-readers
+decision 9 / **task #5807**, not to this ruling, and was deliberately left untouched.
+Behaviour is regression-locked by `tests/harness_statement_semantics/analysis_stress_fn_compile.rs`'s accept/reject trio
+(`analysis_result_conforming_structure_compiles_clean`,
+`analysis_result_real_typed_stress_param_is_rejected`, and — the behavioural fence on the
+"stays `Real`" clause — `analysis_result_dimensioned_safety_factor_value_is_rejected`), plus
+the declared-dimension pins `analysis_result_stress_params_are_scalar_pressure` (five
+`PRESSURE`) and `analysis_result_safety_factor_value_stays_dimensionless` (one
+`DIMENSIONLESS`).
 
 ---
 
 ## Summary
 
+**Invariant.** Each audit-table row is counted once, under the literal value of its
+`Classification` cell, and `Total` is the sum of those counts — the number of table rows.
+Adding, removing or reclassifying a row means changing the matching count and `Total` together.
+Last re-derived from the tables 2026-09-30 (#7235).
+
 | Classification | Count | Action |
 |----------------|-------|--------|
-| `tightenable-now` | 20 | tasks-B/C/A resolved; task-D (#3114) pending |
-| `genuine-dimensionless` | 26 | Annotated `// dimensionless` in-place |
+| `tightenable-now` | 9 | task-D (#3114) pending — all 9 in `structural_physical.ri` |
+| `genuine-dimensionless` | 27 | Annotated `// dimensionless` in-place (incl. `analysis.ri::AnalysisResult.safety_factor_value`, reclassified by #6165) |
 | `tightened-by-#3111` | 12 | task-A ✓ resolved 2026-06-05 — 10 pre-β + 2 post-β (#4240) sites in materials_mechanical.ri: density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy |
+| `tightened-by-#3112` | 3 | task-B ✓ resolved — `materials_thermal.ri` melting_point / max_service_temperature / glass_transition→Temperature |
+| `tightened-by-#3113` | 1 | task-C ✓ resolved — `materials_optical.ri::reference_thickness`→Length |
 | `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
-| `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — all 24 tolerancing.ri blocked-geometry-type sites tightened (17 feature→Geometry, 8 datum_refs→DatumRef; `fn require_finish` param also tightened) |
+| `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — the 24 `tolerancing.ri` table rows (16 `feature`→Geometry, 8 `datum_refs`→DatumRef). A 25th site, `fn require_finish(feature: ...)`, was tightened by the same task but has no table row and is not counted here |
+| `resolved ✓ task-G #3117` | 2 | `solver_elastic.ri::ElasticResult` `displacement` / `stress` — already `Field<…>`-typed (stale TODO confirmed by #3117) |
+| `tightened-by-#3641` | 4 | `solver_elastic.ri` post-audit sites (`ElasticResult.frame`, `ShellStress.top/mid/bottom`) `Real`→`Field<…>` |
+| `tightened-by-#6165` | 5 | RULING Q7 posture 2 ✓ resolved 2026-08-10 — `AnalysisResult`'s five stress params (von_mises_stress, principal_stress_1/2/3, max_shear_stress) `Real`→`Stress`; `safety_factor_value` reclassified `genuine-dimensionless` (counted above) |
+| `structural-contract` | 1 | `analysis.ri::Analysis.yield_strength` only — open, owned by task #5807 |
 | `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
 | `blocked-geometry-type` | 0 | All 24 previous blocked-geometry-type sites tightened by #3116 |
-| `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
-| `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
-| **Total** | **106** | |
+| `blocked-field-in-param` | 0 | Resolved by task 3117 (see `resolved ✓ task-G #3117` row) |
+| **Total** | **99** | Sum of the rows above = number of audit-table rows (`materials_chemical.ri` has none) |
 
-> Note: the original audit counted 99 rows across all tables (88 unique `param X : Real`
-> source lines, plus 11 extra because some params appear in both a trait declaration and
-> conforming structures — e.g. `materials_fea.ri::poisson_ratio` appears 5× across
-> ElasticMaterial + 4 concrete structs). Task #4240 (post-β) added 2 new Real sites
-> (fatigue_strength_at, izod_impact) that were immediately tightened by #3111, bringing
-> the total to 101. Task #6877 (v0.6) then added the `Damped` mixin trait and flipped the
-> four `materials_fea.ri` presets to `DampedMaterial + Visual`, adding 5 further Real sites
-> (`Damped.loss_factor` plus its four preset members) — all `genuine-dimensionless`, none
-> owing a code change — bringing the running total to 106. The `tightenable-now` count
-> falls from 30 to 20 as tasks A (#3111), B (#3112), and C (#3113) resolve; each per-module
-> table shows the resolved rows inline.
+> Note: `Total` counts **table rows** — one per `param X : Real` site (source line). Per-module
+> row counts: materials_mechanical 19, materials_thermal 6, materials_optical 4,
+> materials_electrical 4, materials_fea 10, structural_physical 15, tolerancing 24, io 1,
+> solver_elastic 9, analysis 7 = 99.
+>
+> The original audit had 88 rows, one per site (17/6/4/4/5/15/24/1/5/7 in that module order;
+> acceptance criterion 1). Later tasks added 11 rows: 88 + 2 (#4240, post-β: `fatigue_strength_at`,
+> `izod_impact`, both tightened by #3111) + 5 (#6877, v0.6: `Damped.loss_factor` plus its four
+> preset members, all `genuine-dimensionless`, none owing a code change) + 4 (#3641, post-audit:
+> `ElasticResult.frame`, `ShellStress.top/mid/bottom`) = 99. `tightenable-now` was 23 in the
+> original tables; tasks A (#3111) 10, B (#3112) 3 and C (#3113) 1 resolved 14 of them, leaving
+> task-D's 9. Only sites with a table row are counted; `fn require_finish` (see the
+> `tolerancing.ri` section) is the one tightened site that has none.
 
 ---
 

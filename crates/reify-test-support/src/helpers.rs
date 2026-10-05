@@ -1,16 +1,13 @@
 //! Shared test helpers.
 //!
 //! Most of this module is the `eval-helpers`-gated pipeline for parsing,
-//! compiling, and evaluating Reify source in tests. Alongside it sit un-gated
-//! helpers that need no engine: [`collect_value_ref_members`], which inspects
-//! an already-compiled expression, and [`missing_paths_under`], a filesystem
-//! path-existence filter shared by the test suites' skip-list guards.
-
-use std::path::Path;
+//! compiling, and evaluating Reify source in tests. Alongside it sits one
+//! un-gated helper that needs no engine: [`collect_value_ref_members`], which
+//! inspects an already-compiled expression.
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -39,54 +36,6 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
         }
     });
     members
-}
-
-/// Return the subset of `rel_paths` that have no filesystem entry at
-/// `dir.join(rel)`.
-///
-/// This is the single source of truth for the SKIP_SET dead-key check — the
-/// guard that catches a skip-list entry naming a file that has since been
-/// renamed or deleted, which would otherwise silently disable coverage
-/// forever. It replaced the per-file copies of this `Path::exists` filter that
-/// each such guard used to open-code. This doc is the only place their shared
-/// contract is stated: a call site carries a pointer back here, not a copy.
-///
-/// # Contracts callers may rely on
-///
-/// - **The full offending set is returned.** This never short-circuits on the
-///   first miss, so a caller can report every stale key in one panic instead
-///   of forcing an operator to fix them one run at a time.
-/// - **Input order is preserved** (`filter` is order-preserving), so callers
-///   need not sort to get a stable, reviewable failure message.
-///
-/// # Arity is the caller's problem
-///
-/// Skip lists carry per-file metadata of differing shape, so this takes a
-/// plain iterator of relative paths and callers project their own tuple away
-/// at the call boundary — `SKIP_SET.iter().map(|(rel, _)| *rel)`. That is what
-/// lets skip lists of differing arity share one implementation while staying
-/// private to their own crate: no cross-crate coupling of the skip lists is
-/// created or implied.
-///
-/// # Filesystem semantics
-///
-/// Existence is [`Path::exists`], which follows symlinks and does not
-/// distinguish a file from a directory. A broken symlink therefore reports as
-/// *missing* — pinned by
-/// `test_missing_paths_under_reports_dangling_symlink_as_missing` below.
-///
-/// Any other condition under which `Path::exists` answers `false` — an
-/// unreadable parent directory, say — likewise reports as *missing*. That is a
-/// consequence of `Path::exists`, not a separately pinned behaviour: no test
-/// below exercises it.
-pub fn missing_paths_under<'a>(
-    dir: &Path,
-    rel_paths: impl IntoIterator<Item = &'a str>,
-) -> Vec<&'a str> {
-    rel_paths
-        .into_iter()
-        .filter(|rel| !dir.join(rel).exists())
-        .collect()
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
@@ -311,23 +260,14 @@ pub fn prelude_backed_functions(
     merged
 }
 
-/// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
-/// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
-/// `diagnostics` list. Each parse error's span is attached as a label.
-fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnostic> {
-    parsed
-        .errors
-        .iter()
-        .map(|e| {
-            Diagnostic::error(e.message.clone())
-                .with_label(DiagnosticLabel::new(e.span, e.message.clone()))
-        })
-        .collect()
-}
-
-/// Parse and compile `source` WITHOUT asserting absence of parse errors,
-/// forwarding any parse-layer diagnostics into the returned module's
-/// `diagnostics` list (prepended ahead of compile-layer diagnostics).
+/// Parse and compile `source` WITHOUT asserting absence of parse errors.
+///
+/// The compiler itself forwards each parse error as one `Severity::Error`
+/// diagnostic ahead of the compile-layer diagnostics (`forward_parse_errors`,
+/// reify-compiler `compile_builder/pre_pass.rs`). This helper adds nothing, so
+/// the returned `diagnostics` are exactly what a production caller of
+/// `reify_compiler::compile` sees, and a test may COUNT them. Pinned by
+/// `crates/reify-test-support/tests/allow_parse_errors_helpers.rs`.
 ///
 /// Use this for tests that exercise rejection now emitted at the *parse*
 /// layer — e.g. out-of-range numeric literals, which task #4681 moved from a
@@ -340,26 +280,23 @@ fn parse_errors_as_diagnostics(parsed: &reify_ast::ParsedModule) -> Vec<Diagnost
 /// produced, so downstream invariants like "the offending unit is NOT
 /// registered" remain observable.
 pub fn compile_source_allow_parse_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile(&reify_syntax::parse(source, ModulePath::single("test")))
 }
 
 /// Like [`compile_source_allow_parse_errors`] but parses with the stdlib
 /// prelude enum names pre-seeded and compiles with the full stdlib context
 /// (mirrors [`compile_source_with_stdlib`]).
+///
+/// Same contract: the returned `diagnostics` are exactly what a production
+/// caller of `reify_compiler::compile_with_stdlib` sees, each parse error
+/// forwarded once by the compiler as a `Severity::Error`.
 pub fn compile_source_with_stdlib_allow_parse_errors(
     source: &str,
 ) -> reify_compiler::CompiledModule {
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    let mut diagnostics = parse_errors_as_diagnostics(&parsed);
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
-    diagnostics.append(&mut compiled.diagnostics);
-    compiled.diagnostics = diagnostics;
-    compiled
+    reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
+        source,
+        ModulePath::single("test"),
+    ))
 }
 
 /// Parse and compile `source`, then extract the first template.
@@ -418,6 +355,28 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// Every `Underdetermined`-coded diagnostic in the slice, matched on the
+/// STRUCTURED code rather than by substring on the rendered
+/// `W_UNDERDETERMINED` text — which is the property that makes this worth
+/// having over an ad-hoc `.contains()`, since the rendered wording is free to
+/// change.
+///
+/// Deliberately severity-BLIND, UNLIKE its neighbours [`collect_errors`] and
+/// [`error_diags`]: a diagnostic carrying the code is returned whatever its
+/// severity. `W_UNDERDETERMINED` is a warning today, so adding a severity
+/// filter here to match the neighbours would silently change what the call
+/// sites detect without going red at the ones that merely count. Pinned by
+/// `underdetermined_diags_is_severity_blind`.
+///
+/// Input order is preserved; call sites read the result positionally
+/// (task #6524).
+pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
         .collect()
 }
 
@@ -603,6 +562,14 @@ pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, cont
 /// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
 /// must be absent.
 ///
+/// # Vacuity hazard
+///
+/// An assertion of absence is vacuous wherever the compiler defers checking —
+/// notably a `trait` body with no conforming structure, which emits nothing
+/// however broken it is. The rule and its executable pins live with
+/// `trait_body_without_conformer_is_not_dimension_checked` in reify-compiler's
+/// trait harness.
+///
 /// # Panics
 /// Panics if any `Severity::Error` diagnostic is present. The panic message
 /// includes `context` and the list of error messages.
@@ -637,6 +604,65 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
         diagnostics.is_empty(),
         "{context}: expected no diagnostics at all, got: {:?}",
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that some `Severity::Error` diagnostic carries `code`.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which fixture or phase was being checked.
+///
+/// # Why assert on a code rather than on a count
+///
+/// Prefer this over a bare "at least one error" check, and prefer
+/// [`assert_error_code_absent`] over a bare [`assert_no_error_diagnostics`],
+/// whenever a *specific* diagnostic is the thing under test. A bare non-empty
+/// check is satisfied by *any* error, so an unrelated future diagnostic on an
+/// unrelated line keeps the test green while the guard it was written to
+/// protect rots away silently.
+///
+/// This is not only the stronger pin, it is sometimes the only expressible
+/// one: a fixture that must supply a struct-typed param via a struct-literal
+/// default emits an unavoidable unrelated `unknown variant` error, so no
+/// count-based assertion can be written against it at all.
+///
+/// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
+///
+/// # Panics
+/// Panics if no Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the errors that *were* observed.
+#[track_caller]
+pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    assert!(
+        errors.iter().any(|d| d.code == Some(code)),
+        "{context}: expected an Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+    );
+}
+
+/// Assert that no `Severity::Error` diagnostic carries `code`.
+///
+/// The absence-of-*code* counterpart to [`assert_no_error_diagnostics`]'s
+/// absence-of-*errors*. Use this when the fixture legitimately emits unrelated
+/// errors that a blanket "no errors" assertion would trip over, but the
+/// specific diagnostic under test must still be absent. See
+/// [`assert_error_code_present`] for why code-keyed assertions are preferred.
+///
+/// Unrelated error codes — and codeless (`code: None`) errors — do not
+/// falsify this.
+///
+/// # Panics
+/// Panics if any Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the offending diagnostics.
+#[track_caller]
+pub fn assert_error_code_absent(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    let matching: Vec<_> = errors.iter().filter(|d| d.code == Some(code)).collect();
+    assert!(
+        matching.is_empty(),
+        "{context}: expected no Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but found: {matching:?}"
     );
 }
 
@@ -727,54 +753,266 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+/// Compile `source` — whose length-semantic argument(s) are deliberately
+/// BARE — via the LENIENT [`compile_source`] (not [`parse_and_compile`],
+/// which hard-asserts zero Error diagnostics and would panic before eval ever
+/// ran), then assert that the resulting compile-layer diagnostics are exactly
+/// what a bare length-semantic argument must produce: at least one Error, and
+/// every Error carrying `DiagnosticCode::ArgTypeMismatch`.
+///
+/// `what` names the family under test in BOTH assertions' panic messages —
+/// e.g. `"primitive/profile dimension"`, `"modify/sweep magnitude"`,
+/// `"pattern spacing"`.
+///
+/// # Why both halves matter
+///
+/// 1. At least one compile-layer Error must be present, so a caller cannot
+///    silently stop noticing if the compile-layer length slot regresses.
+/// 2. `DiagnosticCode::ArgTypeMismatch` must be the ONLY Error-severity
+///    compile diagnostic, so an unrelated compile Error cannot make a
+///    caller's downstream "no op reached the kernel" assertion pass for the
+///    wrong reason — compilation having broken, rather than a later eval gate
+///    having dropped the op.
+///
+/// # Panics
+/// Panics if no compile-layer Error diagnostic is produced, or if any
+/// compile-layer Error diagnostic carries a code other than
+/// `DiagnosticCode::ArgTypeMismatch`.
+#[track_caller]
+pub fn compile_expecting_only_arg_type_mismatch(
+    source: &str,
+    what: &str,
+) -> reify_compiler::CompiledModule {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a bare {what} must ALSO be rejected at compile time (ArgTypeMismatch), \
+         not only at eval; got no Error diagnostics in: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error for a bare {what}, else \
+         this caller's \"no op reached the kernel\" assertion could pass because \
+         compilation broke rather than because the eval gate dropped the op; \
+         unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
+    );
+    compiled
+}
+
+/// Build `compiled` against a fresh [`MockGeometryKernel`] as
+/// `ExportFormat::Step`, returning the EVAL-layer `BuildResult.diagnostics`
+/// — never the incoming compile-layer ones — and every
+/// [`reify_ir::GeometryOp`] that reached the kernel.
+///
+/// Those two slots are deliberately NARROWER than [`run_modify_pipeline`]'s
+/// `(BuildResult, Vec<GeometryOpRecord>)`: neither `geometry_output` nor a
+/// record's result handle answers a question a units-gate e2e asks.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn build_against_mock_kernel(
+    compiled: reify_compiler::CompiledModule,
+) -> (Vec<Diagnostic>, Vec<reify_ir::GeometryOp>) {
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: reify_eval::BuildResult = engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let ops = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    (result.diagnostics, ops)
+}
+
+/// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
+///
+/// Resolves any value cell — `let` bindings and `param`s (defaulted or `auto`) alike —
+/// since lookup keys on the cell's member name, not its kind.
+///
+/// This is the cell-level primitive: it returns the full declaration (kind,
+/// visibility, is_aux, cell_type, default_expr, ...) rather than just the
+/// compiled default expression. Callers needing only the compiled default
+/// expression should prefer [`get_let_expr_in`], which delegates here.
+///
+/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
+/// template holding two value cells that share a member name under
+/// different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
+/// walk and is subject to the identical ambiguity contract.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name, naming the colliding entities.
+#[track_caller]
+pub fn get_value_cell_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let Some(template) = module.templates.iter().find(|t| t.name == template_name) else {
+        panic!("no template named '{template_name}'")
+    };
+    lookup_value_cell(template, cell_name)
+}
+
+/// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
+/// [`get_let_expr_in_template`]: resolves `cell_name` against
+/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+///
+/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
+/// the realistic producer of a collision and the disambiguation route.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
+///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
+///   value cell shares that member name, naming the colliding `id.entity` values.
+#[track_caller]
+fn lookup_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let matching: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == cell_name)
+        .collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<String> = template
+                .value_cells
+                .iter()
+                .map(|vc| vc.id.to_string())
+                .collect();
+            panic!(
+                "no value cell named '{cell_name}' in template '{}'; has: {available:?}",
+                template.name
+            )
+        }
+        [only] => only,
+        many => {
+            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+            panic!(
+                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+                 member, under entities {entities:?}; this lookup resolves on id.member alone, \
+                 so disambiguate by searching `template.value_cells` for the desired id.entity",
+                template.name,
+                many.len()
+            )
+        }
+    }
+}
+
+/// THE single site of "has no default expr", shared by [`get_let_expr_in`] and
+/// [`get_let_expr_in_template`].
+///
+/// # Panics
+/// - `"value cell '{cell.id.member}' in '{template_name}' has no default expr"` if
+///   `default_expr` is `None`.
+#[track_caller]
+fn require_default_expr<'a>(
+    cell: &'a reify_compiler::ValueCellDecl,
+    template_name: &str,
+) -> &'a CompiledExpr {
+    let Some(expr) = cell.default_expr.as_ref() else {
+        let cell_name = &cell.id.member;
+        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
+    };
+    expr
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
 ///
 /// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
 /// `param`s alike — since lookup keys on the cell's member name, not its kind. A
 /// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
+/// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Shares its
+/// cell-resolution walk with [`get_value_cell_in`]; see that function's rustdoc for the
+/// full ambiguity contract.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
+///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
+/// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
+pub fn get_let_expr_in_template<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    require_default_expr(lookup_value_cell(template, cell_name), &template.name)
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
+///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
 ///
+/// Delegates to [`get_value_cell_in`] for template and cell resolution.
+///
 /// # Panics
-/// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"no template named '{template_name}'"` if no template with that name exists (raised by
+///   [`get_value_cell_in`]).
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
+///   is absent (raised by [`get_value_cell_in`]).
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
-    cell.default_expr.as_ref().unwrap_or_else(|| {
-        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    require_default_expr(
+        get_value_cell_in(module, template_name, cell_name),
+        template_name,
+    )
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
-///
-/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
-/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
-/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
 /// templates and you need to target a specific one.
 ///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
+///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -786,6 +1024,41 @@ pub fn get_let_expr<'a>(
         .name
         .as_str();
     get_let_expr_in(module, template_name, name)
+}
+
+/// Retrieve the compiled function named `name` from `module`.
+///
+/// # Panics
+/// - `"no function named '{name}' in module '{module.path}'; has: [...]"` if no function has
+///   that name — the panic lists the name of every function the module does carry.
+/// - `"ambiguous function name '{name}' in module '{module.path}'"` if more than one overload
+///   shares that name, listing each overload's params.
+#[track_caller]
+pub fn get_function_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledFunction {
+    let matching: Vec<_> = module.functions.iter().filter(|f| f.name == name).collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+            panic!(
+                "no function named '{name}' in module '{}'; has: {available:?}",
+                module.path
+            )
+        }
+        [only] => only,
+        many => {
+            let params: Vec<_> = many.iter().map(|f| &f.params).collect();
+            panic!(
+                "ambiguous function name '{name}' in module '{}': {} overloads share this name, \
+                 with params {params:?}; this lookup resolves on name alone, so disambiguate by \
+                 searching `module.functions` for the desired params",
+                module.path,
+                many.len()
+            )
+        }
+    }
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -883,12 +1156,13 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 #[track_caller]
 pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
     let id = reify_core::ValueCellId::new(structure, member);
-    result.values.get(&id).cloned().unwrap_or_else(|| {
+    let Some(value) = result.values.get(&id) else {
         panic!(
             "{structure}.{member} not found in eval result; available: {:?}",
             result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
         )
-    })
+    };
+    value.clone()
 }
 
 /// Sorted `member` list of every cell `result` produced for `entity` — used to
@@ -910,10 +1184,49 @@ pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> 
     members
 }
 
+/// The SI magnitude of a resolved [`reify_ir::Value::Scalar`].
+///
+/// `what` is a caller-supplied label naming the cell under test; it is the
+/// only fixture-specific context the panic carries, so each call site keeps
+/// the diagnostic wording its own assertion needs. The `dimension` is
+/// deliberately NOT validated — this projects the magnitude and nothing more.
+/// A caller that needs a dimension check must assert it separately.
+///
+/// `#[track_caller]` keeps the panic's reported location at the test line
+/// rather than inside this file; without it the promotion would be a
+/// diagnostic regression against the inline matches it replaces, which
+/// naturally report at the call site (task #6524).
+///
+/// # Panics
+/// Panics if `value` is not a `Value::Scalar`; the message names both `what`
+/// and the value actually observed. An unresolved `auto` surfaces here as
+/// `Value::Undef`.
+#[track_caller]
+pub fn scalar_si(value: &reify_ir::Value, what: &str) -> f64 {
+    match value {
+        reify_ir::Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("{what}: expected a resolved Value::Scalar, got {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_core::{Diagnostic, Severity};
+    use reify_core::{Diagnostic, DiagnosticCode, Severity};
+
+    /// Run `f` and return the message it panicked with.
+    ///
+    /// `#[should_panic(expected = ...)]` matches exactly ONE substring, which
+    /// otherwise forces a second byte-identical test per expectation. Capturing
+    /// the message instead lets one test assert every substring that makes a
+    /// panic diagnosable. Reuses `reify_core::panic_payload_to_string` rather
+    /// than open-coding the downcast chain.
+    fn panic_message(f: impl FnOnce()) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(()) => panic!("expected a panic, but the call returned normally"),
+            Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
+        }
+    }
 
     /// Build a `reify_eval::EvalResult` from the only two fields these unit
     /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
@@ -1130,6 +1443,61 @@ mod tests {
         );
     }
 
+    // ── scalar_si ─────────────────────────────────────────────────────────
+    //
+    // Task #6524. `scalar_si` projects the SI magnitude out of a
+    // `Value::Scalar` and panics on anything else. The cases below pin its
+    // three properties: the exact magnitude comes back, the panic is
+    // diagnosable, and the dimension is deliberately not inspected.
+
+    /// `scalar_si` returns the `si_value` field verbatim.
+    ///
+    /// `assert_eq!` on the f64 is deliberate: the helper only projects a
+    /// field out and does no arithmetic, so there is no rounding to tolerate
+    /// and an approximate comparison would weaken the pin.
+    #[test]
+    fn scalar_si_returns_si_magnitude_of_scalar() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 0.007,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "gain"),
+            0.007,
+            "scalar_si must return si_value unchanged",
+        );
+    }
+
+    /// A non-`Scalar` value panics with a message naming BOTH the caller's
+    /// `what` label and the value that was actually there — the two facts
+    /// that make the failure diagnosable without a rerun. Asserting both is
+    /// why `panic_message` is used here instead of
+    /// `#[should_panic(expected = ..)]`.
+    #[test]
+    fn scalar_si_panics_naming_label_and_observed_value() {
+        let message = panic_message(|| {
+            let _ = super::scalar_si(&reify_ir::Value::Undef, "E.__connector_0.gain");
+        });
+        assert!(message.contains("E.__connector_0.gain"), "{message}");
+        assert!(message.contains("Undef"), "{message}");
+    }
+
+    /// The helper projects the magnitude and does NOT validate the dimension:
+    /// a non-LENGTH `Scalar` returns its `si_value` just the same. A caller
+    /// needing a dimension check must assert it separately.
+    #[test]
+    fn scalar_si_ignores_dimension() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 2.5e6,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "material.e1"),
+            2.5e6,
+            "dimension must not affect the projected magnitude",
+        );
+    }
+
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
@@ -1301,8 +1669,8 @@ mod tests {
     #[test]
     fn test_compile_template_by_name() {
         let source = r#"
-            structure Alpha { param x: Length = 1 }
-            structure Beta { param y: Length = 2 }
+            structure Alpha { param x: Length = 1mm }
+            structure Beta { param y: Length = 2mm }
         "#;
         let (template, _diags) = super::compile_template(source, "Beta");
         assert_eq!(template.name, "Beta", "should extract template named Beta");
@@ -1451,7 +1819,7 @@ mod tests {
     #[test]
     fn test_make_engine() {
         // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
-        let source = "structure S { param x: Length = 42 }";
+        let source = "structure S { param x: Length = 42mm }";
         let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);
@@ -1594,6 +1962,188 @@ mod tests {
         );
     }
 
+    // ── compile_expecting_only_arg_type_mismatch ──────────────────────────
+
+    /// A source whose ONLY compile-layer Error is the bare-length
+    /// `ArgTypeMismatch` — the shape
+    /// [`super::compile_expecting_only_arg_type_mismatch`] exists to accept. Measured:
+    /// exactly one Error diagnostic, code `Some(DiagnosticCode::ArgTypeMismatch)`.
+    const BARE_FILLET_SRC: &str = r#"
+        structure def BareFillet {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+        }
+        "#;
+
+    /// [`BARE_FILLET_SRC`] with a SECOND, unrelated compile Error added inside
+    /// the SAME structure. Measured: TWO Error diagnostics — `ArgTypeMismatch`
+    /// AND `UnresolvedName` — because compilation does not abort on the first
+    /// error. The MIX is what discriminates the helper's `all` from an `any`;
+    /// an unrelated-error-ONLY source panics under both and would prove nothing.
+    const BARE_FILLET_PLUS_UNRELATED_ERROR_SRC: &str = r#"
+        structure def BareFilletAndStray {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+            let stray = totally_undefined_name
+        }
+        "#;
+
+    /// compile_expecting_only_arg_type_mismatch: a source whose sole compile
+    /// Error is the `ArgTypeMismatch` does not panic, AND the module comes back
+    /// with its diagnostics INTACT.
+    ///
+    /// The returned-unchanged half is part of the contract: a caller inspects
+    /// the module it got back rather than recompiling, so a helper that
+    /// swallowed the diagnostics it had just asserted on — or re-ran the STRICT
+    /// path — would break that caller while still passing its own assertions.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_returns_the_lenient_module() {
+        let compiled = super::compile_expecting_only_arg_type_mismatch(
+            BARE_FILLET_SRC,
+            "modify/sweep magnitude",
+        );
+
+        let errors = super::collect_errors(&compiled.diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the helper must hand back compile_source's output unchanged, diagnostics \
+             and all; got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "the surviving Error must be the COMPILE-layer ArgTypeMismatch; got: {:?}",
+            errors[0]
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 1 — a source with no
+    /// Error diagnostic at all (what a regressed compile-layer length slot would
+    /// look like) panics, and the panic interpolates the caller's `what` noun
+    /// verbatim. That interpolation is the only behavioural claim `what` makes,
+    /// and it is what lets a failure name the family under test rather than
+    /// only the shared helper.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(bracket_source(), "pattern spacing");
+        });
+
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "the panic must interpolate the caller's `what` noun verbatim; got: {message}"
+        );
+        assert!(
+            message.contains("got no Error diagnostics"),
+            "the panic must say WHICH arm fired — no compile Error at all, as distinct \
+             from the wrong one; got: {message}"
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 2 — an
+    /// `ArgTypeMismatch` accompanied by a SECOND, unrelated compile Error
+    /// panics, and the panic names both the intruder and the family.
+    ///
+    /// Driven by the MIXED source deliberately. Weaken the helper's second
+    /// assertion from `all` to `any` and it would ACCEPT this module, at which
+    /// point a caller's "no op reached the kernel" assertion starts
+    /// passing VACUOUSLY — the op absent because compilation broke, not because
+    /// the eval gate dropped it. That silent-vacuity failure is the whole
+    /// reason the assertion exists, and only a mixed fixture can see it.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_on_a_second_unrelated_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_PLUS_UNRELATED_ERROR_SRC,
+                "pattern spacing",
+            );
+        });
+
+        assert!(
+            message.contains("ONLY compile Error"),
+            "the panic must say WHICH arm fired — a second Error alongside the expected \
+             ArgTypeMismatch; got: {message}"
+        );
+        assert!(
+            message.contains("UnresolvedName"),
+            "the panic must NAME the unexpected error rather than merely report that one \
+             exists, or the reader cannot tell what broke compilation; got: {message}"
+        );
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "BOTH arms must interpolate the caller's `what` noun — a family-agnostic \
+             arm reports only that SOMETHING has a second compile Error; got: {message}"
+        );
+    }
+
+    // ── build_against_mock_kernel ─────────────────────────────────────────
+
+    /// build_against_mock_kernel: a clean single-op source yields NO Error
+    /// diagnostics in slot 1 and the emitted `Box` op in slot 2.
+    ///
+    /// Non-empty ops PAIRED with empty errors is what discriminates here: two
+    /// slots sourced from the same place, or returned the wrong way round,
+    /// cannot satisfy both halves at once.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_against_mock_kernel_returns_build_diagnostics_and_the_emitted_ops() {
+        let (diagnostics, ops) = super::build_against_mock_kernel(super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        ));
+
+        let errors = super::collect_errors(&diagnostics);
+        assert!(
+            errors.is_empty(),
+            "a dimensioned box must build with zero Error diagnostics; got: {errors:?}"
+        );
+        let boxes: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, reify_ir::GeometryOp::Box { .. }))
+            .collect();
+        assert_eq!(
+            boxes.len(),
+            1,
+            "slot 2 must carry the ops that actually reached the kernel; got: {ops:?}"
+        );
+    }
+
+    /// build_against_mock_kernel: composed with
+    /// [`super::compile_expecting_only_arg_type_mismatch`], slot 1 carries the
+    /// EVAL layer's `DimensionedArgRejected` and NOT the COMPILE layer's
+    /// `ArgTypeMismatch`.
+    ///
+    /// This is what proves slot 1 is `BuildResult.diagnostics` rather than the
+    /// incoming `compiled.diagnostics` forwarded through. The test above passes
+    /// either way, since a clean source has nothing at either layer; only a
+    /// fixture that is rejected at BOTH layers separates them. A caller that
+    /// filters on `DimensionedArgRejected` would find no needle in a helper that
+    /// returned the compile diagnostics — leaving PRD decision D2's two-layer
+    /// observability unobservable from here.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_against_mock_kernel_returns_eval_layer_diagnostics_not_compile_layer_ones() {
+        let (diagnostics, _ops) =
+            super::build_against_mock_kernel(super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_SRC,
+                "modify/sweep magnitude",
+            ));
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::DimensionedArgRejected)),
+            "slot 1 must be BuildResult.diagnostics — the EVAL-layer gate's \
+             DimensionedArgRejected; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+            "slot 1 must NOT be the incoming compile diagnostics forwarded through: the \
+             COMPILE-layer ArgTypeMismatch belongs to the returned module's own \
+             `diagnostics`, and merging the layers makes \"which layer rejected this?\" \
+             unanswerable from the code alone (PRD D2); got: {diagnostics:?}"
+        );
+    }
+
     // ── assert_has_diagnostic ──────────────────────────────────────────────
 
     /// assert_has_diagnostic should not panic when the diagnostics slice contains
@@ -1708,20 +2258,439 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
-    // ── get_let_expr_in ───────────────────────────────────────────────────
+    // ── assert_error_code_present / assert_error_code_absent ──────────────
+    //
+    // Task 6143. These two are the code-keyed counterpart to the
+    // absence-of-diagnostic helpers above. The cases below pin the property
+    // that motivates them: an *unrelated* error code must not influence
+    // either verdict, which no count-based assertion can express.
 
-    /// get_let_expr_in should return the default_expr of the named cell in the
-    /// named template, even when the module has multiple templates.
-    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
-    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
-    /// they satisfy `*v == (*v as i64) as f64`.
+    /// `assert_error_code_present` passes when an Error-severity diagnostic
+    /// carries the requested code, even alongside unrelated errors.
     #[test]
-    fn test_get_let_expr_in_finds_named_template() {
+    fn test_assert_error_code_present_passes_when_code_present() {
+        let diags = vec![
+            Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
+            // Message text is parenthesized, not colon-introduced. The
+            // `corpus_no_bare_scalar` corpus guard scans every string literal
+            // in `crates/**/*.rs` for bare `: Scalar` inline-DSL annotations
+            // and cannot distinguish one from a quoted diagnostic message.
+            // Only the CODE is asserted on here, so the wording is free.
+            Diagnostic::error("dimension mismatch in comparison (Scalar[kg] vs Scalar[m])")
+                .with_code(DiagnosticCode::DimensionMismatch),
+        ];
+        super::assert_error_code_present(
+            &diags,
+            DiagnosticCode::DimensionMismatch,
+            "conformed trait body",
+        );
+    }
+
+    /// `assert_error_code_present` panics on an empty slice — the vacuity
+    /// case. Panic message must carry the `context` label.
+    #[test]
+    #[should_panic(expected = "conformed trait body")]
+    fn test_assert_error_code_present_panics_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_error_code_present(
+            &diags,
+            DiagnosticCode::DimensionMismatch,
+            "conformed trait body",
+        );
+    }
+
+    /// `assert_error_code_present` filters to `Severity::Error` FIRST: a
+    /// Warning carrying the code does not satisfy it.
+    #[test]
+    #[should_panic(expected = "DimensionMismatch")]
+    fn test_assert_error_code_present_panics_when_only_match_is_a_warning() {
+        let diags = vec![
+            Diagnostic::warning("dimension mismatch").with_code(DiagnosticCode::DimensionMismatch),
+        ];
+        super::assert_error_code_present(&diags, DiagnosticCode::DimensionMismatch, "warn-only");
+    }
+
+    /// `assert_error_code_absent` passes when no Error carries the code —
+    /// INCLUDING when unrelated error codes, and codeless (`code: None`)
+    /// errors, are present. This is the case that makes the helper immune to
+    /// the `unknown variant 'Bearer'` fixture noise measured for task 6143.
+    #[test]
+    fn test_assert_error_code_absent_passes_despite_unrelated_errors() {
+        let diags = vec![
+            Diagnostic::error("unknown variant 'Bearer': no enum in scope declares it"),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("cosmetic").with_code(DiagnosticCode::StructureMemberNotFound),
+        ];
+        super::assert_error_code_absent(
+            &diags,
+            DiagnosticCode::StructureMemberNotFound,
+            "existing member",
+        );
+    }
+
+    /// `assert_error_code_absent` panics when a matching Error IS present, and
+    /// the message carries BOTH the `context` label and the offending
+    /// diagnostic, so a failure is diagnosable without a rerun.
+    #[test]
+    fn test_assert_error_code_absent_panic_names_context_and_offender() {
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
+                    .with_code(DiagnosticCode::StructureMemberNotFound),
+            ];
+            super::assert_error_code_absent(
+                &diags,
+                DiagnosticCode::StructureMemberNotFound,
+                "existing member",
+            );
+        });
+        assert!(message.contains("existing member"), "{message}");
+        assert!(message.contains("no_such_field"), "{message}");
+    }
+
+    /// `assert_error_code_present` panics when only an UNRELATED code fired,
+    /// and names the errors it DID observe alongside the `context` label, so an
+    /// author can see what happened instead of the expected code.
+    #[test]
+    fn test_assert_error_code_present_panic_lists_observed_errors() {
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
+            ];
+            super::assert_error_code_present(
+                &diags,
+                DiagnosticCode::DimensionMismatch,
+                "conformed trait body",
+            );
+        });
+        assert!(message.contains("conformed trait body"), "{message}");
+        assert!(message.contains("unrelated noise"), "{message}");
+    }
+
+    // ── underdetermined_diags ─────────────────────────────────────────────
+    //
+    // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
+    // this one filters on the structured CODE alone and is severity-blind.
+    // The cases below pin that difference, which every call site depends on.
+
+    /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
+    /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
+    /// filter is `== Some(..)`.
+    #[test]
+    fn underdetermined_diags_selects_only_underdetermined_code() {
+        let diags = vec![
+            Diagnostic::warning("auto `bore` is not pinned")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(under.len(), 1, "got {under:#?}");
+        assert_eq!(under[0].message, "auto `bore` is not pinned");
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is.
+    ///
+    /// This helper lands directly beside `collect_errors` / `error_diags`,
+    /// which DO filter `Severity::Error`, so a future editor harmonising the
+    /// neighbours could add one here — silently changing what the call sites
+    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
+    /// not even go red at the sites that merely count it.
+    #[test]
+    fn underdetermined_diags_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated underdetermined")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("plain underdetermined").with_code(DiagnosticCode::Underdetermined),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(
+            under.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only, unlike its collect_errors neighbour; got {under:#?}",
+        );
+    }
+
+    /// Input order is preserved. Call sites read the result positionally, so
+    /// ordering is a relied-upon contract rather than an accident of
+    /// `.filter().collect()`.
+    #[test]
+    fn underdetermined_diags_preserves_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("second").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("third").with_code(DiagnosticCode::Underdetermined),
+        ];
+        let messages: Vec<&str> = super::underdetermined_diags(&diags)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages, vec!["first", "second", "third"]);
+    }
+
+    // ── get_value_cell_in ─────────────────────────────────────────────────
+    // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
+    // get_let_expr all resolve through the shared lookup_value_cell walk, so
+    // the not-found and ambiguity panics pinned once below (on
+    // get_value_cell_in) apply identically at all four entry points — no
+    // per-entry-point duplicate is added for either panic.
+
+    /// Shared fixture: two templates both declare `w` with different values, so a
+    /// wrong-template resolution is observable in the assertion.
+    const ALPHA_BETA_W: &str = r#"
+        structure Alpha { let w = 1.5 }
+        structure Beta  { let w = 2.7 }
+    "#;
+
+    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
+    /// Shared by every test that resolves a real-literal default expr and
+    /// checks its value — the module's single real-literal comparison policy
+    /// (exact equality: both sides come from the same literal parse, so no
+    /// epsilon is needed).
+    fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
+        use reify_ir::{CompiledExprKind, Value};
+
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert_eq!(*v, expected, "expected literal {expected}, got {v}")
+            }
+            other => {
+                panic!("expected CompiledExprKind::Literal(Value::Real({expected})), got {other:?}")
+            }
+        }
+    }
+
+    /// Resolves `Beta.w` and asserts `kind`, `cell_type`, and the default expr literal.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_from_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
+        let cell = super::get_value_cell_in(&module, "Beta", "w");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Beta.w (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
+            cell.cell_type
+        );
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Beta.w should have a default expr"),
+            2.7,
+        );
+    }
+
+    /// get_value_cell_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_value_cell_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_value_cell_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "S", "y");
+    }
+
+    /// Pins that the not-found panic enumerates the template's actual cells
+    /// as `entity.member`, rather than an empty or truncated list.
+    #[test]
+    #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
+    fn test_get_value_cell_in_missing_cell_panic_lists_available_cells() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "y");
+    }
+
+    /// Shared fixture: a module with template `S` and an `auto_param` cell `x`,
+    /// the only way to produce a `default_expr: None` cell in compiled output.
+    fn auto_param_module() -> reify_compiler::CompiledModule {
+        use reify_core::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::dimensionless_scalar())
+            .build();
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this fixture's intent"
+        );
+        crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build()
+    }
+
+    /// Asserts the cell is returned (not panicked on) when its default_expr is None.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.member, "x",
+            "expected get_value_cell_in to return the cell named 'x', got {:?}",
+            cell.id.member
+        );
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell_in must return the cell as-is, not synthesize a default"
+        );
+    }
+
+    /// Pins that two value cells sharing a member name under different
+    /// entities panic, rather than silently resolving to the first declared.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_value_cell_in_panics_on_ambiguous_member() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "x");
+    }
+
+    // ── get_let_expr_in_template ────────────────────────────────────────────
+
+    /// get_let_expr_in_template should return the default_expr of the named
+    /// cell directly from a template the caller already holds (no module or
+    /// template-name resolution step).
+    /// The fixture uses a real-form literal (`1.5`) because the assertion is on
+    /// `result_type`: `classify_number_literal` (reify-ast/src/decl.rs) maps any
+    /// real-form token — one containing `.`, `e`, or `E`, whole-number or not —
+    /// to `Real`, and only integer-form tokens (`1`) reach the `Int` branch. So
+    /// `1.0` would work here too; `1` would not.
+    #[test]
+    fn test_get_let_expr_in_template_finds_cell() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let expr = super::get_let_expr_in_template(&template, "v");
+        assert_eq!(
+            expr.result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// Two value cells sharing member name "x" under different entities on
+    /// one "Bracket" template — the ambiguity fixture shared by the two
+    /// tests below. Both cells carry a default so a resolution failure can
+    /// only be the collision, never a missing default.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
+    /// the shared `lookup_value_cell` / `require_default_expr` primitives, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through those primitives — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template holding two value cells that share a
+    /// member name under different entities is unresolvable by member name
+    /// alone — there is no principled way to pick between them. This pins
+    /// that the lookup aborts rather than silently returning one of the two.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// Pins that the ambiguity panic is actionable: it enumerates the
+    /// colliding `id.entity` values, in `value_cells` order, in its message.
+    /// Without this, a maintainer hitting the panic from
+    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
+    /// that a collision occurred, not which entities collided — forcing them
+    /// to reproduce it by hand before they can disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// The realistic producer of a same-member collision is a scoped
+    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
+    /// None`) sitting alongside the parent's own same-named `let`/defaulted
+    /// `param` cell — real `.ri` source produces exactly this with zero
+    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
+    /// `let area = ...`. With the `sub` declared first, as below, the scoped
+    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
+    /// the ambiguity check must fire before the `default_expr` deref — not
+    /// after — or this fixture would report a missing default instead of an
+    /// ambiguity.
+    ///
+    /// The zero-diagnostics assertion below is a precondition guard: it
+    /// keeps a fixture that stops compiling cleanly from being misread as
+    /// this test failing to detect the ambiguity, rather than failing on the
+    /// precondition with a message naming the actual diagnostics.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
         let source = r#"
-            structure Alpha { let v = 1.5 }
-            structure Beta  { let w = 2.7 }
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
         "#;
         let module = super::compile_source(source);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let _ = super::get_let_expr_in(&module, "Manifold", "area");
+    }
+
+    // ── get_let_expr_in ───────────────────────────────────────────────────
+
+    /// Resolves `Beta.w` across multiple templates and asserts `result_type` and the literal.
+    #[test]
+    fn test_get_let_expr_in_finds_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
@@ -1729,10 +2698,14 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
+        assert_real_literal(expr, 2.7);
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
-    /// name does not match any template in the module.
+    /// name does not match any template in the module. This panic is now raised
+    /// by get_value_cell_in (see its own tests above); kept here too as a
+    /// deliberate API-contract guard on get_let_expr_in's own public panic
+    /// behaviour, independent of its current delegating implementation.
     #[test]
     #[should_panic(expected = "no template named")]
     fn test_get_let_expr_in_panics_on_missing_template() {
@@ -1742,7 +2715,9 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "no value cell named" when the cell
-    /// name does not match any value cell in the named template.
+    /// name does not match any value cell in the named template. Same
+    /// deliberate API-contract guard rationale as the "no template named" test
+    /// above.
     #[test]
     #[should_panic(expected = "no value cell named")]
     fn test_get_let_expr_in_panics_on_missing_cell() {
@@ -1751,35 +2726,11 @@ mod tests {
         super::get_let_expr_in(&module, "S", "y");
     }
 
-    /// get_let_expr_in should panic with "has no default expr" for a value cell
-    /// whose default_expr is None. Uses a builder-synthesized module with an
-    /// auto_param (which always has default_expr = None) rather than a compiled
-    /// source, since a source-level `param` always carries a default in well-formed
-    /// compiled output.  The inline `assert!` below makes the precondition explicit:
-    /// if `auto_param` ever changes to synthesize a placeholder default, the guard
-    /// will fire loudly rather than silently letting the test pass for the wrong reason.
+    /// Asserts a panic with "has no default expr" when the cell's default_expr is None.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
-        use reify_core::{ModulePath, Type};
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::dimensionless_scalar())
-            .build();
-        // Precondition: auto_param must produce default_expr = None; if that ever
-        // changes this guard fires before get_let_expr_in, surfacing the broken
-        // assumption clearly instead of silently exercising the wrong branch.
-        let cell = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id.member == "x")
-            .expect("auto_param should have added cell 'x'");
-        assert!(
-            cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent"
-        );
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
+        let module = auto_param_module();
         super::get_let_expr_in(&module, "S", "x");
     }
 
@@ -1790,7 +2741,6 @@ mod tests {
     #[test]
     fn test_get_let_expr_in_resolves_defaulted_param_cell() {
         use reify_compiler::ValueCellKind;
-        use reify_ir::{CompiledExprKind, Value};
 
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
@@ -1816,19 +2766,7 @@ mod tests {
         );
 
         let expr = super::get_let_expr_in(&module, "S", "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
-        }
+        assert_real_literal(expr, 1.5);
     }
 
     // ── get_let_expr ─────────────────────────────────────────────────────
@@ -1881,23 +2819,75 @@ mod tests {
     /// resolve identically.
     #[test]
     fn test_get_let_expr_resolves_defaulted_param_cell() {
-        use reify_ir::{CompiledExprKind, Value};
-
         let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
         let module = super::compile_source(source);
         let expr = super::get_let_expr(&module, "pi");
-        match &expr.kind {
-            CompiledExprKind::Literal(Value::Real(v)) => {
-                assert!(
-                    (*v - 1.5_f64).abs() < 1e-15,
-                    "expected param default 1.5, got {}",
-                    v
-                );
-            }
-            other => panic!(
-                "expected Literal(Real(1.5)) for defaulted param cell 'pi', got {:?}",
-                other
-            ),
+        assert_real_literal(expr, 1.5);
+    }
+
+    // ── get_function_in ───────────────────────────────────────────────────
+
+    const DOUBLE_TRIPLE_FNS: &str =
+        "fn double(x: Real) -> Real { x + x }\nfn triple(x: Real) -> Real { x + x + x }";
+
+    /// Looks up the second-declared fn, so a lookup that returns the first
+    /// function regardless of name is observable.
+    #[test]
+    fn test_get_function_in_returns_named_function() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let f = super::get_function_in(&module, "triple");
+        assert_eq!(f.name, "triple");
+        assert_eq!(
+            f.params,
+            vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
+        );
+    }
+
+    #[test]
+    fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "quadruple");
+        });
+        for expected in [
+            "no function named 'quadruple'",
+            "fn_lookup",
+            "[\"double\", \"triple\"]",
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
+    /// Reify compiles same-named fns with distinct param types cleanly, so a
+    /// name-only lookup cannot pick one without silently pinning whichever
+    /// overload happens to be declared first.
+    #[test]
+    fn test_get_function_in_panics_on_overloaded_name() {
+        let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+        let module = super::compile_source_named(source, "fn_lookup");
+        super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "convert");
+        });
+        let real_param = format!(
+            "{:?}",
+            ("x".to_string(), reify_core::Type::dimensionless_scalar())
+        );
+        let int_param = format!("{:?}", ("x".to_string(), reify_core::Type::Int));
+        for expected in [
+            "ambiguous function name 'convert'",
+            "fn_lookup",
+            "2 overloads",
+            real_param.as_str(),
+            int_param.as_str(),
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
         }
     }
 
@@ -2153,112 +3143,6 @@ mod tests {
             result_none.is_empty(),
             "expected empty result for OptionNone; got {:?}",
             result_none
-        );
-    }
-
-    // ─── missing_paths_under contract ─────────────────────────────────────
-
-    /// Prefix for every temp dir these `missing_paths_under` tests create, so
-    /// SIGKILL debris under `/tmp` stays attributable to this suite (see
-    /// `temp_dirs::prefixed_tempdir`'s "Names stay attributable" section).
-    const MISSING_PATHS_TEMPDIR_PREFIX: &str = "reify-missing-paths-under-";
-
-    /// Materialise a "present" fixture at `dir.join(rel)`, creating any parent
-    /// directories the forward-slash-separated `rel` implies.
-    fn touch_under(dir: &std::path::Path, rel: &str) {
-        let path = dir.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .unwrap_or_else(|e| panic!("create parent dirs for fixture {rel:?}: {e}"));
-        }
-        std::fs::write(&path, "// present fixture\n")
-            .unwrap_or_else(|e| panic!("write fixture {rel:?}: {e}"));
-    }
-
-    /// missing_paths_under: over a mixed skip list, exactly the entries with no
-    /// file on disk come back — in input order.
-    ///
-    /// One case carries the whole contract on purpose. Entries are ordered
-    /// missing, present, missing, present, so neither a short-circuit on the
-    /// first miss nor an off-by-one can pass; the comparison is made WITHOUT
-    /// sorting, so an order-scrambling implementation cannot pass either; and
-    /// the keys are nested, forward-slash-separated paths — the real SKIP_SET
-    /// key shape — so `dir.join(rel)` resolution is exercised for a present
-    /// nested file, a missing sibling, and a path under an entirely absent
-    /// subdirectory.
-    #[test]
-    fn test_missing_paths_under_flags_only_missing_entries_in_input_order() {
-        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
-        let dir = guard.path();
-        touch_under(dir, "topology_selectors/fillet_top_edges.ri");
-        touch_under(dir, "present.ri");
-
-        let missing = super::missing_paths_under(
-            dir,
-            [
-                "topology_selectors/deleted_by_a_rename.ri",
-                "topology_selectors/fillet_top_edges.ri",
-                "auto/never_existed.ri",
-                "present.ri",
-            ],
-        );
-
-        assert_eq!(
-            missing,
-            vec![
-                "topology_selectors/deleted_by_a_rename.ri",
-                "auto/never_existed.ri"
-            ],
-            "expected exactly the two entries with no file on disk, in input order and \
-             compared without sorting: an implementation that short-circuited on the first \
-             miss would drop 'auto/never_existed.ri', and neither materialised fixture \
-             (nested or top-level) may be flagged; got {missing:?}"
-        );
-    }
-
-    /// missing_paths_under: an empty input iterator yields an empty `Vec`
-    /// rather than panicking, even when `dir` names a path that does not
-    /// exist. (Whether the call touches the filesystem at all is not something
-    /// this test can observe, so it does not claim it.)
-    #[test]
-    fn test_missing_paths_under_empty_input_yields_empty_vec() {
-        let empty: [&str; 0] = [];
-        let missing =
-            super::missing_paths_under(std::path::Path::new("/definitely/not/a/real/dir"), empty);
-
-        assert!(
-            missing.is_empty(),
-            "expected an empty input iterator to yield an empty Vec, even for a `dir` that \
-             does not exist; got {missing:?}"
-        );
-    }
-
-    /// missing_paths_under: a dangling symlink reports as *missing*, pinning the
-    /// documented `Path::exists` semantics — it follows symlinks, so a link whose
-    /// target is gone is indistinguishable from an absent path.
-    ///
-    /// This is the one documented filesystem behaviour with a real failure mode
-    /// behind it: an `examples/` entry that decays into a dangling link trips a
-    /// SKIP_SET guard exactly as a deleted file would.
-    #[cfg(unix)]
-    #[test]
-    fn test_missing_paths_under_reports_dangling_symlink_as_missing() {
-        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
-        let dir = guard.path();
-        touch_under(dir, "live_target.ri");
-        std::os::unix::fs::symlink(dir.join("live_target.ri"), dir.join("live_link.ri"))
-            .expect("create resolvable symlink fixture");
-        std::os::unix::fs::symlink(dir.join("deleted_target.ri"), dir.join("dangling_link.ri"))
-            .expect("create dangling symlink fixture");
-
-        let missing = super::missing_paths_under(dir, ["live_link.ri", "dangling_link.ri"]);
-
-        assert_eq!(
-            missing,
-            vec!["dangling_link.ri"],
-            "expected the symlink whose target is gone to report as missing and the one \
-             pointing at a live file not to — Path::exists resolves through the link; \
-             got {missing:?}"
         );
     }
 }

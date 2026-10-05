@@ -22,11 +22,14 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
+pub mod arg_acceptance;
 pub mod boundary_attachment;
 pub mod color;
+pub mod completeness;
 pub mod constraint;
 pub mod expr;
 pub mod geometry;
+pub mod indeterminate;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
@@ -75,8 +78,9 @@ pub use geometry::{
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
 };
+pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
     check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,
@@ -94,6 +98,7 @@ pub use kernel_validation::{
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
+pub use completeness::{Completeness, PartialReason, SolutionSet};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};

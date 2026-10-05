@@ -47,6 +47,22 @@ export const KEYWORDS = [
   'priv',
   'aux',
   'at',
+  // The derived sub arm (assembly-derivation-toolbox.md leaf A-alpha, task
+  // #6615). All eight are `ekw<>` (@extend) productions in reify.grammar, and
+  // the data-driven guard above scans for the `kw<"…">` substring that `ekw<>`
+  // deliberately contains — so omitting any of them here renders it unstyled
+  // and fails that guard.
+  //
+  // `symmetry` is NOT here on purpose: PRD §8 contract item (ii) reserves it by
+  // comment only, with no production, so there is nothing to style.
+  'mirror',
+  'image',
+  'of',
+  'across',
+  'under',
+  'keep',
+  'exclude',
+  'using',
   'trait',
   'fn',
   'type',
@@ -54,7 +70,7 @@ export const KEYWORDS = [
   // and left as an ordinary identifier in expression position, which is how
   // tree-sitter reads it too.
   'self',
-  // The `auto(free)` modifier — a `kw<>` production inside AutoKeyword.
+  // `auto(free)` — a `kw<>` production inside AutoKeyword and AutoSeed.
   'free',
   // Topology member families (PortDeclaration, ConnectStatement,
   // ChainStatement, ForallStatement) and the quantifier expression.
@@ -94,6 +110,8 @@ export const KEYWORDS = [
   // upstream (grammar.js:714-719), even though the corpus uses `relate` as an
   // identifier nowhere — see the note on RelateBlock in reify.grammar.
   'relate',
+  // Contextual `ekw<"sketch">` — see SketchBlock in reify.grammar.
+  'sketch',
   // `joint name(…) with <dof> = <body>` (grammar.js:762-802). Both words are
   // contextual, which upstream states as a contract rather than an accident:
   // "zero regression: `joint` and `with` continue to lex as identifiers at all
@@ -132,4 +150,7 @@ export const reifyHighlighting = styleTags({
   // Delimiters
   "( )": t.paren,
   "{ }": t.brace,
+  // The destructured import's `.{` opener is its own token, not a `{` node;
+  // see the ImportDeclaration comment in reify.grammar.
+  ImportItemsOpen: t.brace,
 });

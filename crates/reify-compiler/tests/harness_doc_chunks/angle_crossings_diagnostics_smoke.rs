@@ -14,9 +14,7 @@
 //!
 //! # Mechanism: scrape, don't curate
 //!
-//! Like its sibling `enums_chunk_option_smoke.rs` — and unlike
-//! `geometry_chunk_smoke.rs`, which must curate because its chunk intermixes
-//! schematic notation with real call forms — this module SCRAPES the
+//! Like its sibling `enums_chunk_option_smoke.rs`, this module SCRAPES the
 //! transcriptions out of the exemplar's own bytes and compares them to what
 //! the real compiler emits. A curated fixture can drift away from the doc it
 //! claims to pin; scraping makes the documented bytes themselves the thing
@@ -60,26 +58,16 @@ use reify_test_support::{
     compile_source_with_stdlib, compile_source_with_stdlib_allow_parse_errors, errors_only,
 };
 
+use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
+
 /// The best-practices exemplar whose `CANONICAL COPY` block this module pins,
 /// read out of the repo's `examples/` tree at compile time.
 ///
 /// `include_str!` (not `fs::read_to_string`) so a moved or renamed exemplar is
-/// a BUILD error rather than a runtime panic — the same choice
-/// `enums_chunk_option_smoke.rs:58-61` makes for the chunk it pins.
+/// a BUILD error rather than a runtime panic.
 const ANGLE_CROSSINGS_EXEMPLAR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/best_practices/angle_crossings.ri"
-));
-
-/// The served `units` language-reference chunk, read from `reify-mcp`'s source
-/// tree at compile time — the same cross-crate read-by-path
-/// `enums_chunk_option_smoke.rs` uses, since `reify-mcp` does not depend on
-/// `reify-compiler` and `language_chunks::get_chunk` is unreachable from here.
-///
-/// `include_str!` again, so a moved or renamed chunk is a build error.
-const UNITS_CHUNK: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/units.md"
 ));
 
 /// The exemplar's `CANONICAL COPY` block transcribes a diagnostic for exactly
@@ -144,15 +132,26 @@ const COMPILE_RENDERER: &str = "error";
 /// The split matters, because a reader of the exemplar sees one string where
 /// the codebase has two producers:
 ///
-/// - the **parser** produces the bare message — `syntax error: rad` — at
-///   `crates/reify-syntax/src/ts_parser.rs:511` and its sibling ERROR arms
-///   (`:2141`, `:2175`, `:2289`), all `format!("syntax error: {}", ...)`;
+/// - the **parser** produces the bare message — `syntax error in structure
+///   body` — from the generic branch of `Lowering::diagnose_error_node`
+///   (`crates/reify-syntax/src/ts_parser.rs:564`), reached from the two
+///   structure-body `ERROR` arms (`:2845`, `:2887`) and, with `source file`
+///   substituted for the context, from the top-level one (`:962`). Task #5392
+///   (INV-SF-7 `parse-is-value-faithful`) replaced the older
+///   `format!("syntax error: {}", node_text(child))` source ECHO with this
+///   context-named form, so the message no longer quotes the offending token;
 /// - the **CLI** adds `Parse error: ` when it prints, at
-///   `crates/reify-cli/src/main.rs:195` (and the same `eprintln!` at `:254`);
-/// - `reify-test-support`'s `parse_errors_as_diagnostics`
-///   (`crates/reify-test-support/src/helpers.rs:317-326`) forwards `e.message`
-///   verbatim with **no** prefix, so nothing at the library layer ever emits
-///   it either.
+///   `crates/reify-cli/src/main.rs:200` (and the same `eprintln!` at `:264`).
+///   Since #5392 it also renders a `line:col` in front of the message, via
+///   `ParsedModule::render_errors`, so a real run prints
+///   `Parse error: 2:19: syntax error in structure body` for the exemplar's
+///   fixture. The exemplar transcribes the POSITION-FREE form, which is what
+///   this module reconstructs and compares — the position is a property of the
+///   fixture's layout, not of the diagnostic;
+/// - at the library layer the compiler's own `forward_parse_errors`
+///   (reify-compiler `compile_builder/pre_pass.rs`) prefixes a lowercase
+///   `parse error: `, not the CLI's capitalised form, so nothing at the
+///   library layer ever emits the exemplar's prefix either.
 ///
 /// A test in the `reify-compiler` crate cannot invoke the CLI, so the prefix is
 /// pinned here as a constant and reconstructed onto the live parser message;
@@ -572,7 +571,7 @@ fn transcribed_compile_diagnostics_match_the_real_compiler() {
                  transcribes, for `{}`:\n  {}\nbut the compiler produced:\n  {:#?}\n\
                  The compiler wording changed: re-measure with `reify check` and update \
                  the CANONICAL COPY block in examples/best_practices/angle_crossings.ri, \
-                 then let crates/reify-mcp/src/tools/chunks/units.md follow — that is the \
+                 then let {UNITS_CHUNK_PATH} follow — that is the \
                  precedence the exemplar itself states.",
                 entry.declaration, entry.message, messages
             )
@@ -620,9 +619,10 @@ fn parse_layer_entry() -> TranscribedDiagnostic {
 ///
 /// This entry is structurally different from the other three and the
 /// difference is easy to get wrong: `Parse error: ` is **not** parser output.
-/// The parser produces the bare `syntax error: rad`
-/// (`crates/reify-syntax/src/ts_parser.rs:511` and its sibling ERROR arms), and
-/// the prefix is CLI presentation added at `crates/reify-cli/src/main.rs:195`.
+/// The parser produces the bare `syntax error in structure body`
+/// (`crates/reify-syntax/src/ts_parser.rs:564`, reached from the `ERROR` arms
+/// at `:2845` and `:2887`), and the prefix — plus, since #5392, a `line:col` —
+/// is CLI presentation added at `crates/reify-cli/src/main.rs:200`.
 /// So this test asserts the bare message against the library layer and then
 /// RECONSTRUCTS the exemplar's rendered line from it — rather than expecting a
 /// prefix the library never emits.
@@ -656,7 +656,7 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
              produced:\n  {:#?}\nThe parser wording changed: re-measure with \
              `reify check` and update the CANONICAL COPY block in \
              examples/best_practices/angle_crossings.ri, then let \
-             crates/reify-mcp/src/tools/chunks/units.md follow.",
+             {UNITS_CHUNK_PATH} follow.",
             entry.declaration, entry.message, messages
         )
     };
@@ -696,8 +696,9 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
 /// *shape* of these errors rather than re-quoting them, and defers to the
 /// exemplar as the canonical copy — with exactly one exception: it quotes the
 /// parse diagnostic verbatim ("The spaced form `1 rad` is
-/// `Parse error: syntax error: rad`"). That one line is the chunk's only
-/// unpinned verbatim claim, and it is collateral to this module's subject.
+/// `Parse error: syntax error in structure body`"). That one line is the
+/// chunk's only unpinned verbatim claim, and it is collateral to this module's
+/// subject.
 ///
 /// The expected text is RECONSTRUCTED from the scraped canonical-copy entry,
 /// never typed here. So the chunk is checked against the canonical copy, which
@@ -713,8 +714,8 @@ fn units_chunk_verbatim_parse_error_agrees_with_the_canonical_copy() {
     let rendered = format!("{}: {}", entry.renderer, entry.message);
 
     assert!(
-        UNITS_CHUNK.contains(&rendered),
-        "crates/reify-mcp/src/tools/chunks/units.md re-quotes the spaced-literal \
+        read_chunk(UNITS_CHUNK_PATH).contains(&rendered),
+        "{UNITS_CHUNK_PATH} re-quotes the spaced-literal \
          diagnostic verbatim, but it no longer contains `{rendered}` — the rendered form \
          the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
          transcribes. Fix the exemplar side FIRST: if the compiler wording changed, \

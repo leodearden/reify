@@ -87,7 +87,7 @@ asserts `Param` kind + `Scalar{MOMENT_OF_INERTIA}`) and `:1334-1335` (member dim
 
 **Out of blast radius** (they define a *local* `trait Rigid` that shadows the stdlib name):
 `examples/m5_trait_rigid.ri:1-10`, `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:94-97, 192-196`
-(and siblings), `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1518-1520`.
+(and siblings), `crates/reify-compiler/tests/harness_diagnostics_robustness/diagnostic_coverage_checkpoint.rs:1518-1520`.
 
 **Break-loudness, by trait-member shape (probes 7, 8):**
 - *Required tensor param (no default):* stale scalar conformer → **loud error**

@@ -4,7 +4,7 @@ Parameters (`param`) are the public interface of a structure. They represent con
 
 ## Syntax
 
-```
+```reify-fragment
 param thickness : Length                        // No default, starts as undef
 param width : Length = 50mm                     // Has default value
 param material : M                              // Type parameter
@@ -33,7 +33,7 @@ Parameters exist on a determinacy spectrum:
 
 ## Determinacy Predicates
 
-```
+```reify-schematic
 determined(p)              // Has a concrete value
 constrained(p)             // Has constraints but may not be fully determined
 undetermined(p)            // No value, no constraints
@@ -43,7 +43,7 @@ partially_determined(p)    // Some but not all dimensions determined
 ## Setting Parameters
 
 When instantiating a sub-structure:
-```
+```reify-fragment
 sub bracket : Bracket {
     thickness = 3mm
     width = 100mm

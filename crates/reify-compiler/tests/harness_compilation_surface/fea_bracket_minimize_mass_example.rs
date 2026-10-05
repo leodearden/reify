@@ -15,10 +15,18 @@
 //!
 //!   (a) the file parses with zero errors;
 //!   (b) it compiles under the stdlib prelude with ZERO Error-severity diagnostics.
-//!       This is also the gate that catches a dimensional-typing mismatch in the
-//!       stress predicate: the compile-time analysis signatures have no `Type::Field`
-//!       arm, so a field-valued `von_mises(...)` can type as dimensionless `Real`
-//!       and make `< yield_limit` (a `Pressure`) a dimensional-mismatch Error;
+//!       This is also the gate that catches a dimensional-typing regression in the
+//!       stress predicate. Since task #6577, `analysis_fn_result_type`
+//!       (`crates/reify-compiler/src/analysis_signatures.rs`) carries a `Type::Field`
+//!       arm, so a field-valued `von_mises(...)` types as
+//!       `Field<Point3<Length>, Scalar<Pressure>>` and `max(...)` reduces that
+//!       codomain to `Scalar<Pressure>`. Lose that arm and the argument falls back
+//!       to the DIMENSIONLESS default, `von_mises(...)` types as dimensionless
+//!       `Real`, and `< yield_limit` (a `Pressure`) becomes a dimensional-mismatch
+//!       Error — which is exactly what this pin reports. The example's own predicate
+//!       reads the result's `.max_von_mises` member today, so that regression
+//!       surfaces here for the explicit `max(von_mises(.stress))` spelling, whose
+//!       adoption #7333 owns;
 //!   (c) the compiled module exposes the bracket structure template;
 //!   (d) `thickness` is a solver-delegated `ValueCellKind::Auto { free: true }` cell.
 //!       Pinning the COMPILED KIND rather than the source text `= auto` means a

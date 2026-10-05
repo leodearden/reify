@@ -7,7 +7,7 @@ module appearance_viewport_egress
 //   B2: raw box (material-less sub) → None (hash-color fallback; PRD §7.1 invariant)
 //   B3: DisplayOutput on steel body → layer3 RAL9001 cream/Gloss/0.5 override
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero Error gate).
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (zero Error gate).
 // Deterministic backstop:
 //   engine_tests.rs::examples_appearance_viewport_egress_realizes_section8_appearance_contract
 

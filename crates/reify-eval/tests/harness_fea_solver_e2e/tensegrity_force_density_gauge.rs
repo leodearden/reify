@@ -11,136 +11,42 @@
 //! required on `member_forces`, none tolerated on the qᵢ/σ echoes — across all
 //! three emission sites: anchored line-only, anchored surfaces, free-standing.
 //!
-//! SCOPE — gauge COVARIANCE is asserted at BOTH emitters (the last two tests: anchored
-//! via `solve_at`, free-standing via `solve_free_at`), because they reach the property by
-//! different mechanisms — algebraic homogeneity of `D_ff x_f = −D_fa x_a` anchored, versus
-//! homogeneity of the GroupRatios search that fixes the gauge from `reference_group` when
-//! free-standing. Both fixtures are LINE-ONLY; the SURFACES path is the one deliberately
-//! scoped out, for TWO reasons. (1) The gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T`
-//! is linear in the pair, not in q alone, so a surfaces covariance experiment must rescale
-//! every σ_T by λ too — scaling q alone shifts the q/σ balance and MOVES the free nodes,
-//! which is physics, not a defect. (2) Even rescaled as a pair, surfaces convergence is
-//! judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself linear in
-//! q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
+//! SCOPE — gauge COVARIANCE is asserted at ALL THREE emitters (the last three tests),
+//! each of which reaches the property by a DIFFERENT mechanism, so none of the three
+//! subsumes another: algebraic homogeneity of `D_ff x_f = −D_fa x_a` (anchored line-only,
+//! via `solve_at`); homogeneity of the GroupRatios search that fixes the gauge from
+//! `reference_group` (free-standing, via `solve_free_at`); and the gauge-RELATIVE stop
+//! criterion of the cotangent fixed point (anchored surfaces, via `solve_combined`).
+//! The surfaces case rescales the (q, σ) PAIR, never q alone: `D = CᵀQC + Σ_T σ_T·L_T` is
+//! linear in the pair, so that fixture scales every σ_T by λ alongside every qᵢ and
+//! asserts the σ echoes scale by λ too. Rescaling q on its own would shift the q/σ
+//! balance and MOVE the free nodes — physics, not a covariance failure — and excluding
+//! that confound is exactly what the σ-echo assertion is there for.
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, Value};
+// The triplex geometry, its member index space, the tent membrane golden and the
+// `Tensegrity` assembly have ONE definition, in `reify_test_support::tensegrity_fixtures`.
+// This suite uses the unit-height triplex variant, `canonical_triplex_tensegrity`.
+use reify_test_support::tensegrity_fixtures::{
+    TENT_ANCHORS, TENT_TRIS, TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS,
+    TRIPLEX_STRUTS, canonical_triplex_tensegrity, tent_membrane_tensegrity, triplex_group_ids,
+};
 
-/// A 3-component `Value::Point` of SI-metre coordinates — how `point3` lowers.
-/// Every `#[path]` sibling in this module directory carries its own copy (`node` in
-/// `tensegrity_t1b_form_find_e2e.rs`, `tensegrity_t3b_load.rs`, …) because each was
-/// written standalone and the helpers stayed private. Collapsing the family is tracked
-/// with the fixture duplication below (#6152) — see that note for what still blocks it.
-fn node(x: f64, y: f64, z: f64) -> Value {
-    let m = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
-    Value::Point(vec![m(x), m(y), m(z)])
-}
+/// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
+/// the length is taken from that list rather than written out: a member added there
+/// then fails to compile HERE instead of reaching the solver as a length mismatch.
+/// Signs honour the hard contract (struts q < 0, cables q > 0). Verticals are 2, not
+/// 1, on purpose: at q = 1 everywhere `D_ff` has zero row sums and is exactly singular.
+const BASE_Q: [f64; TRIPLEX_MEMBERS.len()] =
+    [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
 
-// DUPLICATION, tracked not silent: the prism geometry + `MEMBERS` topology below is a
-// THIRD copy of the canonical triplex (see `canonical_prism_nodes()` /
-// `triplex_tensegrity()` in `harness_fea_solver_e2e/tensegrity_t1b_form_find_e2e.rs`
-// and the combined fixture in `…/tensegrity_delta_combined_form_find_e2e.rs`), and
-// `membrane_tensegrity()` re-derives the kernel's `tent_membrane()` golden. A topology
-// or node-order change must be mirrored by hand across all three, so collapsing them
-// onto one shared fixture is tracked by task **#6152**.
-//
-// WHAT BLOCKS IT HERE — narrower than it once was. This module now sits as a `#[path]`
-// sibling of the other two INSIDE the same `harness_fea_solver_e2e` compile unit, so
-// the dedup no longer needs `reify-test-support` at all: one shared fixture module in
-// `harness_fea_solver_e2e/`, or `pub(crate)` on the helpers that already exist, reaches
-// every call site. What it does need is DELETING the two existing copies from
-// `tensegrity_t1b_form_find_e2e.rs` and `tensegrity_delta_combined_form_find_e2e.rs`,
-// and neither file is in #6095's locked module set. Adding a fourth copy in a new
-// shared file without removing those two would raise the drift surface, not lower it —
-// so #6152 owns the collapse, with both siblings in ITS scope.
-
-/// Struts-then-cables member order — the one index space `force_densities` and
-/// `member_forces` share: 3 struts, then top / bottom / vertical cable triples.
-const MEMBERS: [(usize, usize); 12] = [
-    (0, 4), (1, 5), (2, 3), (0, 1), (1, 2), (2, 0),
-    (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5),
-];
-
-/// `MEMBERS[..STRUTS]` are the struts (compression, q < 0); the rest are cables
-/// (tension, q > 0). That split is what lets `assert_bridge_holds` re-assert the
-/// documented sign contract instead of merely checking finiteness.
-const STRUTS: usize = 3;
-
-/// Bottom triangle {3,4,5} anchored; top triangle {0,1,2} free.
-const ANCHORS: [i64; 3] = [3, 4, 5];
-
-/// Base force densities in `MEMBERS` order; signs honour the hard contract
-/// (struts q < 0, cables q > 0). Verticals are 2, not 1, on purpose: at q = 1
-/// everywhere `D_ff` has zero row sums and is exactly singular.
-const BASE_Q: [f64; 12] = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
-
-/// The canonical triplex prism (R=1, height=1, twist=30°; top 0,1,2 at z=1,
-/// bottom 3,4,5 at z=0) — `canonical_prism_nodes()` in `tensegrity_t1b_…`.
-fn prism_nodes() -> Vec<Value> {
-    let ring = |i: usize, twist: f64, z: f64| {
-        let a = (120.0 * (i as f64) + twist).to_radians();
-        node(a.cos(), a.sin(), z)
-    };
-    let mut v: Vec<Value> = (0..3).map(|i| ring(i, 0.0, 1.0)).collect();
-    v.extend((0..3).map(|i| ring(i, 30.0, 0.0)));
-    v
-}
-
-/// Assemble a `Tensegrity` Value from raw node / strut / cable / surface fields.
-fn tensegrity(nodes: Vec<Value>, struts: Value, cables: Value, surfaces: Value) -> Value {
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), Value::List(nodes)),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-        ("surfaces".to_string(), surfaces),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Index-tuple list (`[[j,k], …]` / `[[i,j,k], …]`) as the DSL lowers it.
-fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
-    let row = |r: &[i64; N]| Value::List(r.iter().map(|&i| Value::Int(i)).collect());
-    Value::List(rows.iter().map(row).collect())
-}
-
-/// The triplex prism built from `MEMBERS`, carrying the given `surfaces` field.
-fn prism_tensegrity_with(surfaces: Value) -> Value {
-    let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
-    let struts: Vec<[i64; 2]> = MEMBERS[..STRUTS].iter().map(pair).collect();
-    let cables: Vec<[i64; 2]> = MEMBERS[STRUTS..].iter().map(pair).collect();
-    tensegrity(prism_nodes(), index_lists(&struts), index_lists(&cables), surfaces)
-}
-
-/// The line-only triplex prism (no surfaces).
+/// The line-only triplex prism — the canonical geometry carrying a PRESENT but
+/// EMPTY `surfaces` field, which is what this suite has always handed the
+/// anchored line-only solve.
 fn prism_tensegrity() -> Value {
-    prism_tensegrity_with(Value::List(vec![]))
-}
-
-/// Both membrane caps of the prism. The top cap spans the three FREE nodes, so it
-/// genuinely enters `D_ff` rather than sitting inertly on the anchored side.
-fn caps() -> Value {
-    index_lists(&[[0, 1, 2], [3, 4, 5]])
-}
-
-/// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
-/// fanned by 4 triangles, no struts/cables. Mirrors the kernel's `tent_membrane()`
-/// golden — reused solely to reach the NON-EMPTY `surface_stresses` echo branch.
-fn membrane_tensegrity() -> Value {
-    let nodes = vec![
-        node(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
-        node(1.0, 0.0, 0.0),  // 1: anchor
-        node(0.0, 1.0, 0.0),  // 2: anchor
-        node(-1.0, 0.0, 0.0), // 3: anchor
-        node(0.0, -1.0, 0.0), // 4: anchor
-    ];
-    let tris = index_lists(&[[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]]);
-    tensegrity(nodes, Value::List(vec![]), Value::List(vec![]), tris)
+    canonical_triplex_tensegrity(Some(&[]))
 }
 
 type Trampoline = fn(
@@ -174,14 +80,21 @@ fn ints(vs: impl IntoIterator<Item = i64>) -> Value {
 
 /// Anchored LINE-ONLY solve of the triplex prism at the given force densities.
 fn solve_at(q: &[f64]) -> PersistentMap<String, Value> {
-    let inputs = [prism_tensegrity(), reals(q), ints(ANCHORS)];
+    let inputs = [prism_tensegrity(), reals(q), ints(TRIPLEX_ANCHORS)];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
-/// Anchored SURFACES solve of the tent membrane at one isotropic σ per triangle
-/// (no struts/cables ⇒ an empty `force_densities`).
+/// Anchored SURFACES solve of the shared tent membrane golden,
+/// `tent_membrane_tensegrity`, at one isotropic σ per triangle (no struts/cables ⇒
+/// an empty `force_densities`). Used solely to reach the NON-EMPTY
+/// `surface_stresses` echo branch.
 fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
-    let inputs = [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; 4])];
+    let inputs = [
+        tent_membrane_tensegrity(),
+        reals(&[]),
+        ints(TENT_ANCHORS),
+        reals(&[sigma; TENT_TRIS.len()]),
+    ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
@@ -192,32 +105,36 @@ fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
 /// pairing is exercised on that path. Shape mirrors the combined struts+cables+membrane
 /// fixture of `harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs`.
 fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
-    let inputs =
-        [prism_tensegrity_with(caps()), reals(q), ints(ANCHORS), reals(&[sigma; 2])];
+    let inputs = [
+        canonical_triplex_tensegrity(Some(&TRIPLEX_CAPS)),
+        reals(q),
+        ints(TRIPLEX_ANCHORS),
+        reals(&[sigma; TRIPLEX_CAPS.len()]),
+    ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
-/// Seed ratios for `solve_free`, indexed by group: struts (compression) / horizontal
-/// cables / vertical cables. Group 1 is the `reference_group`, so ITS magnitude is what
-/// fixes the free path's gauge — the covariance test below rescales all three together.
-const BASE_SEED: [f64; 3] = [-1.0, 1.0, 1.0];
-
-/// FREE-STANDING solve of the same prism at the given per-group seed ratios (GroupRatios:
-/// struts→0, the six horizontals→1, verticals→2; reference group 1) — the
+/// FREE-STANDING solve of the same prism at the given per-group seed ratios — the
 /// `build_result_free` emission site, which the anchored solves above never reach.
+///
+/// The GroupRatios partition (struts→0, the six horizontals→1, verticals→2) is the
+/// shared `triplex_group_ids()`, not a literal beside `TRIPLEX_MEMBERS`: one id per
+/// member in that same index space, so the two cannot drift. `reference_group` is 1,
+/// so the horizontals’ magnitude is what fixes this path’s gauge — which is why the
+/// covariance test below rescales all three seed ratios together rather than one.
 fn solve_free_at(seed: &[f64]) -> PersistentMap<String, Value> {
     let inputs = [
         prism_tensegrity(),
-        ints([0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]),
+        triplex_group_ids(),
         reals(seed),
         Value::Int(1), // reference_group
     ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_free_trampoline, &inputs)
 }
 
-/// The free-standing solve at the base gauge.
+/// The free-standing solve at the base gauge, [`TRIPLEX_SEEDS`].
 fn solve_free() -> PersistentMap<String, Value> {
-    solve_free_at(&BASE_SEED)
+    solve_free_at(&TRIPLEX_SEEDS)
 }
 
 fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a Vec<Value> {
@@ -288,8 +205,8 @@ fn point_xyz(v: &Value) -> [f64; 3] {
 }
 
 /// Euclidean length of a member on the returned geometry.
-fn member_length(nodes: &[Value], (j, k): (usize, usize)) -> f64 {
-    let (a, b) = (point_xyz(&nodes[j]), point_xyz(&nodes[k]));
+fn member_length(nodes: &[Value], [j, k]: [i64; 2]) -> f64 {
+    let (a, b) = (point_xyz(&nodes[j as usize]), point_xyz(&nodes[k as usize]));
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
@@ -303,10 +220,10 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
     let nodes = list_field(fields, "nodes");
     let member_forces = list_field(fields, "member_forces");
     let force_densities = list_field(fields, "force_densities");
-    assert_eq!(member_forces.len(), MEMBERS.len(), "{site}: one force per member");
-    assert_eq!(force_densities.len(), MEMBERS.len(), "{site}: one echoed density per member");
+    assert_eq!(member_forces.len(), TRIPLEX_MEMBERS.len(), "{site}: one force per member");
+    assert_eq!(force_densities.len(), TRIPLEX_MEMBERS.len(), "{site}: one echoed density per member");
 
-    for (i, &m) in MEMBERS.iter().enumerate() {
+    for (i, &m) in TRIPLEX_MEMBERS.iter().enumerate() {
         // Both extractors panic on the wrong variant / dimension.
         let q = dimensionless_echo("force_densities", &force_densities[i]);
         let n = force_si(&member_forces[i]);
@@ -318,7 +235,7 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
         // would still satisfy 0 == 0·L for every member. Signing it also pins the
         // tension/compression half of the contract for free.
         let (sign, kind) =
-            if i < STRUTS { (-1.0, "strut (compression, q < 0)") } else { (1.0, "cable (tension, q > 0)") };
+            if i < TRIPLEX_STRUTS { (-1.0, "strut (compression, q < 0)") } else { (1.0, "cable (tension, q > 0)") };
         assert!(
             n.is_finite() && q.is_finite() && l > 1e-6,
             "{site}: entry {i} {m:?} must be finite and non-degenerate: N={n} q={q} L={l}"
@@ -339,9 +256,10 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
 
 /// The anchored emission site (`build_result`), on BOTH of its solve paths: line-only,
 /// and surfaces carrying a non-empty member set. The surfaces path needs its own
-/// fixture because `membrane_tensegrity` has zero struts and zero cables — there
+/// fixture because `solve_membrane`'s tent has zero struts and zero cables — there
 /// `member_forces` is empty, so `force_si` and the qᵢ·Lᵢ pairing never run on it. One
-/// solve each, no gauge rescale, so this stays clear of the #6119/#6124 scope-out.
+/// solve each, no gauge rescale; the surfaces gauge rescale lives in
+/// `rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path`.
 #[test]
 fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
     let line_only = solve_at(&BASE_Q);
@@ -386,7 +304,11 @@ fn force_density_and_surface_stress_echoes_carry_no_dimension() {
     const SIGMA: f64 = 2.0;
     let membrane = solve_membrane(SIGMA);
     let surface_stresses = list_field(&membrane, "surface_stresses");
-    assert_eq!(surface_stresses.len(), 4, "one echoed σ per triangle — a NON-empty list");
+    assert_eq!(
+        surface_stresses.len(),
+        TENT_TRIS.len(),
+        "one echoed σ per triangle — a NON-empty list"
+    );
     for (t, ss) in surface_stresses.iter().enumerate() {
         let s = dimensionless_echo("surface_stresses", ss);
         assert_eq!(s, SIGMA, "surface_stresses[{t}] must echo the prescribed σ exactly");
@@ -484,6 +406,100 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
     assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "anchored line-only");
 }
 
+/// ANCHORED-SURFACES GAUGE COVARIANCE — the THIRD emitter, and the case this module's
+/// SCOPE note used to exclude. The gauge here is genuinely the (q, σ) PAIR:
+/// `D = CᵀQC + Σ_T σ_T·L_T` is linear in the pair, not in q alone, so this fixture
+/// rescales every σ_T by λ alongside every qᵢ. Scaling q alone would shift the q/σ
+/// balance and MOVE the free nodes — that is physics, not a covariance failure, which is
+/// why the σ-echo assertion below is load-bearing rather than decorative.
+///
+/// MECHANISM — distinct from both other emitters, which is why it needs its own case.
+/// The anchored line-only path is an exact ALGEBRAIC identity (λ cancels in
+/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
+/// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
+/// covariance is a property of its STOPPING RULE: `form_find.rs` judges
+/// `free_equilibrium_residual_relative` — each free row's `|(D·x)_i|` divided by that
+/// row's own `Σ_j |D_ij|` — against `SURFACE_EQUILIBRIUM_REL_TOL`.
+/// Numerator and denominator each pick up exactly one factor of λ, so the ratio is
+/// gauge-free and both gauges stop at the same iterate. Until task **#6119** that stop
+/// test was an ABSOLUTE tolerance on a residual normalised by geometry scale only: a
+/// large λ inflated it (never converging) and a small λ shrank it below tolerance
+/// (stopping PREMATURELY on unconverged geometry, the silent direction). A regression
+/// that reverts the normaliser lands here.
+///
+/// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.1e-16 m,
+/// member-force relative residual 4.0e-16, σ-echo relative residual exactly 0. Note those
+/// residuals are NOT zero: exact INPUTS do not give an exact assembled matrix, because a
+/// membrane entry is `σ·w` for a geometry-derived cotangent weight `w` and `fl(7σ·w) ≠
+/// 7·fl(σ·w)` in general at a non-power-of-two λ (contrast the kernel fixtures, which pick
+/// λ = 2^±20 precisely so they CAN assert bit-exactness). `D_λ = λ·D` therefore holds here
+/// only to f64 rounding — and the tolerances below are deliberately NOT sized on it, so do
+/// not invoke exactness to tighten them. They are sized on the larger hazard: that same
+/// rounding can in principle push the two runs one iterate apart, and the stop residual
+/// (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11`, a row's net force over that row's own
+/// `Σ_j |D_ij|` — in effect a nodal displacement) bounds that
+/// displacement at ~1e-11 m — so 1e-9 keeps ~2 orders over
+/// the hazard and ~7 over the measurement. Do not slacken either without re-measuring:
+/// the defect this locks moves the converged shape by far more than 1e-9, or fails
+/// `converged` outright in `solve_with`.
+#[test]
+fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path() {
+    // The base membrane stress on both caps — the same value
+    // `member_force_is_q_times_solved_length_in_the_unit_gauge` solves at.
+    const SIGMA_BASE: f64 = 0.5;
+
+    let base = solve_combined(&BASE_Q, SIGMA_BASE);
+    // NON-VACUITY: prove this really is the SURFACES path and not a silent fall-through
+    // to the line-only solve, which would make the whole test a duplicate of the
+    // anchored line-only case above. One σ echo per cap.
+    assert_eq!(
+        list_field(&base, "surface_stresses").len(),
+        2,
+        "the combined fixture must reach the surfaces path (one σ echo per cap)"
+    );
+
+    let scaled_q: Vec<f64> = BASE_Q.iter().map(|&q| q * GAUGE_LAMBDA).collect();
+    let scaled = solve_combined(&scaled_q, SIGMA_BASE * GAUGE_LAMBDA);
+    // As at both other emitters: the rescaled solve must independently satisfy the
+    // bridge — strict FORCE / bare-Real tags, the Nᵢ = qᵢ·Lᵢ·q_ref identity, and the
+    // strut/cable sign contract — so covariance is asserted BETWEEN two known-good solves.
+    assert_bridge_holds(&scaled, "anchored surfaces (scaled gauge)");
+
+    // The σ echoes must scale by λ too. THIS is what makes the experiment a whole-gauge
+    // rescale rather than a q-only one; a q-only rescale is different physics and would
+    // legitimately move the free nodes, so without this the geometry half below could
+    // pass for the wrong reason.
+    let base_sigma = list_field(&base, "surface_stresses");
+    let scaled_sigma = list_field(&scaled, "surface_stresses");
+    assert_eq!(
+        base_sigma.len(),
+        scaled_sigma.len(),
+        "both gauges must reach the surfaces path with the same cap count"
+    );
+    for (t, (b, s)) in base_sigma.iter().zip(scaled_sigma.iter()).enumerate() {
+        let bs = dimensionless_echo("surface_stresses", b);
+        let ss = dimensionless_echo("surface_stresses", s);
+        let expected = bs * GAUGE_LAMBDA;
+        // The same non-vacuity floor `assert_gauge_covariance` applies to the forces: at
+        // bs = 0 the ×λ claim holds for any λ, and σ = 0 would also silently degrade the
+        // solve back to the line-only path the check above exists to exclude.
+        assert!(
+            bs.abs() > 1e-9,
+            "anchored surfaces: surface_stresses[{t}] = {bs} at the base gauge makes the \
+             ×{GAUGE_LAMBDA} scale check vacuous, and a zero σ degrades the solve to the \
+             line-only path (task #6119)"
+        );
+        assert!(
+            (ss - expected).abs() <= 1e-12 * expected.abs(),
+            "anchored surfaces: surface_stresses[{t}] must scale by {GAUGE_LAMBDA} under a \
+             whole-gauge rescale: {bs} · {GAUGE_LAMBDA} = {expected}, got {ss}. Rescaling q \
+             without σ is a different structure, not a gauge change (task #6119)"
+        );
+    }
+
+    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-9, "anchored surfaces");
+}
+
 /// FREE-STANDING GAUGE COVARIANCE — the same claim at the OTHER emitter, where it holds
 /// for an entirely different reason and so needs its own case. Anchored covariance is an
 /// identity (above). Here the gauge is fixed by `reference_group`, whose magnitude is
@@ -508,8 +524,8 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 /// this path cannot meet by construction.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
-    let base = solve_free_at(&BASE_SEED);
-    let scaled_seed: Vec<f64> = BASE_SEED.iter().map(|&r| r * GAUGE_LAMBDA).collect();
+    let base = solve_free_at(&TRIPLEX_SEEDS);
+    let scaled_seed: Vec<f64> = TRIPLEX_SEEDS.iter().map(|&r| r * GAUGE_LAMBDA).collect();
     let scaled = solve_free_at(&scaled_seed);
     // The scaled FREE solve is the one result nothing else pins: the base free gauge is
     // covered by `free_standing_member_forces_are_strictly_force_dimensioned`, but a

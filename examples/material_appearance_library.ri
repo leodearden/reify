@@ -6,7 +6,7 @@ module material_appearance_library
 // `appearance : Appearance` member so downstream renderers can colour each
 // material plausibly without a separate optical-properties file.
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero new
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (zero new
 // wiring required — the smoke runner recursively walks examples/).
 
 // Instantiate all four FEA library materials and read their appearances.

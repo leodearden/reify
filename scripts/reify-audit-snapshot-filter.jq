@@ -34,11 +34,22 @@
 #
 #   1. Prefer .metadata.done_at if fused-memory ever starts exposing it
 #      (forward-compatible — the // fallback only fires when absent/null).
-#   2. Fall back to .updatedAt (ISO-8601 string, e.g. "2026-05-16T05:16:06.954Z"):
-#      strip the .NNN millisecond suffix that jq 1.7's fromdateiso8601 rejects
-#      via sub("\\.[0-9]+Z$"; "Z"), then convert to epoch-seconds.
-#   3. If .updatedAt is also absent, done_at = null (graceful degradation for
-#      legacy fused-memory rows; the wrapper warns loudly in this case).
+#   2. Fall back to .updatedAt via iso8601_to_epoch_or_null, which parses the
+#      shapes crates/reify-audit/src/fused_memory_client.rs
+#      parse_iso8601_to_epoch documents -- "Z", "+HH:MM"/"-HH:MM", "+HH"/"-HH",
+#      or no TZ (read as UTC), each with an optional ".fraction" -- to the SAME
+#      epoch as that loader.  Guarded by Checks 5f and 5h of
+#      tests/infra/test_reify_audit_predone_wrapper.sh.
+#   3. The conversion is TOTAL: every input yields exactly one value, so a bad
+#      .updatedAt gives done_at = null FOR THAT ROW ONLY and the row stays in
+#      the snapshot (matching the loader's per-task Option<i64>).  Hence
+#      `try (...) catch null` around the WHOLE pipeline (a non-string raises
+#      inside test(); an out-of-range field raises inside fromdateiso8601),
+#      and an explicit `else null` arm for no-match, because capture yields
+#      EMPTY there and an empty value inside map({...}) DROPS the row.  Not
+#      `?`: it is `catch EMPTY` (same drop) and binds only to the last filter.
+#      Input the loader accepts but this parser rejects stays null, and the
+#      wrapper warns on it: docs/architecture-audit/f-infra-design.md §11.2.1.
 #
 # Approximation skew: updatedAt equals the done-flip time only when nothing
 # further has been written to the task record after the flip.  Typical skew
@@ -49,6 +60,23 @@
 #
 # See docs/architecture-audit/f-infra-design.md §11.2 for full rationale.
 # Root-cause: task 3731.
+
+def iso8601_pattern:
+  "\\A(?<datetime>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|(?<sign>[+-])(?<offset_hours>[0-9]{2})(?::(?<offset_minutes>[0-9]{2}))?)?\\z";
+
+def utc_offset_seconds:
+  if .sign == null then 0
+  else (if .sign == "+" then 1 else -1 end)
+       * ((.offset_hours | tonumber) * 3600 + ((.offset_minutes // "0") | tonumber) * 60)
+  end;
+
+def iso8601_to_epoch_or_null:
+  try (
+    if test(iso8601_pattern)
+    then capture(iso8601_pattern) | (.datetime + "Z" | fromdateiso8601) - utc_offset_seconds
+    else null
+    end
+  ) catch null;
 
 .result.content[0].text
 | fromjson
@@ -66,13 +94,7 @@
         audit_foundation: (.metadata.audit_foundation // null),
         done_at: (
           if $status == "done" then
-            (
-              .metadata.done_at //
-              ((.updatedAt // "") |
-                if . == "" then null
-                else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
-                end)
-            )
+            (.metadata.done_at // (.updatedAt | iso8601_to_epoch_or_null))
           else
             null
           end

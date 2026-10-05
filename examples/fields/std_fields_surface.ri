@@ -8,7 +8,7 @@
 // exercised as inline-source diagnostic assertions in std_fields_surface_e2e.rs.
 //
 // This file is auto-covered by:
-//   - crates/reify-compiler/tests/examples_smoke.rs (compile-clean bulk walk)
+//   - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (compile-clean bulk walk)
 //   - crates/reify-eval/tests/std_fields_surface_e2e.rs (eval gate + OCCT B5)
 //
 // ── Boundary signals per §11 PRD ─────────────────────────────────────────────

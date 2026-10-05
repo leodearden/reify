@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
+use crate::indeterminate::IndeterminateReason;
 use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
@@ -42,6 +43,9 @@ pub struct ConstraintResult {
     pub id: ConstraintNodeId,
     pub satisfaction: Satisfaction,
     pub diagnostics: ConstraintDiagnostics,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer
+    /// that decided it. `None` for a definite verdict.
+    pub indeterminate_reason: Option<IndeterminateReason>,
 }
 
 /// Diagnostic information from constraint checking.
@@ -81,6 +85,13 @@ pub struct ObjectiveTerm {
     pub sense: ObjectiveSense,
     pub expr: CompiledExpr,
     /// > 0; default 1.0 (PRD §6.1, invariant I3 — the WeightedSum cost contribution).
+    ///
+    /// That bound is NOT runtime-validated (task #6377): no construction site
+    /// checks positivity or even finiteness, so a NaN/±Inf weight can reach
+    /// every fold site listed at [`objective_terms_coherent`]. Of those, only
+    /// `reify-constraints/src/solver.rs::eval_objective_set` is known to fail
+    /// closed on one; what the others do is theirs to state, not this field's
+    /// to vouch for.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,
@@ -423,6 +434,12 @@ pub trait ConstraintChecker: Send + Sync {
     /// use domain-specific text can safely ignore it — the debug level is off
     /// by default and will not appear in production logs unless explicitly
     /// enabled (e.g. `RUST_LOG=reify_eval=debug`).
+    ///
+    /// # Indeterminate reasons
+    ///
+    /// Implementations **SHOULD** set [`ConstraintResult::indeterminate_reason`]
+    /// on every `Indeterminate` result (R1: the reported outcome renders it in
+    /// place of any guess) and **MUST NOT** set it on a definite one.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 
     /// Returns `true` if this checker is the compile-time indeterminate stub
@@ -549,6 +566,10 @@ pub trait ConstraintSolver: Send + Sync {
     ///   `Ranked { candidates: [RankedCandidate { values, objective_score: None, unique }],
     ///             optimality: BestFound { "solver does not report optimality" } }`
     ///   when `problem.objective.is_some()`, or `FeasibilityOnly` when `objective` is `None`.
+    ///   The `completeness` field is always
+    ///   [`crate::Completeness::not_attempted`] (`Partial { NotAttempted }`) in the
+    ///   default lift: a solver that only implements `solve` did not reason about
+    ///   the solution set, so it may claim nothing about its size (BT13).
     /// - `Infeasible { diagnostics }` → `RankedSolveResult::Infeasible { diagnostics }`
     /// - `NoProgress { reason }` → `RankedSolveResult::NoProgress { reason }`
     ///
@@ -579,6 +600,10 @@ pub trait ConstraintSolver: Send + Sync {
                         unique,
                     }],
                     optimality,
+                    // A solver that only implements `solve` has established nothing
+                    // about the solution set, so `NotAttempted` is the honest
+                    // verdict here rather than a placeholder — see its doc.
+                    completeness: crate::completeness::Completeness::not_attempted(),
                 }
             }
             // Infeasible and NoProgress are structurally identical in both the
@@ -1035,7 +1060,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "FeasibilityOnly → score must be None");
@@ -1071,7 +1096,7 @@ mod tests {
 
         let ranked = solver.solve_ranked(&problem);
         match &ranked {
-            RankedSolveResult::Ranked { candidates, optimality } => {
+            RankedSolveResult::Ranked { candidates, optimality, .. } => {
                 assert_eq!(candidates.len(), 1, "expected exactly 1 candidate");
                 let c = &candidates[0];
                 assert!(c.objective_score.is_none(), "default lift → objective_score always None");
@@ -1089,6 +1114,91 @@ mod tests {
                 }
             }
             _ => panic!("expected Ranked, got {:?}", ranked),
+        }
+    }
+
+    /// BT13 (solution-set-completeness, #6706): the default `solve_ranked` lift
+    /// reports `Partial { NotAttempted }` — a solver that only implements `solve`
+    /// has, by construction, established nothing about the solution set — and
+    /// changes nothing else about the result it already produced.
+    ///
+    /// The optimality field is bound with `..` and asserted about NOWHERE: this
+    /// task does not touch the optimality axis, and pinning a `BestFoundReason`
+    /// variant here would couple this test to P2 μ #6680's landing.
+    #[test]
+    fn solve_ranked_default_lift_reports_not_attempted() {
+        use crate::completeness::{Completeness, PartialReason};
+        use crate::ranked::RankedSolveResult;
+
+        let mut solved_values = HashMap::new();
+        solved_values.insert(ValueCellId::new("Part", "x"), Value::length(0.01));
+
+        // Both problem shapes the two lift tests above cover: objective None and
+        // objective Some. Completeness is orthogonal to that split (D6), so both
+        // must report the same verdict.
+        let problems = [
+            (
+                "objective: None",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: None,
+                    functions: vec![].into(),
+                },
+            ),
+            (
+                "objective: Some",
+                ResolutionProblem {
+                    dependent_cells: Vec::new(),
+                    auto_params: vec![],
+                    constraints: vec![],
+                    current_values: ValueMap::new(),
+                    objective: Some(ObjectiveSet::single(
+                        ObjectiveSense::Minimize,
+                        make_literal_expr(),
+                    )),
+                    functions: vec![].into(),
+                },
+            ),
+        ];
+
+        for (label, problem) in &problems {
+            let solver = MockSolvedSolver { values: solved_values.clone(), unique: true };
+
+            // BT13, half 1: `solve()` is byte-identical to what it returned before.
+            match solver.solve(problem) {
+                SolveResult::Solved { values, unique } => {
+                    assert_eq!(values, solved_values, "{label}: solve() values unchanged");
+                    assert!(unique, "{label}: solve() unique unchanged");
+                }
+                other => panic!("{label}: expected Solved, got {other:?}"),
+            }
+
+            // BT13, half 2: the lift adds the completeness verdict and nothing else.
+            let ranked = solver.solve_ranked(problem);
+            match &ranked {
+                RankedSolveResult::Ranked { candidates, completeness, .. } => {
+                    assert_eq!(
+                        *completeness,
+                        Completeness::Partial { reason: PartialReason::NotAttempted },
+                        "{label}: a solver that only implements solve() establishes nothing"
+                    );
+                    assert!(!completeness.derived_unique(candidates.len()), "{label}: C1");
+                    assert!(!completeness.permits_proven_optimal(), "{label}: C2");
+
+                    assert_eq!(candidates.len(), 1, "{label}: candidate count unchanged");
+                    let c = &candidates[0];
+                    assert_eq!(c.values, solved_values, "{label}: candidate values unchanged");
+                    assert!(
+                        c.objective_score.is_none(),
+                        "{label}: default lift objective_score stays None"
+                    );
+                    assert!(c.unique, "{label}: candidate unique forwarded unchanged");
+                }
+                other => panic!("{label}: expected Ranked, got {other:?}"),
+            }
         }
     }
 

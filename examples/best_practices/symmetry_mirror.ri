@@ -11,9 +11,13 @@ module symmetry_mirror
 //
 //   `mirror` returns a REFLECTED COPY. It does not move, consume or extend the
 //   original, so the result must be unioned back in to get a symmetric part.
-//   Measured: volume(arm) = volume(mirror(arm, ...)) = 1e-6 m^3 and
-//   volume(union(arm, mirror(arm, ...))) = 2e-6 m^3 — a copy, not a pattern
-//   that includes its seed.
+//   Measured on THIS file's `arm` (a 40x8x8mm box, so 2.56e-6 m^3):
+//   volume(arm) = volume(arm_mirrored) = 2.56e-6 m^3 and volume(arms) =
+//   5.12e-6 m^3 — a copy, not a pattern that includes its seed. The doubling
+//   is what makes it a copy; it only shows up because `arm` is translated
+//   clear of the mirror plane. Mirror a solid that STRADDLES the plane and the
+//   union lands back on itself — `box` is origin-centred, so an untranslated
+//   `box` mirrored across `plane_yz(0mm)` unions to its own volume, unchanged.
 //
 //   Two call forms, and only two:
 //     * plane-value (2 args): mirror(g, plane_yz(0mm))     <- prefer this
@@ -25,14 +29,24 @@ module symmetry_mirror
 //   the NORMAL components stay bare dimensionless numbers:
 //       mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // correct
 //       mirror(g,   0,   0,   0, 1, 0, 0)     // WRONG — bare-0 origin
-//   The wrong form yields "mirror: ox argument expects Length, got Int; pass a
-//   dimensioned length such as `5mm`" and then a hard geometry-compile error
-//   ("missing or non-Length argument 'ox' for mirror").
+//   The wrong form is rejected at COMPILE time, before anything is built: one
+//   error per component ("mirror: ox argument expects Length, got Int; pass a
+//   dimensioned length such as `5mm`", then the same for oy and oz), and exit 1
+//   under BOTH `reify check` and `reify eval`. Compilation aborts there, so the
+//   older geometry-compile error ("missing or non-Length argument 'ox' for
+//   mirror") is NOT reached on this route — it survives only on the
+//   decoded-value route described just below.
 //
-//   TRAP: that error does NOT appear under `reify check` — check reports "All
-//   constraints satisfied" on the bare-0 form. It only surfaces at `reify eval`
-//   / build time. A green check is not evidence that a geometry call's argument
-//   dimensions are right.
+//   TRAP, re-scoped: the bare-0 7-arg form above is now a HARD `reify check`
+//   failure — a compile-layer ArgTypeMismatch (task 5662) on each of ox, oy and
+//   oz, exit 1, and no verdict line at all. What survives is narrower: on the
+//   decoded-value route `mirror(g, plane_yz(0))` the same three ox/oy/oz Length
+//   errors DO reach check's stderr, yet check still exits 0 and still prints
+//   "All constraints satisfied." underneath them. So the surviving warning is
+//   about the EXIT STATUS and that trailing verdict line, not about the error
+//   being absent — read check's stderr, never its exit code alone. That split
+//   is measured behaviour here and is deliberate but not permanent; re-measure
+//   rather than trusting this line.
 //
 //   Plane constructors: plane_xy(z), plane_xz(y), plane_yz(x) — each takes
 //   EXACTLY ONE offset argument, naming the axis the plane spans (so the
@@ -40,9 +54,22 @@ module symmetry_mirror
 //   generic `plane(...)`.
 //
 //   TRAP: these datum constructors are arity-blind at the type level, so a
-//   wrong-arity `plane_yz(0mm, 0mm)` is NOT a compile error — it evaluates to
-//   `undef` with no diagnostic at check time, and any geometry built on it
-//   silently fails downstream. Same for `point3`/`axis_*`. Count the arguments.
+//   wrong-arity `plane_yz(0mm, 0mm)` is NOT a compile error, and NOTHING names
+//   the arity — it evaluates to `undef` silently. The diagnostic you get comes
+//   from the CONSUMER instead, one level out:
+//       mirror(g, plane_yz(0mm, 0mm))
+//           -> error: failed to compile geometry operation: mirror: expected a
+//              Plane value, got undef
+//       circular_pattern(g, axis_z(vec3(0mm,0mm,0mm)), 4, 360deg)
+//           -> error: failed to compile geometry operation: circular_pattern:
+//              expected an Axis value, got undef
+//   `reify check` prints that error and still exits 0 — the same exit-status
+//   split as above; `reify eval` exits 1. Same for `point3`:
+//   `axis_z(point3(0mm, 0mm))` produces the same "expected an Axis value, got
+//   undef" from `circular_pattern`, because the `undef` propagates up the whole
+//   chain and only the outermost consumer speaks. So the error names the op
+//   that CONSUMED the `undef`, never the miscounted call that produced it, and
+//   check's exit status will not tell you at all. Count the arguments.
 
 structure def SymmetryMirror {
     param arm_len   : Length = 40mm

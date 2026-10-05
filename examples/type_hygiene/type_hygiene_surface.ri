@@ -2,7 +2,7 @@
 //
 // Demonstrates the ergonomic wins of the type-hygiene PRD cluster (tasks α–κ).
 // All cases here are GREEN (compile with zero Error-severity diagnostics and
-// auto-gated by crates/reify-compiler/tests/examples_smoke.rs recursive discovery).
+// auto-gated by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs recursive discovery).
 //
 // Negative cases (tensor comparison, bare-Real density, Pressure-as-density,
 // `x and 5`, scalar-override of tensor trait param) are intentionally excluded

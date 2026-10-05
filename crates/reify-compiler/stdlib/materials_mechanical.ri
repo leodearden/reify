@@ -101,6 +101,9 @@ trait Elastic {
     constraint 0 < poissons_ratio < 0.5
 }
 
+// shear_modulus is declared-only, kept deliberately inert (#5801). Ruling and
+// rationale: docs/reify-stdlib-reference.md §6.3 "Declared-only material properties".
+
 // ── Strength ─────────────────────────────────────────────────────────────────
 
 // yield_strength, ultimate_tensile_strength (UTS), compressive_strength all

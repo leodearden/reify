@@ -1,12 +1,12 @@
 //! Integration tests for task η 3945 (trait-static fn dispatch).
 //!
-//! ## Step-1 / Step-2 (producer): registration in `traits_phase`
+//! ## Producer: registration in `traits_phase` (step 4)
 //!
 //! A trait's body-carrying static (no-`self`) assoc fn must be compiled and
 //! registered as a namespaced `CompiledFunction` named `"Trait::method"` in
 //! `CompiledModule.functions` at the end of `phase_traits`.
 //!
-//! ## Step-3 / Step-4 (consumer): `TraitStaticCall` dispatch arm
+//! ## Consumer: the `TraitStaticCall` dispatch arm
 //!
 //! `Trait::fn(args)` inside a structure body must lower to a
 //! `CompiledExprKind::UserFunctionCall { function_name: "Trait::fn", .. }`,
@@ -16,15 +16,16 @@ use reify_core::{DiagnosticCode, Severity};
 use reify_ir::CompiledExprKind;
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 
-// ── Step-1 producer tests (RED until step-2) ────────────────────────────────
+// ── Step-1 producer tests — registered eagerly by traits_phase step 4 ───────
 
 /// (a) POSITIVE registration: a module with a trait declaring a static (no-self)
 /// body-carrying assoc fn compiles diagnostic-clean, and the resulting
 /// `CompiledModule.functions` contains a `CompiledFunction` whose
 /// `name == "Defaultable::make_default"` with 0 non-self params.
 ///
-/// RED today: `traits_phase` never compiles trait fn bodies, so the namespaced
-/// fn is absent from `ctx.functions`.
+/// `traits_phase` step 4 (the tail of `phase_traits`) compiles each trait's
+/// body-carrying static assoc fn eagerly and registers it under the
+/// namespaced symbol, so the namespaced fn is present in `ctx.functions`.
 #[test]
 fn static_assoc_fn_registered_in_module_functions() {
     let source = r#"
@@ -67,8 +68,12 @@ trait Defaultable {
 /// (which is not in scope during compilation of a neutral fn body) must yield
 /// an `UnresolvedName` diagnostic naming the offending member.
 ///
-/// RED today: trait fn bodies are never compiled (`compile_trait` only stores
-/// the `FnDef`), so no error fires for the member reference.
+/// Trait-static assoc-fn bodies are also compiled eagerly at trait-declaration
+/// time, in a neutral, non-conformer scope (traits_phase.rs step 4). That
+/// eager compile is unconditional — it happens even with zero conformers —
+/// so a body referencing a trait member such as `diameter` yields an
+/// `UnresolvedName` diagnostic naming the member, with no extra code needed,
+/// which is exactly what this test pins.
 #[test]
 fn static_assoc_fn_body_referencing_trait_member_errors() {
     let source = r#"
@@ -100,14 +105,15 @@ trait Bad {
     );
 }
 
-// ── Step-3 consumer tests (RED until step-4) ─────────────────────────────────
+// ── Step-3 consumer tests — dispatched via the TraitStaticCall arm ──────────
 
 /// (a) POSITIVE lowering: `Trait::fn()` inside a structure body lowers to a
 /// `UserFunctionCall` with `function_name == "Defaultable::make_default"` and
 /// produces no Error diagnostics.
 ///
-/// RED today: the `TraitStaticCall` arm is still the "not yet supported" poison
-/// placeholder, so it emits an error and returns a poison expr.
+/// The `ExprKind::TraitStaticCall` arm (expr.rs) resolves the namespaced
+/// symbol through the normal overload resolver and lowers it to a real
+/// `UserFunctionCall` — there is no "not yet supported" placeholder.
 #[test]
 fn trait_static_call_lowers_to_user_function_call_in_structure_body() {
     let source = r#"
@@ -156,7 +162,10 @@ pub structure def Spacer {
 /// emits exactly one Error whose message does NOT contain "not yet supported"
 /// but instead describes the unknown-static-fn situation.
 ///
-/// RED today: the placeholder arm always emits "not yet supported".
+/// The `ExprKind::TraitStaticCall` arm (expr.rs) has no "not yet supported"
+/// placeholder left: an unmatched symbol falls into the `NoMatch` /
+/// `NoUserFunctions` branch, which reports "unknown trait-static function"
+/// when the trait itself isn't in scope.
 #[test]
 fn unknown_trait_static_call_emits_unknown_fn_diagnostic() {
     let source = r#"pub structure def A { let s : Real = C::make() }"#;
@@ -190,7 +199,8 @@ fn unknown_trait_static_call_emits_unknown_fn_diagnostic() {
 /// Positive compilation with a Length-returning static fn using stdlib types.
 /// Mirrors the e2e example file (examples/trait_assoc_fn_static.ri).
 ///
-/// RED until step-4 (dispatch arm).
+/// Exercises the same `TraitStaticCall` dispatch arm (expr.rs) as the tests
+/// above, with a stdlib `Length` return type instead of a bare `Real`.
 #[test]
 fn static_assoc_fn_with_stdlib_length_type_compiles_clean() {
     let source = r#"
@@ -342,11 +352,9 @@ pub structure def Box {
 /// This is the positive counterpart to
 /// `trait_static_fn_call_emits_no_spurious_deprecation_warning`.
 ///
-/// RED after the grammar-only change (step-2): the source now parses and the
-/// fn registers, but `lower_trait_members` drops the annotation so
-/// `FnDef.annotations` is empty → `CompiledFunction.annotations` empty →
-/// no warning emitted.
-/// GREEN after the `lower_trait_members` annotation-attach change (step-4).
+/// `lower_trait_members` (ts_parser.rs) drains pending annotations onto Fn
+/// members, so `CompiledFunction.annotations` carries `@deprecated` and the
+/// `TraitStaticCall` arm's `deprecation_message` check (expr.rs) fires.
 #[test]
 fn trait_static_fn_call_emits_deprecation_warning() {
     let source = r#"
