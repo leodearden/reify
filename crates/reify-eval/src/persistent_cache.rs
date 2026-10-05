@@ -138,8 +138,8 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///
 /// **Wire-format contract:** `ENTRY_FORMAT_VERSION` covers the `bincode 1.3`
 /// fixint-LE encoding of [`CacheEntryHeader`] (4+32+32+8+8+8 = 92 bytes)
-/// AND the body that follows it: the bincode [`WithDiagnostics`] prefix and
-/// the `zstd 0.13` compressed value. Any change to either
+/// AND the body that follows it: the bincode `PersistedDiagnosticsBlock`
+/// prefix of [`WithDiagnostics`] and the `zstd 0.13` compressed value. Any change to either
 /// encoder that produces different bytes on disk — including a minor version
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
@@ -171,14 +171,19 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///   mis-decoded under the v3 reader — an empty v2 diagnostics block is
 ///   byte-identical to an empty v3 one, so without the stamp those entries
 ///   would be served by a reader whose element shape has changed. Pinned by
-///   `v2_entry_reads_as_clean_miss`.
+///   `every_prior_envelope_stamp_reads_as_clean_miss`.
 /// - **4** (task 7245 second review fix) — `labels` is REMOVED from
 ///   `PersistedDiagnostic` again, this time for a correctness reason rather
 ///   than the audit-of-producers premise that v3 rightly rejected: a label
 ///   carries absolute byte offsets into a source text that this cache's key
 ///   does not identify. See `PersistedDiagnostic`'s "Why `labels` are not
 ///   carried". Same migration mechanism as the two bumps above.
-pub const ENTRY_FORMAT_VERSION: u32 = 4;
+/// - **5** (task 7345) — the diagnostics block also carries the
+///   structured-detail overlay list after the diagnostics list, so a warm serve
+///   replays it too (see `PersistedDiagnosticsBlock`). Same migration
+///   mechanism; a v4 block is additionally too short to decode under v5, but
+///   the stamp, not that accident, is the guard.
+pub const ENTRY_FORMAT_VERSION: u32 = 5;
 
 /// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
 ///
@@ -756,6 +761,9 @@ impl PersistentlyCacheable for BucklingResultCache {
 
 // ── Diagnostics envelope (task 7245) ─────────────────────────────────────────
 
+use reify_compute_contract::StructuredComputeDetail;
+use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+
 /// On-disk wire mirror of [`reify_core::Diagnostic`].
 ///
 /// A mirror rather than a serde derive on `Diagnostic` itself: `Diagnostic` is
@@ -903,31 +911,199 @@ fn diagnostic_from_persisted(p: &PersistedDiagnostic) -> io::Result<reify_core::
     Ok(out)
 }
 
-/// Upper bound on the encoded diagnostics block, checked before allocating.
+/// On-disk wire mirror of [`StructuredComputeDetail`].
 ///
-/// Same discipline as [`check_f64_vec_len`] on the slab lengths: a corrupt or
-/// tampered length frame must be rejected as `InvalidData` (which `read_entry`
-/// turns into a clean miss) rather than driving an unbounded allocation. A
-/// dispatch's diagnostics are a handful of short strings, so 1 MiB is orders of
-/// magnitude of headroom.
-const MAX_DIAGNOSTICS_BLOCK_BYTES: u64 = 1 << 20;
-
-/// Encode the diagnostics mirror block for `diagnostics`.
-///
-/// Single source of truth for the block bytes, shared by
-/// [`PersistentlyCacheable::serialize_to_writer`] and
-/// [`PersistentlyCacheable::uncompressed_byte_size`] so the header's declared
-/// size and the bytes actually written can never drift apart.
-fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
-    let mirror: Vec<PersistedDiagnostic> =
-        diagnostics.iter().map(diagnostic_to_persisted).collect();
-    bincode::serialize(&mirror).expect(
-        "PersistedDiagnostic is a plain owned record (u8 + Strings + Vecs of \
-         owned records); bincode::serialize into a Vec cannot fail.",
-    )
+/// A mirror for the same reason as [`PersistedDiagnostic`]: the live type is
+/// deliberately serde-free, and this cache owns its wire format. Unlike
+/// `DiagnosticCode`, this enum is owned HERE, so bincode's positional variant
+/// tag is a local wire-format fact: declaration order IS the on-disk tag, as
+/// [`CacheEntryHeader`]'s field order is. Append only — a reorder or an
+/// insertion needs an [`ENTRY_FORMAT_VERSION`] bump. Pinned by
+/// `with_diagnostics_prefix_encoding_matches_pinned_bytes`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+enum PersistedStructuredDetail {
+    Fea(PersistedFeaDetail),
 }
 
-/// A persistable value paired with the diagnostics its solve emitted.
+/// On-disk wire mirror of [`FeaDiagnosticDetail`]. Declaration order is the
+/// wire tag, exactly as for [`PersistedStructuredDetail`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+enum PersistedFeaDetail {
+    /// Each mode encoded by [`dof_direction_to_u8`].
+    Unconstrained {
+        rigid_body_modes: Vec<u8>,
+    },
+    /// Each [`ElementId`] widened to a platform-independent `u64`.
+    ProblemElements {
+        element_ids: Vec<u64>,
+    },
+    UnresolvedSelector {
+        selector_path: String,
+    },
+}
+
+/// Encode a [`DofDirection`] as its on-disk `u8` code: 0..=5 in
+/// [`DofDirection::all_rigid_body_modes`] order.
+fn dof_direction_to_u8(d: DofDirection) -> u8 {
+    match d {
+        DofDirection::TranslationX => 0,
+        DofDirection::TranslationY => 1,
+        DofDirection::TranslationZ => 2,
+        DofDirection::RotationX => 3,
+        DofDirection::RotationY => 4,
+        DofDirection::RotationZ => 5,
+    }
+}
+
+/// Decode an on-disk DOF code, rejecting unknown values with `InvalidData` so
+/// a corrupt or tampered entry surfaces as a cache miss rather than as a
+/// silently-wrong direction.
+fn dof_direction_from_u8(b: u8) -> io::Result<DofDirection> {
+    match b {
+        0 => Ok(DofDirection::TranslationX),
+        1 => Ok(DofDirection::TranslationY),
+        2 => Ok(DofDirection::TranslationZ),
+        3 => Ok(DofDirection::RotationX),
+        4 => Ok(DofDirection::RotationY),
+        5 => Ok(DofDirection::RotationZ),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "PersistedFeaDetail unknown DofDirection code {other} \
+                 (corrupted or tampered cache entry?)"
+            ),
+        )),
+    }
+}
+
+/// Decode an on-disk element id, rejecting one this platform's `usize` cannot
+/// hold rather than truncating it into a different element.
+fn element_id_from_u64(id: u64) -> io::Result<ElementId> {
+    usize::try_from(id).map(ElementId).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "PersistedFeaDetail element id {id} does not fit in usize \
+                 (corrupted or tampered cache entry?)"
+            ),
+        )
+    })
+}
+
+/// Project a live overlay onto its wire mirror.
+///
+/// Both this and [`fea_detail_to_persisted`] match exhaustively with no
+/// wildcard, so a new upstream variant is a compile error here rather than a
+/// silently dropped overlay: a structured overlay has no meaningful partial
+/// form to degrade to.
+fn structured_detail_to_persisted(d: &StructuredComputeDetail) -> PersistedStructuredDetail {
+    match d {
+        StructuredComputeDetail::Fea(fea) => {
+            PersistedStructuredDetail::Fea(fea_detail_to_persisted(fea))
+        }
+    }
+}
+
+fn fea_detail_to_persisted(d: &FeaDiagnosticDetail) -> PersistedFeaDetail {
+    match d {
+        FeaDiagnosticDetail::Unconstrained { rigid_body_modes } => {
+            PersistedFeaDetail::Unconstrained {
+                rigid_body_modes: rigid_body_modes
+                    .iter()
+                    .copied()
+                    .map(dof_direction_to_u8)
+                    .collect(),
+            }
+        }
+        FeaDiagnosticDetail::ProblemElements { ids } => PersistedFeaDetail::ProblemElements {
+            element_ids: ids.iter().map(|id| id.0 as u64).collect(),
+        },
+        FeaDiagnosticDetail::UnresolvedSelector { selector_path } => {
+            PersistedFeaDetail::UnresolvedSelector {
+                selector_path: selector_path.clone(),
+            }
+        }
+    }
+}
+
+/// Rehydrate a wire mirror into a live overlay.
+fn structured_detail_from_persisted(
+    p: &PersistedStructuredDetail,
+) -> io::Result<StructuredComputeDetail> {
+    match p {
+        PersistedStructuredDetail::Fea(fea) => {
+            fea_detail_from_persisted(fea).map(StructuredComputeDetail::Fea)
+        }
+    }
+}
+
+fn fea_detail_from_persisted(p: &PersistedFeaDetail) -> io::Result<FeaDiagnosticDetail> {
+    Ok(match p {
+        PersistedFeaDetail::Unconstrained { rigid_body_modes } => {
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: rigid_body_modes
+                    .iter()
+                    .copied()
+                    .map(dof_direction_from_u8)
+                    .collect::<io::Result<_>>()?,
+            }
+        }
+        PersistedFeaDetail::ProblemElements { element_ids } => {
+            FeaDiagnosticDetail::ProblemElements {
+                ids: element_ids
+                    .iter()
+                    .copied()
+                    .map(element_id_from_u64)
+                    .collect::<io::Result<_>>()?,
+            }
+        }
+        PersistedFeaDetail::UnresolvedSelector { selector_path } => {
+            FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: selector_path.clone(),
+            }
+        }
+    })
+}
+
+/// The length-framed prefix block of a [`WithDiagnostics`] entry.
+///
+/// Field order IS wire order. `diagnostics` stays first, so its bytes are a
+/// byte-identical prefix of the block, exactly as the whole block was in v4.
+#[derive(Serialize, Deserialize)]
+struct PersistedDiagnosticsBlock {
+    diagnostics: Vec<PersistedDiagnostic>,
+    structured_detail: Vec<PersistedStructuredDetail>,
+}
+
+/// Upper bound on the encoded diagnostics block, enforced on both sides by
+/// [`check_diagnostics_block_len`].
+///
+/// On read it is the same discipline as [`check_f64_vec_len`] on the slab
+/// lengths: a corrupt or tampered length frame must be rejected as
+/// `InvalidData` (which `read_entry` turns into a clean miss) rather than
+/// driving an unbounded allocation. On write it refuses a block the reader
+/// would reject, before any byte is written, so such an entry is never
+/// published as a perpetual miss. Diagnostics are a handful of short strings,
+/// but the structured-detail list can carry element-id lists at 8 bytes per
+/// id, so the block size is data dependent; 1 MiB still holds ~130k ids.
+const MAX_DIAGNOSTICS_BLOCK_BYTES: u64 = 1 << 20;
+
+/// Reject a diagnostics block longer than [`MAX_DIAGNOSTICS_BLOCK_BYTES`].
+fn check_diagnostics_block_len(len: u64) -> io::Result<()> {
+    if len > MAX_DIAGNOSTICS_BLOCK_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "diagnostics block length {len} exceeds MAX_DIAGNOSTICS_BLOCK_BYTES \
+                 ({MAX_DIAGNOSTICS_BLOCK_BYTES})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A persistable value paired with the diagnostics and structured detail its
+/// solve emitted.
 ///
 /// # Why an envelope rather than a field on each record type
 ///
@@ -942,12 +1118,16 @@ fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
 /// anyway, since they arrive separately from the trampoline.
 ///
 /// This mirrors the in-memory cache's own stance (#5062): diagnostics are entry
-/// METADATA, explicitly not part of the result hash.
+/// METADATA, explicitly not part of the result hash. Structured detail is the
+/// typed half of the same metadata and rides the same block.
 ///
 /// # Wire layout — the prefix is load-bearing
 ///
 /// ```text
-/// [u64 LE block length][bincode Vec<PersistedDiagnostic>][V's body]
+/// [u64 LE block length][bincode PersistedDiagnosticsBlock][V's body]
+///
+/// PersistedDiagnosticsBlock =
+///     [Vec<PersistedDiagnostic>][Vec<PersistedStructuredDetail>]
 /// ```
 ///
 /// The diagnostics block is written BEFORE `V`'s body, never appended after
@@ -969,8 +1149,49 @@ pub struct WithDiagnostics<V> {
     /// Diagnostics emitted by the solve that produced `value`, replayed on a
     /// warm serve without their source labels (see `PersistedDiagnostic`).
     pub diagnostics: Vec<reify_core::Diagnostic>,
+    /// Structured-detail overlays emitted by the same solve, replayed on a
+    /// warm serve exactly as the cold solve emitted them.
+    pub structured_detail: Vec<StructuredComputeDetail>,
     /// The persisted result payload.
     pub value: V,
+}
+
+impl<V> WithDiagnostics<V> {
+    /// Replace the payload, keeping the solve's diagnostics and structured
+    /// detail unchanged.
+    pub fn map_value<U>(self, f: impl FnOnce(V) -> U) -> WithDiagnostics<U> {
+        WithDiagnostics {
+            diagnostics: self.diagnostics,
+            structured_detail: self.structured_detail,
+            value: f(self.value),
+        }
+    }
+
+    /// Encode the prefix block.
+    ///
+    /// Single source of truth for the block bytes, shared by
+    /// [`PersistentlyCacheable::serialize_to_writer`] and
+    /// [`PersistentlyCacheable::uncompressed_byte_size`] so the header's
+    /// declared size and the bytes actually written can never drift apart.
+    fn encode_diagnostics_block(&self) -> Vec<u8> {
+        let block = PersistedDiagnosticsBlock {
+            diagnostics: self
+                .diagnostics
+                .iter()
+                .map(diagnostic_to_persisted)
+                .collect(),
+            structured_detail: self
+                .structured_detail
+                .iter()
+                .map(structured_detail_to_persisted)
+                .collect(),
+        };
+        bincode::serialize(&block).expect(
+            "PersistedDiagnosticsBlock holds only plain owned records (u8s, \
+             u64s, Strings and Vecs of them); bincode::serialize into a Vec \
+             cannot fail.",
+        )
+    }
 }
 
 impl<V: PersistentlyCacheable> PersistentlyCacheable for WithDiagnostics<V> {
@@ -980,7 +1201,8 @@ impl<V: PersistentlyCacheable> PersistentlyCacheable for WithDiagnostics<V> {
     const FORMAT_VERSION: u32 = V::FORMAT_VERSION;
 
     fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
-        let block = encode_diagnostics_block(&self.diagnostics);
+        let block = self.encode_diagnostics_block();
+        check_diagnostics_block_len(block.len() as u64)?;
         w.write_all(&(block.len() as u64).to_le_bytes())?;
         w.write_all(&block)?;
         self.value.serialize_to_writer(w)
@@ -990,32 +1212,33 @@ impl<V: PersistentlyCacheable> PersistentlyCacheable for WithDiagnostics<V> {
         let mut len_frame = [0u8; 8];
         r.read_exact(&mut len_frame)?;
         let block_len = u64::from_le_bytes(len_frame);
-        if block_len > MAX_DIAGNOSTICS_BLOCK_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "diagnostics block length {block_len} exceeds limit \
-                     {MAX_DIAGNOSTICS_BLOCK_BYTES} (corrupted or tampered cache entry?)"
-                ),
-            ));
-        }
+        check_diagnostics_block_len(block_len)?;
         let mut block = vec![0u8; block_len as usize];
         r.read_exact(&mut block)?;
-        let mirror: Vec<PersistedDiagnostic> =
+        let block: PersistedDiagnosticsBlock =
             bincode::deserialize(&block).map_err(io::Error::other)?;
-        let diagnostics = mirror
+        let diagnostics = block
+            .diagnostics
             .iter()
             .map(diagnostic_from_persisted)
             .collect::<io::Result<Vec<_>>>()?;
+        let structured_detail = block
+            .structured_detail
+            .iter()
+            .map(structured_detail_from_persisted)
+            .collect::<io::Result<Vec<_>>>()?;
         let value = V::deserialize_from_reader(r)?;
-        Ok(Self { diagnostics, value })
+        Ok(Self {
+            diagnostics,
+            structured_detail,
+            value,
+        })
     }
 
     fn uncompressed_byte_size(&self) -> u64 {
         // The block is stored uncompressed, so it counts verbatim alongside its
         // 8-byte length frame; only `V`'s body passes through zstd.
-        8 + encode_diagnostics_block(&self.diagnostics).len() as u64
-            + self.value.uncompressed_byte_size()
+        8 + self.encode_diagnostics_block().len() as u64 + self.value.uncompressed_byte_size()
     }
 
     fn solve_time_ms(&self) -> u64 {
@@ -2084,8 +2307,6 @@ pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compute_contract::StructuredComputeDetail;
-    use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
 
     // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────
 
@@ -5586,8 +5807,15 @@ version = "9.9.9"
 
     #[test]
     fn persisted_diagnostic_code_is_encoded_by_name_not_variant_index() {
-        let block = encode_diagnostics_block(&[reify_core::Diagnostic::warning("m")
-            .with_code(reify_core::DiagnosticCode::ShellTooThick)]);
+        let block = WithDiagnostics {
+            diagnostics: vec![
+                reify_core::Diagnostic::warning("m")
+                    .with_code(reify_core::DiagnosticCode::ShellTooThick),
+            ],
+            structured_detail: vec![],
+            value: (),
+        }
+        .encode_diagnostics_block();
         assert!(
             block.windows(13).any(|w| w == b"ShellTooThick"),
             "the encoded block must carry the code's stable NAME, not a \

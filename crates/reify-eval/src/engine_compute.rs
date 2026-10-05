@@ -4829,6 +4829,7 @@ mod tests {
             &format!("{cache_key}"),
             &WithDiagnostics {
                 diagnostics: vec![warning.clone()],
+                structured_detail: Vec::new(),
                 value: ElasticResult {
                     displacement: vec![1.0; total_nodes * 3],
                     stress: vec![2.0; total_nodes * 9],

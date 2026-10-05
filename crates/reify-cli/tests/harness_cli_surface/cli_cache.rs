@@ -45,7 +45,8 @@ fn make_elastic_result_fixture() -> ElasticResult {
 }
 
 /// Seed one cache entry in the shape `reify eval` writes and reads: `value`
-/// inside the [`WithDiagnostics`] envelope, here with no diagnostics.
+/// inside the [`WithDiagnostics`] envelope, here with no diagnostics or
+/// structured detail.
 fn seed_entry(
     cache_root: &std::path::Path,
     engine_version_hash: &str,
@@ -58,6 +59,7 @@ fn seed_entry(
         input_hash,
         &WithDiagnostics {
             diagnostics: Vec::new(),
+            structured_detail: Vec::new(),
             value: value.clone(),
         },
     )

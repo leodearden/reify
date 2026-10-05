@@ -230,6 +230,7 @@ pub(crate) fn persistent_write(
                 &input_hash,
                 &crate::persistent_cache::WithDiagnostics {
                     diagnostics: diagnostics.to_vec(),
+                    structured_detail: Vec::new(),
                     value: er,
                 },
             ) {
@@ -263,6 +264,7 @@ pub(crate) fn persistent_write(
                 &input_hash,
                 &crate::persistent_cache::WithDiagnostics {
                     diagnostics: diagnostics.to_vec(),
+                    structured_detail: Vec::new(),
                     value: brc,
                 },
             ) {
@@ -297,6 +299,7 @@ pub(crate) fn persistent_write(
                 &input_hash,
                 &crate::persistent_cache::WithDiagnostics {
                     diagnostics: diagnostics.to_vec(),
+                    structured_detail: Vec::new(),
                     value: ser,
                 },
             ) {
@@ -792,6 +795,7 @@ mod tests {
             &input_hash,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: er,
             },
         )
@@ -915,6 +919,7 @@ mod tests {
             &input_hash_a,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: er,
             },
         )
@@ -1104,6 +1109,7 @@ mod tests {
             &input_hash,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: brc,
             },
         )
@@ -1230,6 +1236,7 @@ mod tests {
             &input_hash_a,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: brc,
             },
         )
