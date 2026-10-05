@@ -1355,3 +1355,39 @@ fn arity_drift_reports_both_directions_at_once() {
         "a documented 3 no fence calls AND a fence 2 nothing documents, got {drift:#?}"
     );
 }
+
+// --- documented_signature_arities unit tests ---------------------------------
+
+#[test]
+fn documented_signature_arities_reads_only_signature_spans_in_unfenced_prose() {
+    let section = "\
+<!-- SYNC note: `distance(a, b, c) -> Length` was the old form -->
+
+The gap is `distance(a, b) -> Length`; the one-argument `distance(a)` is a trap.
+
+Written bare, distance(x, y, z, w) -> Length is not a code span.
+
+```reify
+structure def Gap {
+    // distance(a, b, c, d, e) -> Length
+    let g = distance(x, y)
+}
+```
+";
+
+    assert_eq!(
+        documented_signature_arities(section, "distance"),
+        vec![2],
+        "only a whole `name(params) -> Type` code span in unfenced prose is a documented \
+         signature: an HTML maintainer note, an un-backticked form, a mention with no `->` and \
+         anything inside a fence (comment or call) are never read as one"
+    );
+}
+
+#[test]
+#[should_panic(expected = "variadic signature")]
+fn documented_signature_arities_panics_on_a_variadic_signature() {
+    let section = "The gap is `distance(a, …) -> Length`.\n";
+
+    let _ = documented_signature_arities(section, "distance");
+}
