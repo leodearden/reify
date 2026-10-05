@@ -83,6 +83,7 @@ std
     query        // interferes(), interferes_with(), min_clearance()
   result
     mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
+  fea              // StressInvariants — result of stress_invariants()
 ```
 
 ---
@@ -250,6 +251,15 @@ fn ELEMENTARY_CHARGE()         -> Charge             -- 1.602176634e-19 C       
 ```
 
 Reify has no top-level `const`; dimensionful values carry their dimension via the zero-arg function's return type, while dimensionless math constants (`pi`, `tau`, `e`) are bare compiler builtins.
+
+**Pressure-power aliases.** `units.ri` declares two more `pub type` aliases in its physical-constants alias block, alongside the constants' return-type aliases. They name powers of pressure that have no standard named quantity, so the names are positional: the digit is the exponent. Both are usable from user code.
+
+```
+pub type Pressure2 = Pressure * Pressure     // Pa²  — StressInvariants.i2 (§15)
+pub type Pressure3 = Pressure2 * Pressure    // Pa³  — StressInvariants.i3 (§15)
+```
+
+`Pressure3` chains through `Pressure2` because a type-alias right-hand side admits neither `^` nor parentheses (the same grammar limit that makes `StefanBoltzmannDim` spell T⁴ as four repeated factors).
 
 ---
 
@@ -1822,6 +1832,8 @@ fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_st
 fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
 ```
 
+`stress_invariants`, the fifth stress-tensor reduction, is documented with its result structure in §15 (`std.fea`). Unlike the four above, it takes a concrete 3×3 tensor only and has no `Field` form.
+
 ---
 
 ## 11. `std.fields`
@@ -2287,3 +2299,38 @@ Recovery is driven by the subject (first argument): an `Ok` yields its carried v
 | `map_err(r, f)` | `r` unchanged (`f` not applied) | `Err { error: f(e) }` | `undef` |
 
 `ok_or(o, err)` is the `Option` → `Result` bridge: `some(x) -> Ok { value: x }`, `none -> Err { error: err }`, `undef -> undef`.
+
+---
+
+## 15. `std.fea` — stress-invariant result structure
+
+`std.fea` (`crates/reify-compiler/stdlib/fea.ri`) declares the named structure the `stress_invariants` builtin returns.
+
+```
+structure def StressInvariants {
+    param i1 : Pressure     // I1 = tr(σ)                                                 (Pa)
+    param i2 : Pressure2    // I2 = (tr(σ)² − tr(σ²)) / 2  — sum of principal 2×2 minors  (Pa²)
+    param i3 : Pressure3    // I3 = det(σ)                                                (Pa³)
+}
+
+fn stress_invariants(stress: Tensor<2, 3, Pressure>) -> StressInvariants
+```
+
+The fields hold the three classical scalar invariants of a symmetric 3×3 Cauchy stress tensor. They are unchanged by a rotation of the coordinate frame. Expanded, I2 = σxx·σyy + σyy·σzz + σzz·σxx − σxy² − σyz² − σzx². Each field carries the matching power of the tensor's dimension (Pressure, Pressure², Pressure³; see §2.4 for the `Pressure2`/`Pressure3` aliases).
+
+The fields are dimension-checked: `inv.i1` passes where a `Pressure` is demanded, `inv.i2` where a `Pressure2` is demanded, and `inv.i3` where a `Pressure3` is demanded.
+
+`stress_invariants` takes exactly one argument, a concrete 3×3 tensor such as `matrix([[...]])` of Pa values. The tensor must be symmetric: asymmetric input is a precondition violation, asserted in debug builds; release builds read only the upper triangle. Any other argument evaluates to `undef`: a non-tensor, a non-3×3 matrix, or a `Field`. The result type stays `StressInvariants` even for a `Field` argument, because evaluation has no `Field` form for this reduction (contrast the reductions in §10). A dimensionless input tensor yields plain `Real` values in all three fields.
+
+Worked example — the `INVARIANT_POWERS_FIXTURE` in `crates/reify-eval/tests/harness_fea_solver_e2e/fea_stress_reductions_smoke.rs`, whose values are asserted there:
+
+```
+let stress = matrix([[2.0e6Pa, 0.0Pa,   0.0Pa],
+                     [0.0Pa,   3.0e6Pa, 0.0Pa],
+                     [0.0Pa,   0.0Pa,   5.0e6Pa]])
+
+let inv = stress_invariants(stress)
+// inv.i1 = 10 MPa   (1.0e7 Pa)    — I1 = 2 + 3 + 5
+// inv.i2 = 31 MPa²  (3.1e13 Pa²)  — I2 = 2·3 + 3·5 + 2·5
+// inv.i3 = 30 MPa³  (3.0e19 Pa³)  — I3 = 2·3·5
+```
