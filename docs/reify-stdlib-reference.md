@@ -1014,9 +1014,9 @@ enum Directionality { In, Out, Bidi }
 
 structure def Frame3 {
     param origin : Vector3<Length>
-    param x_axis : Vector3<Length>
-    param y_axis : Vector3<Length>
-    param z_axis : Vector3<Length>
+    param x_axis : Vector3<Dimensionless>
+    param y_axis : Vector3<Dimensionless>
+    param z_axis : Vector3<Dimensionless>
 }
 
 trait LocatedPort : Port {
