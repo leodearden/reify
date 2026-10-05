@@ -41,12 +41,12 @@
 //! parsers [`common::parse_bbox`] / `bbox_of` and [`common::parse_xyz`] / `xyz_of`.
 //! `chamfer_with_history_integration`, `fillet_with_history_integration` and
 //! `local_feature_helper_contract` consume the local-feature HISTORY-record assertions.
-//! `tessellation_winding_integration` consumes the mesh-orientation helpers
-//! [`common::tri_winding_normal`] / `aabb_centre`, as does `reflection_det_negative_integration`,
-//! which also consumes `bbox_of` (the former crossed the seam from `harness_occt` in task
-//! #7307, when it began consuming `common::`). So "asserts on a measured quantity" is NOT the
-//! criterion and never was — "uses `common::`" is. Both harnesses continue to share `tests/fixtures/`, which costs
-//! nothing under C2: it counts only `.rs` files reached by a `mod` / `#[path]` declaration.
+//! `tessellation_winding_integration` and `reflection_det_negative_integration` consume the
+//! mesh-ORIENTATION assertions [`common::assert_outward_wound`] /
+//! `assert_supplied_normals_agree_with_winding`, and the latter also consumes `bbox_of`. So
+//! "asserts on a measured quantity" is NOT the criterion and never was — "uses `common::`"
+//! is. Both harnesses continue to share `tests/fixtures/`, which costs nothing under C2: it
+//! counts only `.rs` files reached by a `mod` / `#[path]` declaration.
 //!
 //! Layout-only (invariant I3): no `#[test]` fn is added, removed or renamed by this split,
 //! and every module keeps its stem, so each `<file>::<test>` module path — and thus every

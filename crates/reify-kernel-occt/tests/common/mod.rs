@@ -41,16 +41,17 @@
 //! wire-format and strictness contracts are likewise stated ONCE, on
 //! [`parse_xyz`].
 //!
-//! The mesh-orientation section ([`tri_winding_normal`], [`aabb_centre`])
-//! retires the private copies that `tessellation_winding_integration.rs` and
-//! `reflection_det_negative_integration.rs` each carried (task #7307).
+//! The mesh-orientation section ([`assert_outward_wound`],
+//! [`assert_supplied_normals_agree_with_winding`]) holds the one
+//! outward-orientation policy for tessellated convex solids, built on the
+//! private [`tri_winding_normal`] / [`aabb_centre`] primitives.
 
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{
     DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
 };
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, Value};
 
 /// Private trait implemented by both [`HistoryRecord`] and [`DeletedRecord`]
 /// so that [`assert_records_in_range`] can operate on slices of either type.
@@ -1181,16 +1182,110 @@ fn xyz_of_panics_on_non_string_value() {
 }
 
 // ---------------------------------------------------------------------------
-// Mesh-orientation helpers (task #7307)
+// Mesh-orientation assertions (task #7307)
 // ---------------------------------------------------------------------------
+
+/// Assert that every triangle of `mesh` is OUTWARD-wound: over the
+/// position-welded canonical vertices ([`Mesh::weld_positions`]), the winding
+/// normal ([`tri_winding_normal`]) must have a strictly positive dot product
+/// with (triangle centroid − [`aabb_centre`]).
+///
+/// This is the check that observes orientation. `Mesh::validate`'s Closed +
+/// ConsistentWinding obligations are a directed-edge invariant that a
+/// consistently INWARD mesh satisfies exactly as well as an outward one.
+///
+/// Valid only for a CONVEX solid whose interior contains its AABB centre (a
+/// box, cylinder, cone or sphere does; a corner tetrahedron does not). For a
+/// non-convex solid, a correctly outward-wound triangle can face the centre.
+///
+/// `what` is interpolated into every panic message so a failure names the
+/// fixture that regressed; `#[track_caller]` points it at the calling test.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+#[track_caller]
+pub fn assert_outward_wound(mesh: &Mesh, what: &str) {
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "{what}: index count must be a multiple of 3"
+    );
+    let (canon_verts, welded) = mesh.weld_positions();
+    let centre = aabb_centre(&canon_verts);
+
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let [ia, ib, ic] = [tri[0], tri[1], tri[2]].map(|i| welded[i as usize] as usize);
+        let [pa, pb, pc] = [ia, ib, ic].map(|i| canon_verts[i].map(f64::from));
+        let normal = tri_winding_normal(pa, pb, pc);
+        let tri_centroid: [f64; 3] = std::array::from_fn(|k| (pa[k] + pb[k] + pc[k]) / 3.0);
+        let outward: [f64; 3] = std::array::from_fn(|k| tri_centroid[k] - centre[k]);
+        let dot = dot3(normal, outward);
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (welded verts {ia},{ib},{ic}) geometric normal from emitted \
+             winding points inward (dot = {dot:.6}); every triangle must be outward-wound"
+        );
+    }
+}
+
+/// Assert that every triangle's averaged supplied per-vertex normal agrees
+/// (dot > 0) with the winding normal of its RAW, unwelded vertices: the
+/// normals a kernel emits (read by shading and export) must point the same
+/// way as its triangles (read by manifold consumers).
+///
+/// # Panics
+///
+/// Also if `mesh.normals` is `None` or not parallel to `mesh.vertices`.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+#[track_caller]
+pub fn assert_supplied_normals_agree_with_winding(mesh: &Mesh, what: &str) {
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "{what}: index count must be a multiple of 3"
+    );
+    let Some(supplied) = mesh.normals.as_deref() else {
+        panic!("{what}: mesh carries no per-vertex normals; tessellate should emit them");
+    };
+    assert_eq!(
+        supplied.len(),
+        mesh.vertices.len(),
+        "{what}: normals array must have same length as vertices array"
+    );
+    let triple = |flat: &[f32], i: u32| -> [f64; 3] {
+        let base = i as usize * 3;
+        [flat[base], flat[base + 1], flat[base + 2]].map(f64::from)
+    };
+
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let [i0, i1, i2] = [tri[0], tri[1], tri[2]];
+        let [pa, pb, pc] = [i0, i1, i2].map(|i| triple(&mesh.vertices, i));
+        let winding_normal = tri_winding_normal(pa, pb, pc);
+        let [na, nb, nc] = [i0, i1, i2].map(|i| triple(supplied, i));
+        let avg_supplied: [f64; 3] = std::array::from_fn(|k| (na[k] + nb[k] + nc[k]) / 3.0);
+        let dot = dot3(winding_normal, avg_supplied);
+
+        assert!(
+            dot > 0.0,
+            "{what}: triangle {t} (raw verts {i0},{i1},{i2}) supplied normals (avg \
+             [{:.4},{:.4},{:.4}]) disagree with the geometric winding normal (dot = {dot:.6}); \
+             supplied normals must agree with the outward-wound triangles",
+            avg_supplied[0],
+            avg_supplied[1],
+            avg_supplied[2],
+        );
+    }
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
 
 /// The geometric normal of triangle `(pa, pb, pc)` implied by its emitted
 /// winding order: `AB × AC`, right-handed.
 ///
 /// Deliberately NOT normalised — its magnitude is twice the triangle's area —
 /// because every caller tests only the sign of a dot product against it.
-#[allow(dead_code)] // only called from has_occt integration-test binaries
-pub fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
     let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
     let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
     [
@@ -1201,18 +1296,13 @@ pub fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] 
 }
 
 /// The centre of the axis-aligned bounding box of `verts` — per-axis
-/// `(min + max) / 2`, widened to `f64` — used as the interior reference point
-/// for an outward-winding check: a triangle is outward-wound when
-/// [`tri_winding_normal`] has a positive dot product with (triangle centroid −
-/// this centre).
+/// `(min + max) / 2`, widened to `f64` — the interior reference point of
+/// [`assert_outward_wound`].
 ///
 /// The AABB centre rather than the vertex-cloud mean, because it is robust to
 /// non-uniform vertex density across faces: if a tighter tolerance makes OCCT
 /// add interior tessellation nodes on one face, the vertex mean shifts toward
 /// that denser face while the AABB centre does not move.
-///
-/// It is a valid outward reference only for a CONVEX solid; for a non-convex
-/// one, a correctly outward-wound triangle can face the centre.
 ///
 /// `verts` is `[f32; 3]` because that is what `Mesh::weld_positions()` returns.
 ///
@@ -1221,9 +1311,8 @@ pub fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] 
 /// If `verts` is empty. Without the check, the `f64::MAX` / `f64::MIN` seeds
 /// would average to a plausible-looking origin and make the downstream
 /// outward-dot check quietly meaningless.
-#[allow(dead_code)] // only called from has_occt integration-test binaries
 #[track_caller]
-pub fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
+fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
     assert!(
         !verts.is_empty(),
         "aabb_centre: empty vertex slice has no bounding box, so it has no centre"
@@ -1249,9 +1338,9 @@ pub fn aabb_centre(verts: &[[f32; 3]]) -> [f64; 3] {
 }
 
 // ---------------------------------------------------------------------------
-// Contract tests for the shared `tri_winding_normal` / `aabb_centre` helpers
-// above. Like the bbox and xyz ones, these `#[test]` fns run as
-// `common::<name>` within the single `harness_occt_measurement` test binary.
+// Contract tests for the mesh-orientation helpers above. Like the bbox and
+// xyz ones, these `#[test]` fns run as `common::<name>` within the single
+// `harness_occt_measurement` test binary.
 //
 // Exact `assert_eq!` is the correct assertion throughout, not a tolerance:
 // every input is a small integer, exactly representable in both f32 and f64,
@@ -1320,4 +1409,69 @@ fn aabb_centre_is_extent_midpoint_not_vertex_mean() {
 #[should_panic(expected = "empty")]
 fn aabb_centre_panics_on_empty_input() {
     let _ = aabb_centre(&[]);
+}
+
+/// The regular octahedron with vertices at `±x̂`, `±ŷ`, `±ẑ`: convex, its AABB
+/// centre (the origin) interior, every face wound outward, and every supplied
+/// normal equal to its vertex's outward unit position.
+fn outward_unit_octahedron() -> Mesh {
+    const POSITIONS: [[f32; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+    // One face per octant (sx, sy, sz); its outward normal is (sx, sy, sz).
+    const FACES: [[u32; 3]; 8] = [
+        [0, 2, 4], // + + +
+        [1, 4, 2], // - + +
+        [0, 4, 3], // + - +
+        [0, 5, 2], // + + -
+        [1, 3, 4], // - - +
+        [1, 2, 5], // - + -
+        [0, 3, 5], // + - -
+        [1, 5, 3], // - - -
+    ];
+    let vertices: Vec<f32> = POSITIONS.into_iter().flatten().collect();
+    Mesh {
+        normals: Some(vertices.clone()),
+        vertices,
+        indices: FACES.into_iter().flatten().collect(),
+    }
+}
+
+/// (e) A correctly outward-wound convex mesh with agreeing normals passes both
+/// assertions.
+#[test]
+fn mesh_orientation_assertions_accept_outward_octahedron() {
+    let mesh = outward_unit_octahedron();
+    assert_outward_wound(&mesh, "outward octahedron");
+    assert_supplied_normals_agree_with_winding(&mesh, "outward octahedron");
+}
+
+/// (f) A CONSISTENTLY inward-wound mesh still passes `Mesh::validate` — which
+/// is why [`assert_outward_wound`] exists — and that assertion rejects it.
+#[test]
+#[should_panic(expected = "points inward")]
+fn assert_outward_wound_rejects_consistently_inward_mesh() {
+    let mut mesh = outward_unit_octahedron();
+    for tri in mesh.indices.chunks_exact_mut(3) {
+        tri.swap(1, 2);
+    }
+    mesh.validate(0.0)
+        .expect("a consistently wound closed mesh passes validate whatever its orientation");
+    assert_outward_wound(&mesh, "reversed octahedron");
+}
+
+/// (g) Normals opposing an outward winding are rejected.
+#[test]
+#[should_panic(expected = "disagree with the geometric winding normal")]
+fn assert_supplied_normals_rejects_normals_opposing_winding() {
+    let mut mesh = outward_unit_octahedron();
+    for n in mesh.normals.as_mut().expect("octahedron carries normals") {
+        *n = -*n;
+    }
+    assert_supplied_normals_agree_with_winding(&mesh, "flipped-normal octahedron");
 }

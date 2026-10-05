@@ -48,7 +48,7 @@ fn tessellate_box(width_mm: f64, height_mm: f64, depth_mm: f64, tol: f64) -> rei
 ///   For every directed edge (u, v): count == 1  AND  count(v, u) == 1.
 ///
 /// Also asserts that every triangle's geometric normal (from the emitted
-/// winding) points AWAY from the box centroid — i.e. is outward-wound.
+/// winding) points AWAY from the box's AABB centre — i.e. is outward-wound.
 ///
 /// RED on base (before the winding fix): REVERSED faces are inward-wound, so
 /// a shared edge between a FORWARD and a REVERSED face is traversed in the
@@ -57,12 +57,6 @@ fn tessellate_box(width_mm: f64, height_mm: f64, depth_mm: f64, tol: f64) -> rei
 #[test]
 fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
     let mesh = tessellate_box(10.0, 20.0, 30.0, 0.1);
-
-    assert_eq!(
-        mesh.indices.len() % 3,
-        0,
-        "index count must be a multiple of 3"
-    );
 
     // Validity note: `BRepPrimAPI_MakeBox` builds an oriented closed shell
     // that assigns some faces FORWARD and others REVERSED relative to the
@@ -84,46 +78,7 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         "real OCCT box tessellation must satisfy the mesh contract after internal welding",
     );
 
-    // Outward-orientation check against the AABB centre (see
-    // `common::aabb_centre` for why not the vertex mean).
-    let (canon_verts, welded) = mesh.weld_positions();
-    let box_centroid = common::aabb_centre(&canon_verts);
-
-    let num_tris = mesh.indices.len() / 3;
-    for t in 0..num_tris {
-        let a = welded[mesh.indices[t * 3] as usize] as usize;
-        let b = welded[mesh.indices[t * 3 + 1] as usize] as usize;
-        let c = welded[mesh.indices[t * 3 + 2] as usize] as usize;
-        let pa = canon_verts[a];
-        let pb = canon_verts[b];
-        let pc = canon_verts[c];
-
-        // Geometric normal from the emitted winding order (AB × AC).
-        let pa_f64 = [pa[0] as f64, pa[1] as f64, pa[2] as f64];
-        let pb_f64 = [pb[0] as f64, pb[1] as f64, pb[2] as f64];
-        let pc_f64 = [pc[0] as f64, pc[1] as f64, pc[2] as f64];
-        let normal = common::tri_winding_normal(pa_f64, pb_f64, pc_f64);
-
-        // Outward direction: triangle centroid → box centroid reversed.
-        let tri_centroid = [
-            (pa[0] as f64 + pb[0] as f64 + pc[0] as f64) / 3.0,
-            (pa[1] as f64 + pb[1] as f64 + pc[1] as f64) / 3.0,
-            (pa[2] as f64 + pb[2] as f64 + pc[2] as f64) / 3.0,
-        ];
-        let outward = [
-            tri_centroid[0] - box_centroid[0],
-            tri_centroid[1] - box_centroid[1],
-            tri_centroid[2] - box_centroid[2],
-        ];
-
-        let dot = normal[0] * outward[0] + normal[1] * outward[1] + normal[2] * outward[2];
-
-        assert!(
-            dot > 0.0,
-            "triangle {t} (verts {a},{b},{c}): geometric normal from emitted winding \
-             points inward (dot = {dot:.6}); all triangles must be outward-wound"
-        );
-    }
+    common::assert_outward_wound(&mesh, "10x20x30 mm box");
 }
 
 // ---------------------------------------------------------------------------
@@ -143,75 +98,5 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
 #[test]
 fn tessellated_box_supplied_normals_agree_with_winding() {
     let mesh = tessellate_box(10.0, 20.0, 30.0, 0.1);
-
-    let supplied = mesh
-        .normals
-        .as_ref()
-        .expect("tessellate should emit per-vertex normals for a box");
-
-    assert_eq!(
-        mesh.indices.len() % 3,
-        0,
-        "index count must be a multiple of 3"
-    );
-    assert_eq!(
-        supplied.len(),
-        mesh.vertices.len(),
-        "normals array must have same length as vertices array"
-    );
-
-    let num_tris = mesh.indices.len() / 3;
-    for t in 0..num_tris {
-        let i0 = mesh.indices[t * 3] as usize;
-        let i1 = mesh.indices[t * 3 + 1] as usize;
-        let i2 = mesh.indices[t * 3 + 2] as usize;
-
-        // Vertex positions.
-        let pa = [
-            mesh.vertices[i0 * 3] as f64,
-            mesh.vertices[i0 * 3 + 1] as f64,
-            mesh.vertices[i0 * 3 + 2] as f64,
-        ];
-        let pb = [
-            mesh.vertices[i1 * 3] as f64,
-            mesh.vertices[i1 * 3 + 1] as f64,
-            mesh.vertices[i1 * 3 + 2] as f64,
-        ];
-        let pc = [
-            mesh.vertices[i2 * 3] as f64,
-            mesh.vertices[i2 * 3 + 1] as f64,
-            mesh.vertices[i2 * 3 + 2] as f64,
-        ];
-
-        // Geometric normal from the emitted winding (AB × AC).
-        let winding_normal = common::tri_winding_normal(pa, pb, pc);
-
-        // Average of the three supplied per-vertex normals.
-        let avg_supplied = [
-            (supplied[i0 * 3] as f64 + supplied[i1 * 3] as f64 + supplied[i2 * 3] as f64)
-                / 3.0,
-            (supplied[i0 * 3 + 1] as f64
-                + supplied[i1 * 3 + 1] as f64
-                + supplied[i2 * 3 + 1] as f64)
-                / 3.0,
-            (supplied[i0 * 3 + 2] as f64
-                + supplied[i1 * 3 + 2] as f64
-                + supplied[i2 * 3 + 2] as f64)
-                / 3.0,
-        ];
-
-        let dot = winding_normal[0] * avg_supplied[0]
-            + winding_normal[1] * avg_supplied[1]
-            + winding_normal[2] * avg_supplied[2];
-
-        assert!(
-            dot > 0.0,
-            "triangle {t}: supplied normals (avg [{:.4},{:.4},{:.4}]) disagree with \
-             the geometric winding normal (dot = {dot:.6}); \
-             supplied normals must agree with the outward-wound triangles",
-            avg_supplied[0],
-            avg_supplied[1],
-            avg_supplied[2],
-        );
-    }
+    common::assert_supplied_normals_agree_with_winding(&mesh, "10x20x30 mm box");
 }
