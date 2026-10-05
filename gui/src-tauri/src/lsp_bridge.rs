@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use reify_lsp::blocking_work::BlockingWorkPlacement;
 use reify_lsp::bridge::InProcessLsp;
-use reify_lsp::server::NotificationSink;
+use reify_lsp::server::{NoOpSink, NotificationSink};
 
 /// Tauri-side wrapper around the in-process LSP server.
 ///
@@ -27,6 +28,18 @@ use reify_lsp::server::NotificationSink;
 /// has no `workspace_root` and these handlers fall back to single-file behavior
 /// (cross-module symbols remain refused). No per-method dispatch arm is required
 /// for cross-file: the substrate rides entirely on the forwarded `rootUri`.
+///
+/// # Where blocking work runs
+///
+/// Every `lsp_request` is dispatched on a large-stack lane
+/// ([`lsp_request_on_worker`]), so the thread polling `handle_request` IS the
+/// stack the parser and compiler need. The bridge therefore builds its server
+/// with [`BlockingWorkPlacement::CallingThread`], giving `definition`,
+/// `prepareRename`, `rename` and `references` the lane's stack too, instead of
+/// a ~2 MiB blocking-pool thread. The one cost: in the degraded no-lane arm
+/// (`dispatch_async(None, ..)` awaits in place), those four now run inline on a
+/// Tauri tokio worker and occupy it for the request — as `didOpen` /
+/// `didChange`'s compile always has there.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
@@ -34,15 +47,13 @@ pub struct LspBridge {
 impl LspBridge {
     /// Create a new LSP bridge with a fresh in-process LSP server.
     pub fn new() -> Self {
-        Self {
-            lsp: InProcessLsp::new(),
-        }
+        Self::with_sink(Arc::new(NoOpSink))
     }
 
     /// Create a new LSP bridge with a custom notification sink.
     pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
         Self {
-            lsp: InProcessLsp::with_sink(sink),
+            lsp: InProcessLsp::with_sink_and_placement(sink, BlockingWorkPlacement::CallingThread),
         }
     }
 
