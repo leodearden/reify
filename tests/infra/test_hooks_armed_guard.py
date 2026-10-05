@@ -170,6 +170,13 @@ class GuardFixture(unittest.TestCase):
         log = self.gate_log()
         return log.stat().st_size if log.exists() else None
 
+    def liveness_lines(self):
+        log = self.gate_log()
+        if not log.exists():
+            return []
+        return [line for line in log.read_text().splitlines()
+                if "stash-guard: liveness:" in line]
+
     # -- the oracle ---------------------------------------------------------
 
     def stash_push(self, lane=None):
@@ -262,6 +269,56 @@ class CheckContract(GuardFixture):
 
     def test_t7_help_exits_0(self):
         self.assert_rc(self.run_guard("--help"), 0)
+
+
+class ArmContract(GuardFixture):
+    """`arm`: 0 armed | 2 the pin cannot fix it | * failed; lane-scoped repair."""
+
+    def _assert_one_liveness_line_naming_the_lane(self):
+        lines = self.liveness_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(str(self.lane), lines[0])
+
+    def test_t8_arm_repairs_a_clobbered_lane(self):
+        clobbered = str(self.tmpdir / "nonexistent")
+        self.clobber_shared(clobbered)
+        self.assert_rc(self.run_guard("arm", self.lane), 0)
+        self._assert_one_liveness_line_naming_the_lane()
+        self.assert_rc(self.run_guard("check", self.lane), 0)
+        self.assertEqual(self.git_out(self.lane, "config", "--worktree", "--get",
+                                      "core.hooksPath"), "hooks")
+        self.assertEqual(self.git_out(self.main, "config", "--local", "--get",
+                                      "core.hooksPath"), clobbered)
+        self.assert_push_refused()
+
+    def test_t9_arm_on_an_armed_lane_writes_nothing(self):
+        self.pin("hooks")
+        before = (self.config_snapshot(), self.log_size())
+        self.assert_rc(self.run_guard("arm", self.lane), 0)
+        self.assertEqual((self.config_snapshot(), self.log_size()), before)
+
+    def test_t10_arm_cannot_fix_a_non_executable_hook(self):
+        self.pin("hooks")
+        hook = self.lane / "hooks" / "reference-transaction"
+        hook.chmod(hook.stat().st_mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+        before = self.config_snapshot()
+        self.assert_rc(self.run_guard("arm", self.lane), 2)
+        self.assertEqual(self.config_snapshot(), before)
+        self._assert_one_liveness_line_naming_the_lane()
+        self.assert_rc(self.run_guard("check", self.lane), 1)
+        self.assert_push_succeeds()
+
+    def test_t11_arm_overwrites_a_dark_non_canonical_pin(self):
+        self.pin("/dev/null")
+        self.assert_rc(self.run_guard("arm", self.lane), 0)
+        self.assert_rc(self.run_guard("check", self.lane), 0)
+        self.assert_push_refused()
+
+    def test_t12_arm_on_a_plain_directory_cannot_check(self):
+        plain = self.tmpdir / "plain"
+        plain.mkdir()
+        self.assert_rc(self.run_guard("arm", plain), 3)
+        self.assertEqual(list(plain.iterdir()), [])
 
 
 if __name__ == "__main__":
