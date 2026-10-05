@@ -28,7 +28,12 @@
 //! - `chunk_io` (#6956) — where the chunk corpus lives, how a chunk is read and
 //!   listed, and how a corpus gate reports.
 //! - `chunk_markdown` (#6956) — how a chunk's markdown divides into fenced code
-//!   blocks and the sections those fences cannot end; the one fence parser.
+//!   blocks, the sections those fences cannot end, and the catalogue tables a
+//!   section carries; the one fence parser.
+//! - `call_scan` (#6956) — which calls a piece of Reify text makes, read as
+//!   text behind a comment stripper.
+//! - `callable_registries` (#6956) — the compiler name registries a documented
+//!   call may belong to, and the one wording for a name that belongs to none.
 //! - `module_compile` (#6956) — what the compiler makes of one complete module,
 //!   split by the rejecting layer; the one definition of "compiles clean".
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
@@ -46,6 +51,10 @@
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
+#[path = "harness_doc_chunks/call_scan.rs"]
+mod call_scan;
+#[path = "harness_doc_chunks/callable_registries.rs"]
+mod callable_registries;
 #[path = "harness_doc_chunks/chunk_cite_gate.rs"]
 mod chunk_cite_gate;
 #[path = "harness_doc_chunks/chunk_io.rs"]

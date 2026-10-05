@@ -1,5 +1,5 @@
-//! How a chunk's markdown divides into fenced code blocks, and the sections
-//! those fences cannot end.
+//! How a chunk's markdown divides into fenced code blocks, the sections those
+//! fences cannot end, and the catalogue tables a section carries.
 
 use std::collections::HashSet;
 
@@ -330,6 +330,81 @@ pub(crate) fn marker_closed_region(
             )
         });
     body.lines().take(end).collect::<Vec<_>>().join("\n")
+}
+
+/// The names a CATALOGUE TABLE's rows are about — one entry per markdown row, in
+/// document order. geometry.md carries two: the length-argument catalogue and
+/// the topology-selector catalogue.
+///
+/// FIRST COLUMN ONLY, and that is the whole point of the scan rather than a
+/// simplification of it. A catalogue's claim is made by the row's subject: the
+/// later columns are prose that legitimately backticks argument NAMES
+/// (`degree`, `n_points`), which are not callables and must not be fed to a
+/// registry lookup. Taking column one keeps "every name this asserts is real" a
+/// true statement instead of one needing an allowlist to stay green.
+///
+/// A cell may name more than one callable (the length catalogue's
+/// ``| `interp` / `bezier` |`` row), so a row yields a Vec. Rows that yield
+/// nothing — the header, the `|---|---|---|` delimiter, any `|`-leading line
+/// without a backticked identifier — are dropped, so `.len()` counts CATALOGUE
+/// rows and nothing else.
+///
+/// A backticked span is accepted only if it is a bare identifier, optionally
+/// followed by a call form: ``` `helix` ``` and ``` `helix(radius, pitch,
+/// height)` ``` both yield `helix`. Anything else (a prose span, a unit
+/// literal) is skipped rather than guessed at.
+pub(crate) fn catalogue_table_rows(section: &str) -> Vec<Vec<String>> {
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in section.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('|') else {
+            continue;
+        };
+        // The FIRST cell: everything up to the next `|`, or the whole remainder
+        // for a (malformed) single-column row.
+        let first_cell = rest.split('|').next().unwrap_or_default();
+
+        let mut names: Vec<String> = Vec::new();
+        for span in first_cell.split('`').skip(1).step_by(2) {
+            // Trim a trailing call form, so `helix` and
+            // `helix(radius, pitch, height)` are the same claim.
+            let head = span.split('(').next().unwrap_or_default().trim();
+            if !head.is_empty()
+                && head.chars().all(is_ident)
+                && !head.starts_with(|c: char| c.is_ascii_digit())
+                && !names.contains(&head.to_string())
+            {
+                names.push(head.to_string());
+            }
+        }
+        if !names.is_empty() {
+            rows.push(names);
+        }
+    }
+    rows
+}
+
+/// The DISTINCT names carried by `rows`, in document order.
+///
+/// A SIBLING of [`catalogue_table_rows`] rather than a replacement for it,
+/// because a catalogue scan asks a table two different questions: how many ROWS
+/// it still has (the anti-vacuity floor) and which NAMES it claims (the registry
+/// assertions). Callers want both answers, so the rows are parsed once and
+/// flattened here — one dedup rule, so every catalogue scan compares against
+/// the same set.
+pub(crate) fn catalogue_table_names(rows: &[Vec<String>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in rows.iter().flatten() {
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -904,4 +979,79 @@ fn section_body_opens_on_a_heading_line() {
 #[should_panic(expected = "carries no")]
 fn section_body_panics_when_the_opener_is_absent() {
     let _ = section_body("# Chunk\nprose\n", "<!-- M -->", "demo.md", "## Demo");
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic catalogue-table tests
+// ---------------------------------------------------------------------------
+
+/// The catalogue scan reads the FIRST cell only, and takes both spellings of a
+/// constructor name.
+///
+/// The first-column rule is what keeps "every name this asserts is real" true:
+/// `n_points` here is a backticked ARGUMENT name in a later column, and feeding
+/// it to a registry lookup would force an allowlist entry for a name that is not
+/// a constructor at all.
+#[test]
+fn catalogue_table_rows_reads_the_first_cell_and_strips_a_call_form() {
+    let table = "\
+| Constructor | Length-semantic arguments | Stays dimensionless |
+|---|---|---|
+| `helix` | **all three** — `helix(radius, pitch, height)` | — |
+| `nurbs` | the control points | leading `n_points` counts |
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["helix".to_string()], vec!["nurbs".to_string()]],
+        "the header, the delimiter row, the trailing call form and the later-column \
+         `n_points` must all be absent"
+    );
+}
+
+/// A cell naming two constructors yields both, and a `|`-leading line with no
+/// backticked identifier yields no ROW at all.
+///
+/// The row count is an anti-vacuity floor in `geometry_chunk_smoke.rs`'s
+/// catalogue checks, so what counts as a row is load-bearing: a header or
+/// delimiter line that slipped into the count would let a real catalogue row be
+/// deleted while the floor stayed satisfied.
+#[test]
+fn catalogue_table_rows_splits_a_shared_cell_and_drops_a_rowless_line() {
+    let table = "\
+|---|---|
+| `interp` / `bezier` | every argument |
+| no backticks here | so this is not a catalogue row |
+prose, not a table row at all
+";
+    assert_eq!(
+        catalogue_table_rows(table),
+        vec![vec!["interp".to_string(), "bezier".to_string()]]
+    );
+}
+
+/// The flatten keeps DOCUMENT ORDER and drops a repeat, across rows as well as
+/// within one.
+///
+/// Both directions of the catalogue assertions read this list — coverage reports
+/// it back in its panic text, and registry-truth iterates it — so an order that
+/// wandered or a duplicate that survived would show up as a confusing panic
+/// rather than a wrong verdict. Pinned here because no caller carries a copy of
+/// the rule to read.
+#[test]
+fn catalogue_table_names_flattens_in_document_order_without_repeats() {
+    let rows = vec![
+        vec!["interp".to_string(), "bezier".to_string()],
+        vec!["helix".to_string()],
+        vec!["bezier".to_string()],
+    ];
+    assert_eq!(
+        catalogue_table_names(&rows),
+        vec![
+            "interp".to_string(),
+            "bezier".to_string(),
+            "helix".to_string()
+        ],
+        "the second `bezier` is the same claim as the first, and the surviving order is the \
+         order a reader scans the table in"
+    );
 }

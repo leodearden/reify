@@ -57,20 +57,21 @@
 //!
 //! # No new chunk scanner
 //!
-//! Sections are read through `chunk_markdown.rs`'s `section_body`, and call
-//! names through `geometry_chunk_smoke.rs`'s `call_sites`, `called_names`,
-//! `registry_family` and `phantom_name_panic`, each parameterised by
-//! `chunk_path` so a `constraints.md` failure names `constraints.md`. The ONE
+//! Sections are read through `chunk_markdown.rs`'s `section_body`, call names
+//! through `call_scan.rs`'s `call_sites` and `called_names`, and their registry
+//! through `callable_registries.rs`'s `registry_family` and
+//! `phantom_name_panic`, parameterised by `chunk_path` so a `constraints.md`
+//! failure names `constraints.md`. The ONE
 //! helper this file added, [`strip_html_comments`], now lives in `chunk_prose.rs`
 //! beside the prose model that shares its comment grammar, and is still pinned
 //! directly by the unit tests at the foot of this file.
 
+use crate::call_scan::{call_sites, called_names};
+use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_io::{CONSTRAINTS_CHUNK_PATH, GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::section_body;
 use crate::chunk_prose::{EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, strip_html_comments};
-use crate::geometry_chunk_smoke::{
-    GEOMETRY_ORACLE_NAMES, call_sites, called_names, phantom_name_panic, registry_family,
-};
+use crate::geometry_chunk_smoke::GEOMETRY_ORACLE_NAMES;
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
 /// Matched BYTE-EXACTLY on the trimmed line.
@@ -161,8 +162,7 @@ const MAXIMUM_XREF_WORDS: usize = 150;
 ///    or coverage defect, and a fixer who sees this line first is spared chasing
 ///    the symptom.
 /// 2. **Call-form coverage.** Every [`REQUIRED_ORACLE_CALL_FORMS`] entry must
-///    appear as a CALL, via
-///    [`call_sites`](crate::geometry_chunk_smoke::call_sites) — the same
+///    appear as a CALL, via [`call_sites`] — the same
 ///    open-paren-and-balanced-parens rule `geometry.md`'s own coverage scan uses.
 ///    The paren is the whole discriminator: `distance` is an ordinary English
 ///    noun AND the argument name in `extrude(profile, distance)`, so a region
@@ -171,9 +171,7 @@ const MAXIMUM_XREF_WORDS: usize = 150;
 /// 3. **Destination naming.** The region must carry [`DESTINATION_TOPIC`]
 ///    BACKTICKED. A pointer that names no destination points nowhere.
 /// 4. **Registry truth.** Every call-shaped name must resolve through
-///    [`registry_family`](crate::geometry_chunk_smoke::registry_family), and a
-///    failure is reported in
-///    [`phantom_name_panic`](crate::geometry_chunk_smoke::phantom_name_panic)'s
+///    [`registry_family`], and a failure is reported in [`phantom_name_panic`]'s
 ///    shared wording so the chunk modules cannot drift on what a reader is told
 ///    about a phantom name.
 /// 5. **Pointer size.** See [`MAXIMUM_XREF_WORDS`].
@@ -357,7 +355,7 @@ fn the_destination_topic_names_the_chunk_the_pointers_route_to() {
 // tests green while establishing nothing.
 //
 // One control per class, plus the registry-truth class the predicate borrows
-// wholesale from `geometry_chunk_smoke.rs`, plus the size class's boundary.
+// wholesale from `callable_registries.rs`, plus the size class's boundary.
 
 /// A well-formed pointer: both FORM B call forms, the backticked destination
 /// topic, and short enough to still be a pointer rather than a copy.
@@ -671,8 +669,8 @@ The posed form and the traps are in the `geometry` chunk — topic `geometry` of
 // `strip_html_comments` (chunk_prose.rs's renderer-faithful stripper) is the
 // one text helper every class of `xref_region_violations` runs downstream of. It
 // is pinned DIRECTLY here rather than only through the controls above, following
-// the posture `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block
-// establishes: the failure it guards against is self-concealing. A stripper that quietly returned
+// the posture `call_scan.rs`'s own "Scanner unit tests" block establishes: the
+// failure it guards against is self-concealing. A stripper that quietly returned
 // nothing would empty every scan, and the call-form class would then blame the
 // chunk for a defect in this function.
 

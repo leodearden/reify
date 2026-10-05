@@ -4,10 +4,10 @@
 //!
 //! Reads units.md through the binary's shared scanners rather than scanners of
 //! its own: fences through `chunk_markdown.rs`'s `tagged_fence_bodies`, cites
-//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, and call names
-//! through `geometry_chunk_smoke.rs`'s comment-aware `strip_reify_comments` /
-//! `called_names` and its registry helpers. What "compiles clean" means is
-//! `module_compile.rs`'s.
+//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, call names
+//! through `call_scan.rs`'s comment-aware `strip_reify_comments` /
+//! `called_names`, and their registry through `callable_registries.rs`. What
+//! "compiles clean" means is `module_compile.rs`'s.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
 //! `assert_module_compiles`, `rejected_form_rows`, `wrap_form`,
@@ -60,12 +60,11 @@
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
 
+use crate::call_scan::{called_names, strip_reify_comments};
+use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::tagged_fence_bodies;
-use crate::geometry_chunk_smoke::{
-    called_names, phantom_name_panic, registry_family, strip_reify_comments,
-};
 use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Info string of the fences that MUST compile clean.
@@ -172,7 +171,7 @@ const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
 /// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
 /// test over a synthetic message rather than only through the live compiler,
 /// which is this file's convention for every hand-rolled text scan (see
-/// `geometry_chunk_smoke.rs`'s "Scanner unit tests" block).
+/// `call_scan.rs`'s "Scanner unit tests" block).
 fn named_length_argument(message: &str) -> Option<&str> {
     let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
     if before.len() == message.len() {
@@ -660,8 +659,8 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
 // `wrap_form` are this module's own hand-rolled text helpers, and every
 // rejection assertion above is downstream of one of them. They are pinned
 // DIRECTLY here rather than only through the chunk, which is the posture
-// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes for the
-// scanners this file imports. The failure these guard against is
+// `call_scan.rs`'s own "Scanner unit tests" block establishes for the scanners
+// this file imports. The failure these guard against is
 // self-concealing: a helper that quietly stopped extracting anything would leave
 // every floor and sentinel above satisfied, because those are drawn from the
 // same helpers' output.
