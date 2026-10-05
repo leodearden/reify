@@ -16,7 +16,9 @@
 #   target_dir  Optional path to the git worktree root to configure.
 #               Defaults to the repo root (one level up from this script).
 #
-# Idempotent: safe to run multiple times.  Exits 0 on success, non-zero on error.
+# Idempotent and write-free when both values are already in place, so
+# lane-cadence callers take no config lock in the steady state.  Exits 0 on
+# success, non-zero on error.
 # All diagnostics go to stderr; nothing is written to stdout.
 #
 # Order matters:
@@ -87,11 +89,19 @@ fi
 # Must be done BEFORE the --worktree write so the write lands in config.worktree
 # rather than aliasing to --local (shared .git/config).
 
-git -C "$TARGET" config extensions.worktreeConfig true
+_ext="$(git -C "$TARGET" config --local --bool --get extensions.worktreeConfig 2>/dev/null || true)"
+if [ "$_ext" != "true" ]; then
+    git -C "$TARGET" config extensions.worktreeConfig true
+fi
 
 # ── step 2: seed per-worktree core.hooksPath ─────────────────────────────────
 # Uses the relative value 'hooks' (resolves to <worktree_root>/hooks/) to match
 # dark-factory's existing create_worktree write and to stay independent of fix (A)'s
 # .git/hooks -> ../hooks symlink.
 
-git -C "$TARGET" config --worktree core.hooksPath hooks
+# Read only AFTER step 1: with the extension off and several worktrees,
+# `config --worktree` aborts.
+_pin="$(git -C "$TARGET" config --worktree --get core.hooksPath 2>/dev/null || true)"
+if [ "$_pin" != "hooks" ]; then
+    git -C "$TARGET" config --worktree core.hooksPath hooks
+fi
