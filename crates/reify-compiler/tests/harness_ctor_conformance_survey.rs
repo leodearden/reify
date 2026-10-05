@@ -99,5 +99,7 @@ mod survey_site;
 mod sweep;
 #[path = "harness_ctor_conformance_survey/disposition.rs"]
 mod disposition;
+#[path = "harness_ctor_conformance_survey/stamp.rs"]
+mod stamp;
 #[path = "harness_ctor_conformance_survey/survey.rs"]
 mod survey;
