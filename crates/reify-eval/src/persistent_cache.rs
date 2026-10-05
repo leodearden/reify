@@ -325,9 +325,8 @@ impl CacheEntryHeader {
 }
 
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
-/// build time by `build.rs` over the contributor source files listed in
-/// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
-/// FEA helpers, per-purpose tolerance impls in this crate) plus the resolved
+/// build time by `build.rs` over the sources classified `Hashed` in
+/// `engine_hash_algo::WORKSPACE_CRATE_COVERAGE` plus the resolved
 /// `(name, version)` pins of reify-eval's build+normal (dev-excluded)
 /// dependency closure — the crate names in `engine_hash_closure.txt`
 /// intersected with the workspace `Cargo.lock` (task 5272; narrowed from the
@@ -785,12 +784,12 @@ impl PersistentlyCacheable for BucklingResultCache {
 /// # Why `code` is persisted as a NAME
 ///
 /// bincode encodes an enum as its positional variant index. `DiagnosticCode`
-/// is grouped by category, so new codes are inserted mid-enum, and nothing
-/// invalidates cached entries when that happens: [`ENTRY_FORMAT_VERSION`] does
-/// not move, and reify-core is not in `CONTRIBUTORS_RELATIVE`, so neither does
-/// [`ENGINE_VERSION_HASH`]. An index would silently re-read every entry as its
-/// neighbouring code; a name makes an insertion a non-event and degrades a
-/// rename or removal to `None`.
+/// is grouped by category, so new codes are inserted mid-enum.
+/// [`ENTRY_FORMAT_VERSION`] does not move when that happens; [`ENGINE_VERSION_HASH`]
+/// now does, because reify-core is hashed, but a name keeps the wire format
+/// independent of variant order instead of relying on that. An index would
+/// silently re-read every entry as its neighbouring code; a name makes an
+/// insertion a non-event and degrades a rename or removal to `None`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
     /// Encoded by [`severity_to_u8`]; an unknown byte is rejected loudly by
@@ -2885,10 +2884,11 @@ version = "9.9.9"
     }
 
     /// Narrowing guard (task 5272): the workspace `Cargo.lock` must NOT appear
-    /// in `CONTRIBUTORS_RELATIVE`. Its contribution to `ENGINE_VERSION_HASH` is
+    /// among the contributor paths. Its contribution to `ENGINE_VERSION_HASH` is
     /// now narrowed to only the resolved (name, version) pins of reify-eval's
-    /// build+normal (exclude-dev) closure — hashed by `build.rs` from the static
-    /// `engine_hash_closure.txt` manifest via `cargo_lock_closure_parts`, NOT by
+    /// build+normal (exclude-dev) closure — hashed by `engine_version_hash_for`
+    /// from the static `engine_hash_closure.txt` manifest via
+    /// `cargo_lock_closure_parts`, NOT by
     /// a whole-file walk. This pins that the narrowing is not reverted: a
     /// re-added `"../../Cargo.lock"` entry would restore whole-lockfile
     /// invalidation (any unrelated dep bump anywhere in the 716-package
@@ -2899,14 +2899,14 @@ version = "9.9.9"
     /// closure by `tests/infra/test_engine_hash_closure.sh`. PRD:
     /// `docs/prds/merge-gate-compile-cost.md` §3 W4 / §5 C4.
     #[test]
-    fn contributors_relative_excludes_workspace_cargo_lock_now_narrowed_to_closure() {
+    fn contributor_paths_exclude_workspace_cargo_lock_now_narrowed_to_closure() {
         assert!(
-            !crate::engine_hash_algo::CONTRIBUTORS_RELATIVE.contains(&"../../Cargo.lock"),
-            "CONTRIBUTORS_RELATIVE must NOT contain \"../../Cargo.lock\" — the \
+            !crate::engine_hash_algo::contributor_paths().any(|p| p == "../../Cargo.lock"),
+            "contributor_paths() must NOT yield \"../../Cargo.lock\" — the \
              Cargo.lock contribution is narrowed to reify-eval's closure pins \
-             (task 5272; hashed by build.rs from engine_hash_closure.txt). \
+             (task 5272; hashed from engine_hash_closure.txt). \
              Actual list: {:#?}",
-            crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
+            crate::engine_hash_algo::contributor_paths().collect::<Vec<_>>()
         );
     }
 

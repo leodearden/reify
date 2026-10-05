@@ -9,7 +9,7 @@
 //
 // Verified by: crates/reify-compiler/tests/numeric_and_range_literals_example.rs
 //   (focused gate, task η/3915) and
-//   crates/reify-compiler/tests/examples_smoke.rs
+//   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
 //   (all_examples_parse_and_compile_with_stdlib — no Error-severity diagnostics).
 
 structure def NumericAndRangeLiterals {

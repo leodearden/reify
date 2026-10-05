@@ -6,7 +6,7 @@
 // material boilerplate.
 //
 // All cases here are GREEN (compile with zero Error-severity diagnostics and
-// auto-gated by crates/reify-compiler/tests/examples_smoke.rs recursive discovery).
+// auto-gated by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs recursive discovery).
 //
 // Negative cases (duplicate default, wrong type, no default → MissingRequiredMember,
 // no density → DynamicsNoDensity) are intentionally excluded from this file —

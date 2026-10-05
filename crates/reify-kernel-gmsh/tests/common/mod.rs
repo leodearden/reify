@@ -1,5 +1,5 @@
 //! What this crate's test binaries share: a re-export shim over the
-//! workspace-canonical fixtures in [`reify_test_support::fixtures`], one
+//! workspace-canonical fixtures in [`reify_test_support::mesh_fixtures`], one
 //! not-yet-hoisted fixture [`subdivided_unit_cube_surface`], and the raw-FFI
 //! entity census [`entity_census`].
 //!
@@ -9,7 +9,7 @@
 //!
 //! # The fixture re-exports are a shim, and will shrink away
 //!
-//! Task #6387 hoisted every fixture below into `reify_test_support::fixtures`,
+//! Task #6387 hoisted every fixture below into `reify_test_support::mesh_fixtures`,
 //! now the single definition for the whole workspace. The `pub use` list
 //! survives only so the consumers that spell `common::` paths today keep
 //! compiling — `tests/fill_metrics_tests.rs`, `tests/volume_fill_fraction.rs`,
@@ -53,12 +53,10 @@
 
 #![allow(dead_code, unused_imports)]
 
-// Spelled with the explicit `fixtures::` module path rather than importing from
-// the crate root: `reify_test_support`'s `lib.rs` glob-re-exports several
-// modules (`pub use fixtures::*;`, `pub use helpers::*;`, …), so a root-path
-// import would become an E0659 ambiguity the moment any other glob-exported
-// module grew a same-named item.
-pub use reify_test_support::fixtures::{
+// Spelled with the explicit `mesh_fixtures::` module path: `mesh_fixtures` is
+// deliberately not glob-exported from `reify_test_support`'s crate root, so the
+// root path does not carry these names.
+pub use reify_test_support::mesh_fixtures::{
     F32_STORAGE_REL, assert_rel, prismatic_box_mesh, tessellated_cylinder_mesh,
     tessellated_cylinder_volume, unit_cube_mesh, unwelded_prismatic_box_mesh,
 };

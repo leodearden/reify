@@ -137,6 +137,8 @@ pub mod trajectory_ops;
 pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
+#[cfg(test)]
+mod engine_hash_tests;
 pub mod field_import_provenance;
 pub mod modal_ops;
 pub mod morph_producer;

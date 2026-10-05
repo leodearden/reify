@@ -9,7 +9,7 @@ use std::f64::consts::PI;
 
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
-use reify_test_support::fixtures::assert_rel;
+use reify_test_support::mesh_fixtures::assert_rel;
 
 const EXACT: f64 = 1e-9;
 

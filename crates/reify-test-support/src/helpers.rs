@@ -7,7 +7,7 @@
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -1024,6 +1024,41 @@ pub fn get_let_expr<'a>(
         .name
         .as_str();
     get_let_expr_in(module, template_name, name)
+}
+
+/// Retrieve the compiled function named `name` from `module`.
+///
+/// # Panics
+/// - `"no function named '{name}' in module '{module.path}'; has: [...]"` if no function has
+///   that name — the panic lists the name of every function the module does carry.
+/// - `"ambiguous function name '{name}' in module '{module.path}'"` if more than one overload
+///   shares that name, listing each overload's params.
+#[track_caller]
+pub fn get_function_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a CompiledFunction {
+    let matching: Vec<_> = module.functions.iter().filter(|f| f.name == name).collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+            panic!(
+                "no function named '{name}' in module '{}'; has: {available:?}",
+                module.path
+            )
+        }
+        [only] => only,
+        many => {
+            let params: Vec<_> = many.iter().map(|f| &f.params).collect();
+            panic!(
+                "ambiguous function name '{name}' in module '{}': {} overloads share this name, \
+                 with params {params:?}; this lookup resolves on name alone, so disambiguate by \
+                 searching `module.functions` for the desired params",
+                module.path,
+                many.len()
+            )
+        }
+    }
 }
 
 /// Assert the anti-cascade contract: exactly the expected root-cause error(s) are present
@@ -2788,6 +2823,72 @@ mod tests {
         let module = super::compile_source(source);
         let expr = super::get_let_expr(&module, "pi");
         assert_real_literal(expr, 1.5);
+    }
+
+    // ── get_function_in ───────────────────────────────────────────────────
+
+    const DOUBLE_TRIPLE_FNS: &str =
+        "fn double(x: Real) -> Real { x + x }\nfn triple(x: Real) -> Real { x + x + x }";
+
+    /// Looks up the second-declared fn, so a lookup that returns the first
+    /// function regardless of name is observable.
+    #[test]
+    fn test_get_function_in_returns_named_function() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let f = super::get_function_in(&module, "triple");
+        assert_eq!(f.name, "triple");
+        assert_eq!(
+            f.params,
+            vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
+        );
+    }
+
+    #[test]
+    fn test_get_function_in_missing_panic_names_module_and_lists_functions() {
+        let module = super::compile_source_named(DOUBLE_TRIPLE_FNS, "fn_lookup");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "quadruple");
+        });
+        for expected in [
+            "no function named 'quadruple'",
+            "fn_lookup",
+            "[\"double\", \"triple\"]",
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
+    /// Reify compiles same-named fns with distinct param types cleanly, so a
+    /// name-only lookup cannot pick one without silently pinning whichever
+    /// overload happens to be declared first.
+    #[test]
+    fn test_get_function_in_panics_on_overloaded_name() {
+        let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
+        let module = super::compile_source_named(source, "fn_lookup");
+        super::assert_no_diagnostics(&module.diagnostics, "overloaded convert fixture");
+        let message = panic_message(|| {
+            super::get_function_in(&module, "convert");
+        });
+        let real_param = format!(
+            "{:?}",
+            ("x".to_string(), reify_core::Type::dimensionless_scalar())
+        );
+        let int_param = format!("{:?}", ("x".to_string(), reify_core::Type::Int));
+        for expected in [
+            "ambiguous function name 'convert'",
+            "fn_lookup",
+            "2 overloads",
+            real_param.as_str(),
+            int_param.as_str(),
+        ] {
+            assert!(
+                message.contains(expected),
+                "panic message should contain {expected:?}, got: {message}"
+            );
+        }
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────

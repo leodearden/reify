@@ -9,7 +9,7 @@ module appearance_surface
 // and redeclares the types inline for standalone validation; this committed
 // example is compiled WITH the new prelude so it omits the redeclarations.
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs.
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs.
 
 // A concrete material that satisfies Visual.
 structure def DemoMaterial : Visual {

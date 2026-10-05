@@ -47,6 +47,8 @@ mod fn_overload_tests;
 mod fn_param_default_consumption_tests;
 #[path = "harness_traits/fn_param_struct_ctor_default_tests.rs"]
 mod fn_param_struct_ctor_default_tests;
+#[path = "harness_traits/fn_return_reconciliation_tests.rs"]
+mod fn_return_reconciliation_tests;
 #[path = "harness_traits/fn_signature_type_resolution_tests.rs"]
 mod fn_signature_type_resolution_tests;
 #[path = "harness_traits/trait_arg_conformance_bench.rs"]

@@ -1,10 +1,10 @@
 //! Executable drift guard between this crate's offset-taking
 //! `test_fixtures::unit_cube_mesh` and the workspace-canonical box fixtures in
-//! [`reify_test_support::fixtures`].
+//! [`reify_test_support::mesh_fixtures`].
 //!
 //! # Why this file exists
 //!
-//! Task #6387 hoisted the box/cube fixtures into `reify_test_support::fixtures`
+//! Task #6387 hoisted the box/cube fixtures into `reify_test_support::mesh_fixtures`
 //! so the workspace has ONE definition of "a box". This crate's copy is the one
 //! deliberate exception: `src/test_fixtures.rs` is gated on
 //! `cfg(any(test, feature = "test-fixtures"))`, and the `test-fixtures` arm is
@@ -29,7 +29,7 @@
 //! do NOT weaken it to a tolerance.
 
 use reify_kernel_manifold::test_fixtures::unit_cube_mesh;
-use reify_test_support::fixtures::{
+use reify_test_support::mesh_fixtures::{
     prismatic_box_mesh, unit_cube_mesh as canonical_unit_cube_mesh,
 };
 
@@ -42,12 +42,12 @@ fn zero_offset_local_cube_is_bit_identical_to_canonical() {
     assert_eq!(
         local.vertices, canonical.vertices,
         "reify_kernel_manifold::test_fixtures::unit_cube_mesh([0,0,0]) has drifted from \
-         reify_test_support::fixtures::unit_cube_mesh() in its vertex buffer"
+         reify_test_support::mesh_fixtures::unit_cube_mesh() in its vertex buffer"
     );
     assert_eq!(
         local.indices, canonical.indices,
         "reify_kernel_manifold::test_fixtures::unit_cube_mesh([0,0,0]) has drifted from \
-         reify_test_support::fixtures::unit_cube_mesh() in its index buffer (winding is \
+         reify_test_support::mesh_fixtures::unit_cube_mesh() in its index buffer (winding is \
          load-bearing: both fixtures are vetted OUTWARD)"
     );
     assert!(

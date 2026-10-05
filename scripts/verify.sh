@@ -1934,6 +1934,27 @@ select_cheap_ptodo_gate() {
 }
 select_cheap_ptodo_gate
 
+# select_branch_ratchet_leaf <input-predicate> <leaf> [git-diff-args...] — under
+# --scope branch, add <leaf> to SELECTED_INFRA_GLOBS iff the merge-base diff
+# lists a path <input-predicate> accepts. The diff always runs --name-only
+# --no-renames, so a rename is judged on both of its sides; the caller's
+# [git-diff-args...] are its diff-status policy (e.g. --diff-filter=AM).
+# Shared by the PDIAG and PDOCCOVER selectors below.
+select_branch_ratchet_leaf() {
+    local _predicate="$1" _leaf="$2" _changed _path
+    shift 2
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames "$@" "$_MERGE_BASE" 2>/dev/null)" || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        if "$_predicate" "$_path"; then
+            add_selected_infra_glob "$_leaf"
+            return 0
+        fi
+    done <<< "$_changed"
+}
+
 # ---------------------------------------------------------------------------
 # Branch-scope at-source trigger for the PDIAG ratchet (task #7691).
 #
@@ -2015,20 +2036,57 @@ pdiag_swept_path() {
     [ "$_stem" != "tests" ] && [[ "$_stem" != *_tests ]]
 }
 
+# pdiag_input_path <repo-relative-path> — succeeds iff PDIAG's ratchet compares
+# the path: a swept file, or the baseline manifest it is compared against.
+pdiag_input_path() {
+    [ "$1" = "crates/reify-audit/pdiag-baseline.txt" ] || pdiag_swept_path "$1"
+}
+
 select_pdiag_ratchet() {
-    [ "$SCOPE" = "branch" ] || return 0
-    [ -n "$_MERGE_BASE" ] || return 0
-    local _changed _path
-    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
-    while IFS= read -r _path; do
-        [ -n "$_path" ] || continue
-        if [ "$_path" = "crates/reify-audit/pdiag-baseline.txt" ] || pdiag_swept_path "$_path"; then
-            add_selected_infra_glob "tests/infra/test_reify_audit_pdiag.sh"
-            return 0
-        fi
-    done <<< "$_changed"
+    select_branch_ratchet_leaf pdiag_input_path tests/infra/test_reify_audit_pdiag.sh --diff-filter=AM
 }
 select_pdiag_ratchet
+
+# ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDOCCOVER ratchet (task #7987).
+#
+# tests/infra/test_reify_audit_pdoccover.sh otherwise runs only in the
+# merge-tier run_all.sh pool. Under --scope branch this selector runs it when
+# the merge-base diff touches a path pdoccover_input_path (below) accepts: the
+# inputs pdoccover::load_inputs, load_oracle_sources and committed_baseline
+# read. Edits to the scanner itself are not a trigger (undecided, #8180).
+#
+# Diff-status policy: --no-renames and no --diff-filter, because a deleted or
+# moved-out input changes what PDOCCOVER reads as much as an edit does
+# (test_verify_scope.sh: B-PDOCCOVER-del-*, B-PDOCCOVER-rename-out).
+#
+# Inherits select_pdiag_ratchet's SELECTED_INFRA_GLOBS properties and its
+# STALE-BINARY DECISION, as that header enumerates them.
+# ---------------------------------------------------------------------------
+
+# pdoccover_input_path <repo-relative-path> — succeeds iff PDOCCOVER reads the
+# path. Each arm is a DERIVED COPY of the Rust symbol its comment names (cited
+# by name, not line); case-sensitive like the Rust, and a case glob's `*`
+# crosses `/`, which is what starts_with means. UNITS_PATH (units.rs) needs no
+# arm of its own: it is an in_oracle_scope path. Its source of truth is
+# behavioural: test_verify_scope.sh's PDOCCOVER-DRIFT re-derives every input
+# from the Rust source on each run and probes it through this selector,
+# UNITS_PATH included.
+pdoccover_input_path() {
+    case "$1" in
+        crates/reify-mcp/src/tools/chunks/*.md) return 0 ;;      # pdoccover.rs is_chunk_path (CHUNKS_PREFIX)
+        crates/reify-compiler/src/*.rs \
+            | crates/reify-compiler/stdlib/*.ri \
+            | crates/reify-stdlib/src/*.rs) return 0 ;;          # pdoccover.rs in_oracle_scope
+        crates/reify-audit/pdoccover-baseline.txt) return 0 ;;   # pdoccover_baseline.rs BASELINE_PATH
+    esac
+    return 1
+}
+
+select_pdoccover_ratchet() {
+    select_branch_ratchet_leaf pdoccover_input_path tests/infra/test_reify_audit_pdoccover.sh
+}
+select_pdoccover_ratchet
 
 # ---------------------------------------------------------------------------
 # Cheap cited-test-path gate on the hook-gated --scope staged path (task #7785).

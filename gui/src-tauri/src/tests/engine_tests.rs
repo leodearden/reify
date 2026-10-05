@@ -13979,7 +13979,7 @@ structure def Mock : PhysicalMock {
 ///
 /// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
 /// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
-/// `reify-compiler/tests/examples_smoke.rs`).
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`).
 #[test]
 fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
@@ -17421,7 +17421,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
     // ../../examples resolves to the repo-root examples/ directory — same idiom as
-    // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
+    // crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (EXAMPLES_DIR).
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
