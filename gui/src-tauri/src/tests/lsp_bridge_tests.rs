@@ -432,6 +432,82 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     }
 }
 
+/// The bridge's PLACEMENT: `definition`, `prepareRename`, `rename` and
+/// `references` answer with tokio's blocking pool saturated, so their
+/// parse/compile work runs on whatever thread polls `handle_request` — on the
+/// LSP lane, the lane's 256 MiB stack (test (d) pins that the lane is that
+/// thread) — rather than on a ~2 MiB blocking-pool thread.
+///
+/// Driven through [`lsp_request_impl`], not `lsp_request_on_worker`: the
+/// property under test is the bridge's placement, and parking the
+/// process-global lane behind a test-owned saturated runtime would couple this
+/// test to every other lane user. Both constructors are covered: `new` (the
+/// tests' bridge) and `with_sink` (the one `main.rs` builds).
+#[test]
+fn lsp_bridge_answers_the_blocking_work_methods_with_the_blocking_pool_saturated() {
+    use std::time::Duration;
+
+    use reify_lsp::blocking_work::test_support::SaturatedBlockingPool;
+
+    const URI: &str = "file:///placement.ri";
+    /// Turns a request stuck behind the saturated pool into a failure; a
+    /// request that never touches the pool answers without timing anything.
+    const HANG_BOUND: Duration = Duration::from_secs(60);
+
+    let at = |line: u32, character: u32| {
+        json!({
+            "textDocument": { "uri": URI },
+            "position": { "line": line, "character": character }
+        })
+    };
+    let mut rename = at(7, 17);
+    rename["newName"] = json!("girth");
+    let mut references = at(1, 10);
+    references["context"] = json!({ "includeDeclaration": true });
+    let requests = [
+        ("textDocument/definition", at(9, 15)),
+        ("textDocument/prepareRename", at(7, 17)),
+        ("textDocument/rename", rename),
+        ("textDocument/references", references),
+    ];
+
+    let bridges = [
+        ("LspBridge::new", LspBridge::new()),
+        (
+            "LspBridge::with_sink",
+            LspBridge::with_sink(Arc::new(reify_lsp::server::NoOpSink)),
+        ),
+    ];
+    for (constructor, bridge) in bridges {
+        let pool = SaturatedBlockingPool::new();
+        pool.block_on(async {
+            init_and_open(&bridge, URI).await;
+            for (method, params) in &requests {
+                let answer = tokio::time::timeout(
+                    HANG_BOUND,
+                    lsp_request_impl(&bridge, method, params.to_string()),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{constructor}: {method} waited on the blocking pool, so its \
+                         compiler work would run on a ~2 MiB pool thread, not the lane"
+                    )
+                })
+                .unwrap_or_else(|e| panic!("{constructor}: {method} failed: {e}"));
+                let parsed: serde_json::Value = serde_json::from_str(&answer).unwrap_or_else(|e| {
+                    panic!("{constructor}: {method} response must be JSON: {e}")
+                });
+                assert!(
+                    !parsed.is_null(),
+                    "{constructor}: {method} answered null at a position the bracket \
+                     fixture resolves"
+                );
+            }
+        });
+    }
+}
+
 /// (c) The ERROR path is preserved: the lane hop must not turn an `Err` into a
 /// panic (which would unwind the Tauri command and leave the frontend's
 /// `invoke` promise unresolved — a silently dead editor pane).
