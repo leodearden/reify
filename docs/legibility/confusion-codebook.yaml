@@ -1495,6 +1495,12 @@ entries:
     origin_phase: unknown
     manifested_phase: merge
     note: Warm-lane task-meta iteration state assumed present but absent; diagnostic probe of .task/iterations.jsonl fails with exit code 2 during merge-phase thrash investigation
+  - date: '2026-10-04'
+    project: reify
+    session: b1caeab8-5105-4447-9231-24191d56a70c
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Warm-lane task-meta file (.task/metadata.json) assumed present but missing from worktree _lane-24 during post-merge verification read attempt
 - id: entry-cand-20260720-3
   title: Sleep-chain polling of background task output blocked by guard
   severity: medium
@@ -7230,6 +7236,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Autonomous warm-lane worktree session with 4 'not found' signals across turns; agent likely probing undocumented .task-meta or bootstrap paths; insufficient digest detail to confirm specific missing file
+  - date: '2026-10-04'
+    project: reify
+    session: 6f94701c-d01a-4c1d-9f77-6dcbd76c49aa
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Session in lane-specific worktree; not_found signals align with probing undocumented .task-meta/<lane>/iterations.jsonl path returning exit code 2
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -8827,6 +8839,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Agent invokes grep_search in turns 17 and 19, receiving ''Error: No such tool available: grep_search'' in both error neighborhoods. Actual tool is Grep. Hallucinated tool name manifests during interactive verification of test coverage claims.'
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search at turn 19, which is hallucinated; harness provides only Read/Grep tools
+  - date: '2026-10-04'
+    project: reify
+    session: fbe78184-f820-4c82-817c-f05abf91aa44
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked grep_search (turns 17, 19, 21, 23) — non-existent tool; harness has Grep, not grep_search
 - id: entry-cand-20260918-12
   title: add_memory MCP call times out and is retried with an identical payload, risking a duplicate write
   severity: medium
@@ -9096,6 +9120,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent called read_file, grep_search and git_log, none of which exist in the toolset (turns 17, 19, 21), and later called verification_complete (turn 70), which also does not exist. All four returned 'No such tool available'.
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called git_log at turn 21, which is hallucinated; not in actual toolset
+  - date: '2026-10-04'
+    project: reify
+    session: fbe78184-f820-4c82-817c-f05abf91aa44
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked git_log (turn 25) — non-existent tool absent from harness toolset
 - id: entry-cand-20260914-18
   title: Safety justification for a timeout ceiling bump assumes a guard env var applies uniformly across roles, missing role-scoped gating logic
   severity: medium
@@ -9269,6 +9305,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'wc: .../crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs: No such file or directory ... Path does not exist ... (turn 90) Correction: the CLI file is NOT in `harness_cli/`'
+  - date: '2026-10-04'
+    project: reify
+    session: de6f047c-b535-43b0-9b63-66a6df913b3b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Two consecutive not-found errors (turns 98, 335) while navigating test-file paths in crates/reify-cli/tests/harness_cli/; agent pattern consistent with wrong assumed test-file subdirectory persisting across multiple attempts
 - id: entry-cand-20260915-21
   title: Multi-file wc/count command's missing-argument failure is easy to overlook amid emitted partial output
   severity: medium
@@ -9465,6 +9507,30 @@ entries:
     origin_phase: architect
     manifested_phase: ops
     note: Four not-found signals at turns 40,85,206,213 in warm-lanes worktree _lane-32, consistent with repeated path resolution failures due to worktree nesting below expected repo root
+  - date: '2026-10-04'
+    project: reify
+    session: 5435434a-54e0-47ba-b07e-5b1936d9a835
+    origin_phase: architect
+    manifested_phase: verify
+    note: Nested warm-lane worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-9) paired with 7 sequential 'does not exist' errors across turns 38, 62, 72, 137, 145, 221, 310 matches the pattern of repeated repo-root-relative path guesses failing against the actual nested directory structure
+  - date: '2026-10-04'
+    project: reify
+    session: a9e21ee7-a075-4666-94bb-fa97068ec50c
+    origin_phase: unknown
+    manifested_phase: implement
+    note: 5 'does not exist'/'no such file or directory' errors distributed across multiple turns (36, 263, 427, 563, 677) in warm-lanes worktree _lane-22; pattern consistent with repeated repo-root-relative path guesses during implementation
+  - date: '2026-10-04'
+    project: reify
+    session: de6f047c-b535-43b0-9b63-66a6df913b3b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Interactive agent in warm-lane nested worktree cwd (/worktrees/_lane-0) attempting relative-path access to crates/reify-cli/tests/*; repeated not-found errors align with repo-root-nested cwd path resolution issue
+  - date: '2026-10-04'
+    project: reify
+    session: 6f94701c-d01a-4c1d-9f77-6dcbd76c49aa
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Nested warm-lane worktree cwd (_lane-27) with two not_found signals consistent with repo-root-relative path guesses
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -9568,6 +9634,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A for-loop over .ri files printed auto_count=0 for each file, yet the Bash call exited 1. The exit status comes from grep -c returning 1 on zero matches, not from a real failure. Turns 127 and 136 then probe rc separately.
+  - date: '2026-10-04'
+    project: reify
+    session: ec5077fb-2d01-4cd0-a78e-4ac101f39339
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Diagnostic command chain with ; separators reports exit code 1 from final git check-ignore subcommand, masking that earlier diagnostics (cat, python) succeeded
+  - date: '2026-10-04'
+    project: reify
+    session: 0a3c2225-030d-428a-abc4-0e465bd52eb9
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 63: Chained command ''ls|grep|head; for d in...cat'' exits 1 from final cat subcommand, masking earlier successful grep/ls probe of reify-gui build artifacts'
 - id: entry-cand-20260826-33
   title: Reify .ri module declaration must exactly match file basename or eval rejects it
   severity: medium
@@ -9750,6 +9828,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent invokes grep_search at turns 17, 19, 21 instead of Grep tool; matches explicitly-listed hallucinated tool name in entry
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search at turn 19, which is hallucinated; harness provides only Read/Grep tools
 - id: entry-cand-20260812-11
   title: fused-memory resolve_ticket times out repeatedly, retried with varying ticket IDs instead of diagnosing a systemic failure
   severity: medium
@@ -9815,6 +9899,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: ls scripts | head -200 | tr '\n' ' '; echo; ls scripts/legibility 2>/dev/null -> [exit 2] Exit code 2
+  - date: '2026-10-04'
+    project: reify
+    session: ec5077fb-2d01-4cd0-a78e-4ac101f39339
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes data directory (ls data 2>/dev/null) and git check-ignore with stderr suppressed; path-not-found errors surface only as bare exit codes without diagnostic context
+  - date: '2026-10-04'
+    project: reify
+    session: 0a3c2225-030d-428a-abc4-0e465bd52eb9
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 163: Probed path ''gui/src-tauri/sidecar/'' surfaces only as bare exit 2 with stderr redirected (2>&1), concealing ''No such file or directory'' diagnostic detail from the exit code alone'
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -25835,3 +25931,55 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'mcp__escalation__get_task_escalations({"__unparsedToolInput": {"len": 60, "raw": "{\"task_id\": \"7948\", \"level\": 2, \"status\": , \"compact\": true}"}}) -> <tool_use_error>InputValidationError: mcp__escalation__get_task_escalations was called with input that could not be parsed as JSON.'
+- id: cand-20261004-1
+  title: Agent calls hallucinated glob_search tool
+  cause: Agent model assumes glob_search exists as a pattern-matching tool, conflating generic agent tool names with harness-specific availability
+  area: tool invocation / harness API surface
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 17) glob_search({"pattern": "crates/reify-audit/**/pprdstatus*"}) -> Error: No such tool available: glob_search'
+- id: cand-20261004-2
+  title: Agent calls hallucinated verification_complete tool
+  cause: Agent assumes a built-in task-completion signaling tool exists to conclude verification, inventing a non-existent harness method
+  area: task completion workflow / harness API surface
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 104) verification_complete({"confidence": "0.85", "evidence": "[...]"}) -> Error: No such tool available: verification_complete'
+- id: cand-20261004-3
+  title: Plan scope excludes documentation files containing cited diagnostic examples
+  cause: Task modifies error messages or diagnostics; plan scope omits documentation/example files that transcribe those diagnostics. Verify-phase tests checking that doc comments match actual behavior then fail, revealing an undocumented scope dependency.
+  area: planning
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 6efbf625-97dd-4250-b24b-3da915c6d40e
+    origin_phase: decompose
+    manifested_phase: verify
+    evidence_quote: 'Both files [examples/best_practices/angle_crossings.ri and crates/reify-mcp/src/tools/chunks/units.md] are outside the plan''s 3 assigned files. Test harness_doc_chunks::transcribed_parse_diagnostic_matches_the_real_parser panicked: CANONICAL COPY transcribes old diagnostic, but parser produced new diagnostic with remedy hint.'
+- id: cand-20261004-4
+  title: Tail command with numeric flag in invalid position during multi-file diagnostic output inspection
+  cause: Agent constructs a tail command with line-count option (-5) that triggers 'option used in invalid context' error, indicating malformed syntax or shell context where the flag cannot be parsed
+  area: shell-command-construction
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 83c4753b-9298-46df-8872-b06f4547ed7a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'tail: option used in invalid context -- 5'
