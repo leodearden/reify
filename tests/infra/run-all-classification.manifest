@@ -118,6 +118,7 @@ test_gui_vitest_rpc_hardening.sh pool
 test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
+test_hooks_armed_guard.sh pool
 test_hooks_call_verify.sh pool
 test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
