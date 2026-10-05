@@ -41,8 +41,7 @@
 
 // The clamp probe and its serialising mutex, shared verbatim with
 // `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`.
-// Declared by path rather than through `common/mod.rs`, whose stated scope is
-// the #6200 geometry fixtures; see `common/clamp_probe.rs` for why one copy
+// Declared by `#[path]`; see `common/clamp_probe.rs` for why, and why one copy
 // matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
