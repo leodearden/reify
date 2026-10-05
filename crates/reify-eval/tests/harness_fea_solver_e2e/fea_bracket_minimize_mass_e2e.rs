@@ -61,10 +61,9 @@
 //!
 //! # Runtime
 //!
-//! MEASURED 66s / 93s / 105s across three runs on a contended 32-core host — a
-//! real Nelder-Mead-over-FEA loop. Cheaper than the producer's ~490s but still
-//! ~30x this harness's 2.25s per-test mean, so it is evicted from the merge gate
-//! by its own test-scoped atom in `scripts/heavy-test-filter-lib.sh`.
+//! A real Nelder-Mead-over-FEA loop, so it is evicted from the merge gate by its
+//! own test-scoped atom in `scripts/heavy-test-filter-lib.sh`. That atom's
+//! comment is the single record of this test's measured cost.
 
 use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
@@ -90,7 +89,7 @@ const TEMPLATE_NAME: &str = "FeaBracketMinimizeMass";
 /// The OTHER inputs — the example's `length` and `width` — are deliberately NOT
 /// hardcoded here: they are read back from the eval result. Pinning them would
 /// silently re-encode the example's mounting envelope, so a benign resizing of
-/// the bracket would fail this ~88s test with a message about the objective
+/// the bracket would fail this slow test with a message about the objective
 /// expression while the thing that actually drifted was a constant in this file.
 /// Density is different: it is sourced from the stdlib material, not from the
 /// example, so it cannot drift with the example's geometry.
@@ -104,8 +103,8 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
     // ── (a) Cheap precondition: the example compiles clean ───────────────────
     //
     // Checked here as well as in the compile-surface test so that a compile
-    // regression fails FAST and legibly, rather than surfacing ~400s later as a
-    // confusing unresolved-thickness panic.
+    // regression fails FAST and legibly, rather than surfacing at the end of the
+    // slow design loop as a confusing unresolved-thickness panic.
     let compiled = compile_source_with_stdlib(&src);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(
@@ -137,7 +136,7 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         }
     };
 
-    // Reported so a future failure of this ~100s test can be diagnosed from the
+    // Reported so a future failure of this slow test can be diagnosed from the
     // captured output alone, without a re-run under --no-capture.
     eprintln!(
         "fea_bracket_minimize_mass: thickness = {:?}, mass = {:?}",

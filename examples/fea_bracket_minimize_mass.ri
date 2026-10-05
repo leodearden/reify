@@ -66,7 +66,7 @@
 // Beam theory is the SIZING BASIS, not an assertion: the FEA solve on a coarse
 // tet mesh of a plate this stubby will not reproduce it exactly, and it is not
 // expected to. Its job is to put the stress/yield crossing in a sane place.
-// MEASURED: the loop converges at 4.52 mm, 8% below the 4.9 mm estimate — close
+// MEASURED: the loop converges at 4.27 mm, 13% below the 4.9 mm estimate — close
 // enough to confirm the constraint binds at the stress/yield crossing rather
 // than anywhere incidental, and NOT a threshold anything asserts against.
 
