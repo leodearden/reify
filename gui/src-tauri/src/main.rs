@@ -634,9 +634,7 @@ async fn mcp_tool_call(
 ///
 /// Stays `async`. Converting it to a sync command would make Tauri run it as
 /// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,
-/// so `Handle::current()` inside `lsp_request_on_worker` would panic — and that
-/// is also precisely the condition under which `handle_request`'s four
-/// `spawn_blocking` arms panic.
+/// so `Handle::current()` inside `lsp_request_on_worker` would panic.
 ///
 /// The `Arc` is the `'static` price of a persistent lane, and follows the shape
 /// `debug_response` already uses with `tauri::State<'_, Arc<DebugBridge>>`.

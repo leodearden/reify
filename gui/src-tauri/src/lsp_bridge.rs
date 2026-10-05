@@ -98,39 +98,22 @@ pub async fn lsp_request_impl(
 /// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
 /// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
 /// over one thread for the process lifetime rather than a fresh 256 MiB mapping
-/// per keystroke.
+/// per keystroke. That covers every `handle_request` arm, the four blocking-work
+/// arms included (see [`LspBridge`]'s "Where blocking work runs").
 ///
 /// # What this hands the lane, and what the lane does with it
 ///
 /// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
-/// future does need a driver — [`tokio::runtime::Handle::block_on`], because
-/// four of `InProcessLsp::handle_request`'s arms call
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
-/// — but choosing that driver is [`crate::large_stack::dispatch_async`]'s job,
-/// not this function's. Pre-baking the `block_on` here would break the lane's
+/// future does need a driver, but choosing it is
+/// [`crate::large_stack::dispatch_async`]'s job, not this function's.
+/// Pre-baking a [`tokio::runtime::Handle::block_on`] here would break the lane's
 /// degraded arms, which run in the submitting async frame where `block_on`
 /// panics "Cannot start a runtime from within a runtime"; see
 /// [`crate::large_stack::dispatch_async`]'s degradation policy.
 ///
-/// # What this does NOT cover
-///
-/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
-/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
-/// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
-/// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
-/// those four are unaffected by this routing. The arms it does cover are the
-/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
-/// which are precisely the keystroke/cursor-frequency ones. Closing the four
-/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
-/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
-/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
-/// here.
-///
 /// # What this COSTS: the request is no longer DROP-CANCELLABLE
 ///
-/// Stated alongside the coverage limit above because it is a behaviour change
-/// this routing INTRODUCES, not merely one it fails to fix.
+/// Stated because it is a behaviour change this routing INTRODUCES.
 ///
 /// Before task 5772 the body ran inside the Tauri command's own future, so a
 /// frontend `invoke` that was abandoned — window closed, pane navigated away,
