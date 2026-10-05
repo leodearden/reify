@@ -5359,6 +5359,7 @@ mod check_error_exit_allowlist_ratchet {
     use super::{
         CheckErrorAllowlistDisposition, CheckErrorExitAllowance, CHECK_ERROR_EXIT_ALLOWLIST,
     };
+    use reify_test_support::ptodo_cite_marker::has_liveness_marker;
 
     /// Renders one table row to a comparable tuple.  The matcher goes through
     /// its `Debug` rendering so the expected side below can be written as a
@@ -5435,6 +5436,29 @@ mod check_error_exit_allowlist_ratchet {
                 e.cite
             );
         }
+    }
+
+    /// The liveness half of the cite pin; the form half is the test above.
+    /// Each distinct cite needs a sole-cite marker comment in this file, the
+    /// only route by which PTODO notices the owning task closing.
+    #[test]
+    fn every_allowlist_cite_has_a_ptodo_liveness_marker() {
+        const SOURCE: &str = include_str!("main.rs");
+        let mut unmarked: Vec<&str> = CHECK_ERROR_EXIT_ALLOWLIST
+            .iter()
+            .map(|e| e.cite)
+            .filter(|cite| !has_liveness_marker(SOURCE, cite))
+            .collect();
+        unmarked.sort_unstable();
+        unmarked.dedup();
+        assert!(
+            unmarked.is_empty(),
+            "allowlist cites {unmarked:?} have no PTODO liveness marker in main.rs. The \
+             `cite` field is a string literal PTODO never reads, so without a sole-cite \
+             marker comment in this file citing the same task, nothing turns red when that \
+             task closes and the entry outlives its owner. Rule: \
+             reify_test_support::ptodo_cite_marker."
+        );
     }
 }
 
