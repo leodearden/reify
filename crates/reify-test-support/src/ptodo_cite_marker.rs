@@ -7,18 +7,22 @@
 //! file citing the same task: when that task goes terminal, the marker is
 //! reported `orphaned` and the PTODO ratchet turns red.
 //!
-//! [`has_liveness_marker`] accepts a TODO-family marker comment whose
-//! parenthesised cite is exactly `cite`, but only when that cite is the line's
-//! sole `#`-then-digit occurrence and the line carries no `ptodo:allow` escape.
-//! Both rules come from `docs/prds/reify-audit-ptodo-detector.md`. Under §8.2
-//! one live cite tracks the whole line, so a co-cited live task would mask a
-//! closed one. Under §6.8 an escaped line is skipped entirely.
+//! [`has_liveness_marker`] accepts one form only. The cite is canonical: `#`
+//! then 1 to 5 digits, value at least 1, as reify-audit's `cite_occurrences`
+//! reads it. Some comment-only line (trimmed, it starts with `//`) contains
+//! `// TODO` immediately followed by the parenthesised cite. That cite is the
+//! line's sole `#`-then-digit occurrence, and the line carries no `ptodo:allow`
+//! escape. The last two rules come from `docs/prds/reify-audit-ptodo-detector.md`.
+//! Under §8.2 one live cite tracks the whole line, so a co-cited live task
+//! would mask a closed one. Under §6.8 an escaped line is skipped entirely.
 //!
-//! The predicate is a conservative SUFFICIENT condition for PTODO to orphan the
-//! marker once the task closes. Every canonical cite begins with `#` and a
-//! digit, so it can demand more than PTODO needs but never less. A false
-//! refusal (a PRD-relative `§`-index on the marker line, say) is fixed by moving
-//! the other `#`-then-digit text off the marker line.
+//! PTODO tracks every accepted line by that cite alone, so the marker is
+//! orphaned once the task closes. The converse does not hold. PTODO also tracks
+//! `FIXME`/`HACK` markers, markers trailing code, and lines whose other
+//! `#`-then-digit text is not a cite (a PRD-relative `§`-index, say), and this
+//! predicate refuses all of them. The comment-only rule is what keeps out an
+//! `#[ignore = "..."]` line, which PTODO judges by its reason string alone. To
+//! fix a refusal, write the marker in the accepted form on a line of its own.
 //!
 //! A table whose rows carry task cites pins each distinct cite through this
 //! predicate over its own source.
@@ -26,16 +30,28 @@
 /// `true` iff some line of `source` is a marker comment that keeps `cite`
 /// liveness-checked by PTODO, per the module-level rules.
 pub fn has_liveness_marker(source: &str, cite: &str) -> bool {
+    if !is_canonical_cite(cite) {
+        return false;
+    }
     let needle = format!("// TODO({cite})"); // ptodo:allow — the needle, not a marker
     source
         .lines()
         .any(|line| is_sole_cite_marker(line, &needle))
 }
 
+fn is_canonical_cite(cite: &str) -> bool {
+    let Some(digits) = cite.strip_prefix('#') else {
+        return false;
+    };
+    (1..=5).contains(&digits.len())
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && digits.parse::<u32>().is_ok_and(|id| id >= 1)
+}
+
 fn is_sole_cite_marker(line: &str, needle: &str) -> bool {
-    line.contains(needle)
+    line.trim_start().starts_with("//")
+        && line.contains(needle)
         && !line.contains("ptodo:allow")
-        && hash_digit_occurrences(needle) == 1
         && hash_digit_occurrences(line) == 1
 }
 
@@ -99,6 +115,32 @@ mod tests {
 
         let other_cite_on_the_line = "// TODO(task 5404): see #6048"; // ptodo:allow — fixture, not a marker
         assert!(!has_liveness_marker(other_cite_on_the_line, "task 5404"));
+
+        let zero_id = "// TODO(#0): x"; // ptodo:allow — fixture, not a marker
+        assert!(!has_liveness_marker(zero_id, "#0"));
+
+        let six_digits = "// TODO(#123456): x"; // ptodo:allow — fixture, not a marker
+        assert!(!has_liveness_marker(six_digits, "#123456"));
+    }
+
+    #[test]
+    fn a_marker_must_be_a_comment_only_line() {
+        let after_code = "const A: u8 = 0; // TODO(#5404): x"; // ptodo:allow — fixture, not a marker
+        assert!(!has_liveness_marker(after_code, "#5404"));
+
+        let after_ignore = "#[ignore = \"slow\"] // TODO(#5404): x"; // ptodo:allow — fixture, not a marker
+        assert!(!has_liveness_marker(after_ignore, "#5404"));
+
+        let doc_comment = "    /// TODO(#5404): x"; // ptodo:allow — fixture, not a marker
+        assert!(has_liveness_marker(doc_comment, "#5404"));
+    }
+
+    #[test]
+    fn only_the_todo_keyword_is_accepted() {
+        for keyword in ["FIXME", "HACK"] {
+            let source = format!("// {keyword}(#5404): x");
+            assert!(!has_liveness_marker(&source, "#5404"), "{source}");
+        }
     }
 
     #[test]
