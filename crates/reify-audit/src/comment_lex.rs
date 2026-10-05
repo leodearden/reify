@@ -10,21 +10,100 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BlockDepth(usize);
 
-/// Report each code byte-range of `line` to `on_code`, lexing from `entry`,
-/// and return the depth the line exits at.
+/// Report each non-empty code byte-range of `line` to `on_code`, in order,
+/// lexing from `entry`, and return the depth the line exits at.
+///
+/// Inside a block comment `/*` nests and `*/` closes, and quotes are inert.
+/// Outside one, string and char literals ([`char_literal_len`]) are opaque
+/// code, `//` ends the line's code, and a stray `*/` is code. Every range ends
+/// at an ASCII delimiter or the line end, so it always slices `line` on char
+/// boundaries.
+///
+/// Only depth carries across lines; string state restarts at every line, so a
+/// literal this lexer cannot see whole (one spanning a line break, or a raw
+/// string holding `"`) desyncs the rest of its own line at most. A closed
+/// entry with no `/` in the line is all code, reported without a byte walk.
 pub(crate) fn lex_line(
     line: &str,
     entry: BlockDepth,
     mut on_code: impl FnMut(Range<usize>),
 ) -> BlockDepth {
-    on_code(0..line.len());
-    entry
+    let mut emit = |code: Range<usize>| {
+        if !code.is_empty() {
+            on_code(code);
+        }
+    };
+    if entry == BlockDepth::default() && !line.contains('/') {
+        emit(0..line.len());
+        return entry;
+    }
+    let bytes = line.as_bytes();
+    let mut depth = entry.0;
+    // Where the current run of code began; meaningful only while depth is 0.
+    let mut code_start = 0;
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        let step = if depth > 0 {
+            if rest.starts_with(b"/*") {
+                depth += 1;
+                2
+            } else if rest.starts_with(b"*/") {
+                depth -= 1;
+                code_start = i + 2;
+                2
+            } else {
+                1
+            }
+        } else if in_str {
+            match rest[0] {
+                b'\\' => 2,
+                b'"' => {
+                    in_str = false;
+                    1
+                }
+                _ => 1,
+            }
+        } else if let Some(len) = char_literal_len(bytes, i) {
+            len
+        } else if rest.starts_with(b"//") {
+            emit(code_start..i);
+            return BlockDepth(depth);
+        } else if rest.starts_with(b"/*") {
+            emit(code_start..i);
+            depth = 1;
+            2
+        } else {
+            if rest[0] == b'"' {
+                in_str = true;
+            }
+            1
+        };
+        i += step;
+    }
+    if depth == 0 {
+        emit(code_start..line.len());
+    }
+    BlockDepth(depth)
 }
 
-/// Byte length of the char literal starting at `bytes[at]`, or `None` when
-/// none starts there.
+/// Byte length of the char literal starting at `bytes[at]`: 3 for `'x'`, 4 for
+/// `'\x'`, and `None` for anything else.
+///
+/// Only those two exact shapes are recognised, so a lifetime (`&'static str`)
+/// is never mistaken for an unterminated literal, which would swallow the
+/// rest of the line.
 pub(crate) fn char_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
-    let _ = (bytes, at);
+    if bytes.get(at) != Some(&b'\'') {
+        return None;
+    }
+    if bytes.get(at + 2) == Some(&b'\'') {
+        return Some(3);
+    }
+    if bytes.get(at + 1) == Some(&b'\\') && bytes.get(at + 3) == Some(&b'\'') {
+        return Some(4);
+    }
     None
 }
 

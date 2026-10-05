@@ -236,6 +236,7 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
+use crate::comment_lex::{BlockDepth, char_literal_len, lex_line};
 use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
 use crate::scan_util::{
     allow_marker_body, contains_word, find_word_boundary_token, is_identifier_shaped, is_word_byte,
@@ -291,113 +292,33 @@ const ALLOW_TOKEN: &str = "pdoccover:allow";
 /// The identifier suffix that marks a const as a builtin-name registry.
 const REGISTRY_SUFFIX: &str = "_NAMES";
 
-/// Strip a trailing `// …` line comment from `line`, returning the code part.
+/// Strip every comment from `line`: the `/* … */` spans, whose open state
+/// carries across lines in `depth`, and the `// …` tail. The code [`lex_line`]
+/// reports is joined with a single space, so bracket depth and quoted-token
+/// extraction both see only real code. Without this a `/* … "phantom" … */`
+/// span inside a registry body, or a `"box", // renamed from "cube"` tail,
+/// would contribute a name that exists nowhere in the compiler.
 ///
-/// Quote-aware: a `//` inside a double-quoted string literal is NOT a comment
-/// start. Without this, an entry line whose trailing comment itself contains a
-/// quoted token (`"box", // renamed from "cube"`) would contribute a phantom
-/// registry entry.
-fn strip_line_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_str => i += 1, // skip the escaped byte
-            b'"' => in_str = !in_str,
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                return &line[..i];
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    line
-}
-
-/// Strip `/* … */` block-comment spans from `line`, tracking open state across
-/// lines via `in_block`.
-///
-/// Returns the code outside any block comment, with the commented spans
-/// replaced by a space so bracket depth and quoted-token extraction both see
-/// only real code. Without this a `/* … "phantom" … */` span inside a registry
-/// body would contribute a name that exists nowhere in the compiler.
-///
-/// Quote-aware in the same sense as [`strip_line_comment`]: a `/*` inside a
-/// string literal does not open a block comment. Nested block comments (legal
-/// in Rust) are depth-counted.
-/// Operates on BYTES, accumulating into a `Vec<u8>` rather than slicing the
-/// `&str`. `units.rs` doc-comments contain non-ASCII (`§`, `→`, em dashes), and
-/// any `&line[i..i+1]`-style slice would panic on a multibyte char boundary.
-/// Every retained byte is copied verbatim, so multibyte sequences survive
-/// intact; every dropped span is delimited by ASCII `/*`/`*/`/`//`, so a drop
-/// can never split a char.
-///
-/// Returns [`Cow::Borrowed`] for the overwhelmingly common line that has
-/// nothing to strip. With no open block and no `/` anywhere, the loop below
-/// provably copies the input byte-for-byte: depth can only rise through the
-/// `/*` arm, the `//` break needs a `/`, and every other arm (including the
-/// in-string `\` escape, which pushes both of its bytes) falls through to a
-/// verbatim push. So the early-out is an identity, not an approximation — and
-/// it matters, because [`known_name_index`] runs this over the whole oracle
-/// corpus (~200k lines of compiler and stdlib source on the real tree) and
+/// Returns [`Cow::Borrowed`] exactly when nothing was dropped, which is the
+/// overwhelmingly common line, and allocates only otherwise. That matters because [`known_name_index`] runs this over the whole oracle
+/// corpus (~200k lines of compiler and stdlib source on the real tree), and
 /// every allocation it makes there is immediately discarded by
-/// [`strip_line_comment`]/[`quoted_tokens`].
-fn strip_block_comments<'a>(line: &'a str, depth: &mut usize) -> Cow<'a, str> {
-    if *depth == 0 && !line.contains('/') {
-        return Cow::Borrowed(line);
+/// [`quoted_tokens`].
+fn strip_comments<'a>(line: &'a str, depth: &mut BlockDepth) -> Cow<'a, str> {
+    let mut code: Option<Cow<'a, str>> = None;
+    *depth = lex_line(line, *depth, |span| {
+        let text = &line[span];
+        code = Some(match code.take() {
+            None => Cow::Borrowed(text),
+            Some(joined) => Cow::Owned(joined.into_owned() + " " + text),
+        });
+    });
+    match code {
+        Some(Cow::Borrowed(text)) if text.len() < line.len() => Cow::Owned(text.to_owned()),
+        Some(code) => code,
+        None if line.is_empty() => Cow::Borrowed(line),
+        None => Cow::Owned(String::new()),
     }
-    let bytes = line.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        if *depth > 0 {
-            if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-                *depth += 1;
-                i += 2;
-                continue;
-            }
-            if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                *depth -= 1;
-                out.push(b' ');
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        match bytes[i] {
-            b'\\' if in_str => {
-                // Copy the backslash and the first byte of the escaped char.
-                // A multibyte escaped char's continuation bytes are copied by
-                // the default arm on subsequent iterations.
-                out.push(bytes[i]);
-                if i + 1 < bytes.len() {
-                    out.push(bytes[i + 1]);
-                }
-                i += 2;
-                continue;
-            }
-            b'"' => in_str = !in_str,
-            // A `//` line comment outside a string ends the line; everything
-            // after it (including a `/*`) is comment text, never code.
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => break,
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                *depth += 1;
-                out.push(b' ');
-                i += 2;
-                continue;
-            }
-            _ => {}
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    // Lossy is unreachable in practice (every retained byte comes from a valid
-    // &str and sequences are never split), but it keeps this infallible rather
-    // than panicking inside a fail-safe detector.
-    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// `true` when `line` carries a `pdoccover:allow` marker at all — with or
@@ -442,14 +363,18 @@ fn is_cfg_test_attr(code: &str) -> bool {
 ///
 /// Used ONLY for brace counting: a `{` inside `"unknown unit: {}"` must not
 /// move the module-nesting depth that decides what is inside `#[cfg(test)]`
-/// scope. Char literals are recognised only in the exact `'x'` / `'\x'` shapes
-/// so a lifetime (`&'static str`) is never mistaken for an unterminated one —
-/// which would swallow every brace to the end of the line.
+/// scope. Char literals are the shapes [`char_literal_len`] recognises, which
+/// keeps a lifetime from swallowing every brace to the end of the line.
 fn blank_literals(code: &str) -> String {
     let bytes = code.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        if let Some(len) = char_literal_len(bytes, i) {
+            out.resize(out.len() + len, b' ');
+            i += len;
+            continue;
+        }
         match bytes[i] {
             b'"' => {
                 out.push(b' ');
@@ -465,16 +390,6 @@ fn blank_literals(code: &str) -> String {
                     out.push(b' ');
                     i += 1;
                 }
-            }
-            // `'x'` (3 bytes) or `'\x'` (4 bytes) only — anything else is a
-            // lifetime and is copied through untouched.
-            b'\'' if i + 2 < bytes.len() && bytes[i + 2] == b'\'' => {
-                out.extend_from_slice(b"   ");
-                i += 3;
-            }
-            b'\'' if i + 3 < bytes.len() && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' => {
-                out.extend_from_slice(b"    ");
-                i += 4;
             }
             b => {
                 out.push(b);
@@ -588,7 +503,7 @@ struct CodeView {
 /// depth both carry across lines, so neither can be done lazily per line.
 fn code_view(units_src: &str) -> CodeView {
     let lines: Vec<&str> = units_src.lines().collect();
-    let mut block_depth = 0usize;
+    let mut block_depth = BlockDepth::default();
     let mut brace_depth: i32 = 0;
     // A `#[cfg(test)]` attribute has been seen and its item not yet identified.
     let mut pending_cfg_test = false;
@@ -598,8 +513,7 @@ fn code_view(units_src: &str) -> CodeView {
     let mut in_test: Vec<bool> = Vec::with_capacity(lines.len());
 
     for raw in &lines {
-        let no_block = strip_block_comments(raw, &mut block_depth);
-        let code = strip_line_comment(&no_block).to_string();
+        let code = strip_comments(raw, &mut block_depth).into_owned();
         let is_attr = is_attribute_line(&code);
 
         if is_attr && is_cfg_test_attr(&code) {
@@ -1100,16 +1014,15 @@ pub fn known_name_index(sources: &[(String, String)]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (path, content) in sources {
         let is_ri = path.ends_with(".ri");
-        let mut block_depth = 0usize;
+        let mut block_depth = BlockDepth::default();
         for raw in content.lines() {
-            let no_block = strip_block_comments(raw, &mut block_depth);
-            let code = strip_line_comment(&no_block);
+            let code = strip_comments(raw, &mut block_depth);
             if is_ri {
-                if let Some(name) = ri_declared_name(code) {
+                if let Some(name) = ri_declared_name(&code) {
                     out.insert(name.to_string());
                 }
             } else {
-                for tok in quoted_tokens(code) {
+                for tok in quoted_tokens(&code) {
                     if is_identifier_shaped(&tok) {
                         out.insert(tok);
                     }
@@ -1951,7 +1864,6 @@ pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInput
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::comment_lex::BlockDepth;
 
     /// Names of the registries `extract_registries` found, in discovery order.
     fn const_names(regs: &[Registry]) -> Vec<&str> {
@@ -2108,7 +2020,11 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
                 "{line:?} has nothing to strip and must not allocate"
             );
             assert_eq!(got, line, "the early-out must be an identity");
-            assert_eq!(depth, BlockDepth::default(), "{line:?} must not open a block");
+            assert_eq!(
+                depth,
+                BlockDepth::default(),
+                "{line:?} must not open a block"
+            );
         }
 
         // Anything that actually rewrites still returns an owned String, and
@@ -2138,7 +2054,10 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     fn strip_comments_is_char_literal_aware() {
         let mut depth = BlockDepth::default();
         let got = strip_comments("let q = '\"'; /* \"phantom\" */ \"b\",", &mut depth);
-        assert!(!got.contains("phantom"), "the block comment leaked: {got:?}");
+        assert!(
+            !got.contains("phantom"),
+            "the block comment leaked: {got:?}"
+        );
         assert_eq!(depth, BlockDepth::default());
     }
 
