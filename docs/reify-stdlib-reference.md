@@ -2438,3 +2438,109 @@ Every param has a default, so a bare `ElasticOptions()` is the standard setup; o
 | `adaptive` | opt into a-posteriori adaptive refinement | **Yes**, on the solid route with an isotropic material; any other material draws a warning and gets a single solve. The shell route ignores it. |
 
 The declarations depart from PRD `docs/prds/v0_3/structural-analysis-fea.md` in two ways. The PRD's `Integer` (e.g. `iterations : Integer`) is spelled `Int`, Reify's builtin name. And the PRD's defaults for `mesh_size` (an automatic size) and `threads` (`num_cpus::get()`, every hardware thread) cannot be written as `.ri` defaults, so both ship as `Option<T> = none`, meaning "no preference": the solver picks the value (for `threads`, the host CPU count).
+
+### 16.3 `ElasticResult` and `ShellStress`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial.
+structure def ElasticResult {
+    param displacement : Field<Point3<Length>, Vector3<Length>>
+    param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param divergence : Field<Point3<Length>, Real>                  // tr(ε), volumetric strain
+    param gradient : Field<Point3<Length>, Tensor<2, 3, Real>>      // ∇u
+    param curl : Field<Point3<Length>, Vector3<Dimensionless>>      // ∇×u
+    param rotation : Field<Point3<Length>, Vector3<Angle>>          // ∇×u / 2
+    param shear_angles : Field<Point3<Length>, Vector3<Angle>>      // (γ_yz, γ_zx, γ_xy)
+    param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
+    param shell_channels : ShellStress
+    param max_von_mises : Pressure
+    param converged : Bool
+    param iterations : Int
+    param error_indicator : Option<Field<Point3<Length>, Pressure>> = none
+    param global_relative_energy_error : Option<Real> = none
+    param convergence_status : ConvergenceStatus = Converged { final_indicator: 0.0 }
+
+    constraint iterations >= 0
+    constraint max_von_mises >= 0
+}
+
+structure def ShellStress {
+    param top : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+}
+```
+
+`solve_elastic_static` builds the result; constructing one yourself is not meaningful. Which fields it fills depends on the route the solve took (§16.2's `shell_force`):
+
+| Field | Solid (tetrahedral) result | Shell result |
+|---|---|---|
+| `displacement` | sampled field | `undef` |
+| `stress` | sampled field | mid-surface stress |
+| `divergence`, `gradient`, `curl`, `rotation`, `shear_angles` | sampled fields | `undef` |
+| `frame` | `undef` | `undef` |
+| `shell_channels` | `undef` | `ShellStress`; `mid` equals `stress` |
+| `max_von_mises`, `converged`, `iterations` | set | set |
+| `error_indicator`, `global_relative_energy_error`, `convergence_status` | the adaptive loop's values when it ran (§16.2's `adaptive`), else the defaults | the defaults |
+
+`max_von_mises` is the peak von Mises stress over the mesh's elements — on a shell result, over the top, mid and bottom layers. It is not the same number as `max(von_mises(result.stress))` (§10): `stress` is resampled from the element values onto a sample grid, and on a solid result that field reduction is never higher, so `max_von_mises` is the more conservative yield check. `converged` and `iterations` report the conjugate-gradient solve against the solver's own iteration cap, not `ElasticOptions.max_iter` (§16.2), so `iterations` can exceed `max_iter`. The defaults of the three a-posteriori fields — `none`, `none` and `Converged { final_indicator: 0.0 }` — are what a single-shot, non-adaptive solve reports. For what the derivative channels mean — why `curl` is dimensionless and `rotation` / `shear_angles` carry `Angle` — see §11's "`ElasticResult` derivative channels".
+
+### 16.4 `solve_elastic_static`
+
+```
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : Field<Point3<Length>, AnisotropicMaterial>,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    body      : Solid,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+pub structure def FEAMaterialInput {
+    param material : ElasticMaterial
+}
+```
+
+All three overloads dispatch to the same solver; their `.ri` bodies are fallbacks that never run.
+
+- **Homogeneous box** (first overload): solves a `length` × `width` × `height` box of one material. `material` accepts any `ConstitutiveLaw` conformer directly — an `ElasticMaterial` such as `Steel_AISI_1045()`, or an `OrthotropicMaterial` / `TransverseIsotropicMaterial`. `options` may be omitted.
+- **Heterogeneous box** (second overload): the same box, with a spatially varying `Field<Point3<Length>, AnisotropicMaterial>` such as `as_printed_material` produces. It has no `options` parameter, so every knob takes its default.
+- **Body** (third overload): realizes `body` to a tetrahedral mesh and solves on that mesh, always as a solid — the shell route is box-only. `options` may be omitted.
+
+`loads` and `supports` take list literals of conformers, e.g. `[PointLoad(...)]` and `[FixedSupport(...)]`. The conformers — `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` and `Gravity` for loads, `FixedSupport` and `PinnedSupport` for supports — are declared in `crates/reify-compiler/stdlib/fea_multi_case.ri`. `docs/stdlib/multi-load-fea.md` shows them in use and covers solving several load cases at once.
+
+`FEAMaterialInput` wraps a material — `FEAMaterialInput(material: mat)` — so that its `.material` is typed `ElasticMaterial`. It was introduced so a concrete material could reach `solve_buckling`'s `material : ElasticMaterial` parameter, and the buckling examples still use it that way. Neither solver needs it today: `solve_elastic_static` and `solve_buckling` both accept a conformer such as `Steel_AISI_1045()` directly, and the wrapped and direct forms give the same result.
+
+Worked example — `examples/fea_cantilever_smoke.ri`, built by `crates/reify-cli/tests/harness_cli/cli_build_fea.rs`, solves a clamped steel cantilever under a tip load:
+
+```
+let material = Steel_AISI_1045()
+let tip_load = PointLoad(point: "tip", force: 1000.0)
+let mount = FixedSupport(target: "root")
+let result = solve_elastic_static(
+    material, length, width, height, [tip_load], [mount], ElasticOptions()
+)
+```
