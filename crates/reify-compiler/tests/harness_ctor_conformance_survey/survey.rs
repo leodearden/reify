@@ -1,92 +1,10 @@
-//! Struct-ctor field-type conformance — corpus survey generator (task #5304).
+//! The whole ctor-conformance corpus survey: corpus enumeration, the sweep, D9
+//! classification, γ's disposition resolver, the markdown renderer, the stamp
+//! guard and the `#[ignore]`d generator.
 //!
-//! PRD `docs/prds/struct-ctor-field-type-conformance.md`, task β (§8): run the
-//! α(+ε) conformance-checking compiler over **all tracked `.ri`** and commit
-//! `docs/prds/struct-ctor-field-type-conformance.survey.md` — every
-//! conformance site, classified per D9, with the regeneration command. The signal is
-//! "mechanized, not a hand audit": every row and every count in that artifact
-//! is produced by the code in this module, with zero hand-derived entries.
-//!
-//! Task #7543 added the corpus's SECOND half: the Reify snippets embedded as
-//! raw-string literals in tracked `.rs` under `crates/`, which
-//! `git ls-files -- '*.ri'` cannot reach. Both halves come from one git-index
-//! primitive ([`scan_tracked_corpus`]) and are swept by one pipeline, so they cannot
-//! disagree about what a ctor-conformance site is; [`corpus_parity`] is what
-//! makes a narrowed walker fail loudly instead of writing a falsely-thin
-//! artifact.
-//!
-//! # Why this lives HERE and not in a new `tests/*.rs` binary
-//!
-//! `tests/infra/test_harness_kloc_cap.sh` rule (b) flags any NEW standalone
-//! top-level `crates/reify-compiler/tests/*.rs` as `reason=unsanctioned-standalone`
-//! unless a grandfather-baseline row is added — an explicitly-discouraged
-//! "conscious baseline edit" whose whole point is to stop new test binaries
-//! silently re-accreting against the merge-gate link count
-//! (`docs/prds/merge-gate-compile-cost.md` §5 C1). Folding the generator into
-//! this already-consolidated unit adds no link at all, and the unit is
-//! thematically exact — "what you hand the compiler … examples". The sibling
-//! `examples_smoke.rs` already runs the identical parse→compile→filter pipeline
-//! over `examples/`; β widens the root to the whole tracked corpus.
-//!
-//! # Why the expensive walk is `#[ignore]`d and the decisions are not
-//!
-//! Compiling the ~261 `examples/` files is documented as "the single most
-//! expensive thing this binary does" (`examples_smoke.rs`); the ~700 tracked
-//! `.ri` are ~2.5× that. The sweep now has a SECOND half on top of it (task
-//! #7543): the Reify snippets embedded as raw-string literals in the ~1,870
-//! tracked `.rs` under `crates/`, which yield ~3,300 admitted snippets to
-//! compile —
-//! measured by the generator itself, which prints both halves' counts on every
-//! run. Paying any of that on every merge gate would directly fight the
-//! merge-gate-compile-cost PRD. So both walks live behind ONE `#[ignore]`d
-//! generator, run on demand — while everything they *decide* (corpus
-//! enumeration for both halves and the parity gate between them, raw-string
-//! extraction and snippet admission, span→line and snippet→host line mapping,
-//! ctor-name recovery, field/expected/found extraction, D9 classification,
-//! disposition resolution, markdown rendering) is factored into pure helpers
-//! that ARE gate-resident and unit-tested here against synthetic inputs, plus
-//! two cheap end-to-end sweeps — a 3-file synthetic `.ri` corpus and a
-//! synthetic Rust host — and a handful of pinned live files per half.
-//! The pipeline is therefore regression-guarded on every gate run at near-zero
-//! cost, without either walk ever running there.
-//!
-//! # Retiring this module
-//!
-//! This is a CENSUS, not a permanent gate. Its product is one document in two
-//! halves, and both named consumers have landed: task #5305 (γ, corpus
-//! fix-forward) consumed the tracked-`.ri` sites, and task #5306 (δ, the
-//! severity flip) fixed the inline sites its flip exposed and kept the rest as
-//! deliberate Error pins. What remains is a standing two-half census that a
-//! future change to `CTOR_FIELD_CONFORMANCE_SEVERITY`, or to the walker's scope,
-//! consults. Its machinery — corpus enumeration for both halves, the parity
-//! gate, span→line, D9 classification, the markdown renderer, the stamp guard —
-//! stays compiled and run on every merge gate, a real standing cost in a compile
-//! unit whose own header cites `docs/prds/merge-gate-compile-cost.md`. Measure
-//! that cost with `harness_layout_unit_lines` (`tests/infra/harness-layout-lib.sh`)
-//! rather than trusting a figure written here: the unit sits above the advisory
-//! warn line of `tests/infra/test_harness_kloc_cap.sh`, acknowledged by a
-//! `_KLOC_WARN_KNOWN` row whose retiring split is #7709.
-//!
-//! Retirement is a FOUR-FILE change now, and all four must go together:
-//!
-//! 1. this file;
-//! 2. its `#[path] mod ctor_conformance_corpus_survey;` declaration in
-//!    `crates/reify-compiler/tests/harness_compilation_surface.rs`;
-//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`;
-//! 4. `crates/reify-test-support/src/rust_fixture_scan.rs` plus its `pub mod`
-//!    line — but ONLY if nothing else has picked it up by then. It is a
-//!    library-crate module with no dependency on this survey, written to be
-//!    reusable, so check `cargo tree`/callers before deleting rather than
-//!    assuming this was its only consumer.
-//!
-//! The ctor-conformance admission set this survey filters through no longer
-//! lives here: it is `reify_test_support::ctor_conformance`, read by every
-//! consumer, so deleting this survey costs nothing that outlives it.
-//!
-//! Nothing here fails when the artifact is deleted on its own:
-//! [`committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] SKIPS on an
-//! absent artifact by design, so a partial retirement degrades to dead weight
-//! rather than a merge-gate red.
+//! What the survey is for, why its corpus walk is `#[ignore]`d while every
+//! decision is gate-resident, and how to retire it are stated once, in the
+//! harness root `crates/reify-compiler/tests/harness_ctor_conformance_survey.rs`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -101,9 +19,8 @@ use reify_test_support::is_ctor_conformance_code;
 // The reusable inline-fixture walker (task #7543): `is_inline_fixture_host`
 // decides what the second corpus half contains, and the collector/admission
 // filter decide what an embedded snippet IS. It lives in reify-test-support
-// rather than here because this harness unit is already at 80% of the
-// `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`, and because a Rust
-// mini-lexer is a second-consumer shape, not a survey concern.
+// rather than here because a Rust mini-lexer is a second-consumer shape, not a
+// survey concern.
 use reify_test_support::rust_fixture_scan;
 
 /// Absolute path to the workspace root, resolved at compile time from this
@@ -5371,9 +5288,9 @@ fn ctor_conformance_corpus_residual_entries_are_all_live() {
 /// harmless here — the generator WRITES the file rather than being scraped from
 /// stdout — but it will confuse a reader of the run log who expects to see the
 /// usual per-test lines, so the bypass is baked into the published command.
-const REGEN_COMMAND: &str = "env cargo test -p reify-compiler --test harness_compilation_surface \
-     -- --ignored --exact \
-     ctor_conformance_corpus_survey::generate_ctor_conformance_corpus_survey";
+const REGEN_COMMAND: &str = "env cargo test -p reify-compiler \
+     --test harness_ctor_conformance_survey -- --ignored --exact \
+     survey::generate_ctor_conformance_corpus_survey";
 
 /// Render `text` safe for a markdown table cell.
 ///
@@ -5663,7 +5580,7 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
     let _ = writeln!(md, "**Base commit:** `{}`", stamp.anchor);
     let _ = writeln!(
         md,
-        "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
+        "**Tool:** `crates/reify-compiler/tests/harness_ctor_conformance_survey.rs`"
     );
     md.push_str("**Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)\n");
     // Stated as two numbers, never their sum: the halves carry different
@@ -7699,8 +7616,7 @@ fn committed_survey_renders_the_current_disposition_vocabulary() {
          suspect — including the severity column, which δ (#5306) moved.\n\n\
          Expected to find: {expected:?}\n\n\
          REGENERATE it, on a CLEAN tree (`stamp_decision` refuses a dirty one):\n  \
-         cargo test -p reify-compiler --test harness_compilation_surface -- --ignored \
-         ctor_conformance\n\n\
+         {REGEN_COMMAND}\n\n\
          Do NOT weaken this into a comparison against a freshly derived artifact: that \
          would compile every tracked `.ri` on each merge-gate run, which is what \
          docs/prds/merge-gate-compile-cost.md forbids and why the generator is \
