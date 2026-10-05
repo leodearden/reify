@@ -529,10 +529,11 @@ impl LetBindingEnv for EmptyLetEnv {
 ///
 /// # Geometry-arg recursion
 ///
-/// For combinators, recurse on the geometry arguments: boolean ops take the
-/// first two `Type::Geometry` args; transforms/modify/pattern/sweeps take the
-/// first geometry operand per [`is_geometry_operand`]. Non-geometry args are
-/// skipped — their inferred traits don't participate in the combine.
+/// For combinators, recurse on the geometry operands per
+/// [`is_geometry_operand`]: boolean ops take the first two, variadic booleans
+/// fold all of them, and transforms/modify/pattern/sweeps take the first.
+/// Non-geometry args are skipped — their inferred traits don't participate in
+/// the combine.
 ///
 /// # Default-Bounded fallback
 ///
@@ -1070,15 +1071,14 @@ fn is_geometry_operand(expr: &CompiledExpr) -> bool {
         )
 }
 
-/// Find the first two geometry-typed arguments and recurse on each with the
-/// env, defaulting to `InferredTraits::all()` if either is missing.
+/// Find the first two geometry operands (per [`is_geometry_operand`]) and
+/// recurse on each with the env, defaulting to `InferredTraits::all()` if
+/// either is missing.
 fn first_two_geometry_args_in_env(
     args: &[CompiledExpr],
     env: &dyn LetBindingEnv,
 ) -> (InferredTraits, InferredTraits) {
-    let mut iter = args
-        .iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry);
+    let mut iter = args.iter().filter(|a| is_geometry_operand(a));
     let a = iter
         .next()
         .map(|a| infer_traits_for_expr_in_env(a, env))
