@@ -1789,10 +1789,16 @@ impl MockGeometryKernel {
         }
     }
 
-    /// Classify a boolean result the way the real OCCT kernel does: an empty
-    /// or multi-body (COMPSOLID) result is `Compound`, anything else `Solid`.
-    /// `yields_compound` decides from the operands' staged bboxes; operands
-    /// without a staged bbox keep the historical `Solid` stamp.
+    /// Approximate OCCT's boolean classification (an empty or multi-body
+    /// COMPSOLID result is `Compound`, anything else `Solid`) from the
+    /// operands' staged bboxes alone. `yields_compound` is asked only when
+    /// both operands have a parseable staged bbox; every other result is
+    /// `Solid`.
+    ///
+    /// Boxes cannot see inside the solids, so this is blind to a cut that
+    /// splits its argument or empties it with an equal-bbox tool, and can be
+    /// misled by solids that do not fill their bboxes (an L-shape, a tube
+    /// around its argument).
     fn boolean_kind(
         &self,
         left: GeometryHandleId,
@@ -1887,7 +1893,8 @@ impl Aabb {
         (0..3).any(|a| self.max[a] < other.min[a] || other.max[a] < self.min[a])
     }
 
-    /// `other` lies strictly inside `self` on every axis.
+    /// `other` lies strictly inside `self` on every axis: an equal box, or one
+    /// sharing a face plane, does not qualify.
     fn strictly_contains(&self, other: &Aabb) -> bool {
         (0..3).all(|a| self.min[a] < other.min[a] && other.max[a] < self.max[a])
     }
@@ -1924,10 +1931,7 @@ impl GeometryKernel for MockGeometryKernel {
             | GeometryOp::InterpCurve { .. }
             | GeometryOp::BezierCurve { .. }
             | GeometryOp::NurbsCurve { .. } => Some(BRepKind::Wire),
-            GeometryOp::Union { left, right } => {
-                Some(self.boolean_kind(*left, *right, |l, r| l.is_disjoint_from(r)))
-            }
-            GeometryOp::Intersection { left, right } => {
+            GeometryOp::Union { left, right } | GeometryOp::Intersection { left, right } => {
                 Some(self.boolean_kind(*left, *right, |l, r| l.is_disjoint_from(r)))
             }
             GeometryOp::Difference { left, right } => {
@@ -3254,18 +3258,19 @@ mod tests {
     }
 
     /// Run `op(left, right)` on a mock whose handles 1 and 2 have the given
-    /// staged bboxes (`None` = unstaged) and return the result's repr.
-    fn boolean_repr(
-        left_bbox: Option<([f64; 3], [f64; 3])>,
-        right_bbox: Option<([f64; 3], [f64; 3])>,
+    /// raw `BoundingBox` query payloads staged (`None` = unstaged) and return
+    /// the result's repr.
+    fn boolean_repr_staged(
+        left_payload: Option<Value>,
+        right_payload: Option<Value>,
         op: impl Fn(GeometryHandleId, GeometryHandleId) -> GeometryOp,
     ) -> Option<BRepKind> {
         let mut kernel = MockGeometryKernel::new();
-        if let Some((min, max)) = left_bbox {
-            kernel = kernel.with_bbox_result(GeometryHandleId(1), bbox_json(min, max));
+        if let Some(payload) = left_payload {
+            kernel = kernel.with_bbox_result(GeometryHandleId(1), payload);
         }
-        if let Some((min, max)) = right_bbox {
-            kernel = kernel.with_bbox_result(GeometryHandleId(2), bbox_json(min, max));
+        if let Some(payload) = right_payload {
+            kernel = kernel.with_bbox_result(GeometryHandleId(2), payload);
         }
         let unit_box = GeometryOp::Box {
             width: Value::length(1.0),
@@ -3275,6 +3280,17 @@ mod tests {
         let left = kernel.execute(&unit_box).unwrap();
         let right = kernel.execute(&unit_box).unwrap();
         kernel.execute(&op(left.id, right.id)).unwrap().repr
+    }
+
+    /// [`boolean_repr_staged`] with well-formed `(min, max)` bboxes.
+    fn boolean_repr(
+        left_bbox: Option<([f64; 3], [f64; 3])>,
+        right_bbox: Option<([f64; 3], [f64; 3])>,
+        op: impl Fn(GeometryHandleId, GeometryHandleId) -> GeometryOp,
+    ) -> Option<BRepKind> {
+        let payload =
+            |bbox: Option<([f64; 3], [f64; 3])>| bbox.map(|(min, max)| bbox_json(min, max));
+        boolean_repr_staged(payload(left_bbox), payload(right_bbox), op)
     }
 
     const UNIT: ([f64; 3], [f64; 3]) = ([0.0; 3], [1.0; 3]);
@@ -3320,6 +3336,31 @@ mod tests {
     }
 
     #[test]
+    fn mock_union_with_an_unusable_staged_bbox_is_solid() {
+        // Not a string, not JSON, JSON missing coordinates. The usable
+        // partner is FAR_AWAY: a decoder that fell back to a default box at
+        // the origin would call the pair disjoint.
+        let unusable = [
+            Value::Bool(true),
+            Value::String("not json".to_string()),
+            Value::String("{\"xmin\":0.0}".to_string()),
+        ];
+        let far_away = || Some(bbox_json(FAR_AWAY.0, FAR_AWAY.1));
+        for payload in unusable {
+            assert_eq!(
+                boolean_repr_staged(far_away(), Some(payload.clone()), union),
+                Some(BRepKind::Solid),
+                "unusable right bbox {payload:?}"
+            );
+            assert_eq!(
+                boolean_repr_staged(Some(payload.clone()), far_away(), union),
+                Some(BRepKind::Solid),
+                "unusable left bbox {payload:?}"
+            );
+        }
+    }
+
+    #[test]
     fn mock_intersection_of_disjoint_bboxes_is_empty_compound() {
         assert_eq!(
             boolean_repr(Some(UNIT), Some(FAR_AWAY), intersection),
@@ -3347,6 +3388,26 @@ mod tests {
             boolean_repr(Some(UNIT), Some(FAR_AWAY), difference),
             Some(BRepKind::Solid)
         );
+    }
+
+    #[test]
+    fn mock_difference_by_equal_or_face_sharing_tool_bbox_is_solid() {
+        // Equal bboxes: the boxes cannot tell an identical-shape cut (empty in
+        // OCCT) from a cut by a smaller solid, so containment must be strict.
+        assert_eq!(
+            boolean_repr(Some(UNIT), Some(UNIT), difference),
+            Some(BRepKind::Solid)
+        );
+        // Tool boxes covering the argument's but sharing its x = 0 / x = 1 face plane.
+        let sharing_min_face = ([0.0, -1.0, -1.0], [2.0, 2.0, 2.0]);
+        let sharing_max_face = ([-1.0, -1.0, -1.0], [1.0, 2.0, 2.0]);
+        for tool in [sharing_min_face, sharing_max_face] {
+            assert_eq!(
+                boolean_repr(Some(UNIT), Some(tool), difference),
+                Some(BRepKind::Solid),
+                "tool bbox {tool:?}"
+            );
+        }
     }
 
     // step-11: tests exercising shape and manufacturing ops
