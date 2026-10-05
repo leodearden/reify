@@ -1441,6 +1441,7 @@ fn shipped_registry() -> Registry {
 #[cfg(test)]
 mod seeded_cites {
     use super::*;
+    use reify_test_support::ptodo_cite_marker::has_liveness_marker;
 
     /// (i) A cite renders in the canonical PTODO form, and nothing else is
     /// representable.
@@ -1527,12 +1528,11 @@ mod seeded_cites {
         cites.dedup();
 
         for cite in cites {
-            let marker = format!("// TODO({cite}):"); // ptodo:allow — the matcher, not a marker
             assert!(
-                source.contains(&marker),
-                "residual cite {cite} has no `{marker}` comment in this file. \
-                 Without it the PTODO detector never sees the cite, so nothing \
-                 checks that the owning task is still live."
+                has_liveness_marker(&source, &cite.to_string()),
+                "residual cite {cite} has no PTODO liveness marker in this file \
+                 (rule: reify_test_support::ptodo_cite_marker). Without it \
+                 nothing checks that the owning task is still live."
             );
         }
     }
