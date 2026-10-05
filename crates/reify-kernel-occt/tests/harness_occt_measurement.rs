@@ -36,13 +36,16 @@
 //! would resolve to a sibling `tests/<file>.rs`, not into the `harness_occt_measurement/`
 //! subdir.
 //!
-//! What the rule selects, descriptively: 13 of the 16 members assert on the parsed result of
-//! a geometry QUERY — they are the consumers of [`common::parse_bbox`] / `bbox_of` and
-//! [`common::parse_xyz`] / `xyz_of`, the JSON parsers `tests/common/mod.rs` exists to hold.
-//! The remaining 3 (`chamfer_with_history_integration`, `fillet_with_history_integration`,
-//! `local_feature_helper_contract`) consume the local-feature HISTORY-record assertions from
-//! the same file instead. So "asserts on a measured quantity" is NOT the criterion and never
-//! was — "uses `common::`" is. Both harnesses continue to share `tests/fixtures/`, which costs
+//! What the rule selects, descriptively: three families of `tests/common/mod.rs` consumer.
+//! Most members assert on the parsed result of a geometry QUERY, through the query-result
+//! parsers [`common::parse_bbox`] / `bbox_of` and [`common::parse_xyz`] / `xyz_of`.
+//! `chamfer_with_history_integration`, `fillet_with_history_integration` and
+//! `local_feature_helper_contract` consume the local-feature HISTORY-record assertions.
+//! `tessellation_winding_integration` consumes the mesh-orientation helpers
+//! [`common::tri_winding_normal`] / `aabb_centre`, as does `reflection_det_negative_integration`,
+//! which also consumes `bbox_of` (the former crossed the seam from `harness_occt` in task
+//! #7307, when it began consuming `common::`). So "asserts on a measured quantity" is NOT the
+//! criterion and never was — "uses `common::`" is. Both harnesses continue to share `tests/fixtures/`, which costs
 //! nothing under C2: it counts only `.rs` files reached by a `mod` / `#[path]` declaration.
 //!
 //! Layout-only (invariant I3): no `#[test]` fn is added, removed or renamed by this split,
@@ -52,8 +55,9 @@
 //! `reify-kernel-occt::harness_occt_measurement`. No `binary(...)` / `--test` selector
 //! anywhere in this repo names either one.
 //!
-//! cfg retention: 15 of the 16 members carry a crate-level `#![cfg(has_occt)]` and
-//! `face_differential_integration` carries `#![cfg(all(has_occt, feature = "test-fixtures"))]`.
+//! cfg retention: every member carries a crate-level `#![cfg(has_occt)]` except
+//! `face_differential_integration`, which carries
+//! `#![cfg(all(has_occt, feature = "test-fixtures"))]`.
 //! Those inner attributes are retained VERBATIM on the moved submodules rather than hoisted to
 //! an outer `#[cfg]` on the `mod` declarations below — an inner `#![cfg(...)]` on a
 //! `#[path]`-loaded submodule compiles correctly in every cfg state and preserves the
