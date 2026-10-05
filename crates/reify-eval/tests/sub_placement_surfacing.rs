@@ -1268,10 +1268,7 @@ structure HolderAt {
         compile_errors
     );
 
-    // Construct the engine inline to retain `operations_ref()`.
-    // `make_engine_with_mock_kernel()` moves the kernel before we can clone
-    // the Arc, so we build the engine here as cross_sub_geometry_e2e.rs:51-54
-    // does.
+    // Inline: needs kernel.operations_ref() — see make_engine_with_mock_kernel docs.
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
