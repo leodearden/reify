@@ -483,7 +483,7 @@ joint's local frame. Giving those columns their own structure, and correcting
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
 compiler's current lowering for a few of these constructors (`half_space`,
-`polygon`, `line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat
+`extrude_infinite`, `polygon`, `line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat
 positional coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
@@ -516,7 +516,7 @@ fn half_space(plane: Plane) -> Solid     // Unbounded — Bounded = false
 // intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
 // Worked example: examples/half_space.ri.
 
-fn extrude_infinite(profile: Surface, direction: Vector3<Dimensionless>) -> Solid     // Unbounded — Bounded = false
+fn extrude_infinite(profile: Surface, axis: Vector3<Dimensionless>, direction: String) -> Solid     // Unbounded — Bounded = false
 // current compiler form: extrude_infinite(profile, dx, dy, dz, direction) — the
 // sweep axis (dx, dy, dz: a dimensionless direction, so bare literals) and a
 // trailing `direction` STRING choosing which way the profile is swept to
