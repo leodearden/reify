@@ -2318,9 +2318,9 @@ fn stress_invariants(stress: Tensor<2, 3, Pressure>) -> StressInvariants
 
 The fields hold the three classical scalar invariants of a symmetric 3×3 Cauchy stress tensor. They are unchanged by a rotation of the coordinate frame. Expanded, I2 = σxx·σyy + σyy·σzz + σzz·σxx − σxy² − σyz² − σzx². Each field carries the matching power of the tensor's dimension (Pressure, Pressure², Pressure³; see §2.4 for the `Pressure2`/`Pressure3` aliases).
 
-The fields are dimension-checked: `inv.i1` passes where a `Pressure` is demanded, `inv.i2` where a `Pressure2` is demanded, and `inv.i3` where a `Pressure3` is demanded. Task #6092 retyped them from `Real` placeholders, which break that overload resolution.
+The fields are dimension-checked: `inv.i1` passes where a `Pressure` is demanded, `inv.i2` where a `Pressure2` is demanded, and `inv.i3` where a `Pressure3` is demanded.
 
-`stress_invariants` takes exactly one argument, a concrete 3×3 tensor such as `matrix([[...]])` of Pa values. The tensor must be symmetric: only its upper triangle is read. Any other argument evaluates to `undef`: a non-tensor, a non-3×3 matrix, or a `Field`. The result type stays `StressInvariants` even for a `Field` argument, because evaluation has no `Field` form for this reduction (contrast the reductions in §10). A dimensionless input tensor yields plain `Real` values in all three fields.
+`stress_invariants` takes exactly one argument, a concrete 3×3 tensor such as `matrix([[...]])` of Pa values. The tensor must be symmetric: asymmetric input is a precondition violation, asserted in debug builds; release builds read only the upper triangle. Any other argument evaluates to `undef`: a non-tensor, a non-3×3 matrix, or a `Field`. The result type stays `StressInvariants` even for a `Field` argument, because evaluation has no `Field` form for this reduction (contrast the reductions in §10). A dimensionless input tensor yields plain `Real` values in all three fields.
 
 Worked example — the `INVARIANT_POWERS_FIXTURE` in `crates/reify-eval/tests/harness_fea_solver_e2e/fea_stress_reductions_smoke.rs`, whose values are asserted there:
 
