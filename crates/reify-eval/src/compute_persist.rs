@@ -1376,6 +1376,22 @@ mod tests {
     /// that target's bridge reader expects.
     type PersistableTargetFixture = (&'static str, fn() -> Value);
 
+    /// One row per persistable target, in allowlist order. Each target is a row
+    /// because each has its own `persistent_lookup`/`persistent_write` arm.
+    fn persistable_target_fixtures() -> [PersistableTargetFixture; 3] {
+        let targets: [PersistableTargetFixture; 3] = [
+            ("solver::elastic_static", elastic_static_cache_value),
+            ("solver::buckling", buckling_cache_value),
+            ("shell-extract::extract", shell_extract_cache_value),
+        ];
+        assert_eq!(
+            targets.map(|(target, _)| target).as_slice(),
+            super::PERSISTABLE_TARGETS.as_slice(),
+            "every persistable target needs a row in this table, in allowlist order",
+        );
+        targets
+    }
+
     /// The persist bridge must replay a diagnostic of ANY severity on EVERY
     /// persistable target, verbatim in every field a consumer can key off.
     ///
@@ -1390,16 +1406,7 @@ mod tests {
     fn persist_bridge_replays_every_severity_on_every_persistable_target() {
         use reify_core::Severity;
 
-        let targets: [PersistableTargetFixture; 3] = [
-            ("solver::elastic_static", elastic_static_cache_value),
-            ("solver::buckling", buckling_cache_value),
-            ("shell-extract::extract", shell_extract_cache_value),
-        ];
-        assert_eq!(
-            targets.map(|(target, _)| target).as_slice(),
-            super::PERSISTABLE_TARGETS.as_slice(),
-            "every persistable target needs a row in this table, in allowlist order",
-        );
+        let targets = persistable_target_fixtures();
         let severities = [Severity::Info, Severity::Warning, Severity::Error];
 
         // ONE cache dir for every cell, so each cell's KEY is what selects its
@@ -1421,8 +1428,11 @@ mod tests {
                     tmp.path(),
                     target,
                     cache_key,
-                    &value,
-                    std::slice::from_ref(&written),
+                    WithDiagnostics {
+                        diagnostics: vec![written.clone()],
+                        structured_detail: vec![],
+                        value: &value,
+                    },
                 );
 
                 let WithDiagnostics {
@@ -1461,6 +1471,63 @@ mod tests {
                     "{cell}: the machine-readable candidate list must survive",
                 );
             }
+        }
+    }
+
+    /// The persist bridge must replay every structured-detail overlay on EVERY
+    /// persistable target. The envelope is target-generic, so a target arm that
+    /// stored its own empty list would silently drop a warm serve's overlays.
+    #[test]
+    fn persist_bridge_replays_structured_detail_on_every_persistable_target() {
+        use crate::StructuredComputeDetail;
+        use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+
+        let written = vec![
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }),
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(3), ElementId(5)],
+            }),
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "top".into(),
+            }),
+        ];
+
+        // ONE cache dir for every row, so each row's KEY selects its entry.
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        for (target_index, (target, build_value)) in
+            persistable_target_fixtures().into_iter().enumerate()
+        {
+            let cache_key =
+                ContentHash(0x7345_0010_7345_0010_7345_0010_0000_0000_u128 | target_index as u128);
+            let value = build_value();
+
+            super::persistent_write(
+                tmp.path(),
+                target,
+                cache_key,
+                WithDiagnostics {
+                    diagnostics: vec![],
+                    structured_detail: written.clone(),
+                    value: &value,
+                },
+            );
+
+            let got = super::persistent_lookup(tmp.path(), target, cache_key)
+                .unwrap_or_else(|| panic!("{target}: the entry just written must be a hit"));
+
+            assert_eq!(
+                got.structured_detail, written,
+                "{target}: every overlay must be replayed exactly as written",
+            );
+            assert_eq!(
+                got.value.content_hash(),
+                value.content_hash(),
+                "{target}: carrying structured detail must not perturb the \
+                 reconstructed Value",
+            );
         }
     }
 
@@ -1736,8 +1803,11 @@ mod tests {
             tmp.path(),
             "solver::buckling",
             cache_key,
-            &value,
-            std::slice::from_ref(&written),
+            WithDiagnostics {
+                diagnostics: vec![written.clone()],
+                structured_detail: vec![],
+                value: &value,
+            },
         );
 
         let got_diags = super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
@@ -1771,7 +1841,16 @@ mod tests {
             &minimal_elastic_result(7.0),
         );
 
-        super::persistent_write(tmp.path(), "solver::elastic_static", cache_key, &value, &[]);
+        super::persistent_write(
+            tmp.path(),
+            "solver::elastic_static",
+            cache_key,
+            WithDiagnostics {
+                diagnostics: vec![],
+                structured_detail: vec![],
+                value: &value,
+            },
+        );
 
         let WithDiagnostics {
             value: got_value,
@@ -1824,8 +1903,11 @@ mod tests {
             tmp.path(),
             "solver::elastic_static",
             cache_key,
-            &value,
-            std::slice::from_ref(&diag),
+            WithDiagnostics {
+                diagnostics: vec![diag.clone()],
+                structured_detail: vec![],
+                value: &value,
+            },
         );
 
         let got_diags = super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
