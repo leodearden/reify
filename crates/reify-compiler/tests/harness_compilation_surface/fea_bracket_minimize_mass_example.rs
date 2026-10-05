@@ -24,9 +24,8 @@
 //!       to the DIMENSIONLESS default, `von_mises(...)` types as dimensionless
 //!       `Real`, and `< yield_limit` (a `Pressure`) becomes a dimensional-mismatch
 //!       Error — which is exactly what this pin reports. The example's own predicate
-//!       reads the result's `.max_von_mises` member today, so that regression
-//!       surfaces here for the explicit `max(von_mises(.stress))` spelling, whose
-//!       adoption #7333 owns;
+//!       is `max(von_mises(<solve>.stress)) < yield_limit`, so this pin guards that
+//!       `Type::Field` arm on a shipped example;
 //!   (c) the compiled module exposes the bracket structure template;
 //!   (d) `thickness` is a solver-delegated `ValueCellKind::Auto { free: true }` cell.
 //!       Pinning the COMPILED KIND rather than the source text `= auto` means a
@@ -40,7 +39,10 @@
 //!   (e) the template carries an `ObjectiveSet` with exactly one
 //!       `ObjectiveSense::Minimize` term — pins the `minimize` by compiled property;
 //!   (f) the template carries EXACTLY ONE compiled constraint, and that constraint's
-//!       compiled expression actually reaches `solve_elastic_static`.
+//!       compiled expression actually reaches `solve_elastic_static`;
+//!   (g) that constraint reduces the FEA's stress FIELD — `max` over `von_mises` of
+//!       the result's `.stress` — and never reads the element-max `.max_von_mises`
+//!       member, which is `>=` the field peak and so would bind instead of it.
 //!
 //! Pin (f) is the structural guard against a specific, silent trap. Reify's grammar
 //! accepts `minimize <expr> where <cond>`, and the parser dutifully lowers the guard
@@ -242,14 +244,14 @@ fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
     // …and the surviving constraint must actually close the loop through the FEA.
     // Without this, `constraint thickness > 1mm` satisfies every pin above while
     // removing `solve_elastic_static` from the design loop entirely — precisely the
-    // silent degradation this module exists to catch, and one the ~88s e2e test can
+    // silent degradation this module exists to catch, and one the slow e2e test can
     // no longer be relied on to catch alone now that it is in the heavy set and off
     // the merge gate.
     //
     // Matched on the compiled expression's Debug rendering rather than a hand-rolled
-    // `CompiledExpr` walk: the call is nested under a `BinOp`/member access today,
-    // and a walk enumerating only today's spine would go quietly vacuous if the
-    // predicate were later restructured (say, wrapped in a `min(...)` reduction).
+    // `CompiledExpr` walk: the call is nested under a `BinOp`, a field reduction and
+    // a member access today, and a walk enumerating only today's spine would go
+    // quietly vacuous if the predicate were later restructured.
     // `UserFunctionCall.function_name` is a `String` field, so the name is present
     // in the Debug output of any tree shape that contains the call.
     const FEA_CALL: &str = "solve_elastic_static";
