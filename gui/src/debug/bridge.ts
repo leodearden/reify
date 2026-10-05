@@ -374,19 +374,12 @@ export interface ResolvedByTestId {
 }
 
 /**
- * Every element carrying `data-testid`, optionally scoped to one pane (#5891).
+ * Every `data-testid` match in document order, optionally scoped to one pane (#5891).
  *
- * Scoped, the selector list is descendant-OR-SELF. The self arm is
- * load-bearing: FeaModeToolbar stamps `data-testid` and `data-viewport-id` on
- * the SAME root element, so a descendant-only selector would find the nine
- * sibling controls but not the root by its own testid.
- *
- * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
- * element matching both arms of the scoped selector list is counted once — the
- * root above is the common case — and a caller's count stays truthful.
- *
- * Returns `[]` when nothing matches. Both params are typed `string`, so a caller
- * holding an `unknown` has to prove the type before it can reach the query.
+ * The scoped selector is descendant-OR-SELF because FeaModeToolbar stamps
+ * `data-testid` and `data-viewport-id` on the SAME root element, which a
+ * descendant-only selector would miss. `querySelectorAll` de-duplicates, so that
+ * root, matching both arms, is counted once.
  */
 function queryAllByTestId(testId: string, viewportId: string | undefined): Element[] {
   const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
@@ -397,13 +390,7 @@ function queryAllByTestId(testId: string, viewportId: string | undefined): Eleme
   return Array.from(document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`));
 }
 
-/**
- * The one non-string `viewportId` check in front of `queryAllByTestId`, shared
- * by `resolveByTestId` (the drive path) and `buildSelectorPredicate` (the
- * observe path) so the two cannot disagree on what a malformed pane id is.
- * Absent stays `undefined` (document-wide); anything else but a string is
- * rejected with `viewportIdNotString`.
- */
+/** The one malformed-`viewportId` check, shared by the drive and observe paths. */
 function narrowViewportId(
   viewportId: unknown,
 ): { viewportId: string | undefined } | { error: string } {
@@ -578,12 +565,8 @@ async function pollUntil(
 
 /**
  * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
- * Quantifies over EVERY match `queryAllByTestId(testId, viewportId)` returns, so
- * an optional `viewportId` scopes the wait to one pane (#5891) and nothing is
- * picked first:
- * 'visible': SOME match isElementVisible AND (text===undefined OR that same
- *            match's textContent.trim()===text)
- * 'gone':    EVERY match is !isElementVisible — vacuously true for zero matches
+ * The quantified rule it implements, and the residual unscoped-wait caveat, are
+ * stated in docs/debug-mcp-recipe.md "wait_for_selector: the unscoped-wait trap".
  *
  * Returns `{error}` INSTEAD of a predicate when `viewportId` is present but not a
  * string. That check is hoisted out of the closure deliberately: a malformed
@@ -605,11 +588,6 @@ async function pollUntil(
  * a timeout. The cost is that a typo'd id reads as instant success, so callers
  * proving a teardown should confirm the pane exists first. Under 'visible' the
  * same typo fails loudly (timeout), which is why only this arm needs the note.
- *
- * THE RESIDUAL CAVEAT: an unscoped wait answers for the whole document, not for
- * any one pane, so its green is no proof that the pane a caller acts on next is
- * ready. See docs/debug-mcp-recipe.md "wait_for_selector: the unscoped-wait
- * trap", pinned by waitFor.test.ts case (h).
  */
 function buildSelectorPredicate(opts: {
   testId: string;

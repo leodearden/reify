@@ -710,29 +710,9 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result).toEqual({ error: 'timeout' });
   });
 
-  // (h)–(l2) pin the OBSERVE-path rule for a multi-match, and the one caveat that
-  // survives it.
-  //
-  // THE RULE, stated once: a wait quantifies over EVERY match in its scope —
-  // document-wide when unscoped, inside the named pane when scoped. 'visible'
-  // holds iff SOME match is visible, and with `text` that SAME match's trimmed
-  // textContent must equal it. 'gone' holds iff EVERY match is hidden or absent,
-  // which is vacuously true for zero matches — the reason (g) holds. Nothing is
-  // picked first: a hidden copy early in document order neither blocks a
-  // 'visible' wait (i) nor satisfies a 'gone' wait on its own (j1). The DRIVE
-  // tools (click_element and friends) still act on the first match and report
-  // the guess — #5891's back-compat contract, a different question from this one.
-  //
-  // THE ONE RESIDUAL CAVEAT, (h): an unscoped green is a claim about the
-  // DOCUMENT, not about the pane you act on next. The remedy is to scope the wait
-  // whenever the follow-up action is scoped.
-  //
-  // CALLER-FACING FAILURE PATH for (h): a harness that waits UNSCOPED and then
-  // acts SCOPED on pane-1 gets a green wait off design-main while pane-1 is still
-  // mounting, and then a `notFoundForViewport` on the action a moment later.
-  // Because the wait reports no viewportId/matchCount, nothing in the green result
-  // hints that a different pane satisfied it, so the failure reads as a bridge bug
-  // rather than the caller-introduced race it is.
+  // (h)–(l2) pin the observe-path multi-match rule and its one residual caveat,
+  // (h). Canonical statement: docs/debug-mcp-recipe.md "wait_for_selector: the
+  // unscoped-wait trap".
   it('(h) UNSCOPED state:"visible" is satisfied by ANY pane, so it cannot gate on a SPECIFIC later pane being ready', async () => {
     // design-main holds a visible `scoped-el`; pane-1 holds nothing — i.e. the
     // exact "pane 1 is still mounting" state. This is inherent to an unscoped
@@ -806,6 +786,15 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     });
 
     expect(unscoped.result).toEqual({ error: 'timeout' });
+
+    // wait_for's selector arm reaches the same 'gone' rule, as (i) shows for
+    // 'visible'.
+    const viaWaitFor = await dispatchDrained(43, 'wait_for', {
+      predicate: { kind: 'selector', testId: 'scoped-el', state: 'gone' },
+      timeout_ms: 100,
+    });
+
+    expect(viaWaitFor.result).toEqual({ error: 'timeout' });
 
     // The scoped wait on the pane holding the visible copy agrees.
     const scoped = await dispatchDrained(36, 'wait_for_selector', {

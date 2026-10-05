@@ -153,9 +153,9 @@ harness that waits unscoped and then acts scoped on a pane that is still
 mounting gets a green wait and then a `notFoundForViewport` on the action. Scope
 the wait whenever the follow-up action is scoped.
 
-This subsection is the canonical statement — the tool's own `viewportId` schema
-description and `buildSelectorPredicate` in `gui/src/debug/bridge.ts` each carry
-the one-line rule and point here. The rule and the remaining trap are pinned by
+This subsection is the canonical statement. The tool schemas carry a
+one-sentence version for agents; the code and test sites point here rather than
+restating it. The rule and the remaining trap are pinned by
 cases (h)–(l2) of `gui/src/__tests__/waitFor.test.ts`. The drive tools
 (`click_element` and friends) are a different question: they stay first-match
 plus a reported `viewportId`/`matchCount`, by #5891's back-compat contract.
