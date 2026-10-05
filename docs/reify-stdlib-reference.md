@@ -715,6 +715,8 @@ fn loft(profiles: List<Surface>) -> Solid
 fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
+The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.2, beside `half_space`, the other unbounded producer.
+
 ### 3.7 `std.geometry.transform`
 
 ```
