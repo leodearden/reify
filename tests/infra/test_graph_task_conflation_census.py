@@ -199,7 +199,7 @@ class FakeReader:
         self.endpoints = {edge.uuid: census_tool.EdgeEndpoints(edge.source, edge.target,
                                                                edge.invalid_at, edge.expired_at)
                           for edge in self.edges}
-        self.existing = set(self.nodes)
+        self.names = dict(self.nodes)
         self.calls = []
 
     def node_count(self):
@@ -236,9 +236,9 @@ class FakeReader:
         self.calls.append(("edge_endpoints", edge_uuid))
         return self.endpoints.get(edge_uuid)
 
-    def node_exists(self, uuid):
-        self.calls.append(("node_exists", uuid))
-        return uuid in self.existing
+    def node_name(self, uuid):
+        self.calls.append(("node_name", uuid))
+        return self.names.get(uuid)
 
 
 class FakeGraph:
@@ -304,8 +304,10 @@ class ProposalWorld:
         self.t700 = g.node("Task 700")
         self.foo = g.node("Foo crate")
         self.e_ambiguous_numbers = g.edge(self.t700, self.foo, "Tasks 710 and 720 both touch foo")
+        self.census_nodes = dict(g.nodes)
         self.census = _build(g.reader())
         self.by_id = _candidates(self.census)
+        self.t502_minted = g.node("Task 502")
 
     def candidate(self, edge, node):
         return self.by_id[f"{edge}@{node}"]
@@ -499,7 +501,7 @@ class ProposalTest(unittest.TestCase):
         self.assertEqual(census["generator"], "scripts/graph-task-conflation-census.py")
         self.assertEqual(census["graph_key"], "reify")
         self.assertEqual(census["generated_at"], GENERATED_AT)
-        nodes = len(self.world.graph.nodes)
+        nodes = len(self.world.census_nodes)
         self.assertEqual(census["key_confirmation"],
                          {"expected_node_count": nodes, "observed_node_count": nodes})
         self.assertEqual(census["bm25_probe"], {
@@ -511,9 +513,8 @@ class ProposalTest(unittest.TestCase):
 class DeterminismTest(unittest.TestCase):
     def test_order_and_ids_are_input_order_independent(self):
         world = ProposalWorld()
-        g = world.graph
-        reversed_reader = FakeReader(dict(reversed(list(g.nodes.items()))),
-                                     list(reversed(g.edges)))
+        reversed_reader = FakeReader(dict(reversed(list(world.census_nodes.items()))),
+                                     list(reversed(world.graph.edges)))
         again = _build(reversed_reader)
         self.assertEqual(json.dumps(again, sort_keys=True),
                          json.dumps(world.census, sort_keys=True))
@@ -603,7 +604,8 @@ class FakeFalkorConnection:
         if "RELATES_TO" in query:
             return _table(self._endpoints(literals[0]))
         if literals:
-            return ["count"], [[int(literals[0] in self.graph.nodes)]]
+            nodes = self.graph.nodes
+            return _table([{"name": nodes[literals[0]]}] if literals[0] in nodes else [])
         return ["count"], [[len(self.graph.nodes)]]
 
     def _edge_rows(self, wanted):
@@ -664,8 +666,8 @@ class FalkorReaderTest(unittest.TestCase):
         self.assertEqual(self.reader.edge_endpoints(w.e_unary),
                          census_tool.EdgeEndpoints(w.t2590, w.t2591, None, None))
         self.assertIsNone(self.reader.edge_endpoints(_edge_uuid(999)))
-        self.assertTrue(self.reader.node_exists(w.t2919))
-        self.assertFalse(self.reader.node_exists(_node_uuid(999)))
+        self.assertEqual(self.reader.node_name(w.t2919), "Task 2919")
+        self.assertIsNone(self.reader.node_name(_node_uuid(999)))
         with tempfile.TemporaryDirectory() as out:
             code, _, _ = _run_main(["census", "--expect-node-count", str(len(w.graph.nodes)),
                                     "--out-dir", out], self.conn)
@@ -725,7 +727,7 @@ class FalkorReaderTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.reader.edges_touching([self.world.t3019, bad])
             with self.assertRaises(ValueError):
-                self.reader.node_exists(bad)
+                self.reader.node_name(bad)
             with self.assertRaises(ValueError):
                 self.reader.edge_endpoints(bad)
         self.assertEqual(self.conn.calls, [])
@@ -855,11 +857,19 @@ class ValidateAdjudicationTest(ReviewFixture):
         self.assertEqual(self.rules(), {(self.unary_id, Rule.EMPTY_RATIONALE),
                                         (self.mint_id, Rule.EMPTY_RATIONALE)})
 
-    def test_repair_needs_exactly_one_target(self):
-        self.entry(self.unique_id)["mint_name"] = "Task 2919"
-        self.entry(self.mint_id)["mint_name"] = None
-        self.assertEqual(self.rules(), {(self.unique_id, Rule.REPAIR_TARGET_COUNT),
-                                        (self.mint_id, Rule.REPAIR_TARGET_COUNT)})
+    def test_repair_needs_a_target(self):
+        self.entry(self.mint_id).update(mint_name=None, target_node_uuid=None)
+        self.assertEqual(self.rules(), {(self.mint_id, Rule.REPAIR_WITHOUT_TARGET)})
+
+    def test_a_minted_repair_carries_both(self):
+        self.entry(self.mint_id)["target_node_uuid"] = self.world.t502_minted
+        self.assertEqual(self.entry(self.mint_id)["mint_name"], "Task 502")
+        self.assertEqual(self.rules(), set())
+
+    def test_a_minted_repair_checks_both_fields(self):
+        self.entry(self.mint_id).update(mint_name="task 502", target_node_uuid=self.world.t500)
+        self.assertEqual(self.rules(), {(self.mint_id, Rule.MINT_NAME_NOT_CANONICAL),
+                                        (self.mint_id, Rule.REPAIR_SELF_LOOP)})
 
     def test_repair_onto_either_endpoint_is_a_self_loop(self):
         self.entry(self.unique_id)["target_node_uuid"] = self.world.t3017
@@ -911,6 +921,19 @@ class RenderReviewTest(ReviewFixture):
         self.assertIn("no target", row)
         self.assertEqual(row.replace("\\|", "").count("|"), plain_row.count("|"))
 
+    def test_a_folded_mint_is_no_longer_listed_as_needing_a_mint(self):
+        self.entry(self.mint_id)["target_node_uuid"] = self.world.t502_minted
+        lines = census_tool.render_review(self.census, self.adjudication).splitlines()
+        start = lines.index("## REPAIRs that need a node minted first") + 1
+        end = next(i for i in range(start, len(lines)) if lines[i].startswith("## "))
+        self.assertEqual([line for line in lines[start:end] if line], ["- none"])
+        header = next(line for line in lines if line.startswith("| # |"))
+        target_column = [cell.strip() for cell in header.split("|")].index("target")
+        row = next(line for line in lines if line.startswith("|") and self.world.e_absent in line)
+        target_cell = [cell.strip() for cell in row.split("|")][target_column]
+        self.assertIn(self.world.t502_minted, target_cell)
+        self.assertIn("minted Task 502", target_cell)
+
 
 class RepairListTest(ReviewFixture):
     def test_only_repair_rows_with_reassign_edge_shaped_keys(self):
@@ -926,6 +949,16 @@ class RepairListTest(ReviewFixture):
         self.assertEqual(by_id[self.mint_id], {
             "candidate_id": self.mint_id, "edge_uuid": self.world.e_absent,
             "which_end": "source", "from_node_uuid": self.world.t500, "mint_name": "Task 502",
+        })
+
+    def test_a_minted_row_carries_its_folded_uuid_and_its_mint_name(self):
+        self.entry(self.mint_id)["target_node_uuid"] = self.world.t502_minted
+        by_id = {r["candidate_id"]: r for r in census_tool.repair_list(self.census,
+                                                                       self.adjudication)}
+        self.assertEqual(by_id[self.mint_id], {
+            "candidate_id": self.mint_id, "edge_uuid": self.world.e_absent,
+            "which_end": "source", "from_node_uuid": self.world.t500,
+            "new_endpoint_uuid": self.world.t502_minted, "mint_name": "Task 502",
         })
 
 
@@ -1029,11 +1062,32 @@ class CheckRepairsTest(ReviewFixture):
                 w.harness, w.t4100, None, None)
 
     def test_target_missing_is_checked_before_the_endpoint(self):
-        self.reader.existing.discard(self.world.t2919)
+        del self.reader.names[self.world.t2919]
         self.move(self.world.e_unique_source, self.world.t2919, self.world.t3017)
         statuses = self.statuses()
         self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
                          (State.TARGET_MISSING, State.TARGET_MISSING))
+
+    def fold_mint(self, target):
+        self.entry(self.mint_id)["target_node_uuid"] = target
+
+    def test_a_folded_mint_row_is_pending_then_applied(self):
+        w = self.world
+        self.fold_mint(w.t502_minted)
+        self.assertEqual(self.statuses()[self.mint_id], State.PENDING)
+        self.move(w.e_absent, w.t502_minted, w.orchestrator)
+        self.assertEqual(self.statuses()[self.mint_id], State.APPLIED)
+
+    def test_a_folded_uuid_absent_from_the_graph_is_target_missing(self):
+        self.fold_mint(_node_uuid(999))
+        self.assertEqual(self.statuses()[self.mint_id], State.TARGET_MISSING)
+
+    def test_a_folded_uuid_of_a_node_named_otherwise_is_misnamed_without_an_edge_read(self):
+        for wrong in (self.world.t2919, self.world.harness):
+            self.reader.calls.clear()
+            self.fold_mint(wrong)
+            self.assertEqual(self.statuses()[self.mint_id], State.TARGET_MISNAMED, wrong)
+            self.assertNotIn(("edge_endpoints", self.world.e_absent), self.reader.calls)
 
     def test_an_invalid_adjudication_is_refused(self):
         self.entry(self.unary_id)["rationale"] = ""
@@ -1094,6 +1148,19 @@ class CheckRepairsCliTest(ReviewFixture):
     def test_an_unminted_row_fails_either_requirement(self):
         self.entry(self.mint_id).update(verdict=REPAIR, mint_name="Task 502")
         self.assertEqual(self.check("pending")[0], 1)
+
+    def test_a_misnamed_minted_row_fails_the_pending_gate(self):
+        self.entry(self.mint_id).update(verdict=REPAIR, mint_name="Task 502",
+                                        target_node_uuid=self.world.t2919)
+        code, stdout, _ = self.check("pending")
+        self.assertEqual(code, 1)
+        counts = json.loads(stdout)["counts"]
+        self.assertEqual((counts["target_misnamed"], counts["pending"]), (1, 2))
+        self.entry(self.mint_id)["target_node_uuid"] = self.world.t502_minted
+        code, stdout, _ = self.check("pending")
+        self.assertEqual(code, 0)
+        counts = json.loads(stdout)["counts"]
+        self.assertEqual((counts["target_misnamed"], counts["pending"]), (0, 3))
 
     def test_out_writes_the_report_and_never_overwrites(self):
         out = self.dir / "pre.json"
