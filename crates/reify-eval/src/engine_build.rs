@@ -12207,13 +12207,7 @@ impl Engine {
                 // guard, with no test pinning it either way. Untested
                 // behaviour change plus inert motivation ⇒ removed.
                 //
-                // The geometry-list reuse-pass defect (a second no-op selective
-                // `tessellate_snapshot` returned `[Undef; n]`, task #6460) is
-                // closed at `tessellate_snapshot`'s baseline mint, not here: that
-                // mint re-derives the list cell from the current values every
-                // pass, so this line's shallow write-back of a list's
-                // `[Undef; n]` re-eval into `snapshot.values` never reaches the
-                // result.
+                // List cells are re-derived by `tessellate_snapshot`'s baseline mint (#6460).
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
@@ -12333,13 +12327,13 @@ impl Engine {
     /// A geometry-backed cell whose realizations this pass does NOT execute
     /// (hidden, or hash-exempt because their inputs are unchanged) carries the
     /// symbolic eval-path handle (`kernel_handle: None`) minted from the
-    /// current values — scalar and list cells alike. Executed realizations are
-    /// upgraded to kernel-backed handles by hydration. Pinned by the
-    /// geometry-list reuse-pass tests in `harness_cache`'s
-    /// `selective_demand_redemand_staleness.rs`
-    /// (`a_repeat_no_op_tessellate_under_all_visible_selective_demand_keeps_the_geometry_list_resolved`,
-    /// `redemand_geometry_list_survives_hide_unhide`,
-    /// `the_reuse_pass_after_an_edit_serves_the_edited_geometry_list_not_the_pre_edit_one`).
+    /// current values — scalar and list cells alike. Hydration upgrades a
+    /// scalar cell to a kernel-backed handle when its realization executes,
+    /// but a list cell only when EVERY element executes: hash exemption is
+    /// per realization while the list regroup is all-or-nothing, so a partly
+    /// re-executed list is served wholly symbolic, its executed elements
+    /// included. Geometry-list cases: reify-eval
+    /// `tests/harness_cache/selective_demand_redemand_staleness.rs`.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
         // Reset all per-build engine state through the single exhaustive-
         // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
