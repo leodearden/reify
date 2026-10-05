@@ -22,8 +22,9 @@ review         OFFLINE. Validates an adjudication against its census, writes
                (keys mirror fused-memory reassign_edge's parameters) on stdout.
 check-repairs  READ-ONLY. Reports, per adjudicated REPAIR row, whether the
                edge's endpoint is still pending, applied, moved elsewhere, gone,
-               targets a missing node, or still needs a node minted; exits 0
-               iff every row has the --require'd state.
+               targets a missing node, targets a minted node not named for its
+               mint (misnamed), or still needs a node minted; exits 0 iff every
+               row has the --require'd state.
 
 Candidate rule (asymmetric on purpose, erring toward FEWER candidates because
 every candidate feeds irreversible edge surgery): a row is a candidate iff the
@@ -54,8 +55,9 @@ census:       {schema_version, generator, graph_key, generated_at,
 adjudication: {census: <census file name>,
                adjudications[{candidate_id, verdict, target_node_uuid,
                               mint_name, rationale}]}
-               A REPAIR carries exactly one of target_node_uuid (an existing
-               node, task-named or not) or mint_name ('Task N', canonical).
+               A REPAIR carries target_node_uuid (an existing node, task-named
+               or not), mint_name ('Task N', canonical, still to be minted), or
+               both once the minted node's uuid is folded in.
 check report: {census, checked_at, require,
                rows[{candidate_id, edge_uuid, which_end, status}], counts}
 
@@ -189,7 +191,7 @@ class GraphReader(Protocol):
 
     def edge_endpoints(self, edge_uuid: str) -> EdgeEndpoints | None: ...
 
-    def node_exists(self, uuid: str) -> bool: ...
+    def node_name(self, uuid: str) -> str | None: ...
 
 
 # ── Census ──────────────────────────────────────────────────────────────────
@@ -445,10 +447,12 @@ class FalkorReader:
         return EdgeEndpoints(row["source_uuid"], row["target_uuid"], row["invalid_at"],
                              row["expired_at"])
 
-    def node_exists(self, uuid: str) -> bool:
+    def node_name(self, uuid: str) -> str | None:
         checked = _checked_uuid(uuid)
-        return int(self._scalar(
-            f"MATCH (n:Entity) WHERE n.uuid = '{checked}' RETURN count(n) AS nodes")) > 0
+        rows = self._ro(f"MATCH (n:Entity) WHERE n.uuid = '{checked}' RETURN n.name AS name")
+        if not rows:
+            return None
+        return rows[0]["name"] or ""
 
 
 def _edge_row(record: dict[str, Any]) -> EdgeRow:
@@ -531,7 +535,7 @@ class ReviewRule(enum.Enum):
     DUPLICATE_ADJUDICATION = "duplicate_adjudication"
     INVALID_VERDICT = "invalid_verdict"
     EMPTY_RATIONALE = "empty_rationale"
-    REPAIR_TARGET_COUNT = "repair_target_count"
+    REPAIR_WITHOUT_TARGET = "repair_without_target"
     REPAIR_SELF_LOOP = "repair_self_loop"
     TARGET_NOT_UUID = "target_not_uuid"
     MINT_NAME_NOT_CANONICAL = "mint_name_not_canonical"
@@ -549,16 +553,19 @@ class ReviewError:
 
 def _repair_rules(entry: dict, candidate: dict) -> list[ReviewRule]:
     target, mint_name = entry.get("target_node_uuid"), entry.get("mint_name")
-    if (target is None) == (mint_name is None):
-        return [ReviewRule.REPAIR_TARGET_COUNT]
-    if mint_name is not None:
-        canonical = isinstance(mint_name, str) and _CANONICAL_MINT_NAME.fullmatch(mint_name)
-        return [] if canonical else [ReviewRule.MINT_NAME_NOT_CANONICAL]
+    if target is None and mint_name is None:
+        return [ReviewRule.REPAIR_WITHOUT_TARGET]
+    rules = []
+    if mint_name is not None and not (isinstance(mint_name, str)
+                                      and _CANONICAL_MINT_NAME.fullmatch(mint_name)):
+        rules.append(ReviewRule.MINT_NAME_NOT_CANONICAL)
+    if target is None:
+        return rules
     if not isinstance(target, str) or not _UUID_SHAPE.fullmatch(target):
-        return [ReviewRule.TARGET_NOT_UUID]
-    if target in (candidate["node_uuid"], candidate["other_uuid"]):
-        return [ReviewRule.REPAIR_SELF_LOOP]
-    return []
+        rules.append(ReviewRule.TARGET_NOT_UUID)
+    elif target in (candidate["node_uuid"], candidate["other_uuid"]):
+        rules.append(ReviewRule.REPAIR_SELF_LOOP)
+    return rules
 
 
 def _entry_rules(entry: dict, candidate: dict) -> list[ReviewRule]:
@@ -612,7 +619,7 @@ def repair_list(census: dict, adjudication: dict) -> list[dict]:
                   "which_end": candidate["which_end"], "from_node_uuid": candidate["node_uuid"]}
         if entry.get("target_node_uuid") is not None:
             repair["new_endpoint_uuid"] = entry["target_node_uuid"]
-        else:
+        if entry.get("mint_name") is not None:
             repair["mint_name"] = entry["mint_name"]
         repairs.append(repair)
     return repairs
@@ -629,10 +636,17 @@ def _row(cells: Iterable[Any]) -> str:
     return "| " + " | ".join(_cell(cell) for cell in cells) + " |"
 
 
+def _needs_mint(entry: dict) -> bool:
+    return bool(entry.get("mint_name")) and entry.get("target_node_uuid") is None
+
+
 def _target_text(entry: dict) -> str | None:
-    if entry.get("mint_name"):
-        return f"mint {entry['mint_name']}"
-    return entry.get("target_node_uuid")
+    target, mint_name = entry.get("target_node_uuid"), entry.get("mint_name")
+    if target is not None and mint_name:
+        return f"{target} (minted {mint_name})"
+    if mint_name:
+        return f"mint {mint_name}"
+    return target
 
 
 def _candidate_row(number: int, candidate: dict, entry: dict) -> str:
@@ -651,7 +665,7 @@ def render_review(census: dict, adjudication: dict) -> str:
     key, probe, summary = census["key_confirmation"], census["bm25_probe"], census["summary"]
     pairs = _paired(census, adjudication)
     adjudicated = Counter(entry["verdict"] for _, entry in pairs)
-    mints = [(n, c, e) for n, (c, e) in enumerate(pairs, 1) if e.get("mint_name")]
+    mints = [(n, c, e) for n, (c, e) in enumerate(pairs, 1) if _needs_mint(e)]
     columns = ["#", "node", "edge", "node end", "other endpoint", "fact", "named", "signature",
                "proposed", "adjudicated", "target", "rationale"]
     return "\n".join([
@@ -714,6 +728,7 @@ class RepairState(enum.Enum):
     MOVED_ELSEWHERE = "moved_elsewhere"
     EDGE_GONE = "edge_gone"
     TARGET_MISSING = "target_missing"
+    TARGET_MISNAMED = "target_misnamed"
     UNMINTED = "unminted"
 
 
@@ -733,12 +748,21 @@ class InvalidAdjudicationError(ValueError):
         self.errors = errors
 
 
+def _is_named_for(node_name: str, mint_name: str) -> bool:
+    """Whether a minted node's name is canonical for the same task number as its mint name."""
+    number = canonical_task_number(node_name)
+    return number is not None and number == canonical_task_number(mint_name)
+
+
 def _repair_state(reader: GraphReader, repair: dict) -> RepairState:
-    if "mint_name" in repair:
+    if "new_endpoint_uuid" not in repair:
         return RepairState.UNMINTED
     target = repair["new_endpoint_uuid"]
-    if not reader.node_exists(target):
+    name = reader.node_name(target)
+    if name is None:
         return RepairState.TARGET_MISSING
+    if "mint_name" in repair and not _is_named_for(name, repair["mint_name"]):
+        return RepairState.TARGET_MISNAMED
     endpoints = reader.edge_endpoints(repair["edge_uuid"])
     if endpoints is None or endpoints.is_tombstoned:
         return RepairState.EDGE_GONE
