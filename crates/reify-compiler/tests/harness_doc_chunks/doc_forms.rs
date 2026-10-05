@@ -11,7 +11,7 @@
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
 //! span, as [`listing_signature_spans`] cuts it, through that same rule.
 
-use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
+use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart, WhereClause};
 use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
 
@@ -209,10 +209,13 @@ pub(crate) fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
 /// deterministic output. A named argument counts one, exactly as a documented
 /// form counts it.
 ///
-/// `source` must be `structure def`s whose members are all `let` bindings — the
-/// shape of the signature fixtures. Anything else PANICS rather than being
-/// skipped, so growing a fixture a new declaration or member kind is a loud
-/// "extend the walker", never a silent coverage hole.
+/// `source` must be `structure def`s whose members are `let`, `param` or
+/// `constraint` declarations — the shape of the signature fixtures, the
+/// chunks' ```` ```reify ```` fences and the cited examples. A `param`
+/// default and every member's `where` guard are walked too. Any other
+/// declaration or member kind PANICS rather than being skipped, so growing a
+/// source a new kind is a loud "extend the walker", never a silent coverage
+/// hole.
 pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     let parsed = parse_or_panic(source, label);
 
@@ -226,21 +229,41 @@ pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
             );
         };
         for member in &structure.members {
-            let MemberDecl::Let(binding) = member else {
-                panic!(
-                    "{label}: `call_forms` only walks `let` members of `{}`, but it has another \
-                     member kind — extend `call_forms` rather than leaving those call sites \
-                     unchecked",
+            match member {
+                MemberDecl::Let(binding) => {
+                    collect_call_forms(&binding.value, &mut forms);
+                    collect_guard_call_forms(&binding.where_clause, &mut forms);
+                }
+                MemberDecl::Param(param) => {
+                    if let Some(default) = &param.default {
+                        collect_call_forms(default, &mut forms);
+                    }
+                    collect_guard_call_forms(&param.where_clause, &mut forms);
+                }
+                MemberDecl::Constraint(constraint) => {
+                    collect_call_forms(&constraint.expr, &mut forms);
+                    collect_guard_call_forms(&constraint.where_clause, &mut forms);
+                }
+                _ => panic!(
+                    "{label}: `call_forms` only walks `let`, `param` and `constraint` members of \
+                     `{}`, but it has another member kind — extend `call_forms` rather than \
+                     leaving those call sites unchecked",
                     structure.name
-                );
-            };
-            collect_call_forms(&binding.value, &mut forms);
+                ),
+            }
         }
     }
 
     forms.sort();
     forms.dedup();
     forms
+}
+
+/// [`collect_call_forms`] over a member's `where` guard, when it has one.
+fn collect_guard_call_forms(guard: &Option<WhereClause>, out: &mut Vec<(String, usize)>) {
+    if let Some(guard) = guard {
+        collect_call_forms(&guard.condition, out);
+    }
 }
 
 /// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
