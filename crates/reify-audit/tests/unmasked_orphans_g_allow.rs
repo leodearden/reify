@@ -69,3 +69,14 @@ fn reify_eval_unmasked_rows_are_allow_listed() {
         ("crates/reify-eval/src/geometry_ops.rs", "eval_sub_pose"),
     ]);
 }
+
+#[test]
+fn reify_mesh_morph_unmasked_rows_are_allow_listed() {
+    assert_allow_listed(&[
+        (
+            "crates/reify-mesh-morph/src/diagnostics.rs",
+            "reset_for_test",
+        ),
+        ("crates/reify-mesh-morph/src/stats.rs", "reset_for_test"),
+    ]);
+}
