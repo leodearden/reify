@@ -16,10 +16,10 @@
 //!     race is fail-soft; the remap removal must not promote unknown-id to High).
 //! - **Test B** (live, on-demand `#[ignore]`): runs the PTODO scan over the
 //!   real repo against the real `tasks.db` and asserts ZERO
-//!   `g-allow-orphaned`. It fails loud when the DB cannot be read, since a
-//!   degraded run would make that zero vacuous. Liveness never reds a commit
-//!   gate (PRD §19(c)); the cadenced dark-factory 5796 sweep owns live drift,
-//!   and Test A is the always-on assertion.
+//!   `g-allow-orphaned`. It fails loud when the DB cannot be read or the scan
+//!   read no files, since either would make that zero vacuous. Liveness never
+//!   reds a commit gate (PRD §19(c)); the cadenced dark-factory 5796 sweep owns
+//!   live drift, and Test A is the always-on assertion.
 
 mod common;
 
@@ -240,8 +240,9 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
 /// a cite orphans when its task closes, with no change to the tree, so a
 /// commit-path liveness gate reds whoever commits next. The cadenced
 /// dark-factory 5796 sweep owns live drift. Because the test only runs when
-/// asked for, an unreadable DB fails loud rather than skipping: a degraded
-/// run reports zero orphans vacuously. The count is printed to stderr.
+/// asked for, an unreadable DB or a scan that read no files fails loud rather
+/// than skipping: either run reports zero orphans vacuously. The count is
+/// printed to stderr.
 #[test]
 #[ignore = "on-demand liveness check; owned by the DF 5796 cadenced sweep — run with --ignored in the main checkout"]
 fn g_allow_repo_wide_hard_gate_live() {
@@ -257,22 +258,6 @@ fn g_allow_repo_wide_hard_gate_live() {
         .parent()
         .unwrap() // workspace root
         .to_path_buf();
-
-    // Graceful-skip if git is not available.
-    if std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("g_allow_repo_wide_hard_gate_live: skipping — git not available");
-        return;
-    }
-
-    // Graceful-skip if this does not look like a real repo.
-    if !ws_root.join(".git").exists() && !ws_root.join(".git").is_file() {
-        eprintln!("g_allow_repo_wide_hard_gate_live: skipping — not a git repo");
-        return;
-    }
 
     let db_path = reify_audit::ptodo::tasks_db_path(&ws_root);
 
@@ -293,6 +278,15 @@ fn g_allow_repo_wide_hard_gate_live() {
 
     let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 
+    // Both run proofs come from the scan itself. `RealGitOps::ls_files` fails
+    // soft to an empty list, so a probe for git or `.git` would only stand in
+    // for this count.
+    assert!(
+        stats.files_scanned > 0,
+        "the scan read no tracked files under {} (git unavailable, or not a git \
+         checkout), so a zero-orphan result would be vacuous",
+        ws_root.display()
+    );
     assert_eq!(
         stats.tasks_db,
         reify_audit::ptodo::TasksDbMode::Present,
