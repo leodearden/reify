@@ -1740,19 +1740,13 @@ pub trait JCodemunchOps {
 ///
 /// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
 /// binding whenever a run does not need the jcodemunch seam at all, and it is
-/// ungated for exactly that reason. Three call sites, all of them real:
+/// ungated for exactly that reason. Its production call sites:
 ///
 /// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
 ///    produces zero findings without opening a socket.
-/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
-///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
-/// 3. `pdiag-baseline-gen` and `ptodo-baseline-gen`, structural censuses that
-///    still have to populate [`AuditContext`]'s field.
-///
-/// Lives here rather than in each bin because it was copy-pasted into three of
-/// them, so every future change to the trait had to be replayed by hand in
-/// three places — a silent drift hazard with no compiler backstop until one
-/// copy stopped building. All three now bind this one.
+/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
+/// 3. The `*-baseline-gen` structural censuses, which still have to populate
+///    [`AuditContext`]'s field.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;
 

@@ -64,7 +64,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 // `NoopJCodemunchOps` is the library's: `ptodo::check` never touches the
-// jcodemunch seam (it is P1/PDEAD-only), but `AuditContext` requires the field.
+// jcodemunch seam, but `AuditContext` requires the field.
 use reify_audit::{AuditContext, NoopJCodemunchOps, RealGitOps};
 
 fn main() {
