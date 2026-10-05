@@ -3322,10 +3322,9 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
 /// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
 /// (`parasitic_error`), four `Option<Pressure>` params in
 /// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
-/// one of them, and the `none`-valued state is reachable from the panel's own
-/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
-/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
-/// lets the bare number through to be refused here.
+/// one of them. A `none`-valued Option cell reports `dimension: ""`, so the
+/// panel gates on `declared_dimension` instead, which peels the wrapper the
+/// same way (`every_value_cell_reports_its_declared_dimension_whatever_its_value_holds`).
 ///
 /// Not a corruption either way — reify-eval maps `Value::Int` onto
 /// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors

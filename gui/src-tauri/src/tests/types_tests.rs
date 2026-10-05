@@ -97,6 +97,7 @@ fn value_data_serializes_with_expected_fields() {
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -974,6 +975,7 @@ fn value_data_serializes_with_freshness_field() {
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(
@@ -3342,6 +3344,7 @@ fn value_data_reason_some_serializes_as_string() {
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["reason"], json!("outer_d unbound"));
@@ -3362,6 +3365,7 @@ fn value_data_reason_none_serializes_as_null() {
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert!(v["reason"].is_null());
@@ -3403,6 +3407,7 @@ fn value_data_last_substantive_value_some_serializes_and_round_trips() {
         last_substantive_value: Some("42 mm".to_string()),
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["last_substantive_value"], json!("42 mm"));
@@ -3447,6 +3452,7 @@ fn value_data_dimension_and_si_value_serialize_and_round_trip() {
         last_substantive_value: None,
         dimension: "Volume".to_string(),
         si_value: Some(0.00704500224),
+        declared_dimension: "Volume".to_string(),
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["dimension"], json!("Volume"));
@@ -3500,7 +3506,10 @@ fn value_data_declared_dimension_serializes_and_round_trips() {
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["declared_dimension"], json!("Length"));
     let back: ValueData = serde_json::from_value(v).unwrap();
-    assert_eq!(back, val, "ValueData must round-trip with declared_dimension");
+    assert_eq!(
+        back, val,
+        "ValueData must round-trip with declared_dimension"
+    );
 }
 
 /// Older payload without the `declared_dimension` key must deserialize

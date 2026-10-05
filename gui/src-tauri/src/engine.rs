@@ -5143,6 +5143,10 @@ fn build_values(
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
             let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
+            let declared_dimension = declared_scalar_dimension(&cell.cell_type)
+                .and_then(|d| d.canonical_name())
+                .unwrap_or("")
+                .to_string();
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -5211,6 +5215,7 @@ fn build_values(
                 last_substantive_value,
                 dimension,
                 si_value,
+                declared_dimension,
             });
         }
     }
@@ -8010,6 +8015,22 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
     ty
 }
 
+/// The dimension a cell's DECLARED type requires of a supplied value: its
+/// [`unwrap_optional`] type, if that is a non-dimensionless `Type::Scalar`.
+///
+/// The one definition of "a dimensioned cell" — consumed by the bare-number
+/// gate in [`parse_value_string_for_cell`] and by `build_values`'
+/// `ValueData.declared_dimension` — so the panel's input gate and the
+/// backend's agree by construction (task #6962).
+/// `!is_dimensionless()` is explicit so a `param x : Real` (compiled to
+/// `Scalar { DIMENSIONLESS }`) is never treated as dimensioned.
+pub(crate) fn declared_scalar_dimension(cell_type: &reify_core::Type) -> Option<DimensionVector> {
+    match unwrap_optional(cell_type) {
+        reify_core::Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
+        _ => None,
+    }
+}
+
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
 ///
 /// The one thing the context-free [`parse_value_string`] cannot do: **refuse a
@@ -8040,8 +8061,12 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///
 /// Each conjunct, and what pins it:
 ///
-///   * `unwrap_optional` first, so an `Option<Length>` cell is gated like a
-///     `Length` one — `parse_value_string_for_cell_gates_through_an_option_wrapper`;
+///   * [`declared_scalar_dimension`] — the cell's declared, `Option`-peeled,
+///     non-dimensionless dimension, the same fact the panel's gate reads as
+///     `ValueData.declared_dimension`. An `Option<Length>` cell is gated like a
+///     `Length` one (`parse_value_string_for_cell_gates_through_an_option_wrapper`),
+///     and a `param x : Real` (`Scalar { DIMENSIONLESS }`) stays ungated even if
+///     a dimensionless quantity ever gains a curated ladder;
 ///   * only `Value::Int` / `Value::Real` are refused; every other variant falls
 ///     through to reify-eval's own `TypeKindMismatch` / `DimensionMismatch`,
 ///     notably `Value::Bool`, whose message an existing test depends on;
@@ -8050,12 +8075,7 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///     both ungated for the same reason, pinned together by
 ///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`
 ///     because keying on `canonical_name().is_some()` would read as an
-///     equivalent refactor and split them;
-///   * `!dimension.is_dimensionless()` is explicit even though every covered
-///     dimension is non-dimensionless by construction, so a future curated
-///     ladder for a dimensionless quantity cannot silently start gating every
-///     ratio slider. `param x : Real` compiles to
-///     `Type::Scalar { DIMENSIONLESS }` and falls on the permissive side.
+///     equivalent refactor and split them.
 ///
 /// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it can
 /// only name a rung this index parses — pinned across every curated ladder by
@@ -8079,10 +8099,9 @@ pub(crate) fn parse_value_string_for_cell(
     let s = s.trim();
     let value = parse_value_string(s)?;
 
-    if let reify_core::Type::Scalar { dimension } = unwrap_optional(cell_type)
-        && !dimension.is_dimensionless()
+    if let Some(dimension) = declared_scalar_dimension(cell_type)
         && matches!(value, Value::Int(_) | Value::Real(_))
-        && let Some((expected, rung)) = dimension_requires_unit(dimension)
+        && let Some((expected, rung)) = dimension_requires_unit(&dimension)
     {
         return Err(format!(
             "expects {expected}, got the bare number '{s}'; pass a dimensioned \
