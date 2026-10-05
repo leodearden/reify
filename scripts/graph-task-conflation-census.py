@@ -22,9 +22,10 @@ review         OFFLINE. Validates an adjudication against its census, writes
                (keys mirror fused-memory reassign_edge's parameters) on stdout.
 check-repairs  READ-ONLY. Reports, per adjudicated REPAIR row, whether the
                edge's endpoint is still pending, applied, moved elsewhere, gone,
-               targets a missing node, targets a minted node not named for its
-               mint (misnamed), or still needs a node minted; exits 0 iff every
-               row has the --require'd state.
+               targets a missing node, targets a node whose name contradicts the
+               row's mint or proposed task number (misnamed), or still needs a
+               node minted; exits 0 iff every row has the --require'd state,
+               bar rows a --pre-apply report already found gone.
 
 Candidate rule (asymmetric on purpose, erring toward FEWER candidates because
 every candidate feeds irreversible edge surgery): a row is a candidate iff the
@@ -57,9 +58,11 @@ adjudication: {census: <census file name>,
                               mint_name, rationale}]}
                A REPAIR carries target_node_uuid (an existing node, task-named
                or not), mint_name ('Task N', canonical, still to be minted), or
-               both once the minted node's uuid is folded in.
-check report: {census, checked_at, require,
-               rows[{candidate_id, edge_uuid, which_end, status}], counts}
+               both once the minted node's uuid is folded in. The two ends of
+               one edge never both move onto one node.
+check report: {census, checked_at, require, pre_apply,
+               rows[{candidate_id, edge_uuid, which_end, status}], counts,
+               exempt[candidate_id]}
 
 Safety
 ------
@@ -163,9 +166,8 @@ class Bm25Probe:
 
     @property
     def serving(self) -> bool:
-        if self.fulltext_hits is not None and self.fulltext_hits > 0:
-            return True
-        return self.name_contains == 0 and self.error is None
+        """Only a fulltext hit proves BM25 serves; a token naming no node proves nothing."""
+        return self.fulltext_hits is not None and self.fulltext_hits > 0
 
 
 @dataclass(frozen=True)
@@ -537,6 +539,7 @@ class ReviewRule(enum.Enum):
     EMPTY_RATIONALE = "empty_rationale"
     REPAIR_WITHOUT_TARGET = "repair_without_target"
     REPAIR_SELF_LOOP = "repair_self_loop"
+    REPAIR_PAIR_SELF_LOOP = "repair_pair_self_loop"
     TARGET_NOT_UUID = "target_not_uuid"
     MINT_NAME_NOT_CANONICAL = "mint_name_not_canonical"
     TARGET_ON_NON_REPAIR = "target_on_non_repair"
@@ -581,6 +584,23 @@ def _entry_rules(entry: dict, candidate: dict) -> list[ReviewRule]:
     return rules
 
 
+def _same_new_endpoint(first: dict, second: dict) -> bool:
+    return any(first.get(field) is not None and first.get(field) == second.get(field)
+               for field in ("target_node_uuid", "mint_name"))
+
+
+def _collapsing_pairs(candidates: dict[str, dict], entries: dict[str, dict]) -> list[ReviewError]:
+    """The REPAIR rows that move both ends of one edge onto one node."""
+    by_edge: dict[str, list[str]] = {}
+    for candidate_id, entry in entries.items():
+        if entry.get("verdict") == Verdict.REPAIR.value:
+            by_edge.setdefault(candidates[candidate_id]["edge_uuid"], []).append(candidate_id)
+    return [ReviewError(candidate_id, ReviewRule.REPAIR_PAIR_SELF_LOOP)
+            for pair in by_edge.values()
+            if len(pair) == 2 and _same_new_endpoint(entries[pair[0]], entries[pair[1]])
+            for candidate_id in pair]
+
+
 def validate_adjudication(census: dict, adjudication: dict,
                           census_file_name: str) -> list[ReviewError]:
     """Every way `adjudication` fails to be a complete, applicable verdict list for `census`."""
@@ -588,19 +608,20 @@ def validate_adjudication(census: dict, adjudication: dict,
     if adjudication.get("census") != census_file_name:
         errors.append(ReviewError(None, ReviewRule.CENSUS_MISMATCH))
     candidates = {candidate["candidate_id"]: candidate for candidate in census["candidates"]}
-    seen: set[str] = set()
+    entries: dict[str, dict] = {}
     for entry in adjudication.get("adjudications", []):
         candidate_id = entry.get("candidate_id")
         if candidate_id not in candidates:
             errors.append(ReviewError(candidate_id, ReviewRule.UNKNOWN_CANDIDATE))
-        elif candidate_id in seen:
+        elif candidate_id in entries:
             errors.append(ReviewError(candidate_id, ReviewRule.DUPLICATE_ADJUDICATION))
         else:
-            seen.add(candidate_id)
+            entries[candidate_id] = entry
             errors.extend(ReviewError(candidate_id, rule)
                           for rule in _entry_rules(entry, candidates[candidate_id]))
+    errors.extend(_collapsing_pairs(candidates, entries))
     errors.extend(ReviewError(candidate_id, ReviewRule.MISSING_ADJUDICATION)
-                  for candidate_id in candidates if candidate_id not in seen)
+                  for candidate_id in candidates if candidate_id not in entries)
     return errors
 
 
@@ -748,20 +769,28 @@ class InvalidAdjudicationError(ValueError):
         self.errors = errors
 
 
-def _is_named_for(node_name: str, mint_name: str) -> bool:
-    """Whether a minted node's name is canonical for the same task number as its mint name."""
+def _is_misnamed(node_name: str, repair: dict, proposal: dict) -> bool:
+    """Whether a target's name contradicts the task number its row is about.
+
+    A minted target must be canonically named for its mint. Any other target
+    may be a non-task node, but a canonical Task-N one must carry the
+    proposal's number whenever the proposal names exactly one.
+    """
     number = canonical_task_number(node_name)
-    return number is not None and number == canonical_task_number(mint_name)
+    if "mint_name" in repair:
+        return number != canonical_task_number(repair["mint_name"])
+    proposed = proposal["target_numbers"]
+    return number is not None and len(proposed) == 1 and number != proposed[0]
 
 
-def _repair_state(reader: GraphReader, repair: dict) -> RepairState:
+def _repair_state(reader: GraphReader, repair: dict, proposal: dict) -> RepairState:
     if "new_endpoint_uuid" not in repair:
         return RepairState.UNMINTED
     target = repair["new_endpoint_uuid"]
     name = reader.node_name(target)
     if name is None:
         return RepairState.TARGET_MISSING
-    if "mint_name" in repair and not _is_named_for(name, repair["mint_name"]):
+    if _is_misnamed(name, repair, proposal):
         return RepairState.TARGET_MISNAMED
     endpoints = reader.edge_endpoints(repair["edge_uuid"])
     if endpoints is None or endpoints.is_tombstoned:
@@ -778,29 +807,57 @@ def check_repairs(reader: GraphReader, census: dict, adjudication: dict,
     errors = validate_adjudication(census, adjudication, census_file_name)
     if errors:
         raise InvalidAdjudicationError(errors)
+    proposals = {candidate["candidate_id"]: candidate["proposal"]
+                 for candidate in census["candidates"]}
     return [RepairStatus(repair["candidate_id"], repair["edge_uuid"], repair["which_end"],
-                         _repair_state(reader, repair))
+                         _repair_state(reader, repair, proposals[repair["candidate_id"]]))
             for repair in repair_list(census, adjudication)]
+
+
+class ReportMismatchError(ValueError):
+    """A --pre-apply report checks a different census than the one being checked."""
+
+
+def _gone_before(pre_apply: Path | None, census_file_name: str) -> frozenset[str]:
+    """The candidate ids a pre-apply report already found edge_gone (skipped, never applied)."""
+    if pre_apply is None:
+        return frozenset()
+    report = _load_json(pre_apply)
+    if report.get("census") != census_file_name:
+        raise ReportMismatchError(f"{pre_apply} checks census {report.get('census')!r}, "
+                                  f"not {census_file_name!r}")
+    return frozenset(row["candidate_id"] for row in report["rows"]
+                     if row["status"] == RepairState.EDGE_GONE.value)
+
+
+def _check_report(args: argparse.Namespace, checked_at: datetime, rows: list[RepairStatus],
+                  exempt: list[str]) -> dict:
+    return {
+        "census": args.census.name,
+        "checked_at": f"{checked_at.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
+        "require": args.require,
+        "pre_apply": None if args.pre_apply is None else args.pre_apply.name,
+        "rows": [{"candidate_id": row.candidate_id, "edge_uuid": row.edge_uuid,
+                  "which_end": row.which_end, "status": row.status.value} for row in rows],
+        "counts": {state.value: sum(row.status is state for row in rows) for state in RepairState},
+        "exempt": exempt,
+    }
 
 
 def run_check_repairs(args: argparse.Namespace, connect, clock: Callable[[], datetime]) -> int:
     if args.out is not None:
         _refuse_existing([args.out])
     census, adjudication = _load_json(args.census), _load_json(args.adjudication)
+    gone_before = _gone_before(args.pre_apply, args.census.name)
     rows = check_repairs(_open_reader(args, connect), census, adjudication, args.census.name)
-    report = {
-        "census": args.census.name,
-        "checked_at": f"{clock().astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
-        "require": args.require,
-        "rows": [{"candidate_id": row.candidate_id, "edge_uuid": row.edge_uuid,
-                  "which_end": row.which_end, "status": row.status.value} for row in rows],
-        "counts": {state.value: sum(row.status is state for row in rows) for state in RepairState},
-    }
+    exempt = [row.candidate_id for row in rows
+              if row.status is RepairState.EDGE_GONE and row.candidate_id in gone_before]
+    report = _check_report(args, clock(), rows, exempt)
     if args.out is not None:
         write_new_json(args.out, report)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     required = RepairState(args.require)
-    return 0 if all(row.status is required for row in rows) else 1
+    return 0 if all(row.status is required or row.candidate_id in exempt for row in rows) else 1
 
 
 # ── Command line ────────────────────────────────────────────────────────────
@@ -845,6 +902,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_artifact_options(check)
     check.add_argument("--require", choices=("pending", "applied"), required=True,
                        help="state every REPAIR row must be in for exit 0")
+    check.add_argument("--pre-apply", type=Path,
+                       help="an earlier check-repairs report of the same census; a row it found "
+                            "edge_gone (skipped as drifted, never applied) is exempt from "
+                            "--require while still edge_gone")
     check.add_argument("--out", type=Path, help="also write the report here (never overwritten)")
     return parser
 
@@ -874,8 +935,8 @@ def run_census(args: argparse.Namespace, connect, clock: Callable[[], datetime])
 
 
 _REPORTED_ERRORS = (KeyConfirmationError, GraphQueryTimeout, MissingDriverError,
-                    OutputExistsError, InvalidAdjudicationError, FileNotFoundError,
-                    json.JSONDecodeError)
+                    OutputExistsError, InvalidAdjudicationError, ReportMismatchError,
+                    FileNotFoundError, json.JSONDecodeError)
 
 
 def main(argv: list[str] | None = None, connect=connect_falkor,

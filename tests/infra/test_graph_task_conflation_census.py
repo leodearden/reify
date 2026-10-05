@@ -25,7 +25,7 @@ import re
 import sys
 import tempfile
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -320,9 +320,13 @@ class Bm25ProbeTest(unittest.TestCase):
 
     def test_serving(self):
         self.assertTrue(self.probe(547, 92).serving)
-        self.assertTrue(self.probe(0, 0).serving)
+        self.assertTrue(self.probe(3, 0).serving)
         self.assertFalse(self.probe(0, 92).serving)
         self.assertFalse(self.probe(None, 92, error="boom").serving)
+
+    def test_a_token_naming_no_node_is_never_serving(self):
+        self.assertFalse(self.probe(0, 0).serving)
+        self.assertFalse(self.probe(None, 0, error="boom").serving)
 
 
 class KeyConfirmationTest(unittest.TestCase):
@@ -897,6 +901,55 @@ class ValidateAdjudicationTest(ReviewFixture):
                                         (self.mint_id, Rule.TARGET_ON_NON_REPAIR)})
 
 
+class RepairPairTest(unittest.TestCase):
+    """An edge whose two ends are both candidates, each proposed onto the one named task."""
+
+    census_name = "reify-task-conflations-pair.json"
+
+    def setUp(self):
+        g = FakeGraph()
+        self.t10, self.t20 = g.node("Task 10"), g.node("Task 20")
+        self.t30, self.t40 = g.node("Task 30"), g.node("Task 40")
+        self.edge = g.edge(self.t10, self.t20, "Task 30 shipped the parser")
+        self.census = _build(g.reader())
+        self.adjudication = census_tool.adjudication_template(self.census, self.census_name)
+        for entry in self.adjudication["adjudications"]:
+            entry["rationale"] = "both ends are lookalikes of the named task"
+        self.ids = (f"{self.edge}@{self.t10}", f"{self.edge}@{self.t20}")
+        self.source, self.target = (next(e for e in self.adjudication["adjudications"]
+                                         if e["candidate_id"] == candidate_id)
+                                    for candidate_id in self.ids)
+
+    def rules(self):
+        errors = census_tool.validate_adjudication(self.census, self.adjudication, self.census_name)
+        return {(error.candidate_id, error.rule) for error in errors}
+
+    def collapsed(self):
+        return {(candidate_id, Rule.REPAIR_PAIR_SELF_LOOP) for candidate_id in self.ids}
+
+    def test_both_ends_onto_one_existing_node_collapse_the_edge(self):
+        self.assertEqual((self.source["target_node_uuid"], self.target["target_node_uuid"]),
+                         (self.t30, self.t30))
+        self.assertEqual(self.rules(), self.collapsed())
+
+    def test_both_ends_onto_one_mint_collapse_the_edge(self):
+        self.source.update(target_node_uuid=None, mint_name="Task 50")
+        self.target.update(target_node_uuid=None, mint_name="Task 50")
+        self.assertEqual(self.rules(), self.collapsed())
+        self.source["target_node_uuid"] = self.t40
+        self.assertEqual(self.rules(), self.collapsed())
+
+    def test_distinct_new_endpoints_are_valid(self):
+        self.target["target_node_uuid"] = self.t40
+        self.assertEqual(self.rules(), set())
+        self.target.update(target_node_uuid=None, mint_name="Task 50")
+        self.assertEqual(self.rules(), set())
+
+    def test_a_pair_with_one_non_repair_end_is_judged_per_row(self):
+        self.target.update(verdict=NOT_A_CONFLATION, target_node_uuid=None)
+        self.assertEqual(self.rules(), set())
+
+
 class RenderReviewTest(ReviewFixture):
     def test_review_sheet_carries_header_counts_and_every_row(self):
         self.entry(self.unary_id)["rationale"] = "unary | about the other endpoint\nno target"
@@ -1089,6 +1142,24 @@ class CheckRepairsTest(ReviewFixture):
             self.assertEqual(self.statuses()[self.mint_id], State.TARGET_MISNAMED, wrong)
             self.assertNotIn(("edge_endpoints", self.world.e_absent), self.reader.calls)
 
+    def test_an_existing_target_named_for_another_task_than_proposed_is_misnamed(self):
+        w = self.world
+        self.entry(self.unique_id)["target_node_uuid"] = w.t4100
+        self.entry(self.target_id)["target_node_uuid"] = w.t3017
+        statuses = self.statuses()
+        self.assertEqual((statuses[self.unique_id], statuses[self.target_id]),
+                         (State.TARGET_MISNAMED, State.TARGET_MISNAMED))
+        self.assertFalse({("edge_endpoints", w.e_unique_source),
+                          ("edge_endpoints", w.e_unique_target)} & set(self.reader.calls))
+
+    def test_an_existing_target_without_a_contradicting_task_number_is_checked_as_usual(self):
+        w = self.world
+        self.entry(self.unique_id)["target_node_uuid"] = w.harness
+        self.entry(self.unary_id).update(verdict=REPAIR, target_node_uuid=w.t3017)
+        statuses = self.statuses()
+        self.assertEqual((statuses[self.unique_id], statuses[self.unary_id]),
+                         (State.PENDING, State.PENDING))
+
     def test_an_invalid_adjudication_is_refused(self):
         self.entry(self.unary_id)["rationale"] = ""
         with self.assertRaises(ValueError) as ctx:
@@ -1116,13 +1187,14 @@ class CheckRepairsCliTest(ReviewFixture):
                           "--adjudication", str(self.adjudication_path),
                           "--require", require, *extra], self.conn)
 
+    def rewire(self, edge_uuid, **changes):
+        edges = self.world.graph.edges
+        index = next(i for i, edge in enumerate(edges) if edge.uuid == edge_uuid)
+        edges[index] = replace(edges[index], **changes)
+
     def apply_repairs(self):
-        w, edges = self.world, self.world.graph.edges
-        for index, edge in enumerate(edges):
-            if edge.uuid == w.e_unique_source:
-                edges[index] = FakeEdge(edge.uuid, w.t2919, edge.target, edge.fact)
-            if edge.uuid == w.e_unique_target:
-                edges[index] = FakeEdge(edge.uuid, edge.source, w.t2919, edge.fact)
+        self.rewire(self.world.e_unique_source, source=self.world.t2919)
+        self.rewire(self.world.e_unique_target, target=self.world.t2919)
 
     def test_pending_report_and_exit_code(self):
         code, stdout, _ = self.check("pending")
@@ -1178,6 +1250,39 @@ class CheckRepairsCliTest(ReviewFixture):
         code, _, stderr = self.check("pending")
         self.assertNotEqual(code, 0)
         self.assertIn(Rule.INVALID_VERDICT.value, stderr)
+        self.assertEqual(self.conn.calls, [])
+
+    def test_a_row_already_gone_at_pre_apply_is_exempt_from_the_applied_gate(self):
+        w, pre = self.world, self.dir / "pre.json"
+        target_id = f"{w.e_unique_target}@{w.t4100}"
+        self.rewire(w.e_unique_target, invalid_at="2026-10-04T00:00:00Z")
+        code, stdout, _ = self.check("pending", "--out", str(pre))
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout)["exempt"], [])
+        self.rewire(w.e_unique_source, source=w.t2919)
+        self.assertEqual(self.check("applied")[0], 1)
+        code, stdout, _ = self.check("applied", "--pre-apply", str(pre))
+        self.assertEqual(code, 0)
+        report = json.loads(stdout)
+        self.assertEqual((report["pre_apply"], report["exempt"]), ("pre.json", [target_id]))
+        self.assertEqual((report["counts"]["applied"], report["counts"]["edge_gone"]), (1, 1))
+
+    def test_a_row_gone_only_after_pre_apply_still_fails_the_applied_gate(self):
+        w, pre = self.world, self.dir / "pre.json"
+        self.assertEqual(self.check("pending", "--out", str(pre))[0], 0)
+        self.rewire(w.e_unique_source, source=w.t2919)
+        self.rewire(w.e_unique_target, expired_at="2026-10-04T00:00:00Z")
+        code, stdout, _ = self.check("applied", "--pre-apply", str(pre))
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout)["exempt"], [])
+
+    def test_a_pre_apply_report_of_another_census_is_refused_before_any_read(self):
+        pre = self.dir / "pre.json"
+        pre.write_text(json.dumps({"census": "other.json", "rows": []}), encoding="utf-8")
+        code, stdout, stderr = self.check("applied", "--pre-apply", str(pre))
+        self.assertNotEqual(code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("other.json", stderr)
         self.assertEqual(self.conn.calls, [])
 
 
