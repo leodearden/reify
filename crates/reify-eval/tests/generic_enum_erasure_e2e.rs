@@ -25,6 +25,9 @@
 //!      admits an `Err` override of a `param r : Result<Length, String>`.
 //!   6. cold_eval_honours_err_override_of_applied_result_param — same B12
 //!      defect on the `set_param_and_invalidate` + `eval` path (task θ #8017).
+//!   7. edit_param_override_payload_is_not_checked_against_applied_type_args_c5
+//!      — PRD C-5: the override gate is name-only, so an `Ok` carrying a mass
+//!      is accepted for `Result<Length, String>` (task θ #8017).
 
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::Value;
@@ -362,4 +365,41 @@ fn cold_eval_honours_err_override_of_applied_result_param() {
     let result = engine.eval(&compiled);
 
     assert_err_override_took_effect(&result);
+}
+
+// ── test 7: the boundary of what test 5 admits ───────────────────────────────
+
+/// PRD generic-enum-type-arg-retention C-5: type args are compile-time only, so
+/// the override gate compares the enum NAME and never the payload. An `Ok`
+/// carrying a mass is therefore ACCEPTED for `Result<Length, String>`, and
+/// `Demo.r` holds it unchanged. This pins where the accepted inputs stop: a
+/// runtime payload check would reject here, and has to flip this test to do so.
+#[test]
+fn edit_param_override_payload_is_not_checked_against_applied_type_args_c5() {
+    let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
+    assert_r_cell_is_applied_result(&compiled);
+
+    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    assert_demo_bore_is(&engine.eval(&compiled), 0.005);
+
+    let ok_carrying_mass = Value::Enum {
+        type_name: "Result".into(),
+        variant: "Ok".into(),
+        payload: vec![(
+            "value".into(),
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::MASS,
+            },
+        )],
+    };
+    let edited = engine
+        .edit_param(ValueCellId::new("Demo", "r"), ok_carrying_mass.clone())
+        .unwrap_or_else(|e| panic!("C-5: override payload was checked against the type args: {e}"));
+
+    assert_eq!(
+        demo_value(&edited, "r"),
+        &ok_carrying_mass,
+        "Demo.r must hold the overriding value unchanged"
+    );
 }
