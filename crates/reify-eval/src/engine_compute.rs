@@ -460,9 +460,10 @@ impl crate::Engine {
                     // Tasks 7245 / 7345: replay the diagnostics and the
                     // structured detail the original solve emitted, through
                     // the SAME tuple slots the fresh (trampoline) path uses.
-                    // Every consumer already `extend`s from both, so a warm
-                    // serve needs no consumer change to say what the cold
-                    // serve said.
+                    // The eval-path consumers already `extend` from both, so
+                    // a warm serve there says what the cold serve said with
+                    // no consumer change. The engine_build hydration/cascade
+                    // sites drop the structured-detail slot on BOTH paths.
                     //
                     // #5062 / INV-EVAL-3 (each diagnostic has exactly one owner
                     // per serve — replayed XOR freshly-pushed, never both)

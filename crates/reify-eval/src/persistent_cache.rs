@@ -3523,10 +3523,6 @@ version = "9.9.9"
         };
 
         for stale in 2..ENTRY_FORMAT_VERSION {
-            assert_ne!(
-                stale, ENTRY_FORMAT_VERSION,
-                "this loop only models STALE stamps"
-            );
             let inp = format!("00112233445566770011223344556{stale:03x}");
             write_with_stamp(stale, &inp);
             let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, &inp)
