@@ -1932,8 +1932,6 @@ pub structure Envelope {
 //    (synthetic box, meshed internally) — the gantry tube is therefore an
 //    EQUIVALENT-EI box (same E, same I ⇒ same bending k; density retuned so
 //    modal masses match).
-//  - Passing the SAME cell to two dims args panics compute_cache_key
-//    (duplicate ValueCellId) — hence the `* 1.0` clone cells.
 //  - result_for/envelope_* multi-case accessors have no compile-time
 //    signature (eval-dispatch only), so per-case algebra reads come from
 //    separate typed solve_elastic_static calls; solve_load_cases exists in
