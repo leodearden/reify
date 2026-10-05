@@ -97,5 +97,7 @@ mod owner;
 mod survey_site;
 #[path = "harness_ctor_conformance_survey/sweep.rs"]
 mod sweep;
+#[path = "harness_ctor_conformance_survey/disposition.rs"]
+mod disposition;
 #[path = "harness_ctor_conformance_survey/survey.rs"]
 mod survey;
