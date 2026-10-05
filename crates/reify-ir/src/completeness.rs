@@ -23,14 +23,8 @@
 //! variant already exists to stop "found none" rendering as "none exist". This
 //! module lifts that same doctrine to the continuous side and to the shared
 //! `reify-ir` seam so both sides speak one vocabulary (PRD §0.3).
-//!
-//! # Status at this leaf (α, #6706)
-//!
-//! Carrier types only. No producer computes a real verdict yet: every existing
-//! producer reports [`Completeness::not_attempted`], which is behaviour-preserving
-//! (boundary test BT13). The enumerator that actually establishes `Exhaustive` /
-//! `Refuted` arrives at later leaves of the same PRD.
 
+use crate::ranked::RankedCandidate;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 
 /// How much of the solution set the producer actually established.
@@ -199,8 +193,7 @@ impl Completeness {
     /// would make a genuinely unique solution look non-unique.
     ///
     /// Deduplication arrives with the box-based basin identity at ζ (#6711 → #6902).
-    /// That
-    /// is precisely why no `derived_unique` is offered on
+    /// That is precisely why no `derived_unique` is offered on
     /// [`crate::ranked::RankedSolveResult`] itself: there is no honest count to
     /// pass it there yet.
     pub const fn derived_unique(&self, solution_count: usize) -> bool {
@@ -220,7 +213,7 @@ impl Completeness {
     /// duality gap) may still claim it, but it must then also justify `Exhaustive`
     /// rather than treating the certificate as a substitute for the enumeration.
     ///
-    /// C2 is a predicate, not runtime-enforced at α, and one in-tree producer
+    /// C2 is a predicate, not runtime-enforced, and one in-tree producer
     /// currently reports `ProvenOptimal` beside [`Completeness::not_attempted`]:
     /// `CpSatSolver`, reachable through `SolverRegistry::production()`'s
     /// CrossDomain fallback. That pair is pinned by
@@ -272,10 +265,6 @@ impl Completeness {
     /// render like a [`Completeness::Partial`] one. One is a proof about the model,
     /// the other is a report about the search, and collapsing them is exactly the
     /// wrong this axis exists to correct.
-    ///
-    /// Returns `String` rather than the `&'static str` that
-    /// [`crate::ranked::BestFoundReason::describe`] returns — see
-    /// [`PartialReason::describe`] for why that divergence is deliberate.
     pub fn describe(&self) -> String {
         match self {
             Completeness::Exhaustive => {
@@ -295,14 +284,8 @@ impl Completeness {
 impl PartialReason {
     /// Human-readable rendering of why the set was not established.
     ///
-    /// # Why `String`, not `&'static str`
-    ///
-    /// [`crate::ranked::BestFoundReason::describe`] returns `&'static str`, and this
-    /// method deliberately diverges rather than drifting: three reasons carry
-    /// payloads (`dims`, `param`, `constraint`) that MUST be interpolated for the
-    /// decline to be attributable (INV-SF-3). A `&'static str` here would render two
-    /// different declines as one indistinguishable string, which is the silent-skip
-    /// shape that invariant forbids.
+    /// The payload-carrying reasons interpolate their payload, so two different
+    /// declines never render as one string (INV-SF-3).
     pub fn describe(&self) -> String {
         match self {
             PartialReason::BoxBudgetExhausted => {
@@ -340,45 +323,77 @@ impl PartialReason {
 /// only route to a *total* is [`Self::proven_count`], which returns `None`
 /// precisely when the total was not proven.
 ///
+/// The fields are private so that each verdict is attached only through the
+/// constructor stating its well-formedness rule: [`Self::exhaustive`],
+/// [`Self::partial`] or [`Self::refuted`].
+///
 /// Not `PartialEq`, because [`crate::ranked::RankedCandidate`] is not (it holds
-/// `f64` scores); compare the [`Self::completeness`] field directly when a test
-/// needs verdict equality.
+/// `f64` scores); compare [`Self::completeness`] directly when a test needs
+/// verdict equality.
 #[derive(Debug, Clone)]
 pub struct SolutionSet {
-    /// The solutions the producer actually found.
-    ///
-    /// This is "what I found", not "what exists" — reading a total off this
-    /// length is the C4 violation. Use [`Self::proven_count`] for a total.
-    ///
-    /// # PRECONDITION for an `Exhaustive` verdict: already basin-deduplicated
-    ///
-    /// The one case where "what I found" and "what exists" coincide is
-    /// [`Completeness::Exhaustive`], and both [`Self::proven_count`] and
-    /// [`Self::unique`] then read this length AS the solution count. Attaching
-    /// `Exhaustive` therefore requires that this vector has ALREADY been
-    /// deduplicated by basin identity (invariant C5 — the containing verified
-    /// box, D3): a K-start multistart converges K times into one basin, so an
-    /// undeduplicated list would turn ONE solution into a proven claim of K.
-    ///
-    /// Deduplication arrives with the box-based basin identity at ζ (#6711 →
-    /// #6902). Until then no in-tree producer may attach `Exhaustive`: a producer
-    /// holding an undeduplicated list must report a `Partial` verdict, for which
-    /// both methods correctly refuse to derive anything from this length. That is
-    /// the same rule [`Completeness::derived_unique`] states for its
-    /// `solution_count` argument — this field is simply where it binds.
-    pub solutions: Vec<crate::ranked::RankedCandidate>,
-    /// How much of the solution set the producer established.
-    ///
-    /// A well-formed [`Completeness::Refuted`] set carries an **empty**
-    /// `solutions`: a proof that no solution exists in the searched domain is
-    /// contradicted by holding one. [`Self::proven_count`] deliberately reports
-    /// `Some(0)` for `Refuted` from the *verdict*, so a producer that violates
-    /// this is visible in the mismatch against `solutions.len()` rather than
-    /// silently masked.
-    pub completeness: Completeness,
+    solutions: Vec<RankedCandidate>,
+    completeness: Completeness,
 }
 
 impl SolutionSet {
+    /// Every solution in the searched domain, one candidate per basin.
+    ///
+    /// # PRECONDITION: `deduplicated` is already basin-deduplicated
+    ///
+    /// `Exhaustive` is the one verdict under which "what was found" is "what
+    /// exists", so [`Self::proven_count`] and [`Self::unique`] read this length AS
+    /// the solution count. A K-start multistart converges K times into one basin,
+    /// so an undeduplicated list would turn ONE solution into a proven claim of K.
+    ///
+    /// Basin identity is the containing verified box (C5, D3) and arrives at ζ
+    /// (#6711 → #6902). Until then a producer holding an undeduplicated list must
+    /// build its set with [`Self::partial`], for which neither method derives
+    /// anything from the length. This is the same rule
+    /// [`Completeness::derived_unique`] states for its `solution_count` argument.
+    pub fn exhaustive(deduplicated: Vec<RankedCandidate>) -> Self {
+        SolutionSet {
+            solutions: deduplicated,
+            completeness: Completeness::Exhaustive,
+        }
+    }
+
+    /// The solutions a search found, and why it did not establish the rest.
+    ///
+    /// `found` is "what I found", not "what exists": no total is ever read off
+    /// it (C4).
+    pub fn partial(found: Vec<RankedCandidate>, reason: PartialReason) -> Self {
+        SolutionSet {
+            solutions: found,
+            completeness: Completeness::Partial { reason },
+        }
+    }
+
+    /// A proof that no solution exists in the searched domain, naming the
+    /// constraint whose narrowing emptied it.
+    ///
+    /// Takes no solutions: a refutation holding a candidate contradicts itself,
+    /// so the empty set is the only shape this constructor can build.
+    pub fn refuted(narrowing: ConstraintNodeId) -> Self {
+        SolutionSet {
+            solutions: Vec::new(),
+            completeness: Completeness::Refuted { narrowing },
+        }
+    }
+
+    /// The solutions the producer found.
+    ///
+    /// This is "what I found", not "what exists" — reading a total off this
+    /// length is the C4 violation. Use [`Self::proven_count`] for a total.
+    pub fn solutions(&self) -> &[RankedCandidate] {
+        &self.solutions
+    }
+
+    /// How much of the solution set the producer established.
+    pub fn completeness(&self) -> &Completeness {
+        &self.completeness
+    }
+
     /// **Invariant C1** — whether this set is a uniqueness claim.
     ///
     /// Delegates to [`Completeness::derived_unique`] with this set's own length.
@@ -392,9 +407,8 @@ impl SolutionSet {
     /// **exist**, or `None` when that was never established.
     ///
     /// - [`Completeness::Exhaustive`] → `Some(solutions.len())`: the search covered
-    ///   the domain, so what was found is what exists. This arm is the reason
-    ///   [`Self::solutions`] must already be basin-deduplicated (C5) before an
-    ///   `Exhaustive` verdict may be attached — see that field's precondition.
+    ///   the domain, so what was found is what exists. This arm is why
+    ///   [`Self::exhaustive`] requires a basin-deduplicated list (C5).
     /// - [`Completeness::Refuted`] → `Some(0)`: proven empty.
     /// - [`Completeness::Partial`] → `None`: more may exist and how many is unknown.
     ///
@@ -404,18 +418,17 @@ impl SolutionSet {
     /// not-established case, so no user-facing string can imply a total the
     /// producer never proved.
     ///
-    /// `solutions.len()` remains available as "how many were **found**", which C4
-    /// explicitly permits — a `Partial` verdict may report what the search
-    /// produced. The two are different questions and this method answers only the
-    /// second.
+    /// [`Self::solutions`]`.len()` remains available as "how many were **found**",
+    /// which C4 explicitly permits — a `Partial` verdict may report what the
+    /// search produced. The two are different questions and this method answers
+    /// only the second.
     ///
-    /// Note the `Refuted` arm reads the verdict, not the vector: see the
-    /// [`Self::completeness`] field docs for why a well-formed `Refuted` carries an
-    /// empty `solutions`. A malformed one — `Refuted` holding candidates — trips a
-    /// `debug_assert!` here rather than being silently masked, so the
-    /// well-formedness rule is loud in every test and debug build. The release
-    /// answer stays `Some(0)` from the verdict: quietly returning `solutions.len()`
-    /// instead would let a producer's bug re-render a refutation as a count.
+    /// The `Refuted` arm reads the verdict, not the vector. [`Self::refuted`]
+    /// cannot build a `Refuted` set holding candidates; the `debug_assert!` below
+    /// is the use-time check that keeps that rule loud should another
+    /// construction path ever break it. The release answer stays `Some(0)` from
+    /// the verdict: returning `solutions.len()` instead would let such a bug
+    /// re-render a refutation as a count.
     pub fn proven_count(&self) -> Option<usize> {
         match self.completeness {
             Completeness::Exhaustive => Some(self.solutions.len()),

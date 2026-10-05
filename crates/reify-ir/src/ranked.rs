@@ -97,8 +97,7 @@ pub enum OptimalityStatus {
     /// about other basins. A stationary point plus an unenumerated domain is
     /// exactly the false-completeness claim the completeness axis exists to
     /// prevent, so a stationarity certificate justifies at most
-    /// [`OptimalityStatus::BestFound`], never this variant. Promoting on
-    /// stationarity alone is the specific wrong refactor this note pre-empts.
+    /// [`OptimalityStatus::BestFound`], never this variant.
     ProvenOptimal,
     /// The best result found within the given budget, without a proof of optimality.
     ///
@@ -148,17 +147,16 @@ pub struct RankedCandidate {
 /// verdict that says *proven* empty and names the narrowing constraint is
 /// [`crate::Completeness::Refuted`].
 ///
-/// # OPEN SEAM — no arm of this enum can carry `Refuted` yet (α #6706)
+/// # OPEN SEAM — no arm of this enum can carry `Refuted` yet
 ///
 /// A well-formed [`crate::Completeness::Refuted`] set carries an **empty**
-/// `solutions` (see [`crate::SolutionSet::completeness`]), while I2 requires
+/// `solutions` (see [`crate::SolutionSet::refuted`]), while I2 requires
 /// `Ranked.candidates` to be NON-empty — enforced by always-on `assert!` at both
 /// consumption seams (reify-eval's `engine_eval.rs`, reify-constraints'
 /// `registry.rs`). So `Refuted` is representable in [`crate::SolutionSet`] but in
 /// no arm of this enum today: `Ranked { candidates: [], .. }` would violate I2,
 /// and `Infeasible`/`NoProgress` have no field to put it in.
 ///
-/// That gap is deliberate at α, which ships the carrier and wires no producer.
 /// The leaf that first PRODUCES a refutation — ε #6710 → #6900, refutation by
 /// subdivision — owns the choice between the two resolutions, and must make it
 /// explicitly rather than smuggling a dummy candidate past I2 (which would be
@@ -172,7 +170,7 @@ pub struct RankedCandidate {
 ///
 /// ε's charter emits the refutation BEFORE any solver iteration, which the second
 /// option fits without touching I2 — but the decision is ε's, made with its
-/// fixture in hand, not α's to pre-empt.
+/// fixture in hand.
 #[derive(Debug, Clone)]
 pub enum RankedSolveResult {
     /// One or more ranked candidates were found.
@@ -184,7 +182,7 @@ pub enum RankedSolveResult {
         /// Quality of the solution set.
         optimality: OptimalityStatus,
         /// How much of the solution set was actually established
-        /// (solution-set-completeness PRD §3.1, task α #6706).
+        /// (solution-set-completeness PRD §3.1).
         ///
         /// Additive and **orthogonal** to `optimality` (D6): `optimality` says how
         /// good the best candidate is, `completeness` says how many solutions there
@@ -196,8 +194,7 @@ pub enum RankedSolveResult {
         /// [`crate::Completeness::not_attempted`], which is behaviour-preserving
         /// (BT13). Note that `candidates.len()` is **not** a solution count — the
         /// list is not deduplicated until ζ #6711 → #6902 — so `completeness` must
-        /// never be
-        /// combined with it to derive `unique`; see
+        /// never be combined with it to derive `unique`; see
         /// [`crate::Completeness::derived_unique`].
         completeness: crate::completeness::Completeness,
     },

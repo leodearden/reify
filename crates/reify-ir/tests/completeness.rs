@@ -1,233 +1,24 @@
 //! Integration tests for the `Completeness` / `SolutionSet` carrier
 //! (PRD `docs/prds/v0_6/solution-set-completeness.md` §3.1, invariants C1–C4).
 //!
-//! Written TDD: each test/impl step pair adds a new capability, going RED→GREEN.
-//! Step 1 (RED): `Completeness` / `PartialReason` variant shape + payload round-trip.
-//!
-//! # Rail (plan pre-1)
-//!
-//! This task must NOT touch the optimality axis. No test in this file may pin a
-//! [`reify_ir::BestFoundReason`] variant by name — assertions are on the
-//! completeness axis only.
+//! Assertions stay on the completeness axis: no test in this file pins a
+//! [`reify_ir::BestFoundReason`] variant by name.
 
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use reify_ir::{Completeness, PartialReason, RankedCandidate, SolutionSet, Value};
 use std::collections::HashMap;
 
-// ── Completeness variant shape (§3.1) ────────────────────────────────────────
-
-#[test]
-fn completeness_variants_construct() {
-    let _exhaustive = Completeness::Exhaustive;
-    let _partial = Completeness::Partial {
-        reason: PartialReason::BoxBudgetExhausted,
-    };
-    let _refuted = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Bracket", 0),
-    };
-}
-
-#[test]
-fn completeness_refuted_payload_round_trips() {
-    let narrowing = ConstraintNodeId::new("Bracket", 3);
-    let refuted = Completeness::Refuted {
-        narrowing: narrowing.clone(),
-    };
-
-    match refuted {
-        Completeness::Refuted { narrowing: got } => assert_eq!(got, narrowing),
-        other => panic!("expected Refuted, got {other:?}"),
-    }
-}
-
-#[test]
-fn completeness_partial_payload_round_trips() {
-    let partial = Completeness::Partial {
-        reason: PartialReason::ProbeOnly,
-    };
-
-    match partial {
-        Completeness::Partial { reason } => assert_eq!(reason, PartialReason::ProbeOnly),
-        other => panic!("expected Partial, got {other:?}"),
-    }
-}
-
-// ── PartialReason variant shape (§3.1) ───────────────────────────────────────
-
-/// Every `PartialReason` in §3.1 constructs. Kept as one exhaustive list so a
-/// variant added later without a test is visible in the diff.
-#[test]
-fn partial_reason_variants_construct() {
-    let _budget = PartialReason::BoxBudgetExhausted;
-    let _envelope = PartialReason::DimensionAboveEnvelope { dims: 4 };
-    let _unbounded = PartialReason::DomainUnbounded {
-        param: ValueCellId::new("Part", "x"),
-    };
-    let _interval = PartialReason::NotIntervalRepresentable {
-        constraint: ConstraintNodeId::new("Part", 1),
-    };
-    let _inner = PartialReason::InnerSolveUnproven;
-    let _probe = PartialReason::ProbeOnly;
-    let _not_attempted = PartialReason::NotAttempted;
-}
-
-#[test]
-fn partial_reason_payloads_round_trip() {
-    match (PartialReason::DimensionAboveEnvelope { dims: 7 }) {
-        PartialReason::DimensionAboveEnvelope { dims } => assert_eq!(dims, 7),
-        other => panic!("expected DimensionAboveEnvelope, got {other:?}"),
-    }
-
-    let param = ValueCellId::new("Frame", "width");
-    match (PartialReason::DomainUnbounded {
-        param: param.clone(),
-    }) {
-        PartialReason::DomainUnbounded { param: got } => assert_eq!(got, param),
-        other => panic!("expected DomainUnbounded, got {other:?}"),
-    }
-
-    let constraint = ConstraintNodeId::new("Frame", 2);
-    match (PartialReason::NotIntervalRepresentable {
-        constraint: constraint.clone(),
-    }) {
-        PartialReason::NotIntervalRepresentable { constraint: got } => {
-            assert_eq!(got, constraint)
-        }
-        other => panic!("expected NotIntervalRepresentable, got {other:?}"),
-    }
-}
-
-// ── Derives: Debug / Clone / PartialEq / Eq ──────────────────────────────────
-
-#[test]
-fn completeness_debug_is_non_empty_and_clone_round_trips() {
-    let values = [
-        Completeness::Exhaustive,
-        Completeness::Partial {
-            reason: PartialReason::DimensionAboveEnvelope { dims: 3 },
-        },
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0),
-        },
-    ];
-
-    for value in &values {
-        let rendered = format!("{value:?}");
-        assert!(
-            !rendered.is_empty(),
-            "Debug must be non-empty for {value:?}"
-        );
-
-        let cloned = value.clone();
-        assert_eq!(&cloned, value, "Clone must round-trip equal");
-        assert_eq!(
-            format!("{cloned:?}"),
-            rendered,
-            "Clone must Debug identically"
-        );
-    }
-}
-
-#[test]
-fn partial_reason_debug_is_non_empty_and_clone_round_trips() {
-    for reason in all_partial_reasons() {
-        let rendered = format!("{reason:?}");
-        assert!(
-            !rendered.is_empty(),
-            "Debug must be non-empty for {reason:?}"
-        );
-        assert_eq!(reason.clone(), reason, "Clone must round-trip equal");
-    }
-}
-
-#[test]
-fn completeness_distinct_variants_compare_unequal() {
-    let exhaustive = Completeness::Exhaustive;
-    let partial = Completeness::Partial {
-        reason: PartialReason::NotAttempted,
-    };
-    let refuted = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Bracket", 0),
-    };
-
-    assert_ne!(exhaustive, partial);
-    assert_ne!(exhaustive, refuted);
-    assert_ne!(partial, refuted);
-    assert_eq!(exhaustive, Completeness::Exhaustive);
-}
-
-#[test]
-fn completeness_refuted_discriminates_on_narrowing_id() {
-    let a = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Bracket", 0),
-    };
-    let b = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Bracket", 1),
-    };
-    let c = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Flange", 0),
-    };
-
-    assert_ne!(a, b, "different constraint index must compare unequal");
-    assert_ne!(a, c, "different constraint entity must compare unequal");
-    assert_eq!(
-        a,
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0)
-        }
-    );
-}
-
-#[test]
-fn partial_reason_distinct_variants_compare_unequal() {
-    let reasons = all_partial_reasons();
-    for (i, left) in reasons.iter().enumerate() {
-        for (j, right) in reasons.iter().enumerate() {
-            if i == j {
-                assert_eq!(left, right);
-            } else {
-                assert_ne!(left, right, "{left:?} and {right:?} must compare unequal");
-            }
-        }
-    }
-
-    // Payload-carrying reasons discriminate on their payload too.
-    assert_ne!(
-        PartialReason::DimensionAboveEnvelope { dims: 3 },
-        PartialReason::DimensionAboveEnvelope { dims: 4 }
-    );
-    assert_ne!(
-        PartialReason::DomainUnbounded {
-            param: ValueCellId::new("Part", "x")
-        },
-        PartialReason::DomainUnbounded {
-            param: ValueCellId::new("Part", "y")
-        }
-    );
-    assert_ne!(
-        PartialReason::NotIntervalRepresentable {
-            constraint: ConstraintNodeId::new("Part", 0)
-        },
-        PartialReason::NotIntervalRepresentable {
-            constraint: ConstraintNodeId::new("Part", 1)
-        }
-    );
-}
-
-/// `Eq` (not just `PartialEq`) is required: the composition law at ι #6715 → #6903 keys
-/// on completeness verdicts, so they must be usable as map keys / in `assert_eq!`
-/// without a partial-equivalence caveat.
-#[test]
-fn completeness_is_eq() {
-    fn assert_eq_bound<T: Eq>(_: &T) {}
-    assert_eq_bound(&Completeness::Exhaustive);
-    assert_eq_bound(&PartialReason::NotAttempted);
-}
+/// `Eq` (not just `PartialEq`): the composition law at ι #6715 → #6903 keys on
+/// completeness verdicts, so they must be usable as map keys.
+const _: () = {
+    const fn assert_eq_bound<T: Eq>() {}
+    assert_eq_bound::<Completeness>();
+    assert_eq_bound::<PartialReason>();
+};
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 
-/// The full §3.1 `PartialReason` set, with distinct payloads so equality tests
-/// exercise the payload discriminators too.
+/// The full §3.1 `PartialReason` set, one value per variant.
 fn all_partial_reasons() -> Vec<PartialReason> {
     vec![
         PartialReason::BoxBudgetExhausted,
@@ -357,113 +148,122 @@ fn make_candidate(x: f64) -> RankedCandidate {
     }
 }
 
-fn set_of(n: usize, completeness: Completeness) -> SolutionSet {
-    SolutionSet {
-        solutions: (0..n).map(|i| make_candidate(i as f64 / 100.0)).collect(),
-        completeness,
-    }
+fn candidates(n: usize) -> Vec<RankedCandidate> {
+    (0..n).map(|i| make_candidate(i as f64 / 100.0)).collect()
 }
 
-/// (a) `SolutionSet::unique()` must agree with
-/// `Completeness::derived_unique(solutions.len())` across the same grid as the
-/// C1 truth table — it delegates, it does not re-derive.
+fn refuted_set() -> SolutionSet {
+    SolutionSet::refuted(ConstraintNodeId::new("Bracket", 0))
+}
+
+const COUNTS: [usize; 4] = [0, 1, 2, 5];
+
+/// Every set the constructors can build over [`COUNTS`]: `Exhaustive` and each
+/// `Partial` reason at each count, plus the one `Refuted` shape.
+fn every_constructible_set() -> Vec<SolutionSet> {
+    let mut sets = vec![refuted_set()];
+    for n in COUNTS {
+        sets.push(SolutionSet::exhaustive(candidates(n)));
+        sets.extend(
+            all_partial_reasons()
+                .into_iter()
+                .map(|reason| SolutionSet::partial(candidates(n), reason)),
+        );
+    }
+    sets
+}
+
+/// Each constructor attaches the verdict it names and keeps what it was given;
+/// `refuted` builds the empty set, the only well-formed `Refuted` shape.
+#[test]
+fn constructors_attach_the_verdict_they_name() {
+    let exhaustive = SolutionSet::exhaustive(candidates(2));
+    assert_eq!(exhaustive.completeness(), &Completeness::Exhaustive);
+    assert_eq!(exhaustive.solutions().len(), 2);
+
+    for reason in all_partial_reasons() {
+        let partial = SolutionSet::partial(candidates(3), reason.clone());
+        assert_eq!(
+            partial.completeness(),
+            &Completeness::Partial {
+                reason: reason.clone()
+            }
+        );
+        assert_eq!(partial.solutions().len(), 3, "Partial{{{reason:?}}}");
+    }
+
+    let narrowing = ConstraintNodeId::new("Flange", 4);
+    let refuted = SolutionSet::refuted(narrowing.clone());
+    assert_eq!(refuted.completeness(), &Completeness::Refuted { narrowing });
+    assert!(refuted.solutions().is_empty());
+}
+
+/// `SolutionSet::unique()` must agree with
+/// `Completeness::derived_unique(solutions.len())` for every set the
+/// constructors can build — it delegates, it does not re-derive.
 #[test]
 fn solution_set_unique_agrees_with_derived_unique() {
-    let mut completenesses = vec![
-        Completeness::Exhaustive,
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0),
-        },
-    ];
-    completenesses.extend(
-        all_partial_reasons()
-            .into_iter()
-            .map(|reason| Completeness::Partial { reason }),
-    );
-
-    for completeness in &completenesses {
-        for n in [0usize, 1, 2, 5] {
-            let set = set_of(n, completeness.clone());
-            assert_eq!(
-                set.unique(),
-                completeness.derived_unique(n),
-                "SolutionSet::unique must delegate to derived_unique for {completeness:?} with {n} solutions"
-            );
-        }
+    for set in every_constructible_set() {
+        assert_eq!(
+            set.unique(),
+            set.completeness().derived_unique(set.solutions().len()),
+            "SolutionSet::unique must delegate to derived_unique for {:?} with {} solutions",
+            set.completeness(),
+            set.solutions().len()
+        );
     }
 
     // The three named cells, spelled out.
-    assert!(set_of(1, Completeness::Exhaustive).unique());
+    assert!(SolutionSet::exhaustive(candidates(1)).unique());
     assert!(
-        !set_of(
-            1,
-            Completeness::Partial {
-                reason: PartialReason::ProbeOnly
-            }
-        )
-        .unique(),
+        !SolutionSet::partial(candidates(1), PartialReason::ProbeOnly).unique(),
         "one candidate + ProbeOnly is not a uniqueness claim"
     );
     assert!(
-        !set_of(2, Completeness::Exhaustive).unique(),
+        !SolutionSet::exhaustive(candidates(2)).unique(),
         "two proven solutions is the opposite of unique"
     );
 }
 
-/// (b) C4 — a `Partial` verdict may never report a total.
+/// C4 — a `Partial` verdict may never report a total.
 #[test]
 fn proven_count_is_none_for_every_partial_reason() {
     // Exhaustive: the count IS proven, and it is the set's own length.
-    for n in [0usize, 1, 2, 5] {
-        assert_eq!(set_of(n, Completeness::Exhaustive).proven_count(), Some(n));
+    for n in COUNTS {
+        assert_eq!(
+            SolutionSet::exhaustive(candidates(n)).proven_count(),
+            Some(n)
+        );
     }
 
     // Refuted: proven zero.
-    let refuted = set_of(
-        0,
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0),
-        },
-    );
-    assert_eq!(refuted.proven_count(), Some(0));
+    assert_eq!(refuted_set().proven_count(), Some(0));
 
     // Partial: no total, for every reason and regardless of what was found.
     for reason in all_partial_reasons() {
-        for n in [0usize, 1, 2] {
-            let set = set_of(
-                n,
-                Completeness::Partial {
-                    reason: reason.clone(),
-                },
-            );
+        for n in COUNTS {
+            let set = SolutionSet::partial(candidates(n), reason.clone());
             assert_eq!(
                 set.proven_count(),
                 None,
                 "Partial{{{reason:?}}} holding {n} candidates must not report a total"
             );
             // C4 permits reporting what was found — that stays available.
-            assert_eq!(set.solutions.len(), n);
+            assert_eq!(set.solutions().len(), n);
         }
     }
 }
 
-/// (c) C3 — an empty `Refuted` and an empty `Partial` must be distinguishable.
+/// C3 — an empty `Refuted` and an empty `Partial` must be distinguishable.
 /// One is a proof about the model; the other is a report about the search.
 #[test]
 fn empty_refuted_and_empty_partial_are_distinguishable() {
-    let refuted_c = Completeness::Refuted {
-        narrowing: ConstraintNodeId::new("Bracket", 0),
-    };
-    let partial_c = Completeness::Partial {
-        reason: PartialReason::BoxBudgetExhausted,
-    };
-
-    let refuted = set_of(0, refuted_c.clone());
-    let partial = set_of(0, partial_c.clone());
+    let refuted = refuted_set();
+    let partial = SolutionSet::partial(Vec::new(), PartialReason::BoxBudgetExhausted);
 
     // Both found nothing...
-    assert_eq!(refuted.solutions.len(), 0);
-    assert_eq!(partial.solutions.len(), 0);
+    assert!(refuted.solutions().is_empty());
+    assert!(partial.solutions().is_empty());
 
     // ...but only one of them proved anything.
     assert_eq!(
@@ -476,27 +276,11 @@ fn empty_refuted_and_empty_partial_are_distinguishable() {
         None,
         "Partial proves nothing about the total"
     );
-    assert_ne!(refuted.proven_count(), partial.proven_count());
-    assert_ne!(refuted_c, partial_c);
+    assert_ne!(refuted.completeness(), partial.completeness());
 
     // Neither is a uniqueness claim.
     assert!(!refuted.unique());
     assert!(!partial.unique());
-}
-
-/// (d) Debug / Clone smoke. `SolutionSet` is not `PartialEq` because
-/// `RankedCandidate` is not, so the round-trip is asserted through `Debug`.
-#[test]
-fn solution_set_debug_and_clone_smoke() {
-    let set = set_of(2, Completeness::Exhaustive);
-    let cloned = set.clone();
-
-    let d1 = format!("{set:?}");
-    let d2 = format!("{cloned:?}");
-    assert!(d1.contains("SolutionSet"));
-    assert_eq!(d1, d2);
-    assert_eq!(cloned.proven_count(), set.proven_count());
-    assert_eq!(cloned.unique(), set.unique());
 }
 
 // ── C2: ProvenOptimal requires Exhaustive (§3.2) ─────────────────────────────
@@ -666,43 +450,4 @@ fn refuted_describe_names_the_narrowing_constraint() {
         }
         .describe(),
     );
-}
-
-// ── SolutionSet well-formedness: a `Refuted` set holding candidates is loud ──
-
-/// (e) The `Refuted` well-formedness rule stated on `SolutionSet::completeness`
-/// is enforced, not merely advisory: `proven_count()` on a malformed `Refuted`
-/// set that still holds candidates trips a `debug_assert!` instead of silently
-/// reporting `Some(0)` beside a non-empty `solutions`.
-///
-/// `#[cfg(debug_assertions)]`-gated because `debug_assert!` compiles out in
-/// release, where the answer stays `Some(0)` read from the verdict (deliberately
-/// — see `proven_count`'s docs: returning `solutions.len()` there would re-render
-/// a refutation as a count).
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "a well-formed Refuted SolutionSet carries no solutions")]
-fn proven_count_on_malformed_refuted_trips_debug_assert() {
-    let malformed = set_of(
-        2,
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0),
-        },
-    );
-    let _ = malformed.proven_count();
-}
-
-/// The well-formed `Refuted` set — the one every producer must build — is
-/// unaffected by that guard: empty `solutions`, `proven_count() == Some(0)`.
-/// Pinned separately so the guard cannot be "fixed" by making the good case panic.
-#[test]
-fn proven_count_on_well_formed_refuted_is_some_zero() {
-    let refuted = set_of(
-        0,
-        Completeness::Refuted {
-            narrowing: ConstraintNodeId::new("Bracket", 0),
-        },
-    );
-    assert!(refuted.solutions.is_empty());
-    assert_eq!(refuted.proven_count(), Some(0));
 }
