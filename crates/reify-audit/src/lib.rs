@@ -59,6 +59,9 @@ pub(crate) mod task_rows;
 /// Crate-internal: shared text-scanning primitives for the structural
 /// detectors. Not part of the detector API surface — the detectors are.
 pub(crate) mod scan_util;
+/// Crate-internal: the comment-region lexer PDIAG and PDOCCOVER share. Not
+/// part of the detector API surface — the detectors are.
+pub(crate) mod comment_lex;
 /// Not a detector: public only so the live-serve test harnesses decode MCP
 /// response bodies with the same function both clients use.
 pub mod mcp_wire;

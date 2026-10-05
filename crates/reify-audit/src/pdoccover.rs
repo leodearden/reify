@@ -1951,6 +1951,7 @@ pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInput
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comment_lex::BlockDepth;
 
     /// Names of the registries `extract_registries` found, in discovery order.
     fn const_names(regs: &[Registry]) -> Vec<&str> {
@@ -2092,8 +2093,8 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     /// The early-out must also be an IDENTITY, so the same-output assertions
     /// below matter as much as the borrow ones.
     #[test]
-    fn strip_block_comments_borrows_when_there_is_nothing_to_strip() {
-        let mut depth = 0usize;
+    fn strip_comments_borrows_when_there_is_nothing_to_strip() {
+        let mut depth = BlockDepth::default();
         for line in [
             "    \"is_watertight\",",
             "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[",
@@ -2101,32 +2102,53 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
             "    let msg = \"unresolved unit: {} — see §3\";",
             "    let escaped = \"a\\\"b\";",
         ] {
-            let got = strip_block_comments(line, &mut depth);
+            let got = strip_comments(line, &mut depth);
             assert!(
                 matches!(got, Cow::Borrowed(_)),
                 "{line:?} has nothing to strip and must not allocate"
             );
             assert_eq!(got, line, "the early-out must be an identity");
-            assert_eq!(depth, 0, "{line:?} must not open a block");
+            assert_eq!(depth, BlockDepth::default(), "{line:?} must not open a block");
         }
 
         // Anything that actually rewrites still returns an owned String, and
         // still rewrites correctly.
-        let mut depth = 0usize;
-        let got = strip_block_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
         assert!(matches!(got, Cow::Owned(_)), "a stripped line is owned");
         assert_eq!(quoted_tokens(&got), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(depth, 0);
+        assert_eq!(depth, BlockDepth::default());
 
         // An OPEN block is stripped even with no `/` on the line — the
-        // early-out must not fire on depth > 0.
-        let mut depth = 1usize;
-        let got = strip_block_comments("still inside the comment", &mut depth);
+        // early-out must not fire on an open depth.
+        let mut depth = BlockDepth::default();
+        strip_comments("/* opened", &mut depth);
+        let got = strip_comments("still inside the comment", &mut depth);
         assert!(
             matches!(got, Cow::Owned(_)) && got.is_empty(),
             "a line inside an open block must be dropped, got {got:?}"
         );
-        assert_eq!(depth, 1, "the block is still open");
+        assert_ne!(depth, BlockDepth::default(), "the block is still open");
+        assert_eq!(strip_comments("x */ y", &mut depth), " y");
+    }
+
+    /// A `'"'` char literal must not open a phantom string that hides the
+    /// real block comment after it.
+    #[test]
+    fn strip_comments_is_char_literal_aware() {
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("let q = '\"'; /* \"phantom\" */ \"b\",", &mut depth);
+        assert!(!got.contains("phantom"), "the block comment leaked: {got:?}");
+        assert_eq!(depth, BlockDepth::default());
+    }
+
+    /// `strip_comments` alone owns `//` stripping, so a char literal must not
+    /// flip quote parity and leak the tail's quoted token.
+    #[test]
+    fn strip_comments_drops_a_line_comment_after_a_char_literal() {
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("    '\"' => \"x\", // renamed from \"y\"", &mut depth);
+        assert!(!got.contains("\"y\""), "the `//` tail leaked: {got:?}");
     }
 
     /// Three spellings that mean exactly what `pub const X_NAMES: &[&str]`
