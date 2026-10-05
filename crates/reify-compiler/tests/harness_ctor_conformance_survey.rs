@@ -95,5 +95,7 @@ mod corpus;
 mod owner;
 #[path = "harness_ctor_conformance_survey/survey_site.rs"]
 mod survey_site;
+#[path = "harness_ctor_conformance_survey/sweep.rs"]
+mod sweep;
 #[path = "harness_ctor_conformance_survey/survey.rs"]
 mod survey;
