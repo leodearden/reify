@@ -10,8 +10,8 @@
 //! Task #7543 added the corpus's SECOND half: the Reify snippets embedded as
 //! raw-string literals in tracked `.rs` under `crates/`, which
 //! `git ls-files -- '*.ri'` cannot reach. Both halves come from one git-index
-//! primitive ([`survey::scan_tracked_corpus`]) and are swept by one pipeline, so they
-//! cannot disagree about what a ctor-conformance site is; [`survey::corpus_parity`] is
+//! primitive ([`corpus::scan_tracked_corpus`]) and are swept by one pipeline, so they
+//! cannot disagree about what a ctor-conformance site is; [`corpus::corpus_parity`] is
 //! what makes a narrowed walker fail loudly instead of writing a falsely-thin
 //! artifact.
 //!
@@ -73,7 +73,7 @@
 //! consumer, so deleting this survey costs nothing that outlives it.
 //!
 //! Nothing here fails when the artifact is deleted on its own:
-//! [`survey::committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] SKIPS on an
+//! [`generator::committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] SKIPS on an
 //! absent artifact by design, so a partial retirement degrades to dead weight
 //! rather than a merge-gate red.
 //!
@@ -87,6 +87,7 @@
 //! trusting a number pinned here.
 //!
 //! Module order is the layering: each module imports only from modules listed above it.
+//! The entry point is the top layer, [`generator`], which writes the artifact.
 #[path = "harness_ctor_conformance_survey/workspace_git.rs"]
 mod workspace_git;
 #[path = "harness_ctor_conformance_survey/corpus.rs"]
@@ -101,5 +102,7 @@ mod sweep;
 mod disposition;
 #[path = "harness_ctor_conformance_survey/stamp.rs"]
 mod stamp;
-#[path = "harness_ctor_conformance_survey/survey.rs"]
-mod survey;
+#[path = "harness_ctor_conformance_survey/render.rs"]
+mod render;
+#[path = "harness_ctor_conformance_survey/generator.rs"]
+mod generator;

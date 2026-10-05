@@ -114,7 +114,7 @@ fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
 ///
 /// Pure by construction, so the decision is gate-resident and unit-tested with
 /// no git state at all; the three reads that feed it live in [`survey_stamp`],
-/// behind the `#[ignore]`d generator. Same split this module uses throughout.
+/// behind the `#[ignore]`d generator. Same split this survey uses throughout.
 ///
 /// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
 /// * `dirty` — `git status --porcelain --untracked-files=no`, raw.
