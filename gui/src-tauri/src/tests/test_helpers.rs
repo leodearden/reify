@@ -666,20 +666,15 @@ pub(crate) fn deep_recurse_if_on_thread(
 // ── Task 6190: η RepresentationWithin export-refusal fixture ─────────────────
 
 /// `reify_test_support::bracket_source` plus a non-circular checker structure
-/// declaring the bound, so the DECLARED BOUND is the ONLY delta between the case
-/// `engine_tests::export_end_to_end` exports green and the refused cases in
-/// `engine_tests.rs` and `commands_tests.rs`. This is the CLI's
-/// `representation_within_satisfied.ri` idiom (geometry-owning structure + a separate
-/// `structure XCheck { param subject : X  constraint RepresentationWithin(subject,
-/// <bound>) }`) grafted onto that source.
+/// declaring the bound, so the DECLARED BOUND is the ONLY delta from that source:
+/// any difference in export outcome between the two is the bound's doing. This is
+/// the CLI's `representation_within_satisfied.ri` idiom (geometry-owning structure +
+/// a separate `structure XCheck { param subject : X  constraint
+/// RepresentationWithin(subject, <bound>) }`) grafted onto that source.
 ///
 /// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
 /// η refuses on module shape alone, before any deviation is measured, so it fires
 /// identically for any bound.
-///
-/// `engine_tests.rs` and `commands_tests.rs` share this ONE definition — a per-file
-/// twin lets a future `RepresentationWithin` / `param subject` syntax change reach one
-/// copy and not the other, silently voiding the "only delta" invariant above.
 pub(crate) fn bounded_bracket_source() -> String {
     format!(
         "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
