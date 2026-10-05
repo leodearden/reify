@@ -79,7 +79,7 @@ use crate::chunk_io::{
 use crate::chunk_markdown::section_body;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
-    Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
+    Arity, DocForm, call_forms, callee_names, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
 use crate::signature_fixtures::{STDLIB_GEOMETRY_OPS_FIXTURE, read_fixture};
 
@@ -164,17 +164,12 @@ fn is_recognised_geometry_call(name: &str) -> bool {
     GEOMETRY_FUNCTION_NAMES.contains(&name) || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
 }
 
-/// Every call name in `source`, projected from `doc_forms`' [`call_forms`] so
-/// exactly one AST walker exists (overloads of the same name collapse to one
-/// entry here — see `call_forms` for the arity-preserving form).
+/// Every call name in `source`: `doc_forms`' [`call_forms`] projected through
+/// [`callee_names`], so exactly one AST walker and one name projection exist
+/// (overloads of the same name collapse to one entry here — see `call_forms`
+/// for the arity-preserving form).
 fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
-    let mut names: Vec<String> = call_forms(source, label)
-        .into_iter()
-        .map(|(name, _count)| name)
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+    callee_names(&call_forms(source, label))
 }
 
 /// Every call name in `source` that the compiler does not recognise as a

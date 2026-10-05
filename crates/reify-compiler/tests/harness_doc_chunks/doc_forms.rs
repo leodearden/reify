@@ -10,10 +10,16 @@
 //! capitalised names and lambdas are prose, never signatures — see
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
 //! span, as [`listing_signature_spans`] cuts it, through that same rule.
+//!
+//! A source's call forms are read off its parsed AST by [`call_forms`], and a
+//! chunk's ```` ```reify ```` fences are read the same way, one module per
+//! fence, by [`fence_call_forms`].
 
 use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart, WhereClause};
 use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
+
+use crate::chunk_markdown::tagged_fence_bodies;
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -257,6 +263,36 @@ pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     forms.sort();
     forms.dedup();
     forms
+}
+
+/// Every `(call name, arg count)` form across the bare ```` ```reify ````
+/// fences of `markdown`, each fence parsed as its own module through
+/// [`call_forms`] — so prose, other-tagged fences, comments and string literals
+/// contribute nothing. Deduped and sorted across fences.
+///
+/// A fence that does not parse, or that [`call_forms`] cannot walk, panics
+/// naming `chunk_path` and the fence's 1-based position among the bare
+/// ```` ```reify ```` fences.
+pub(crate) fn fence_call_forms(markdown: &str, chunk_path: &str) -> Vec<(String, usize)> {
+    let mut forms: Vec<(String, usize)> = tagged_fence_bodies(markdown, "reify", chunk_path)
+        .iter()
+        .enumerate()
+        .flat_map(|(index, body)| {
+            call_forms(body, &format!("{chunk_path} ```reify fence #{}", index + 1))
+        })
+        .collect();
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// The distinct callee names of `forms`, sorted: every overload of a name
+/// collapses to one entry.
+pub(crate) fn callee_names(forms: &[(String, usize)]) -> Vec<String> {
+    let mut names: Vec<String> = forms.iter().map(|(name, _arity)| name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// [`collect_call_forms`] over a member's `where` guard, when it has one.
