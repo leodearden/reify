@@ -523,6 +523,35 @@ structure def NamedArgument {
 }
 
 #[test]
+fn call_forms_walks_param_defaults_constraints_and_where_guards() {
+    let source = r#"
+structure def EveryMemberSlot {
+    param h : Length = default_height(40mm) where param_enabled(1mm, 2mm)
+    let b = box(h, h, h) where let_enabled(h)
+    constraint volume(b) > 1mm^3 where constraint_enabled(b, h, h, h)
+}
+"#;
+
+    let forms: Vec<(String, usize)> = [
+        ("box", 3),
+        ("constraint_enabled", 4),
+        ("default_height", 1),
+        ("let_enabled", 1),
+        ("param_enabled", 2),
+        ("volume", 1),
+    ]
+    .iter()
+    .map(|(name, arity)| (name.to_string(), *arity))
+    .collect();
+    assert_eq!(
+        call_forms(source, "member-slot snippet"),
+        forms,
+        "a param default, a constraint expression and every member's `where` guard (the `let` \
+         guard included) are call sites"
+    );
+}
+
+#[test]
 fn listing_signature_spans_cuts_every_unqualified_call_on_a_line() {
     let cases: [(&str, &[&str], &str); 9] = [
         (
