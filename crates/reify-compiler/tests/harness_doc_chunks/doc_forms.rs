@@ -575,6 +575,63 @@ structure def EveryMemberSlot {
 }
 
 #[test]
+fn fence_call_forms_reads_only_the_parsed_code_of_bare_reify_fences() {
+    let markdown = r#"# Demo chunk
+
+Prose may name `prose_only(a)` in a code span, or prose_only(a) bare.
+
+```reify
+structure def Members {
+    param h : Length = 5mm
+    let s = sphere(h)
+    constraint volume(s) > 1mm^3
+}
+```
+
+```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Commented {
+    // line_commented(a, b)
+    /* block_commented(a) */
+    let note = "string_call(a)"
+    let g = box(1mm, 2mm, 3mm)
+    let ball = sphere(1mm)
+}
+```
+"#;
+
+    let forms: Vec<(String, usize)> = [("box", 3), ("sphere", 1), ("volume", 1)]
+        .iter()
+        .map(|(name, arity)| (name.to_string(), *arity))
+        .collect();
+    assert_eq!(
+        fence_call_forms(markdown, "demo.md"),
+        forms,
+        "only the parsed code of bare ```reify fences is read, each fence as its own module: \
+         prose, a schematic listing, comments and string literals contribute nothing, and the \
+         forms of every fence are sorted and deduped together"
+    );
+}
+
+#[test]
+fn callee_names_collapses_overloads_to_sorted_distinct_names() {
+    let forms = vec![
+        ("b".to_string(), 1),
+        ("a".to_string(), 2),
+        ("a".to_string(), 3),
+    ];
+
+    assert_eq!(
+        callee_names(&forms),
+        vec!["a".to_string(), "b".to_string()],
+        "two overloads of one name are one callee name, and the names come back sorted"
+    );
+}
+
+#[test]
 fn listing_signature_spans_cuts_every_unqualified_call_on_a_line() {
     let cases: [(&str, &[&str], &str); 9] = [
         (
