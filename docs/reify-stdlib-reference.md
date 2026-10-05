@@ -1828,11 +1828,29 @@ and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 **Stress post-processing (`std.analysis.stress`):**
 
 ```
+// Pointwise — a concrete 3×3 stress tensor (e.g. 100MPa * outer(e1, e1))
+fn von_mises(stress: Tensor<2, 3, Pressure>) -> Pressure
+fn principal_stresses(stress: Tensor<2, 3, Pressure>) -> List<Pressure>
+fn safety_factor(stress: Tensor<2, 3, Pressure>, yield_strength: Pressure) -> Real
+fn max_shear(stress: Tensor<2, 3, Pressure>) -> Pressure
+
+// Field-lifted — the same reduction at every sample point (e.g. ElasticResult.stress, §16)
 fn von_mises(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
-fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> List<Field<Point3<Length>, Scalar<Pressure>>>
+fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, List<Scalar<Pressure>>>
 fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_strength: Pressure) -> Field<Point3<Length>, Scalar<Dimensionless>>
 fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
 ```
+
+The argument's shape picks the form: a `Field` argument takes the field-lifted
+path, a concrete tensor the pointwise one. The pointwise form is the one PRD
+v0_3/structural-analysis-fea.md task 5 specifies, ruled by #2884:
+`von_mises(stress: Tensor<2,3,Pressure>) -> Pressure`. Each field-lifted form is
+that reduction applied at every sample point. `principal_stresses` yields the
+three principal stresses in ascending order — over a field, every sample is
+that three-element list. The tensor argument is not dimension-checked today, so
+`von_mises`, `max_shear` and `principal_stresses` carry the tensor's own
+quantity: a dimensionless tensor yields `Real` (the same rule §15 states for
+`stress_invariants`).
 
 `stress_invariants`, the fifth stress-tensor reduction, is documented with its result structure in §15 (`std.fea`). Unlike the four above, it takes a concrete 3×3 tensor only and has no `Field` form.
 
