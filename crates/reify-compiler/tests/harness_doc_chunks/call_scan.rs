@@ -143,59 +143,33 @@ pub(crate) fn called_names(text: &str) -> Vec<String> {
 // see that.
 
 #[test]
-fn call_sites_counts_a_nested_call_as_one_argument() {
-    let arities: Vec<usize> = call_sites(
-        "let b = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)",
-        "translate",
-    )
-    .into_iter()
-    .map(|(arity, _)| arity)
-    .collect();
-    assert_eq!(
-        arities,
-        vec![4],
-        "the nested `box(...)` must contribute ONE argument, not its own three"
+fn calls_sees_a_call_and_the_call_nested_in_its_arguments() {
+    let text = "let b = translate(box(20mm, 20mm, 20mm), 30mm, 0mm, 0mm)";
+    assert!(calls(text, "translate"), "the outer call is a call");
+    assert!(
+        calls(text, "box"),
+        "a call nested in another's argument list is a call in its own right"
     );
 }
 
 #[test]
-fn call_sites_reads_an_empty_argument_list_as_arity_zero() {
-    let arities: Vec<usize> = call_sites("let m0 = mechanism()", "mechanism")
-        .into_iter()
-        .map(|(arity, _)| arity)
-        .collect();
-    assert_eq!(arities, vec![0]);
+fn calls_reads_an_empty_argument_list_as_a_call() {
+    assert!(calls("let m0 = mechanism()", "mechanism"));
 }
 
 #[test]
-fn call_sites_skips_an_identifier_prefixed_match() {
+fn calls_skips_an_identifier_prefixed_match() {
     assert!(
-        call_sites("let x = xmin_clearance(s, id_a, id_b)", "min_clearance").is_empty(),
+        !calls("let x = xmin_clearance(s, id_a, id_b)", "min_clearance"),
         "`min_clearance(` must not be harvested out of a longer identifier"
     );
 }
 
 #[test]
-fn call_sites_skips_a_call_form_whose_parens_never_balance() {
+fn calls_skips_a_call_form_whose_parens_never_balance() {
     assert!(
-        call_sites("min_clearance(s, id_a,", "min_clearance").is_empty(),
+        !calls("min_clearance(s, id_a,", "min_clearance"),
         "an unbalanced call form is skipped rather than guessed at"
-    );
-}
-
-#[test]
-fn call_sites_offset_lands_just_past_the_closing_paren() {
-    // This is the offset `geometry_chunk_smoke.rs`'s `documented_signature_arities`
-    // uses to find the `->`.
-    let src = "`distance(a, b) -> Length` (2-arg)";
-    let sites = call_sites(src, "distance");
-    assert_eq!(sites.len(), 1);
-    let (arity, after) = sites[0];
-    assert_eq!(arity, 2);
-    assert!(
-        src[after..].trim_start().starts_with("-> Length"),
-        "expected the return annotation just past the closing paren, got {:?}",
-        &src[after..]
     );
 }
 
