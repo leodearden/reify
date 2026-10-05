@@ -10,6 +10,13 @@ use std::ops::Range;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BlockDepth(usize);
 
+impl BlockDepth {
+    /// `true` inside at least one unclosed `/*`.
+    pub(crate) fn is_open(self) -> bool {
+        self.0 > 0
+    }
+}
+
 /// Report each non-empty code byte-range of `line` to `on_code`, in order,
 /// lexing from `entry`, and return the depth the line exits at.
 ///
