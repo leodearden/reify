@@ -15,6 +15,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common;
 use reify_ir::{GeometryOp, Value};
 use reify_kernel_occt::OcctKernel;
 
@@ -34,22 +35,6 @@ fn tessellate_box(width_mm: f64, height_mm: f64, depth_mm: f64, tol: f64) -> rei
     kernel
         .tessellate(h.id, tol)
         .expect("tessellate should succeed")
-}
-
-// ---------------------------------------------------------------------------
-// Geometric helper shared by both tests
-// ---------------------------------------------------------------------------
-
-/// Compute the geometric normal of triangle (pa, pb, pc) from the emitted
-/// winding order: AB × AC.  All inputs and the result are in f64.
-fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
-    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-    [
-        ab[1] * ac[2] - ab[2] * ac[1],
-        ab[2] * ac[0] - ab[0] * ac[2],
-        ab[0] * ac[1] - ab[1] * ac[0],
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -99,34 +84,10 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         "real OCCT box tessellation must satisfy the mesh contract after internal welding",
     );
 
-    // Outward-orientation check.
-    // Box centroid from the AABB (min+max per axis / 2).  Using the analytic
-    // bounding-box center rather than the vertex-cloud average makes this
-    // robust to non-uniform vertex distributions — e.g. if a tighter
-    // tolerance caused OCCT to add interior tessellation nodes on any face,
-    // the vertex mean would shift toward the denser face whereas the AABB
-    // center is unaffected.
+    // Outward-orientation check against the AABB centre (see
+    // `common::aabb_centre` for why not the vertex mean).
     let (canon_verts, welded) = mesh.weld_positions();
-    let box_centroid = {
-        let mut min = [f64::MAX; 3];
-        let mut max = [f64::MIN; 3];
-        for v in &canon_verts {
-            for k in 0..3 {
-                let coord = v[k] as f64;
-                if coord < min[k] {
-                    min[k] = coord;
-                }
-                if coord > max[k] {
-                    max[k] = coord;
-                }
-            }
-        }
-        [
-            (min[0] + max[0]) / 2.0,
-            (min[1] + max[1]) / 2.0,
-            (min[2] + max[2]) / 2.0,
-        ]
-    };
+    let box_centroid = common::aabb_centre(&canon_verts);
 
     let num_tris = mesh.indices.len() / 3;
     for t in 0..num_tris {
@@ -141,7 +102,7 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         let pa_f64 = [pa[0] as f64, pa[1] as f64, pa[2] as f64];
         let pb_f64 = [pb[0] as f64, pb[1] as f64, pb[2] as f64];
         let pc_f64 = [pc[0] as f64, pc[1] as f64, pc[2] as f64];
-        let normal = tri_winding_normal(pa_f64, pb_f64, pc_f64);
+        let normal = common::tri_winding_normal(pa_f64, pb_f64, pc_f64);
 
         // Outward direction: triangle centroid → box centroid reversed.
         let tri_centroid = [
@@ -223,7 +184,7 @@ fn tessellated_box_supplied_normals_agree_with_winding() {
         ];
 
         // Geometric normal from the emitted winding (AB × AC).
-        let winding_normal = tri_winding_normal(pa, pb, pc);
+        let winding_normal = common::tri_winding_normal(pa, pb, pc);
 
         // Average of the three supplied per-vertex normals.
         let avg_supplied = [

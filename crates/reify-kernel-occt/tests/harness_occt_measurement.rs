@@ -94,5 +94,7 @@ mod reflection_det_negative_integration;
 mod shell_open_curated_faces;
 #[path = "harness_occt_measurement/sweep_guided_integration.rs"]
 mod sweep_guided_integration;
+#[path = "harness_occt_measurement/tessellation_winding_integration.rs"]
+mod tessellation_winding_integration;
 #[path = "harness_occt_measurement/topology_extract_integration.rs"]
 mod topology_extract_integration;
