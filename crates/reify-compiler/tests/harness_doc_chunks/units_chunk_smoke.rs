@@ -60,11 +60,12 @@
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
 
-use crate::call_scan::{called_names, strip_reify_comments};
+use crate::call_scan::strip_reify_comments;
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::tagged_fence_bodies;
+use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Info string of the fences that MUST compile clean.
@@ -309,21 +310,8 @@ fn assert_rejected_as_documented(form: &str) {
     );
 }
 
-/// The ```` ```reify ````-tagged fences of units.md, comment-stripped.
-///
-/// Comment-free because every downstream scan here is a text scan: a call form
-/// written only in a `//` annotation is never compiled, so it must not satisfy a
-/// sentinel or contribute a name. Same reasoning — and the same helper — as
-/// `geometry_chunk_smoke.rs`'s fence sentinels.
-fn units_fence_code(markdown: &str) -> Vec<String> {
-    tagged_fence_bodies(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
-        .iter()
-        .map(|fence| strip_reify_comments(fence))
-        .collect()
-}
-
-/// Every form units.md's migration idiom turns on is CALLED, outside a comment,
-/// by one of its ```` ```reify ```` fences.
+/// Every form units.md's migration idiom turns on is CALLED, in parsed code, by
+/// one of its ```` ```reify ```` fences.
 ///
 /// That is what makes the idiom compile-verified: the fence gate
 /// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
@@ -347,21 +335,23 @@ fn units_fence_code(markdown: &str) -> Vec<String> {
 fn units_reify_fences_call_the_migration_idiom_sentinels() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
 
-    // Sentinels, scanned COMMENT-FREE. `box` is the primitive whose bare-number
-    // rejection is the chunk's headline example; `mirror` is the form that
-    // carries BOTH halves of the rule in one call (dimensioned pivot, bare axis
-    // components), so losing it would quietly retire the only fence-verified
-    // demonstration that the legitimately-bare tail really is accepted.
-    let code = units_fence_code(&markdown);
-    for sentinel in ["box(", "mirror("] {
+    // Sentinels, read off the fences' parsed AST, so a call written only in a
+    // `//` annotation or a string literal never counts. `box` is the primitive
+    // whose bare-number rejection is the chunk's headline example; `mirror` is
+    // the form that carries BOTH halves of the rule in one call (dimensioned
+    // pivot, bare axis components), so losing it would quietly retire the only
+    // fence-verified demonstration that the legitimately-bare tail really is
+    // accepted.
+    let called = callee_names(&fence_call_forms(&markdown, UNITS_CHUNK_PATH));
+    for sentinel in ["box", "mirror"] {
         assert!(
-            code.iter().any(|fence| fence.contains(sentinel)),
-            "anti-vacuity: no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} contains `{sentinel}` \
-             OUTSIDE A COMMENT — the documented migration idiom is no longer compile-verified, so \
-             a form the compiler outright rejects could ship as the recommended fix. The scan \
-             matches the info string BYTE-EXACTLY, so a bare ``` fence or a ```reify-rejected \
-             fence is invisible to it. (A call form mentioned only in a fence's `//` annotation \
-             does not count; it is never compiled.)"
+            called.iter().any(|name| name == sentinel),
+            "anti-vacuity: no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} calls `{sentinel}` — the \
+             documented migration idiom is no longer compile-verified, so a form the compiler \
+             outright rejects could ship as the recommended fix. The scan matches the info string \
+             BYTE-EXACTLY, so a bare ``` fence or a ```reify-rejected fence is invisible to it. \
+             (A call form mentioned only in a fence's `//` annotation does not count; it is never \
+             compiled.) Fence call names: {called:?}"
         );
     }
 }
@@ -399,18 +389,11 @@ const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[];
 fn documented_call_names_in_units_chunk_are_real_registry_entries() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
 
-    let mut names: Vec<String> = Vec::new();
-    for fence in units_fence_code(&markdown) {
-        for name in called_names(&fence) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
+    let names = callee_names(&fence_call_forms(&markdown, UNITS_CHUNK_PATH));
 
-    // Anti-vacuity. An emptied scan — the ```reify tag dropped, the fence
-    // rewritten as prose, or `strip_reify_comments` swallowing the body — would
-    // otherwise iterate zero times and pass while protecting nothing.
+    // Anti-vacuity. An emptied scan — the ```reify tag dropped, or the fence
+    // rewritten as prose or into a form with no calls — would otherwise iterate
+    // zero times and pass while protecting nothing.
     assert!(
         !names.is_empty(),
         "no call names were extracted from {UNITS_CHUNK_PATH}'s ```{REIFY_TAG} fences — the \
@@ -419,14 +402,13 @@ fn documented_call_names_in_units_chunk_are_real_registry_entries() {
     );
     // The two sentinels are the same pair the compile gate uses, so the two
     // guards cannot disagree about which forms the chunk is supposed to teach.
-    // Asserted on the EXTRACTED NAME SET rather than on raw text, so a call form
+    // Asserted on the parsed CALL NAMES rather than on raw text, so a call form
     // demoted to a comment fails here as well as there.
     for sentinel in ["box", "mirror"] {
         assert!(
             names.iter().any(|n| n == sentinel),
-            "no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} CALLS `{sentinel}` outside a comment \
-             — the migration idiom no longer demonstrates the form it is supposed to. Names \
-             seen: {names:?}"
+            "no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} CALLS `{sentinel}` — the migration \
+             idiom no longer demonstrates the form it is supposed to. Names seen: {names:?}"
         );
     }
 
