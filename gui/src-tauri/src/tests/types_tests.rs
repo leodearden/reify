@@ -3475,6 +3475,52 @@ fn value_data_dimension_and_si_value_backward_compat_no_keys_deserialize_to_defa
     assert_eq!(val.si_value, None);
 }
 
+// --- ValueData::declared_dimension (input-side gate fact, task #6962) ---
+
+/// A `ValueData` carrying `declared_dimension` serializes the key and
+/// round-trips back to an equal struct, independently of the value-side
+/// `dimension` (here empty, as for a `none`-valued `Option<Length>` cell).
+#[test]
+fn value_data_declared_dimension_serializes_and_round_trips() {
+    let val = ValueData {
+        cell_id: "Bracket.gap".to_string(),
+        name: "gap".to_string(),
+        value: "none".to_string(),
+        unit: String::new(),
+        determinacy: "determined".to_string(),
+        entity_path: "Bracket".to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+        reason: None,
+        last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
+        declared_dimension: "Length".to_string(),
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert_eq!(v["declared_dimension"], json!("Length"));
+    let back: ValueData = serde_json::from_value(v).unwrap();
+    assert_eq!(back, val, "ValueData must round-trip with declared_dimension");
+}
+
+/// Older payload without the `declared_dimension` key must deserialize
+/// cleanly to `""` (serde default — mirrors the `dimension` backward-compat).
+#[test]
+fn value_data_declared_dimension_backward_compat_no_key_deserializes_to_empty() {
+    let json = serde_json::json!({
+        "cell_id": "Box.width",
+        "name": "width",
+        "value": "10",
+        "unit": "mm",
+        "determinacy": "determined",
+        "entity_path": "Box",
+        "kind": "Param",
+        "freshness": "final"
+    });
+    let val: ValueData = serde_json::from_value(json).unwrap();
+    assert_eq!(val.declared_dimension, "");
+}
+
 // ── appearance-viewport-egress α: MeshAppearance serde round-trip tests ──────
 
 /// A `MeshData` with `appearance: Some(MeshAppearance { ... })` serializes to

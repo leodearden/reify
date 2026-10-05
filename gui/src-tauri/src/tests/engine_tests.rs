@@ -2865,6 +2865,18 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     let body = box(width, width, width)
 }"#;
 
+/// One cell per declared-type shape `ValueData.declared_dimension` must
+/// report: an `Option<Length>` holding `none` (value-side dimension empty), a
+/// plain `Length`, a named-but-unladdered `Money`, a dimensionless `Real`, and
+/// a non-scalar `let`.
+const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
+    param gap : Option<Length> = none
+    param width : Length = 80mm
+    param cost : Money = 5USD
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
@@ -3144,6 +3156,84 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         err.contains("Cannot parse value") && err.contains("6USD"),
         "got {err:?}"
     );
+}
+
+/// Every cell carries the dimension its DECLARED type requires, whatever its
+/// runtime value holds — and that field and the backend's bare-number gate
+/// read one fact.
+///
+/// The panel's input gate keys on this field; the backend gate keys on the
+/// declared `cell_type`. (c) makes their agreement executable: for every
+/// param, "a curated ladder covers its declared dimension" holds exactly when
+/// `preview_parameter(id, "120")` is refused as a bare number.
+#[test]
+fn every_value_cell_reports_its_declared_dimension_whatever_its_value_holds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let loaded = session
+        .load_from_source(DECLARED_DIMENSION_SRC, "declared_dimension")
+        .expect("initial load");
+
+    let cell = |name: &str| -> crate::types::ValueData {
+        loaded
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("cell `{name}` must be in the payload"))
+            .clone()
+    };
+
+    // (a) PREMISE, asserted not assumed: a `none`-valued `Option<Length>` has
+    // no value-side dimension, which is the divergence this field closes.
+    let gap = cell("gap");
+    assert_eq!(gap.determinacy, "determined", "got {gap:?}");
+    assert_eq!(
+        gap.dimension, "",
+        "the value-side dimension of a `none` Option cell is empty; got {gap:?}"
+    );
+
+    // (b) The declared dimension, per shape.
+    for (name, expected) in [
+        ("gap", "Length"),
+        ("width", "Length"),
+        ("cost", "Money"),
+        ("scale", ""),
+        ("body", ""),
+    ] {
+        let v = cell(name);
+        assert_eq!(
+            v.declared_dimension, expected,
+            "`{name}` must report its declared dimension; got {v:?}"
+        );
+    }
+
+    // (c) GATE PARITY. Collected up front so each preview below starts from
+    // the loaded payload, not from an earlier accepted edit.
+    let params: Vec<(String, String)> = loaded
+        .values
+        .iter()
+        .filter(|v| v.kind == "Param")
+        .map(|v| (v.cell_id.clone(), v.declared_dimension.clone()))
+        .collect();
+    assert!(
+        params.len() >= 4,
+        "premise: the fixture's four params must all be in the payload; got {params:?}"
+    );
+    let ladders = crate::display_units::unit_ladders();
+    for (cell_id, declared) in params {
+        let covered = !declared.is_empty() && ladders.iter().any(|l| l.dimension == declared);
+        let result = session.preview_parameter(&cell_id, "120");
+        let refused = matches!(&result, Err(e) if e.contains("bare number"));
+        assert_eq!(
+            covered,
+            refused,
+            "`{cell_id}` (declared_dimension {declared:?}): the panel's coverage of the \
+             declared dimension must match the backend gate's verdict on a bare `120`; \
+             got {:?}",
+            result.as_ref().map(|_| "accepted")
+        );
+    }
 }
 
 /// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
