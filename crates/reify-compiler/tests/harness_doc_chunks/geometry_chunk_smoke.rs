@@ -68,18 +68,21 @@
 //! invokes (that comment declines to require a leading backtick precisely so the
 //! call form may be rewrapped, bolded, or tabulated freely).
 //!
-//! `oracle_signature_arities_match_the_compiling_fences` requires each of
-//! the five oracle names to carry a literal `-> <Type>` immediately after a
-//! balanced call form somewhere in the section. **`-> <Type>` after the call form
-//! is therefore a PINNED notation for those five names, and a markdown table with
-//! the return type in its own column (`| min_clearance(s, id_a, id_b) | Length |`)
-//! is RED even though no capability regressed.** That is a deliberate trade, not
-//! an oversight: the `->` is the ONLY thing separating a documented SIGNATURE from
-//! the traps subsection's prose mentions of unsupported forms
-//! (`min_clearance(a, b)`, `min_clearance(s, id, id)`), which must not be held to
-//! the fences. Widening the scan to accept a table cell would re-admit those. If
-//! the section is ever tabulated, widen `documented_signature_arities` in the same
-//! commit — and re-check that the trap prose still reads as prose.
+//! `oracle_signature_arities_match_the_compiling_fences` and
+//! `measurement_signature_arities_match_the_compiling_fences` require each of
+//! the five oracle names and the four whole-handle names to carry a signature
+//! written as ONE code span holding the whole `name(params) -> Type`, in the
+//! section's unfenced prose. **That single span is therefore a PINNED notation
+//! for those nine names: an un-backticked signature, one split across spans, or
+//! a markdown table with the return type in its own column
+//! (`| min_clearance(s, id_a, id_b) | Length |`) is RED even though no
+//! capability regressed.** That is a deliberate trade, not an oversight: the
+//! `->` is the ONLY thing separating a documented SIGNATURE from the traps
+//! subsection's prose mentions of unsupported forms (`min_clearance(a, b)`,
+//! `min_clearance(s, id, id)`), which must not be held to the fences. Widening
+//! the scan to accept a table cell would re-admit those. If the section is ever
+//! tabulated, widen `documented_signature_arities` in the same commit — and
+//! re-check that the trap prose still reads as prose.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -91,6 +94,7 @@ use crate::chunk_markdown::{
     catalogue_table_names, catalogue_table_rows, marker_closed_region, section_body,
     tagged_fence_bodies,
 };
+use crate::doc_forms::{Arity, documented_unfenced_forms};
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
 //
@@ -720,22 +724,32 @@ fn geometry_reify_fences_call_every_worked_example_form() {
 }
 
 /// The arities `name` is DOCUMENTED at in `section`, read off its
-/// `name(<args>) -> <Type>` signature forms.
+/// `name(<args>) -> <Type>` signatures: code spans of the section's UNFENCED
+/// prose that [`doc_form_of_span`](crate::doc_forms::doc_form_of_span) reads as
+/// signature-shaped whole. Fence bodies (the fence side's jurisdiction) and HTML
+/// maintainer notes are never read.
 ///
 /// The `->` is what separates a SIGNATURE from a mere mention, and the
 /// distinction is load-bearing: the traps subsection deliberately writes
 /// `min_clearance(a, b)` (the unsupported 2-arg overload) and
 /// `min_clearance(s, id, id)` (the self-pair rider) as prose. Neither is a
 /// contract the fences should be held to.
+///
+/// PANICS on unreadable markup, and on a variadic signature, which has no fixed
+/// arity for the fences to mirror.
 fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
-    // Comment-free first: the section body includes the fence lines, so an
-    // annotated call form inside a fence comment must not read as a documented
-    // signature either.
-    let section = strip_reify_comments(section);
-    call_sites(&section, name)
+    documented_unfenced_forms(section)
+        .unwrap_or_else(|e| panic!("{CHUNK_PATH}: {e} — so no signature in it can be read"))
         .into_iter()
-        .filter(|(_, after)| section[*after..].trim_start().starts_with("->"))
-        .map(|(arity, _)| arity)
+        .filter(|documented| documented.form.name == name && documented.span.contains("->"))
+        .map(|documented| match documented.form.arity {
+            Arity::Exact(arity) => arity,
+            Arity::AtLeast(_) => panic!(
+                "{CHUNK_PATH}: `{}` is a variadic signature, which has no fixed arity for the \
+                 ```reify fences to mirror — document `{name}` at each arity a fence calls it at",
+                documented.span
+            ),
+        })
         .collect()
 }
 
@@ -800,13 +814,15 @@ fn oracle_signature_arities_match_the_compiling_fences() {
     let mut drift = Vec::new();
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
         let documented = documented_signature_arities(&section, name);
-        // Anti-vacuity. A signature form that loses its `-> <Type>` annotation
-        // would otherwise drop out of this check silently instead of failing it.
+        // Anti-vacuity. A signature form that loses its `-> <Type>` annotation,
+        // or stops being one whole code span, would otherwise drop out of this
+        // check silently instead of failing it.
         assert!(
             !documented.is_empty(),
             "{CHUNK_PATH}'s `{ORACLE_SECTION_TITLE}` section documents no `{name}(…) -> <Type>` \
              signature form, so nothing pins that name's arity and this check would pass \
-             vacuously for it. Restore the `-> <Type>` return annotation on the call form."
+             vacuously for it. Restore the signature as ONE backticked `{name}(…) -> <Type>` \
+             code span in the section's prose, return annotation included."
         );
 
         // Comment-free fence bodies: a call form that appears only in a `//`
@@ -876,15 +892,16 @@ fn measurement_signature_arities_match_the_compiling_fences() {
     for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
         let documented = documented_signature_arities(&section, name);
         // Anti-vacuity, per name. Without it, a name that lost its `-> <Type>`
-        // annotation — or was dropped from the signature list entirely — would
-        // silently contribute zero assertions instead of failing.
+        // annotation or its backticks — or was dropped from the signature list
+        // entirely — would silently contribute zero assertions instead of failing.
         assert!(
             !documented.is_empty(),
             "{CHUNK_PATH}'s `{MEASUREMENT_SECTION_TITLE}` section documents no `{name}(…) -> \
              <Type>` signature form, so nothing pins that name's arity and this check would pass \
-             vacuously for it. Restore the `-> <Type>` return annotation on the call form. (The \
-             `->` is what separates a SIGNATURE from a prose mention; see the module doc's \"The \
-             one doc-FORMAT pin this file does impose\".)"
+             vacuously for it. Restore the signature as ONE backticked `{name}(…) -> <Type>` code \
+             span in the section's prose, return annotation included. (The `->` is what \
+             separates a SIGNATURE from a prose mention; see the module doc's \"The one \
+             doc-FORMAT pin this file does impose\".)"
         );
 
         // Comment-free fence bodies: a call form appearing only in a `//`

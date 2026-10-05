@@ -20,6 +20,7 @@ use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
 
 use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_prose::{code_spans, unfenced_prose};
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -93,6 +94,29 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
             Arity::Exact(count)
         },
     })
+}
+
+/// One signature-shaped span in a chunk's unfenced prose.
+pub(crate) struct DocumentedForm {
+    pub(crate) form: DocForm,
+    /// 1-based line of the span's opening backtick run.
+    pub(crate) line: usize,
+    pub(crate) span: String,
+}
+
+/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
+/// order; `Err` when the prose cannot be read.
+pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .filter_map(|span| {
+            doc_form_of_span(&span.text).map(|form| DocumentedForm {
+                form,
+                line: span.line,
+                span: span.text,
+            })
+        })
+        .collect())
 }
 
 /// The candidate signature spans on each line of a ```` ```reify-schematic ````

@@ -24,8 +24,7 @@
 use std::collections::BTreeSet;
 
 use crate::chunk_io::{all_chunks, chunk_label, report};
-use crate::chunk_prose::{code_spans, unfenced_prose};
-use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span};
+use crate::doc_forms::{Arity, DocForm, DocumentedForm, call_forms, documented_unfenced_forms};
 use crate::signature_fixtures::{SIGNATURE_FIXTURES, UNFENCED_SIGNATURES_FIXTURE, read_fixture};
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
@@ -62,29 +61,6 @@ const NOT_SIGNATURES: &[ProseMention] = &[
         why: "trap 3 documents this 2-arg form as UNSUPPORTED",
     },
 ];
-
-/// One signature-shaped span in a chunk's unfenced prose.
-pub(crate) struct DocumentedForm {
-    pub(crate) form: DocForm,
-    /// 1-based line of the span's opening backtick run.
-    pub(crate) line: usize,
-    pub(crate) span: String,
-}
-
-/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
-/// order; `Err` when the prose cannot be read.
-pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
-    Ok(code_spans(&unfenced_prose(markdown)?)
-        .into_iter()
-        .filter_map(|span| {
-            doc_form_of_span(&span.text).map(|form| DocumentedForm {
-                form,
-                line: span.line,
-                span: span.text,
-            })
-        })
-        .collect())
-}
 
 /// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
 /// and deduped: a documented signature no call in `calls` exercises at its
