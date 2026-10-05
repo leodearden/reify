@@ -166,14 +166,15 @@ pub(crate) fn persistent_lookup(
 ///
 /// # Behaviour
 ///
-/// Extracts a typed cache container from `result` via the target-specific
-/// bridge function, wraps it together with `diagnostics` in a
+/// Extracts a typed cache container from `entry.value` via the target-specific
+/// bridge function, swaps it into the same
 /// [`crate::persistent_cache::WithDiagnostics`] envelope, then calls
 /// [`crate::persistent_cache::write_entry`] (atomic temp+rename).
 ///
-/// `diagnostics` are the ones this dispatch's trampoline emitted. They are
-/// stored so a later warm serve can replay them; without them the on-disk
-/// cache would make every `W_*` warning first-run-only.
+/// `entry` carries the value plus the diagnostics and structured detail this
+/// dispatch's trampoline emitted. Both are stored so a later warm serve can
+/// replay them; without them the on-disk cache would make every `W_*` warning
+/// and every structured overlay first-run-only.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -194,8 +195,7 @@ pub(crate) fn persistent_write(
     cache_dir: &std::path::Path,
     target: &str,
     cache_key: reify_core::ContentHash,
-    result: &reify_ir::Value,
-    diagnostics: &[reify_core::Diagnostic],
+    entry: crate::persistent_cache::WithDiagnostics<&reify_ir::Value>,
 ) {
     debug_assert!(
         is_persistable_target(target),
@@ -207,7 +207,7 @@ pub(crate) fn persistent_write(
     match target {
         "solver::elastic_static" => {
             let Some(er) =
-                crate::compute_targets::elastic_static::elastic_result_from_value(result)
+                crate::compute_targets::elastic_static::elastic_result_from_value(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -222,11 +222,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    structured_detail: Vec::new(),
-                    value: er,
-                },
+                &entry.map_value(|_| er),
             ) {
                 tracing::warn!(
                     %e,
@@ -239,7 +235,7 @@ pub(crate) fn persistent_write(
         }
         "solver::buckling" => {
             let Some(brc) =
-                crate::compute_targets::buckling::buckling_result_from_value(result)
+                crate::compute_targets::buckling::buckling_result_from_value(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -256,11 +252,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    structured_detail: Vec::new(),
-                    value: brc,
-                },
+                &entry.map_value(|_| brc),
             ) {
                 tracing::warn!(
                     %e,
@@ -274,7 +266,7 @@ pub(crate) fn persistent_write(
         }
         "shell-extract::extract" => {
             let Some(ser) =
-                crate::shell_extract_compute::value_to_shell_extraction_result(result)
+                crate::shell_extract_compute::value_to_shell_extraction_result(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -291,11 +283,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    structured_detail: Vec::new(),
-                    value: ser,
-                },
+                &entry.map_value(|_| ser),
             ) {
                 tracing::warn!(
                     %e,

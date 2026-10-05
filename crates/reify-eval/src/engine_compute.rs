@@ -701,16 +701,19 @@ impl crate::Engine {
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
-                    // Task 7245: the trampoline's diagnostics are stored
-                    // alongside the value so a later warm serve can replay
-                    // them. Borrowed here, before the `Ok((..))` below moves
-                    // `diagnostics` out.
+                    // Tasks 7245 / 7345: the trampoline's diagnostics and
+                    // structured detail are stored alongside the value so a
+                    // later warm serve can replay both. Cloned here, before
+                    // the `Ok((..))` below moves them out.
                     crate::compute_persist::persistent_write(
                         cache_dir,
                         target,
                         cache_key,
-                        &effective_value,
-                        &diagnostics,
+                        crate::persistent_cache::WithDiagnostics {
+                            diagnostics: diagnostics.clone(),
+                            structured_detail: structured_detail.clone(),
+                            value: &effective_value,
+                        },
                     );
                 }
                 // θ / task 3427 step-4: return effective_value (prior on
