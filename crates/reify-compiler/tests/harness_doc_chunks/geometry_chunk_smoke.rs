@@ -22,7 +22,9 @@
 //! - ```` ```reify ```` worked examples — `fence_gate.rs` compiles every one
 //!   verbatim and holds their count exact;
 //!   `geometry_reify_fences_call_every_worked_example_form` requires the forms
-//!   that need a worked example to be called in one.
+//!   that need a worked example to be called in one. This file reads their
+//!   calls through `doc_forms.rs`'s `fence_call_forms`, which holds every fence
+//!   to a shape stricter than compiling clean — see its doc.
 //! - Cited tests and examples — `chunk_cite_gate.rs` resolves every cite;
 //!   `geometry_chunk_example_citations_hold_against_the_real_examples` holds the
 //!   GD&T section's claim about its cited example.
@@ -333,10 +335,10 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // TYPOGRAPHY: writing the same call form as `**`min_clearance`**(s, …)`, or
     // moving it into a markdown table cell, would go RED with zero capability
     // regression and a panic claiming the oracle is undocumented. Per the house
-    // rule this file inherits, prose formatting is not the subject. (The ONE
-    // exception, `-> <Type>`, is stated in the module doc's "The one doc-FORMAT
-    // pin this file does impose" — read it before tabulating this section.) The real
-    // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
+    // rule this file inherits, prose formatting is not the subject. (For the ONE
+    // exception, see the module doc's "The one doc-FORMAT pin this file does
+    // impose" before re-typesetting this section.) The real weight is carried by
+    // (b) below, by `section_body`'s anti-vacuity panic, and
     // by `geometry_reify_fences_call_every_worked_example_form`'s per-name
     // sentinels, which require each call form inside a COMPILING fence — a strictly stronger
     // property than any string match here.
@@ -407,9 +409,9 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
 ///
 /// No leading backtick is required, for the reason
 /// `interference_oracle_names_documented_in_geometry_chunk` states at length: the
-/// house rule this file inherits forbids pinning doc TYPOGRAPHY. The one
-/// exception — the `-> <Type>` notation — is imposed only on the whole-handle
-/// four, by `measurement_signature_arities_match_the_compiling_fences`.
+/// house rule this file inherits forbids pinning doc TYPOGRAPHY. For the one
+/// exception, see the module doc's "The one doc-FORMAT pin this file does
+/// impose".
 ///
 /// Anti-vacuity comes free from [`section_body`], which panics when its marker is
 /// absent, so deleting the section is RED rather than silently green.
@@ -990,7 +992,8 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 
     let table_rows = catalogue_table_rows(&section);
     let table_names = catalogue_table_names(&table_rows);
-    let called = callee_names(&fence_call_forms(&section, CHUNK_PATH));
+    let section_label = format!("{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section");
+    let called = callee_names(&fence_call_forms(&section, &section_label));
 
     // Anti-vacuity, one floor per set. The ROW floor catches a deleted or
     // gutted catalogue table — the case that used to pass silently. The CALL

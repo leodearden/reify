@@ -294,15 +294,21 @@ pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
 /// [`call_forms`] — so prose, other-tagged fences, comments and string literals
 /// contribute nothing. Deduped and sorted across fences.
 ///
-/// A fence that does not parse, or that [`call_forms`] cannot walk, panics
-/// naming `chunk_path` and the fence's 1-based position among the bare
-/// ```` ```reify ```` fences.
-pub(crate) fn fence_call_forms(markdown: &str, chunk_path: &str) -> Vec<(String, usize)> {
-    let mut forms: Vec<(String, usize)> = tagged_fence_bodies(markdown, "reify", chunk_path)
+/// Every fence is thereby held to the shape [`call_forms`] walks, which is
+/// stricter than compiling clean: a fence that compiles but declares a `fn`,
+/// an `enum` or an `import` panics here until the walker is extended.
+///
+/// `label` says what `markdown` is — a whole chunk, or one section of it —
+/// because fences are numbered within `markdown`, not within the chunk. A
+/// fence that does not parse, or that [`call_forms`] cannot walk, panics naming
+/// `{label} ```reify fence #{n}`, `n` its 1-based position among `markdown`'s
+/// bare ```` ```reify ```` fences.
+pub(crate) fn fence_call_forms(markdown: &str, label: &str) -> Vec<(String, usize)> {
+    let mut forms: Vec<(String, usize)> = tagged_fence_bodies(markdown, "reify", label)
         .iter()
         .enumerate()
         .flat_map(|(index, body)| {
-            call_forms(body, &format!("{chunk_path} ```reify fence #{}", index + 1))
+            call_forms(body, &format!("{label} ```reify fence #{}", index + 1))
         })
         .collect();
     forms.sort();
@@ -674,6 +680,60 @@ structure def Commented {
          prose, a schematic listing, comments and string literals contribute nothing, and the \
          forms of every fence are sorted and deduped together"
     );
+}
+
+#[test]
+#[should_panic(expected = "demo.md ```reify fence #2 must parse cleanly")]
+fn fence_call_forms_names_an_unparseable_fence_by_label_and_position() {
+    let markdown = r#"```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Parses {
+    let s = sphere(1mm)
+}
+```
+
+```reify
+structure def Broken {
+    let s = sphere(1mm
+}
+```
+"#;
+
+    fence_call_forms(markdown, "demo.md");
+}
+
+#[test]
+#[should_panic(expected = "demo.md's Fits section ```reify fence #1: `call_forms` only walks")]
+fn fence_call_forms_names_a_fence_it_cannot_walk_by_label_and_position() {
+    let markdown = "```reify\nenum FitType { Clearance, Transition, Interference }\n```\n";
+
+    fence_call_forms(markdown, "demo.md's Fits section");
+}
+
+#[test]
+fn documented_unfenced_forms_is_an_err_when_the_prose_cannot_be_read() {
+    let signature = "`volume(solid) -> Scalar<Volume>`\n\n";
+    assert_eq!(
+        documented_unfenced_forms(signature).map(|forms| forms.len()),
+        Ok(1),
+        "control: the signature alone is read"
+    );
+
+    for (defect, why) in [
+        ("```reify\nstructure def Open {\n", "an unterminated fence"),
+        (
+            "<!-- an unterminated note\n",
+            "an unterminated HTML comment",
+        ),
+    ] {
+        assert!(
+            documented_unfenced_forms(&format!("{signature}{defect}")).is_err(),
+            "{why} hides the rest of the chunk, so it is an Err, never a short list of forms"
+        );
+    }
 }
 
 #[test]

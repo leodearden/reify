@@ -8,7 +8,8 @@
 //! of its ```` ```reify ```` fences through `doc_forms.rs`'s AST walk
 //! (`fence_call_forms` / `callee_names`), and their registry through
 //! `callable_registries.rs`. What "compiles clean" means is
-//! `module_compile.rs`'s.
+//! `module_compile.rs`'s; `fence_call_forms` holds every ```` ```reify ```` fence
+//! to a shape stricter than that — see its doc.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
 //! `assert_module_compiles`, `rejected_form_rows`, `strip_reify_comments`,
