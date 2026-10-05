@@ -85,5 +85,9 @@
 //! module below — is measured and capped by `tests/infra/test_harness_kloc_cap.sh`
 //! rule (a); re-measure with that guard's `harness_layout_unit_lines` rather than
 //! trusting a number pinned here.
+//!
+//! Module order is the layering: each module imports only from modules listed above it.
+#[path = "harness_ctor_conformance_survey/workspace_git.rs"]
+mod workspace_git;
 #[path = "harness_ctor_conformance_survey/survey.rs"]
 mod survey;
