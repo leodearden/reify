@@ -6274,10 +6274,9 @@ impl Engine {
                     if problem.objective.is_some() {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
                             // `..` drops the `completeness` verdict deliberately:
-                            // the engine does not consume the completeness axis at
-                            // task α #6706. δ #6709 → #6901 is the leaf that reads it (the
-                            // §3.4 verdict policy), so this is a known gap, not an
-                            // oversight.
+                            // the engine does not consume the completeness axis
+                            // yet. δ #6709 → #6901 is the leaf that reads it (the
+                            // §3.4 verdict policy).
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
@@ -7675,11 +7674,8 @@ impl Engine {
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
-                    // `..` drops the `completeness` verdict deliberately: the engine
-                    // does not consume the completeness axis at task α #6706.
-                    // δ #6709 → #6901 is the leaf that reads it (the §3.4 verdict
-                    // policy),
-                    // so this is a known gap, not an oversight.
+                    // `..` drops `completeness` for the reason given at the
+                    // per-template site in `eval()`.
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,

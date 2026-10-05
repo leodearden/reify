@@ -1432,11 +1432,8 @@ fn production_registry_ranks_the_bool_balance_by_its_objective() {
                 assert_eq!(
                     completeness,
                     reify_ir::Completeness::not_attempted(),
-                    "{sense:?}: BT13 + C2 interim: production()'s ranked lift reports \
-                     not_attempted() even when CP-SAT proved optimality by complete \
-                     enumeration; re-expressing CP-SAT's `complete` as Exhaustive is \
-                     #6903's (its Ranked candidates are capped at RANKED_CANDIDATE_CAP, \
-                     so `complete` alone does not make the carried set exhaustive)"
+                    "{sense:?}: BT13 + C2 interim: CP-SAT's ProvenOptimal beside \
+                     not_attempted() is retired by #6903 (see cpsat.rs's scored tail)"
                 );
                 let ups = balance_bools(&candidates[0].values);
                 assert_balanced(ups);
@@ -2416,13 +2413,16 @@ fn registry_forwards_compute_dispatch_to_inner_solver() {
 
 // ---- BT13: the registry ranked lift does not opt in either (#6706) ----
 
-/// BT13 (solution-set-completeness): `SolverRegistry::solve_ranked_with_dispatch`
-/// reports `Partial { NotAttempted }` at task α. The registry still conjoins
-/// per-component `unique` today; replacing that conjunction with the §3.5
-/// `Completeness` meet is ι/#6903's work, and this test is what will red when it
-/// lands — deliberately, since that is the change of meaning.
+/// BT13 (solution-set-completeness): the registry's ranked lift reports
+/// `Partial { NotAttempted }`. The registry still conjoins per-component
+/// `unique`; replacing that conjunction with the §3.5 `Completeness` meet is
+/// ι/#6903's work, and this test is what will red when it lands — deliberately,
+/// since that is the change of meaning.
 ///
-/// The optimality field is bound with `..`; #6706 does not touch that axis.
+/// One entry point suffices: `solve_ranked` is `solve_ranked_with_dispatch(p,
+/// None)`, and the lift has a single `Ranked` construction site.
+///
+/// The optimality field is bound with `..`; this test does not touch that axis.
 #[test]
 fn registry_ranked_reports_not_attempted() {
     use reify_ir::{Completeness, PartialReason};
@@ -2430,25 +2430,23 @@ fn registry_ranked_reports_not_attempted() {
     let registry = SolverRegistry::new(Box::new(DimensionalSolver));
     let (problem, _x_id, _y_id) = two_param_interior_quadratic_problem_via_registry();
 
-    for (label, ranked) in [
-        ("solve_ranked", registry.solve_ranked(&problem)),
-        (
-            "solve_ranked_with_dispatch",
-            registry.solve_ranked_with_dispatch(&problem, None),
-        ),
-    ] {
-        match &ranked {
-            RankedSolveResult::Ranked { candidates, completeness, .. } => {
-                assert_eq!(
-                    *completeness,
-                    Completeness::Partial { reason: PartialReason::NotAttempted },
-                    "{label}: the registry lift does not establish the solution set at task α"
-                );
-                assert!(!completeness.permits_proven_optimal(), "{label}: C2");
-                assert!(!candidates.is_empty(), "{label}: I2 — Ranked carries >= 1 candidate");
-            }
-            other => panic!("{label}: expected Ranked, got {other:?}"),
+    match registry.solve_ranked(&problem) {
+        RankedSolveResult::Ranked {
+            candidates,
+            completeness,
+            ..
+        } => {
+            assert_eq!(
+                completeness,
+                Completeness::Partial {
+                    reason: PartialReason::NotAttempted
+                },
+                "the registry lift does not establish the solution set"
+            );
+            assert!(!completeness.permits_proven_optimal(), "C2");
+            assert!(!candidates.is_empty(), "I2 — Ranked carries >= 1 candidate");
         }
+        other => panic!("expected Ranked, got {other:?}"),
     }
 }
 
