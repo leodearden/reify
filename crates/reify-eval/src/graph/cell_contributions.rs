@@ -1,3 +1,278 @@
+//! The value cells [`EvaluationGraph::from_templates`] puts in
+//! `graph.value_cells`, enumerated once so callers can ask about them without
+//! building the graph.
+//!
+//! `from_templates` populates its value cells by folding [`contributed_cells`],
+//! so this iterator IS that set, not a description of it. A template's
+//! `ports.members` never reaches the graph and is deliberately not enumerated.
+//!
+//! [`EvaluationGraph::from_templates`]: super::EvaluationGraph::from_templates
+
+use reify_compiler::{
+    CompiledGuardedGroup, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    find_template,
+};
+use reify_core::{Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, MemberKey, Value};
+
+/// Every guarded group's guard cell is a `Bool` let over its guard expression.
+static GUARD_CELL_TYPE: Type = Type::Bool;
+
+/// How a contribution lands in a value-cell map that may already hold its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsertPolicy {
+    /// Replace whatever is there: the last contribution for an id wins.
+    Overwrite,
+    /// Insert only if the id is absent, so a parent's override of a plain
+    /// sub's cell (`sub b : Bearing { bore = auto }`, task 3806) survives the
+    /// child's default.
+    KeepExisting,
+}
+
+/// One value cell `from_templates` inserts, in insertion order.
+#[derive(Clone, Copy, Debug)]
+pub struct ContributedCell<'a>(Source<'a>);
+
+#[derive(Clone, Copy, Debug)]
+enum Source<'a> {
+    Declared(&'a ValueCellDecl),
+    SubInstance {
+        slot: InstanceSlot<'a>,
+        decl: &'a ValueCellDecl,
+    },
+    Guard(&'a CompiledGuardedGroup),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InstanceSlot<'a> {
+    parent: &'a str,
+    sub_name: &'a str,
+    index: SlotIndex<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SlotIndex<'a> {
+    Single,
+    Positional(i64),
+    Keyed(&'a MemberKey),
+}
+
+impl InstanceSlot<'_> {
+    fn scoped_entity(&self) -> String {
+        let InstanceSlot {
+            parent, sub_name, ..
+        } = self;
+        match self.index {
+            SlotIndex::Single => format!("{parent}.{sub_name}"),
+            SlotIndex::Positional(i) => format!("{parent}.{sub_name}[{i}]"),
+            SlotIndex::Keyed(key) => format!("{parent}.{}", key.path_segment(sub_name)),
+        }
+    }
+}
+
+impl<'a> ContributedCell<'a> {
+    pub fn cell_type(&self) -> &'a Type {
+        match self.0 {
+            Source::Declared(decl) | Source::SubInstance { decl, .. } => &decl.cell_type,
+            Source::Guard(_) => &GUARD_CELL_TYPE,
+        }
+    }
+
+    pub fn kind(&self) -> ValueCellKind {
+        match self.0 {
+            Source::Declared(decl) | Source::SubInstance { decl, .. } => decl.kind,
+            Source::Guard(_) => ValueCellKind::Let,
+        }
+    }
+
+    pub fn default_expr(&self) -> Option<&'a CompiledExpr> {
+        match self.0 {
+            Source::Declared(decl) | Source::SubInstance { decl, .. } => decl.default_expr.as_ref(),
+            Source::Guard(group) => Some(&group.guard_expr),
+        }
+    }
+
+    /// The id this cell has in `graph.value_cells`. Allocates for a
+    /// sub-instance cell, whose scoped entity is not stored anywhere.
+    pub fn graph_id(&self) -> ValueCellId {
+        match self.0 {
+            Source::Declared(decl) => decl.id.clone(),
+            Source::SubInstance { slot, decl } => {
+                ValueCellId::new(slot.scoped_entity(), decl.id.member.clone())
+            }
+            Source::Guard(group) => group.guard_value_cell.clone(),
+        }
+    }
+
+    pub fn insert_policy(&self) -> InsertPolicy {
+        match self.0 {
+            Source::SubInstance {
+                slot:
+                    InstanceSlot {
+                        index: SlotIndex::Single,
+                        ..
+                    },
+                ..
+            } => InsertPolicy::KeepExisting,
+            _ => InsertPolicy::Overwrite,
+        }
+    }
+}
+
+/// Every value cell `from_templates(templates)` inserts, in insertion order.
+/// Per template: its own cells, then each resolvable sub's instance cells,
+/// then each guarded group's guard cell, members and else-members.
+pub fn contributed_cells(
+    templates: &[TopologyTemplate],
+) -> impl Iterator<Item = ContributedCell<'_>> {
+    templates
+        .iter()
+        .flat_map(move |template| template_cells(templates, template))
+}
+
+fn template_cells<'a>(
+    templates: &'a [TopologyTemplate],
+    template: &'a TopologyTemplate,
+) -> impl Iterator<Item = ContributedCell<'a>> {
+    let own = template.value_cells.iter().map(declared_cell);
+    let guarded = template.guarded_groups.iter().flat_map(|group| {
+        std::iter::once(ContributedCell(Source::Guard(group)))
+            .chain(group.members.iter().map(declared_cell))
+            .chain(group.else_members.iter().map(declared_cell))
+    });
+    own.chain(sub_instance_cells(templates, template))
+        .chain(guarded)
+}
+
+fn declared_cell(decl: &ValueCellDecl) -> ContributedCell<'_> {
+    ContributedCell(Source::Declared(decl))
+}
+
+fn sub_instance_cells<'a>(
+    templates: &'a [TopologyTemplate],
+    parent: &'a TopologyTemplate,
+) -> impl Iterator<Item = ContributedCell<'a>> {
+    parent
+        .sub_components
+        .iter()
+        .filter_map(move |sub| resolve_sub(templates, parent, sub))
+        .flat_map(move |elab| {
+            let SubElaboration {
+                sub, child, shape, ..
+            } = elab;
+            shape.slot_indices().flat_map(move |index| {
+                let slot = InstanceSlot {
+                    parent: &parent.name,
+                    sub_name: &sub.name,
+                    index,
+                };
+                child
+                    .value_cells
+                    .iter()
+                    .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+            })
+        })
+}
+
+/// A sub-component resolved against the template slice: the child template
+/// its instances are stamped from, and how many instances there are.
+pub(crate) struct SubElaboration<'a> {
+    pub sub: &'a SubComponentDecl,
+    pub child: &'a TopologyTemplate,
+    /// The child's structure name: a keyed sub's element type, not "Keyed".
+    pub element_structure: &'a str,
+    pub shape: SubShape<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum SubShape<'a> {
+    /// `sub xs : List<T>`; `count` is `None` unless statically known.
+    Collection {
+        count: Option<i64>,
+    },
+    Keyed(&'a [MemberKey]),
+    Single,
+}
+
+impl<'a> SubShape<'a> {
+    fn slot_indices(self) -> impl Iterator<Item = SlotIndex<'a>> {
+        let (positional, keyed, single) = match self {
+            SubShape::Collection { count } => {
+                (count.map(|n| (0..n).map(SlotIndex::Positional)), None, None)
+            }
+            SubShape::Keyed(keys) => (None, Some(keys.iter().map(SlotIndex::Keyed)), None),
+            SubShape::Single => (None, None, Some(SlotIndex::Single)),
+        };
+        positional
+            .into_iter()
+            .flatten()
+            .chain(keyed.into_iter().flatten())
+            .chain(single)
+    }
+}
+
+/// `None` when the sub's structure is not among `templates`; such a sub
+/// contributes no cells and is not registered.
+pub(crate) fn resolve_sub<'a>(
+    templates: &'a [TopologyTemplate],
+    parent: &'a TopologyTemplate,
+    sub: &'a SubComponentDecl,
+) -> Option<SubElaboration<'a>> {
+    let element_structure = element_structure_name(sub);
+    let child = find_template(templates, element_structure)?;
+    let shape = if sub.is_collection {
+        SubShape::Collection {
+            count: static_count(parent, sub),
+        }
+    } else if !sub.keyed_members.is_empty() {
+        SubShape::Keyed(&sub.keyed_members)
+    } else {
+        SubShape::Single
+    };
+    Some(SubElaboration {
+        sub,
+        child,
+        element_structure,
+        shape,
+    })
+}
+
+fn element_structure_name(sub: &SubComponentDecl) -> &str {
+    if sub.keyed_members.is_empty() {
+        return &sub.structure_name;
+    }
+    match sub.type_args.first() {
+        Some(Type::StructureRef(name)) => name,
+        _ => &sub.structure_name,
+    }
+}
+
+/// The count cell's default when it is an Int literal, or a reference to a
+/// parent cell whose default is one.
+fn static_count(parent: &TopologyTemplate, sub: &SubComponentDecl) -> Option<i64> {
+    let count_expr = cell_default(parent, sub.count_cell.as_ref()?)?;
+    match &count_expr.kind {
+        CompiledExprKind::ValueRef(referenced) => literal_int(cell_default(parent, referenced)?),
+        _ => literal_int(count_expr),
+    }
+}
+
+fn cell_default<'a>(template: &'a TopologyTemplate, id: &ValueCellId) -> Option<&'a CompiledExpr> {
+    template
+        .value_cells
+        .iter()
+        .find(|cell| cell.id == *id)?
+        .default_expr
+        .as_ref()
+}
+
+fn literal_int(expr: &CompiledExpr) -> Option<i64> {
+    match expr.kind {
+        CompiledExprKind::Literal(Value::Int(n)) => Some(n),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -160,18 +435,28 @@ structure Tray {
             .collect();
         for witness in entry.witnesses {
             let entity = witness.split('.').next().unwrap_or(witness);
-            for (source, ids) in [("graph", &graph_ids), ("contributed", &contributed_ids)] {
-                assert!(
-                    ids.iter().any(|id| id.contains(witness)),
-                    "corpus staleness ({}): no {source} cell id contains `{witness}`, so \
-                     this input no longer reaches its arm. Fix the input, not the \
-                     witness. {source} ids under `{entity}`: {:#?}",
-                    entry.arm,
-                    ids.iter()
-                        .filter(|id| id.starts_with(entity))
-                        .collect::<Vec<_>>(),
-                );
-            }
+            let under_entity = |ids: &[String]| -> Vec<String> {
+                ids.iter()
+                    .filter(|id| id.starts_with(entity))
+                    .cloned()
+                    .collect()
+            };
+            assert!(
+                graph_ids.iter().any(|id| id.contains(witness)),
+                "corpus staleness ({}): no graph cell id contains `{witness}`, so this \
+                 input no longer reaches its arm. Fix the input, not the witness. \
+                 graph ids under `{entity}`: {:#?}",
+                entry.arm,
+                under_entity(&graph_ids),
+            );
+            assert!(
+                contributed_ids.iter().any(|id| id.contains(witness)),
+                "({}) from_templates inserts `{witness}` but contributed_cells never \
+                 yields it: the enumeration is missing an arm. contributed ids under \
+                 `{entity}`: {:#?}",
+                entry.arm,
+                under_entity(&contributed_ids),
+            );
         }
     }
 
