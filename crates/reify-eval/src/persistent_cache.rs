@@ -2084,6 +2084,8 @@ pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_compute_contract::StructuredComputeDetail;
+    use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
 
     // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────
 
@@ -3207,7 +3209,7 @@ version = "9.9.9"
         //
         // What each bump changed is recorded once, in the version history on
         // `ENTRY_FORMAT_VERSION` itself; extend it there with the bump.
-        assert_eq!(ENTRY_FORMAT_VERSION, 4);
+        assert_eq!(ENTRY_FORMAT_VERSION, 5);
     }
 
     #[test]
@@ -3258,87 +3260,73 @@ version = "9.9.9"
     }
 
     #[test]
-    fn v2_entry_reads_as_clean_miss() {
-        // The migration contract for the v2 → v3 bump. v2 entries genuinely
-        // exist in developer and CI cache dirs — this branch's own test runs
-        // wrote them before the review fix reshaped `PersistedDiagnostic`.
-        //
-        // The fixture's diagnostics block is EMPTY on purpose: that is both the
-        // common shape (most solves say nothing) and the only v2 shape that
-        // still decodes CLEANLY under the v3 reader, since an empty
-        // `Vec<PersistedDiagnostic>` is 8 zero bytes whatever the element shape
-        // is. A v2 block with an actual diagnostic runs out of bytes under the
-        // v3 element layout and is already rejected — but by accident, not by
-        // contract. So the empty block is exactly the entry that would be
-        // silently served under a reader whose element shape has changed, and
-        // `verify_format_version` is what must stop it.
+    fn every_prior_envelope_stamp_reads_as_clean_miss() {
+        // The migration contract for every bump since the envelope existed: an
+        // entry stamped with any earlier envelope version is a clean miss, and
+        // it is the STAMP that rejects it — not an accidental body-decode
+        // failure. The body bytes below are produced by the CURRENT encoder, so
+        // they decode cleanly under the current reader; only the header stamp
+        // differs. That is exactly the entry a reader would silently serve if
+        // `verify_format_version` did not run before the body decode (e.g. an
+        // empty v2 diagnostics block was byte-identical to an empty v3 one).
+        // The pre-envelope v1 layout has its own test above.
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "abcdef0123456789abcdef0123456789";
-        let inp = "0011223344556677001122334455667d";
 
-        // Written as a literal 2 (never `ENTRY_FORMAT_VERSION`) so this test
-        // keeps its meaning across any future bump.
-        assert_ne!(
-            2, ENTRY_FORMAT_VERSION,
-            "this fixture only models a STALE entry while ENTRY_FORMAT_VERSION \
-             differs from 2; the PersistedDiagnostic reshape is what makes v2 \
-             entries stale"
-        );
-
-        // Hand-write the v2 layout: a v2 header, then the length-framed
-        // diagnostics prefix carrying an empty vec (bincode encodes that as a
-        // u64 length of 0), then the `ElasticResult` body.
-        std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
-        let legacy = make_sample_result();
-        let block = 0u64.to_le_bytes();
-        let header = CacheEntryHeader {
-            format_version: 2,
-            engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
-            input_hash: cache_key_to_ascii_32(inp).unwrap(),
-            solve_time_ms: legacy.solve_time_ms(),
-            byte_size: 8 + block.len() as u64 + legacy.uncompressed_byte_size(),
-            written_at: 0,
+        let entry = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: vec![],
+            value: make_sample_result(),
         };
-        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
-        header.write_to(&mut f).unwrap();
-        f.write_all(&(block.len() as u64).to_le_bytes()).unwrap();
-        f.write_all(&block).unwrap();
-        legacy.serialize_to_writer(&mut f).unwrap();
-        drop(f);
-        write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+        let mut body: Vec<u8> = Vec::new();
+        entry
+            .serialize_to_writer(&mut body)
+            .expect("serialize_to_writer into a Vec must not fail");
 
-        let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
-            .expect("a stale entry must be a miss, never an Err");
-        assert!(
-            got.is_none(),
-            "a v2 entry must read as a clean miss so the caller cold-recomputes"
-        );
+        let write_with_stamp = |stamp: u32, inp: &str| {
+            std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
+            let header = CacheEntryHeader {
+                format_version: stamp,
+                engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
+                input_hash: cache_key_to_ascii_32(inp).unwrap(),
+                solve_time_ms: entry.solve_time_ms(),
+                byte_size: entry.uncompressed_byte_size(),
+                written_at: 0,
+            };
+            let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+            header.write_to(&mut f).unwrap();
+            f.write_all(&body).unwrap();
+            drop(f);
+            write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+        };
 
-        // Non-vacuity: the SAME body bytes under the CURRENT stamp must be a
+        for stale in 2..ENTRY_FORMAT_VERSION {
+            assert_ne!(
+                stale, ENTRY_FORMAT_VERSION,
+                "this loop only models STALE stamps"
+            );
+            let inp = format!("00112233445566770011223344556{stale:03x}");
+            write_with_stamp(stale, &inp);
+            let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, &inp)
+                .expect("a stale entry must be a miss, never an Err");
+            assert!(
+                got.is_none(),
+                "a v{stale} entry must read as a clean miss so the caller cold-recomputes"
+            );
+        }
+
+        // Non-vacuity: the identical body under the CURRENT stamp must be a
         // HIT. Without this, a malformed fixture would fail its body decode —
-        // which `read_entry` also turns into `Ok(None)` — and the assertion
+        // which `read_entry` also turns into `Ok(None)` — and every assertion
         // above would pass for entirely the wrong reason.
-        let fresh_inp = "0011223344556677001122334455667e";
-        let fresh_header = CacheEntryHeader {
-            format_version: ENTRY_FORMAT_VERSION,
-            input_hash: cache_key_to_ascii_32(fresh_inp).unwrap(),
-            ..header
-        };
-        std::fs::create_dir_all(shard_dir(root, eng, fresh_inp)).unwrap();
-        let mut f = std::fs::File::create(entry_bin_path(root, eng, fresh_inp)).unwrap();
-        fresh_header.write_to(&mut f).unwrap();
-        f.write_all(&(block.len() as u64).to_le_bytes()).unwrap();
-        f.write_all(&block).unwrap();
-        legacy.serialize_to_writer(&mut f).unwrap();
-        drop(f);
-        write_sidecar(&entry_meta_path(root, eng, fresh_inp)).unwrap();
-
+        let fresh_inp = "0011223344556677001122334455fffe";
+        write_with_stamp(ENTRY_FORMAT_VERSION, fresh_inp);
         assert!(
             read_entry::<WithDiagnostics<ElasticResult>>(root, eng, fresh_inp)
                 .expect("a current-format entry must not Err")
                 .is_some(),
-            "the fixture body must be decodable, or the miss above proves nothing"
+            "the fixture body must be decodable, or the misses above prove nothing"
         );
     }
 
@@ -5671,6 +5659,171 @@ version = "9.9.9"
         er
     }
 
+    /// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
+    /// covers each wire-mirror arm.
+    fn all_fea_structured_detail() -> Vec<StructuredComputeDetail> {
+        vec![
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            }),
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+                ids: vec![ElementId(3), ElementId(5)],
+            }),
+            StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+                selector_path: "top".into(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_structured_detail_of_every_fea_variant() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa1";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: all_fea_structured_detail(),
+            value: sample_result_with_aposteriori(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert_eq!(
+            read_back.structured_detail, original.structured_detail,
+            "every structured-detail overlay must be replayed exactly as written"
+        );
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "the diagnostics list must survive alongside the structured detail"
+        );
+        assert_eq!(read_back.value, original.value);
+    }
+
+    #[test]
+    fn with_diagnostics_structured_detail_prefix_survives_absent_aposteriori_tail() {
+        // The #7245 prefix-ordering regression for the structured-detail list:
+        // with the conditional tail ABSENT, any metadata byte placed after V's
+        // body would be read as an aposteriori discriminant.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa2";
+
+        let value = make_sample_result();
+        assert!(
+            value.aposteriori.is_none(),
+            "this test is only meaningful when the conditional tail is ABSENT"
+        );
+        let original = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: all_fea_structured_detail(),
+            value,
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit, not a decode failure");
+
+        assert!(
+            read_back.value.aposteriori.is_none(),
+            "structured detail must not leak into the aposteriori tail; got {:?}",
+            read_back.value.aposteriori
+        );
+        assert_eq!(read_back.value, original.value);
+        assert_eq!(read_back.structured_detail, original.structured_detail);
+    }
+
+    #[test]
+    fn with_diagnostics_refuses_to_write_a_block_over_the_read_bound() {
+        // An element-id list scales with the mesh, so the block size is data
+        // dependent. A block the reader would reject must never be published:
+        // it would be a perpetual miss that still costs a write and disk.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa3";
+
+        let oversized = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: (0..(MAX_DIAGNOSTICS_BLOCK_BYTES as usize / 8 + 1))
+                        .map(ElementId)
+                        .collect(),
+                },
+            )],
+            value: make_sample_result(),
+        };
+        assert!(
+            write_entry(root, eng, inp, &oversized).is_err(),
+            "a block over MAX_DIAGNOSTICS_BLOCK_BYTES must be refused on write"
+        );
+        assert!(
+            !entry_bin_path(root, eng, inp).exists(),
+            "a refused write must not publish a .bin"
+        );
+        assert!(
+            read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+                .unwrap()
+                .is_none(),
+            "a refused write must leave a clean miss"
+        );
+    }
+
+    #[test]
+    fn structured_detail_rejects_an_unknown_dof_direction_byte() {
+        // Hand-encoded block: an empty diagnostics list, then one
+        // Fea(Unconstrained) overlay carrying a single rigid-body-mode byte.
+        let entry_with_mode_byte = |mode: u8| -> Vec<u8> {
+            let mut block: Vec<u8> = Vec::new();
+            block.extend_from_slice(&0u64.to_le_bytes()); // diagnostics: []
+            block.extend_from_slice(&1u64.to_le_bytes()); // one overlay
+            block.extend_from_slice(&0u32.to_le_bytes()); // Fea
+            block.extend_from_slice(&0u32.to_le_bytes()); // Unconstrained
+            block.extend_from_slice(&1u64.to_le_bytes()); // one mode
+            block.push(mode);
+            let mut bytes = (block.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(&block);
+            make_sample_result()
+                .serialize_to_writer(&mut bytes)
+                .expect("serialize_to_writer into a Vec must not fail");
+            bytes
+        };
+
+        // Non-vacuity: the same bytes with the last valid code decode cleanly.
+        let valid = WithDiagnostics::<ElasticResult>::deserialize_from_reader(
+            &mut entry_with_mode_byte(5).as_slice(),
+        )
+        .expect("a well-formed block must decode");
+        assert_eq!(
+            valid.structured_detail,
+            vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: vec![DofDirection::RotationZ],
+                }
+            )]
+        );
+
+        let err = WithDiagnostics::<ElasticResult>::deserialize_from_reader(
+            &mut entry_with_mode_byte(6).as_slice(),
+        )
+        .expect_err("an unknown DofDirection byte must not decode");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData (never a silently wrong direction), got {err:?}"
+        );
+        assert!(
+            err.to_string().contains('6'),
+            "the rejection must name the offending byte, got: {err}"
+        );
+    }
+
     #[test]
     fn with_diagnostics_round_trips_value_and_diagnostics() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -5680,6 +5833,7 @@ version = "9.9.9"
 
         let original = WithDiagnostics {
             diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: vec![],
             value: sample_result_with_aposteriori(),
         };
         write_entry(root, eng, inp, &original).unwrap();
@@ -5718,6 +5872,7 @@ version = "9.9.9"
 
         let original = WithDiagnostics {
             diagnostics: Vec::new(),
+            structured_detail: vec![],
             value: make_sample_result(),
         };
         write_entry(root, eng, inp, &original).unwrap();
@@ -5751,6 +5906,7 @@ version = "9.9.9"
                 shell_too_thick_warning(),
                 reify_core::Diagnostic::info("adaptive refinement converged"),
             ],
+            structured_detail: vec![],
             value,
         };
         write_entry(root, eng, inp, &original).unwrap();
@@ -5791,6 +5947,7 @@ version = "9.9.9"
 
         let original = WithDiagnostics {
             diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: vec![],
             value: make_sample_result(),
         };
         write_entry(root, eng, inp, &original).unwrap();
@@ -5834,6 +5991,17 @@ version = "9.9.9"
                     .with_code(reify_core::DiagnosticCode::ShellTooThick)
                     .with_candidates(["c"]),
             ],
+            structured_detail: vec![
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+                }),
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(3)],
+                }),
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+                    selector_path: "top".into(),
+                }),
+            ],
             value: make_sample_result(),
         };
         let mut encoded: Vec<u8> = Vec::new();
@@ -5841,12 +6009,12 @@ version = "9.9.9"
             .serialize_to_writer(&mut encoded)
             .expect("serialize_to_writer into a Vec must not fail");
 
-        // bincode 1.3 fixint-LE: u64 lengths, a u8 `Option` tag, fields in
-        // declaration order.
+        // bincode 1.3 fixint-LE: u64 lengths, a u8 `Option` tag, u32 enum
+        // variant tags, fields in declaration order.
         #[rustfmt::skip]
-        let expected: [u8; 65] = [
-            // block length frame = 57 (u64)
-            0x39, 0, 0, 0, 0, 0, 0, 0,
+        let expected: [u8; 138] = [
+            // block length frame = 130 (u64): 57 diagnostics + 73 structured
+            0x82, 0, 0, 0, 0, 0, 0, 0,
             // Vec<PersistedDiagnostic> length = 1 (u64)
             0x01, 0, 0, 0, 0, 0, 0, 0,
             // severity = Warning
@@ -5858,6 +6026,17 @@ version = "9.9.9"
             b'S', b'h', b'e', b'l', b'l', b'T', b'o', b'o', b'T', b'h', b'i', b'c', b'k',
             // candidates = ["c"] (u64 count, then one u64-length string)
             0x01, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'c',
+            // Vec<PersistedStructuredDetail> length = 3 (u64)
+            0x03, 0, 0, 0, 0, 0, 0, 0,
+            // Fea (u32 tag 0) / Unconstrained (u32 tag 0), modes = [0..=5]
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0x06, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5,
+            // Fea (u32 tag 0) / ProblemElements (u32 tag 1), element_ids = [3]
+            0, 0, 0, 0, 0x01, 0, 0, 0,
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0,
+            // Fea (u32 tag 0) / UnresolvedSelector (u32 tag 2), selector_path = "top"
+            0, 0, 0, 0, 0x02, 0, 0, 0,
+            0x03, 0, 0, 0, 0, 0, 0, 0, b't', b'o', b'p',
         ];
         assert_eq!(
             &encoded[..expected.len()],
@@ -5892,6 +6071,7 @@ version = "9.9.9"
             inp,
             &WithDiagnostics {
                 diagnostics: vec![rich],
+                structured_detail: vec![],
                 value: make_sample_result(),
             },
         )
