@@ -4,15 +4,16 @@
 //!
 //! Reads units.md through the binary's shared scanners rather than scanners of
 //! its own: fences through `chunk_markdown.rs`'s `tagged_fence_bodies`, cites
-//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, call names
-//! through `call_scan.rs`'s comment-aware `strip_reify_comments` /
-//! `called_names`, and their registry through `callable_registries.rs`. What
-//! "compiles clean" means is `module_compile.rs`'s.
+//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, the call names
+//! of its ```` ```reify ```` fences through `doc_forms.rs`'s AST walk
+//! (`fence_call_forms` / `callee_names`), and their registry through
+//! `callable_registries.rs`. What "compiles clean" means is
+//! `module_compile.rs`'s.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
-//! `assert_module_compiles`, `rejected_form_rows`, `wrap_form`,
-//! `named_length_argument`, `squash_whitespace` — the last four pinned directly
-//! by the "Scanner unit tests" block at the bottom.
+//! `assert_module_compiles`, `rejected_form_rows`, `strip_reify_comments`,
+//! `wrap_form`, `named_length_argument`, `squash_whitespace` — the last five
+//! pinned directly by the "Scanner unit tests" block at the bottom.
 //!
 //! # What this file guards
 //!
@@ -60,7 +61,6 @@
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
 
-use crate::call_scan::strip_reify_comments;
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
@@ -171,8 +171,8 @@ const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
 /// `"box: width argument expects Length, got Int; …"` that is `width`. Split out
 /// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
 /// test over a synthetic message rather than only through the live compiler,
-/// which is this file's convention for every hand-rolled text scan (see
-/// `call_scan.rs`'s "Scanner unit tests" block).
+/// which is this file's convention for every hand-rolled text scan (see the
+/// "Scanner unit tests" block at the bottom).
 fn named_length_argument(message: &str) -> Option<&str> {
     let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
     if before.len() == message.len() {
@@ -223,6 +223,74 @@ fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
         }
     }
     rows
+}
+
+/// `src` with its `//` and `/* */` annotations removed. Every other byte —
+/// newlines included — is left exactly where it was, so a row still reads like
+/// the chunk's own line in a panic message.
+///
+/// [`rejected_form_rows`]' one helper. A ```` ```reify-rejected ```` or
+/// ```` ```reify-rejected-at-eval ```` row (`form --> form // note`) is not
+/// Reify source, so no parser reads it, and its annotations are removed as
+/// text. Handles both comment forms the grammar defines
+/// (`tree-sitter-reify/grammar.js` `line_comment` / `block_comment`) and does
+/// not strip inside a double-quoted string. `://` is deliberately NOT a comment
+/// start, so a URL survives. A mis-tracked string can only cause a comment to
+/// survive, never content to be dropped — i.e. it degrades to the un-stripped
+/// behaviour, never past it.
+fn strip_reify_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut in_string = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            match c {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                }
+                '"' => in_string = false,
+                // An unterminated literal ends at the line break rather than
+                // swallowing the rest of the input.
+                '\n' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            // `//` to end of line — but not the `//` in a `scheme://` URL.
+            '/' if chars.peek() == Some(&'/') && !out.ends_with(':') => {
+                chars.next();
+                while chars.peek().is_some_and(|&n| n != '\n') {
+                    chars.next();
+                }
+            }
+            // `/* … */`, newlines preserved so line structure survives.
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev_star = false;
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                    }
+                    if prev_star && n == '/' {
+                        break;
+                    }
+                    prev_star = n == '*';
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Assert `module_src` compiles clean, in `module_compile`'s one sense of the
@@ -637,15 +705,55 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `rejected_form_rows`, `named_length_argument`, `squash_whitespace` and
-// `wrap_form` are this module's own hand-rolled text helpers, and every
-// rejection assertion above is downstream of one of them. They are pinned
-// DIRECTLY here rather than only through the chunk, which is the posture
-// `call_scan.rs`'s own "Scanner unit tests" block establishes for the scanners
-// this file imports. The failure these guard against is
-// self-concealing: a helper that quietly stopped extracting anything would leave
-// every floor and sentinel above satisfied, because those are drawn from the
-// same helpers' output.
+// `rejected_form_rows`, `strip_reify_comments`, `named_length_argument`,
+// `squash_whitespace` and `wrap_form` are this module's own hand-rolled text
+// helpers, and every rejection assertion above is downstream of one of them.
+// They are pinned DIRECTLY here rather than only through the chunk. The failure
+// these guard against is self-concealing: a helper that quietly stopped
+// extracting anything would leave every floor and sentinel above satisfied,
+// because those are drawn from the same helpers' output.
+
+#[test]
+fn strip_reify_comments_leaves_ordinary_source_untouched() {
+    let src = "structure def S {\n    let g = box(1mm, 2mm, 3mm)\n}";
+    assert_eq!(strip_reify_comments(src), src);
+}
+
+#[test]
+fn strip_reify_comments_keeps_a_url_intact() {
+    // `//` after a URL scheme is not a comment start, so a row quoting a URL
+    // keeps it.
+    let src = "see https://example.test/clearance for more";
+    assert_eq!(strip_reify_comments(src), src);
+}
+
+#[test]
+fn strip_reify_comments_leaves_a_double_slash_inside_a_string_literal() {
+    let src = r#"let m1 = body(m0, "a//b", fixed()) // drop me"#;
+    assert_eq!(
+        strip_reify_comments(src),
+        r#"let m1 = body(m0, "a//b", fixed()) "#
+    );
+}
+
+#[test]
+fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
+    let src = "let a = box(1mm, 1mm, 1mm)\n/* two\n   lines */\nlet b = sphere(1mm)";
+    let out = strip_reify_comments(src);
+    assert_eq!(
+        out.lines().count(),
+        src.lines().count(),
+        "line structure must survive so panic messages still line up with the chunk"
+    );
+    assert!(
+        !out.contains("two"),
+        "block-comment body must be gone: {out:?}"
+    );
+    assert!(
+        out.contains("sphere(1mm)"),
+        "code after the comment must survive"
+    );
+}
 
 /// The argument-name extraction reads the blamed argument out of a SYNTHETIC
 /// message, so it is pinned independently of whatever the compiler emits today.

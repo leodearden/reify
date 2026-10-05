@@ -1,93 +1,8 @@
-//! Which calls a piece of Reify text makes, read as TEXT: the comment stripper
-//! every call scan runs behind, the per-name call-site scan, and the
-//! distinct-called-names scan confirmed through it.
+//! Which calls a piece of text makes, read as TEXT: the per-name call-site
+//! scan, and the distinct-called-names scan confirmed through it.
 //!
 //! Text scans, so they read a fence body, a chunk's markdown prose and an
 //! example `.ri` file alike, whether or not the text parses.
-
-/// `src` with Reify comments removed. Every other byte — newlines included — is
-/// left exactly where it was, so a stripped fence still reads like the original
-/// in a panic message.
-///
-/// WHY THIS EXISTS. [`call_sites`] is a text scan, so without it a call form
-/// written only in a `//` comment counts as a real call. That was live, not
-/// hypothetical: geometry.md's FORM A fence carries the line
-/// `// MUST be let-bound. Writing `constraint min_clearance(s, id_a, id_b) > 2mm``,
-/// whose 3-arg `min_clearance(` is exactly the documented arity — so deleting the
-/// fence's REAL `let clr = min_clearance(s, id_a, id_b)` left both of
-/// `geometry_chunk_smoke.rs`'s `geometry_reify_fences_call_every_worked_example_form`
-/// and `oracle_signature_arities_match_the_compiling_fences` green while
-/// their panic text claimed the form was "compile-verified" / "exercised by a
-/// compiling fence". A commented-out call is not a call.
-///
-/// NOT AN AST WALK — yet. `doc_forms::call_forms` (`pub(crate)`) already extracts
-/// `(name, arity)` from the real parser, which would close this hole for free AND
-/// handle nesting exactly; swapping this scan onto it is task #8036, which first
-/// extends that walk to `constraint` members. Copying its ~120-line exhaustive
-/// `ExprKind` match here instead would add a second call extractor to this
-/// binary. Until then this stripper plus the unit tests at the bottom of this
-/// file are the guard.
-///
-/// Handles both comment forms the grammar defines (`tree-sitter-reify/grammar.js`
-/// `line_comment` / `block_comment`) and does not strip inside a double-quoted
-/// string. `://` is deliberately NOT a comment start, so the same helper is safe
-/// on the chunk's markdown prose, where a URL would otherwise truncate its line.
-/// A mis-tracked string can only cause a comment to survive, never content to be
-/// dropped — i.e. it degrades to the un-stripped behaviour, never past it.
-pub(crate) fn strip_reify_comments(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut chars = src.chars().peekable();
-    let mut in_string = false;
-
-    while let Some(c) = chars.next() {
-        if in_string {
-            out.push(c);
-            match c {
-                '\\' => {
-                    if let Some(escaped) = chars.next() {
-                        out.push(escaped);
-                    }
-                }
-                '"' => in_string = false,
-                // An unterminated literal ends at the line break rather than
-                // swallowing the rest of the input.
-                '\n' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-
-        match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            // `//` to end of line — but not the `//` in a `scheme://` URL.
-            '/' if chars.peek() == Some(&'/') && !out.ends_with(':') => {
-                chars.next();
-                while chars.peek().is_some_and(|&n| n != '\n') {
-                    chars.next();
-                }
-            }
-            // `/* … */`, newlines preserved so line structure survives.
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut prev_star = false;
-                for n in chars.by_ref() {
-                    if n == '\n' {
-                        out.push('\n');
-                    }
-                    if prev_star && n == '/' {
-                        break;
-                    }
-                    prev_star = n == '*';
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
 
 /// Every call to `name` in `text`, as `(arity, byte offset just past the closing
 /// paren)`, in document order.
@@ -284,76 +199,6 @@ fn call_sites_offset_lands_just_past_the_closing_paren() {
     );
 }
 
-#[test]
-fn call_sites_does_not_see_a_call_that_only_appears_in_a_comment() {
-    // geometry.md's FORM A fence, reduced to the two lines that matter: the
-    // annotation names the 3-arg form, the code calls the 2-arg one.
-    let fence = "// Writing `constraint min_clearance(s, id_a, id_b) > 2mm` inline is wrong.\n\
-                 let clr = min_clearance(s, id_a)";
-
-    let raw: Vec<usize> = call_sites(fence, "min_clearance")
-        .into_iter()
-        .map(|(arity, _)| arity)
-        .collect();
-    assert_eq!(
-        raw,
-        vec![3, 2],
-        "a RAW scan sees the commented form too — this is the hole `strip_reify_comments` closes"
-    );
-
-    let code: Vec<usize> = call_sites(&strip_reify_comments(fence), "min_clearance")
-        .into_iter()
-        .map(|(arity, _)| arity)
-        .collect();
-    assert_eq!(
-        code,
-        vec![2],
-        "a comment-free scan must see only the call the compiler actually gets"
-    );
-}
-
-#[test]
-fn strip_reify_comments_leaves_ordinary_source_untouched() {
-    let src = "structure def S {\n    let g = box(1mm, 2mm, 3mm)\n}";
-    assert_eq!(strip_reify_comments(src), src);
-}
-
-#[test]
-fn strip_reify_comments_keeps_a_url_intact() {
-    // The same helper runs over the chunk's markdown prose, where `//` after a
-    // scheme is not a comment.
-    let src = "see https://example.test/clearance for more";
-    assert_eq!(strip_reify_comments(src), src);
-}
-
-#[test]
-fn strip_reify_comments_leaves_a_double_slash_inside_a_string_literal() {
-    let src = r#"let m1 = body(m0, "a//b", fixed()) // drop me"#;
-    assert_eq!(
-        strip_reify_comments(src),
-        r#"let m1 = body(m0, "a//b", fixed()) "#
-    );
-}
-
-#[test]
-fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
-    let src = "let a = box(1mm, 1mm, 1mm)\n/* two\n   lines */\nlet b = sphere(1mm)";
-    let out = strip_reify_comments(src);
-    assert_eq!(
-        out.lines().count(),
-        src.lines().count(),
-        "line structure must survive so panic messages still line up with the chunk"
-    );
-    assert!(
-        !out.contains("two"),
-        "block-comment body must be gone: {out:?}"
-    );
-    assert!(
-        out.contains("sphere(1mm)"),
-        "code after the comment must survive"
-    );
-}
-
 /// A digit-prefixed run juxtaposed with `(` is a numeric literal, not a call.
 ///
 /// The discriminator `called_names` documents, asserted directly. Without the
@@ -411,27 +256,4 @@ fn called_names_dedups_and_preserves_document_order() {
         called_names("polygon(0mm, 0mm) ; nurbs(1, 2) ; polygon(1mm, 1mm) ; nurbs(3, 4)"),
         vec!["polygon".to_string(), "nurbs".to_string()]
     );
-}
-
-/// A call appearing ONLY inside a `//` comment is absent once the input is
-/// comment-stripped.
-///
-/// `called_names` documents "`text` MUST already be comment-free" as a
-/// PRECONDITION, not a behaviour — it does no stripping of its own. This pins
-/// the contract from the caller's side, which is how every chunk module uses it:
-/// `called_names(&strip_reify_comments(&section))`. The hazard is live, not
-/// hypothetical — geometry.md's FORM A fence carries a commented call at exactly
-/// the documented arity (see `strip_reify_comments`), and a commented-out call
-/// is not a call.
-#[test]
-fn called_names_does_not_see_a_call_that_only_appears_in_a_comment() {
-    let src = "// let old = helix(10mm, 2mm, 50mm)\nlet spine = interp(0mm, 0mm, 0mm)";
-    assert_eq!(
-        called_names(&strip_reify_comments(src)),
-        vec!["interp".to_string()],
-        "the commented `helix(` must not count once the input is stripped"
-    );
-    // Control: UNSTRIPPED, the scanner does see it — so the assertion above is
-    // about the precondition being honoured, not about the input being inert.
-    assert!(called_names(src).contains(&"helix".to_string()));
 }
