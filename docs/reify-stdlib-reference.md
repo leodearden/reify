@@ -516,9 +516,14 @@ fn half_space(plane: Plane) -> Solid     // Unbounded — Bounded = false
 // intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
 // Worked example: examples/half_space.ri.
 
-// Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
-// see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
-// fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
+fn extrude_infinite(profile: Surface, direction: Vector3<Dimensionless>) -> Solid     // Unbounded — Bounded = false
+// current compiler form: extrude_infinite(profile, dx, dy, dz, direction) — the
+// sweep axis (dx, dy, dz: a dimensionless direction, so bare literals) and a
+// trailing `direction` STRING choosing which way the profile is swept to
+// infinity: "positive", "negative" or "both". Being unbounded, it must be
+// intersected with a finite solid before export or a mass-property query, e.g.
+// intersection(extrude_infinite(circle(5mm), 0, 0, 1, "positive"), box(20mm, 20mm, 10mm))
+// Worked example: examples/extrude_infinite.ri.
 ```
 
 **Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
@@ -722,9 +727,9 @@ Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
 ```
 fn mirror<G: Transformable>(geometry: G, plane: Plane) -> G
-fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Length>, count: Int, spacing: Length) -> List<G>
+fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Dimensionless>, count: Int, spacing: Length) -> List<G>
 fn circular_pattern<G: Transformable>(geometry: G, axis: Axis, count: Int, angle: Angle) -> List<G>
-fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Length>, count1: Int, spacing1: Length, dir2: Vector3<Length>, count2: Int, spacing2: Length) -> List<G>
+fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Dimensionless>, count1: Int, spacing1: Length, dir2: Vector3<Dimensionless>, count2: Int, spacing2: Length) -> List<G>
 fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3>>) -> List<G>
 ```
 
@@ -2050,7 +2055,7 @@ This hierarchy is enforced via nominal conformance, not merely declared: `bind`/
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
-`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
