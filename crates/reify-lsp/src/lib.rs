@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use tower_lsp::{LspService, Server};
 
+use blocking_work::BlockingWorkPlacement;
 use server::ClientSink;
 
 /// Start the Reify LSP server on stdin/stdout.
@@ -33,7 +34,9 @@ pub async fn run_server() {
 
     let (service, socket) = LspService::new(|client| {
         let sink = Arc::new(ClientSink::new(client.clone()));
+        // Keep the stdio server's async workers free while handlers parse and compile.
         server::ReifyLanguageServer::with_sink(client, sink)
+            .with_blocking_work_placement(BlockingWorkPlacement::BlockingPool)
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }
