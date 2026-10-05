@@ -207,9 +207,9 @@ use reify_solver_elastic::{
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
     GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
     StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
-    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    apply_patch_resultant, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    element_stress_p1, free_faces_within, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
     resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
     solve_cg_with_warm_state_progress, tet_volume_p1,
@@ -277,7 +277,8 @@ pub(crate) struct CantileverFeaSolve {
     pub u: Arc<Vec<f64>>,
     /// Node coordinates (length n_nodes).
     pub coords: Vec<[f64; 3]>,
-    /// Indices of tip-face nodes (ix == nx) — for tip-deflection queries.
+    /// The loaded node set: the x_max face (synthetic `ix == nx`; realized by
+    /// coordinate) or a selector-resolved load set (task 4092).
     pub tip_nodes: Vec<usize>,
     /// Maximum von Mises stress across all elements (Pa).
     pub max_von_mises: f64,
@@ -555,8 +556,9 @@ pub fn solve_elastic_static_trampoline(
     // Two load kinds are bridged here (task 4264), read in a single pass by
     // `extract_loads`:
     //
-    //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
-    //                 loads across the tip-face nodes via apply_point_load).
+    //   PointLoad   — `force: Real` → scalar tip_force (a -Z resultant spread
+    //                 as a uniform traction over the tip face via
+    //                 apply_patch_resultant).
     //
     //   PressureLoad — `magnitude: Real, face: String, direction: String` →
     //                 face-traction assembled via apply_traction_load(f,
@@ -1681,9 +1683,10 @@ type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 type BcNodeSetOverride = Option<(Option<Vec<usize>>, Option<Vec<usize>>)>;
 
 /// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
-/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
-/// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
-/// Dirichlet-clamped AND tip-loaded, a physically meaningless over-constraint —
+/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip)
+/// face sets selected by `realized_cantilever_bc_node_sets` collapse into one —
+/// every DOF both Dirichlet-clamped AND tip-loaded, a physically meaningless
+/// over-constraint —
 /// so `realized_solver_mesh` rejects the mesh and the trampoline falls back to
 /// the synthetic box (task 4091 review #2; honest degradation,
 /// realization-read-api §3.2-5). 1e-9 sits orders of magnitude above the
@@ -2739,6 +2742,44 @@ fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
     (nx, ny, nz)
 }
 
+/// The realized cantilever's `(root, tip)` node sets: the nodes on the x_min
+/// face (clamped) and the x_max face (loaded) of `coords`' bounding box,
+/// selected by coordinate (task 4091 design_dec[2]).
+///
+/// The tolerance is relative to the x-extent, with a small absolute floor.
+/// `realized_solver_mesh` guarantees an x-extent of at least
+/// [`MIN_SOLVE_X_EXTENT`], so the two sets cannot overlap into one
+/// over-constrained set (task 4091 review #2).
+fn realized_cantilever_bc_node_sets(coords: &[[f64; 3]]) -> (Vec<usize>, Vec<usize>) {
+    let (aabb_min, aabb_max) = aabb(coords);
+    let x_tol = (aabb_max[0] - aabb_min[0]).max(1e-12) * 1e-6 + 1e-12;
+    let nodes_where = |on_face: &dyn Fn(f64) -> bool| -> Vec<usize> {
+        (0..coords.len())
+            .filter(|&n| on_face(coords[n][0]))
+            .collect()
+    };
+    (
+        nodes_where(&|x| x <= aabb_min[0] + x_tol),
+        nodes_where(&|x| x >= aabb_max[0] - x_tol),
+    )
+}
+
+/// The cantilever tip resultant `tip_force` as the uniform traction over the
+/// free faces spanned by `tip_nodes`, returned as a fresh `3 * coords.len()`
+/// load vector (task 7448). Its total and line of action (the tip-face
+/// centroid) do not depend on the mesh; a zero-area tip set (a vertex or edge
+/// selector target) keeps the equal nodal split.
+fn cantilever_tip_load(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    tip_nodes: &[usize],
+    tip_force: [f64; 3],
+) -> Vec<f64> {
+    let mut f = vec![0.0; 3 * coords.len()];
+    apply_patch_resultant(&mut f, coords, tets, tip_nodes, tip_force);
+    f
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -2851,24 +2892,7 @@ pub(crate) fn solve_cantilever_fea(
             let dz = ext[2].max(1e-9);
             let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
             let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
-            // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
-            // Relative tol on the x-extent plus a small absolute floor. The
-            // x-extent is guaranteed non-degenerate (≥ MIN_SOLVE_X_EXTENT) by
-            // `realized_solver_mesh`, so the two face sets cannot overlap into a
-            // single over-constrained set here (task 4091 review #2).
-            let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
-            let root_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] <= aabb_min[0] + x_tol)
-                .map(|(i, _)| i)
-                .collect();
-            let tip_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] >= aabb_max[0] - x_tol)
-                .map(|(i, _)| i)
-                .collect();
+            let (root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
             (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
@@ -3053,21 +3077,11 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load over the tip-face nodes ────────
+    // ── Build load vector; spread the tip resultant over the tip face ─────────
     //
-    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
-    // both the synthetic and realized paths). Force is distributed equally across
-    // them — the bending (-Z) direction for the canonical cantilever tip load.
-    let mut f = vec![0.0f64; 3 * n_nodes];
-    let n_tip = tip_nodes.len().max(1) as f64;
-    let force_per_tip = [
-        tip_force[0] / n_tip,
-        tip_force[1] / n_tip,
-        tip_force[2] / n_tip,
-    ];
-    for &tn in &tip_nodes {
-        apply_point_load(&mut f, tn, force_per_tip);
-    }
+    // Mesh-independent because the adaptive lanes re-derive `tip_nodes` on
+    // every remesh (task 7448).
+    let mut f = cantilever_tip_load(&coords, &tet_connectivity, &tip_nodes, tip_force);
 
     // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
@@ -3100,6 +3114,10 @@ pub(crate) fn solve_cantilever_fea(
     //
     // `root_nodes` was selected during mesh acquisition above (the x_min face on
     // both the synthetic and realized paths).
+    //
+    // The fully fixed root face is a deliberate modelling choice. Its perimeter
+    // is a re-entrant clamp singularity (stress unbounded at the clamp edges), so
+    // the Z-Z indicator and Dörfler marks concentrate there under refinement.
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -5278,10 +5296,10 @@ fn box_face_plane(
 /// - `extent` — physical coordinate of the plane.
 /// - `eps`    — point-on-plane tolerance (1e-9 recommended).
 ///
-/// For each tet's 4 triangular faces, a face is included if all 3 of its nodes
-/// satisfy the plane predicate (`coord[axis] >= extent - eps` for at_max,
-/// `coord[axis] <= eps` for lower).  A boundary face belongs to exactly one tet
-/// so there is no double-counting.
+/// Returns the free (boundary) tet faces whose 3 nodes all satisfy the plane
+/// predicate (`coord[axis] >= extent - eps` for at_max, `coord[axis] <= eps`
+/// for lower), via `free_faces_within`, so a face shared by two tets is never
+/// included.
 fn collect_box_face_triangles(
     coords: &[[f64; 3]],
     tets: &[[usize; 4]],
@@ -5290,9 +5308,6 @@ fn collect_box_face_triangles(
     extent: f64,
     eps: f64,
 ) -> Vec<[usize; 3]> {
-    // Four triangular faces of a tet [a, b, c, d]:
-    const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-
     // NOTE: `eps` is an **absolute** tolerance. For the current fixtures
     // (SI-metre beams, node spacing >> 1e-9 m) this is safe. If sub-millimetre
     // or sub-micron FEA geometries are ever supported, consider scaling eps
@@ -5306,19 +5321,7 @@ fn collect_box_face_triangles(
             coord <= eps
         }
     };
-
-    let mut result = Vec::new();
-    for tet in tets {
-        for fi in &FACE_IDX {
-            let n0 = tet[fi[0]];
-            let n1 = tet[fi[1]];
-            let n2 = tet[fi[2]];
-            if on_plane(n0) && on_plane(n1) && on_plane(n2) {
-                result.push([n0, n1, n2]);
-            }
-        }
-    }
-    result
+    free_faces_within(tets, on_plane)
 }
 
 /// Apply face-pressure tractions from `pressures` into the global force vector `f`.
@@ -5330,7 +5333,7 @@ fn collect_box_face_triangles(
 ///
 /// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
 /// is supported in v1; other direction strings are treated as `"normal"`.
-/// Accumulates additively into `f` — composable with the existing tip point loads.
+/// Accumulates additively into `f` — composable with the tip load.
 ///
 /// **Performance note:** the full tet mesh is scanned once per `PressureSpec`
 /// (O(|pressures| × n_tets)).  For the current fixtures (≤ 2 specs, small meshes)
@@ -8036,6 +8039,110 @@ mod tests {
             result.max_von_mises.is_finite() && result.max_von_mises > 0.0,
             "max_von_mises must be finite > 0, got {}",
             result.max_von_mises
+        );
+    }
+
+    /// `[length, width, height]` (m) of the synthetic box the traction tests load.
+    const TRACTION_TEST_BOX: [f64; 3] = [1.0, 0.1, 0.1];
+    const TRACTION_TEST_PRESSURE: f64 = 1.0e6;
+
+    /// Solves `TRACTION_TEST_BOX` once under `TRACTION_TEST_PRESSURE` on `face`
+    /// and once under `tip_force` on the tip set `load_set` picks from the mesh
+    /// (`None`: the solve's own x_max face), and asserts the two displacement
+    /// fields agree to CG stopping noise: the tip force assembles as that
+    /// pressure.
+    fn assert_tip_force_loads_like_face_pressure(
+        case: &str,
+        grid_override: Option<(usize, usize, usize)>,
+        face: &str,
+        tip_force: [f64; 3],
+        load_set: impl Fn(&[[f64; 3]]) -> Option<Vec<usize>>,
+    ) {
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let solve = |tip_force, pressures: &[PressureSpec], bc_override| {
+            let (result, _warm) = solve_cantilever_fea(
+                &model,
+                length,
+                width,
+                height,
+                None,
+                tip_force,
+                None,
+                pressures,
+                [0.0; 3],
+                true,
+                None,
+                None,
+                bc_override,
+                grid_override,
+            );
+            assert!(result.converged, "{case}: solve did not converge");
+            result
+        };
+        let pressure = [PressureSpec {
+            magnitude: TRACTION_TEST_PRESSURE,
+            face: face.to_string(),
+            direction: "normal".to_string(),
+        }];
+        let by_pressure = solve([0.0; 3], &pressure, None);
+        let bc_override = load_set(&by_pressure.coords).map(|load| (None, Some(load)));
+        let by_tip_force = solve(tip_force, &[], bc_override);
+
+        let scale = by_pressure.u.iter().fold(0.0_f64, |m, u| m.max(u.abs()));
+        let gap = by_tip_force
+            .u
+            .iter()
+            .zip(by_pressure.u.iter())
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        // Empirical: CG's tolerance bounds the residual, not this gap.
+        assert!(
+            gap <= 1e-6 * scale,
+            "{case}: tip-force and {face}-pressure solves differ by {gap:e} \
+             (max |u| = {scale:e})",
+        );
+    }
+
+    /// Task 7448: the tip force loads the synthetic x_max face as the uniform
+    /// traction of its resultant, on the default grid and on a grid the
+    /// uniform adaptive lane produces.
+    #[test]
+    fn tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face() {
+        let [_, width, height] = TRACTION_TEST_BOX;
+        let x_max_resultant = [-TRACTION_TEST_PRESSURE * width * height, 0.0, 0.0];
+        for grid_override in [None, Some((8, 2, 4))] {
+            assert_tip_force_loads_like_face_pressure(
+                &format!("grid {grid_override:?}"),
+                grid_override,
+                "x_max",
+                x_max_resultant,
+                |_| None,
+            );
+        }
+    }
+
+    /// Task 7448: a selector-resolved (task 4092) load set on a face other
+    /// than x_max also gets the uniform traction of the tip resultant.
+    #[test]
+    fn selector_resolved_load_set_gets_the_uniform_traction_of_its_resultant() {
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let z_max_resultant = [0.0, 0.0, -TRACTION_TEST_PRESSURE * length * width];
+        let z_max_face_nodes = |coords: &[[f64; 3]]| {
+            Some(
+                (0..coords.len())
+                    .filter(|&n| coords[n][2] >= height - 1e-9)
+                    .collect(),
+            )
+        };
+        assert_tip_force_loads_like_face_pressure(
+            "z_max load set",
+            None,
+            "z_max",
+            z_max_resultant,
+            z_max_face_nodes,
         );
     }
 
@@ -13006,32 +13113,43 @@ mod tests {
         sizes[best]
     }
 
-    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
-    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
-    /// `surface` is that gmsh mesh's own extracted boundary.
+    /// The bit-stable gmsh options every realized-mesh test meshes with.
+    fn deterministic_meshing_options(mesh_size: f64) -> reify_solver_elastic::MeshingOptions {
+        reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(mesh_size),
+            deterministic: true,
+            ..Default::default()
+        }
+    }
+
+    /// REAL GMSH OUTPUT for the fea_body_cantilever_adaptive.ri box
+    /// (1.0 × 0.1 × 0.1 m): a hand-built box's extracted boundary remeshed at
+    /// the uniform size `seed_size`.
     ///
     /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
     /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
     /// `inventory::submit!` in and break OCCT-only registry assertions
     /// (reify-eval/Cargo.toml's dead-strip invariant).
-    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
-        let opts = reify_solver_elastic::MeshingOptions {
-            mesh_size: Some(seed_size),
-            deterministic: true,
-            ..Default::default()
-        };
+    fn gmsh_box_volume_mesh(seed_size: f64) -> reify_ir::VolumeMesh {
         let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
         let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
             .expect("a P1 tet box has an extractable boundary");
         let (_, seed_tets) =
             volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
-        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+        reify_solver_elastic::refine_with_size_field(
             &seed_surface,
             &seed,
             &vec![seed_size; seed_tets.len()],
-            &opts,
+            &deterministic_meshing_options(seed_size),
         )
-        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        .expect("seeding a real gmsh volume from the box boundary must succeed")
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is
+    /// [`gmsh_box_volume_mesh`] and whose `surface` is that gmsh mesh's own
+    /// extracted boundary.
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let volume_mesh = gmsh_box_volume_mesh(seed_size);
         let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
             .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
 
@@ -13042,7 +13160,7 @@ mod tests {
             },
             volume_mesh,
             surface,
-            opts,
+            deterministic_meshing_options(seed_size),
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
@@ -13161,6 +13279,127 @@ mod tests {
              empty-mark remesh of the same seed: marked={n_after}, \
              unmarked={}",
             conns_unmarked.len(),
+        );
+    }
+
+    /// Task 7448: on the realized arm's tip set, the tip load keeps its
+    /// resultant and line of action (the tip-face centroid) across gmsh
+    /// remeshes that grade the tip face one-sidedly, so adaptive iterations
+    /// solve one boundary-value problem.
+    #[test]
+    fn realized_tip_load_keeps_its_resultant_and_line_of_action_across_remeshes() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const TIP_FORCE: [f64; 3] = [0.0, 0.0, -1000.0];
+        const SEED_SIZE: f64 = 0.05;
+        const REFINE_PASSES: usize = 2;
+        // Absorbs gmsh's f32 vertex rounding (~1e-7 m at x ≈ 1.0) should a
+        // tip-face vertex sit off the plane.
+        const CENTROID_TOL_M: f64 = 1e-6;
+        // Far above CENTROID_TOL_M, so the graded fixture tells an equal split
+        // from the traction.
+        const MIN_EQUAL_SPLIT_OFFSET_M: f64 = 1e-3;
+        let in_graded_region = |c: [f64; 3]| c[0] > 0.9 && c[1] < 0.05;
+
+        let seed = gmsh_box_volume_mesh(SEED_SIZE);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+        let mut meshes = vec![seed];
+        for _ in 0..REFINE_PASSES {
+            let current = meshes.last().expect("the seed is pushed first");
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(current).expect("gmsh output is widenable");
+            let marked: Vec<usize> = (0..tets.len())
+                .filter(|&e| in_graded_region(tet_centroid_of(&coords, &tets[e])))
+                .collect();
+            let refined = reify_solver_elastic::refine_marked_elements(
+                &surface,
+                current,
+                &marked,
+                &characteristic_sizes_from_solver_mesh(&coords, &tets),
+                &deterministic_meshing_options(SEED_SIZE),
+            )
+            .expect("a mark-driven gmsh remesh of the box must succeed");
+            meshes.push(refined);
+        }
+
+        struct TipLoadReading {
+            n_tip: usize,
+            resultant: [f64; 3],
+            line_of_action: [f64; 3],
+            face_centroid: [f64; 3],
+            equal_split_line_of_action: [f64; 3],
+        }
+        let f_norm_sq: f64 = TIP_FORCE.iter().map(|c| c * c).sum();
+        let read_tip_load = |mesh: &reify_ir::VolumeMesh| {
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(mesh).expect("gmsh output is widenable");
+            let (_root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
+            let f = cantilever_tip_load(&coords, &tets, &tip_nodes, TIP_FORCE);
+            let mut resultant = [0.0; 3];
+            let mut line_of_action = [0.0; 3];
+            for (n, x) in coords.iter().enumerate() {
+                let f_n = [f[3 * n], f[3 * n + 1], f[3 * n + 2]];
+                let share = (0..3).map(|a| f_n[a] * TIP_FORCE[a]).sum::<f64>() / f_norm_sq;
+                for a in 0..3 {
+                    resultant[a] += f_n[a];
+                    line_of_action[a] += share * x[a];
+                }
+            }
+            let (lo, hi) = aabb(&coords);
+            let n_tip = tip_nodes.len();
+            TipLoadReading {
+                n_tip,
+                resultant,
+                line_of_action,
+                face_centroid: [hi[0], 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])],
+                equal_split_line_of_action: std::array::from_fn(|a| {
+                    tip_nodes.iter().map(|&n| coords[n][a]).sum::<f64>() / n_tip as f64
+                }),
+            }
+        };
+        let readings: Vec<TipLoadReading> = meshes.iter().map(read_tip_load).collect();
+
+        let seed_reading = &readings[0];
+        let last_reading = readings.last().expect("at least the seed was read");
+        for (pass, r) in readings.iter().enumerate() {
+            for (a, &force_a) in TIP_FORCE.iter().enumerate() {
+                assert!(
+                    (r.resultant[a] - force_a).abs() <= 1e-12 * f_norm_sq.sqrt(),
+                    "pass {pass}: tip-load resultant {:?} != {TIP_FORCE:?}",
+                    r.resultant,
+                );
+                assert!(
+                    (r.line_of_action[a] - r.face_centroid[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} is off the tip-face \
+                     centroid {:?}",
+                    r.line_of_action,
+                    r.face_centroid,
+                );
+                assert!(
+                    (r.line_of_action[a] - seed_reading.line_of_action[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} moved from the seed's {:?}",
+                    r.line_of_action,
+                    seed_reading.line_of_action,
+                );
+            }
+        }
+
+        assert!(
+            last_reading.n_tip > seed_reading.n_tip,
+            "fixture: the refine passes must re-triangulate the tip face: tip nodes \
+             {} -> {}",
+            seed_reading.n_tip,
+            last_reading.n_tip,
+        );
+        let equal_split_offset_y =
+            (last_reading.equal_split_line_of_action[1] - last_reading.face_centroid[1]).abs();
+        assert!(
+            equal_split_offset_y >= MIN_EQUAL_SPLIT_OFFSET_M,
+            "fixture: the graded tip face must move an equal split's line of action \
+             off the centroid in y, but it is only {equal_split_offset_y:e} m off",
         );
     }
 

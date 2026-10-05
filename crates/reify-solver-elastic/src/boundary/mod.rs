@@ -6,8 +6,9 @@
 //!
 //! # Additive accumulation
 //!
-//! The three Neumann `apply_*` primitives (`apply_point_load`,
-//! `apply_body_force`, `apply_traction_load`) are designed to compose
+//! The three element-level Neumann `apply_*` primitives (`apply_point_load`,
+//! `apply_body_force`, `apply_traction_load`) and `apply_patch_resultant`,
+//! the mesh-level composite built on them, are designed to compose
 //! additively into a shared `&mut [f64]` global load vector. Callers should:
 //!
 //! ```ignore
@@ -22,6 +23,8 @@
 
 pub mod dirichlet;
 pub mod neumann;
+pub mod patch_load;
 
 pub use dirichlet::{DirichletBc, apply_dirichlet_row_elimination};
 pub use neumann::{FaceOrder, apply_body_force, apply_point_load, apply_traction_load};
+pub use patch_load::{apply_patch_resultant, free_faces_within};
