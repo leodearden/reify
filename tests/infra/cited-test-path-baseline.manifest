@@ -51,8 +51,6 @@ crates/reify-compiler/src/geometry.rs :: crates/reify-compiler/tests/rounded_pri
 crates/reify-compiler/src/type_compat.rs :: crates/reify-compiler/tests/purpose_compile_tests.rs
 crates/reify-compiler/src/type_resolution.rs :: crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs
 crates/reify-compiler/stdlib/dynamics.ri :: crates/reify-compiler/tests/stdlib_loader_tests.rs
-crates/reify-compiler/stdlib/fea_multi_case.ri :: crates/reify-eval/tests/fea_loads_stdlib_smoke.rs
-crates/reify-compiler/stdlib/fea_multi_case.ri :: crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs
 crates/reify-compiler/stdlib/materials_electrical.ri :: crates/reify-compiler/tests/polymorphic_zero_tests.rs
 crates/reify-compiler/stdlib/units.ri :: crates/reify-compiler/tests/si_units_tests.rs
 crates/reify-compiler/tests/fixtures/specialization_scope_permitted.ri :: crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs
