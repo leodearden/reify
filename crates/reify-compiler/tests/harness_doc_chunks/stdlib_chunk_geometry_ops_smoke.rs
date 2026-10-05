@@ -73,81 +73,18 @@ use reify_compiler::{
 };
 use reify_core::Severity;
 
-use crate::chunk_cite_gate::cited_source_paths;
+use crate::chunk_io::{
+    GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH as CHUNK_PATH, all_chunks, read_chunk,
+};
+use crate::chunk_markdown::section_body;
 use crate::chunk_prose::code_spans;
 use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
-use crate::fence_gate::repo_root;
 use crate::signature_fixtures::{STDLIB_GEOMETRY_OPS_FIXTURE, read_fixture};
-
-/// The chunk this fixture transcribes. Read (never written) to check documented
-/// names against the compiler's registries. If the chunk moves, this const must
-/// move with it — the failure mode is a loud `expect` on the read, not a silent
-/// skip.
-const CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/stdlib.md"
-);
-
-/// The primitive/profile constructor chunk. Read (never written) to justify the
-/// "documented elsewhere" exclusions of the registry → doc guard below. Same
-/// contract as [`CHUNK_PATH`]: if the chunk moves, this const must move with it,
-/// and the failure mode is a loud `expect` on the read, not a silent skip.
-const GEOMETRY_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/geometry.md"
-);
-
-/// The whole chunk corpus served by `reify_language_reference`. The known-gap
-/// exclusion below claims a name is documented in NO chunk, so that claim has to
-/// be checked against every chunk, not just the two named above.
-const CHUNKS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../reify-mcp/src/tools/chunks");
 
 /// Heading of the chunk section whose documented names are checked.
 const CHUNK_SECTION: &str = "## Key Geometry Operations";
-
-/// Read a chunk, panicking loudly (never skipping) if it has moved.
-fn read_chunk(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!("{path} must be readable ({e}) — update the chunk path const if the chunk moved")
-    })
-}
-
-/// Every `*.md` under [`CHUNKS_DIR`], concatenated in a stable (sorted) order.
-///
-/// Same loud-panic-never-skip posture as [`read_chunk`]: an unreadable directory
-/// or entry aborts rather than silently shrinking the corpus, because a shrunken
-/// corpus would make the "documented in NO chunk" claim pass vacuously.
-fn read_all_chunks() -> String {
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(CHUNKS_DIR)
-        .unwrap_or_else(|e| {
-            panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunks moved")
-        })
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| panic!("reading an entry of {CHUNKS_DIR} failed ({e})"))
-                .path()
-        })
-        .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    paths.sort();
-
-    // Anti-vacuity: the corpus is 17 chunks today. An empty or near-empty read
-    // would silently turn the known-gap audit into a no-op.
-    assert!(
-        paths.len() >= 10,
-        "anti-vacuity: {CHUNKS_DIR} yielded only {} markdown chunk(s) — the corpus the \
-         known-gap audit reads has moved or been gutted, and the audit gives NO protection",
-        paths.len()
-    );
-
-    paths
-        .iter()
-        .map(|p| read_chunk(&p.to_string_lossy()))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
 /// "Key Geometry Operations" (+ "Curves") table must compile with no
@@ -328,7 +265,7 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
     assert!(
         unrecognised.is_empty(),
         "stdlib.md documents a geometry op the compiler does not have — the \
-         chunk crates/reify-mcp/src/tools/chunks/stdlib.md must be corrected \
+         chunk {CHUNK_PATH} must be corrected \
          (an unknown call name in a `structure def` body compiles silently, so \
          the zero-Error compile smoke cannot catch this). Unrecognised name(s): {}",
         unrecognised.join(", ")
@@ -341,30 +278,24 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
 /// chunk's [`CHUNK_SECTION`] section.
 ///
 /// Scan shape (deliberately narrow, so this stays a NAME+ARITY check and
-/// never becomes a wording pin) — identical section/line/span selection to
-/// the name-only scan this supersedes: inside that section — from its
-/// heading to the next `## ` heading — every line that starts with `**` is a
-/// bolded signature row; within such a row only its code spans are inspected,
-/// and each is read by `doc_forms`' [`doc_form_of_span`] — the strict
-/// signature-shape rule, under which a bare `…` or an `ident…` argument marks
-/// the form variadic and counts nothing.
+/// never becomes a wording pin): inside the section [`section_body`] reads
+/// under that heading, every line that starts with `**` is a bolded signature
+/// row; within such a row only its code spans are inspected, and each is read
+/// by `doc_forms`' [`doc_form_of_span`] — the strict signature-shape rule,
+/// under which a bare `…` or an `ident…` argument marks the form variadic and
+/// counts nothing.
 ///
 /// Deduped and sorted (by name, then arity), so a caller's `assert_eq!` names
-/// the exact form. Callers must anti-vacuity-check the result: a heading
-/// rename or a row that stops using `**`/backticks would otherwise silently
-/// empty the scan.
+/// the exact form. A heading rename PANICS naming the chunk. A row that stops
+/// using `**`/backticks would still silently empty the scan, so callers must
+/// anti-vacuity-check the result.
 fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
     let mut forms = Vec::new();
-    let mut in_section = false;
 
-    for line in markdown.lines() {
-        if let Some(heading) = line.strip_prefix("## ") {
-            in_section = heading.trim() == CHUNK_SECTION.trim_start_matches("## ");
-            continue;
-        }
-        if !in_section || !line.starts_with("**") {
-            continue;
-        }
+    for line in section_body(markdown, CHUNK_SECTION, CHUNK_PATH, CHUNK_SECTION)
+        .lines()
+        .filter(|line| line.starts_with("**"))
+    {
         forms.extend(
             code_spans(line)
                 .iter()
@@ -382,9 +313,8 @@ fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
 /// scan exists (overloads of the same name collapse to one entry here — see
 /// `documented_geometry_op_forms` for the arity-preserving form).
 ///
-/// Deduped and sorted. Callers must anti-vacuity-check the result: a heading
-/// rename or a row that stops using `**`/backticks would otherwise silently
-/// empty the scan.
+/// Deduped and sorted. Callers must anti-vacuity-check the result: a row that
+/// stops using `**`/backticks would otherwise silently empty the scan.
 fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
     let mut names: Vec<String> = documented_geometry_op_forms(markdown)
         .into_iter()
@@ -396,16 +326,15 @@ fn documented_geometry_op_names(markdown: &str) -> Vec<String> {
 }
 
 /// Anti-vacuity guard every [`documented_geometry_op_names`] caller owes its
-/// assertions: a heading rename, or rows that stop using `**`/backticks, would
-/// empty the scan and make the checks built on it pass (or fire) for reasons
+/// assertions: rows that stop using `**`/backticks would empty the scan and make the checks built on it pass (or fire) for reasons
 /// that have nothing to do with the property under test. The section carries
 /// ~43 distinct names today.
 fn assert_scan_not_vacuous(documented: &[String]) {
     assert!(
         documented.len() >= 20,
         "the '{CHUNK_SECTION}' scan found only {} name(s) in {CHUNK_PATH} — the scan is \
-         vacuous (heading renamed, or the signature rows no longer start with `**` and \
-         use backticks) and gives NO protection",
+         vacuous (the signature rows no longer start with `**` and use backticks) and \
+         gives NO protection",
         documented.len()
     );
 }
@@ -421,8 +350,8 @@ fn documented_geometry_op_names_all_exist_in_the_compiler() {
     let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_names(&markdown);
 
-    // Anti-vacuity: a heading rename or a reformatted table would empty the
-    // scan and make every assertion below pass trivially. The sentinels
+    // Anti-vacuity: a reformatted table would empty the scan and make every
+    // assertion below pass trivially. The sentinels
     // additionally prove the scan reaches the Sweep / Pattern / Curves rows,
     // not just the first one.
     assert_scan_not_vacuous(&documented);
@@ -552,8 +481,8 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 /// "documented elsewhere" would launder it into a false coverage claim — the
 /// exact failure mode this guard exists to catch, one level down.
 ///
-/// Membership here is a claim the guard enforces against the WHOLE corpus (via
-/// [`read_all_chunks`]), not just stdlib.md and geometry.md, so documenting a
+/// Membership here is a claim the guard enforces against the WHOLE corpus (every
+/// chunk [`all_chunks`] lists), not just stdlib.md and geometry.md, so documenting a
 /// parked name in ANY chunk reports it. The list is expected to SHRINK and must
 /// never grow: documenting an entry means deleting it, and class 3 still
 /// reports any entry that has in fact been documented, so a closed gap cannot
@@ -681,13 +610,17 @@ fn geometry_op_doc_coverage_violations(
 fn every_implemented_geometry_op_is_documented_in_a_chunk() {
     let stdlib_md = read_chunk(CHUNK_PATH);
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let all_chunks_md = read_all_chunks();
+    let all_chunks_md = all_chunks("the known-gap audit")
+        .into_iter()
+        .map(|(_, markdown)| markdown)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // Anti-vacuity, every input. An empty registry would make this guard pass
-    // trivially, and an emptied scan (heading renamed, rows no longer `**`/
-    // backticked) would make it report all 64 names — pin both so neither
-    // failure mode is mistaken for a real signal. (`read_all_chunks` pins its
-    // own corpus size.)
+    // trivially, and an emptied scan (rows no longer `**`/backticked) would
+    // make it report all 64 names — pin both so neither
+    // failure mode is mistaken for a real signal. (`all_chunks` pins its own
+    // corpus size.)
     assert!(
         GEOMETRY_FUNCTION_NAMES.len() >= 50,
         "anti-vacuity: GEOMETRY_FUNCTION_NAMES holds only {} name(s) — the registry this \
@@ -745,8 +678,8 @@ const SYNTHETIC_GEOMETRY_MD: &str = "`mentioned_ctor(x, y, z)` builds a thing.";
 /// Mentions `elsewhere_ctor` and nothing else.
 const SYNTHETIC_OTHER_CHUNK_MD: &str = "See also `elsewhere_ctor(v)` for the implicit form.";
 
-/// Stand-in for the whole chunk corpus, mirroring `read_all_chunks`'s
-/// concatenation: everything the three synthetic chunks say, and nothing else.
+/// Stand-in for the whole chunk corpus, joined the way the real guard joins
+/// [`all_chunks`]: everything the three synthetic chunks say, and nothing else.
 fn synthetic_all_chunks() -> String {
     format!("{SYNTHETIC_STDLIB_MD}\n{SYNTHETIC_GEOMETRY_MD}\n{SYNTHETIC_OTHER_CHUNK_MD}")
 }
@@ -893,125 +826,6 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
         reported.iter().any(|v| v.contains("box")),
         "`box` is excluded as documented in geometry.md, but geometry.md only documents \
          `rounded_box(` — the exclusion must not ride on a suffix match. Got: {reported:?}"
-    );
-}
-
-// ── geometry.md → examples/ worked-example claim ─────────────────────────────
-//
-// Everything above checks what geometry.md says about the COMPILER. This checks
-// one thing it says about the REPOSITORY: the chunk points designers at a
-// runnable `.ri` file as the worked example of a constructor family, and a
-// pointer to a file not containing what the prose promises sends a designer
-// looking for a constructor they will never find. Same
-// authoritative-doc-is-wrong failure class as the guards above, one artifact
-// over. That every cited path EXISTS is `chunk_cite_gate.rs`'s corpus-wide
-// job, so a dangling cite reds one test, not two.
-//
-// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). The
-// assertion reads a CLAIM out of the chunk and checks it against the real file
-// on disk; either side may be reworded freely so long as the claim stays true.
-
-/// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
-/// constructors, and the four names that claim has to cover.
-const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
-const GDT_ZONE_CONSTRUCTORS: &[&str] =
-    &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
-
-/// `source` with every `//`-to-end-of-line comment removed.
-///
-/// Applied before [`chunk_mentions`] so "this example EXERCISES the constructor"
-/// is checked against the example's CODE, not against a header comment that
-/// merely names it — otherwise the claim could be satisfied by describing a call
-/// instead of making one, which is the laundering-a-gap-into-a-coverage-claim
-/// failure this guard family exists to catch.
-///
-/// Deliberately naive: a `//` inside a string literal is stripped too, and block
-/// comment syntax is not handled. Both errors only REMOVE text, so they can make
-/// this stricter, never laxer — the safe direction for a guard.
-fn strip_line_comments(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// geometry.md's GD&T section cites [`GDT_ZONES_EXAMPLE`] as the worked example
-/// of all four zone constructors, so that example must really call each of them.
-///
-/// This claim is what motivated the guard — `zone_slab` had no worked example
-/// anywhere under `examples/` until task #5700 added a cell for it to the cited
-/// file, so the one constructor the prose promised an example for was the one
-/// that had none. This assertion is what keeps it that way. Whether the cite
-/// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
-#[test]
-fn geometry_chunk_example_citations_hold_against_the_real_examples() {
-    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let cited: Vec<String> = cited_source_paths(&geometry_md)
-        .into_iter()
-        .map(|(path, _)| path)
-        .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
-        .collect();
-
-    assert!(
-        cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
-        "{GEOMETRY_CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard \
-         at whatever example the GD&T section now cites, so the all-four claim stays checked \
-         against the file it is actually made about. Cited: {cited:?}"
-    );
-
-    let example_path = repo_root().join(GDT_ZONES_EXAMPLE);
-    let example_src = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
-        panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {GEOMETRY_CHUNK_PATH}")
-    });
-    let code = strip_line_comments(&example_src);
-    let absent: Vec<&str> = GDT_ZONE_CONSTRUCTORS
-        .iter()
-        .copied()
-        .filter(|name| !chunk_mentions(&code, name))
-        .collect();
-    assert!(
-        absent.is_empty(),
-        "{GEOMETRY_CHUNK_PATH} cites {GDT_ZONES_EXAMPLE} as the worked example of all four GD&T \
-         zone constructors, but the example never calls: {}. A designer following that pointer \
-         to learn one of them finds nothing — FIX: add a cell calling the missing constructor(s) \
-         to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
-         or narrow the chunk's claim to the constructors the example does exercise.",
-        absent.join(", ")
-    );
-}
-
-// Discriminating-power controls for `strip_line_comments`, in the same
-// synthetic-data posture as the coverage-guard controls earlier in this file: it
-// is the load-bearing part of the worked-example claim, and the real chunk does
-// not exercise it in a way that would notice it going inert. The citation scan's
-// own controls live beside the shared scanner in `chunk_cite_gate.rs`.
-
-#[test]
-fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {
-    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
-                     let body = box(10mm, 10mm, 10mm)\n";
-    assert!(
-        chunk_mentions(described, "zone_slab"),
-        "control: the RAW source does mention zone_slab, so the assertion below is about \
-         strip_line_comments and not about chunk_mentions"
-    );
-    assert!(
-        !chunk_mentions(&strip_line_comments(described), "zone_slab"),
-        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
-         the constructor\" claim — describing a call instead of making one is exactly the \
-         laundering this guard family exists to catch"
-    );
-}
-
-#[test]
-fn a_constructor_actually_called_in_code_survives_comment_stripping() {
-    let called = "// this header names no constructor at all\n\
-                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
-    assert!(
-        chunk_mentions(&strip_line_comments(called), "zone_slab"),
-        "a real call is CODE: stripping comments must leave it standing, including when a \
-         trailing comment follows it on the same line"
     );
 }
 
@@ -1446,8 +1260,7 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 /// assertions — the overload-aware sibling of [`assert_scan_not_vacuous`].
 ///
 /// Two failure modes, not one. The COUNT floor catches the same vacuity that
-/// helper does (a heading rename, or rows that stop using `**`/backticks would
-/// empty the scan). The SENTINELS additionally catch a mode the name-level
+/// helper does (rows that stop using `**`/backticks would empty the scan). The SENTINELS additionally catch a mode the name-level
 /// helper cannot have: a scan that still finds every name but silently
 /// collapses each name's overloads back to one entry, degrading this gate into
 /// the name-only gate it is supposed to complement. Both members of each
@@ -1462,8 +1275,8 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     assert!(
         documented.len() >= 40,
         "the '{CHUNK_SECTION}' form scan found only {} form(s) in {CHUNK_PATH} — the scan is \
-         vacuous (heading renamed, or the signature rows no longer start with `**` and use \
-         backticks) and gives NO protection",
+         vacuous (the signature rows no longer start with `**` and use backticks) and gives \
+         NO protection",
         documented.len()
     );
     for sentinel in [
@@ -1523,9 +1336,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
 /// goes RED at its source.
 #[test]
 fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
-    let markdown = std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    });
+    let markdown = read_chunk(CHUNK_PATH);
     let documented = documented_geometry_op_forms(&markdown);
     assert_form_scan_not_vacuous(&documented);
 
@@ -1541,7 +1352,7 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
          unmirrored even when its NAME is exercised, just at a different arity (task #5583). \
          Remediation: add a call at that arity to \
          crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri, or correct the \
-         signature in crates/reify-mcp/src/tools/chunks/stdlib.md if the compiler does not \
+         signature in {CHUNK_PATH} if the compiler does not \
          accept it. Unmirrored form(s): {}",
         unmirrored
             .iter()

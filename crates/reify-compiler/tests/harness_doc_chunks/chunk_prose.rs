@@ -16,7 +16,7 @@
 
 use std::ops::Range;
 
-use crate::fence_gate::parse_fences;
+use crate::chunk_markdown::parse_fences;
 
 /// The HTML comment grammar — ONE pair of delimiters for every comment reader in
 /// this binary: the prose model here, the renderer-faithful

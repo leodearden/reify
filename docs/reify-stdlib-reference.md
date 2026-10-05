@@ -482,9 +482,9 @@ joint's local frame. Giving those columns their own structure, and correcting
 
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
-compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
-coordinate arguments rather than the structured types shown; each is annotated
+compiler's current lowering for a few of these constructors (`half_space`,
+`polygon`, `line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat
+positional coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
 
@@ -507,8 +507,14 @@ fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
 fn rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid
 
-// Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
-// fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+fn half_space(plane: Plane) -> Solid     // Unbounded — Bounded = false
+// current compiler form: half_space(px, py, pz, nx, ny, nz) — a point ON the
+// boundary plane (px, py, pz: Length, so `mm` literals) and the OUTWARD normal
+// toward the retained material (nx, ny, nz: a dimensionless direction). Being
+// unbounded, it must be intersected with a finite solid before export or a
+// mass-property query, e.g.
+// intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+// Worked example: examples/half_space.ri.
 
 // Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
 // see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
@@ -531,9 +537,11 @@ convention changes:
 | `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
 | `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
+| `tube` | base at z=0, axis +Z, x/y centred | outer `cylinder` minus inner `cylinder` (§3.3), so it inherits `cylinder`'s anchor |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
 | `rounded_box` | centred at origin, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
 | `rounded_rect` (2D) | planar XY at z=0, centred at origin | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
+| `polygon` (2D) | planar XY at z=0; positioned by its explicit vertices | not auto-centred, unlike the other 2D shapes |
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
@@ -590,10 +598,48 @@ fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, kno
 // weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
 // count is n_points + degree + 1. e.g.
 // nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
-
-// Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
-// fn nurbs_surface(/* NURBS surface parameters */) -> Surface
 ```
+
+**Free-form & implicit surfaces:**
+
+```
+fn nurbs_surface(control_points: List<List<Point3<Length>>>, weights: List<List<Real>>,
+                 u_knots: List<Real>, v_knots: List<Real>, u_degree: Int, v_degree: Int) -> Surface
+// The six arguments differ in SHAPE: control_points is a NESTED (u-major × v)
+// grid of point3(...) and weights a matching nested grid of reals, but
+// u_knots/v_knots are FLAT clamped knot vectors and the degrees are plain
+// integers. A bilinear patch (degree 1 × 1):
+// nurbs_surface([[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+//               [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)
+fn isosurface(grid: Geometry) -> Solid
+fn isosurface(grid: Geometry, iso: Length) -> Solid
+fn isosurface(grid: Geometry, iso: Length, adaptive: Bool) -> Solid
+// Marching cubes over a Voxel-repr grid; a BRep or Mesh operand is voxelized
+// first. Omitted, iso resolves to 0.0 and adaptive to false at evaluation. The
+// iso:/adaptive: labels are the recommended spelling but bind POSITIONALLY
+// (2nd argument → iso, 3rd → adaptive), so adaptive cannot be passed without iso.
+```
+
+A NURBS patch is neither Closed nor Planar, so it is not a valid profile for
+`extrude`/`revolve`/`sweep`/`loft`. `isosurface`'s result is a `Solid` (Bounded,
+Watertight, Connected), not a bare mesh handle.
+
+**GD&T tolerance zones:**
+
+```
+fn zone_slab(face: Surface, width: Length) -> Solid
+fn zone_cylinder(axis: Curve, width: Length) -> Solid
+fn zone_annulus(axis: Curve, nominal_radius: Length, width: Length, length: Length) -> Solid
+fn zone_profile(solid: Solid, width: Length) -> Solid
+```
+
+Each builds a tolerance zone as a real `Solid` centred on its input (`±width/2`).
+`zone_slab` takes a face or 2D profile, not a solid; `zone_profile` is its
+solid-input sibling. `zone_cylinder`'s `width` is the zone DIAMETER, and its
+extent is the axis wire's own length. `zone_annulus`' `length` is accepted and
+validated but unused: the axis wire sets its extent too. Worked example of all
+four: `examples/tolerancing/gdt_zones.ri`. The GD&T tolerance traits are
+§7.2's.
 
 ### 3.3 `std.geometry.compound`
 
@@ -1458,6 +1504,9 @@ constraint def Conforms {
     // Handles MMC/LMC/RFS material condition expansion
 }
 ```
+
+A tolerance zone as a real `Solid` — `zone_slab`, `zone_cylinder`, `zone_annulus`,
+`zone_profile` — is built by §3.2's GD&T tolerance-zone constructors.
 
 ### 7.3 `std.tolerancing.surface`
 

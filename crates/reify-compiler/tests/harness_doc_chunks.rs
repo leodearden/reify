@@ -25,6 +25,17 @@
 //!
 //! - `fence_gate` (#5479, same PRD, leaf β) — the repo-wide gate over every
 //!   `chunks/*.md` fence.
+//! - `chunk_io` (#6956) — where the chunk corpus lives, how a chunk is read and
+//!   listed, and how a corpus gate reports.
+//! - `chunk_markdown` (#6956) — how a chunk's markdown divides into fenced code
+//!   blocks, the sections those fences cannot end, and the catalogue tables a
+//!   section carries; the one fence parser.
+//! - `call_scan` (#6956) — which calls a piece of Reify text makes, read as
+//!   text behind a comment stripper.
+//! - `callable_registries` (#6956) — the compiler name registries a documented
+//!   call may belong to, and the one wording for a name that belongs to none.
+//! - `module_compile` (#6956) — what the compiler makes of one complete module,
+//!   split by the rejecting layer; the one definition of "compiles clean".
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
@@ -34,11 +45,22 @@
 //!   stand for documented signatures, and what "compiles clean" means for them.
 //! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced
 //!   prose is exercised by a compile-verified fixture.
+//! - `schematic_listing_gate` (#6956) — every signature in a gated chunk's
+//!   ```` ```reify-schematic ```` listings is exercised by a compile-verified
+//!   fixture.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
+#[path = "harness_doc_chunks/call_scan.rs"]
+mod call_scan;
+#[path = "harness_doc_chunks/callable_registries.rs"]
+mod callable_registries;
 #[path = "harness_doc_chunks/chunk_cite_gate.rs"]
 mod chunk_cite_gate;
+#[path = "harness_doc_chunks/chunk_io.rs"]
+mod chunk_io;
+#[path = "harness_doc_chunks/chunk_markdown.rs"]
+mod chunk_markdown;
 #[path = "harness_doc_chunks/chunk_prose.rs"]
 mod chunk_prose;
 #[path = "harness_doc_chunks/doc_forms.rs"]
@@ -51,8 +73,12 @@ mod fence_gate;
 mod functions_chunk_overloading_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/module_compile.rs"]
+mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/schematic_listing_gate.rs"]
+mod schematic_listing_gate;
 #[path = "harness_doc_chunks/signature_fixtures.rs"]
 mod signature_fixtures;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]

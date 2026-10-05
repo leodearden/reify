@@ -18,13 +18,14 @@
 //! `mechanism` are SILENT. For those the pairing is a doc↔fixture consistency
 //! pin, which becomes a real arity pin as #7343 and the builtin-signature-registry
 //! work land. Argument type and order are never checked. Lambda-parameter spans
-//! and ```` ```reify-schematic ```` listings are out of scope.
+//! are out of scope; ```` ```reify-schematic ```` listings are the fenced twin
+//! `schematic_listing_gate.rs`'s.
 
 use std::collections::BTreeSet;
 
+use crate::chunk_io::{all_chunks, chunk_label, report};
 use crate::chunk_prose::{code_spans, unfenced_prose};
 use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span};
-use crate::fence_gate::{all_chunks, chunk_label, report};
 use crate::signature_fixtures::{SIGNATURE_FIXTURES, UNFENCED_SIGNATURES_FIXTURE, read_fixture};
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
@@ -274,11 +275,8 @@ fn a_prose_signature_no_call_exercises_is_reported_with_its_location_span_and_fo
     );
 
     assert_eq!(violations.len(), 1, "got {violations:#?}");
-    for needle in [
-        "crates/reify-mcp/src/tools/chunks/demo.md:1",
-        "some(v, w)",
-        "some/Exact(2)",
-    ] {
+    let demo_line = format!("{}:1", chunk_label("demo"));
+    for needle in [demo_line.as_str(), "some(v, w)", "some/Exact(2)"] {
         assert!(
             violations[0].contains(needle),
             "the violation must name `{needle}`, got: {}",
