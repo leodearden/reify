@@ -3031,9 +3031,24 @@ fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
         .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
         .expect("initial load");
 
-    session
+    let state = session
         .preview_parameter("GateScope.scale", "2.0")
         .expect("a Real cell must still take a bare number");
+    // A dimensionless cell's bare number is not reinterpreted as a Scalar.
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.name == "scale")
+        .expect("the Real cell must be in the payload");
+    assert_eq!(
+        (
+            scale.declared_dimension.as_str(),
+            scale.dimension.as_str(),
+            scale.unit.as_str()
+        ),
+        ("", "", ""),
+        "a dimensionless cell has no dimension or badge to carry; got {scale:?}"
+    );
     session
         .preview_parameter("GateScope.scale", "3")
         .expect("a Real cell must still take a bare integer");
@@ -3099,25 +3114,25 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
             .expect("the Money cell must be in the payload")
     }
 
-    // (b) The uncovered cell takes a bare number, and the magnitude lands
-    // verbatim as the canonical SI number.
+    // (b) The uncovered cell takes a bare number, the magnitude lands verbatim
+    // as the canonical SI number, and the cell keeps its dimension and badge.
     //
-    // Asserted in BOTH states because the transition is the observable cost of
-    // leaving the Int/Real coercion to reify-eval (see
-    // `parse_value_string_for_cell`, which explains why this gate deliberately
-    // does not touch it). The `5USD` default compiles to a
-    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
-    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
-    // reify-eval accepts through that wildcard — and a non-Scalar has no
-    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
-    // carries the magnitude. Pinned rather than described so a future change to
-    // that coercion surfaces here.
+    // reify-eval admits the bare number as a `Value::Int` through its
+    // dimension wildcard (see `parse_value_string_for_cell`). The payload reads
+    // a bare Int/Real held by a declared-dimensioned cell as that dimension's
+    // SI magnitude, so `value`/`unit`/`si_value`/`dimension` stay one coherent
+    // set across the edit instead of the badge dropping to "".
     let before = cost_cell(&loaded);
     assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
     assert_eq!(
         before.si_value,
         Some(5.0),
         "the default carries its SI magnitude; got {before:?}"
+    );
+    assert_eq!(before.declared_dimension, "Money", "got {before:?}");
+    assert!(
+        !before.unit.is_empty(),
+        "premise: the default shows a unit badge for the edit to preserve; got {before:?}"
     );
 
     let state = session
@@ -3129,11 +3144,16 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
     );
     assert_eq!(
-        (cost.dimension.as_str(), cost.si_value),
-        ("", None),
-        "a bare number lands as a `Value::Int`, which has no dimension to report — \
-         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+        cost.unit, before.unit,
+        "the unit badge the cell showed before the edit must survive it; got {cost:?}"
     );
+    assert_eq!(cost.dimension, "Money", "got {cost:?}");
+    assert_eq!(
+        cost.si_value,
+        Some(6.0),
+        "the bare number is the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(cost.declared_dimension, "Money", "got {cost:?}");
 
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
