@@ -87,6 +87,10 @@ Subcommands:
   check       Report whether git runs hooks/reference-transaction's refs/stash
               guard in the target worktree, pinned per-worktree.  Read-only.
                                         [0 armed | 1 not armed | 3 could not check]
+  arm         If not armed, pin core.hooksPath for the target worktree (via
+              scripts/setup-main-gate-worktree-config.sh), then re-verify.
+              Writes nothing when already armed.
+                                        [0 armed | 2 the pin cannot fix it | * failed]
 
   target_dir  Optional path inside a git work tree; defaults to the repo root
               (one level up from this script).
@@ -164,7 +168,8 @@ _assess() {
     [ "${#UNMET[@]}" -eq 0 ]
 }
 
-cmd_check() {
+# _verdict — _assess, reported on stderr.  Returns _assess's code.
+_verdict() {
     local rc=0 reason
     _assess || rc=$?
     case "$rc" in
@@ -175,11 +180,67 @@ cmd_check() {
             for reason in "${UNMET[@]}"; do
                 echo "[warn] hooks-armed-guard: NOT armed in $TOP (hooks dir $HOOKS_DIR): $reason" >&2
             done
-            echo "[warn] hooks-armed-guard: remediation: scripts/hooks-armed-guard.sh arm $TOP" \
-                 "(re-pins core.hooksPath; a hook that fails the probe must be restored in $HOOKS_DIR)" >&2
             ;;
     esac
     return "$rc"
+}
+
+# _liveness_log MSG — append a `stash-guard: liveness:` line to the target
+# store's shared main-gate audit log.  The cwd is $TOP so main_gate_log resolves
+# THAT store's common dir.  Degrades to a stderr line if the lib is absent.
+_liveness_log() {
+    local msg="stash-guard: liveness: $1"
+    local lib="$_SCRIPT_DIR/../hooks/main-gate-lib.sh"
+    if [ -r "$lib" ]; then
+        # shellcheck source=hooks/main-gate-lib.sh
+        ( cd "$TOP" && . "$lib" && main_gate_log "$msg" ) \
+            || echo "[warn] hooks-armed-guard: $msg (main-gate log write failed)" >&2
+    else
+        echo "[warn] hooks-armed-guard: $msg (hooks/main-gate-lib.sh absent; not logged)" >&2
+    fi
+}
+
+cmd_check() {
+    local rc=0
+    _verdict || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        echo "[warn] hooks-armed-guard: remediation: scripts/hooks-armed-guard.sh arm $TOP" \
+             "(re-pins core.hooksPath; a hook that fails the probe must be restored in $HOOKS_DIR)" >&2
+    fi
+    return "$rc"
+}
+
+cmd_arm() {
+    local rc=0
+    _verdict || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) ;;
+        *) return "$rc" ;;
+    esac
+
+    if ! "$_SCRIPT_DIR/setup-main-gate-worktree-config.sh" "$TOP" >&2; then
+        echo "[error] hooks-armed-guard: setup-main-gate-worktree-config.sh failed to pin $TOP" >&2
+        return 1
+    fi
+
+    rc=0
+    _verdict || rc=$?
+    case "$rc" in
+        0)
+            _liveness_log "re-armed $TOP (hooks dir $HOOKS_DIR)"
+            return 0
+            ;;
+        1)
+            _liveness_log "still DARK in $TOP after arm: ${UNMET[0]}"
+            echo "[warn] hooks-armed-guard: the pin cannot fix this; restore" \
+                 "reference-transaction in $HOOKS_DIR" >&2
+            return 2
+            ;;
+        *)
+            return "$rc"
+            ;;
+    esac
 }
 
 # ── argument parsing ──────────────────────────────────────────────────────────
@@ -189,7 +250,7 @@ case "${1:-}" in
         usage
         exit 0
         ;;
-    check)
+    check|arm)
         ;;
     *)
         echo "[error] hooks-armed-guard: unknown or missing subcommand: ${1:-<none>}" >&2
@@ -216,4 +277,5 @@ UNMET=()
 
 case "$SUBCOMMAND" in
     check) cmd_check ;;
+    arm)   cmd_arm ;;
 esac
