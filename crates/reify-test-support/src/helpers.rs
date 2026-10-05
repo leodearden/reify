@@ -56,6 +56,20 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Create a new `Engine` backed by a fresh `MockConstraintChecker` and a fresh
+/// `MockGeometryKernel` — [`make_engine`] plus a mock kernel. Suitable for
+/// structural surfacing tests; the mock's `tessellate` returns a canned mesh,
+/// so it pins surface shape but cannot validate placement. Construct the
+/// engine inline instead when a test needs the kernel's `operations_ref()`,
+/// since this factory moves the kernel into the engine.
+#[cfg(feature = "eval-helpers")]
+pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
+    reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(MockGeometryKernel::new())),
+    )
+}
+
 /// Parse, compile (asserting no errors), and evaluate `source` using a
 /// `MockConstraintChecker` engine. Returns the `EvalResult`.
 ///
@@ -1847,6 +1861,33 @@ mod tests {
                 "constraint {} should be Satisfied under SimpleConstraintChecker, got {:?}",
                 entry.id,
                 entry.satisfaction
+            );
+        }
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_engine_with_mock_kernel_surfaces_the_mock_kernels_canned_mesh() {
+        let compiled = super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        );
+        let result = super::make_engine_with_mock_kernel().tessellate_realizations(&compiled);
+        let errors = super::collect_errors(&result.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "tessellating a dimensioned box must produce zero Error diagnostics; got: {errors:?}"
+        );
+        assert!(
+            !result.meshes.is_empty(),
+            "an engine with a geometry kernel must surface the `body` mesh; got none (a kernel-less engine returns empty meshes)"
+        );
+        let canned = super::mesh_aabb(&crate::mocks::minimal_valid_mesh(true));
+        for surface in &result.meshes {
+            assert_eq!(
+                super::mesh_aabb(&surface.mesh),
+                canned,
+                "surface {} must carry MockGeometryKernel's canned tetrahedron",
+                surface.entity_path
             );
         }
     }
