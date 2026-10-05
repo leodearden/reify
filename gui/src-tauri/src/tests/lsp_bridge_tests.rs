@@ -436,29 +436,14 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
 fn lsp_bridge_answers_the_blocking_work_methods_with_the_blocking_pool_saturated() {
     use std::time::Duration;
 
-    use reify_lsp::blocking_work::test_support::SaturatedBlockingPool;
+    use reify_lsp::blocking_work::test_support::{SaturatedBlockingPool, blocking_work_requests};
 
     const URI: &str = "file:///placement.ri";
     /// Turns a request stuck behind the saturated pool into a failure; a
     /// request that never touches the pool answers without timing anything.
     const HANG_BOUND: Duration = Duration::from_secs(60);
 
-    let at = |line: u32, character: u32| {
-        json!({
-            "textDocument": { "uri": URI },
-            "position": { "line": line, "character": character }
-        })
-    };
-    let mut rename = at(7, 17);
-    rename["newName"] = json!("girth");
-    let mut references = at(1, 10);
-    references["context"] = json!({ "includeDeclaration": true });
-    let requests = [
-        ("textDocument/definition", at(9, 15)),
-        ("textDocument/prepareRename", at(7, 17)),
-        ("textDocument/rename", rename),
-        ("textDocument/references", references),
-    ];
+    let requests = blocking_work_requests(URI);
 
     let bridges = [
         ("LspBridge::new", LspBridge::new()),

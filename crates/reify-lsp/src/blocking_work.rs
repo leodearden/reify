@@ -44,8 +44,9 @@ impl BlockingWorkPlacement {
     }
 }
 
-/// A test fixture that tells the two placements apart without reaching into
-/// the server: a runtime whose blocking pool cannot run anything.
+/// Test fixtures that tell the two placements apart without reaching into
+/// the server: a runtime whose blocking pool cannot run anything, and the
+/// requests whose handlers run blocking work.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use std::cell::Cell;
@@ -53,6 +54,9 @@ pub mod test_support {
     use std::pin::Pin;
     use std::sync::mpsc;
     use std::task::Poll;
+    use std::time::Duration;
+
+    use serde_json::{Value, json};
 
     /// A current-thread tokio runtime whose only blocking thread is occupied
     /// until [`SaturatedBlockingPool::release`] (or drop).
@@ -119,12 +123,41 @@ pub mod test_support {
     pub async fn poll_once<F: Future + Unpin>(future: &mut F) -> Poll<F::Output> {
         std::future::poll_fn(|cx| Poll::Ready(Pin::new(&mut *future).poll(cx))).await
     }
+
+    /// A first poll of a fresh `spawn_blocking` is Pending even on an idle
+    /// pool, so work queued behind [`SaturatedBlockingPool`] is only told
+    /// apart from work an idle pool is about to run by polling again after
+    /// this long.
+    pub const IDLE_POOL_WOULD_HAVE_RUN_IT_BY: Duration = Duration::from_millis(500);
+
+    /// The definition, prepareRename, rename and references requests for the
+    /// document at `uri`, each at a position that resolves when that document
+    /// holds `reify_test_support::bracket_source()`, so a panic swallowed into
+    /// `None` shows as a null answer.
+    pub fn blocking_work_requests(uri: &str) -> [(&'static str, Value); 4] {
+        let at = |line: u32, character: u32| {
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            })
+        };
+        let mut rename = at(7, 17);
+        rename["newName"] = json!("girth");
+        let mut references = at(1, 10);
+        references["context"] = json!({ "includeDeclaration": true });
+        [
+            ("textDocument/definition", at(9, 15)),
+            ("textDocument/prepareRename", at(7, 17)),
+            ("textDocument/rename", rename),
+            ("textDocument/references", references),
+        ]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::BlockingWorkPlacement;
-    use super::test_support::{SaturatedBlockingPool, poll_once};
+    use super::test_support::{IDLE_POOL_WOULD_HAVE_RUN_IT_BY, SaturatedBlockingPool, poll_once};
 
     #[tokio::test]
     async fn calling_thread_runs_the_work_on_the_polling_thread() {
@@ -159,12 +192,6 @@ mod tests {
             assert_eq!(outcome, None, "placement {placement:?}");
         }
     }
-
-    /// A first poll of a fresh `spawn_blocking` is Pending even on an idle
-    /// pool, so the fixture's claim is only observable after giving an idle
-    /// pool ample time to have run the work.
-    const IDLE_POOL_WOULD_HAVE_RUN_IT_BY: std::time::Duration =
-        std::time::Duration::from_millis(500);
 
     #[test]
     fn saturated_blocking_pool_runs_no_blocking_work_until_released() {
