@@ -3,26 +3,30 @@
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test require_tasks_db_cli`
 //!
-//! Without the flag, an unopenable task DB degrades the DB-backed PTODO lanes
+//! Without the flag, a task DB the PTODO lanes cannot use degrades them
 //! fail-soft (PRD §6.7): a breadcrumb on stderr, and a run that can look
 //! clean. With it, the same condition is a refusal — exit 255, naming the
-//! resolved path, before any detector runs (PRD §6.7 amendment, ruling
-//! §19(b)). The consumer is dark-factory 5796's cadenced sweep, which must
-//! tell "the DB said nothing is orphaned" from "nothing was checked".
-//!
-//! The fixture helpers are local copies in the `tests/pdcheck_cli.rs` style,
-//! so this binary reads whole on its own.
+//! resolved path, and no findings array (PRD §6.7 amendment, ruling §19(b)).
+//! The consumer is dark-factory 5796's cadenced sweep, which must tell "the
+//! DB said nothing is orphaned" from "nothing was checked".
 
 mod common;
+
+#[path = "common/cli_fixture.rs"]
+mod cli_fixture;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use cli_fixture::{write_empty_runs_db, write_empty_tasks_json};
 use serde_json::Value;
 
 /// The refusal code. 1–254 is the High-finding count and 125 is the
 /// arg/IO error, so this is the only code that collides with neither.
 const TASKS_DB_ABSENT_EXIT: i32 = 255;
+
+/// The arg/IO error code: what a flag combination that can guard nothing gets.
+const ERROR_EXIT: i32 = 125;
 
 /// The §6.7 fail-soft breadcrumb fragment: present exactly when the
 /// DB-backed lanes degraded.
@@ -31,21 +35,6 @@ const DEGRADE_MARK: &str = "lanes degraded";
 /// The marker's cited task, seeded `done` wherever a DB exists, so a run that
 /// really consulted the DB reports it as one High `orphaned:` finding.
 const CITED_ID: i64 = 4444;
-
-fn write_empty_tasks_json(dir: &Path) -> PathBuf {
-    let path = dir.join("tasks.json");
-    std::fs::write(&path, "[]").expect("write tasks.json");
-    path
-}
-
-/// `IF NOT EXISTS`: some tests invoke the binary twice against one aux dir.
-fn write_empty_runs_db(dir: &Path) -> PathBuf {
-    let path = dir.join("runs.db");
-    let conn = rusqlite::Connection::open(&path).expect("open runs.db");
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS events (task_id TEXT, event_type TEXT);")
-        .expect("create events table");
-    path
-}
 
 /// A one-commit repo whose only file carries a marker citing [`CITED_ID`].
 fn repo_with_cited_marker(dir: &Path) {
@@ -89,12 +78,17 @@ fn seed_cited_id_done(path: &Path) {
 /// The ambient `REIFY_PTODO_TASKS_DB` is always removed; a test that needs
 /// the override sets it on the returned command.
 fn ptodo_command(repo: &Path, aux: &Path, require: bool) -> Command {
+    pattern_command("PTODO", repo, aux, require)
+}
+
+/// [`ptodo_command`] with any `--pattern` value.
+fn pattern_command(pattern: &str, repo: &Path, aux: &Path, require: bool) -> Command {
     let tasks_file = write_empty_tasks_json(aux);
     let runs_db = write_empty_runs_db(aux);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
     cmd.args([
         "--pattern",
-        "PTODO",
+        pattern,
         "--no-jcodemunch",
         "--project-root",
         repo.to_str().expect("utf-8 repo path"),
@@ -148,12 +142,14 @@ fn has_cited_orphan(findings: &[Value]) -> bool {
     })
 }
 
+/// The refusal shape every `--require-tasks-db` refusal shares, wherever it
+/// fires: the dedicated code, the resolved path, and no findings array.
 fn assert_refused_naming(code: Option<i32>, stderr: &str, path: &Path) {
     assert_eq!(
         code,
         Some(TASKS_DB_ABSENT_EXIT),
-        "an unopenable task DB under --require-tasks-db must refuse with the dedicated \
-         code; stderr:\n{stderr}"
+        "a task DB the lanes cannot use under --require-tasks-db must refuse with the \
+         dedicated code; stderr:\n{stderr}"
     );
     let path = path.display().to_string();
     assert!(
@@ -162,11 +158,17 @@ fn assert_refused_naming(code: Option<i32>, stderr: &str, path: &Path) {
     );
     assert!(
         !has_findings_array(stderr),
-        "the refusal must come before any detector, so no findings array; stderr:\n{stderr}"
+        "a refused run must emit no findings array; stderr:\n{stderr}"
     );
+}
+
+/// A DB that cannot be opened is refused before any detector runs, so no lane
+/// even degrades.
+fn assert_refused_before_any_detector(code: Option<i32>, stderr: &str, path: &Path) {
+    assert_refused_naming(code, stderr, path);
     assert!(
         !stderr.contains(DEGRADE_MARK),
-        "a refusal is not a degraded run; stderr:\n{stderr}"
+        "an unopenable DB is refused before the lanes, not degraded; stderr:\n{stderr}"
     );
 }
 
@@ -188,7 +190,7 @@ fn absent_db_fails_loud_where_the_flagless_run_fails_soft() {
     );
 
     let (code, stderr) = run(ptodo_command(repo.path(), aux.path(), true));
-    assert_refused_naming(code, &stderr, &default_tasks_db(repo.path()));
+    assert_refused_before_any_detector(code, &stderr, &default_tasks_db(repo.path()));
 }
 
 #[test]
@@ -223,7 +225,74 @@ fn required_path_is_resolved_through_the_env_override() {
     let mut cmd = ptodo_command(repo_with_db.path(), aux.path(), true);
     cmd.env("REIFY_PTODO_TASKS_DB", &missing_db);
     let (code, stderr) = run(cmd);
-    assert_refused_naming(code, &stderr, &missing_db);
+    assert_refused_before_any_detector(code, &stderr, &missing_db);
+}
+
+/// An existing file that is not a tasks DB opens fine and only fails inside
+/// the lanes, so the requirement must be enforced on whether the lanes really
+/// used the DB, not on whether the path opened.
+#[test]
+fn a_file_that_opens_but_is_not_a_tasks_db_is_refused() {
+    let repo = tempfile::tempdir().expect("create repo tempdir");
+    let aux = tempfile::tempdir().expect("create aux tempdir");
+    repo_with_cited_marker(repo.path());
+    let not_a_tasks_db = aux.path().join("empty-tasks.db");
+    std::fs::write(&not_a_tasks_db, "").expect("write an empty file");
+
+    let mut cmd = ptodo_command(repo.path(), aux.path(), false);
+    cmd.env("REIFY_PTODO_TASKS_DB", &not_a_tasks_db);
+    let (code, stderr) = run(cmd);
+    assert_eq!(
+        code,
+        Some(0),
+        "without the flag a non-tasks DB degrades to a clean-looking run; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(DEGRADE_MARK),
+        "the precondition: the lanes degrade on this file; stderr:\n{stderr}"
+    );
+
+    let mut cmd = ptodo_command(repo.path(), aux.path(), true);
+    cmd.env("REIFY_PTODO_TASKS_DB", &not_a_tasks_db);
+    let (code, stderr) = run(cmd);
+    assert_refused_naming(code, &stderr, &not_a_tasks_db);
+}
+
+/// Only PTODO reads the task DB. A run set without it has no lane to guard,
+/// so the flag is an argument conflict (125), not a DB refusal (255) and not
+/// a silent no-op that reads as "the DB requirement held".
+#[test]
+fn a_run_set_without_ptodo_rejects_the_flag_as_an_arg_conflict() {
+    let repo = tempfile::tempdir().expect("create repo tempdir");
+    let aux = tempfile::tempdir().expect("create aux tempdir");
+    repo_with_cited_marker(repo.path());
+    seed_cited_id_done(&default_tasks_db(repo.path()));
+
+    let (code, stderr) = run(pattern_command("P2", repo.path(), aux.path(), true));
+    assert_eq!(
+        code,
+        Some(ERROR_EXIT),
+        "--pattern P2 selects no task-DB reader; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--require-tasks-db") && stderr.contains("PTODO"),
+        "the conflict must name the flag and the detector it guards; stderr:\n{stderr}"
+    );
+    assert!(
+        !has_findings_array(&stderr),
+        "an arg conflict runs no detector; stderr:\n{stderr}"
+    );
+
+    let (code, stderr) = run(pattern_command("P2,PTODO", repo.path(), aux.path(), true));
+    assert_eq!(
+        code,
+        Some(1),
+        "a mixed run set that includes PTODO keeps the flag; stderr:\n{stderr}"
+    );
+    assert!(
+        has_cited_orphan(&findings(&stderr)),
+        "the DB-backed lanes must have run; stderr:\n{stderr}"
+    );
 }
 
 #[test]

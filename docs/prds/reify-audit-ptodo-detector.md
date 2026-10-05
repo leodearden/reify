@@ -364,12 +364,14 @@ there and silently turned the hook-gated main-commit ratchet DB-present (§19 fi
 §19 (b)/(c).** `reify-audit --require-tasks-db` is the one deliberate exception to this
 section's fail-soft, for the caller that needs the DB-backed lanes to have run: the
 dark-factory 5796 cadenced sweep. It resolves the path through `ptodo::tasks_db_path`, so
-`REIFY_PTODO_TASKS_DB` is honoured identically, and opens it read-only as the lanes do. When
-that open fails it exits **255** naming the resolved path, before any detector runs and
-without emitting a findings array. "Never exit 125 for DB absence" still holds: 255 is not 125
-and lies outside the 1–254 High-count band. Without the flag nothing changes. Residual: a path
-that exists but is not a tasks DB opens fine and still degrades with the breadcrumb above; the
-flag guards path absence, which is the misconfiguration a cadenced sweep actually meets.
+`REIFY_PTODO_TASKS_DB` is honoured identically. It is enforced on the run's own outcome: when
+PTODO reports its DB-backed lanes degraded (`ScanStats.tasks_db == Absent`), whether the path
+is missing or holds a file that opens but is not a tasks DB, the run exits **255** naming the
+resolved path and emits no findings array. A path that cannot be opened at all is refused the
+same way before any detector runs. "Never exit 125 for DB absence" still holds: 255 is not 125
+and lies outside the 1–254 High-count band. The flag guards the PTODO lanes only, so a run set
+without PTODO (`--pre-done`, or a `--pattern` that omits it) rejects it as an argument conflict
+(125) rather than accepting a requirement it cannot check. Without the flag nothing changes.
 `g_allow_repo_wide_hard_gate_live` and `engine_seam_g_allow_owner_cites_resolve_live_real_db`
 are now `#[ignore]`d on-demand checks (run with `--ignored`, `REIFY_PTODO_TASKS_DB` at the
 main checkout's DB). They fail loud on a DB they cannot read rather than skipping, and their
@@ -655,8 +657,8 @@ As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
 DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
 advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
 
-Exit **255** is `--require-tasks-db`'s refusal when the task DB cannot be opened (§6.7
-amendment, task #7787); it never collides with the High count, which is capped at 254.
+Exit **255** is `--require-tasks-db`'s refusal when the PTODO lanes cannot use the task DB
+(§6.7 amendment, task #7787); it never collides with the High count, which is capped at 254.
 
 **Correction — the exit code is not the real-tree gate; the §6.6 ratchet is
 (2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous).** *This paragraph is

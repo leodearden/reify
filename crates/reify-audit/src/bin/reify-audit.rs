@@ -26,7 +26,7 @@
 //! | 0         | No High-severity findings |
 //! | 1–254     | Count of High-severity findings (capped at 254) |
 //! | 125       | Infrastructure/setup error (arg parse, IO, serialization, empty task corpus for a corpus-only run set) |
-//! | 255       | `--require-tasks-db` and the task DB cannot be opened at the resolved path |
+//! | 255       | `--require-tasks-db` and the PTODO lanes cannot use the task DB at the resolved path |
 //!
 //! Exit code 125 is reserved for errors so it never collides with a
 //! finding-count result — callers (D-1 hook, T-5 skill) can branch on
@@ -96,8 +96,9 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
     let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
     let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
-    let _ = writeln!(out, "  --require-tasks-db       Refuse (exit 255, naming the resolved path) when the PTODO task");
-    let _ = writeln!(out, "                           DB cannot be opened, instead of degrading the DB-backed lanes");
+    let _ = writeln!(out, "  --require-tasks-db       Refuse (exit 255, naming the resolved path) when the PTODO lanes");
+    let _ = writeln!(out, "                           cannot use the task DB, instead of degrading them; the run set");
+    let _ = writeln!(out, "                           must include PTODO (else exit 125)");
     let _ = writeln!(out, "  --print-repo-id          Print the derived (or --jcodemunch-repo-overridden) jcodemunch");
     let _ = writeln!(out, "                           repo id for --project-root, then exit (no task/git/runs-db work)");
     let _ = writeln!(out, "  --help, -h               Show this help");
@@ -131,7 +132,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
     let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable,");
     let _ = writeln!(out, "             empty task corpus when every selected detector needs it)");
-    let _ = writeln!(out, "  exit 255:  --require-tasks-db and the task DB cannot be opened at the resolved path");
+    let _ = writeln!(out, "  exit 255:  --require-tasks-db and the PTODO lanes cannot use the task DB at the");
+    let _ = writeln!(out, "             resolved path");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -189,22 +191,37 @@ fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Resu
 // §6.7 amendment — the opt-in task-DB precondition
 // -----------------------------------------------------------------------
 
-/// Refuse when the task DB cannot be opened. Returns the already-rendered
-/// refusal message on `Err`.
+/// The refusal message for a task DB at `path` the PTODO lanes cannot use.
+/// One renderer, so the fast-path and the outcome refusal read alike.
+fn tasks_db_refusal(path: &Path, cause: &str) -> String {
+    format!(
+        "--require-tasks-db: task DB unusable at '{}' — {cause}; refusing rather \
+         than letting the DB-backed lanes report a vacuous clean (point \
+         REIFY_PTODO_TASKS_DB or --project-root at a tasks.db)",
+        path.display()
+    )
+}
+
+/// The fast path: refuse a task DB that cannot even be opened before any
+/// task load or detector, so the common misconfiguration costs milliseconds.
+/// Returns the rendered refusal on `Err`.
 ///
-/// Resolves and opens through the same two calls `ptodo::check_with_stats`
-/// uses to decide whether to degrade, so "required" and "would have degraded
-/// on open" cannot disagree, and `REIFY_PTODO_TASKS_DB` is honoured alike.
-fn enforce_tasks_db_present(project_root: &Path) -> Result<(), String> {
+/// Not the authority. A file that is not a tasks DB opens here and only fails
+/// inside the lanes; [`tasks_db_requirement_unmet`] enforces against that
+/// outcome. Resolves and opens through the calls `ptodo::check_with_stats`
+/// uses, so `REIFY_PTODO_TASKS_DB` is honoured alike.
+fn enforce_tasks_db_opens(project_root: &Path) -> Result<(), String> {
     let path = ptodo::tasks_db_path(project_root);
-    ptodo::open_tasks_db(&path).map(drop).map_err(|e| {
-        format!(
-            "--require-tasks-db: task DB unreachable at '{}' — {e}; refusing rather \
-             than degrading the DB-backed lanes to a vacuous clean (point \
-             REIFY_PTODO_TASKS_DB or --project-root at a tasks.db)",
-            path.display()
-        )
-    })
+    ptodo::open_tasks_db(&path)
+        .map(drop)
+        .map_err(|e| tasks_db_refusal(&path, &e.to_string()))
+}
+
+/// The authority: whether a `--require-tasks-db` run's detector degraded its
+/// DB-backed lanes, judged by what the run itself reports
+/// ([`ptodo::ScanStats::tasks_db`]) rather than by a separate probe.
+fn tasks_db_requirement_unmet(args: &Args, run: &DetectorRun) -> bool {
+    args.require_tasks_db && run.tasks_db == Some(ptodo::TasksDbMode::Absent)
 }
 
 // -----------------------------------------------------------------------
@@ -218,7 +235,7 @@ fn enforce_tasks_db_present(project_root: &Path) -> Result<(), String> {
 /// misconfigured invocations separately from finding counts.
 const ERROR_EXIT: u8 = 125;
 
-/// `--require-tasks-db`'s refusal when the task DB cannot be opened.
+/// `--require-tasks-db`'s refusal when the PTODO lanes cannot use the task DB.
 ///
 /// Dedicated: outside the 1–254 High-count band, and distinct from
 /// [`ERROR_EXIT`], which PRD §6.7 forbids for DB absence. Its consumer is
@@ -309,9 +326,10 @@ struct Args {
     /// `--project-root` to stdout and exit, touching none of the
     /// task/runs-db/git machinery below.
     print_repo_id: bool,
-    /// `--require-tasks-db`: opt-in. When set, a task DB that cannot be
-    /// opened at the `ptodo::tasks_db_path`-resolved path is a refusal
-    /// ([`TASKS_DB_ABSENT_EXIT`]) rather than the §6.7 fail-soft.
+    /// `--require-tasks-db`: opt-in. When set, a task DB the PTODO lanes
+    /// cannot use at the `ptodo::tasks_db_path`-resolved path is a refusal
+    /// ([`TASKS_DB_ABSENT_EXIT`]) rather than the §6.7 fail-soft. Valid only
+    /// for a run set that reads the DB ([`run_set_reads_tasks_db`]).
     require_tasks_db: bool,
 }
 
@@ -629,6 +647,12 @@ fn task_corpus_only_run_set(args: &Args) -> bool {
             .all(|detector| detector.refuses_empty_task_corpus)
 }
 
+/// Return true when the run set includes a detector that reads the task DB,
+/// so `--require-tasks-db` has a lane to guard. `--pre-done` runs P5 alone.
+fn run_set_reads_tasks_db(args: &Args) -> bool {
+    !args.pre_done && selected_detectors(args.pattern.as_deref()).any(Detector::reads_tasks_db)
+}
+
 /// One detector a sweep can dispatch. Every fact the binary knows about a
 /// detector is a field of its row, so selection, the jcodemunch connect
 /// decision and the check it runs cannot drift apart.
@@ -654,13 +678,28 @@ struct Detector {
     /// mixed run [`run_detector`] skips it with a "skipped" breadcrumb. Either
     /// way no caller can read the unchecked detector as clean.
     refuses_empty_task_corpus: bool,
-    check: fn(&AuditContext<'_>) -> Vec<Finding>,
+    check: Check,
+}
+
+/// How a [`Detector`] runs. Whether it reads the task DB and how it reports
+/// that its DB-backed lanes ran are one fact, so they are one variant.
+#[derive(Clone, Copy)]
+enum Check {
+    /// Reads no task DB.
+    Plain(fn(&AuditContext<'_>) -> Vec<Finding>),
+    /// Reads the task DB, and reports in [`ptodo::ScanStats::tasks_db`]
+    /// whether its DB-backed lanes ran or degraded.
+    TasksDbBacked(fn(&AuditContext<'_>) -> (Vec<Finding>, ptodo::ScanStats)),
 }
 
 impl Detector {
     /// `None` is the pattern-less default sweep.
     fn selected_by(&self, pattern: Option<&str>) -> bool {
         pattern.map_or(self.in_default_sweep, |p| pattern_selects(p, self.token))
+    }
+
+    fn reads_tasks_db(&self) -> bool {
+        matches!(self.check, Check::TasksDbBacked(_))
     }
 }
 
@@ -669,33 +708,56 @@ impl Detector {
 /// emitted in.
 #[rustfmt::skip]
 const DETECTORS: &[Detector] = &[
-    Detector { token: pattern_flag::P1,          in_default_sweep: true,  queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: p1_producer_orphan::check },
-    Detector { token: pattern_flag::P2,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: p2_consumer_stub::check },
-    Detector { token: pattern_flag::P5,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: p5_phantom_done::check },
-    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: pdead_dead_code::check },
-    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: puntested::check },
-    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: player::check },
-    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: ptodo::check },
-    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pdssentinel::check },
-    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pdiag::check },
-    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pdoccover::check },
-    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pdcheck::check },
-    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: pcite::check },
-    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: true,  check: pprdstatus::check },
+    Detector { token: pattern_flag::P1,          in_default_sweep: true,  queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(p1_producer_orphan::check) },
+    Detector { token: pattern_flag::P2,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(p2_consumer_stub::check) },
+    Detector { token: pattern_flag::P5,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check) },
+    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(pdead_dead_code::check) },
+    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(puntested::check) },
+    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(player::check) },
+    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::TasksDbBacked(ptodo::check_with_stats) },
+    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdssentinel::check) },
+    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdiag::check) },
+    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdoccover::check) },
+    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check) },
+    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check) },
+    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check) },
 ];
 
-/// One detector's findings. A detector that refuses an empty task corpus is
-/// not run on one: the breadcrumb marks its zero findings as unchecked.
-fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> Vec<Finding> {
+/// What one detector run produced.
+struct DetectorRun {
+    findings: Vec<Finding>,
+    /// Whether a [`Check::TasksDbBacked`] detector's DB-backed lanes ran;
+    /// `None` for one that reads no task DB or was not run.
+    tasks_db: Option<ptodo::TasksDbMode>,
+}
+
+/// Run one detector. A detector that refuses an empty task corpus is not run
+/// on one: the breadcrumb marks its zero findings as unchecked.
+fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> DetectorRun {
     if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
         eprintln!(
             "reify-audit: {} skipped — the task corpus is empty; \
              this is NOT a clean bill of health",
             detector.token
         );
-        return Vec::new();
+        return DetectorRun {
+            findings: Vec::new(),
+            tasks_db: None,
+        };
     }
-    (detector.check)(ctx)
+    match detector.check {
+        Check::Plain(check) => DetectorRun {
+            findings: check(ctx),
+            tasks_db: None,
+        },
+        Check::TasksDbBacked(check) => {
+            let (findings, stats) = check(ctx);
+            DetectorRun {
+                findings,
+                tasks_db: Some(stats.tasks_db),
+            }
+        }
+    }
 }
 
 /// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in
@@ -770,10 +832,19 @@ fn main() -> ExitCode {
         return ExitCode::from(ERROR_EXIT);
     }
 
+    // A flag with no lane to guard would read as "the DB requirement held".
+    if args.require_tasks_db && !run_set_reads_tasks_db(&args) {
+        eprintln!(
+            "reify-audit: error: --require-tasks-db guards the PTODO task-DB lanes, \
+             and this run set does not include PTODO"
+        );
+        return ExitCode::from(ERROR_EXIT);
+    }
+
     // Before any task load, runs.db open, git op, jcodemunch connect or
     // detector, so a refusal costs milliseconds and emits no findings JSON.
     if args.require_tasks_db
-        && let Err(msg) = enforce_tasks_db_present(Path::new(&args.project_root))
+        && let Err(msg) = enforce_tasks_db_opens(Path::new(&args.project_root))
     {
         eprintln!("reify-audit: {msg}");
         return ExitCode::from(TASKS_DB_ABSENT_EXIT);
@@ -933,9 +1004,21 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: every detector this run selects.
-        selected_detectors(args.pattern.as_deref())
-            .flat_map(|detector| run_detector(detector, &ctx))
-            .collect()
+        let mut findings = Vec::new();
+        for detector in selected_detectors(args.pattern.as_deref()) {
+            let run = run_detector(detector, &ctx);
+            // Before any findings array is serialized, like the fast path.
+            if tasks_db_requirement_unmet(&args, &run) {
+                let path = ptodo::tasks_db_path(&ctx.project_root);
+                eprintln!(
+                    "reify-audit: {}",
+                    tasks_db_refusal(&path, "it opened, but the lanes degraded on it")
+                );
+                return ExitCode::from(TASKS_DB_ABSENT_EXIT);
+            }
+            findings.extend(run.findings);
+        }
+        findings
     };
 
     // Emit JSON findings on stderr. Scope the lock so it's dropped before any
@@ -1210,6 +1293,26 @@ mod tests {
         assert!(
             usage.contains("255"),
             "--help must document the dedicated refusal exit code; got:\n{usage}"
+        );
+    }
+
+    #[test]
+    fn require_tasks_db_needs_ptodo_in_the_run_set() {
+        for pattern in [None, Some("PTODO"), Some("P1,PTODO")] {
+            assert!(
+                run_set_reads_tasks_db(&make_args(false, pattern)),
+                "{pattern:?} selects PTODO, the task-DB reader"
+            );
+        }
+        for pattern in [Some("P1"), Some("P2,P5,PDSSENTINEL")] {
+            assert!(
+                !run_set_reads_tasks_db(&make_args(false, pattern)),
+                "{pattern:?} selects no task-DB reader"
+            );
+        }
+        assert!(
+            !run_set_reads_tasks_db(&make_args(true, None)),
+            "--pre-done runs P5 alone"
         );
     }
 
