@@ -709,4 +709,162 @@ structure Bracket {
             "every Location must carry the opened document uri"
         );
     }
+
+    // --- task 6195: blocking-work placement ---
+    //
+    // definition, prepareRename, rename and references run their parse/compile
+    // work per the server's `BlockingWorkPlacement`. A runtime whose blocking
+    // pool is saturated tells the placements apart from outside the server:
+    // CallingThread answers anyway, BlockingPool queues until the pool frees.
+
+    use std::time::Duration;
+
+    use crate::blocking_work::BlockingWorkPlacement;
+    use crate::blocking_work::test_support::{SaturatedBlockingPool, poll_once};
+
+    const PLACEMENT_URI: &str = "file:///placement.ri";
+
+    /// The four blocking-work requests, each at a bracket-fixture position
+    /// that resolves, so a panic swallowed into `None` would show as null.
+    fn blocking_work_requests() -> [(&'static str, Value); 4] {
+        let at = |line: u32, character: u32| {
+            json!({
+                "textDocument": { "uri": PLACEMENT_URI },
+                "position": { "line": line, "character": character }
+            })
+        };
+        let mut rename = at(7, 17);
+        rename["newName"] = json!("girth");
+        let mut references = at(1, 10);
+        references["context"] = json!({ "includeDeclaration": true });
+        [
+            ("textDocument/definition", at(9, 15)),
+            ("textDocument/prepareRename", at(7, 17)),
+            ("textDocument/rename", rename),
+            ("textDocument/references", references),
+        ]
+    }
+
+    async fn initialized_with_bracket_open(lsp: &InProcessLsp) {
+        lsp.handle_request("initialize", reify_test_support::minimal_init_params())
+            .await
+            .expect("initialize should succeed");
+        open_bracket(lsp, PLACEMENT_URI).await;
+    }
+
+    fn calling_thread_lsp() -> InProcessLsp {
+        InProcessLsp::with_sink_and_placement(
+            Arc::new(NoOpSink),
+            BlockingWorkPlacement::CallingThread,
+        )
+    }
+
+    #[test]
+    fn calling_thread_placement_answers_every_blocking_work_method_with_the_pool_saturated() {
+        let pool = SaturatedBlockingPool::new();
+        pool.block_on(async {
+            let lsp = calling_thread_lsp();
+            initialized_with_bracket_open(&lsp).await;
+            for (method, params) in blocking_work_requests() {
+                let answer =
+                    tokio::time::timeout(Duration::from_secs(60), lsp.handle_request(method, params))
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "{method} waited on the blocking pool instead of running on the \
+                                 calling thread"
+                            )
+                        })
+                        .unwrap_or_else(|e| panic!("{method} failed: {e}"));
+                assert!(
+                    !answer.is_null(),
+                    "{method} answered null at a position the bracket fixture resolves"
+                );
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn calling_thread_placement_answers_exactly_what_the_default_placement_answers() {
+        let default_placement = InProcessLsp::new();
+        let calling_thread = calling_thread_lsp();
+        initialized_with_bracket_open(&default_placement).await;
+        initialized_with_bracket_open(&calling_thread).await;
+        for (method, params) in blocking_work_requests() {
+            let expected = default_placement
+                .handle_request(method, params.clone())
+                .await;
+            let actual = calling_thread.handle_request(method, params).await;
+            assert_eq!(actual, expected, "{method}");
+        }
+    }
+
+    /// Build a server exactly as `run_server` does (minus stdio), open the
+    /// bracket fixture, and assert `request` queues behind an occupied
+    /// blocking pool, then answers `Some` once the pool frees.
+    fn assert_default_placement_queues_behind_the_pool<T, F>(
+        method: &str,
+        request: impl FnOnce(ReifyLanguageServer) -> F,
+    ) where
+        T: std::fmt::Debug,
+        F: Future<Output = tower_lsp::jsonrpc::Result<Option<T>>>,
+    {
+        let pool = SaturatedBlockingPool::new();
+        pool.block_on(async {
+            let (service, _socket) = LspService::new(|client| {
+                ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
+            });
+            let server = service.inner().clone();
+            server
+                .initialize(
+                    serde_json::from_value(reify_test_support::minimal_init_params())
+                        .expect("minimal init params deserialize"),
+                )
+                .await
+                .expect("initialize should succeed");
+            server
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem::new(
+                        Url::parse(PLACEMENT_URI).unwrap(),
+                        "reify".to_string(),
+                        1,
+                        reify_test_support::bracket_source().to_string(),
+                    ),
+                })
+                .await;
+
+            let mut answer = std::pin::pin!(request(server));
+            assert!(
+                poll_once(&mut answer).await.is_pending(),
+                "{method} answered on the calling thread; the stdio server's default \
+                 placement must hand its blocking work to the pool"
+            );
+            pool.release();
+            let answer = answer.await;
+            assert!(matches!(answer, Ok(Some(_))), "{method}: {answer:?}");
+        });
+    }
+
+    #[test]
+    fn default_placement_still_hands_blocking_work_to_the_pool() {
+        let [definition, prepare_rename, rename, references] = blocking_work_requests();
+        assert_default_placement_queues_behind_the_pool(definition.0, |server| async move {
+            server
+                .goto_definition(serde_json::from_value(definition.1).unwrap())
+                .await
+        });
+        assert_default_placement_queues_behind_the_pool(prepare_rename.0, |server| async move {
+            server
+                .prepare_rename(serde_json::from_value(prepare_rename.1).unwrap())
+                .await
+        });
+        assert_default_placement_queues_behind_the_pool(rename.0, |server| async move {
+            server.rename(serde_json::from_value(rename.1).unwrap()).await
+        });
+        assert_default_placement_queues_behind_the_pool(references.0, |server| async move {
+            server
+                .references(serde_json::from_value(references.1).unwrap())
+                .await
+        });
+    }
 }
