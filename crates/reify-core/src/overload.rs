@@ -530,7 +530,7 @@ fn arg_side_admits(param_ty: &Type, arg_ty: &Type) -> bool {
 /// no-match.
 ///
 /// The ARG side (PRD docs/prds/v0_6/generic-enum-type-arg-retention.md §7
-/// C-4; the S-4 witness is tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri)
+/// C-4; the S-4 witness is tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri) (pg-drift:allow — prose only; nothing compiled reads it)
 /// has three cases, none gated on `is_generic` — the genericity in question
 /// belongs to the CALLER whose body produced a type-param-carrying value, not
 /// to the candidate being matched:

@@ -429,7 +429,7 @@ structure S {
 
 /// [CORE SIGNAL] PRD docs/prds/v0_6/generic-enum-type-arg-retention.md §7 C-4
 /// (S-4, headed form; probe fixture
-/// tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri, inlined here).
+/// tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri, inlined here). (pg-drift:allow — source inlined; the file is never read)
 /// `or_else(Ok{..}, Ok{..})` has the leaky static type `Result<T, E>`; a
 /// headed type-param-carrying arg admits a concrete param at tier 3 only where
 /// heads unify, and `Length` vs `Result` do not — so `fl` has no match and the
