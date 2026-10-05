@@ -91,5 +91,7 @@
 mod workspace_git;
 #[path = "harness_ctor_conformance_survey/corpus.rs"]
 mod corpus;
+#[path = "harness_ctor_conformance_survey/owner.rs"]
+mod owner;
 #[path = "harness_ctor_conformance_survey/survey.rs"]
 mod survey;
