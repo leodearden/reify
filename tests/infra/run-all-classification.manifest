@@ -95,6 +95,9 @@ test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
+# pool: stub reify-audit + stub MCP server; its entrypoint cases run reify_audit_guard only over a non-git temp root, where it fails open before any cargo build.
+test_docs_truth_sweep.sh pool
+test_docs_truth_sweep_units.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool

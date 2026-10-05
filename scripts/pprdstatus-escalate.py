@@ -54,26 +54,29 @@ Exit codes:
        detector failed, or it refused an empty task corpus, which leaves
        PPRDSTATUS nothing to check, or the findings file could not be read
 
-This is the one-shot raise primitive. Its recurring cadence, set-level dedupe
-and docs-truth aggregation belong to task #6347.
+This is the one-shot raise primitive. The recurring, set-deduplicated,
+family-wide raise is scripts/docs-truth-sweep.py; its rationale is in
+docs/notes/docs-truth-sweep.md.
 """
 
 import argparse
 import http.client
 import json
 import os
-import subprocess
 import sys
-import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from escalation_mcp import EscalationError, McpSession  # noqa: E402  (after sys.path manipulation)
+from reify_audit_findings import detector_preamble, parse_findings, run_pattern  # noqa: E402
 
 PATTERN = "PPRDSTATUS"
 FINDING_PATTERN = "PPrdStatus"
 SITTING = "/audit --pattern PPRDSTATUS"
 ERROR_PREFIX = "pprdstatus-escalate:"
+CLIENT_NAME = "pprdstatus-escalate"
 EXIT_FILE_FAILED = 1
 EXIT_NO_FINDINGS_ARRAY = 125
-MCP_PROTOCOL_VERSION = "2024-11-05"
-MCP_TIMEOUT_SECONDS = 30
 
 SUGGESTED_ACTION = (
     f"Book a docs-truth triage sitting ({SITTING}) and judge each listed doc on "
@@ -84,61 +87,13 @@ SUGGESTED_ACTION = (
 )
 
 
-class EscalationError(Exception):
-    """The escalation server answered, but did not accept the filing."""
-
-
-def run_detector(binary, project_root):
-    """(stderr, returncode) of one offline PPRDSTATUS sweep of project_root."""
-    completed = subprocess.run(
-        [binary, "--pattern", PATTERN, "--no-jcodemunch", "--project-root", project_root],
-        cwd=project_root,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    return completed.stderr, completed.returncode
-
-
 def captured_stderr(args):
     """The detector's stderr, and where it came from; OSError if unreadable."""
     if args.findings_file:
         with open(args.findings_file, encoding="utf-8", errors="replace") as captured:
             return captured.read(), f"findings file {args.findings_file}"
-    stderr, returncode = run_detector(args.reify_audit, os.path.abspath(args.project_root))
+    stderr, returncode = run_pattern(args.reify_audit, PATTERN, os.path.abspath(args.project_root))
     return stderr, f"{args.reify_audit} exited {returncode}"
-
-
-def findings_array_start(stderr):
-    """Offset of the findings array: the last line that opens with `[`."""
-    newline_bracket = stderr.rfind("\n[")
-    if newline_bracket >= 0:
-        return newline_bracket + 1
-    return 0 if stderr.startswith("[") else None
-
-
-def parse_findings(stderr):
-    """The findings list, or None when stderr carries no parseable array.
-
-    This is the binary's documented JSON-on-stderr contract
-    (.claude/skills/audit/references/cli-invocation.md §3.1). The exit code is
-    never read as failure once an array parses: it is the High count, and 125
-    High findings is a legal result.
-    """
-    start = findings_array_start(stderr)
-    if start is None:
-        return None
-    try:
-        findings = json.loads(stderr[start:])
-    except json.JSONDecodeError:
-        return None
-    return findings if isinstance(findings, list) else None
-
-
-def detector_preamble(stderr):
-    """Everything the detector wrote ahead of its findings array."""
-    start = findings_array_start(stderr)
-    return stderr if start is None else stderr[:start]
 
 
 def escalation_arguments(findings):
@@ -164,88 +119,11 @@ def escalation_arguments(findings):
     }
 
 
-class McpSession:
-    """A minimal streamable-HTTP MCP client: initialize, then tools/call.
-
-    Keeps the server's mcp-session-id and sends it on every later post.
-    Accepts both plain-JSON and SSE (`data:` line) reply bodies.
-    """
-
-    def __init__(self, url):
-        self.url = url
-        self.session_id = None
-        self.next_id = 0
-
-    def open(self):
-        self._post(
-            self._request(
-                "initialize",
-                {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "pprdstatus-escalate", "version": "1"},
-                },
-            )
-        )
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-    def call_tool(self, name, arguments):
-        return self._post(self._request("tools/call", {"name": name, "arguments": arguments}))
-
-    def _request(self, method, params):
-        self.next_id += 1
-        return {"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params}
-
-    def _post(self, payload):
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        if self.session_id:
-            headers["mcp-session-id"] = self.session_id
-        request = urllib.request.Request(
-            self.url, data=json.dumps(payload).encode(), headers=headers
-        )
-        with urllib.request.urlopen(request, timeout=MCP_TIMEOUT_SECONDS) as response:
-            self.session_id = response.headers.get("mcp-session-id") or self.session_id
-            body = response.read().decode("utf-8")
-        return reply_message(body)
-
-
-def reply_message(body):
-    """The JSON-RPC message in a reply body, or None for an empty (202) reply."""
-    data_lines = [line[len("data:"):].strip() for line in body.splitlines() if line.startswith("data:")]
-    if data_lines:
-        return json.loads(data_lines[-1])
-    return json.loads(body) if body.strip() else None
-
-
 def file_escalation(url, arguments):
     """File escalate_info and return the server's record ({id, status, level})."""
-    session = McpSession(url)
+    session = McpSession(url, CLIENT_NAME)
     session.open()
-    return escalation_record(session.call_tool("escalate_info", arguments))
-
-
-def escalation_record(reply):
-    """The escalation record in a tools/call reply; EscalationError if refused."""
-    if reply is None:
-        raise EscalationError("empty tools/call reply")
-    if "error" in reply:
-        raise EscalationError(f"JSON-RPC error: {reply['error']}")
-    result = reply.get("result") or {}
-    text = "".join(
-        item.get("text", "") for item in result.get("content", []) if item.get("type") == "text"
-    )
-    if result.get("isError"):
-        raise EscalationError(f"escalate_info returned an error: {text}")
-    try:
-        record = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise EscalationError(f"unparseable escalate_info payload {text!r}: {error}") from error
-    if not isinstance(record, dict) or "error" in record:
-        raise EscalationError(f"escalate_info refused the filing: {record}")
-    return record
+    return session.call_tool("escalate_info", arguments)
 
 
 def parse_args(argv):
