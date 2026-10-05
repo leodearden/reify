@@ -333,7 +333,7 @@ fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
     // test list, or triaging a red, was told this test proved something it did
     // not. The test name is what shows up in `cargo test` output; coverage
     // ownership stays with the test that actually asserts it. The live count
-    // belongs in the artifact this module generates, which states it as a
+    // belongs in the artifact this survey generates, which states it as a
     // measured header field.
     assert!(
         corpus.len() >= RI_CORPUS_FLOOR,
@@ -380,7 +380,7 @@ fn tracked_ri_corpus_is_sorted_and_deduplicated() {
 // DELIBERATELY ABSENT: a gate-resident "every corpus entry resolves to an
 // existing file on disk" probe.
 //
-// That is a property of the WORKING TREE, not of anything this module decides.
+// That is a property of the WORKING TREE, not of anything this survey decides.
 // `git ls-files` reports the INDEX, so an engineer who has `rm`'d a tracked
 // `.ri` locally, or is mid-`git mv`, without staging the deletion would get a
 // red `reify-compiler` suite pointing at the survey module with no connection to
