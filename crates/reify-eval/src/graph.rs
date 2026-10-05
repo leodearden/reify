@@ -12,6 +12,8 @@ use reify_core::{
 };
 use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
+pub mod cell_contributions;
+
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
 #[derive(Debug, Clone)]
