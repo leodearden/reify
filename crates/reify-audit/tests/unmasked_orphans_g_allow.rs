@@ -98,3 +98,11 @@ fn reify_solver_elastic_unmasked_rows_are_allow_listed() {
         ),
     ]);
 }
+
+#[test]
+fn reify_syntax_unmasked_row_is_allow_listed() {
+    assert_allow_listed(&[(
+        "crates/reify-syntax/src/lib.rs",
+        "visit_structure_member_root_exprs",
+    )]);
+}
