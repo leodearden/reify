@@ -81,9 +81,10 @@ echo ""
 echo "--- Test 3: declared set equals grep-derived release-sensitive set ---"
 
 # Actual release-sensitive set comes from the shared library (single source of
-# truth): an anchored grep over crates/ and gui/src-tauri/ for the three
+# truth): an anchored grep over crates/ and gui/src-tauri/ for the four
 # release-sensitivity mechanisms (cfg_attr(debug_assertions, ignore ...) /
-# cfg(not(debug_assertions)) / runtime cfg!(debug_assertions)).  The full
+# cfg(not(debug_assertions)) / runtime cfg!(debug_assertions) /
+# cfg_attr(debug_assertions, should_panic ...)).  The full
 # rationale lives in the release_sensitive_set doc comment in
 # scripts/release-scope-lib.sh.
 ACTUAL_SENSITIVE="$(release_sensitive_set)"
@@ -103,6 +104,24 @@ if [ -n "$_DIFF_OUT" ]; then
 fi
 assert "declared release-sensitive set equals grep-derived set (no missing or extra entries)" \
     test -z "$_DIFF_OUT"
+
+# ---------------------------------------------------------------------------
+# Test 3b: Mechanism D derives a crate from a fixture tree
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 3b: release_sensitive_set derives a crate from a cfg_attr(debug_assertions, should_panic) fixture ---"
+_FX_ROOT="$(mktemp -d)"
+mkdir -p "$_FX_ROOT/crates/fx-mech-d/src" "$_FX_ROOT/crates/fx-clean/src"
+printf '%s\n' '    #[cfg_attr( debug_assertions , should_panic(expected = "boom"))]' \
+    > "$_FX_ROOT/crates/fx-mech-d/src/lib.rs"
+printf '%s\n' '// #[cfg_attr(debug_assertions, should_panic)] in a comment only' \
+    > "$_FX_ROOT/crates/fx-clean/src/lib.rs"
+_FX_DERIVED="$(_RELEASE_SCOPE_LIB_REPO_ROOT="$_FX_ROOT" release_sensitive_set)"
+rm -rf "$_FX_ROOT"
+assert "Mechanism D: fixture crate with cfg_attr(debug_assertions, should_panic) is derived" \
+    grep -qxF 'fx-mech-d' <<< "$_FX_DERIVED"
+assert "Mechanism D: fixture crate with the shape only in a comment is NOT derived" \
+    bash -c "! grep -qxF 'fx-clean' <<< \"\$1\"" _ "$_FX_DERIVED"
 
 # ---------------------------------------------------------------------------
 # Test 3a: A5 release-scope EXIT guard — reify-mesh-morph has left the sensitive set

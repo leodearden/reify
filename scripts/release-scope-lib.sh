@@ -60,7 +60,7 @@ release_declared_set() {
 }
 
 # release_sensitive_set — derive the ACTUAL release-sensitive set by grepping for
-# the three release-sensitivity mechanisms over crates/ and gui/src-tauri/.
+# the four release-sensitivity mechanisms over crates/ and gui/src-tauri/.
 #
 # Mechanism A: cfg_attr(debug_assertions, ignore ...) — tests ignored in debug,
 #   exercised only in release.  The ignore token may be bare or followed by
@@ -79,7 +79,12 @@ release_declared_set() {
 #   '/' on the line, which excludes //, ///, //! comment lines while still catching
 #   mid-line uses like 'if cfg!(debug_assertions)' and 'cfg!(debug_assertions),'.
 #
-# Mechanisms A+B are ANCHORED at line start (optional whitespace then '#[cfg...') to
+# Mechanism D: cfg_attr(debug_assertions, should_panic ...) — a test that must panic
+#   in debug but whose release-profile assertions differ (the panic never fires
+#   there), so its release-only half runs only in the release pass.  Whitespace is
+#   tolerated around the comma and after the opening paren.
+#
+# Mechanisms A+B+D are ANCHORED at line start (optional whitespace then '#[cfg...') to
 # exclude doc-comment false positives (e.g. //! lines describing these attributes).
 # A line beginning with whitespace then '#[cfg...' is an attribute; a line
 # beginning with '//' is a comment and is never matched.
@@ -90,6 +95,7 @@ release_declared_set() {
 release_sensitive_set() {
     local pat_a='^\s*#\[cfg_attr\(debug_assertions,\s*ignore'
     local pat_b='^\s*#\[cfg\(not\(debug_assertions\)\)\]'
+    local pat_d='^\s*#\[cfg_attr\(\s*debug_assertions\s*,\s*should_panic'
     local pat_c_pos='^[^/]*cfg!\(debug_assertions\)'
     local pat_c_neg='^[^/]*cfg!\(not\(debug_assertions\)\)'
     local repo_root="$_RELEASE_SCOPE_LIB_REPO_ROOT"
@@ -107,6 +113,9 @@ release_sensitive_set() {
         grep -rlE "$pat_c_pos" --include='*.rs' \
             "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
         grep -rlE "$pat_c_neg" --include='*.rs' \
+            "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
+        # Mechanism D: cfg_attr(debug_assertions, should_panic ...) — panics only in debug
+        grep -rlE "$pat_d" --include='*.rs' \
             "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
     } | while IFS= read -r file; do
         case "$file" in

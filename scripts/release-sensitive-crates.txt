@@ -10,7 +10,7 @@
 #   Cargo.toml:155-158), so non-sensitive crates are fully covered by the debug pass.
 #
 # How to verify:
-#   Run the three greps below over the workspace and collect their crate hits:
+#   Run the greps below over the workspace and collect their crate hits:
 #
 #   Mechanism A — tests ignored in debug, exercised only in release:
 #     grep -rlE '^\s*#\[cfg_attr\(debug_assertions,\s*ignore' \
@@ -27,8 +27,12 @@
 #     grep -rlE '^[^/]*cfg!\(not\(debug_assertions\)\)' \
 #         --include='*.rs' crates/ gui/src-tauri/
 #
+#   Mechanism D — tests that panic only in debug (release assertions differ):
+#     grep -rlE '^\s*#\[cfg_attr\(\s*debug_assertions\s*,\s*should_panic' \
+#         --include='*.rs' crates/ gui/src-tauri/
+#
 #   Map each hit file to its crate (crates/<dir> → <dir>; gui/src-tauri/* → reify-gui).
-#   Mechanisms A+B anchor on '^\s*#\[' to exclude doc-comment false positives.
+#   Mechanisms A+B+D anchor on '^\s*#\[' to exclude doc-comment false positives.
 #   Mechanism C anchors on '^[^/]*' (macro before first '/') to exclude comment lines.
 #   The union of all hit sets (sorted, unique) must equal this list.
 #
