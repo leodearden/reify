@@ -499,6 +499,34 @@ selector.  Why, and the existing instances:
 [`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
 §3; when to re-check them: §5.
 
+## Signals ignored on entry (nohup, bare `&`)
+
+A non-interactive bash cannot trap or reset a signal that was `SIG_IGN` when it
+started: `trap '…' SIG` returns 0 and installs nothing, and `trap -p SIG` keeps
+printing `trap -- '' SIG<SIG>`. The disposition is inherited by every
+descendant. `nohup` ignores HUP, and a bare `cmd &` from a shell without job
+control ignores INT and QUIT. `run_all.sh`'s own pool form `( … ) &` was
+measured NOT to leak it (child `SigIgn` 0), so the gate is unaffected. An
+operator or agent who backgrounds a sweep with `nohup` or a bare `&` is
+affected. Diagnose with `grep SigIgn /proc/self/status`, where bit (sig−1) is
+set per ignored signal: `…01` under nohup, `…06` under a bare `&`.
+
+A suite that probes trap behaviour owns two jobs:
+
+- **Construct** the disposition its probe child needs with
+  `env --default-signal=SIG child` (GNU coreutils ≥ 8.31). Scope it to that
+  child, never to the suite: a suite with HUP reset is killable by the very
+  hangup it was nohup'd against.
+- **Detect** the residual case in the probe itself (no reset on this host, or a
+  wrapper that re-ignores it) and report a loud `SKIP`, never a contract `FAIL`.
+
+Worked example: `test_nextest_absent_lib.sh` arm 10c, pinned hermetically by
+arms 10i–10l. `set -m` (`test_with_jcodemunch_serve.sh`) is a narrower tool:
+it avoids bash's OWN async-INT ignore for a child the suite launches, but
+cannot undo a disposition the suite inherited. To background a sweep, use the
+harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
+ignores INT and QUIT (measured `SigIgn` `…06`).
+
 ## Files
 
 | File | Purpose |
