@@ -1,5 +1,9 @@
 //! One ctor-conformance site as the survey records it, and its extraction from
 //! a compiler diagnostic.
+//!
+//! It also owns the synthetic-site builders, `synth_site` and
+//! `synth_inline_site`: test fixtures for the higher disposition and render
+//! layers, kept beside the `SurveySite` they build.
 
 use reify_test_support::is_ctor_conformance_code;
 
@@ -813,6 +817,8 @@ fn survey_site_carries_file_and_resolved_line() {
 
 /// One inline row, as `survey_inline_corpus` builds them: a HOST `.rs` file
 /// and host line, plus the snippet-relative coordinate that MAKES it inline.
+/// The inline counterpart of [`synth_site`], for the same disposition and
+/// render tests.
 #[cfg(test)]
 pub(crate) fn synth_inline_site(file: &str, field: Option<&str>, severity: &str) -> SurveySite {
     SurveySite {

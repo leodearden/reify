@@ -142,13 +142,13 @@ pub(crate) fn git_read(args: &[&str]) -> String {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
+                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
                 args.join(" ")
             )
         });
     assert!(
         out.status.success(),
-        "ctor_conformance_corpus_survey: `git {}` in {WORKSPACE_ROOT} exited {:?}: {}",
+        "harness_ctor_conformance_survey::workspace_git: `git {}` in {WORKSPACE_ROOT} exited {:?}: {}",
         args.join(" "),
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
@@ -167,7 +167,7 @@ pub(crate) fn git_succeeds(args: &[&str]) -> bool {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
+                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
                 args.join(" ")
             )
         })

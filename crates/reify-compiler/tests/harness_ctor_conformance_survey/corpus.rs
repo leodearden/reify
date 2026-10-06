@@ -131,19 +131,19 @@ fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}"
+                "harness_ctor_conformance_survey::corpus: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}"
             )
         });
     assert!(
         out.status.success(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` in {WORKSPACE_ROOT} \
+        "harness_ctor_conformance_survey::corpus: `git ls-files -z -- '{pathspec}'` in {WORKSPACE_ROOT} \
          exited {:?}: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
     );
 
     let stdout = String::from_utf8(out.stdout)
-        .expect("ctor_conformance_corpus_survey: `git ls-files` emitted non-UTF-8 paths");
+        .expect("harness_ctor_conformance_survey::corpus: `git ls-files` emitted non-UTF-8 paths");
     let mut paths: Vec<String> = stdout
         .split('\0')
         .filter(|s| !s.is_empty())
@@ -153,7 +153,7 @@ fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
     paths.dedup();
     assert!(
         !paths.is_empty(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` returned nothing in \
+        "harness_ctor_conformance_survey::corpus: `git ls-files -z -- '{pathspec}'` returned nothing in \
          {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
     );
     paths

@@ -253,7 +253,7 @@ fn scan_structure_defs(
         let path = dir.join(format!("{stem}.ri"));
         let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: FEA stdlib module '{stem}' is listed in \
+                "harness_ctor_conformance_survey::owner: FEA stdlib module '{stem}' is listed in \
                  FEA_STDLIB_MODULES but {} cannot be read: {e}. A stdlib rename must not \
                  silently empty the D9 do-not-touch partition — update the list.",
                 path.display()
@@ -340,14 +340,14 @@ fn scan_stdlib_structure_defs() -> std::collections::BTreeSet<String> {
     let dir = std::path::Path::new(STDLIB_DIR);
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
-            "ctor_conformance_corpus_survey: cannot read the stdlib dir {}: {e}",
+            "harness_ctor_conformance_survey::owner: cannot read the stdlib dir {}: {e}",
             dir.display()
         )
     });
     for entry in entries {
         let entry = entry.unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: cannot read an entry of the stdlib dir \
+                "harness_ctor_conformance_survey::owner: cannot read an entry of the stdlib dir \
                  {}: {e}. A dropped entry would silently shrink the known-def set and \
                  demote real ctor sites to `UnresolvedDef`.",
                 dir.display()
@@ -359,7 +359,7 @@ fn scan_stdlib_structure_defs() -> std::collections::BTreeSet<String> {
         }
         let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
-                "ctor_conformance_corpus_survey: cannot read the stdlib module {}: {e}. \
+                "harness_ctor_conformance_survey::owner: cannot read the stdlib module {}: {e}. \
                  An unreadable stdlib file would silently drop its defs from the \
                  known-def set and demote every site constructing one of them to \
                  `UnresolvedDef`.",

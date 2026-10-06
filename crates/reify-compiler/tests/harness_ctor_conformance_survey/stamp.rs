@@ -333,5 +333,5 @@ pub(crate) fn survey_stamp(ri: &[String], hosts: &[String]) -> SurveyStamp {
     let drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri", "*.rs"]);
     let drifted = drift_within_corpus(&drift, &surveyed_corpus_union(ri, hosts));
     stamp_decision(&anchor, &dirty, &drifted)
-        .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"))
+        .unwrap_or_else(|e| panic!("harness_ctor_conformance_survey::stamp: {e}"))
 }

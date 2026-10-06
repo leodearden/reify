@@ -78,7 +78,7 @@ fn generate_ctor_conformance_corpus_survey() {
         (CorpusHalf::TrackedRi, corpus),
         (CorpusHalf::InlineRustHost, hosts),
     ])
-    .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"));
+    .unwrap_or_else(|e| panic!("harness_ctor_conformance_survey::generator: {e}"));
 
     let run = survey_corpus(root, corpus);
     let inline = survey_inline_corpus(root, hosts);
