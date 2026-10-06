@@ -441,21 +441,24 @@ async fn an_evaluation_submitted_after_the_wait_began_settles_it_at_its_generati
     let ManualQueue {
         queue, executor, ..
     } = ManualQueue::new();
-    let submitter = {
-        let queue = Arc::clone(&queue);
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            let ticket = queue.submit(EvalRequest::evaluation(|| EvalOutcome::succeeded(None, ())));
-            std::thread::sleep(Duration::from_millis(50));
-            executor.run_pending();
-            drop(ticket);
-        })
-    };
+    let request = waiting(GUARD, Some(0));
+    let wait = wait_until_settled(&engine, &queue, &request);
+    tokio::pin!(wait);
+    let short = Duration::from_millis(100);
 
-    let outcome = wait_until_settled(&engine, &queue, &waiting(GUARD, Some(0))).await;
-    submitter
-        .join()
-        .expect("the submitting thread must not panic");
+    assert!(
+        tokio::time::timeout(short, &mut wait).await.is_err(),
+        "nothing newer than generation 0 has been issued yet"
+    );
+    let _ticket = queue.submit(EvalRequest::evaluation(|| EvalOutcome::succeeded(None, ())));
+    assert!(
+        tokio::time::timeout(short, &mut wait).await.is_err(),
+        "a queued but unrun evaluation must keep the wait pending"
+    );
+    executor.run_pending();
+    let outcome = tokio::time::timeout(GUARD, wait)
+        .await
+        .expect("the wait must settle once the evaluation has run");
 
     assert!(
         matches!(outcome, WaitOutcome::Settled { generation: 1, .. }),
@@ -481,8 +484,8 @@ async fn a_never_loaded_session_is_reported_not_started_rather_than_timed_out() 
 #[test]
 fn a_not_started_wait_replies_the_engine_not_started_token() {
     assert_eq!(
-        WaitOutcome::NotStarted.early_reply(),
-        Some(serde_json::json!({"error": "engine_not_started"}))
+        WaitOutcome::NotStarted.settled_or_early_reply(),
+        Err(serde_json::json!({"error": "engine_not_started"}))
     );
 }
 
@@ -498,8 +501,8 @@ fn a_timed_out_wait_replies_the_timeout_token_with_its_last_reading() {
     };
 
     assert_eq!(
-        busy.early_reply(),
-        Some(serde_json::json!({
+        busy.settled_or_early_reply(),
+        Err(serde_json::json!({
             "error": "timeout",
             "engine_busy": true,
             "generation": 5,
@@ -507,8 +510,8 @@ fn a_timed_out_wait_replies_the_timeout_token_with_its_last_reading() {
         }))
     );
     assert_eq!(
-        awaiting.early_reply(),
-        Some(serde_json::json!({
+        awaiting.settled_or_early_reply(),
+        Err(serde_json::json!({
             "error": "timeout",
             "engine_busy": false,
             "generation": 3,
@@ -518,13 +521,16 @@ fn a_timed_out_wait_replies_the_timeout_token_with_its_last_reading() {
 }
 
 #[test]
-fn a_settled_wait_has_no_early_reply_so_the_frontend_is_asked_next() {
+fn a_settled_wait_yields_its_generation_and_wait_so_the_frontend_is_asked_next() {
     let settled = WaitOutcome::Settled {
         generation: 2,
-        waited: Duration::ZERO,
+        waited: Duration::from_millis(40),
     };
 
-    assert_eq!(settled.early_reply(), None);
+    assert_eq!(
+        settled.settled_or_early_reply(),
+        Ok((2, Duration::from_millis(40)))
+    );
 }
 
 #[test]

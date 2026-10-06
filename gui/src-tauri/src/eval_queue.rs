@@ -158,7 +158,7 @@ impl EditLedger {
 }
 
 /// How far the queue has got, read without running anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EvalProgress {
     /// The newest generation the queue has issued: per GUI process, starting at
     /// 0 and never reset. Settling does not lower it.

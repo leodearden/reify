@@ -3,7 +3,7 @@
 //! This is the one place that question is answered without blocking. Every
 //! engine user holds the one engine mutex while it works — the queue's
 //! drainer, the debug server's `run_on_engine`, setup — so "the mutex is held"
-//! is exact for all of them with no instrumentation at their call sites. The
+//! covers all of them with no instrumentation at their call sites. The
 //! queue's own progress adds the work it has accepted but not yet started,
 //! which the mutex cannot see. Waiters poll the same reading through
 //! [`wait_until_settled`].
@@ -64,6 +64,11 @@ impl Serialize for EngineActivity {
 
 /// Read the engine lane without blocking: `try_lock` never waits, and the
 /// queue's progress takes only the queue's own short-lived lock.
+///
+/// A probe that gets the lock holds it for the instant `is_idle` takes, so a
+/// second probe in that instant reads it held: `busy` can over-report that
+/// briefly with no engine work in flight, and never under-reports. A waiter
+/// just polls again.
 ///
 /// A poisoned mutex reads as free, on the grounds `with_engine_lock` documents
 /// for recovering its guard (`crate::engine_lock`).
@@ -167,17 +172,18 @@ pub enum WaitOutcome {
 }
 
 impl WaitOutcome {
-    /// The reply `wait_for_idle` gives without asking the frontend, carrying
-    /// the in-band `engine_not_started` / `timeout` tokens its callers branch
-    /// on. `None` once the engine settled: the frontend's render half is next.
-    pub fn early_reply(&self) -> Option<Value> {
+    /// `Ok((generation, waited))` once the engine settled, so the frontend's
+    /// render half is next. Otherwise `Err` with the reply `wait_for_idle` gives
+    /// without asking the frontend, carrying the in-band `engine_not_started` /
+    /// `timeout` tokens its callers branch on.
+    pub fn settled_or_early_reply(self) -> Result<(u64, Duration), Value> {
         match self {
-            WaitOutcome::Settled { .. } => None,
-            WaitOutcome::NotStarted => Some(json!({"error": "engine_not_started"})),
+            WaitOutcome::Settled { generation, waited } => Ok((generation, waited)),
+            WaitOutcome::NotStarted => Err(json!({"error": "engine_not_started"})),
             WaitOutcome::TimedOut {
                 last,
                 awaiting_generation,
-            } => Some(json!({
+            } => Err(json!({
                 "error": "timeout",
                 "engine_busy": last.busy(),
                 "generation": last.queue.generation,

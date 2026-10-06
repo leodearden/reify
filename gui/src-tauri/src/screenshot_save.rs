@@ -20,8 +20,9 @@ pub fn png_base64(data: &str) -> &str {
 }
 
 /// Split `save_path` off an image tool's params, returning it with the params
-/// to forward to the frontend. The path must be absolute: the GUI's working
-/// directory is arbitrary, so a relative one would land anywhere.
+/// to forward to the frontend. The path must be absolute, since the GUI's
+/// working directory is arbitrary, and must end in `.png`, since an existing
+/// file there is overwritten.
 pub fn take_save_path(mut params: Value) -> Result<(Option<PathBuf>, Value), String> {
     let Some(raw) = params.as_object_mut().and_then(|p| p.remove("save_path")) else {
         return Ok((None, params));
@@ -30,6 +31,15 @@ pub fn take_save_path(mut params: Value) -> Result<(Option<PathBuf>, Value), Str
     if !path.is_absolute() {
         return Err(format!(
             "save_path must be an absolute path; got {}",
+            path.display()
+        ));
+    }
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        return Err(format!(
+            "save_path must end in .png; got {}",
             path.display()
         ));
     }

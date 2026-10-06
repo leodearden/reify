@@ -66,6 +66,26 @@ fn a_relative_save_path_is_refused_naming_it() {
     assert!(refusal.contains("absolute"), "{refusal}");
 }
 
+/// The file is overwritten, so a mistyped path such as the design's own `.ri`
+/// must not be accepted.
+#[test]
+fn a_save_path_without_a_png_extension_is_refused_naming_it() {
+    for path in ["/tmp/design.ri", "/tmp/shot"] {
+        let refusal = take_save_path(json!({"save_path": path}))
+            .expect_err("only a .png path may be overwritten with PNG bytes");
+
+        assert!(refusal.contains(path), "{refusal}");
+        assert!(refusal.contains(".png"), "{refusal}");
+    }
+}
+
+#[test]
+fn a_png_extension_is_accepted_in_any_case() {
+    let (path, _) = take_save_path(json!({"save_path": "/tmp/SHOT.PNG"})).expect("accepted");
+
+    assert_eq!(path, Some(PathBuf::from("/tmp/SHOT.PNG")));
+}
+
 #[test]
 fn a_save_path_that_is_not_a_string_is_refused() {
     assert_eq!(

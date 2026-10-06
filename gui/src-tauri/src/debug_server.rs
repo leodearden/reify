@@ -33,6 +33,10 @@ struct ToolDef {
     input_schema: Value,
 }
 
+/// The `save_path` param every image tool advertises, read by
+/// `crate::screenshot_save::take_save_path`.
+const SAVE_PATH_DESCRIPTION: &str = "Optional ABSOLUTE path ending in .png; when given the PNG is written there, overwriting any existing file, and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist.";
+
 fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -42,7 +46,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_status",
-            description: "NON-BLOCKING engine lane read that never waits on the engine lock: {busy, engine_lock_held, engine_started (null while the lock is held), generation (newest EvalQueue generation issued this GUI process; pass it to wait_for_idle.since_generation), queue_outstanding}. busy covers both queued GUI evaluations and a debug tool's own in-flight engine work.",
+            description: "NON-BLOCKING engine lane read that never waits on the engine lock: {busy, engine_lock_held, engine_started (null while the lock is held), generation (newest EvalQueue generation issued this GUI process; pass it to wait_for_idle.since_generation), queue_outstanding}. busy covers both queued GUI evaluations and a debug tool's own in-flight engine work. It never under-reports, but can read true for an instant with no work in flight: the read itself holds the engine lock briefly, so an overlapping engine_status/health/wait_for_idle read can see engine_lock_held: true.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -98,7 +102,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "save_path": {
                         "type": "string",
-                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 }
             }),
@@ -115,7 +119,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "save_path": {
                         "type": "string",
-                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 }
             }),
@@ -327,7 +331,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "save_path": {
                         "type": "string",
-                        "description": "Optional ABSOLUTE path; when given the PNG is written there and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist."
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 },
                 "required": ["testId"]
@@ -3038,11 +3042,9 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
     };
 
     let outcome = engine_activity::wait_until_settled(&state.engine, &state.evals, &request).await;
-    if let Some(reply) = outcome.early_reply() {
-        return Ok(reply);
-    }
-    let engine_activity::WaitOutcome::Settled { generation, waited } = outcome else {
-        unreachable!("early_reply answers every outcome but Settled");
+    let (generation, waited) = match outcome.settled_or_early_reply() {
+        Ok(settled) => settled,
+        Err(reply) => return Ok(reply),
     };
 
     // The frontend gets what is left of the caller's budget, canonicalised so

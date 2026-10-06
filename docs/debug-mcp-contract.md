@@ -93,7 +93,12 @@ queue's own short-lived lock and adds work accepted but not yet running. The one
 implementation is `gui/src-tauri/src/engine_activity.rs`. `engine_status`
 replies `{busy, engine_lock_held, engine_started, generation,
 queue_outstanding}`; `engine_started` is `null` while the lock is held, since
-reading it would mean waiting.
+reading it would mean waiting. The reading itself holds the lock for the
+instant it takes to read `engine_started`, so of two overlapping reads
+(`engine_status`, `health`, a `wait_for_idle` poll) one can see
+`engine_lock_held: true`, and so `busy: true`, with no engine work in flight.
+`busy` can over-report for that instant but never under-reports, and
+`wait_for_idle` absorbs it by polling again.
 
 A **generation** is issued for every edit and evaluation the GUI's evaluation
 queue accepts (editor typing, slider and UI parameter edits, file-watcher
@@ -145,8 +150,9 @@ starvation.
   Valid names are the full payload's own keys
   (`gui/src-tauri/src/engine_state_view.rs`).
 - `screenshot`, `screenshot_window` and `element_screenshot` take an optional
-  `save_path`: an ABSOLUTE path whose parent directory exists. The PNG is
-  written there and the reply is `{saved_to, bytes, mimeType}` (plus
+  `save_path`: an ABSOLUTE path ending in `.png` whose parent directory exists.
+  The PNG is written there, overwriting any existing file (hence the extension
+  rule), and the reply is `{saved_to, bytes, mimeType}` (plus
   `element_screenshot`'s pane diagnostics) instead of an inline image. It
   renders as a TEXT block (§2d).
 
