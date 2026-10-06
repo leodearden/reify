@@ -65,7 +65,8 @@ release_declared_set() {
 # Mechanism A: cfg_attr(debug_assertions, ignore ...) — tests ignored in debug,
 #   exercised only in release.  The ignore token may be bare or followed by
 #   "= reason", so the pattern stops at "ignore" without requiring a closing paren.
-#   Heavy tests in reify-solver-elastic and reify-eval use this mechanism.
+#   Heavy tests in reify-solver-elastic and reify-eval use this mechanism.  Matched
+#   by the shared cfg_attr grammar below.
 #
 # Mechanism B: cfg(not(debug_assertions)) — code only compiled in release
 #   (debug_assert! calls are elided).  Crates using this mechanism include
@@ -81,28 +82,43 @@ release_declared_set() {
 #
 # Mechanism D: cfg_attr(debug_assertions, should_panic ...) — a test that must panic
 #   in debug but whose release-profile assertions differ (the panic never fires
-#   there), so its release-only half runs only in the release pass.  Whitespace is
-#   tolerated around the comma and after the opening paren.
+#   there), so its release-only half runs only in the release pass.
+#
+# cfg_attr grammar (Mechanisms A and D): ONE prefix, cfg_attr_debug below, differing
+#   only in the trailing token.  It is a PCRE run over whole files (grep -z), so
+#   whitespace INCLUDING newlines is tolerated after the opening paren and on both
+#   sides of the comma.  That is load-bearing, not cosmetic: rustfmt splits a long
+#   attribute into
+#       #[cfg_attr(
+#           debug_assertions,
+#           should_panic(expected = "...")
+#       )]
+#   and the tree carries that shape for both tokens (e.g. reify-eval's
+#   tests/determinacy_predicates.rs).  A line-based grep would miss it and silently
+#   drop the crate from the release pass.  Mechanisms B and C stay line-based: B's
+#   attribute is too short to be split, and C is an expression, not an attribute.
 #
 # Mechanisms A+B+D are ANCHORED at line start (optional whitespace then '#[cfg...') to
 # exclude doc-comment false positives (e.g. //! lines describing these attributes).
 # A line beginning with whitespace then '#[cfg...' is an attribute; a line
-# beginning with '//' is a comment and is never matched.
+# beginning with '//' is a comment and is never matched.  For A+D the (?m) flag
+# makes '^' match at every line start inside the whole-file record.
 #
 # File-to-crate mapping:
 #   crates/<dir>/...  → <dir>  (package name equals directory name for all crates/)
 #   gui/src-tauri/... → reify-gui
 release_sensitive_set() {
-    local pat_a='^\s*#\[cfg_attr\(debug_assertions,\s*ignore'
+    local cfg_attr_debug='(?m)^[ \t]*#\[cfg_attr\(\s*debug_assertions\s*,\s*'
+    local pat_a="${cfg_attr_debug}ignore"
     local pat_b='^\s*#\[cfg\(not\(debug_assertions\)\)\]'
-    local pat_d='^\s*#\[cfg_attr\(\s*debug_assertions\s*,\s*should_panic'
+    local pat_d="${cfg_attr_debug}should_panic"
     local pat_c_pos='^[^/]*cfg!\(debug_assertions\)'
     local pat_c_neg='^[^/]*cfg!\(not\(debug_assertions\)\)'
     local repo_root="$_RELEASE_SCOPE_LIB_REPO_ROOT"
 
     {
         # Mechanism A: heavy tests gated behind cfg_attr(debug_assertions, ignore ...)
-        grep -rlE "$pat_a" --include='*.rs' \
+        grep -rlPz "$pat_a" --include='*.rs' \
             "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
         # Mechanism B: cfg(not(debug_assertions)) — release-only fallback code
         grep -rlE "$pat_b" --include='*.rs' \
@@ -115,7 +131,7 @@ release_sensitive_set() {
         grep -rlE "$pat_c_neg" --include='*.rs' \
             "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
         # Mechanism D: cfg_attr(debug_assertions, should_panic ...) — panics only in debug
-        grep -rlE "$pat_d" --include='*.rs' \
+        grep -rlPz "$pat_d" --include='*.rs' \
             "$repo_root/crates" "$repo_root/gui/src-tauri" 2>/dev/null || true
     } | while IFS= read -r file; do
         case "$file" in

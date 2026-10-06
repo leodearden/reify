@@ -81,11 +81,9 @@ echo ""
 echo "--- Test 3: declared set equals grep-derived release-sensitive set ---"
 
 # Actual release-sensitive set comes from the shared library (single source of
-# truth): an anchored grep over crates/ and gui/src-tauri/ for the four
-# release-sensitivity mechanisms (cfg_attr(debug_assertions, ignore ...) /
-# cfg(not(debug_assertions)) / runtime cfg!(debug_assertions) /
-# cfg_attr(debug_assertions, should_panic ...)).  The full
-# rationale lives in the release_sensitive_set doc comment in
+# truth): an anchored grep over crates/ and gui/src-tauri/ for the
+# release-sensitivity mechanisms.  The mechanisms, their patterns and the full
+# rationale live in the release_sensitive_set doc comment in
 # scripts/release-scope-lib.sh.
 ACTUAL_SENSITIVE="$(release_sensitive_set)"
 
@@ -106,21 +104,36 @@ assert "declared release-sensitive set equals grep-derived set (no missing or ex
     test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
-# Test 3b: Mechanism D derives a crate from a fixture tree
+# Test 3b: the cfg_attr(debug_assertions, <token>) grammar shared by Mechanisms A
+# (ignore) and D (should_panic) derives crates from a fixture tree
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Test 3b: release_sensitive_set derives a crate from a cfg_attr(debug_assertions, should_panic) fixture ---"
+echo "--- Test 3b: release_sensitive_set derives crates from cfg_attr(debug_assertions, ignore|should_panic) fixtures ---"
+# Each fixture crate carries exactly ONE token, so a crate is derived only if that
+# token's mechanism matches.  The spaced shapes pin that A and D accept the same
+# whitespace; the multi-line shapes are rustfmt's output for a long attribute.
 _FX_ROOT="$(mktemp -d)"
-mkdir -p "$_FX_ROOT/crates/fx-mech-d/src" "$_FX_ROOT/crates/fx-clean/src"
-printf '%s\n' '    #[cfg_attr( debug_assertions , should_panic(expected = "boom"))]' \
-    > "$_FX_ROOT/crates/fx-mech-d/src/lib.rs"
-printf '%s\n' '// #[cfg_attr(debug_assertions, should_panic)] in a comment only' \
-    > "$_FX_ROOT/crates/fx-clean/src/lib.rs"
+_fx_crate() {
+    local crate="$1"; shift
+    mkdir -p "$_FX_ROOT/crates/$crate/src"
+    printf '%s\n' "$@" > "$_FX_ROOT/crates/$crate/src/lib.rs"
+}
+_fx_crate fx-mech-a-spaced '    #[cfg_attr( debug_assertions , ignore = "heavy")]'
+_fx_crate fx-mech-d-spaced '    #[cfg_attr( debug_assertions , should_panic(expected = "boom"))]'
+_fx_crate fx-mech-a-multiline \
+    '#[cfg_attr(' '    debug_assertions,' '    ignore = "heavy"' ')]'
+_fx_crate fx-mech-d-multiline \
+    '#[cfg_attr(' '    debug_assertions,' '    should_panic(expected = "boom")' ')]'
+_fx_crate fx-clean \
+    '// #[cfg_attr(debug_assertions, should_panic)] in a comment only' \
+    '// #[cfg_attr(' '//     debug_assertions,' '//     ignore = "heavy"' '// )]'
 _FX_DERIVED="$(_RELEASE_SCOPE_LIB_REPO_ROOT="$_FX_ROOT" release_sensitive_set)"
 rm -rf "$_FX_ROOT"
-assert "Mechanism D: fixture crate with cfg_attr(debug_assertions, should_panic) is derived" \
-    grep -qxF 'fx-mech-d' <<< "$_FX_DERIVED"
-assert "Mechanism D: fixture crate with the shape only in a comment is NOT derived" \
+for _fx in fx-mech-a-spaced fx-mech-d-spaced fx-mech-a-multiline fx-mech-d-multiline; do
+    assert "cfg_attr grammar: fixture crate '$_fx' is derived" \
+        grep -qxF "$_fx" <<< "$_FX_DERIVED"
+done
+assert "cfg_attr grammar: fixture crate with the shapes only in comments is NOT derived" \
     bash -c "! grep -qxF 'fx-clean' <<< \"\$1\"" _ "$_FX_DERIVED"
 
 # ---------------------------------------------------------------------------
