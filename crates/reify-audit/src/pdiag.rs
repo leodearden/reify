@@ -581,7 +581,8 @@ fn probe_segment(
 }
 
 /// Byte offset of the first statement terminator in `line` at or after `from`,
-/// skipping any `;` that sits inside a string or char literal.
+/// skipping any `;` that sits inside a string or char literal
+/// ([`comment_lex::char_literal_len`] reads the latter).
 ///
 /// Literal awareness is load-bearing rather than fastidious: a `;` inside a
 /// diagnostic MESSAGE arms [`probe_segment`]'s bound one statement early, which
@@ -595,39 +596,33 @@ fn probe_segment(
 /// offset is always a char boundary.
 ///
 /// The scan is per-segment and deliberately shallow — a string spanning a line
-/// break is re-read from scratch on its continuation lines, a raw string's
-/// `r#"…"#` delimiters read as plain quotes, and a `'"'` char literal opens a
-/// phantom string. None of that can cost a false RED, and the reason is
-/// structural rather than a survey of shapes: this scan only ever DECLINES to
-/// report a `;`, so its answer is always the bare `line[from..].find(';')` it
-/// replaced, or a later `;`, or `None`. Since [`probe_segment`] bounds only on
-/// anchors strictly AFTER the terminator, a later-or-absent `;` admits a
-/// SUBSET of the bounds the unfiltered scan admitted. Every mis-read is
-/// therefore permissive by construction, whatever the literal does.
+/// break is re-read from scratch on its continuation lines, and a raw string's
+/// `r#"…"#` delimiters read as plain quotes. Neither can cost a false RED, and
+/// the reason is structural rather than a survey of shapes: this scan only
+/// ever DECLINES to report a `;`, so its answer is always the bare
+/// `line[from..].find(';')` it replaced, or a later `;`, or `None`. Since
+/// [`probe_segment`] bounds only on anchors strictly AFTER the terminator, a
+/// later-or-absent `;` admits a SUBSET of the bounds the unfiltered scan
+/// admitted. Every mis-read is therefore permissive by construction, whatever
+/// the literal does.
 fn statement_end(line: &str, from: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut in_string = false;
     let mut i = from;
     while i < bytes.len() {
+        if !in_string && let Some(len) = comment_lex::char_literal_len(bytes, i) {
+            i += len;
+            continue;
+        }
         match bytes[i] {
             b'\\' if in_string => i += 1,
             b'"' => in_string = !in_string,
-            b';' if !in_string && !is_quoted_semicolon(bytes, i) => return Some(i),
+            b';' if !in_string => return Some(i),
             _ => {}
         }
         i += 1;
     }
     None
-}
-
-/// `true` when the `;` at `at` is the body of a `';'` char literal.
-///
-/// Matching the two delimiters is exact, because `';'` is the ONLY char
-/// literal that can hold a `;` at all. A general char-literal scanner would
-/// have to tell `'a` the lifetime from `'a'` the char — an ambiguity this
-/// module has no need to take on.
-fn is_quoted_semicolon(bytes: &[u8], at: usize) -> bool {
-    at > 0 && bytes[at - 1] == b'\'' && bytes.get(at + 1) == Some(&b'\'')
 }
 
 /// `true` when a `.with_code(` reachable from `anchor_line` (a 0-based index
@@ -1986,9 +1981,7 @@ mod tests {
         );
 
         // (ii) The `';'` char literal — the only char literal that can hold a
-        //      `;`, and the reason `is_quoted_semicolon` matches delimiters
-        //      rather than running a char-literal scanner that would have to
-        //      tell `'a` the lifetime from `'a'` the char.
+        //      `;`.
         let src = file(&[
             "    let d = if bad {",
             "        Diagnostic::error(fmt(';'))",
@@ -2004,6 +1997,18 @@ mod tests {
         //       the fix would trade a false RED for the hole it just closed.
         let src = file(&[
             "    out.push(Diagnostic::error(\"plain; message\".into()));",
+            "    out.push(Diagnostic::warning(m2).with_code(c));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false), (2, true)]);
+    }
+
+    #[test]
+    fn a_double_quote_char_literal_does_not_hide_a_real_terminator() {
+        // `'"'` is a char literal, not a string opener. Read as an opener it
+        // would hide this line's real `;`, so the next statement's
+        // `.with_code(` would absorb the code-less site above it.
+        let src = file(&[
+            "    out.push(Diagnostic::error(quote('\"')));",
             "    out.push(Diagnostic::warning(m2).with_code(c));",
         ]);
         assert_eq!(sites(&src), vec![(1, false), (2, true)]);
