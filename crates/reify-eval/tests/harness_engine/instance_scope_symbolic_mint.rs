@@ -209,3 +209,53 @@ fn geometry_consuming_optimized_cell_reuses_for_an_override_free_sub_at_eval() {
          the box's inputs, so the template's value is not this instance's answer"
     );
 }
+
+/// Phase 1.5's scratch let must mint the same selector phase 2 commits.
+///
+/// `elaborate_child_instance_nested`'s `Phase15Node::Let` arm computes a SCRATCH
+/// value for each let into the overlay that nested subs' constructor args are
+/// pre-evaluated against, under the invariant "the scratch value equals the
+/// value phase 2 will commit". `Top6.mid.sink.sel` is the one place a scratch
+/// value that skipped the mint surfaces: phase 2 commits a minted
+/// `Top6.mid.s`, while the overlay still held `body` (and so `s`) as Undef.
+#[test]
+fn phase15_scratch_overlay_carries_the_minted_selector_into_a_nested_sub_arg() {
+    let source = r#"
+        structure Leaf6 {
+            param sel : Option<FaceSelector> = none
+        }
+
+        structure Mid6 {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+            let s = face(body, "x_max")
+            sub sink = Leaf6(sel: s)
+        }
+
+        structure Top6 {
+            sub mid = Mid6()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let result = make_simple_engine().eval(&compiled);
+
+    let committed = cell(&result, "Top6.mid", "s");
+    assert!(
+        matches!(committed, Value::Selector(_)),
+        "phase 2 must commit Top6.mid.s as a minted Selector, got {committed:?}"
+    );
+
+    // The `Option<FaceSelector>` param may hold the selector wrapped in `Some`;
+    // compare the payload so the assertion is about the value, not the wrapper.
+    let passed = match cell(&result, "Top6.mid.sink", "sel") {
+        Value::Option(Some(inner)) => inner.as_ref(),
+        other => other,
+    };
+    assert_eq!(
+        passed, committed,
+        "Top6.mid.sink.sel (unwrapped from its Option) must equal the phase-2 \
+         commit of Top6.mid.s: the ctor arg is pre-evaluated against phase \
+         1.5's scratch overlay, so Undef here means the scratch let skipped the \
+         symbolic mint phase 2 applies"
+    );
+}
