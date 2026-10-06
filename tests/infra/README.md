@@ -520,13 +520,12 @@ A suite that probes trap behaviour owns two jobs:
 - **Detect** the residual case in the probe itself (no reset on this host, or a
   wrapper that re-ignores it) and report a loud `SKIP`, never a contract `FAIL`.
 
-Worked example: `test_nextest_absent_lib.sh` arm 10c (`_t10c_spawn`,
-`_T10C_RC_IGNORED_ON_ENTRY`, `_t10c_report`; hermetic arms 10i–10l). `set -m`
-(`test_with_jcodemunch_serve.sh`) is a narrower tool: it avoids bash's OWN
-async-INT ignore for a child the suite launches, but cannot undo a disposition
-the suite inherited. To background a sweep, use the harness's own backgrounding
-or `( setsid cmd ) &`; a bare `setsid cmd &` still ignores INT and QUIT
-(measured `SigIgn` `…06`).
+Worked example: `test_nextest_absent_lib.sh` arm 10c, pinned hermetically by
+arms 10i–10l. `set -m` (`test_with_jcodemunch_serve.sh`) is a narrower tool:
+it avoids bash's OWN async-INT ignore for a child the suite launches, but
+cannot undo a disposition the suite inherited. To background a sweep, use the
+harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
+ignores INT and QUIT (measured `SigIgn` `…06`).
 
 ## Files
 
