@@ -299,11 +299,11 @@ const REGISTRY_SUFFIX: &str = "_NAMES";
 /// span inside a registry body, or a `"box", // renamed from "cube"` tail,
 /// would contribute a name that exists nowhere in the compiler.
 ///
-/// Returns [`Cow::Borrowed`] exactly when nothing was dropped, which is the
-/// overwhelmingly common line, and allocates only otherwise. That matters because [`known_name_index`] runs this over the whole oracle
-/// corpus (~200k lines of compiler and stdlib source on the real tree), and
-/// every allocation it makes there is immediately discarded by
-/// [`quoted_tokens`].
+/// Allocates only when two or more code spans must be joined; a line with one
+/// span or none is borrowed. That matters because [`known_name_index`] runs
+/// this over the whole oracle corpus (~200k lines of compiler and stdlib
+/// source on the real tree), and every allocation it makes there is
+/// immediately discarded by [`quoted_tokens`].
 fn strip_comments<'a>(line: &'a str, depth: &mut BlockDepth) -> Cow<'a, str> {
     let mut code: Option<Cow<'a, str>> = None;
     *depth = lex_line(line, *depth, |span| {
@@ -313,12 +313,7 @@ fn strip_comments<'a>(line: &'a str, depth: &mut BlockDepth) -> Cow<'a, str> {
             Some(joined) => Cow::Owned(joined.into_owned() + " " + text),
         });
     });
-    match code {
-        Some(Cow::Borrowed(text)) if text.len() < line.len() => Cow::Owned(text.to_owned()),
-        Some(code) => code,
-        None if line.is_empty() => Cow::Borrowed(line),
-        None => Cow::Owned(String::new()),
-    }
+    code.unwrap_or(Cow::Borrowed(""))
 }
 
 /// `true` when `line` carries a `pdoccover:allow` marker at all — with or
@@ -1996,8 +1991,7 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
         );
     }
 
-    /// The comment stripper must BORROW the common line and allocate only when
-    /// it actually rewrites something.
+    /// The comment stripper must BORROW the common, comment-free line.
     ///
     /// `known_name_index` runs it over ~200k lines of compiler and stdlib
     /// source per fabrication-lane run; an unconditional `Vec<u8>` + `String`
@@ -2027,11 +2021,9 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
             );
         }
 
-        // Anything that actually rewrites still returns an owned String, and
-        // still rewrites correctly.
+        // Anything that actually rewrites still rewrites correctly.
         let mut depth = BlockDepth::default();
         let got = strip_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
-        assert!(matches!(got, Cow::Owned(_)), "a stripped line is owned");
         assert_eq!(quoted_tokens(&got), vec!["a".to_string(), "b".to_string()]);
         assert_eq!(depth, BlockDepth::default());
 
@@ -2041,7 +2033,7 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
         strip_comments("/* opened", &mut depth);
         let got = strip_comments("still inside the comment", &mut depth);
         assert!(
-            matches!(got, Cow::Owned(_)) && got.is_empty(),
+            got.is_empty(),
             "a line inside an open block must be dropped, got {got:?}"
         );
         assert_ne!(depth, BlockDepth::default(), "the block is still open");
