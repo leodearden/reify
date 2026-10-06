@@ -109,8 +109,7 @@ WATCHER_SERVICE="jcodemunch-watcher"
 # resolves: the canonical checkout's per-path identity, which that script indexes
 # and a scripts/with-jcodemunch-serve.sh serve answers for. --repo overrides it.
 # get_changed_symbols diffs the git blobs between the two SHAs under the index's
-# source_root, so the range depends on git history, not on the index HEAD. It was
-# re-verified against the per-path index on 2026-10-06 (task 7363's commit).
+# source_root, so the range depends on git history, not on the index HEAD.
 if [[ -n "$REPO_ID_ARG" ]]; then
     REPO_ID="$REPO_ID_ARG"
 else
