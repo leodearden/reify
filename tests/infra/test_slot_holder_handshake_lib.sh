@@ -263,8 +263,9 @@ wait "$_PID_GW" 2>/dev/null || true
 assert "holder_wait_until_waiter_queued: a waiter that already acquired and exited is NOT reported (live waiters only)" \
     bash -c "! holder_wait_until_waiter_queued '$_SLOT_G' 2"
 
-assert "holder_wait_until_waiter_queued: a missing slot file returns non-zero without aborting" \
-    bash -c "! holder_wait_until_waiter_queued '$_TMPD/g-missing.slot' 2"
+_SLOT_G_MISSING="$_TMPD/g-missing.slot"
+assert "holder_wait_until_waiter_queued: a missing slot file returns non-zero (and never creates the file)" \
+    bash -c "! holder_wait_until_waiter_queued '$_SLOT_G_MISSING' 2 && [ ! -e '$_SLOT_G_MISSING' ]"
 
 holder_release "$_TMPD/g2.release" "$_PID_G2" || true
 

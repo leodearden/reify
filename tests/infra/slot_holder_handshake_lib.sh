@@ -146,6 +146,12 @@ export -f holder_wait_for_marker
 # match: it has no `->`, so every field sits one column left (type in field 2,
 # key in field 6).
 #
+# ASSUMPTION: stat's st_dev equals the superblock s_dev the kernel prints.  That
+# holds on ext4, xfs and tmpfs, but NOT on btrfs (stat reports a per-subvolume
+# anonymous dev) or overlayfs (stat reports the underlying file's dev).  There
+# the key never matches and the barrier exhausts its backstop: it fails closed,
+# never a false pass.
+#
 # The key is re-resolved on every poll, so a file that appears later still
 # converges.  Read-only: unlike holder_wait_until_held this never creates
 # SLOT_FILE, because no waiter can queue on a file that does not exist and
