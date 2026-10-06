@@ -48,10 +48,10 @@ module discrete_choice
 // root from one start (-1 above, not "-1 and +1"). Which root you get is not
 // something to rely on. To pin a particular alternative, add a constraint that
 // discriminates between them; to explore both, you currently need two runs.
-// CP-SAT is wired, but it enumerates only finite-domain autos (Bool, bounded
-// Int, Enum). `side` is a continuous Real with no finite domain, so this
-// component never reaches CP-SAT: the continuous solver solves it and returns
-// one root.
+// CP-SAT ships default-on, but it enumerates only finite-domain autos (Bool,
+// bounded Int, Enum). `side` is a continuous Real with no finite domain, so
+// this component never reaches CP-SAT: the continuous solver solves it and
+// returns one root.
 //
 // Dimensionality: `side` must be dimensionless (`Real`), because it is compared
 // against the bare integer `1`. `Real` resolves to a dimensionless scalar, and
