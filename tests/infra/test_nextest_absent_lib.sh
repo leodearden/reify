@@ -799,6 +799,9 @@ set -euo pipefail
 cd "$1"
 _m="$2"
 _sig="$3"
+trap : "$_sig"
+if [ "$(trap -p "$_sig")" != "trap -- ':' SIG$_sig" ]; then echo "IGNORED_ON_ENTRY" >> "$_m"; exit 0; fi
+trap - "$_sig"
 caller_cleanup() { echo "CALLER_RAN" >> "$_m"; }
 trap caller_cleanup EXIT
 source tests/infra/nextest_absent_lib.sh
@@ -820,15 +823,24 @@ TRAP_SIG
 #                      or no WORKDIR= line. The probe never got far enough to say
 #                      anything about the contract, which is what makes this the
 #                      only outcome a retry may absorb.
+#   _T10C_RC_IGNORED_ON_ENTRY
+#                      the probe shell inherited SIG as SIG_IGN, and bash cannot
+#                      trap a signal ignored on entry, so the sub-arm could not
+#                      run. An environment fact, not a contract verdict, and
+#                      deterministic, so never retried.
 _T10C_RC_OK=0
 _T10C_RC_CONTRACT=1
 _T10C_RC_STARVED=2
+_T10C_RC_IGNORED_ON_ENTRY=3
 
 # _t10c_probe_once SIG MARKER — ONE attempt at the SIG arm. Echoes the same
-# diagnostics this arm has always echoed and returns one of the three verdict
+# diagnostics this arm has always echoed and returns one of the four verdict
 # codes above.
 #
-# PRECEDENCE, when an attempt shows both classes at once: STARVATION DOMINATES.
+# PRECEDENCE. IGNORED_ON_ENTRY is classified FIRST, before both other classes:
+# the probe writes it and exits before init, so it carries no WORKDIR= line and
+# the checks below would misread it as STARVED and retry it. Otherwise, when an
+# attempt shows both remaining classes at once: STARVATION DOMINATES.
 # A probe that wrote no marker, outlived its own SIGKILL, or never reached its
 # `echo WORKDIR=` line did not get far enough for its CALLER_RAN / leaked-workdir
 # evidence to mean anything, so promoting that evidence to a contract verdict
@@ -847,6 +859,13 @@ _t10c_probe_once() {
     fi
     cat "$_m"
 
+    if grep -q '^IGNORED_ON_ENTRY$' "$_m"; then
+        echo "SIG$_sig: SIG$_sig was IGNORED ON ENTRY to the probe shell, an inherited"
+        echo "SIG_IGN (nohup ignores HUP; a bare \`cmd &\` from a shell without job"
+        echo "control ignores INT/QUIT). bash cannot trap a signal ignored on entry,"
+        echo "so this sub-arm could not be run. It says nothing about the trap contract."
+        return "$_T10C_RC_IGNORED_ON_ENTRY"
+    fi
     if grep -q '^SURVIVED_KILL$' "$_m"; then
         echo "SIG$_sig: the probe outlived its own SIGKILL, so CALLER_RAN could"
         echo "have come from the EXIT trap — this arm would be vacuous."
