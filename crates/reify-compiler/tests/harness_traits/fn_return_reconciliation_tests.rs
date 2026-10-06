@@ -99,6 +99,29 @@ fn unannotated_trait_static_fn_with_dimensioned_body_warns() {
     );
 }
 
+/// A trait-static fn's body scope is named after its namespaced fn, and the
+/// exactness walk must still recognise the params minted under it. Trait
+/// signature resolution rejects the fn's own type param, so the fixture also
+/// carries an unrelated Error: only the reconciliation report is asserted.
+#[test]
+fn unannotated_generic_trait_static_fn_whose_body_passes_its_type_param_through_warns() {
+    let module = compile_source("trait Passes { fn id<T>(x: T) { x } }\n");
+
+    let unannotated = with_code(&module, DiagnosticCode::FnReturnTypeUnannotated);
+    assert_eq!(
+        unannotated.len(),
+        1,
+        "expected exactly one FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(unannotated[0].severity, Severity::Warning);
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+        "expected no FnReturnTypeMismatch, got: {:?}",
+        module.diagnostics
+    );
+}
+
 /// Bodies that agree with the `Real` default stay silent: a dimensionless
 /// body and an `Int` body (which widens to the default).
 #[test]
@@ -324,25 +347,36 @@ fn annotated_int_return_with_real_body_warns() {
     );
 }
 
-/// A body that hands back a type-param-typed input unchanged contradicts a
-/// concrete annotation whatever the instantiation.
+/// A body that hands back a generic-typed input unchanged contradicts a concrete
+/// annotation: the signature promises the annotated type for every `T`. Covers a
+/// type param and a dimension param, `Int` and `Scalar` annotations, and the
+/// let-relay and conditional shapes.
 #[test]
-fn annotated_real_return_with_type_param_body_warns() {
-    let module = compile_source("fn f<T>(x: T) -> Real { x }\n");
+fn annotated_return_contradicted_by_generic_passthrough_body_warns() {
+    for source in [
+        "fn f<T>(x: T) -> Real { x }\n",
+        "fn f<T>(x: T) -> Int { x }\n",
+        "fn f<Q: Dimension>(x: Scalar<Q>) -> Length { x }\n",
+        "fn f<T>(x: T) -> Real { let y = x; y }\n",
+        "fn f<T>(c: Bool, a: T, b: T) -> Real { if c then a else b }\n",
+    ] {
+        let module = compile_source(source);
 
-    let mismatches = with_code(&module, DiagnosticCode::FnReturnTypeMismatch);
-    assert_eq!(
-        mismatches.len(),
-        1,
-        "expected exactly one FnReturnTypeMismatch, got: {:?}",
-        module.diagnostics
-    );
-    assert_eq!(mismatches[0].severity, Severity::Warning);
-    assert!(
-        with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
-        "an annotated fn must not report FnReturnTypeUnannotated, got: {:?}",
-        module.diagnostics
-    );
+        let mismatches = with_code(&module, DiagnosticCode::FnReturnTypeMismatch);
+        assert_eq!(
+            mismatches.len(),
+            1,
+            "expected exactly one FnReturnTypeMismatch for {source:?}, got: {:?}",
+            module.diagnostics
+        );
+        assert_eq!(mismatches[0].severity, Severity::Warning);
+        assert_no_errors(&module);
+        assert!(
+            with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
+            "an annotated fn must not report FnReturnTypeUnannotated for {source:?}, got: {:?}",
+            module.diagnostics
+        );
+    }
 }
 
 /// Agreeing bodies stay silent, including `Int` widening to `Real` and generic
@@ -423,6 +457,38 @@ structure def Rod : Tagged { param d : Length = 5mm }
         module.diagnostics
     );
     assert_no_errors(&module);
+}
+
+/// A conformer's body scope is built by `compile_assoc_function`, a separate
+/// path from free fns, and the exactness walk must still recognise the params
+/// minted under it. Trait signature resolution rejects the fn's own type param,
+/// so the fixture also carries an unrelated Error: only the reconciliation report
+/// is asserted.
+#[test]
+fn conformer_default_generic_fn_whose_body_passes_its_type_param_through_warns() {
+    let module = compile_source(
+        r#"
+trait Passes {
+    param d : Length
+    fn keep<T>(self, x: T) { x }
+}
+structure def Rod : Passes { param d : Length = 5mm }
+"#,
+    );
+
+    let unannotated = with_code(&module, DiagnosticCode::FnReturnTypeUnannotated);
+    assert_eq!(
+        unannotated.len(),
+        1,
+        "expected exactly one FnReturnTypeUnannotated, got: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(unannotated[0].severity, Severity::Warning);
+    assert!(
+        with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+        "expected no FnReturnTypeMismatch, got: {:?}",
+        module.diagnostics
+    );
 }
 
 /// A default body is reported once, however many conformers inherit it, while
