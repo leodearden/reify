@@ -48,6 +48,10 @@ SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier H5d/H9 use.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2802,12 +2806,11 @@ reset_calls
 Q_SEED8_PID=$!
 _BGPIDS+=("$Q_SEED8_PID")
 
-# Brief settle so the backgrounded job has actually forked/reached the flock
-# call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
-# check below can only be a false failure (never a false pass), since the
-# holder genuinely holds the lock until killed below.
-# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
-sleep 0.3
+# OBSERVE seed blocked in its own `flock 9` on the lane lock: the holder lives
+# until killed below, so once seed is queued the two not-done assertions that
+# follow cannot be outrun.
+assert "H5d-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK8} is listed in /proc/locks)" \
+    holder_wait_until_waiter_queued "$Q_LOCK8" 150
 assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
 assert "H5d: sentinel file in <lane>/target still present while blocked (no clobber yet)" \
@@ -3059,11 +3062,9 @@ reset_calls
 Q_SEED11_PID=$!
 _BGPIDS+=("$Q_SEED11_PID")
 
-# Brief settle so the backgrounded job has reached the flock call. NOT a
-# wall-clock upper bound -- the "not done yet" check can only false-fail, never
-# false-pass, since the holder genuinely holds the lock until killed below.
-# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
-sleep 0.3
+# Same causal barrier as H5d: observe seed queued on the lane lock first.
+assert "H9-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK11} is listed in /proc/locks)" \
+    holder_wait_until_waiter_queued "$Q_LOCK11" 150
 assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
 assert "H9: sentinel survives while blocked (no clobber yet)" \
