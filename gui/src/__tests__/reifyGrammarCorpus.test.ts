@@ -1351,7 +1351,7 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
  */
 describe('reify.grammar snippets — auto forms', () => {
   // Corpus-attested 9x: examples/continuous_cost_min.ri:62,
-  // examples/best_practices/discrete_choice.ri:65, and seven more.
+  // examples/best_practices/discrete_choice.ri:78, and seven more.
   it('parses `param thickness : Length = auto(free)`', () => {
     expect(countErrorNodes('structure def F { param thickness : Length = auto(free) }')).toBe(0);
   });
