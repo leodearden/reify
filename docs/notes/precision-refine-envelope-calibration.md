@@ -1051,8 +1051,9 @@ every halving-chain member (§3.1), ran under `timeout 600` (the lazily evaluate
 None hit its limit.
 
 **Totals across the block:** **1778 runs over 1236 probes** (a probe is one subject at one
-`d`), covering 274 distinct `d`; 505 of the runs are repetitions. Neither tally should
-be read as the other, and several `d` recur across stages and spellings. Every run emitted the datum line;
+`d`), covering 274 distinct `d`; 542 of the runs repeat a probe already run — 505 as determinism
+re-runs and 37 as halving-chain members (§3.1) that an earlier walk had already measured. Neither
+tally should be read as the other, and several `d` recur across stages and spellings. Every run emitted the datum line;
 not a single `OK`, `INDETERMINATE`, `NO-DATUM` or `TIMEOUT` occurred in a measurement run (the four
 non-datum results in the raw log are the deliberate validation runs above). No achieved value differed
 between repetitions anywhere. Finest `d` probed: 0.025 mm; most expensive run: 602 s. The raw log records **completed** runs only: probes
