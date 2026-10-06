@@ -722,10 +722,10 @@ The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.
 ### 3.7 `std.geometry.transform`
 
 ```
-fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G  // not implemented — see note below
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
-fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
 fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
 fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
