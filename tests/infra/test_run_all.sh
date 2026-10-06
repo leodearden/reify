@@ -361,6 +361,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     TMPDIR_T9="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T9")
 
+    # Probe group directories: each group's counters and per-member outcomes
+    # log live under its own directory (read back via _h2t9_probe_count).
+    PROBE_POOL_T9="$TMPDIR_T9/probe-pool"
+    PROBE_SERIAL_T9="$TMPDIR_T9/probe-serial"
+
     # Fixture manifest: 3 `pool` (one fails), 2 `intra-run-serial`, 1 `host-exclusive`.
     MANIFEST_T9="$TMPDIR_T9/classification.manifest"
     cat > "$MANIFEST_T9" <<'EOF'
@@ -454,6 +459,15 @@ MOCKBODY
         chmod +x "$_path"
     }
 
+    # _h2t9_probe_count <group_dir> <outcome>
+    # How many members of a probe group recorded <outcome> (`met` or
+    # `exhausted`) in the group's outcomes log; 0 when it recorded nothing.
+    _h2t9_probe_count() {
+        local _outcomes="$1/outcomes" _outcome="$2"
+        [ -f "$_outcomes" ] || { echo 0; return 0; }
+        grep -cx -- "$_outcome" "$_outcomes" || true
+    }
+
     _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_1.sh" 0
     _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_2.sh" 0
     _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_3.sh" 1
@@ -510,6 +524,10 @@ MOCKBODY
     assert "T9a: serial group max-concurrency == 1 (got: $t9a_serial_max)" \
         test "$t9a_serial_max" -eq 1
 
+    t9a_serial_exhausted="$(_h2t9_probe_count "$PROBE_SERIAL_T9" exhausted)"
+    assert "T9a control: serial group -- each of the 2 non-last members held its full exclusive window with no successor arriving (exhausted: $t9a_serial_exhausted of 2)" \
+        test "$t9a_serial_exhausted" -eq 2
+
     if [[ "$t9a_out" == *"=== Summary: 6 discovered, 1 failed ==="* ]]; then
         assert "T9a: byte-exact Summary line (6 discovered, 1 failed)" true
     else
@@ -555,15 +573,21 @@ MOCKBODY
     t9b_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (got: $t9b_pool_max)" \
         test "$t9b_pool_max" -eq 1
+
+    t9b_pool_exhausted="$(_h2t9_probe_count "$PROBE_POOL_T9" exhausted)"
+    assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (exhausted: $t9b_pool_exhausted of 2)" \
+        test "$t9b_pool_exhausted" -eq 2
 else
     assert "T9a: pool group max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: serial group max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a control: serial group -- each of the 2 non-last members held its full exclusive window with no successor arriving (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: ^FAILED classifier marker names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: === FAILED: human line names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Test 10: H2 pool N observability (INFO line + knob echo) -------------------
