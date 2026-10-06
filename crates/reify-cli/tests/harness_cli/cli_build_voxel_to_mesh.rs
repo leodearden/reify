@@ -1,7 +1,5 @@
 use crate::common;
 
-use std::process::Command;
-
 /// Task 5002 (δ) integration gate: `reify build examples/multi_kernel/voxel_to_mesh.ri`
 /// (a real BRep→Voxel operand feeding a Voxel→Mesh `isosurface(...)` terminal)
 /// must exit 0 and print a `Triangles: N` line with `N > 0`.
@@ -27,25 +25,17 @@ fn build_voxel_to_mesh_prints_positive_triangle_count() {
 
     let example = common::example_path("multi_kernel/voxel_to_mesh.ri");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &example,
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "build",
+        &example,
+        "-o",
+        output_path.to_str().expect("temp path is not valid UTF-8"),
+    ]);
 
     assert!(
-        output.status.success(),
-        "reify build should exit 0 for multi_kernel/voxel_to_mesh.ri\nstdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build should exit 0 for multi_kernel/voxel_to_mesh.ri; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
     assert!(
         stdout.contains("Wrote"),
