@@ -2325,19 +2325,21 @@ fi
 # marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error
 # mislabel instead of test_failure. RED sub-case: a fast-failing pool member
-# ("boom") plus a slow pool member ("hang") under REIFY_RUN_ALL_POOL_CONCURRENCY=2
+# ("boom") plus a pool member ("hang") that is held until the test releases it,
+# under REIFY_RUN_ALL_POOL_CONCURRENCY=2
 # (both admitted concurrently, no lock contention -- keeps this test's markers
 # independent of Test 24's). The harness polls (bounded, not a fixed sleep)
 # for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
 # (discovered via a private TMPDIR override -- the same authoritative state
-# _ra_partial_failed_names itself scans), confirming the failure landed
+# _ra_partial_failed_names itself scans), then waits for hang's READY
+# announcement, confirming the failure landed and the run is still mid-flight
 # before firing SIGTERM itself -- decoupling the signal's timing from
 # absolute wall-clock guesswork under host load -- while the parent is
 # blocked in the Phase-1 `wait` for hang, into the new trap. Output is
 # captured to a FILE, not `$(...)`: the
 # orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
-# an inherited copy of the original pipe's write end while it finishes its ~8s
-# sleep) would otherwise hold a command-substitution pipe open long past
+# an inherited copy of the original pipe's write end until the test releases
+# it) would otherwise hold a command-substitution pipe open long past
 # run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
 # timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
 # Summary) -- proves the trap is signal-only and never fires on the normal path.
@@ -2360,7 +2362,20 @@ test_pool_boom.sh pool
 test_pool_hang.sh pool
 EOF
     printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25/test_pool_boom.sh"
-    printf '#!/usr/bin/env bash\nsleep 8\nexit 0\n' > "$TMPDIR_T25/test_pool_hang.sh"
+    # hang announces READY with its PID (tmp+mv, so READY is never seen empty),
+    # then stays until the test releases it. Its 600-iteration wait is only a
+    # broken-infra backstop and is recorded as `backstop` if it ever ends the hold.
+    {
+        printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+        printf 'source %q\n' "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+        printf 'READY=%q\nRELEASE=%q\nOUTCOME=%q\n' \
+            "$T25_HANG_DIR/ready" "$T25_HANG_DIR/release" "$T25_HANG_DIR/outcome"
+        cat <<'HANGBODY'
+echo "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"
+if holder_wait_for_marker "$RELEASE" 600; then echo released > "$OUTCOME"; else echo backstop > "$OUTCOME"; fi
+exit 0
+HANGBODY
+    } > "$TMPDIR_T25/test_pool_hang.sh"
     chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
 
     LOCK_T25="$TMPDIR_T25/pool-t25.lock"
@@ -2381,13 +2396,11 @@ EOF
     mkdir -p "$H2WD_PARENT_T25"
 
     # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
-    # the SIGTERM can be fired right after boom's `.rc` write confirms its
-    # failure landed. The bounded poll below caps the wait at 4s (comfortably
-    # under hang's 8s sleep, so a slow-but-not-wedged host still exercises
-    # the intended mid-run interrupt) and reacts as soon as the write lands
-    # rather than always waiting the full window. A background SIGKILL
-    # fallback mirrors `timeout`'s -k grace period, in case the TERM trap
-    # somehow doesn't reap it.
+    # the SIGTERM can be fired once boom's `.rc` write confirms its failure
+    # landed and hang has announced READY. The bounded poll below reacts as
+    # soon as the write lands rather than always waiting the full window. A
+    # background SIGKILL fallback mirrors `timeout`'s -k grace period, in case
+    # the TERM trap somehow doesn't reap it.
     env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
         RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
@@ -2397,14 +2410,11 @@ EOF
         bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
     t25_pid=$!
 
-    # Poll bound: base 40 attempts (4s) on an idle host, scaled by the same
-    # /proc/loadavg-derived factor load_tolerance_lib.sh already applies
-    # elsewhere in this suite (e.g. Test 9's ARRIVED barrier) -- a heavily
-    # loaded host gets a proportionally longer window instead of a fixed
-    # guess, while the early-exit below still reacts immediately once boom's
-    # write lands (no extra wall-clock cost on an idle/normal host).
+    # Poll bound: a broken-infra backstop only. hang is held until the test
+    # releases it, so it always outlives this poll. Worst case
+    # 100 x 0.1s x CAP 8 = 80s < hang's own backstop, 600 x 0.2s = 120s.
     source "$LOAD_TOLERANCE_LIB_T9"
-    t25_poll_attempts=$(load_tolerant_attempts 40)
+    t25_poll_attempts=$(load_tolerant_attempts 100)
 
     t25_wd=""
     t25_rc_file=""
@@ -2449,14 +2459,23 @@ EOF
         echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
     fi
 
-    if [ -s "$T25_HANG_DIR/ready" ]; then t25_hang_started=1; else t25_hang_started=0; fi
+    # SIGTERM must land on a run still mid-flight: wait for hang's READY
+    # rather than assuming it from timing.
+    if holder_wait_for_marker "$T25_HANG_DIR/ready"; then t25_hang_started=1; else t25_hang_started=0; fi
     kill -TERM "$t25_pid" 2>/dev/null || true
     ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
     t25_killer=$!
     wait "$t25_pid" 2>/dev/null || t25_rc=$?
     kill "$t25_killer" 2>/dev/null || true
     wait "$t25_killer" 2>/dev/null || true
-    touch "$T25_HANG_DIR/release"
+
+    # End the orphaned hang member now rather than leaving it to its backstop.
+    t25_hang_pid="$(cat "$T25_HANG_DIR/ready" 2>/dev/null || true)"
+    if [ -n "$t25_hang_pid" ]; then
+        holder_release "$T25_HANG_DIR/release" "$t25_hang_pid" || true
+    else
+        touch "$T25_HANG_DIR/release"
+    fi
 
     if grep -q 'INTERRUPTED' "$T25_OUT"; then
         assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
