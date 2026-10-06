@@ -156,3 +156,9 @@ mod discrete_default_on_e2e;
 // reason as #5417's and #5415's above.
 #[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
 mod indeterminate_reason_carrier_e2e;
+// Task #8102's instance-scope symbolic geometry/selector mint pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above. They are also
+// a topical fit: they drive `Engine::eval` over `sub` instantiations to pin
+// what `unfold.rs` commits for geometry and selector cells.
+#[path = "harness_engine/instance_scope_symbolic_mint.rs"]
+mod instance_scope_symbolic_mint;
