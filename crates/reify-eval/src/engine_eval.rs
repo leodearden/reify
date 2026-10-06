@@ -6273,9 +6273,14 @@ impl Engine {
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                            // `..` drops the `completeness` verdict deliberately:
+                            // the engine does not consume the completeness axis
+                            // yet. δ #6709 → #6901 is the leaf that reads it (the
+                            // §3.4 verdict policy).
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
+                                ..
                             } => {
                                 assert!(
                                     !candidates.is_empty(),
@@ -7669,9 +7674,12 @@ impl Engine {
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                    // `..` drops `completeness` for the reason given at the
+                    // per-template site in `eval()`.
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,
+                        ..
                     } => {
                         assert!(
                             !candidates.is_empty(),

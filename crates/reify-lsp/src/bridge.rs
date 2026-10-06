@@ -11,6 +11,7 @@ use serde_json::Value;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
+use crate::blocking_work::BlockingWorkPlacement;
 use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 
 /// Deserialize an LSP params payload into `T`, attaching `label` to any
@@ -50,8 +51,24 @@ impl InProcessLsp {
 
     /// Create a new in-process LSP server with a custom notification sink.
     pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
-        let (service, socket) =
-            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
+        Self::with_sink_and_placement(sink, BlockingWorkPlacement::default())
+    }
+
+    /// Create a new in-process LSP server with a custom notification sink and
+    /// blocking-work placement.
+    ///
+    /// An embedder that already runs [`InProcessLsp::handle_request`] on a
+    /// thread it chose (e.g. a large-stack thread) passes
+    /// [`BlockingWorkPlacement::CallingThread`] so the definition /
+    /// prepareRename / rename / references work runs there too.
+    pub fn with_sink_and_placement(
+        sink: Arc<dyn NotificationSink>,
+        placement: BlockingWorkPlacement,
+    ) -> Self {
+        let (service, socket) = LspService::new(|client| {
+            ReifyLanguageServer::with_sink(client, sink.clone())
+                .with_blocking_work_placement(placement)
+        });
         let server = service.inner().clone();
         Self {
             server,
@@ -708,5 +725,70 @@ structure Bracket {
             locations.iter().all(|l| l.uri == expected_uri),
             "every Location must carry the opened document uri"
         );
+    }
+
+    // --- task 6195: blocking-work placement ---
+    //
+    // definition, prepareRename, rename and references run their parse/compile
+    // work per the server's `BlockingWorkPlacement`. A runtime whose blocking
+    // pool is saturated tells the placements apart from outside the server:
+    // CallingThread answers anyway, BlockingPool queues until the pool frees.
+
+    use std::time::Duration;
+
+    use crate::blocking_work::test_support::{SaturatedBlockingPool, blocking_work_requests};
+
+    const PLACEMENT_URI: &str = "file:///placement.ri";
+
+    /// Turns a request stuck behind the saturated pool into a failure; a
+    /// request that never touches the pool answers without timing anything.
+    const HANG_BOUND: Duration = Duration::from_secs(60);
+
+    async fn initialized_with_bracket_open(lsp: &InProcessLsp) {
+        lsp.handle_request("initialize", reify_test_support::minimal_init_params())
+            .await
+            .expect("initialize should succeed");
+        open_bracket(lsp, PLACEMENT_URI).await;
+    }
+
+    fn calling_thread_lsp() -> InProcessLsp {
+        InProcessLsp::with_sink_and_placement(
+            Arc::new(NoOpSink),
+            BlockingWorkPlacement::CallingThread,
+        )
+    }
+
+    #[test]
+    fn calling_thread_placement_answers_every_blocking_work_method_with_the_pool_saturated() {
+        let pool = SaturatedBlockingPool::new();
+        pool.block_on(async {
+            let lsp = calling_thread_lsp();
+            initialized_with_bracket_open(&lsp).await;
+            for (method, params) in blocking_work_requests(PLACEMENT_URI) {
+                let answer = tokio::time::timeout(HANG_BOUND, lsp.handle_request(method, params))
+                    .await
+                    .unwrap_or_else(|_| panic!("{method} waited on the blocking pool"))
+                    .unwrap_or_else(|e| panic!("{method} failed: {e}"));
+                assert!(
+                    !answer.is_null(),
+                    "{method} answered null at a position the bracket fixture resolves"
+                );
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn calling_thread_placement_answers_exactly_what_the_default_placement_answers() {
+        let default_placement = InProcessLsp::new();
+        let calling_thread = calling_thread_lsp();
+        initialized_with_bracket_open(&default_placement).await;
+        initialized_with_bracket_open(&calling_thread).await;
+        for (method, params) in blocking_work_requests(PLACEMENT_URI) {
+            let expected = default_placement
+                .handle_request(method, params.clone())
+                .await;
+            let actual = calling_thread.handle_request(method, params).await;
+            assert_eq!(actual, expected, "{method}");
+        }
     }
 }

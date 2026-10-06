@@ -595,9 +595,10 @@ populated by `placeholder_part()` (a well-formed zero-field fake) with
 zero readers and its growth promise citing done #4578; the undeclared
 engine-attached `ModalResult.topology`, always `Undef` on the dims
 path; `mechanism_modal`'s `shape = []` / `participation_mass = 0`
-(#7012 owns the degraded reason). Normative contract, census and
-decomposition: `docs/prds/v0_6/result-field-vacuity-closure.md`
-(C1′–C4′ there; not restated here).
+(flipped to honest `Undef` by #7012; reason recorded at the
+producer). Normative contract, census and decomposition:
+`docs/prds/v0_6/result-field-vacuity-closure.md` (C1′–C4′ there; not
+restated here).
 
 **House pattern**: the tet-result `Undef`-for-unpopulated convention —
 buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′

@@ -502,6 +502,86 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["channel"]
             }),
         },
+        ToolDef {
+            name: "scrub_range_input",
+            description: "Drive an <input type=range> slider through a gesture, frontend-mediated \
+                          with no dispatch_tool arm. It assigns the control's `.value` and dispatches \
+                          ONLY the DOM events the control's own handlers bind: one focus, then per \
+                          value (each of `frames`, then `value`) an `input` event and one animation \
+                          frame, then the commit. `commit: 'hold'` models a pointer still held (no \
+                          terminal event, so only previews fire); `commit: 'change'` models the \
+                          release (a `change` event, the durable write). It never calls a Tauri \
+                          command itself. `selector` must match exactly one element: zero or several \
+                          matches are errors, never a guess. A value the control cannot represent \
+                          (outside min/max, off the step) is refused before any event fires, and a \
+                          control that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged; or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=range> (e.g. '[data-testid=\"joint-row-0\"] input[type=\"range\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final value, as the control's own `.value` string (display units, e.g. '120' for 120 mm)."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate values typed before `value`, one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["change", "hold"],
+                        "description": "'change' releases the slider (durable write); 'hold' leaves it held."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
+            }),
+        },
+        ToolDef {
+            name: "edit_text_input",
+            description: "Type into an <input type=text> edit box, frontend-mediated with no \
+                          dispatch_tool arm. It assigns the control's `.value` and dispatches ONLY \
+                          the DOM events the control's own handlers bind: one focus, then per value \
+                          (each of `frames`, then `value`) an `input` event and one animation frame, \
+                          then the commit. Typing ends with `commit: 'enter'` (an Enter keydown) or \
+                          `commit: 'blur'` (a blur event); `commit: 'hold'` leaves the edit open. It \
+                          never calls a Tauri command itself. `selector` must match exactly one \
+                          element: zero or several matches are errors, never a guess. A value the \
+                          control cannot represent is refused before any event fires, and a control \
+                          that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged (a commit may \
+                          legitimately rewrite it to the at-rest display); or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=text> (e.g. '[data-testid=\"prop-row-Bracket.width\"] input[type=\"text\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final text (e.g. '150mm')."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate texts typed before `value` (e.g. ['1', '15', '150']), one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["enter", "blur", "hold"],
+                        "description": "'enter' or 'blur' ends the edit (durable write); 'hold' leaves it open."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
+            }),
+        },
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
@@ -655,7 +735,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector and carries that tool's unscoped-wait trap — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit to wait over every match document-wide. This arm builds the SAME selector predicate as wait_for_selector and shares that tool's semantics — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -663,7 +743,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches on the same visible element when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -673,7 +753,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md under the heading 'wait_for_selector: the unscoped-wait trap'. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the matches in the pane whose [data-viewport-id] subtree contains (or is) them. Omit to wait over every match document-wide. Either way 'visible' is satisfied by ANY visible match, 'gone' only once EVERY match is hidden or absent. Return shape is unchanged — this tool observes rather than drives, so it reports no viewportId/matchCount. So an unscoped green is not proof about any one pane; scope the wait whenever the follow-up action is scoped (docs/debug-mcp-recipe.md, 'wait_for_selector: the unscoped-wait trap'). Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }

@@ -492,13 +492,22 @@ pub enum Type {
     /// `Frame` / `Transform` / `AffineMap`.
     Orientation(usize),
     /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
+    ///
+    /// The origin is a `Point3<Length>` (RULING #6089, below).
     Frame(usize),
     /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
+    ///
+    /// The translation is a `Vector3<Length>` — a displacement (RULING #6089, below).
     Transform(usize),
     /// General (non-rigid) affine map in N-dimensional space: a linear part + translation.
     ///
     /// Unlike `Transform(usize)` (rigid: rotation+translation), the linear part may scale/shear.
     /// Stored as inline arrays `linear: [[f64;3];3]` + `translation: [f64;3]` in `Value::AffineMap`.
+    ///
+    /// RULING #6089 (Leo, 2026-08-07): `Frame` origin, `Transform` translation and
+    /// this translation (stored in SI metres) all carry Length. The three types are
+    /// deliberately monomorphic at Length, as task-6081 ruled for `BoundingBox`;
+    /// parameterizing them later is a widening, not a correction.
     AffineMap(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
@@ -634,6 +643,10 @@ pub enum Type {
     /// Introduced in task 4602 β (type-args/proj substrate).
     Projection { base: Box<Type>, member: String },
 }
+
+/// Reserved `TypeParam` name prefix of an R1 unbound placeholder. Private:
+/// only `Type::unbound_placeholder` / `Type::is_unbound_placeholder` spell it.
+const UNBOUND_TYPE_ARG_PREFIX: &str = "__unbound_";
 
 impl Type {
     /// Shorthand for a length scalar.
@@ -790,6 +803,16 @@ impl Type {
         }
     }
 
+    /// The static type of a generic-enum type argument that neither the
+    /// payload nor an annotation determined (R1 placeholder; ruling:
+    /// docs/prds/v0_6/generic-enum-type-arg-retention.md §6 R1(c)).
+    ///
+    /// It stays a `TypeParam`, and its name is the same at every site for a
+    /// given declared `param`.
+    pub fn unbound_placeholder(param: &str) -> Self {
+        Type::TypeParam(format!("{UNBOUND_TYPE_ARG_PREFIX}{param}"))
+    }
+
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Scalar { .. })
@@ -853,6 +876,13 @@ impl Type {
     /// from "IS present" to "is NOT present", and update this follow-up section.
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
+    }
+
+    /// Is this an R1 unbound placeholder (see `Type::unbound_placeholder`)?
+    ///
+    /// Top-level only: `Result<Length, ?E>` and `Option<?T>` return `false`.
+    pub fn is_unbound_placeholder(&self) -> bool {
+        matches!(self, Type::TypeParam(name) if name.starts_with(UNBOUND_TYPE_ARG_PREFIX))
     }
 
     /// Returns the inner name for name-carrying variants without allocating.
@@ -2688,5 +2718,40 @@ mod tests {
 
         // (d) Display == "Feature"
         assert_eq!(format!("{}", Type::Feature), "Feature");
+    }
+
+    // ── R1 unbound placeholder (generic-enum-type-arg-retention §6 R1(c)) ────
+
+    #[test]
+    fn unbound_placeholder_is_a_recognisable_type_param() {
+        let e = Type::unbound_placeholder("E");
+
+        // (1) R1(c): it stays a TypeParam, so provisional-binding rules apply.
+        assert!(matches!(e, Type::TypeParam(_)), "got {e:?}");
+        // (2) the predicate recognises it.
+        assert!(e.is_unbound_placeholder());
+
+        // (3) site-independent: no per-site counter in the name or Display.
+        assert_eq!(e, Type::unbound_placeholder("E"));
+        assert_eq!(e.to_string(), Type::unbound_placeholder("E").to_string());
+        assert_ne!(Type::unbound_placeholder("T"), e);
+
+        // (4) negatives — the predicate inspects the top level only.
+        let not_placeholders = [
+            Type::TypeParam("E".into()),
+            Type::TypeParam("__auto_Seal".into()),
+            Type::Int,
+            Type::applied(
+                "Result",
+                vec![Type::length(), Type::unbound_placeholder("E")],
+            ),
+            Type::Option(Box::new(Type::unbound_placeholder("T"))),
+        ];
+        for t in &not_placeholders {
+            assert!(
+                !t.is_unbound_placeholder(),
+                "{t:?} is not an R1 placeholder"
+            );
+        }
     }
 }

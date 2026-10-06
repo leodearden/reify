@@ -634,9 +634,7 @@ async fn mcp_tool_call(
 ///
 /// Stays `async`. Converting it to a sync command would make Tauri run it as
 /// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,
-/// so `Handle::current()` inside `lsp_request_on_worker` would panic — and that
-/// is also precisely the condition under which `handle_request`'s four
-/// `spawn_blocking` arms panic.
+/// so `Handle::current()` inside `lsp_request_on_worker` would panic.
 ///
 /// The `Arc` is the `'static` price of a persistent lane, and follows the shape
 /// `debug_response` already uses with `tauri::State<'_, Arc<DebugBridge>>`.
@@ -852,6 +850,14 @@ async fn set_active_fea_case(
 }
 
 fn main() {
+    let mut context = tauri::generate_context!();
+    if let Err(e) =
+        reify_gui::dev_url::retarget_to_vite_port_from_env(&mut context.config_mut().build)
+    {
+        eprintln!("reify-gui: {e}");
+        std::process::exit(2);
+    }
+
     // Sweep stale tempfiles and orphan directories from the persistent cache
     // before any engine work. Best-effort: resolver errors are logged at
     // tracing::debug! level and the sweep is skipped; IO errors inside the
@@ -1108,6 +1114,6 @@ fn main() {
                 });
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error running tauri application");
 }

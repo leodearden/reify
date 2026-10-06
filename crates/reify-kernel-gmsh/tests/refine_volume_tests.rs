@@ -9,10 +9,8 @@
 
 // The clamp probe and its serialising mutex are shared verbatim with
 // `tests/mesh_size_option_hermeticity.rs`, the other half of this
-// discipline. Declared by path rather than through `common/mod.rs`, which
-// #6387 reduced to a re-export shim over `reify_test_support::fixtures` and
-// which is scheduled for deletion; see `common/clamp_probe.rs` for why one
-// copy matters.
+// discipline. Declared by `#[path]`; see `common/clamp_probe.rs` for why, and
+// why one copy matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
@@ -21,8 +19,10 @@ use clamp_probe::{
     poison_global_mesh_size_clamp, probe_triangle_count, set_global_mesh_size_clamp,
 };
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
-use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions, refine_volume_with_size_field};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_kernel_gmsh::{
+    BackgroundSizeField, MeshingOptions, ffi, init, refine_volume_with_size_field,
+};
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
 /// `[0,scale]^3`.
@@ -730,41 +730,16 @@ fn uniform_smaller_size_field_produces_more_tets() {
 
 /// A refine that asks for many worker threads still returns a mesh.
 ///
-/// # A HANG is this test's red signal, not an assertion message
+/// This is the hang guard for the `PostView` octree warm-up in
+/// `refine_volume.rs`'s `BackgroundFieldGuard::install`, and a HANG is its red
+/// signal, not an assertion message: without the warm-up gmsh 4.15.2
+/// deadlocks inside `gmshModelMeshGenerate(3)` and the gate's timeout kills the
+/// binary.
 ///
-/// If this regresses, the binary stops making progress and the gate's timeout
-/// kills it — there is no failure message to go looking for. The cause would be
-/// gmsh 4.15.2 deadlocking inside `gmshModelMeshGenerate(3)` while evaluating
-/// the `PostView` background size field from several mesher threads at once
-/// (task #7447). `refine_volume_with_size_field` defends against that by
-/// pinning `General.NumThreads` to 1 unconditionally; the measured thread-count
-/// table and the evidence that it is a block rather than slowness live at that
-/// option write in `src/refine_volume.rs`.
-///
-/// # Why 32 threads, and why the count had to be measured here
-///
-/// The deadlock threshold is FIXTURE-dependent, so a count that hangs another
-/// binary proves nothing about this one. Measured on this exact fixture with
-/// the pin removed and nothing else changed, each run killed at 120 s:
-///
-/// | `threads`  | unpinned outcome     |
-/// |------------|----------------------|
-/// | `Some(8)`  | passes in ~4 s       |
-/// | `Some(16)` | hangs                |
-/// | `Some(24)` | hangs                |
-/// | `Some(32)` | hangs (reproduced 2/2) |
-///
-/// `Some(8)` is enough to hang `tests/mesher_poison_recovery.rs`, whose gmsh
-/// has already been through a `finalize`/`initialize` recovery cycle — but it
-/// is NOT enough on a clean process, so writing 8 here would have produced a
-/// test that is green on BOTH sides of the fix and guards nothing. `Some(32)`
-/// is a literal rather than `available_parallelism` so what gmsh is asked for
-/// does not vary with the host's core count; the pin means only one thread is
-/// ever actually used, so it costs the gate no CPU.
-///
-/// Every other test in this file passes `deterministic: true`, i.e. one thread.
-/// That is exactly why nothing green caught the deadlock when the background
-/// field first landed.
+/// `Some(32)` is a literal above this fixture's 14 classified curves, the count
+/// the deadlock tracks (measured without the warm-up: 14 threads pass, 15
+/// hang), so what gmsh is asked for does not vary with the host's core count.
+/// Mechanism and measurements: `docs/notes/gmsh-postview-background-field-threading.md`.
 ///
 /// Deliberately no wall-clock upper bound: a regression manifests as an
 /// unbounded hang that the gate timeout already catches, so a duration
@@ -785,6 +760,53 @@ fn refine_returns_a_mesh_when_the_caller_asks_for_many_threads() {
         n_tets > 0,
         "a multi-threaded refine must return a usable volume mesh, got {n_tets} tets",
     );
+}
+
+/// `refine_volume_with_size_field` hands gmsh the caller's resolved thread
+/// count, read back from gmsh's option table after the call. The read is valid
+/// because `General.NumThreads` is a non-size process-global no scope restores:
+/// refine writes it and leaves it, exactly like `mesh_to_volume`. If a later
+/// task scopes `General.NumThreads`, this read must move inside that scope.
+///
+/// 3 threads is below the cube's 14 classified curves, so this test reds by
+/// assertion, never by hang.
+#[test]
+fn refine_hands_gmsh_the_callers_resolved_thread_count() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let cube = unit_cube_mesh();
+    let sizes = box_size_field(1.0, |_, _, _| 0.5);
+    let cases = [
+        (
+            MeshingOptions {
+                mesh_size: Some(0.5),
+                threads: Some(3),
+                deterministic: false,
+            },
+            3.0,
+        ),
+        (
+            MeshingOptions {
+                mesh_size: Some(0.5),
+                threads: Some(3),
+                deterministic: true,
+            },
+            1.0,
+        ),
+    ];
+
+    for (opts, expected_threads) in cases {
+        refine_volume_with_size_field(&cube, &sizes, &opts, ElementOrderTag::P1)
+            .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
+        let handed_to_gmsh = {
+            let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            ffi::option_get_number("General.NumThreads")
+                .expect("ffi::option_get_number(General.NumThreads) failed")
+        };
+        assert_eq!(
+            handed_to_gmsh, expected_threads,
+            "for {opts:?} gmsh must be asked for {expected_threads} threads",
+        );
+    }
 }
 
 /// `refine_volume_with_size_field` leaves EVERY mesh-size process-global at

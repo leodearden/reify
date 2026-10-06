@@ -1,0 +1,3050 @@
+{
+  "schema_version": 1,
+  "generator": "scripts/graph-task-conflation-census.py",
+  "graph_key": "reify",
+  "generated_at": "2026-10-04T04:31:51Z",
+  "key_confirmation": {
+    "expected_node_count": 31835,
+    "observed_node_count": 31835
+  },
+  "bm25_probe": {
+    "token": "orchestrator",
+    "fulltext_hits": 547,
+    "name_contains": 92,
+    "serving": true,
+    "error": null
+  },
+  "summary": {
+    "task_nodes": 2546,
+    "live_edge_rows_scanned": 5331,
+    "self_loops_skipped": 45,
+    "foreign_facts": 100,
+    "adjacent_signature": 33,
+    "proposed": {
+      "REPAIR": 63,
+      "RECORD_ONLY": 37,
+      "NOT_A_CONFLATION": 0
+    }
+  },
+  "candidates": [
+    {
+      "candidate_id": "6d6d8985-bc01-41ca-9d31-1e9f992e9296@c94ada96-0307-412b-a321-aa75c8cf5042",
+      "node_uuid": "c94ada96-0307-412b-a321-aa75c8cf5042",
+      "node_name": "task #10",
+      "own_numbers": [
+        10
+      ],
+      "edge_uuid": "6d6d8985-bc01-41ca-9d31-1e9f992e9296",
+      "which_end": "target",
+      "other_uuid": "b53d2a09-1c1d-4819-a9cf-884a3fd83da0",
+      "other_name": "GUI bidirectional selection sync",
+      "fact": "Task 3880 was completed as of 2026-05-27.",
+      "named_numbers": [
+        3880
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-27T01:39:22.872710+00:00",
+      "first_episode": "b5b09675-cff1-4a51-a727-c32f95d26c35",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3880
+        ],
+        "target_node_uuids": [
+          "98ce2904-fd42-4fc4-9fcc-a1ab7481dd97"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "8c9e990f-0baf-4a61-bf7b-9f36c75fb073@c94ada96-0307-412b-a321-aa75c8cf5042",
+      "node_uuid": "c94ada96-0307-412b-a321-aa75c8cf5042",
+      "node_name": "task #10",
+      "own_numbers": [
+        10
+      ],
+      "edge_uuid": "8c9e990f-0baf-4a61-bf7b-9f36c75fb073",
+      "which_end": "target",
+      "other_uuid": "092f5e38-2510-43fb-aaa1-aba7f89691fb",
+      "other_name": "task 3800",
+      "fact": "Task 3800 was completed as of 2026-05-27.",
+      "named_numbers": [
+        3800
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-27T01:39:22.872672+00:00",
+      "first_episode": "b5b09675-cff1-4a51-a727-c32f95d26c35",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "3baeb93c-842d-47fd-9ea1-9cbf63a280ad@5555dce3-5c09-4db7-b22a-015f1d451340",
+      "node_uuid": "5555dce3-5c09-4db7-b22a-015f1d451340",
+      "node_name": "task 266",
+      "own_numbers": [
+        266
+      ],
+      "edge_uuid": "3baeb93c-842d-47fd-9ea1-9cbf63a280ad",
+      "which_end": "target",
+      "other_uuid": "de28453a-8aa2-44ae-a71c-791855982edc",
+      "other_name": "task 3895",
+      "fact": "Task 3895 was created as of 2026-05-27.",
+      "named_numbers": [
+        3895
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-27T05:40:18.002826+00:00",
+      "first_episode": "7bd166e9-2ae3-445a-b445-34fd3a1ad94d",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "36e0c23c-5b4e-4f7b-b809-39729c71902f@506a403c-16a3-49e5-a944-783534d69c7f",
+      "node_uuid": "506a403c-16a3-49e5-a944-783534d69c7f",
+      "node_name": "Task 319",
+      "own_numbers": [
+        319
+      ],
+      "edge_uuid": "36e0c23c-5b4e-4f7b-b809-39729c71902f",
+      "which_end": "source",
+      "other_uuid": "442d66eb-8d41-48aa-bb16-cc5cb95f511c",
+      "other_name": "reify-types",
+      "fact": "Task 3191 tracks the movement of the exhaustive tables to a shared Display impl on reify-types to eliminate cross-crate drift.",
+      "named_numbers": [
+        3191
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-08T15:37:46.877589+00:00",
+      "first_episode": "d7c70878-6f38-497a-bb97-5f01b8f5fc87",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          3191
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 3191"
+      }
+    },
+    {
+      "candidate_id": "1620132e-f14e-466b-8d35-80097322acdc@01c40a47-3326-48cb-8e31-ac7d615308f5",
+      "node_uuid": "01c40a47-3326-48cb-8e31-ac7d615308f5",
+      "node_name": "task 923",
+      "own_numbers": [
+        923
+      ],
+      "edge_uuid": "1620132e-f14e-466b-8d35-80097322acdc",
+      "which_end": "source",
+      "other_uuid": "783fbc9e-e945-40a4-8808-f1e9a4b4c6bf",
+      "other_name": "Stage 2 reconciliation",
+      "fact": "Task 955 was bulk-cancelled during Stage 2 reconciliation cycle d5d5c55e.",
+      "named_numbers": [
+        955
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-07T16:35:00.002824+00:00",
+      "first_episode": "f086739b-8add-4946-a859-a257b8301b93",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          955
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 955"
+      }
+    },
+    {
+      "candidate_id": "2488db91-9992-4f02-84f8-c6867a1807d6@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_uuid": "e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_name": "tasks 1999",
+      "own_numbers": [
+        1999
+      ],
+      "edge_uuid": "2488db91-9992-4f02-84f8-c6867a1807d6",
+      "which_end": "source",
+      "other_uuid": "03826305-1c36-441d-bc34-f71c548d875b",
+      "other_name": "freshness-gate check",
+      "fact": "Task 1997's live-status was verified as in-progress by the freshness-gate check.",
+      "named_numbers": [
+        1997
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-26T12:14:44.647621+00:00",
+      "first_episode": "71dcbcde-343c-4984-b934-172350d7714e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_nodes",
+        "target_numbers": [
+          1997
+        ],
+        "target_node_uuids": [
+          "5269d34a-d365-403d-b1d0-10980da69a7f",
+          "a39d3abf-8bb9-43b2-a138-a1b867d812da"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "94575eda-dd74-4df7-ba9e-c556ad3f858a@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_uuid": "e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_name": "tasks 1999",
+      "own_numbers": [
+        1999
+      ],
+      "edge_uuid": "94575eda-dd74-4df7-ba9e-c556ad3f858a",
+      "which_end": "source",
+      "other_uuid": "e31578e8-e133-48c8-9b4f-8e8f438434a5",
+      "other_name": "FLAG-S2-STALE-STALL-GUARD-PATTERN-2",
+      "fact": "The freshness gate was applied to Task 1997 per FLAG-S2-STALE-STALL-GUARD-PATTERN-2.",
+      "named_numbers": [
+        1997
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-26T12:14:44.647689+00:00",
+      "first_episode": "71dcbcde-343c-4984-b934-172350d7714e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_nodes",
+        "target_numbers": [
+          1997
+        ],
+        "target_node_uuids": [
+          "5269d34a-d365-403d-b1d0-10980da69a7f",
+          "a39d3abf-8bb9-43b2-a138-a1b867d812da"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "d9595ff2-5814-430a-89e7-659a44a34746@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_uuid": "e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_name": "tasks 1999",
+      "own_numbers": [
+        1999
+      ],
+      "edge_uuid": "d9595ff2-5814-430a-89e7-659a44a34746",
+      "which_end": "source",
+      "other_uuid": "f06b37b7-b512-462e-95d0-069b688dfb8d",
+      "other_name": "stale-stall-guard pattern",
+      "fact": "Task 1997 is the second occurrence of the stale-stall-guard pattern.",
+      "named_numbers": [
+        1997
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-26T12:14:44.647671+00:00",
+      "first_episode": "71dcbcde-343c-4984-b934-172350d7714e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_nodes",
+        "target_numbers": [
+          1997
+        ],
+        "target_node_uuids": [
+          "5269d34a-d365-403d-b1d0-10980da69a7f",
+          "a39d3abf-8bb9-43b2-a138-a1b867d812da"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "f0761c0f-ea34-4785-bf67-d43718ed59ac@e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_uuid": "e489bb17-ec21-4a03-9a74-cab0fe1cbb25",
+      "node_name": "tasks 1999",
+      "own_numbers": [
+        1999
+      ],
+      "edge_uuid": "f0761c0f-ea34-4785-bf67-d43718ed59ac",
+      "which_end": "source",
+      "other_uuid": "acba6c97-07ef-45e3-a90a-2afd24c7222e",
+      "other_name": "stale snapshot",
+      "fact": "Task 1997 was shown as pending due to a stale snapshot.",
+      "named_numbers": [
+        1997
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-26T12:14:44.647659+00:00",
+      "first_episode": "71dcbcde-343c-4984-b934-172350d7714e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_nodes",
+        "target_numbers": [
+          1997
+        ],
+        "target_node_uuids": [
+          "5269d34a-d365-403d-b1d0-10980da69a7f",
+          "a39d3abf-8bb9-43b2-a138-a1b867d812da"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "f0815ef7-92c7-4f69-809f-2c234571ec1d@e045e96a-61e4-479a-b453-f51082a6ef30",
+      "node_uuid": "e045e96a-61e4-479a-b453-f51082a6ef30",
+      "node_name": "Task 2138",
+      "own_numbers": [
+        2138
+      ],
+      "edge_uuid": "f0815ef7-92c7-4f69-809f-2c234571ec1d",
+      "which_end": "target",
+      "other_uuid": "92d7b634-75f0-4479-be6a-679b81cd29b5",
+      "other_name": "Task 2141",
+      "fact": "Task 2141 experienced a multi-state bounce within a single reconciliation cycle.",
+      "named_numbers": [
+        2141
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-22T08:45:04.420087+00:00",
+      "first_episode": "70f81f94-ab5f-40d4-a85f-4ec5d00c0705",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "70aef703-1c74-4366-b5e4-0f46548765e6@0830858c-891b-401f-89ac-8ee071ec041e",
+      "node_uuid": "0830858c-891b-401f-89ac-8ee071ec041e",
+      "node_name": "Task 2180",
+      "own_numbers": [
+        2180
+      ],
+      "edge_uuid": "70aef703-1c74-4366-b5e4-0f46548765e6",
+      "which_end": "source",
+      "other_uuid": "da0379bb-9dd5-4fa0-8325-1a7ef69bb41b",
+      "other_name": "engine_edit Fix 2: drop redundant entirely-removed-sub sweep + tighten Fix 1 comment and HashSet alloc",
+      "fact": "Task 2183 has the title 'engine_edit Fix 2: drop redundant entirely-removed-sub sweep + tighten Fix 1 comment and HashSet alloc'.",
+      "named_numbers": [
+        2183
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-24T07:52:27.829991+00:00",
+      "first_episode": "c3fb7576-bc1f-4492-ba46-f3d46c791bc9",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          2183
+        ],
+        "target_node_uuids": [
+          "9b58c4b4-0217-4f68-a7db-9ac1653aa799"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e4e89204-2f4f-4b65-afd6-672ca0fe6db4@0830858c-891b-401f-89ac-8ee071ec041e",
+      "node_uuid": "0830858c-891b-401f-89ac-8ee071ec041e",
+      "node_name": "Task 2180",
+      "own_numbers": [
+        2180
+      ],
+      "edge_uuid": "e4e89204-2f4f-4b65-afd6-672ca0fe6db4",
+      "which_end": "source",
+      "other_uuid": "26563d56-58d5-45a9-b916-eb6eeb3a07b4",
+      "other_name": "esc-2086-28",
+      "fact": "Task 2183 is sourced from esc-2086-28.",
+      "named_numbers": [
+        2183
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-24T07:52:27.830015+00:00",
+      "first_episode": "c3fb7576-bc1f-4492-ba46-f3d46c791bc9",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          2183
+        ],
+        "target_node_uuids": [
+          "9b58c4b4-0217-4f68-a7db-9ac1653aa799"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "87448b96-e5c3-40f1-ac8f-1d79da5bb148@feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "node_uuid": "feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "node_name": "Task 2268",
+      "own_numbers": [
+        2268
+      ],
+      "edge_uuid": "87448b96-e5c3-40f1-ac8f-1d79da5bb148",
+      "which_end": "target",
+      "other_uuid": "e9bfb8a6-1364-469d-8511-d80a419de425",
+      "other_name": "Task 2259",
+      "fact": "The fast-path divergence bugs from Task 2259 revealed structural divergence between eval() and eval_cached().",
+      "named_numbers": [
+        2259
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-26T20:29:30.227134+00:00",
+      "first_episode": "5c40e3d0-280f-439e-aad2-4497454e349b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "faa8d843-190f-449b-b443-06fabcca0060@feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "node_uuid": "feeb50e0-2f34-4861-a544-5cdc848828b3",
+      "node_name": "Task 2268",
+      "own_numbers": [
+        2268
+      ],
+      "edge_uuid": "faa8d843-190f-449b-b443-06fabcca0060",
+      "which_end": "target",
+      "other_uuid": "caa4067c-41ab-418e-ac8a-6d660225aa64",
+      "other_name": "Task 2266",
+      "fact": "The fast-path divergence bugs from Task 2266 revealed structural divergence between eval() and eval_cached().",
+      "named_numbers": [
+        2266
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-26T20:29:30.227155+00:00",
+      "first_episode": "5c40e3d0-280f-439e-aad2-4497454e349b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "0eb5ef53-1736-4d88-9be5-b3ee84f3e9e4@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_name": "task 2342",
+      "own_numbers": [
+        2342
+      ],
+      "edge_uuid": "0eb5ef53-1736-4d88-9be5-b3ee84f3e9e4",
+      "which_end": "source",
+      "other_uuid": "4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "other_name": "task 2354",
+      "fact": "Task 2354 fixed gaps that were previously listed in task 2347.",
+      "named_numbers": [
+        2347,
+        2354
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770218+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2347
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2347"
+      }
+    },
+    {
+      "candidate_id": "679942f0-5e01-460a-be0f-558bc9cfddd9@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_name": "task 2342",
+      "own_numbers": [
+        2342
+      ],
+      "edge_uuid": "679942f0-5e01-460a-be0f-558bc9cfddd9",
+      "which_end": "target",
+      "other_uuid": "cf323761-01e8-4048-b28a-87261433f578",
+      "other_name": "stdlib-trait-breadth",
+      "fact": "Task 2347 is the deliverable for the stdlib-trait-breadth audit dated 2026-04-26.",
+      "named_numbers": [
+        2347
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770107+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2347
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2347"
+      }
+    },
+    {
+      "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_name": "task 2342",
+      "own_numbers": [
+        2342
+      ],
+      "edge_uuid": "d80970ea-bd53-469d-8bf8-51878e0c00c8",
+      "which_end": "source",
+      "other_uuid": "27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "other_name": "task 2351",
+      "fact": "Task 2352 fixed gaps that were previously listed in task 2347.",
+      "named_numbers": [
+        2347,
+        2352
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770209+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          2347,
+          2352
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e54c4519-e4d7-475c-a3f7-3645481f3312@2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "node_name": "task 2342",
+      "own_numbers": [
+        2342
+      ],
+      "edge_uuid": "e54c4519-e4d7-475c-a3f7-3645481f3312",
+      "which_end": "source",
+      "other_uuid": "4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "other_name": "task 2354",
+      "fact": "Task 2349 fixed gaps that were previously listed in task 2347.",
+      "named_numbers": [
+        2347,
+        2349
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770200+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          2347,
+          2349
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "d80970ea-bd53-469d-8bf8-51878e0c00c8@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "node_uuid": "27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "node_name": "task 2351",
+      "own_numbers": [
+        2351
+      ],
+      "edge_uuid": "d80970ea-bd53-469d-8bf8-51878e0c00c8",
+      "which_end": "target",
+      "other_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "other_name": "task 2342",
+      "fact": "Task 2352 fixed gaps that were previously listed in task 2347.",
+      "named_numbers": [
+        2347,
+        2352
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-12T12:20:03.770209+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          2347,
+          2352
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "ec3649b7-eb26-4b24-a573-b6100672ac78@27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "node_uuid": "27cbc6de-9a0a-4b5b-a4c0-f04f5a22e9ed",
+      "node_name": "task 2351",
+      "own_numbers": [
+        2351
+      ],
+      "edge_uuid": "ec3649b7-eb26-4b24-a573-b6100672ac78",
+      "which_end": "target",
+      "other_uuid": "cf323761-01e8-4048-b28a-87261433f578",
+      "other_name": "stdlib-trait-breadth",
+      "fact": "Task 2352 is one of the deliverables for the stdlib-trait-breadth audit.",
+      "named_numbers": [
+        2352
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-12T12:20:03.770161+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2352
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2352"
+      }
+    },
+    {
+      "candidate_id": "6676d6c7-cad0-4cdb-8297-d427d757b590@4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "node_uuid": "4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "node_name": "task 2354",
+      "own_numbers": [
+        2354
+      ],
+      "edge_uuid": "6676d6c7-cad0-4cdb-8297-d427d757b590",
+      "which_end": "target",
+      "other_uuid": "cf323761-01e8-4048-b28a-87261433f578",
+      "other_name": "stdlib-trait-breadth",
+      "fact": "Task 2349 is one of the deliverables for the stdlib-trait-breadth audit.",
+      "named_numbers": [
+        2349
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770147+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          2349
+        ],
+        "target_node_uuids": [
+          "6983c2f5-7241-49e8-ae95-73064dafde9b"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e54c4519-e4d7-475c-a3f7-3645481f3312@4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "node_uuid": "4ee581e7-d6bb-4cd0-a7bd-7643dfe6a9be",
+      "node_name": "task 2354",
+      "own_numbers": [
+        2354
+      ],
+      "edge_uuid": "e54c4519-e4d7-475c-a3f7-3645481f3312",
+      "which_end": "target",
+      "other_uuid": "2657026e-0d6c-4c2d-9b1e-4b4ec271c8c0",
+      "other_name": "task 2342",
+      "fact": "Task 2349 fixed gaps that were previously listed in task 2347.",
+      "named_numbers": [
+        2347,
+        2349
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T12:20:03.770200+00:00",
+      "first_episode": "f6c10c28-8373-41da-91cd-e836a0f0ef1a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          2347,
+          2349
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e7870d2f-2872-4888-b333-3edeb027a21c@5af14450-4b37-4cf3-a20a-2ee956b1b425",
+      "node_uuid": "5af14450-4b37-4cf3-a20a-2ee956b1b425",
+      "node_name": "tasks 2534.x",
+      "own_numbers": [
+        2534
+      ],
+      "edge_uuid": "e7870d2f-2872-4888-b333-3edeb027a21c",
+      "which_end": "target",
+      "other_uuid": "371c3e64-1b18-4916-9f7a-56283df142ec",
+      "other_name": "Task 2583",
+      "fact": "Task 2583 is a hard prerequisite for all downstream v0.2 kinematic tasks (2670–2678). Original IDs 2584–2589 were retired 2026-04-29 and replaced by this batch during reconciliation run d63b8848.",
+      "named_numbers": [
+        2583,
+        2670,
+        2671,
+        2672,
+        2673,
+        2674,
+        2675,
+        2676,
+        2677,
+        2678
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-29T02:03:00.355371+00:00",
+      "first_episode": "fb0ec75d-4159-42b9-a804-7668bf97cbf4",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          2670,
+          2671,
+          2672,
+          2673,
+          2674,
+          2675,
+          2676,
+          2677,
+          2678
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "283173b4-1ba7-4d5e-82e5-ec6d505f6a97@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_uuid": "20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_name": "Task 2590",
+      "own_numbers": [
+        2590
+      ],
+      "edge_uuid": "283173b4-1ba7-4d5e-82e5-ec6d505f6a97",
+      "which_end": "source",
+      "other_uuid": "57009a02-3330-4e73-b84b-30f0ee58fda8",
+      "other_name": "task 2593",
+      "fact": "Task 2593 was created as a new pending task under the persistent-naming-v2 project.",
+      "named_numbers": [
+        2593
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-04-28T19:49:44.425487+00:00",
+      "first_episode": "6499734e-5730-425f-bd0a-8a1bc7520a45",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "887ee27c-36fc-47d3-a5f9-70a726d07ba2@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_uuid": "20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_name": "Task 2590",
+      "own_numbers": [
+        2590
+      ],
+      "edge_uuid": "887ee27c-36fc-47d3-a5f9-70a726d07ba2",
+      "which_end": "source",
+      "other_uuid": "ad8f1bd6-9626-4327-840d-f735262f25b4",
+      "other_name": "task 2592",
+      "fact": "Task 2592 was created as a new pending task under the persistent-naming-v2 project.",
+      "named_numbers": [
+        2592
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-28T19:49:44.425477+00:00",
+      "first_episode": "6499734e-5730-425f-bd0a-8a1bc7520a45",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "f04d4eb1-8550-45eb-b81e-0a07b5429635@20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_uuid": "20441d49-7459-4d4a-a538-ecbaa5a92531",
+      "node_name": "Task 2590",
+      "own_numbers": [
+        2590
+      ],
+      "edge_uuid": "f04d4eb1-8550-45eb-b81e-0a07b5429635",
+      "which_end": "source",
+      "other_uuid": "9fdc85a3-b192-4c77-8506-c66681fd7366",
+      "other_name": "task 2591",
+      "fact": "Task 2591 was created as a new pending task under the persistent-naming-v2 project.",
+      "named_numbers": [
+        2591
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-04-28T19:49:44.425465+00:00",
+      "first_episode": "6499734e-5730-425f-bd0a-8a1bc7520a45",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "61fefaef-9f5d-4cbe-8b56-fa2fba87b66f@91d0de4c-40a0-40b4-9b2c-6bcb02a8eadf",
+      "node_uuid": "91d0de4c-40a0-40b4-9b2c-6bcb02a8eadf",
+      "node_name": "Task 2669",
+      "own_numbers": [
+        2669
+      ],
+      "edge_uuid": "61fefaef-9f5d-4cbe-8b56-fa2fba87b66f",
+      "which_end": "source",
+      "other_uuid": "f46f7450-2630-47e0-921e-050c77038d3d",
+      "other_name": "Task 3528",
+      "fact": "Task 3528 was cancelled.",
+      "named_numbers": [
+        3528
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-14T10:52:11.036049+00:00",
+      "first_episode": "6ee043e1-862d-429a-b7f6-f4b29f94157a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "f4bbaaca-837e-409f-bf0a-0fa1b25e2c87@9d3cb428-0159-4ee5-92cb-669b5e9bbf76",
+      "node_uuid": "9d3cb428-0159-4ee5-92cb-669b5e9bbf76",
+      "node_name": "Task 2699",
+      "own_numbers": [
+        2699
+      ],
+      "edge_uuid": "f4bbaaca-837e-409f-bf0a-0fa1b25e2c87",
+      "which_end": "target",
+      "other_uuid": "d9f6d68d-9666-4573-9d9b-1a0c07f7e670",
+      "other_name": "task 2324",
+      "fact": "Task 2324 is now fully claimable.",
+      "named_numbers": [
+        2324
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-07T13:52:14.306652+00:00",
+      "first_episode": "d2ca0a67-0b89-4e05-8b9f-1a06000572a1",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "715c046d-58bb-4a25-ba46-5f8a1df931f4@3c6e72c4-4907-4db2-9f8c-189606274e9e",
+      "node_uuid": "3c6e72c4-4907-4db2-9f8c-189606274e9e",
+      "node_name": "Tasks 2914-2929",
+      "own_numbers": [
+        2914,
+        2929
+      ],
+      "edge_uuid": "715c046d-58bb-4a25-ba46-5f8a1df931f4",
+      "which_end": "source",
+      "other_uuid": "78ccd797-c27c-40f0-8b5d-ffb8944c5e33",
+      "other_name": "MeshContract",
+      "fact": "Tasks 5102-5116 are adopted in relation to the MeshContract validator.",
+      "named_numbers": [
+        5102,
+        5103,
+        5104,
+        5105,
+        5106,
+        5107,
+        5108,
+        5109,
+        5110,
+        5111,
+        5112,
+        5113,
+        5114,
+        5115,
+        5116
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-06T10:55:37.408834+00:00",
+      "first_episode": "c5711fb3-589a-4705-8363-c88f1fe3aaa2",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          5102,
+          5103,
+          5104,
+          5105,
+          5106,
+          5107,
+          5108,
+          5109,
+          5110,
+          5111,
+          5112,
+          5113,
+          5114,
+          5115,
+          5116
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "873164ed-5501-4a46-9661-92451ed9ce66@15d2d1ec-bfc1-4a8d-b9fc-d50d1fca03d5",
+      "node_uuid": "15d2d1ec-bfc1-4a8d-b9fc-d50d1fca03d5",
+      "node_name": "task 2962",
+      "own_numbers": [
+        2962
+      ],
+      "edge_uuid": "873164ed-5501-4a46-9661-92451ed9ce66",
+      "which_end": "source",
+      "other_uuid": "066455f4-c28b-4678-89a8-c51bba624af4",
+      "other_name": "deformed-shape",
+      "fact": "Task 2963 is completed and is part of the Deformed-shape view end-to-end mechanism.",
+      "named_numbers": [
+        2963
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-12T09:50:31.967257+00:00",
+      "first_episode": "0bb6a1ed-ed5c-4962-8cab-78975af49882",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          2963
+        ],
+        "target_node_uuids": [
+          "adbb2c5c-eff7-4660-9373-710838f961e1"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "94f57155-447d-420f-bcb4-0dcee25508c3@553903f4-5c8b-4167-b896-8907b41e7a83",
+      "node_uuid": "553903f4-5c8b-4167-b896-8907b41e7a83",
+      "node_name": "Task 2979",
+      "own_numbers": [
+        2979
+      ],
+      "edge_uuid": "94f57155-447d-420f-bcb4-0dcee25508c3",
+      "which_end": "target",
+      "other_uuid": "9c88a24a-46b0-46cf-9238-8eb6e2eae328",
+      "other_name": "Task 2981",
+      "fact": "Task 2981 was moved from pending to blocked.",
+      "named_numbers": [
+        2981
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-14T11:12:52.132204+00:00",
+      "first_episode": "9ee72340-c610-4e72-a9ce-320bc06dab60",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "cd8a87a2-823f-499f-9ab0-1808c374976c@cc5d2895-3622-4520-ace1-f56220cc0cbc",
+      "node_uuid": "cc5d2895-3622-4520-ace1-f56220cc0cbc",
+      "node_name": "task 2995",
+      "own_numbers": [
+        2995
+      ],
+      "edge_uuid": "cd8a87a2-823f-499f-9ab0-1808c374976c",
+      "which_end": "source",
+      "other_uuid": "c7411f75-9a47-42e7-b393-9b023d232591",
+      "other_name": "NodeNotFoundError",
+      "fact": "Task 4993 was resolved via merge_entities, confirming nodes 309c9bd9/d2f52619 are gone as indicated by NodeNotFoundError.",
+      "named_numbers": [
+        4993
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-05T07:00:26.796673+00:00",
+      "first_episode": "16e3aae4-944d-4ec8-8a17-6466f34bb831",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4993
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4993"
+      }
+    },
+    {
+      "candidate_id": "2f7c6873-5070-49d3-bca6-8e8125bf5d97@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_uuid": "d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_name": "Task 3019",
+      "own_numbers": [
+        3019
+      ],
+      "edge_uuid": "2f7c6873-5070-49d3-bca6-8e8125bf5d97",
+      "which_end": "source",
+      "other_uuid": "685fd211-d2d9-4888-a4b6-b8e761ce76e6",
+      "other_name": "task 2918",
+      "fact": "Task 2919 depends on task 2918.",
+      "named_numbers": [
+        2918,
+        2919
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-09T03:09:26.621990+00:00",
+      "first_episode": "e2dc2628-171f-4bee-8340-685de34e7a0e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2919
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2919"
+      }
+    },
+    {
+      "candidate_id": "442c14ea-a580-443f-b9ae-9d4a4d29bb0c@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_uuid": "d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_name": "Task 3019",
+      "own_numbers": [
+        3019
+      ],
+      "edge_uuid": "442c14ea-a580-443f-b9ae-9d4a4d29bb0c",
+      "which_end": "source",
+      "other_uuid": "b5c74804-2861-4a2d-bd09-b69d30e55424",
+      "other_name": "task 2916",
+      "fact": "Task 2919 depends on task 2916.",
+      "named_numbers": [
+        2916,
+        2919
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-09T03:09:26.621976+00:00",
+      "first_episode": "e2dc2628-171f-4bee-8340-685de34e7a0e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2919
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2919"
+      }
+    },
+    {
+      "candidate_id": "4b782505-333f-4667-a931-136c57912dd3@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_uuid": "d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_name": "Task 3019",
+      "own_numbers": [
+        3019
+      ],
+      "edge_uuid": "4b782505-333f-4667-a931-136c57912dd3",
+      "which_end": "target",
+      "other_uuid": "36e1acf4-8859-481a-944c-ec74790dab02",
+      "other_name": "task 3017",
+      "fact": "Task 3017 is not task 2919.",
+      "named_numbers": [
+        2919,
+        3017
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-09T03:09:26.622005+00:00",
+      "first_episode": "e2dc2628-171f-4bee-8340-685de34e7a0e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2919
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2919"
+      }
+    },
+    {
+      "candidate_id": "d0b345d7-6cae-4e6b-9b5e-904fbd963904@d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_uuid": "d8ae125e-5e29-422d-a619-5a8675a9fdb8",
+      "node_name": "Task 3019",
+      "own_numbers": [
+        3019
+      ],
+      "edge_uuid": "d0b345d7-6cae-4e6b-9b5e-904fbd963904",
+      "which_end": "source",
+      "other_uuid": "7ae20826-f152-4bcf-83e2-cd4f3790eb15",
+      "other_name": "FEA solver",
+      "fact": "Task 2919 is related to the FEA solver, specifically focusing on CG with Jacobi preconditioner via faer-rs.",
+      "named_numbers": [
+        2919
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-09T03:09:26.621956+00:00",
+      "first_episode": "e2dc2628-171f-4bee-8340-685de34e7a0e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          2919
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 2919"
+      }
+    },
+    {
+      "candidate_id": "14525eaf-9078-4332-ac8a-d34ba35a71d4@fa0d3c48-cef1-411f-96bd-57df98f08229",
+      "node_uuid": "fa0d3c48-cef1-411f-96bd-57df98f08229",
+      "node_name": "Task 3024",
+      "own_numbers": [
+        3024
+      ],
+      "edge_uuid": "14525eaf-9078-4332-ac8a-d34ba35a71d4",
+      "which_end": "target",
+      "other_uuid": "5f5c7834-8ed8-47c5-bd0b-9e52529895d6",
+      "other_name": "stale description",
+      "fact": "The stale snapshot indicates that tasks 3025 has been completed since the last snapshot.",
+      "named_numbers": [
+        3025
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-07T06:57:45.996999+00:00",
+      "first_episode": "5735728d-e633-4951-b570-6393711df0aa",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3025
+        ],
+        "target_node_uuids": [
+          "662d2214-d1cb-497f-b336-0bc7dea488cd"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "2bdbeab3-035a-43fe-bb0f-fa8077ee4881@8797a07f-8999-4d7c-bdff-978b56da1254",
+      "node_uuid": "8797a07f-8999-4d7c-bdff-978b56da1254",
+      "node_name": "task 3117",
+      "own_numbers": [
+        3117
+      ],
+      "edge_uuid": "2bdbeab3-035a-43fe-bb0f-fa8077ee4881",
+      "which_end": "source",
+      "other_uuid": "a223c0af-568e-401f-8179-3b1c7d530dbe",
+      "other_name": "ElasticResult API ext (M-005)",
+      "fact": "Decomposition task #3 is responsible for the ElasticResult API extension.",
+      "named_numbers": [
+        3
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-12T10:50:37.294145+00:00",
+      "first_episode": "3bcc937e-6dae-4772-9a5a-55a4067e025f",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3
+        ],
+        "target_node_uuids": [
+          "b6f11870-36c8-4a7c-aebb-06e4c6be51fd"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "2c333dd7-8f26-49f7-911f-6b369776f6ad@904c8cb0-7842-4fad-9029-9a8e7dd96681",
+      "node_uuid": "904c8cb0-7842-4fad-9029-9a8e7dd96681",
+      "node_name": "task 3134",
+      "own_numbers": [
+        3134
+      ],
+      "edge_uuid": "2c333dd7-8f26-49f7-911f-6b369776f6ad",
+      "which_end": "source",
+      "other_uuid": "4daf6664-bb21-46f9-a9f8-175d2e387e42",
+      "other_name": "commit 2c77bd75df1710cef646644115444e3ec37890eb",
+      "fact": "Task 3136 has commit 2c77bd75df1710cef646644115444e3ec37890eb associated with it.",
+      "named_numbers": [
+        3136
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-08T05:21:42.828007+00:00",
+      "first_episode": "a6cc91be-7d86-4db5-8620-cb3840972798",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3136
+        ],
+        "target_node_uuids": [
+          "8ce7cbb2-6cce-4f46-b41b-c4fab092718e"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "309fd159-ea8b-49c3-9ef5-924a7995f1a9@3d1d07be-9be2-4257-8147-79c1a0d9eb7e",
+      "node_uuid": "3d1d07be-9be2-4257-8147-79c1a0d9eb7e",
+      "node_name": "task 3246",
+      "own_numbers": [
+        3246
+      ],
+      "edge_uuid": "309fd159-ea8b-49c3-9ef5-924a7995f1a9",
+      "which_end": "target",
+      "other_uuid": "6e260b56-f77a-4571-8cb3-4a917394c619",
+      "other_name": "task 3249",
+      "fact": "Task 3249 adds test coverage for exponent-form Real literals.",
+      "named_numbers": [
+        3249
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-09T07:46:10.228350+00:00",
+      "first_episode": "4b64388f-964b-4e3c-9c15-5e6407fb1aea",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "3248c0c3-0051-4f46-8813-50c8772b6a3e@ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "node_uuid": "ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "node_name": "task 3316",
+      "own_numbers": [
+        3316
+      ],
+      "edge_uuid": "3248c0c3-0051-4f46-8813-50c8772b6a3e",
+      "which_end": "source",
+      "other_uuid": "e6bcc976-5cc0-4c06-b839-db9e5331a7fa",
+      "other_name": "Task 3317",
+      "fact": "Task 3317 must not run before Task 3341 completes, as it depends on compile_entry_with_imports still existing.",
+      "named_numbers": [
+        3317,
+        3341
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-10T08:31:04.335960+00:00",
+      "first_episode": "29b12b47-f991-4c97-a26d-eb12579a0fa7",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3341
+        ],
+        "target_node_uuids": [
+          "a885e689-458f-4f23-b18d-9cc5f21e18a7"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e4b1e85b-43b9-44a0-b30b-88499433a2db@ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "node_uuid": "ce8a0946-a665-4974-b048-abcfd3ee690d",
+      "node_name": "task 3316",
+      "own_numbers": [
+        3316
+      ],
+      "edge_uuid": "e4b1e85b-43b9-44a0-b30b-88499433a2db",
+      "which_end": "source",
+      "other_uuid": "428bd57e-7600-4b46-827e-73d7fcee3da5",
+      "other_name": "Task 3318",
+      "fact": "Task 3318 must not run before Task 3341 completes, as it depends on compile_entry_with_imports still existing.",
+      "named_numbers": [
+        3318,
+        3341
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-10T08:31:04.335974+00:00",
+      "first_episode": "29b12b47-f991-4c97-a26d-eb12579a0fa7",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3341
+        ],
+        "target_node_uuids": [
+          "a885e689-458f-4f23-b18d-9cc5f21e18a7"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "ed5d66c0-fd80-4bd3-950f-66befc53e1cc@65297fdf-001d-40fe-81cc-e77c6034411a",
+      "node_uuid": "65297fdf-001d-40fe-81cc-e77c6034411a",
+      "node_name": "Task 3413",
+      "own_numbers": [
+        3413
+      ],
+      "edge_uuid": "ed5d66c0-fd80-4bd3-950f-66befc53e1cc",
+      "which_end": "target",
+      "other_uuid": "623d138b-5be7-4f53-b15f-9de3ac28a5d5",
+      "other_name": "Task 3386",
+      "fact": "Task 3386 is a direct prerequisite for Task 3414.",
+      "named_numbers": [
+        3386,
+        3414
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-11T04:25:07.344199+00:00",
+      "first_episode": "f4ad41e5-439a-4d3a-97ca-05b4250caaaa",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3414
+        ],
+        "target_node_uuids": [
+          "f147cc66-543e-4c7c-8430-f8b3b4cc8d46"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "6a0a25d3-107d-4fa2-8d6b-14dfde5d2fb9@7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "node_uuid": "7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "node_name": "task 3443",
+      "own_numbers": [
+        3443
+      ],
+      "edge_uuid": "6a0a25d3-107d-4fa2-8d6b-14dfde5d2fb9",
+      "which_end": "source",
+      "other_uuid": "75a9d841-3f43-4e00-85da-d808828eb289",
+      "other_name": "G3 premise",
+      "fact": "BOOKMARK task 4043 tracks the G3-premise-gap design-first work surfaced by esc-3437-13.",
+      "named_numbers": [
+        4043
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-28T14:10:38.915340+00:00",
+      "first_episode": "cf9f1352-dc88-4fe2-b878-9a72bb76b07b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4043
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4043"
+      }
+    },
+    {
+      "candidate_id": "b475f624-001f-4d23-9ee1-1f3d2bf0d9b0@7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "node_uuid": "7ad07405-6dc8-4059-8632-2e9f728eb7a2",
+      "node_name": "task 3443",
+      "own_numbers": [
+        3443
+      ],
+      "edge_uuid": "b475f624-001f-4d23-9ee1-1f3d2bf0d9b0",
+      "which_end": "target",
+      "other_uuid": "19a66a41-9526-491b-bca4-d67195942913",
+      "other_name": "esc-3436-210",
+      "fact": "esc-3437-13 was resolved on 2026-05-27, allowing progress on BOOKMARK task 4043.",
+      "named_numbers": [
+        4043
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-28T14:10:38.915418+00:00",
+      "first_episode": "cf9f1352-dc88-4fe2-b878-9a72bb76b07b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4043
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4043"
+      }
+    },
+    {
+      "candidate_id": "e858fb65-9737-412e-98a2-fc204d57520d@7c9f87f9-27cf-45f4-bc40-2f5e2b1c9b00",
+      "node_uuid": "7c9f87f9-27cf-45f4-bc40-2f5e2b1c9b00",
+      "node_name": "Task 3526",
+      "own_numbers": [
+        3526
+      ],
+      "edge_uuid": "e858fb65-9737-412e-98a2-fc204d57520d",
+      "which_end": "source",
+      "other_uuid": "5c9487d5-3eb3-43e8-b3c6-4c8067d59870",
+      "other_name": "TDD+review pipeline",
+      "fact": "Task 3525 belongs in the TDD pipeline due to its dependency on a native C++ dependency.",
+      "named_numbers": [
+        3525
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-02T20:18:27.257132+00:00",
+      "first_episode": "b3374bff-9bbf-4ec8-acbe-0d886537d51d",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3525
+        ],
+        "target_node_uuids": [
+          "a91bc002-6c57-47ac-8437-967470ef014d"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "2a0a345e-1965-475e-ac4b-a8b8218d2932@28445c5a-2d99-45b1-a5c4-91895f62776e",
+      "node_uuid": "28445c5a-2d99-45b1-a5c4-91895f62776e",
+      "node_name": "task 3591",
+      "own_numbers": [
+        3591
+      ],
+      "edge_uuid": "2a0a345e-1965-475e-ac4b-a8b8218d2932",
+      "which_end": "source",
+      "other_uuid": "59de60d0-84ca-439c-bb0d-6b84b6f1314b",
+      "other_name": "gmsh NodeAttachment dep-cycle",
+      "fact": "The same pattern used for the gmsh NodeAttachment/BoundaryAssociation cycle was applied to resolve the crate cycle in Task 3555.",
+      "named_numbers": [
+        3555
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-27T09:32:34.502644+00:00",
+      "first_episode": "efea8820-b62c-46e5-b66d-cd8ce163f5de",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3555
+        ],
+        "target_node_uuids": [
+          "96a1c7ff-37f3-450b-a43b-ed09a0fadf5a"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "614bf88e-bc0e-465d-9ff6-219f4f01af80@350f4486-d6af-48a7-a044-6e68af13ead2",
+      "node_uuid": "350f4486-d6af-48a7-a044-6e68af13ead2",
+      "node_name": "task 3632",
+      "own_numbers": [
+        3632
+      ],
+      "edge_uuid": "614bf88e-bc0e-465d-9ff6-219f4f01af80",
+      "which_end": "source",
+      "other_uuid": "29fba0eb-c78e-459d-ab9d-c3b31a2337b4",
+      "other_name": "task 3631",
+      "fact": "Task 3631 enables downstream task 3633.",
+      "named_numbers": [
+        3631,
+        3633
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-15T03:17:24.530722+00:00",
+      "first_episode": "26e0292c-3fad-4d56-94ca-809a4aa16c5b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3633
+        ],
+        "target_node_uuids": [
+          "51ce2543-607c-4c54-82b1-2a951b5b7db7"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "07a2750a-9b05-4f98-a9aa-89d45d0d98b7@9626ea29-52e3-492f-b5bb-7a0f3598ebf0",
+      "node_uuid": "9626ea29-52e3-492f-b5bb-7a0f3598ebf0",
+      "node_name": "Task 3836",
+      "own_numbers": [
+        3836
+      ],
+      "edge_uuid": "07a2750a-9b05-4f98-a9aa-89d45d0d98b7",
+      "which_end": "source",
+      "other_uuid": "53414299-c0d9-4e7f-bfba-0c1e44e337bd",
+      "other_name": "inverse_dynamics",
+      "fact": "Task 3838 refactored eval_inverse_dynamics through a shared seam.",
+      "named_numbers": [
+        3838
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-04T03:15:37.408077+00:00",
+      "first_episode": "38a50a4d-a37c-49cb-b6d7-8e55b3dd62a4",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          3838
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 3838"
+      }
+    },
+    {
+      "candidate_id": "d7c79cee-9488-40f4-8cb0-819709958f0a@871817d6-0d3f-430c-8b28-d7de3f57f6f9",
+      "node_uuid": "871817d6-0d3f-430c-8b28-d7de3f57f6f9",
+      "node_name": "Task 3883",
+      "own_numbers": [
+        3883
+      ],
+      "edge_uuid": "d7c79cee-9488-40f4-8cb0-819709958f0a",
+      "which_end": "source",
+      "other_uuid": "27a0bacc-626a-4263-80e2-c7fec116eb45",
+      "other_name": "ctor hook at engine_eval.rs:1794",
+      "fact": "Task 3894 (RBD-α.1b) includes a ctor hook at engine_eval.rs:1794.",
+      "named_numbers": [
+        3894
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-26T21:56:35.780233+00:00",
+      "first_episode": "e972ba5f-2b07-430e-804b-63c43e21a5d8",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          3894
+        ],
+        "target_node_uuids": [
+          "7c0000d6-957a-4148-8903-1e2e342eaea8"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "446e106b-1ab6-4744-8c58-dd6bf9b3f8b5@008e4082-df3b-4e46-ad8d-6165ca4e9154",
+      "node_uuid": "008e4082-df3b-4e46-ad8d-6165ca4e9154",
+      "node_name": "task 3908",
+      "own_numbers": [
+        3908
+      ],
+      "edge_uuid": "446e106b-1ab6-4744-8c58-dd6bf9b3f8b5",
+      "which_end": "target",
+      "other_uuid": "07d6d230-54d4-4db8-8891-bf17ba29e92e",
+      "other_name": "T10",
+      "fact": "The T10 sub-placement integration gate does not need a dependency on task 4148.",
+      "named_numbers": [
+        4148
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-01T12:31:47.103085+00:00",
+      "first_episode": "c062400f-71f0-4129-a550-22bdf633d477",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4148
+        ],
+        "target_node_uuids": [
+          "3f618312-6b4e-4526-a369-3dff85f4305b"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "7cc6280a-858d-4684-bef6-2c96d78877a8@5f3588ed-6c24-4a5c-8c1f-39de705e5899",
+      "node_uuid": "5f3588ed-6c24-4a5c-8c1f-39de705e5899",
+      "node_name": "tasks 3996/3998/4001",
+      "own_numbers": [
+        3996,
+        3998,
+        4001
+      ],
+      "edge_uuid": "7cc6280a-858d-4684-bef6-2c96d78877a8",
+      "which_end": "source",
+      "other_uuid": "ac861374-6ec0-4c6b-b8d8-2010863cbdc6",
+      "other_name": "required-seed enforcement",
+      "fact": "Task 4011 includes required-seed enforcement.",
+      "named_numbers": [
+        4011
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-28T12:12:12.937117+00:00",
+      "first_episode": "1f65d576-45df-4a02-9239-1574f7bf34d3",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4011
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4011"
+      }
+    },
+    {
+      "candidate_id": "75abeea1-4883-48e5-a8d7-e5b9e2e4c24d@70808ce7-7e94-4e18-9f81-48c20a2978d0",
+      "node_uuid": "70808ce7-7e94-4e18-9f81-48c20a2978d0",
+      "node_name": "task 4002",
+      "own_numbers": [
+        4002
+      ],
+      "edge_uuid": "75abeea1-4883-48e5-a8d7-e5b9e2e4c24d",
+      "which_end": "source",
+      "other_uuid": "3db4b29d-ee62-4247-8a09-ae0e197c69a3",
+      "other_name": "esc-4000-39",
+      "fact": "The issue with the semaphore was surfaced by esc-4000-39, which timed out during the post-merge verify of task 4000.",
+      "named_numbers": [
+        4000
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-05-28T13:13:19.722613+00:00",
+      "first_episode": "15a1b133-e81c-497d-9e99-6a3320ebb51e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4000
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4000"
+      }
+    },
+    {
+      "candidate_id": "a0056eca-5754-4751-8cc7-b85bc9812ff6@d63f74cf-bdfc-45c6-89db-91b5b01b6c9c",
+      "node_uuid": "d63f74cf-bdfc-45c6-89db-91b5b01b6c9c",
+      "node_name": "Task 4003",
+      "own_numbers": [
+        4003
+      ],
+      "edge_uuid": "a0056eca-5754-4751-8cc7-b85bc9812ff6",
+      "which_end": "source",
+      "other_uuid": "c3092557-cadc-4413-9df7-71dde0b71ddd",
+      "other_name": "--purpose flag consumer surface",
+      "fact": "Task 4000 covers the --purpose flag consumer surface.",
+      "named_numbers": [
+        4000
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-28T12:14:20.006071+00:00",
+      "first_episode": "babcf55a-2e16-4e21-85a3-f5d21f486976",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4000
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4000"
+      }
+    },
+    {
+      "candidate_id": "b409ad2b-8620-4cac-8ea1-9c08bb01a11b@322dacfa-b800-431e-b524-b81fef8824f8",
+      "node_uuid": "322dacfa-b800-431e-b524-b81fef8824f8",
+      "node_name": "tasks 4057-4062",
+      "own_numbers": [
+        4057,
+        4062
+      ],
+      "edge_uuid": "b409ad2b-8620-4cac-8ea1-9c08bb01a11b",
+      "which_end": "target",
+      "other_uuid": "e5471a59-c051-4cb0-aeac-c71ef8bffa22",
+      "other_name": "Layer-B",
+      "fact": "A walk of the full downstream owner task set confirmed that Layer B owns tasks 4035–4040.",
+      "named_numbers": [
+        4035,
+        4036,
+        4037,
+        4038,
+        4039,
+        4040
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-30T20:06:26.576832+00:00",
+      "first_episode": "4ad23a67-ad34-47a3-88e9-5762f07b65a4",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          4035,
+          4036,
+          4037,
+          4038,
+          4039,
+          4040
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "bfb026e9-aba7-4a0d-9279-b4aff2e32c82@4f51a19b-34db-43d9-8abf-92a2b729d898",
+      "node_uuid": "4f51a19b-34db-43d9-8abf-92a2b729d898",
+      "node_name": "task 4068",
+      "own_numbers": [
+        4068
+      ],
+      "edge_uuid": "bfb026e9-aba7-4a0d-9279-b4aff2e32c82",
+      "which_end": "source",
+      "other_uuid": "44d06277-23bf-4d5a-8786-ea42291b63dc",
+      "other_name": "Task 3392",
+      "fact": "The degenerate-shell element is a strict improvement on the flat transverse-shear of Task 3392.",
+      "named_numbers": [
+        3392
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-31T08:22:03.481752+00:00",
+      "first_episode": "a6952530-6823-4148-987e-97e9de1e740e",
+      "episode_count": 2,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "02c89fb4-9ffe-4ea2-afd0-dd874e64b868@519ba511-58ac-448f-97cb-5ae1c0318d1b",
+      "node_uuid": "519ba511-58ac-448f-97cb-5ae1c0318d1b",
+      "node_name": "Task 4071",
+      "own_numbers": [
+        4071
+      ],
+      "edge_uuid": "02c89fb4-9ffe-4ea2-afd0-dd874e64b868",
+      "which_end": "source",
+      "other_uuid": "4660a85c-0624-4374-acc2-ee8e3c6aa9e9",
+      "other_name": "Clause (1)",
+      "fact": "Clause (1) was split out to a new keeper task 4820 because it was blocked for different reasons.",
+      "named_numbers": [
+        4820
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-24T17:46:26.496563+00:00",
+      "first_episode": "6479d110-2b6e-4275-8cbb-bbd1119295f4",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4820
+        ],
+        "target_node_uuids": [
+          "65e0aa42-31c6-4521-9510-a49d23530ce1"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "7f438458-5e84-49fa-8fd4-bbe0a17bdcaa@5d651daf-70ca-46e2-8d63-21095f630446",
+      "node_uuid": "5d651daf-70ca-46e2-8d63-21095f630446",
+      "node_name": "task 4105",
+      "own_numbers": [
+        4105
+      ],
+      "edge_uuid": "7f438458-5e84-49fa-8fd4-bbe0a17bdcaa",
+      "which_end": "source",
+      "other_uuid": "8430bd3a-4345-46d4-b5a6-7b869afda2d8",
+      "other_name": "Task 4082",
+      "fact": "The GUI buckling mode-shape preview depends on task 4082 being done.",
+      "named_numbers": [
+        4082
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-31T04:26:50.053650+00:00",
+      "first_episode": "fb27aed2-9f1c-4d49-8e10-5b48be4cd976",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "f8937569-075a-4270-bd44-d615d1bc1980@5d651daf-70ca-46e2-8d63-21095f630446",
+      "node_uuid": "5d651daf-70ca-46e2-8d63-21095f630446",
+      "node_name": "task 4105",
+      "own_numbers": [
+        4105
+      ],
+      "edge_uuid": "f8937569-075a-4270-bd44-d615d1bc1980",
+      "which_end": "source",
+      "other_uuid": "f5c0f731-bca5-423a-ad7f-91fb16926cd5",
+      "other_name": "Buckling mode list",
+      "fact": "The GUI buckling mode-shape preview depends on task 4072 being done.",
+      "named_numbers": [
+        4072
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-05-31T04:26:50.053581+00:00",
+      "first_episode": "fb27aed2-9f1c-4d49-8e10-5b48be4cd976",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4072
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4072"
+      }
+    },
+    {
+      "candidate_id": "f4481d01-028c-45b5-898c-87142a73ff50@31883cdf-ded1-4ef7-976b-9c3af993af55",
+      "node_uuid": "31883cdf-ded1-4ef7-976b-9c3af993af55",
+      "node_name": "task 4111",
+      "own_numbers": [
+        4111
+      ],
+      "edge_uuid": "f4481d01-028c-45b5-898c-87142a73ff50",
+      "which_end": "source",
+      "other_uuid": "31fa5d80-9c02-46b1-b053-906878cad8dd",
+      "other_name": "Task 3867",
+      "fact": "Cleanups to impulse_shaper.rs cannot be deferred onto task 3867.",
+      "named_numbers": [
+        3867
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-01T11:06:30.868336+00:00",
+      "first_episode": "e6dc6ed5-967e-446f-81b0-88a724534006",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "2c4815cf-2e52-475c-8bc0-e383483aa44e@dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "node_uuid": "dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "node_name": "task 4263",
+      "own_numbers": [
+        4263
+      ],
+      "edge_uuid": "2c4815cf-2e52-475c-8bc0-e383483aa44e",
+      "which_end": "source",
+      "other_uuid": "8181b3f3-9a89-4a0d-9c59-1dcd067c6591",
+      "other_name": "mass properties",
+      "fact": "Task 4271 will use MassProperties as the canonical currency for mechanism-body mass.",
+      "named_numbers": [
+        4271
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-03T17:03:36.361726+00:00",
+      "first_episode": "61bbe149-9a6a-4302-b54e-acc5665b75ac",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4271
+        ],
+        "target_node_uuids": [
+          "2b1faa7f-02f9-4f5a-bd1b-9257b0a3c733"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "7f3dcc9f-7870-449f-8927-f6af0141d773@dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "node_uuid": "dd59c308-2909-4fec-a6c2-de62b90eb9c7",
+      "node_name": "task 4263",
+      "own_numbers": [
+        4263
+      ],
+      "edge_uuid": "7f3dcc9f-7870-449f-8927-f6af0141d773",
+      "which_end": "target",
+      "other_uuid": "f19690dc-f7b9-45c1-b1e3-7f655f2987a4",
+      "other_name": "leo",
+      "fact": "Leo's decision to converge mechanism-body mass onto one canonical currency blocks task 4271.",
+      "named_numbers": [
+        4271
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-03T17:03:36.361668+00:00",
+      "first_episode": "61bbe149-9a6a-4302-b54e-acc5665b75ac",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4271
+        ],
+        "target_node_uuids": [
+          "2b1faa7f-02f9-4f5a-bd1b-9257b0a3c733"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "42fc36ec-b2f9-4148-ac10-c55af52d1309@87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "node_uuid": "87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "node_name": "Task 4351",
+      "own_numbers": [
+        4351
+      ],
+      "edge_uuid": "42fc36ec-b2f9-4148-ac10-c55af52d1309",
+      "which_end": "target",
+      "other_uuid": "eb68af59-f04e-44fa-9cbb-67d9d694d6bd",
+      "other_name": "Task 4362",
+      "fact": "Task #4362 has Task #4359 as a completed dependency.",
+      "named_numbers": [
+        4359,
+        4362
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-23T00:28:20.618527+00:00",
+      "first_episode": "ac650f0a-0c09-4ccd-b28e-59df8fe7ee1f",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4359
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4359"
+      }
+    },
+    {
+      "candidate_id": "89cf3323-9e24-4e61-865a-9a729abcbe26@87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "node_uuid": "87317480-a56a-4d98-9aa1-4d94f0108f9f",
+      "node_name": "Task 4351",
+      "own_numbers": [
+        4351
+      ],
+      "edge_uuid": "89cf3323-9e24-4e61-865a-9a729abcbe26",
+      "which_end": "source",
+      "other_uuid": "65e0aa42-31c6-4521-9510-a49d23530ce1",
+      "other_name": "Task 4820",
+      "fact": "Task 4820 was wired to depend on Task 4829.",
+      "named_numbers": [
+        4820,
+        4829
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-24T19:43:02.684793+00:00",
+      "first_episode": "6eab0b4c-065a-4847-8cc3-c40fa01d0c9a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4829
+        ],
+        "target_node_uuids": [
+          "98934b0f-834c-4459-bfbe-9aebc0758501"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "b16ed8cb-16d4-4b6a-835a-f656083af3a6@c89768ad-e490-4943-89de-d99e4c13db3f",
+      "node_uuid": "c89768ad-e490-4943-89de-d99e4c13db3f",
+      "node_name": "task 4373",
+      "own_numbers": [
+        4373
+      ],
+      "edge_uuid": "b16ed8cb-16d4-4b6a-835a-f656083af3a6",
+      "which_end": "target",
+      "other_uuid": "7976b36c-df66-4b18-8131-08921ef90c40",
+      "other_name": "spawn-brief protocol",
+      "fact": "The spawn-brief protocol was used to set task 4473 as deferred at the start of the amendment discussion.",
+      "named_numbers": [
+        4473
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-10T11:50:41.622239+00:00",
+      "first_episode": "f64b30c1-1672-462d-b4b6-c69f56895925",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4473
+        ],
+        "target_node_uuids": [
+          "358f141c-fe67-4772-85b8-bc50b4b33c07"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "00bc56ef-dfdc-4491-a8e6-aefbf0aaee2b@7a971822-6dc3-43e2-a4e9-4e736e9deaab",
+      "node_uuid": "7a971822-6dc3-43e2-a4e9-4e736e9deaab",
+      "node_name": "task 4375",
+      "own_numbers": [
+        4375
+      ],
+      "edge_uuid": "00bc56ef-dfdc-4491-a8e6-aefbf0aaee2b",
+      "which_end": "source",
+      "other_uuid": "b5dc2051-f672-4827-9d0d-7a9d0fe8edfe",
+      "other_name": "sibling B",
+      "fact": "Task 4379 is referred to as sibling B in the context of task 4380.",
+      "named_numbers": [
+        4379,
+        4380
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-08T12:01:06.746006+00:00",
+      "first_episode": "31df57b7-a855-4f41-a267-2ed673d4980b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          4379,
+          4380
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "e8670300-baf5-447e-96d1-088847b15bb7@155f9ac1-4764-4cf4-acbc-61c75dd33895",
+      "node_uuid": "155f9ac1-4764-4cf4-acbc-61c75dd33895",
+      "node_name": "Task 4388",
+      "own_numbers": [
+        4388
+      ],
+      "edge_uuid": "e8670300-baf5-447e-96d1-088847b15bb7",
+      "which_end": "source",
+      "other_uuid": "f0af6c14-5ab9-459d-b011-21696d206021",
+      "other_name": "GUI DOF badge",
+      "fact": "The GUI DOF badge moves to docs/prds/v0_6/solver-legibility-telemetry.md leaf iota (task #6730).",
+      "named_numbers": [
+        6730
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-26T20:32:25.225053+00:00",
+      "first_episode": "a45b1dde-ea46-475a-a4bb-0b80eea50d3d",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          6730
+        ],
+        "target_node_uuids": [
+          "037c1291-d7b2-4bc9-9122-8893b111377f"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "c5c4c429-95cf-440e-87cb-d43cb56302c1@dab5be4e-0596-4938-aa8e-a64e87e192d8",
+      "node_uuid": "dab5be4e-0596-4938-aa8e-a64e87e192d8",
+      "node_name": "task 4490",
+      "own_numbers": [
+        4490
+      ],
+      "edge_uuid": "c5c4c429-95cf-440e-87cb-d43cb56302c1",
+      "which_end": "source",
+      "other_uuid": "62b1e5b1-44fe-42a2-b932-7dca76093cf5",
+      "other_name": "design decisions DD1-DD6",
+      "fact": "The detailed prior plan for Task 4497 was verified as viable and should be reused by the restarted agent.",
+      "named_numbers": [
+        4497
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-14T17:59:18.968275+00:00",
+      "first_episode": "c1459c82-ce13-471b-8ae9-7df266798026",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4497
+        ],
+        "target_node_uuids": [
+          "9ec38fe7-9b92-43ff-835d-6cb8a83bcd02"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "d9580f01-f9d8-4486-a821-ec5ec0a384ca@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_uuid": "f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_name": "task 4615",
+      "own_numbers": [
+        4615
+      ],
+      "edge_uuid": "d9580f01-f9d8-4486-a821-ec5ec0a384ca",
+      "which_end": "target",
+      "other_uuid": "f19690dc-f7b9-45c1-b1e3-7f655f2987a4",
+      "other_name": "leo",
+      "fact": "Leo confirmed that task 4616 should depend on task 4596.",
+      "named_numbers": [
+        4596,
+        4616
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-15T10:29:21.271399+00:00",
+      "first_episode": "d21e7ed8-50f7-4388-8e96-bc72b5cc1690",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          4596,
+          4616
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "ea185157-ab72-4e6a-824d-1cc413856e67@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_uuid": "f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_name": "task 4615",
+      "own_numbers": [
+        4615
+      ],
+      "edge_uuid": "ea185157-ab72-4e6a-824d-1cc413856e67",
+      "which_end": "source",
+      "other_uuid": "01fa4629-08f9-480c-946d-490a93fe38a4",
+      "other_name": "Gap C",
+      "fact": "Task 4616 is wired to depend on the Gap C honesty-diagnostic leaf.",
+      "named_numbers": [
+        4616
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-15T10:29:21.271382+00:00",
+      "first_episode": "d21e7ed8-50f7-4388-8e96-bc72b5cc1690",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4616
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4616"
+      }
+    },
+    {
+      "candidate_id": "ea50e06c-e823-4afc-9601-4fda31a94162@f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_uuid": "f961c0b7-6ab0-46a6-90d1-35c469562e64",
+      "node_name": "task 4615",
+      "own_numbers": [
+        4615
+      ],
+      "edge_uuid": "ea50e06c-e823-4afc-9601-4fda31a94162",
+      "which_end": "target",
+      "other_uuid": "3eda47af-815b-41d3-91ef-2f4d106fb5dc",
+      "other_name": "thickness",
+      "fact": "The member access for seal.thickness lowers to make_poison_literal until task 4596 is completed, affecting task 4616.",
+      "named_numbers": [
+        4596,
+        4616
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-15T10:29:21.271391+00:00",
+      "first_episode": "d21e7ed8-50f7-4388-8e96-bc72b5cc1690",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "ambiguous_target_numbers",
+        "target_numbers": [
+          4596,
+          4616
+        ],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "4508fbd0-2231-4176-9701-e84465c8234e@018ab3e0-d6cb-470a-9afa-acbb8e824966",
+      "node_uuid": "018ab3e0-d6cb-470a-9afa-acbb8e824966",
+      "node_name": "task #4644",
+      "own_numbers": [
+        4644
+      ],
+      "edge_uuid": "4508fbd0-2231-4176-9701-e84465c8234e",
+      "which_end": "target",
+      "other_uuid": "20532372-16ac-472c-a170-131df838843f",
+      "other_name": "SPECIAL-CASE perf marker",
+      "fact": "The fidget per-handle JitShape-cache perf marker is recorded in task #4643.",
+      "named_numbers": [
+        4643
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-17T13:53:49.946738+00:00",
+      "first_episode": "fd10fcf0-b9e9-41f6-b2a6-a0a50b0366d3",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4643
+        ],
+        "target_node_uuids": [
+          "36fc51e9-c14f-4849-9da3-f2bc9a1ebdee"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "8047cd8b-d05e-4012-b9e9-9ae95bf48555@67da01ce-e974-49f4-8a60-043a1736a430",
+      "node_uuid": "67da01ce-e974-49f4-8a60-043a1736a430",
+      "node_name": "task 4645",
+      "own_numbers": [
+        4645
+      ],
+      "edge_uuid": "8047cd8b-d05e-4012-b9e9-9ae95bf48555",
+      "which_end": "source",
+      "other_uuid": "82cc3f58-39e5-425c-be81-640e6195fc76",
+      "other_name": "task 4640",
+      "fact": "Task 4646 supersedes the interim solution of task 4640 by restoring one error.",
+      "named_numbers": [
+        4640,
+        4646
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-06-18T06:41:58.567993+00:00",
+      "first_episode": "c7ce413f-b530-4aa9-89cc-443b02f46851",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4646
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4646"
+      }
+    },
+    {
+      "candidate_id": "10379740-90a8-475e-a821-b66c51dc21e3@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_uuid": "e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_name": "task 4755",
+      "own_numbers": [
+        4755
+      ],
+      "edge_uuid": "10379740-90a8-475e-a821-b66c51dc21e3",
+      "which_end": "source",
+      "other_uuid": "73e97d12-4a8e-4d24-ac12-58bac56473b7",
+      "other_name": "warm_pool.rs",
+      "fact": "Task 4759 showed deletions in warm_pool.rs.",
+      "named_numbers": [
+        4759
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-26T09:33:11.285618+00:00",
+      "first_episode": "ae75ebfb-6267-4a69-8ab9-6f0b56d6f59b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4759
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4759"
+      }
+    },
+    {
+      "candidate_id": "51ce0475-9af9-41fc-b67c-d1cceb314a5d@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_uuid": "e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_name": "task 4755",
+      "own_numbers": [
+        4755
+      ],
+      "edge_uuid": "51ce0475-9af9-41fc-b67c-d1cceb314a5d",
+      "which_end": "source",
+      "other_uuid": "333e4897-5d38-40a1-818e-70f00b7d031b",
+      "other_name": "git-rebase",
+      "fact": "Task 4759 confirmed that a plain git rebase applied cleanly after analyzing the diff.",
+      "named_numbers": [
+        4759
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-26T09:33:11.285582+00:00",
+      "first_episode": "ae75ebfb-6267-4a69-8ab9-6f0b56d6f59b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4759
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4759"
+      }
+    },
+    {
+      "candidate_id": "92cc574a-a541-46f8-b729-ae45aefb09bb@e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_uuid": "e93c9cb2-1e20-4ece-b25a-9dded740eabc",
+      "node_name": "task 4755",
+      "own_numbers": [
+        4755
+      ],
+      "edge_uuid": "92cc574a-a541-46f8-b729-ae45aefb09bb",
+      "which_end": "source",
+      "other_uuid": "76cbbfc5-08c4-4fc4-944f-dde1f3b4080d",
+      "other_name": "toolpath",
+      "fact": "Task 4759 showed 4040 deletions in toolpath.rs among other files.",
+      "named_numbers": [
+        4759
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-26T09:33:11.285601+00:00",
+      "first_episode": "ae75ebfb-6267-4a69-8ab9-6f0b56d6f59b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          4759
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 4759"
+      }
+    },
+    {
+      "candidate_id": "6b05b9a8-762f-477b-8c26-f3b468545a57@e3094483-341a-4019-a806-05f250445798",
+      "node_uuid": "e3094483-341a-4019-a806-05f250445798",
+      "node_name": "task 4859",
+      "own_numbers": [
+        4859
+      ],
+      "edge_uuid": "6b05b9a8-762f-477b-8c26-f3b468545a57",
+      "which_end": "target",
+      "other_uuid": "c404b4c1-733c-49b2-87dd-8fa82fd7e58f",
+      "other_name": "task 4864",
+      "fact": "Task 4864's flake fix will be landed first, followed by rebasing task 4837 on top of it.",
+      "named_numbers": [
+        4837,
+        4864
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-06-26T10:59:24.274302+00:00",
+      "first_episode": "767ebb43-6cee-4040-879f-da1219275831",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4837
+        ],
+        "target_node_uuids": [
+          "32720857-1ced-41e2-8fff-1a327aa03908"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "091d397e-8d1b-4c36-96ba-c13e7a900659@9af4459c-8c9d-4a2d-83dc-45ffde6f3644",
+      "node_uuid": "9af4459c-8c9d-4a2d-83dc-45ffde6f3644",
+      "node_name": "Task 4952",
+      "own_numbers": [
+        4952
+      ],
+      "edge_uuid": "091d397e-8d1b-4c36-96ba-c13e7a900659",
+      "which_end": "source",
+      "other_uuid": "2dab8d74-96f2-4400-b841-a08ade6e64c2",
+      "other_name": "task/5026-land6",
+      "fact": "Task/5026-land6 was chosen over waiting for task 4954 to land first due to task 4954's poor merge verify results.",
+      "named_numbers": [
+        4954,
+        5026
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-07-07T07:30:46.307444+00:00",
+      "first_episode": "2c883d12-3370-462a-afc9-ac3a4c309672",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          4954
+        ],
+        "target_node_uuids": [
+          "28dfb48b-73af-4cb4-9ba1-1a2f8b6a2dd8"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "9b104db8-726f-433f-94c2-0609e9efe611@28dfb48b-73af-4cb4-9ba1-1a2f8b6a2dd8",
+      "node_uuid": "28dfb48b-73af-4cb4-9ba1-1a2f8b6a2dd8",
+      "node_name": "Task 4954",
+      "own_numbers": [
+        4954
+      ],
+      "edge_uuid": "9b104db8-726f-433f-94c2-0609e9efe611",
+      "which_end": "target",
+      "other_uuid": "5bb1dced-a1ee-4b7e-aadc-22e4affa9ae0",
+      "other_name": "Task 6077",
+      "fact": "Task #6077's description records that the change also closes the pre-existing #4955 hole.",
+      "named_numbers": [
+        6077
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-19T16:34:05.669035+00:00",
+      "first_episode": "042b2e84-0405-4ec1-a68d-b8b19715c679",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "ab22c3eb-7583-434f-a6ae-0fdbe43f8815@9cefc69a-4606-4585-8bec-09f124a42ab6",
+      "node_uuid": "9cefc69a-4606-4585-8bec-09f124a42ab6",
+      "node_name": "Task 5011",
+      "own_numbers": [
+        5011
+      ],
+      "edge_uuid": "ab22c3eb-7583-434f-a6ae-0fdbe43f8815",
+      "which_end": "source",
+      "other_uuid": "251b779a-e7fb-4db7-a6bf-b5541819bd53",
+      "other_name": "risk_label='human-review-required'",
+      "fact": "Task 5017 has a risk label indicating that human review is required.",
+      "named_numbers": [
+        5017
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-13T16:23:56.926164+00:00",
+      "first_episode": "82d5e9b1-c1f5-48a1-8f5a-6ab379de2aeb",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          5017
+        ],
+        "target_node_uuids": [
+          "54bb136d-9c66-4544-be9d-123de488b972"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "5188769f-0383-4512-89a8-0ef26913a113@621610c6-f54e-49c6-8adc-c61ce748c066",
+      "node_uuid": "621610c6-f54e-49c6-8adc-c61ce748c066",
+      "node_name": "task/5178",
+      "own_numbers": [
+        5178
+      ],
+      "edge_uuid": "5188769f-0383-4512-89a8-0ef26913a113",
+      "which_end": "target",
+      "other_uuid": "dfb2d332-36fd-4588-9910-998435c4d353",
+      "other_name": "task/5174",
+      "fact": "The revert of the untrack was collateral from task/5174's tracked-db WIP during an inter-iteration rebase.",
+      "named_numbers": [
+        5174
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-12T18:20:24.820613+00:00",
+      "first_episode": "eebcac3d-5714-4753-a057-23f6e63856ed",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "99a0c152-de47-4cb5-a802-6a0b1eb6ad6a@5cfe33d2-5972-4fc8-bab1-651c29d95a4d",
+      "node_uuid": "5cfe33d2-5972-4fc8-bab1-651c29d95a4d",
+      "node_name": "Task 5187",
+      "own_numbers": [
+        5187
+      ],
+      "edge_uuid": "99a0c152-de47-4cb5-a802-6a0b1eb6ad6a",
+      "which_end": "source",
+      "other_uuid": "95c94333-89f6-424f-a7f9-015dd880f5a2",
+      "other_name": "line_cost",
+      "fact": "Task 5189 BT-5 resolves reads via direct auto_owner.get, not through derived Let cells like line_cost.",
+      "named_numbers": [
+        5189
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-07-22T15:33:31.732723+00:00",
+      "first_episode": "026fbb46-30b6-4c3b-805f-a3cb2e2a869a",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          5189
+        ],
+        "target_node_uuids": [
+          "4883ee96-a75c-4c93-9195-35d209638cd2"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "c0db6ca9-23ae-42d9-9973-49c419e4701d@4883ee96-a75c-4c93-9195-35d209638cd2",
+      "node_uuid": "4883ee96-a75c-4c93-9195-35d209638cd2",
+      "node_name": "Task 5189",
+      "own_numbers": [
+        5189
+      ],
+      "edge_uuid": "c0db6ca9-23ae-42d9-9973-49c419e4701d",
+      "which_end": "source",
+      "other_uuid": "85b73a2c-640b-4a1a-8841-026c9eeb7c3f",
+      "other_name": "BT-5 acceptance test",
+      "fact": "The BT-5 acceptance test depends on the cluster-formation gap resolved by Task 5334.",
+      "named_numbers": [
+        5334
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-28T11:13:44.748549+00:00",
+      "first_episode": "784fa8a5-49cc-4640-b082-0f23e60aa4b1",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          5334
+        ],
+        "target_node_uuids": [
+          "4361b3c2-a424-4cf7-9c45-e2c2fa8a93d8"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "0851f0e4-4445-453e-a5d5-5aab1b1e03d8@5bee6475-14cd-42bb-a3cc-4dd278798352",
+      "node_uuid": "5bee6475-14cd-42bb-a3cc-4dd278798352",
+      "node_name": "Task 5363",
+      "own_numbers": [
+        5363
+      ],
+      "edge_uuid": "0851f0e4-4445-453e-a5d5-5aab1b1e03d8",
+      "which_end": "target",
+      "other_uuid": "a2be5bd9-6841-476a-8d3e-d8f3de37107a",
+      "other_name": "Task 5569",
+      "fact": "task 5569 was filed as a follow-up task on 2026-07-26.",
+      "named_numbers": [
+        5569
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-26T12:11:16.795085+00:00",
+      "first_episode": "919a2912-b38d-4704-993a-07d661bf7bac",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "75dab54d-d842-4a11-bc30-10857fd698e3@e3843994-0930-4eac-bdd0-3a85063f7d91",
+      "node_uuid": "e3843994-0930-4eac-bdd0-3a85063f7d91",
+      "node_name": "Task 5462",
+      "own_numbers": [
+        5462
+      ],
+      "edge_uuid": "75dab54d-d842-4a11-bc30-10857fd698e3",
+      "which_end": "target",
+      "other_uuid": "5bb1dced-a1ee-4b7e-aadc-22e4affa9ae0",
+      "other_name": "Task 6077",
+      "fact": "Task #6077 is already dep-gated behind #5467.",
+      "named_numbers": [
+        6077
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-19T16:34:05.669063+00:00",
+      "first_episode": "042b2e84-0405-4ec1-a68d-b8b19715c679",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "c420de2a-a71b-43e4-b68c-0c8383c3c5a9@b8582c44-33d8-414b-a72d-bc71bd5e6a73",
+      "node_uuid": "b8582c44-33d8-414b-a72d-bc71bd5e6a73",
+      "node_name": "Task 5535",
+      "own_numbers": [
+        5535
+      ],
+      "edge_uuid": "c420de2a-a71b-43e4-b68c-0c8383c3c5a9",
+      "which_end": "target",
+      "other_uuid": "48787536-0633-4b36-93f7-0de3157416b2",
+      "other_name": "Task 5415",
+      "fact": "A set_task_status call was issued against task 5415 during this cycle, returning no_op=true, indicating it was already pending.",
+      "named_numbers": [
+        5415
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-26T01:39:59.382342+00:00",
+      "first_episode": "38b259fe-1d2f-447c-bffc-3f5b7eebc27e",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "63092fd2-a428-4182-9d7c-1fa79eab17a3@dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "node_uuid": "dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "node_name": "Task 5623",
+      "own_numbers": [
+        5623
+      ],
+      "edge_uuid": "63092fd2-a428-4182-9d7c-1fa79eab17a3",
+      "which_end": "source",
+      "other_uuid": "fbe52467-6063-4098-b5fe-dfa98ec91a08",
+      "other_name": "PRD-D5-retirement record",
+      "fact": "Task 5627 owns the PRD-D5-retirement record.",
+      "named_numbers": [
+        5627
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-28T15:28:21.636612+00:00",
+      "first_episode": "22b9004c-1a6a-4338-855d-45381af4c5c5",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          5627
+        ],
+        "target_node_uuids": [
+          "32e21534-072b-4b6d-ae46-fb70fe30d7d5"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "d597a7de-32fa-4839-85ca-969cf505ccbf@dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "node_uuid": "dac0788e-d2f5-416c-a8f9-5b33f4e0a768",
+      "node_name": "Task 5623",
+      "own_numbers": [
+        5623
+      ],
+      "edge_uuid": "d597a7de-32fa-4839-85ca-969cf505ccbf",
+      "which_end": "target",
+      "other_uuid": "ad919f83-027b-49d2-851b-e3deb2dbfb4b",
+      "other_name": "docs-only",
+      "fact": "The docs-only amendment is related to task 5627.",
+      "named_numbers": [
+        5627
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-07-28T15:28:21.636714+00:00",
+      "first_episode": "22b9004c-1a6a-4338-855d-45381af4c5c5",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          5627
+        ],
+        "target_node_uuids": [
+          "32e21534-072b-4b6d-ae46-fb70fe30d7d5"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "22beeeed-ef7b-4971-aec2-821fc0df3e25@36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "node_uuid": "36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "node_name": "Task 5633",
+      "own_numbers": [
+        5633
+      ],
+      "edge_uuid": "22beeeed-ef7b-4971-aec2-821fc0df3e25",
+      "which_end": "source",
+      "other_uuid": "9f09aca0-26cb-4f88-af12-11d206301e2f",
+      "other_name": "implementer",
+      "fact": "Task 5632 was routed by the implementer.",
+      "named_numbers": [
+        5632
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-07-31T19:47:07.816489+00:00",
+      "first_episode": "d1ec88b9-bc5d-4ab0-89c6-2202b6b41d0f",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          5632
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 5632"
+      }
+    },
+    {
+      "candidate_id": "7a913250-ef6a-469d-9dd6-dc46df41e70a@36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "node_uuid": "36a77ef0-3842-4e78-a56e-8bd69ac71430",
+      "node_name": "Task 5633",
+      "own_numbers": [
+        5633
+      ],
+      "edge_uuid": "7a913250-ef6a-469d-9dd6-dc46df41e70a",
+      "which_end": "source",
+      "other_uuid": "c177b82d-796c-4189-8b8c-ea2a1bf871d0",
+      "other_name": "merge-queue",
+      "fact": "Task 5632 was landed via the merge queue rather than reopening it.",
+      "named_numbers": [
+        5632
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-07-31T19:47:07.816349+00:00",
+      "first_episode": "d1ec88b9-bc5d-4ab0-89c6-2202b6b41d0f",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          5632
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 5632"
+      }
+    },
+    {
+      "candidate_id": "86c54448-f4e0-4ba7-8b67-1aa07f61d5cb@e60968e8-8969-44ed-9cac-682f7e5ec64a",
+      "node_uuid": "e60968e8-8969-44ed-9cac-682f7e5ec64a",
+      "node_name": "Task 5847",
+      "own_numbers": [
+        5847
+      ],
+      "edge_uuid": "86c54448-f4e0-4ba7-8b67-1aa07f61d5cb",
+      "which_end": "source",
+      "other_uuid": "afe066a0-61a0-4cb0-bc9d-cc9c5b67db6f",
+      "other_name": "unit-cube fixture",
+      "fact": "Task #7447's unit-cube fixture was used to measure the bleed of size hints onto baseline vertices.",
+      "named_numbers": [
+        7447
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-09-19T22:47:09.970578+00:00",
+      "first_episode": "6c56e4fd-35e0-44fd-9f00-134229039786",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          7447
+        ],
+        "target_node_uuids": [
+          "18a5d534-7612-44e9-b9cb-2fc45eec5257"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "b85a4078-5f63-4fd8-b056-47f0eb93552a@38553292-8e79-4bc3-a285-b4b8b34d5a22",
+      "node_uuid": "38553292-8e79-4bc3-a285-b4b8b34d5a22",
+      "node_name": "Task 5976",
+      "own_numbers": [
+        5976
+      ],
+      "edge_uuid": "b85a4078-5f63-4fd8-b056-47f0eb93552a",
+      "which_end": "target",
+      "other_uuid": "e373608d-e697-4286-afcf-653b8cf9eb4a",
+      "other_name": "Task 6058",
+      "fact": "TASK 6058's dependency on Curator gate 6060 was explicitly removed so it could proceed.",
+      "named_numbers": [
+        6058
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-10T11:27:09.748779+00:00",
+      "first_episode": "4e538397-fcff-4b01-993a-6da046604f07",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "88178776-38d3-4c38-a615-5fa131bf9fc3@5dd532a2-f4b0-4636-9dad-d05dbcca9f42",
+      "node_uuid": "5dd532a2-f4b0-4636-9dad-d05dbcca9f42",
+      "node_name": "Task 6084",
+      "own_numbers": [
+        6084
+      ],
+      "edge_uuid": "88178776-38d3-4c38-a615-5fa131bf9fc3",
+      "which_end": "target",
+      "other_uuid": "18715dbb-edb3-4250-96af-7fa4b60b212e",
+      "other_name": "RepresentationWithin",
+      "fact": "The requirement to actually enforce the bound on the exported mesh has a hard dependency on task 6085.",
+      "named_numbers": [
+        6085
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-08-10T11:22:32.255809+00:00",
+      "first_episode": "7927ff6b-64ac-4714-89fb-47dfe9b8efe0",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          6085
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 6085"
+      }
+    },
+    {
+      "candidate_id": "1f42756f-5444-476d-9c94-d98e920bec6b@67d09d80-37d9-4942-94c2-6b7a6a67f845",
+      "node_uuid": "67d09d80-37d9-4942-94c2-6b7a6a67f845",
+      "node_name": "Task 6107",
+      "own_numbers": [
+        6107
+      ],
+      "edge_uuid": "1f42756f-5444-476d-9c94-d98e920bec6b",
+      "which_end": "source",
+      "other_uuid": "7a52bcd6-372e-4bed-95e1-402152fcc206",
+      "other_name": "Task 6408",
+      "fact": "The ruling regarding the jc_sqlite3() wrapper was recorded on task 6408.",
+      "named_numbers": [
+        6408
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-21T10:34:15.997599+00:00",
+      "first_episode": "db4969e8-dc0f-40f1-ba32-50e476661ea8",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "8a51e13b-dc00-426f-9026-70116b746a7d@61f65121-f4ab-4d59-8007-c23f55157a49",
+      "node_uuid": "61f65121-f4ab-4d59-8007-c23f55157a49",
+      "node_name": "Task 6128",
+      "own_numbers": [
+        6128
+      ],
+      "edge_uuid": "8a51e13b-dc00-426f-9026-70116b746a7d",
+      "which_end": "target",
+      "other_uuid": "edece2dc-d1c3-4578-aaa2-7dc945a5f9c8",
+      "other_name": "Task 6080",
+      "fact": "Task 6126 is landing to remove the last admission of dimensionless in the transform family, which task 6080's decision addresses.",
+      "named_numbers": [
+        6080,
+        6126
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-08-17T17:05:31.716665+00:00",
+      "first_episode": "59d2d750-4042-4e58-a893-798f5c4fd2c1",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "unique_target",
+        "target_numbers": [
+          6126
+        ],
+        "target_node_uuids": [
+          "b11f678f-ab66-4f89-9fe7-53d80b5070fa"
+        ],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "9a8e780b-82b2-4823-a612-d5b723bfc9cc@b500ca10-d01c-4a24-b743-4b17ed3a4d1e",
+      "node_uuid": "b500ca10-d01c-4a24-b743-4b17ed3a4d1e",
+      "node_name": "Task 6165",
+      "own_numbers": [
+        6165
+      ],
+      "edge_uuid": "9a8e780b-82b2-4823-a612-d5b723bfc9cc",
+      "which_end": "source",
+      "other_uuid": "39eff5b0-0b08-4c8b-b11e-2315403093cf",
+      "other_name": "ruling 6164",
+      "fact": "Ruling 6164's HALF 2 was described in task 6164.",
+      "named_numbers": [
+        6164
+      ],
+      "signature": "adjacent",
+      "created_at": "2026-08-20T10:36:30.473623+00:00",
+      "first_episode": "779b7b7d-bb31-436b-869b-b4cafd033282",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          6164
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 6164"
+      }
+    },
+    {
+      "candidate_id": "3a9d9ec5-7acc-4c82-89fd-e8a7214dc04d@de3c7a7b-db4f-43b0-8447-a5661152d995",
+      "node_uuid": "de3c7a7b-db4f-43b0-8447-a5661152d995",
+      "node_name": "Task 6638",
+      "own_numbers": [
+        6638
+      ],
+      "edge_uuid": "3a9d9ec5-7acc-4c82-89fd-e8a7214dc04d",
+      "which_end": "source",
+      "other_uuid": "c74664d1-f0fb-4fe9-86d1-a424521f0d62",
+      "other_name": "Task 7664",
+      "fact": "Finding 1 related to .config/nextest.toml was deferred into task 7664.",
+      "named_numbers": [
+        7664
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-09-21T09:27:54.378998+00:00",
+      "first_episode": "0c3262a0-8933-481a-af47-ee40996dc44b",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "RECORD_ONLY",
+        "reason": "unary_about_other_endpoint",
+        "target_numbers": [],
+        "target_node_uuids": [],
+        "mint_name": null
+      }
+    },
+    {
+      "candidate_id": "0aff7cb9-a416-42de-94fc-05a4cae08b04@037c1291-d7b2-4bc9-9122-8893b111377f",
+      "node_uuid": "037c1291-d7b2-4bc9-9122-8893b111377f",
+      "node_name": "Task 6730",
+      "own_numbers": [
+        6730
+      ],
+      "edge_uuid": "0aff7cb9-a416-42de-94fc-05a4cae08b04",
+      "which_end": "target",
+      "other_uuid": "179b9a11-c99e-458e-a552-eede06fb1b71",
+      "other_name": "reify-mcp",
+      "fact": "The deletion of the reify mcp-server is ratified and owned by task #6665.",
+      "named_numbers": [
+        6665
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-26T20:33:20.395374+00:00",
+      "first_episode": "4e969fee-e120-4f44-9bb9-9e7a7662a8b7",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          6665
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 6665"
+      }
+    },
+    {
+      "candidate_id": "dd325db1-c237-4272-886f-72e1257f6f59@037c1291-d7b2-4bc9-9122-8893b111377f",
+      "node_uuid": "037c1291-d7b2-4bc9-9122-8893b111377f",
+      "node_name": "Task 6730",
+      "own_numbers": [
+        6730
+      ],
+      "edge_uuid": "dd325db1-c237-4272-886f-72e1257f6f59",
+      "which_end": "source",
+      "other_uuid": "1b59afb0-23d9-4c4d-93a1-810a9b7eee19",
+      "other_name": "P1 docs/prds/v0_6/solver-driver-parity.md §11",
+      "fact": "Task #6665 is recorded in P1 docs/prds/v0_6/solver-driver-parity.md §11.",
+      "named_numbers": [
+        6665
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-08-26T20:33:20.395486+00:00",
+      "first_episode": "4e969fee-e120-4f44-9bb9-9e7a7662a8b7",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          6665
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 6665"
+      }
+    },
+    {
+      "candidate_id": "02462fc4-ce8d-48c3-9486-56f4370b3928@48ae3d4f-d6d6-44ed-a7bb-ed706d83d480",
+      "node_uuid": "48ae3d4f-d6d6-44ed-a7bb-ed706d83d480",
+      "node_name": "Task 7822",
+      "own_numbers": [
+        7822
+      ],
+      "edge_uuid": "02462fc4-ce8d-48c3-9486-56f4370b3928",
+      "which_end": "source",
+      "other_uuid": "fa41fb11-7ecf-40cb-b44f-5ab3e67eb89e",
+      "other_name": "mcp_wire.rs",
+      "fact": "Task #6289 owns the hoisting of envelope policy into mcp_wire.rs.",
+      "named_numbers": [
+        6289
+      ],
+      "signature": "non_adjacent",
+      "created_at": "2026-10-01T09:37:39.442675+00:00",
+      "first_episode": "511247ee-a08d-411c-87b5-4299ecfe71be",
+      "episode_count": 1,
+      "proposal": {
+        "verdict": "REPAIR",
+        "reason": "target_node_absent",
+        "target_numbers": [
+          6289
+        ],
+        "target_node_uuids": [],
+        "mint_name": "Task 6289"
+      }
+    }
+  ]
+}

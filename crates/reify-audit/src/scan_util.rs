@@ -1,13 +1,15 @@
-//! Shared primitives for this crate's structural text scanners — PTODO and
-//! PDOCCOVER, the two that scan raw source lines for word-delimited tokens.
+//! Shared primitives for this crate's structural text scanners — PTODO,
+//! PDOCCOVER and PCITE, the ones that scan raw source lines for
+//! word-delimited tokens.
 //!
-//! Both hand-rolled the same two things: a `\b` word-boundary match (the crate
-//! takes no `regex` dep, per `f-infra-design.md` §12) and an inline
-//! `<token> — <reason>` marker grammar. Before task #6036 each had its own
-//! copy, so a boundary-semantics fix reached exactly one detector and had to
-//! be rediscovered in the next. They share one implementation here so such a
-//! fix reaches both at once, and the boundary and UTF-8 contract those fixes
-//! settled has one statement, on [`contains_word`].
+//! PTODO and PDOCCOVER hand-rolled the same two things: a `\b` word-boundary
+//! match (the crate takes no `regex` dep, per `f-infra-design.md` §12) and an
+//! inline `<token> — <reason>` marker grammar. Before task #6036 each had its
+//! own copy, so a boundary-semantics fix reached exactly one detector and had
+//! to be rediscovered in the next. They share one implementation here so such
+//! a fix reaches every scanner at once, and the boundary and UTF-8 contract
+//! those fixes settled has one statement, on [`contains_word`]. PCITE reuses
+//! the marker grammar and, with PDOCCOVER, [`is_identifier_shaped`].
 //!
 //! What this module deliberately does NOT own is argued on
 //! [`allow_marker_body`]: two sibling marker readers resemble this one and are
@@ -26,6 +28,21 @@
 /// text they never validated.
 pub(crate) fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// `true` when `s` is identifier-shaped end-to-end: `[A-Za-z_][A-Za-z0-9_]*`.
+///
+/// The admission test for existence evidence and for a cited name alike.
+/// Without it a message template (`"unresolved type: {}"`), a phrase, a path
+/// or a chunk id would enter an oracle, and arbitrary prose could vouch for —
+/// or be accused as — a symbol.
+pub(crate) fn is_identifier_shaped(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(is_word_byte)
 }
 
 /// `true` when `needle` occurs in `haystack` delimited by word boundaries on

@@ -1173,6 +1173,11 @@ impl CpSatSolver {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            // Mapping `SolveAllResult::Enumerated.complete` to `Exhaustive` /
+            // `Partial{BoxBudgetExhausted}` is #6903's, and not a flag copy:
+            // `complete` is a claim about the SEARCH, `Exhaustive` one about the
+            // CARRIED set, which is truncated to `RANKED_CANDIDATE_CAP`.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -1249,6 +1254,7 @@ fn lift_feasibility(solved: SolveResult) -> RankedSolveResult {
                 unique,
             }],
             optimality: OptimalityStatus::FeasibilityOnly,
+            completeness: reify_ir::Completeness::not_attempted(),
         },
         non_solved => non_solved
             .into_ranked_pass_through()
@@ -1313,11 +1319,13 @@ fn verdict_from_enumeration(
             // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
             //
             // β sets the flag and stops there. It does NOT copy
-            // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+            // `DimensionalSolver`'s `finalise_uniqueness` (solver.rs),
             // which demotes a non-unique STRICT-auto solve to
             // `Infeasible { ConstraintNonUnique }`. The engine's
-            // non-unique warning is gated on `ap.free`
-            // (engine_eval.rs:3355/5975), so nothing user-visible turns
+            // non-unique warning is gated on `ap.free` (engine_eval.rs:
+            // `push_merged_cluster_nonunique_warnings` and the
+            // per-template arms of `Engine::eval` and
+            // `Engine::eval_cached`), so nothing user-visible turns
             // on the strict case yet, and the demotion POLICY belongs
             // with the step that first makes it observable. See
             // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
@@ -1474,9 +1482,11 @@ mod cpsat_test_fixtures {
     ///
     /// Exists to pin that the distinction makes NO difference to what cpsat
     /// reports. `free` is what the engine gates its non-unique WARNING on
-    /// (engine_eval.rs:3355/5975), and `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686) goes further still and DEMOTES a non-unique strict solve
-    /// to `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), and
+    /// `DimensionalSolver`'s `finalise_uniqueness` (solver.rs) goes further
+    /// still and DEMOTES a non-unique strict solve to
+    /// `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
     /// the honest flag and stops there. That is a deliberate scope line, not an
     /// oversight, so it gets a fixture and a unit rather than silence.
     pub(super) fn strict_bool_auto(member: &str) -> AutoParam {
@@ -3045,13 +3055,15 @@ mod unique_honesty_tests {
     /// is pinned rather than left to be inferred from an absence.
     ///
     /// β's job is to make `unique` TRUE-OR-FALSE-AS-MEASURED. It stops there.
-    /// It does NOT copy `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686), which demotes a non-unique STRICT-auto solve all the
+    /// It does NOT copy `DimensionalSolver`'s `finalise_uniqueness`
+    /// (solver.rs), which demotes a non-unique STRICT-auto solve all the
     /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
     /// this task: the engine's non-unique warning is gated on `ap.free`
-    /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
-    /// case yet; and the demotion POLICY belongs with the step that first makes
-    /// it observable (task #6554).
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), so
+    /// nothing user-visible turns on the strict case yet; and the demotion
+    /// POLICY belongs with the step that first makes it observable
+    /// (task #6554).
     ///
     /// If a later step adds that demotion, this unit fails — which is the
     /// correct outcome. It asserts today's contract, not a wish.
@@ -3171,6 +3183,7 @@ mod solve_ranked_override_tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => (candidates, optimality),
             other => panic!("expected RankedSolveResult::Ranked; got {other:?}"),
         }
@@ -3512,6 +3525,33 @@ mod solve_ranked_override_tests {
              they disagree; if they ever agree here, one of them has quietly \
              been redefined as the other",
         );
+    }
+
+    /// BT13 (solution-set-completeness): CpSat does not opt into the
+    /// completeness axis yet, so BOTH of its `Ranked` construction sites report
+    /// `not_attempted()` — the scored tail of `solve_ranked_with_budget`, reached
+    /// under an objective, and `lift_feasibility`, reached without one. The
+    /// mapping that replaces it is #6903's; see the scored tail's comment.
+    #[test]
+    fn both_ranked_construction_sites_report_not_attempted() {
+        let unscored = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        );
+        for (site, p) in [
+            ("scored tail", a_or_b_scored(ObjectiveSense::Minimize)),
+            ("lift_feasibility", unscored),
+        ] {
+            match CpSatSolver.solve_ranked(&p) {
+                RankedSolveResult::Ranked { completeness, .. } => assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "{site}: BT13"
+                ),
+                other => panic!("{site}: expected RankedSolveResult::Ranked; got {other:?}"),
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

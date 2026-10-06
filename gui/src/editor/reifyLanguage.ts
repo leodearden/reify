@@ -57,6 +57,8 @@ export const KEYWORD_LED_BODIES = [
   'PurposeDeclaration',
   // `relate { … }` — the `{` follows the `relate` keyword, so it is keyword-led.
   'RelateBlock',
+  // `sketch <name> { … }` — the `{` follows `sketch <name>`.
+  'SketchBlock',
   // `constraint def Name<T> { … }` — the `{` trails a header, never opens the node.
   'ConstraintDefinition',
   // `where { … }` trailing a sub's pose — keyword-led like `RelateBlock`.

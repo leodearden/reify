@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
+use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::{TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility};
@@ -126,54 +126,6 @@ fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCel
     )
 }
 
-/// Does this declaration carry the shape `guards.rs` produces for a
-/// `where`-guarded `let m = auto`?
-///
-/// That arm of `compile_guarded_members` does **not** call `extract_auto_free`
-/// — unlike its own `MemberDecl::Param` arm, and unlike the top-level auto-let
-/// path in `entity.rs` — so the cell is pushed with `ValueCellKind::Let` and
-/// the bare `auto` node falls through to the expression fallback, yielding a
-/// `Literal(Value::Undef)` default. The author's `auto` is gone by the time
-/// this pass runs, and obligation (5) (`decl.kind.is_auto()`) walks past it.
-/// Both reachable spellings (`= auto`, `= auto(free)`) lower to that same
-/// residue, and the default's `result_type` is a dimensionless `Scalar` rather
-/// than `Type::Error`, so the `Literal(Undef)` payload is the only
-/// discriminator available.
-///
-/// Deliberately the NARROW test: refusing to conclude on any template with a
-/// non-empty `guarded_groups` would silence the rule for every guarded
-/// template, including the ones it judges correctly.
-///
-/// **This bail is removable**, and that is the point of naming its cause here:
-/// it exists only because the `MemberDecl::Let` arm skips `extract_auto_free`.
-/// Fixing that lowering makes the cell a real `ValueCellKind::Auto`, obligation
-/// (5) catches it on its own, and this obligation becomes dead. That lowering
-/// fix is task #6888, spawned from #5417 — so an /audit sweep can find this
-/// compensating check from the defect it compensates for.
-fn is_auto_shaped_guarded_let(decl: &ValueCellDecl) -> bool {
-    matches!(decl.kind, ValueCellKind::Let)
-        && matches!(
-            decl.default_expr.as_ref().map(|e| &e.kind),
-            Some(CompiledExprKind::Literal(Value::Undef))
-        )
-}
-
-/// Every cell id the lowering parked in a guarded group, as opposed to in
-/// `value_cells`.
-///
-/// [`declared_cells`] deliberately erases that distinction — cell *resolution*
-/// must span both — but obligation (5′) needs it back, because
-/// [`is_auto_shaped_guarded_let`] is only meaningful for a cell that came
-/// through `compile_guarded_members`.
-fn guarded_cell_ids(template: &TopologyTemplate) -> HashSet<&ValueCellId> {
-    template
-        .guarded_groups
-        .iter()
-        .flat_map(|g| g.members.iter().chain(g.else_members.iter()))
-        .map(|d| &d.id)
-        .collect()
-}
-
 /// Does `template_name` denote the structure `structure_name`, allowing for
 /// monomorphisation?
 ///
@@ -191,15 +143,8 @@ fn names_same_structure(template_name: &str, structure_name: &str) -> bool {
 }
 
 /// Does this template declare an `auto` cell anywhere — top-level or guarded?
-///
-/// Counts the guarded-`let` shape the lowering erases
-/// ([`is_auto_shaped_guarded_let`]) as well as a real [`ValueCellKind::Auto`],
-/// because the question this answers is "did the author write an auto here",
-/// and answering it too generously only ever produces more silence.
 fn declares_any_auto(template: &TopologyTemplate) -> bool {
-    let guarded = guarded_cell_ids(template);
-    declared_cells(template)
-        .any(|d| d.kind.is_auto() || (guarded.contains(&d.id) && is_auto_shaped_guarded_let(d)))
+    declared_cells(template).any(|d| d.kind.is_auto())
 }
 
 /// Could this template's objective be INHERITED by some descendant, and govern
@@ -375,10 +320,6 @@ fn auto_override_possible(
 /// - **4.** every named cell resolves to a declaration of *this* template;
 /// - **5.** the transitive closure of those cells through their `default_expr`s
 ///   reaches no `auto` — a `let` may not launder one;
-/// - **5′.** no cell in that closure is an `auto` the guarded-`let` lowering
-///   erased ([`is_auto_shaped_guarded_let`]). Obligation 5 asks what the cell
-///   *is*; this one asks what the author *wrote*, and the two diverge for
-///   exactly one shape;
 /// - **6.** no other template in the module installs an `auto` override onto an
 ///   instance of this one that lands in that closure
 ///   ([`auto_override_possible`]);
@@ -480,10 +421,8 @@ pub(crate) fn inert_objective_finding(
         return None;
     }
 
-    // (4) + (5) + (5′) — close over `default_expr` inside this template,
-    // refusing to conclude anything the moment a cell is unknown, opaque,
-    // `auto`, or an `auto` the guarded-let lowering erased.
-    let guarded_ids = guarded_cell_ids(template);
+    // (4) + (5) — close over `default_expr` inside this template, refusing to
+    // conclude anything the moment a cell is unknown, opaque, or `auto`.
     let mut closure: BTreeSet<ValueCellId> = BTreeSet::new();
     let mut pending: Vec<ValueCellId> = named.clone();
     while let Some(id) = pending.pop() {
@@ -492,14 +431,6 @@ pub(crate) fn inert_objective_finding(
         }
         let decl = cells.get(&id)?;
         if decl.kind.is_auto() {
-            return None;
-        }
-        // (5′) the author wrote `auto`, but a `where`-guarded `let` lost it in
-        // lowering. Judging the residue would print "`m` … is never `auto`"
-        // over a source line that says `let m = auto`. See
-        // `is_auto_shaped_guarded_let` for the shape and for the condition
-        // under which this bail can be deleted.
-        if guarded_ids.contains(&id) && is_auto_shaped_guarded_let(decl) {
             return None;
         }
         if let Some(default_expr) = &decl.default_expr {
@@ -1374,57 +1305,6 @@ mod inert_objective_tests {
             "an auto scoped to an entity this module cannot attribute is \
              unaccounted for, so assume the worst"
         );
-    }
-
-    // ── OBLIGATION 5′: the auto the guarded-`let` lowering erased ───────────
-
-    /// The erased shape itself: `ValueCellKind::Let` with a `Literal(Undef)`
-    /// default, inside a guarded group. That is what `guards.rs` produces for a
-    /// `where`-guarded `let m = auto`, and obligation 5 (`kind.is_auto()`)
-    /// walks straight past it.
-    ///
-    /// The two neighbouring guarded cases use a real `ValueCellKind::Auto`, so
-    /// this is the only place the erased shape is pinned — without it,
-    /// `is_auto_shaped_guarded_let` could be deleted and only the source-level
-    /// probes in `objective_conflict.rs` would notice.
-    #[test]
-    fn an_erased_guarded_auto_let_is_not_inert() {
-        let mut t = tmpl("Erased");
-        let mut group = guarded_group("Erased");
-        group.members = vec![cell(
-            "Erased",
-            "m",
-            ValueCellKind::Let,
-            Some(raw(CompiledExprKind::Literal(Value::Undef))),
-        )];
-        t.guarded_groups = vec![group];
-        t.objective = Some(minimize(vref("Erased", "m")));
-
-        assert!(
-            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
-            "the author wrote `let m = auto`; the lowering ate it, and judging \
-             the residue would print \"`m` is never `auto`\" over that very line"
-        );
-    }
-
-    /// The control: the same `Literal(Undef)` `let` OUTSIDE a guarded group is
-    /// not the erased shape — `entity.rs`'s top-level auto-let path mints a
-    /// real `Auto` there, so an unguarded `Let` with an `Undef` default is
-    /// something else entirely and must not silence the rule.
-    #[test]
-    fn an_undef_let_outside_a_guarded_group_is_still_judged() {
-        let mut t = tmpl("Unguarded");
-        t.value_cells = vec![cell(
-            "Unguarded",
-            "m",
-            ValueCellKind::Let,
-            Some(raw(CompiledExprKind::Literal(Value::Undef))),
-        )];
-        t.objective = Some(minimize(vref("Unguarded", "m")));
-
-        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
-            .expect("an unguarded `Undef` let is not the erased guarded shape");
-        assert_eq!(finding.never_auto_cells, vec![ValueCellId::new("Unguarded", "m")]);
     }
 
     // ── OBLIGATION 7: the containment walk's own arms ────────────────────────

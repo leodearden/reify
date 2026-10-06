@@ -13,7 +13,7 @@
 // used to carry are neither needed nor harmless: they shadowed the stdlib
 // types' trait bounds and became standalone module roots of their own.
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs; the cells
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs; the cells
 // below are locked by crates/reify-eval/tests/m8_3_stdlib_integration.rs.
 //
 // Flange structure contains:

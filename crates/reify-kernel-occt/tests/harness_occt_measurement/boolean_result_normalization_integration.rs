@@ -31,13 +31,13 @@
 //! Numbers below are direct measurements, not estimates — they are what makes
 //! RED distinguishable from GREEN without re-deriving anything:
 //!
-//! | quantity                                                  | RED (today) | GREEN (fixed) |
-//! |-----------------------------------------------------------|-------------|---------------|
-//! | `rounded_box(100,60,20,10)` fuse chain: faces / edges      | 50 / 88     | 10 / 24       |
-//! | edges selected at the top face (`edges_at_height` predicate)| 40          | 8             |
-//! | faces after a 1 mm fillet of that rim selection            | 66          | 18            |
-//! | cut-derived container → distance to a fully buried probe   | 90 mm       | 0 mm          |
-//! | two abutting 10 mm cubes fused: faces                      | 10          | 6             |
+//! | quantity                                                  | RED (pre-7054) | GREEN (fixed) |
+//! |-----------------------------------------------------------|----------------|---------------|
+//! | `rounded_box(100,60,20,10)` fuse chain: faces / edges      | 50 / 88        | 10 / 24       |
+//! | edges selected at the top face (`edges_at_height` predicate)| 40             | 8             |
+//! | faces after a 1 mm fillet of that rim selection            | 66             | 18            |
+//! | cut-derived container → distance to a fully buried probe   | 90 mm          | 0 mm          |
+//! | two abutting 10 mm cubes fused: faces                      | 10             | 6             |
 //!
 //! Two measured facts that constrain how these tests may be written:
 //!
@@ -58,7 +58,7 @@
 //! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
 //!
 //!   * `"Solid"`    ⇔ `BRepKind::Solid` (only `"Solid"` maps to it —
-//!     `brep_kind_of_shape` at lib.rs:660 collapses `"CompSolid"`/`"Compound"`
+//!     `brep_kind_of_shape` collapses `"CompSolid"`/`"Compound"`
 //!     onto `BRepKind::Compound`).
 //!   * `"CompSolid"` ⇔ `BRepKind::Compound` **and** `IsWatertight == true`
 //!     (a bare `"Compound"` fails the `SOLID|COMPSOLID|SHELL` guard, so
@@ -212,8 +212,8 @@ fn binary_fuse_of_disjoint_boxes_is_a_watertight_compsolid() {
         kernel.repr_of(fused),
         Some(BRepKind::Compound),
         "a disjoint multi-solid fuse must be stored as the multi-body \
-         BRepKind::Compound classified from the real shape, NOT the hardcoded \
-         BRepKind::Solid the binary boolean arms stamp today"
+         BRepKind::Compound classified from the real shape, NOT a hardcoded \
+         BRepKind::Solid (the pre-7054 behaviour)"
     );
     assert!(
         bool_query(&kernel, GeometryQuery::IsWatertight(fused)),
@@ -571,10 +571,9 @@ fn fuse_with_history_on_abutting_boxes_records_indices_into_the_unified_result()
         .expect("fuse with history should succeed");
     let result = handle.id;
 
-    // The stored shape must be the unified SOLID, not the raw COMPOUND.
-    // `IsWatertight` is the discriminator here, NOT `repr_of`: the Rust
-    // with-history arms stamp a hardcoded `BRepKind::Solid` today, so the repr
-    // would agree even while the shape underneath is a COMPOUND.
+    // The stored shape must be the unified SOLID, not the raw COMPOUND:
+    // `IsWatertight` separates the two (a raw COMPOUND fails its guard).
+    // `repr_of` is asserted separately below.
     assert!(
         bool_query(&kernel, GeometryQuery::IsWatertight(result)),
         "the with-history result must be the normalized SOLID; a raw COMPOUND \
@@ -603,7 +602,7 @@ fn fuse_with_history_on_abutting_boxes_records_indices_into_the_unified_result()
     assert_eq!(
         n_faces, 6,
         "two abutting 10mm cubes fuse into a 20x10x10 prism: 6 faces \
-         (RED today: a COMPOUND with 10, the count topology_selectors_integration.rs \
+         (pre-7054: a COMPOUND with 10, the count topology_selectors_integration.rs \
          independently pinned before this fix)"
     );
     assert_eq!(n_edges, 12, "...and 12 edges");

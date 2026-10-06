@@ -45,27 +45,16 @@
 //!
 //! # What is still NOT covered
 //!
-//! Three boundaries, stated as limits rather than left to be inferred. All
-//! three are LSP-side: the engine surface is covered.
+//! Two boundaries, stated as limits rather than left to be inferred. Both are
+//! LSP-side: the engine surface is covered.
 //!
-//! 1. **Four LSP methods.** `InProcessLsp::handle_request`'s
-//!    `textDocument/definition`, `prepareRename`, `rename` and `references` arms
-//!    each call `tokio::task::spawn_blocking`, so their compiler work executes on
-//!    tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
-//!    under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request`
-//!    on a lane gives the big stack only to that thread's OWN frames, so the LSP
-//!    lane cannot help those four. Closing them needs a change in
-//!    `crates/reify-lsp/src/server.rs`, which is outside this module and would
-//!    also regress the stdio `reify lsp` CLI server (it relies on
-//!    `spawn_blocking` to keep its 2-worker runtime responsive). Tracked as
-//!    task #6195.
-//! 2. **Concurrency WITHIN a lane.** A lane has one consumer, so routing
+//! 1. **Concurrency WITHIN a lane.** A lane has one consumer, so routing
 //!    `lsp_request` onto [`LSP_LANE`] serializes LSP requests against each
 //!    other, where the multi-threaded tauri runtime previously ran them
 //!    concurrently. The split buys isolation from ENGINE work, not from other
 //!    LSP work — see [`Lane`]'s "What the split does NOT buy" for what that
 //!    costs and what bounding it would take. Tracked as task #6517.
-//! 3. **Drop-cancellation of an LSP request.** A future handed to a lane is
+//! 2. **Drop-cancellation of an LSP request.** A future handed to a lane is
 //!    driven to completion by a thread that cannot be cancelled, so abandoning
 //!    the awaiting side no longer stops the work — see
 //!    [`crate::lsp_bridge::lsp_request_on_worker`]'s "What this COSTS".
@@ -344,31 +333,29 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// touches the `eval_state` mutex that `didChange` holds across its diagnostics
 /// eval — genuinely ran concurrently with an in-flight `didChange` eval.
 ///
-/// The sharpest case is the four `spawn_blocking` arms from the module docs'
-/// "What is still NOT covered". They hand their compiler work to tokio's
-/// blocking pool, but the lane thread stays parked in `block_on` for the whole
-/// duration — so a workspace-wide `textDocument/references` now stalls every
-/// subsequent keystroke's `didChange` and `hover` behind it, while gaining
-/// nothing from the lane in exchange (its own frames on the lane's stack are
-/// shallow; the deep ones are on the blocking pool's ~2 MiB threads).
+/// The sharpest case is the four blocking-work arms — `definition`,
+/// `prepareRename`, `rename` and `references`. The bridge runs their parse and
+/// compile work ON the lane, which is how they get its stack (see
+/// [`crate::lsp_bridge::LspBridge`]'s "Where blocking work runs"), so a
+/// workspace-wide `textDocument/references` occupies the lane for its whole
+/// duration and every subsequent keystroke's `didChange` and `hover` waits
+/// behind it.
 ///
 /// So the accurate claim is: the lane split protects the keystroke path from
-/// ENGINE work, not from other LSP work. Bounding the remainder means either
-/// keeping the four `spawn_blocking` arms off the lane, or making [`LSP_LANE`] a
-/// small fixed pool of large-stack consumers instead of a single-consumer queue.
-/// Both are follow-up work rather than part of this routing: a method-keyed
-/// bypass couples this module to `reify-lsp`'s internal choice of which arms
-/// offload — a coupling that would rot silently if that choice changed — and a
-/// pool is a different concurrency design than the one this task specified,
-/// needing its own reentrancy and ordering argument (LSP notifications such as
+/// ENGINE work, not from other LSP work. Bounding the remainder means making
+/// [`LSP_LANE`] a small fixed pool of large-stack consumers instead of a
+/// single-consumer queue. Keeping those four arms OFF the lane is not a
+/// candidate: it would hand their deep work back to a ~2 MiB thread. A pool is
+/// follow-up work rather than part of this routing: it is a different
+/// concurrency design than the one this task specified, needing its own
+/// reentrancy and ordering argument (LSP notifications such as
 /// `didOpen`/`didChange` are order-sensitive against later requests on the same
 /// document, so a pool must not reorder them).
 ///
-/// That deferral is TRACKED, not merely narrated: task #6517 carries both
-/// candidate fixes above, and records that the choice between them should be
-/// made against a measurement — no benchmark of serialized-vs-concurrent
-/// keystroke latency exists yet. Cited here for the same reason the module docs
-/// cite #6195: a disclosed limit with no ticket behind it is
+/// That deferral is TRACKED, not merely narrated: task #6517 carries it, and
+/// records that the design should be chosen against a measurement — no
+/// benchmark of serialized-vs-concurrent keystroke latency exists yet. Cited
+/// here because a disclosed limit with no ticket behind it is
 /// indistinguishable from a limit nobody intends to close.
 pub(crate) struct Lane {
     /// The lane thread's name, for backtraces, `top -H` and profiler rows.
@@ -547,11 +534,12 @@ where
 /// # How the future is driven on the lane, and why by a `Handle`
 ///
 /// A lane thread is a plain `std` thread with no ambient runtime, so the future
-/// needs a driver. FOUR of `InProcessLsp::handle_request`'s arms
-/// (`textDocument/definition`, `prepareRename`, `rename`, `references`) call
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
-/// — under a bare executor such as `futures::executor::block_on` those four
-/// would panic with "there is no reactor running".
+/// needs a driver, and the driver must not assume the future never needs a
+/// runtime context: `InProcessLsp`'s default `BlockingPool` placement calls
+/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`,
+/// so under a bare executor such as `futures::executor::block_on` it would panic
+/// with "there is no reactor running" (the GUI bridge picks `CallingThread`, but
+/// the lane does not depend on that choice).
 /// [`tokio::runtime::Handle::block_on`] installs the runtime context via
 /// `enter_runtime` and is explicitly legal from a NON-runtime thread. So the
 /// handle is captured HERE, on the submitter (which is inside the tauri
@@ -578,8 +566,8 @@ where
 /// * No ambient runtime ([`tokio::runtime::Handle::try_current`] is `Err`):
 ///   `.await` here too. `try_current` rather than `current` so a caller polled
 ///   outside any runtime DEGRADES instead of panicking; with no runtime there is
-///   no nesting hazard, and the four `spawn_blocking` arms would have failed
-///   under any driver in that state anyway.
+///   no nesting hazard, and a future that needs a runtime context would have
+///   failed under any driver in that state anyway.
 /// * `SendError(job)`: the queue handed the job BACK unrun. The job provably
 ///   contains a `Handle::block_on`, so it must NOT run in this frame — this
 ///   frame is inside the runtime, and `block_on` there panics "Cannot start a

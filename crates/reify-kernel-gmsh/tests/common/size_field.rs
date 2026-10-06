@@ -10,7 +10,6 @@
 //! sharing one would couple the serialiser's tests to their own input.
 //!
 //! Declared by `#[path]` from each binary, following `common/clamp_probe.rs`:
-//! `common/mod.rs` states its own scope is the #6200 geometry fixtures, and
 //! `reify_test_support` — where a shared fixture would otherwise belong —
 //! cannot name [`BackgroundSizeField`] without taking a reify-kernel-gmsh
 //! dependency edge that `common/mod.rs` records as structurally unwanted.

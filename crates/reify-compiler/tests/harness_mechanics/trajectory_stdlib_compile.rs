@@ -22,7 +22,9 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    collect_value_ref_members, compile_source_with_stdlib, errors_only, get_function_in,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -2642,39 +2644,7 @@ fn cascaded_shaper_struct_has_correct_param_shape() {
     );
 }
 
-// ─── η (task 3859): EndEffectorTrack lazy-accessor helpers + tests ───────────
-
-/// Generic name-lookup helper used by [`find_trait`], [`find_enum`], and
-/// [`find_function`]. Returns the first item in `items` where
-/// `key(item) == name`, or panics with a descriptive message listing the
-/// available names.
-///
-/// `kind` labels the item type in the error string (e.g. `"fn"`, `"trait"`).
-/// `key` extracts the name string for comparison and error display.
-///
-/// Not used by [`find_structure`] — that helper additionally filters on
-/// `entity_kind` and emits `(name, entity_kind)` pairs in its error message.
-fn find_named<T>(
-    items: &'static [T],
-    name: &str,
-    kind: &str,
-    key: impl Fn(&T) -> &str,
-) -> &'static T {
-    let result = items.iter().find(|item| key(item) == name);
-    result.unwrap_or_else(|| {
-        panic!(
-            "expected `{kind} {name}` in std/trajectory, got: {:?}",
-            items.iter().map(&key).collect::<Vec<_>>()
-        )
-    })
-}
-
-/// Look up a compiled function by name within the `std/trajectory` module.
-fn find_function(name: &str) -> &'static CompiledFunction {
-    find_named(&load_stdlib_module().functions, name, "fn", |f| {
-        f.name.as_str()
-    })
-}
+// ─── η (task 3859): EndEffectorTrack lazy-accessor tests ─────────────────────
 
 // ─── step-29: EndEffectorTrack structure param shape ─────────────────────────
 
@@ -2839,7 +2809,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// code.
 #[test]
 fn end_effector_track_fn_has_correct_signature() {
-    let func = find_function("end_effector_track");
+    let func = get_function_in(load_stdlib_module(), "end_effector_track");
 
     assert!(func.is_pub, "end_effector_track should be pub");
 
@@ -2896,7 +2866,7 @@ fn end_effector_track_fn_has_correct_signature() {
 /// dimension: DimensionVector::LENGTH }))` — one Length scalar per time sample.
 #[test]
 fn deviation_from_nominal_fn_has_correct_signature() {
-    let func = find_function("deviation_from_nominal");
+    let func = get_function_in(load_stdlib_module(), "deviation_from_nominal");
 
     assert!(func.is_pub, "deviation_from_nominal should be pub");
 
@@ -2957,7 +2927,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
 /// time sample).
 #[test]
 fn peak_deviation_fn_has_correct_signature() {
-    let func = find_function("peak_deviation");
+    let func = get_function_in(load_stdlib_module(), "peak_deviation");
 
     assert!(func.is_pub, "peak_deviation should be pub");
 

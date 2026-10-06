@@ -4287,6 +4287,7 @@ dependencies = [
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reify-build-utils",
  "reify-compiler",
  "reify-config",
@@ -4529,6 +4530,7 @@ dependencies = [
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-mesh-morph",

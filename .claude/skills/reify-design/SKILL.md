@@ -48,6 +48,7 @@ Things that are easy to get wrong (the embedded GUI prompt has old forms — the
 
 - **Declaration keyword:** `structure def Name`, `enum def Name`, `trait def Name`. Not bare `structure Name`.
 - **Identifiers:** `snake_case` for params/lets/ports/subs/values, `PascalCase` for structures/traits/types.
+- **`module` line:** not a free label but the file's location-derived path. For the file you run, that is its stem: `bracket.ri` → `module bracket`. When copying a file to a scratch name, update the line or keep the basename and vary the directory. A mismatch is `E_MODULE_PATH_MISMATCH` (exit 1). Full rule, including imported files: the `syntax` chunk, §"Module Declaration".
 - **Logic ops:** `and`, `or`, `not`, `implies`. Not `&&`, `||`, `!`.
 - **Conditional:** `if cond then a else b`. Not `if c { a } else { b }`.
 - **Quantities:** number + unit, no space — `80mm`, `90deg`, `2.5kg`, `1.5e-3m`. *Always* units on physical quantities.
@@ -125,7 +126,7 @@ When extending an existing `.ri` file:
 
 Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`, and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
 
-- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:1420`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions. Use this when iterating.
+- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:${REIFY_VITE_PORT:-1420}`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions, and set `REIFY_VITE_PORT` to run a second dev session while :1420 is taken. Use this when iterating.
 - **Release:** `scripts/run-gui.sh <file.ri>` — what end users will see.
 
 If `reify` is built: `reify gui --debug <file.ri>` (alias `reify gui-debug <file.ri>`).

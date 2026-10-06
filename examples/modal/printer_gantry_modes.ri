@@ -73,7 +73,7 @@
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
 //   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a real
 //   stdlib `structure def RayleighDamping` in modal_analysis.ri, fully
-//   supported by the trampoline via `extract_damping` in
+//   supported by the trampoline via `classify_damping` in
 //   reify-eval/src/modal_ops.rs. `rayleigh_damping_ratio` is NOT in
 //   modal_ops.rs — it is cross-crate, in reify-stdlib::modal::free_vibration,
 //   merely imported there. (Cited by symbol and file, never `file:line`:

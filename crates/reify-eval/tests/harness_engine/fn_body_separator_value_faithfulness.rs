@@ -15,7 +15,7 @@
 //! `reify-test-support`'s `eval-helpers` feature, which `reify-syntax` cannot enable:
 //! `reify-eval` depends on `reify-syntax`, so the reverse dependency would be a cycle.
 
-use reify_core::{ModulePath, ValueCellId};
+use reify_core::ValueCellId;
 use reify_ir::Value;
 use reify_test_support::{
     cell_value, compile_source_with_stdlib_allow_parse_errors, error_diags, eval_source,
@@ -130,34 +130,16 @@ fn twins_differ_only_by_the_separator() {
     }
 }
 
-/// Compile `source` through the PRODUCTION single-module path — `parse_with_stdlib` +
-/// `compile_with_stdlib`, which is what the CLI and GUI do.
-///
-/// Two test-support helpers are deliberately bypassed here, because each would distort the
-/// very measurement under test:
-///
-/// - `eval_source` routes through `parse_or_panic`, which asserts `parsed.errors.is_empty()`
-///   and so panics before any value exists to compare.
-/// - `compile_source_with_stdlib_allow_parse_errors` PREPENDS its own `Diagnostic::error` per
-///   parse error (`helpers.rs`'s `parse_errors_as_diagnostics`) and THEN calls
-///   `compile_with_stdlib`, whose `forward_parse_errors` (`compile_builder/pre_pass.rs`) now
-///   pushes an ERROR for each of the same parse errors. Since task #5392 the two agree on
-///   severity, so the helper no longer differs in KIND — it differs in COUNT, reporting every
-///   parse error twice. A test whose subject is "what diagnostics does a real caller actually
-///   see" cannot measure through a helper that doubles them.
-///
-/// Evaluation is deliberately NOT done here. Every variant in this corpus is refused, so
-/// driving the engine over IR lowered from a CST that carries ERROR/MISSING nodes would be
-/// wasted work in the common path and a plausible source of unrelated panics that would be
-/// misattributed to INV-SF-7. Callers that reach the value-comparison arm call
-/// [`eval_as_production_does`] explicitly.
-fn compile_as_production_does(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    reify_compiler::compile_with_stdlib(&parsed)
-}
-
 /// Evaluate an already-compiled module with the same `MockConstraintChecker` engine the other
 /// e2e tests use (`result_fallback_e2e.rs`'s manual pipeline).
+///
+/// `eval_source` cannot be used on the malformed twin: it routes through `parse_or_panic`,
+/// which panics before any value exists to compare.
+///
+/// Evaluation is deliberately NOT run on refused variants. Every variant in this corpus is
+/// refused, so driving the engine over IR lowered from a CST that carries ERROR/MISSING nodes
+/// would be wasted work in the common path and a plausible source of unrelated panics that
+/// would be misattributed to INV-SF-7. Only the value-comparison arm calls this.
 fn eval_as_production_does(compiled: &reify_compiler::CompiledModule) -> reify_eval::EvalResult {
     make_engine().eval(compiled)
 }
@@ -224,7 +206,7 @@ fn adjacent_token_variation_cannot_silently_change_a_value() {
     let mut refused = 0usize;
 
     for v in VARIANTS {
-        let compiled = compile_as_production_does(v.no_sep);
+        let compiled = compile_source_with_stdlib_allow_parse_errors(v.no_sep);
         let diagnostics = compiled.diagnostics.clone();
 
         // A hard error is a CONFORMING outcome — "a parse error at the ambiguity site" is
@@ -322,7 +304,7 @@ fn separated_twins_are_all_clean() {
 /// warning into a broken build.
 ///
 /// Scope is deliberately one fixture, and deliberately at the EVAL layer.
-/// `crates/reify-compiler/tests/examples_smoke.rs` already walks all of `examples/`
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` already walks all of `examples/`
 /// recursively — asserting `parsed.errors.is_empty()` and zero `Severity::Error` diagnostics
 /// from `compile_with_stdlib`, behind an auditable `SKIP_SET` — so it is the corpus-wide guard
 /// against the severity flip and a second hand-picked list here would be strictly weaker.

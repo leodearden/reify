@@ -395,8 +395,9 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 /// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
 /// the line, in source order.
 ///
-/// [`has_canonical_cite`], [`extract_cites`] and [`has_malformed_cite`]'s `#N`
-/// pass are all expressed over this one iterator, so the grammar they share —
+/// [`has_canonical_cite`], [`extract_cites`] (both via
+/// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
+/// all expressed over this one iterator, so the grammar they share —
 /// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
 /// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
 /// CONSTRUCTION. It was previously three hand-rolled copies required to stay
@@ -441,32 +442,36 @@ fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
     })
 }
 
-/// §8.2 canonical citation: `true` when the line carries at least one
-/// [`cite_occurrences`] cite (`#` + 1..=5 digits, value ≥1) that is NOT a
-/// PRD-relative index.
+/// §8.2 canonical cite occurrences: every [`cite_occurrences`] cite (`#` +
+/// 1..=5 digits, value ≥1) that is NOT a PRD-relative index, yielded as
+/// `(byte_offset_of_the_hash, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
 /// document, not a task, so it cannot anchor tracking. The filter is applied
-/// per-OCCURRENCE, so a line carrying both idioms still reports the genuine
-/// cite. An all-PRD-relative (or all-zero) line falls through to the structural
-/// `untracked` / `malformed-cite` classification.
+/// per-OCCURRENCE, so a line carrying both idioms still yields the genuine
+/// cite. This is the ONE definition of a canonical task cite, shared by
+/// [`has_canonical_cite`], [`extract_cites`] and PPRDSTATUS's cite lane, which
+/// needs the offset to find the cite's adjacent status parenthetical.
+pub(crate) fn canonical_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
+    cite_occurrences(line).filter(|&(at, id)| !prd_relative_cite(line.as_bytes(), at, id))
+}
+
+/// §8.2 canonical citation: `true` when the line carries at least one
+/// [`canonical_cite_occurrences`] cite. An all-PRD-relative (or all-zero) line
+/// falls through to the structural `untracked` / `malformed-cite`
+/// classification.
 fn has_canonical_cite(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    cite_occurrences(line).any(|(at, id)| !prd_relative_cite(bytes, at, id))
+    canonical_cite_occurrences(line).next().is_some()
 }
 
 /// §8.2 cite extraction (β liveness lane): every canonical id on the line, in
 /// source order.
 ///
-/// Shares [`cite_occurrences`] with [`has_canonical_cite`] and applies the same
-/// [`prd_relative_cite`] filter, so the two are lock-step by construction: a
-/// cite that is not canonical is also not extracted.
+/// Expressed over [`canonical_cite_occurrences`], like [`has_canonical_cite`],
+/// so the two are lock-step by construction: a cite that is not canonical is
+/// also not extracted.
 fn extract_cites(line: &str) -> Vec<u32> {
-    let bytes = line.as_bytes();
-    cite_occurrences(line)
-        .filter(|&(at, id)| !prd_relative_cite(bytes, at, id))
-        .map(|(_, id)| id)
-        .collect()
+    canonical_cite_occurrences(line).map(|(_, id)| id).collect()
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
@@ -869,8 +874,8 @@ const PHANTOM_PHRASES: &[&str] = &[
 ];
 
 /// §8.3 phantom-tracking detection: `true` when the line contains any of the
-/// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
-/// is applied by the caller ([`scan_file`]).
+/// [`PHANTOM_PHRASES`] (case-insensitive). The caller ([`scan_file`]) splits
+/// on the canonical-cite precondition.
 fn phantom_phrase(line: &str) -> bool {
     let lower = line.to_lowercase();
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
@@ -1168,7 +1173,8 @@ enum LineClass {
 /// 5. lane δ-A (`.rs`): an `#[allow(…dead_code…)]` attribute whose trailing
 ///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
 ///    else `Structural(Untracked)`.
-/// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 6. phantom phrase: no canonical cite → `Structural(PhantomTracking)`;
+///    canonical cite, not a `// G-allow:` line → `Cited(on-line cites)`.
 /// 7. lane δ-B (`.rs`): an ordinary comment line (trimmed, starts `//` — so
 ///    `//`, `///` and `//!` alike) that carries BOTH a canonical `#NNNN` cite
 ///    and deferral prose, and is not a `// G-allow:` marker →
@@ -1218,12 +1224,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
                 // canonical cite → tracked; β resolves the on-line cites. No
                 // above-line lookback here (that is a stub-macro convention),
                 // so an unrelated cite on the prior line cannot mask this one.
-                // Deduped like arm (4): `resolve_liveness_keyed` emits one
-                // finding per id, so a line naming the same id twice would
-                // otherwise report it twice.
-                let mut ids = extract_cites(line);
-                dedup_in_place(&mut ids);
-                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+                out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
             } else if has_malformed_cite(line) {
                 out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
@@ -1290,9 +1291,14 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
-        } else if phantom_phrase(line) && !has_canon {
+        } else if !has_canon && phantom_phrase(line) {
             // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
+        } else if has_canon && phantom_phrase(line) && g_allow_marker_body(line).is_none() {
+            // (6′) discharged phantom tracking: the cite backs the claim, so β
+            // re-checks it as arm (3) does (PRD §19(d)). A `// G-allow:` line
+            // stays with its own lane, as in arm (7) choice (iii).
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         } else if is_rust
             && line.trim_start().starts_with("//")
             && has_canon
@@ -1345,14 +1351,22 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // §8.2's `prd_relative_cite` kills the PRD-relative class
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
-            let mut ids = extract_cites(line);
-            dedup_in_place(&mut ids);
-            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         }
 
         prev = Some(line);
     }
     out
+}
+
+/// The canonical cites on `line`, each id once, in first-seen order — the
+/// payload of a `Cited` entry anchored on its own line. Deduped because
+/// `resolve_liveness_keyed` emits one finding per id, so a line naming the
+/// same id twice would otherwise report it twice.
+fn on_line_cites(line: &str) -> Vec<u32> {
+    let mut ids = extract_cites(line);
+    dedup_in_place(&mut ids);
+    ids
 }
 
 /// Order-preserving in-place dedup of cite ids. Cite lists are tiny (1–2
@@ -3632,6 +3646,102 @@ mod tests {
             (4, Kind::PhantomTracking, "tracked separately".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 arm (6) — phantom phrase discharged by a canonical cite (§19(d))
+    // -------------------------------------------------------------------
+
+    /// A phantom-tracking phrase backed by a canonical cite is discharged: its
+    /// cites go to β exactly as a cited comment marker's do. The line carries
+    /// no deferral prose, so δ-B cannot be what claims it.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_is_cited() {
+        let line = "// tracked separately as #5835";
+        assert!(
+            !has_deferral_prose(line),
+            "δ-B must not be able to claim this line"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![5835]), line.to_string())]
+        );
+    }
+
+    /// The discharged arm covers every swept extension. Both shapes are taken
+    /// from the live population (an `.ri` example and a `.ts` test).
+    #[test]
+    fn scan_file_discharged_phantom_tracking_non_rust() {
+        for (line, id) in [
+            ("// one — tracked as a follow-up (#5835)", 5835),
+            ("  // so the fix is tracked separately, by #6564.", 6564),
+        ] {
+            assert_eq!(
+                scan_file(line, false),
+                vec![(1, LineClass::Cited(vec![id]), line.trim().to_string())],
+                "discharged phantom line not classified Cited([{id}]): {line}"
+            );
+        }
+    }
+
+    /// Repeated ids collapse to one and distinct ids keep source order, as on
+    /// every other `Cited` arm.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_dedups_cites() {
+        let line = "/// tracked separately as #6156 (see #6156) and #7756";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![6156, 7756]), line.to_string())]
+        );
+    }
+
+    /// A PRD-relative `#N` names a position in a PRD, not a task, so it cannot
+    /// discharge the claim: the line stays structural phantom tracking.
+    #[test]
+    fn scan_file_phantom_with_only_prd_relative_cite_stays_structural() {
+        let line = "// tracked separately under §7#5";
+        assert!(
+            !has_canonical_cite(line),
+            "§7#5 must be PRD-relative for this test to mean anything"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(
+                1,
+                LineClass::Structural(Kind::PhantomTracking),
+                line.to_string()
+            )]
+        );
+    }
+
+    /// A `// G-allow:` line stays with its own lane, whatever the extension,
+    /// even when it carries a phantom phrase and a canonical cite.
+    #[test]
+    fn scan_file_discharged_phantom_g_allow_line_is_delegated() {
+        let line = "// G-allow: wiring tracked separately as #5235 — no non-test caller until then";
+        assert!(g_allow_marker_body(line).is_some());
+        for is_rust in [true, false] {
+            assert_eq!(scan_file(line, is_rust), vec![], "is_rust={is_rust}");
+        }
+    }
+
+    /// The structural projection is unchanged by the discharged arm: only the
+    /// uncited claim reaches α, so the §6.6 baseline cannot move.
+    #[test]
+    fn classify_file_discharged_phantom_tracking_adds_no_structural_entry() {
+        let content = [
+            "// tracked as a follow-up task",
+            "// tracked separately as #5835",
+        ]
+        .join("\n");
+        assert_eq!(
+            classify_file(&content, true),
+            vec![(
+                1,
+                Kind::PhantomTracking,
+                "// tracked as a follow-up task".to_string()
+            )]
+        );
     }
 
     // -------------------------------------------------------------------

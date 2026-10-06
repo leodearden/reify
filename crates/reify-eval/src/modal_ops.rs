@@ -312,6 +312,36 @@ pub(crate) fn assemble_modal_km(
     }
 }
 
+/// The `W_ModalConvergence` warning for a solve that returned `n_returned` of
+/// `n_requested` modes, `residual_check_failures` of which failed the
+/// eigensolver's post-solve residual check — or `None` when every requested
+/// mode came back verified.
+///
+/// ONE template with two optional clauses (a count shortfall, unverified
+/// pairs), so the two facts cannot drift into two templates.  Uncoded, like
+/// every convergence warning before it.
+fn modal_convergence_warning(
+    n_returned: usize,
+    n_requested: usize,
+    residual_check_failures: usize,
+) -> Option<Diagnostic> {
+    let shortfall = (n_returned < n_requested).then(|| {
+        format!(
+            "eigensolver returned {n_returned} of {n_requested} requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes)."
+        )
+    });
+    let unverified = (residual_check_failures > 0).then(|| {
+        format!(
+            "{residual_check_failures} of the {n_returned} returned modes failed the \
+             eigensolver's post-solve residual check and are not verified eigenpairs."
+        )
+    });
+    let clauses: Vec<String> = shortfall.into_iter().chain(unverified).collect();
+    (!clauses.is_empty())
+        .then(|| Diagnostic::warning(format!("W_ModalConvergence: {}", clauses.join(" "))))
+}
+
 /// Eigensolve over a prebuilt [`ModalAssembly`]: project `K`/`M` to the free-DOF
 /// subspace, solve `K_free φ = λ M_free φ`, and scatter the mode shapes back to
 /// the full DOF space.
@@ -545,19 +575,19 @@ pub(crate) fn eigensolve_modal(
         }
     }
 
-    // Convergence shortfall: `eig.converged` is false iff fewer modes were
-    // returned than requested (holds for both the dense and shift-invert paths).
+    // Convergence: a shortfall in the returned count, unverified returned pairs
+    // (#7602), or both — `eig.converged` is false iff either holds.
     //
     // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
     // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
     // wrong remedy for both faults above — it would stand beside the right one
     // and contradict it.
-    if !eig.converged && fault == ModalSolveFault::None {
-        diagnostics.push(Diagnostic::warning(format!(
-            "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
-             the result is partial (raise max_iters/tol or lower n_modes).",
-            n_modes_out, eigen_opts.n_modes,
-        )));
+    if fault == ModalSolveFault::None {
+        diagnostics.extend(modal_convergence_warning(
+            n_modes_out,
+            eigen_opts.n_modes,
+            eig.residual_check_failures,
+        ));
     }
 
     // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
@@ -997,6 +1027,11 @@ enum ModalSolveFault {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
+/// `Err(KNotSpd)` is not confined to σ = 0: with a non-identity mass and σ above a
+/// mode, `K_free − σM_free` is indefinite and the solver runs in the `K` inner
+/// product, so it measures `K_free` there too — a singular `K_free` with σ above
+/// its rigid-body modes arrives here the same way.
+///
 /// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
@@ -1045,8 +1080,9 @@ fn solve_generalized_eigen(
                     fault: ModalSolveFault::None,
                 };
             }
-            // K is not SPD: fall through to the under-constrained branch below,
-            // exactly as the former `None` did.
+            // K is not SPD — measured at σ = 0, or at σ ≠ 0 when M ≠ cI and σ
+            // lies above a mode: fall through to the under-constrained branch
+            // below, exactly as the former `None` did.
             Err(ShiftInvertFailure::KNotSpd) => {}
             // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
             // `param sigma : Real = 0.0` unconstrained and nothing on the path
@@ -1066,6 +1102,7 @@ fn solve_generalized_eigen(
                         eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                         n_converged: 0,
                         converged: false,
+                        residual_check_failures: 0,
                         shift: sigma,
                         // Nothing was factored and no spectrum was computed, so
                         // C5 forbids ESTABLISHING `false` here — the same
@@ -1093,6 +1130,7 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                residual_check_failures: 0,
                 shift: opts.sigma,
                 // No spectrum was computed at all here, so `false` cannot be
                 // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
@@ -1963,6 +2001,83 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
     0.0
 }
 
+/// Build one lumped-model `Mode`. Field dispositions (INV-PD-2):
+///
+/// - `frequency`, `damping_ratio`: populated from the solve.
+/// - `shape`: degraded to `Undef`. The lumped eigenvector is one scalar
+///   generalized coordinate per spanning-tree body, so there is no per-node
+///   `Vector3` displacement field to report.
+/// - `participation_mass`: degraded to `Undef`. It is a projection onto
+///   `ModalOptions.reference_direction`, but the lumped DOFs carry no spatial
+///   direction that the solve uses.
+fn mechanism_mode_value(frequency_hz: f64, damping_ratio: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        (
+            "frequency".to_string(),
+            Value::Scalar {
+                si_value: frequency_hz,
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("shape".to_string(), Value::Undef),
+        ("participation_mass".to_string(), Value::Undef),
+        ("damping_ratio".to_string(), Value::Real(damping_ratio)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build the lumped-model `ModalResult`. Field dispositions (INV-PD-2):
+///
+/// - `part`: allowlisted to #7097, which owns replacing [`placeholder_part`].
+/// - `modes`: populated, one [`mechanism_mode_value`] per physical mode.
+/// - `boundary_conditions`: degraded to `Undef`. The joint tree, not a
+///   `Support`, constrains the lumped solve, so `[]` or an echo of the
+///   caller's list would misreport it.
+/// - `damping`: populated input-conditionally, as the echo of the caller's
+///   `ModalOptions.damping` descriptor (task #6875); `Undef` when the caller
+///   supplied none.
+/// - `mass_matrix_norm` / `stiffness_matrix_norm`: populated with the
+///   Frobenius norms of the physical lumped M and K, excluding the anchor DOF.
+/// - `topology`: an undeclared write owned by #7097; always `Undef` here
+///   ([`build_modal_topology_value`]).
+fn mechanism_modal_result_value(
+    modes: Vec<Value>,
+    damping: Value,
+    mass_matrix_norm: f64,
+    stiffness_matrix_norm: f64,
+) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), placeholder_part()),
+        ("modes".to_string(), Value::List(modes)),
+        ("boundary_conditions".to_string(), Value::Undef),
+        ("damping".to_string(), damping),
+        (
+            "mass_matrix_norm".to_string(),
+            Value::Real(mass_matrix_norm),
+        ),
+        (
+            "stiffness_matrix_norm".to_string(),
+            Value::Real(stiffness_matrix_norm),
+        ),
+        ("topology".to_string(), build_modal_topology_value()),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -1979,10 +2094,12 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
 /// model (see the `DampingKind::Material` arm below).
 /// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
-/// give ζ_i = 0.  `Mode.shape` stays an empty list and
-/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
-/// has one scalar DOF per body and therefore no 3D mode shape to report (which
-/// is also why `ModalOptions.reference_direction` is unused here).
+/// give ζ_i = 0.
+///
+/// **Field dispositions (INV-PD-2)**, with their reasons, are recorded at
+/// [`mechanism_mode_value`] and [`mechanism_modal_result_value`]: `Mode.shape`
+/// and `Mode.participation_mass` are `Undef`, and the matrix norms are those
+/// of the physical lumped M and K.
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -1996,7 +2113,10 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// **`ModalOptions.n_modes` is respected**: the returned modes list is
 /// truncated to `n_modes` when `n_modes < n_physical_modes`.
 /// `ModalOptions.boundary_conditions` and `reference_direction` are unused
-/// (they are FEA-mesh concepts without meaning in the lumped model).
+/// (they are FEA-mesh concepts without meaning in the lumped model), so
+/// `ModalResult.boundary_conditions` is `Undef` rather than an echo. Any
+/// input-side warning for the two belongs to INV-PD-1
+/// (`docs/prds/v0_6/trampoline-param-drop-closure.md`).
 ///
 /// **Multi-body advisory**: for `n_dof ≥ 2` the model uses a strictly diagonal
 /// M and K (one uncoupled DOF per body), which ignores inertial cross-coupling.
@@ -2069,6 +2189,10 @@ fn run_mechanism_modal(
             };
         }
     };
+    // Norms of the PHYSICAL lumped M and K, taken before the step-(2) anchor
+    // pad for the same reason the anchor's mode is kept out of `modes`.
+    let mass_matrix_norm = frobenius_norm(&m_mat);
+    let stiffness_matrix_norm = frobenius_norm(&k_mat);
 
     // ── (1c) multi-body uncoupled-estimate advisory (suggestion: S1) ─────────
     // The lumped model uses a strictly diagonal M and K (one DOF per body),
@@ -2253,10 +2377,8 @@ fn run_mechanism_modal(
         DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
     };
 
-    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
-    // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract;
-    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // ── (5) shape Mode records ───────────────────────────────────────────────
+    // `damping_ratio` carries the Rayleigh ratio read from
     // `ModalOptions.damping` (task #6875).
     //
     // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
@@ -2265,27 +2387,7 @@ fn run_mechanism_modal(
     // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
-        .map(|&f| {
-            let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
-            let fields: PersistentMap<String, Value> = [
-                (
-                    "frequency".to_string(),
-                    Value::Scalar { si_value: f, dimension: DimensionVector::FREQUENCY },
-                ),
-                ("shape".to_string(), Value::List(Vec::new())),
-                ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
-            ]
-            .into_iter()
-            .collect();
-            Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
-                version: 1,
-                fields,
-            }))
-        })
+        .map(|&f| mechanism_mode_value(f, rayleigh_damping_ratio(alpha, beta, 2.0 * PI * f)))
         .collect();
 
     // ── (5b) honour ModalOptions.n_modes — truncate if caller requests fewer ──
@@ -2304,37 +2406,13 @@ fn run_mechanism_modal(
         modes_list.truncate(requested_n_modes);
     }
 
-    // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
-    // topology is always present (Value::Undef on the mechanism path — no B-rep
-    // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
-    //
-    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
-    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
-    // longer a placeholder. `Value::Undef` now means only "the caller supplied
-    // no descriptor", which is what a bare `ModalOptions()` produces, so an
-    // undamped solve is still reported as `Undef` exactly as before.
-    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
-    // generalized-coordinate model never forms the norms the FEA path reports.
-    let result_fields: PersistentMap<String, Value> = [
-        ("part".to_string(), placeholder_part()),
-        ("modes".to_string(), Value::List(modes_list)),
-        ("boundary_conditions".to_string(), Value::List(Vec::new())),
-        (
-            "damping".to_string(),
-            field_or(options, "damping", Value::Undef),
-        ),
-        ("mass_matrix_norm".to_string(), Value::Real(0.0)),
-        ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
-        ("topology".to_string(), build_modal_topology_value()),
-    ]
-    .into_iter()
-    .collect();
-    let result = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "ModalResult".to_string(),
-        version: 1,
-        fields: result_fields,
-    }));
+    // ── (6) shape ModalResult ────────────────────────────────────────────────
+    let result = mechanism_modal_result_value(
+        modes_list,
+        field_or(options, "damping", Value::Undef),
+        mass_matrix_norm,
+        stiffness_matrix_norm,
+    );
     ComputeOutcome::Completed {
         result,
         new_warm_state: None,
@@ -4493,6 +4571,7 @@ mod tests {
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
         extract_loss_factor, extract_reference_direction, face_company, face_realization,
         frobenius_norm,
+        modal_convergence_warning,
         mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
@@ -5379,6 +5458,64 @@ mod tests {
             "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
             result.diagnostics,
         );
+    }
+
+    /// #7602: `converged` can now be false with every requested mode returned
+    /// — a pair failed the eigensolver's post-solve residual check — and the
+    /// warning must say THAT, not "returned 2 of 2 … partial".
+    ///
+    /// (a) A shortfall alone keeps today's text verbatim.
+    #[test]
+    fn modal_convergence_warning_keeps_the_shortfall_text_verbatim() {
+        let d = modal_convergence_warning(1, 2, 0).expect("a shortfall warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert_eq!(
+            d.message,
+            "W_ModalConvergence: eigensolver returned 1 of 2 requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes).",
+        );
+    }
+
+    /// (b) Every mode returned, some unverified: name the residual-check
+    /// failure, and never call the result partial.
+    #[test]
+    fn modal_convergence_warning_names_unverified_modes_without_calling_them_partial() {
+        let d = modal_convergence_warning(2, 2, 1).expect("an unverified mode warns");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.code.is_none(), "the convergence warning stays uncoded");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+        assert!(d.message.contains("not verified eigenpairs"), "{}", d.message);
+        assert!(!d.message.contains("partial"), "{}", d.message);
+        assert!(!d.message.contains("returned 2 of 2"), "{}", d.message);
+    }
+
+    /// (c) Both at once: one diagnostic carrying both facts.
+    #[test]
+    fn modal_convergence_warning_carries_both_facts_in_one_diagnostic() {
+        let d = modal_convergence_warning(2, 3, 1).expect("both conditions warn");
+        assert!(d.message.starts_with("W_ModalConvergence:"), "{}", d.message);
+        assert!(d.message.contains("returned 2 of 3 requested modes"), "{}", d.message);
+        assert!(
+            d.message.contains(
+                "1 of the 2 returned modes failed the eigensolver's post-solve residual check"
+            ),
+            "{}",
+            d.message,
+        );
+    }
+
+    /// (d) Neither: no warning.
+    #[test]
+    fn modal_convergence_warning_is_silent_on_a_verified_full_result() {
+        assert!(modal_convergence_warning(2, 2, 0).is_none());
     }
 
     /// Amendment (suggestion 1 / robustness): an under-constrained model must NOT
@@ -12053,6 +12190,175 @@ mod tests {
                  guarantee for printer_z_compliant_mount.ri"
             );
         }
+    }
+
+    /// Drive the mechanism-modal trampoline to a `Completed` outcome with no
+    /// `Error` diagnostic and unwrap the `ModalResult` it built.
+    fn solved_mechanism_modal_result(mech: Value, options: Value) -> Box<StructureInstanceData> {
+        let outcome = solve_mechanism_modal_trampoline(
+            &[mech, options],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "must not produce Error diagnostics; got {diagnostics:?}",
+        );
+        match result {
+            Value::StructureInstance(d) if d.type_name == "ModalResult" => d,
+            other => panic!("expected a ModalResult StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Task #7012: the fields the lumped generalized-coordinate model cannot
+    /// define — `Mode.shape`, `Mode.participation_mass` and
+    /// `ModalResult.boundary_conditions` — are honest `Value::Undef`, while
+    /// the solved `frequency` / `damping_ratio` stay populated. The caller
+    /// supplies a non-empty support list and a non-default
+    /// `reference_direction`, the two inputs this path does not apply, so
+    /// neither the old `[]` / `0.0` fakes nor an echo of the caller's list can
+    /// pass.
+    #[test]
+    fn mechanism_modal_lumped_undefined_fields_are_honest_undef() {
+        let mech = two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        );
+        let options = modal_options(vec![
+            (
+                "boundary_conditions".to_string(),
+                Value::List(vec![fixed_support("x_min")]),
+            ),
+            (
+                "reference_direction".to_string(),
+                Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+        ]);
+        let data = solved_mechanism_modal_result(mech, options);
+
+        let modes = match data.fields.get("modes") {
+            Some(Value::List(m)) => m,
+            other => panic!("modes must be a List; got {other:?}"),
+        };
+        assert_eq!(
+            modes.len(),
+            2,
+            "the n_dof = 2 solve must return both modes, or the per-mode Undef \
+             checks below are vacuous"
+        );
+        for (i, mode) in modes.iter().enumerate() {
+            let fields = match mode {
+                Value::StructureInstance(d) if d.type_name == "Mode" => &d.fields,
+                other => panic!("modes[{i}] must be a Mode; got {other:?}"),
+            };
+            assert!(
+                matches!(
+                    fields.get("frequency"),
+                    Some(Value::Scalar { si_value, dimension })
+                        if *dimension == DimensionVector::FREQUENCY
+                            && si_value.is_finite()
+                            && *si_value > 0.0
+                ),
+                "mode {i} frequency must stay a finite, positive Scalar<Frequency>; \
+                 got {:?}",
+                fields.get("frequency"),
+            );
+            assert!(
+                matches!(fields.get("damping_ratio"), Some(Value::Real(_))),
+                "mode {i} damping_ratio must stay a populated Real; got {:?}",
+                fields.get("damping_ratio"),
+            );
+            assert_eq!(
+                fields.get("shape"),
+                Some(&Value::Undef),
+                "mode {i} shape: the lumped model has no per-node displacement field"
+            );
+            assert_eq!(
+                fields.get("participation_mass"),
+                Some(&Value::Undef),
+                "mode {i} participation_mass: the lumped DOFs carry no direction to \
+                 project onto reference_direction"
+            );
+        }
+        assert_eq!(
+            data.fields.get("boundary_conditions"),
+            Some(&Value::Undef),
+            "ModalResult.boundary_conditions: the lumped solve applies no Support, \
+             so neither `[]` nor an echo of the caller's list is honest"
+        );
+    }
+
+    /// Task #7012: `ModalResult.mass_matrix_norm` / `stiffness_matrix_norm`
+    /// are the Frobenius norms of the PHYSICAL lumped M and K, excluding the
+    /// n_dof = 1 anchor DOF. Both matrices are diagonal and
+    /// ‖diag(d)‖_F = √(Σ d_i²) exactly, so each expectation is that closed
+    /// form and the 1e-12 relative band only absorbs fp associativity.
+    #[test]
+    fn mechanism_modal_reports_lumped_matrix_norms() {
+        fn norms(mech: Value) -> (f64, f64) {
+            let data = solved_mechanism_modal_result(mech, struct_instance("ModalOptions", vec![]));
+            let real = |name: &str| match data.fields.get(name) {
+                Some(Value::Real(v)) => *v,
+                other => panic!("{name} must be a Real; got {other:?}"),
+            };
+            (real("mass_matrix_norm"), real("stiffness_matrix_norm"))
+        }
+        fn assert_rel_close(label: &str, got: f64, expected: f64) {
+            let rel = (got - expected).abs() / expected;
+            assert!(
+                rel <= 1e-12,
+                "{label}: got {got}, expected {expected} (relative error {rel:.3e})"
+            );
+        }
+
+        // Case A — n_dof = 1, the anchor-pad path. The padded pencil's norms
+        // would be √(0.5² + 1²) ≈ 1.118 and ≈ 2e11 (λ_anchor = max(k/m, 1)·1e8).
+        let (mass_norm, stiffness_norm) = norms(one_body_mechanism(
+            mass_props_solid(0.5),
+            flexure_joint(1_000.0),
+        ));
+        assert_rel_close("Case A mass_matrix_norm", mass_norm, 0.5);
+        assert_rel_close("Case A stiffness_matrix_norm", stiffness_norm, 1_000.0);
+
+        // Case B — n_dof = 2, the direct solve.
+        let (mass_norm, stiffness_norm) = norms(two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        ));
+        assert_rel_close(
+            "Case B mass_matrix_norm",
+            mass_norm,
+            (2.0_f64 * 2.0 + 0.1 * 0.1).sqrt(),
+        );
+        assert_rel_close(
+            "Case B stiffness_matrix_norm",
+            stiffness_norm,
+            (1_000.0_f64 * 1_000.0 + 50_000.0 * 50_000.0).sqrt(),
+        );
+
+        // Case C — a rigid joint stores no K entry, so ‖K‖ = 0 is measured,
+        // not a fake; ‖M‖ keeps the case from passing on an all-zero result.
+        let (mass_norm, stiffness_norm) =
+            norms(one_body_mechanism(mass_props_solid(0.5), rigid_joint()));
+        assert_rel_close("Case C mass_matrix_norm", mass_norm, 0.5);
+        assert_eq!(
+            stiffness_norm, 0.0,
+            "Case C: a rigid joint contributes no stiffness, so ‖K‖ must be exactly 0"
+        );
     }
 
     /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
