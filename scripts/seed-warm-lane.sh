@@ -1685,10 +1685,11 @@ fi
 #   benign for its own reason rather than by luck of the gate: the build-dir
 #   invalidation above (lane-scoped, task lanes only — correct here for the first
 #   paragraph's reason), and the stash-guard liveness arm below (the merge-spec lane
-#   serves speculative merge verifies and is never handed to an agent).  The lane lock is NOT a second instance, though it reads
-#   like one: seed's own acquire is default-on under $FRESH_CHECKOUT, but DF's
-#   `--assume-lane-lock-held` clears it on BOTH production pool acquires, so that
-#   gate decides nothing for either role — see the --lane-lock note in the header.
+#   serves speculative merge verifies and is never handed to an agent).  The lane
+#   lock is NOT a third instance, though it reads like one: seed's own acquire is
+#   default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held` clears it
+#   on BOTH production pool acquires, so that gate decides nothing for either
+#   role — see the --lane-lock note in the header.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
