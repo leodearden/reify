@@ -29,7 +29,7 @@ use crate::engine::EngineSession;
 use crate::engine_lock::with_engine_lock;
 use crate::types::GuiState;
 
-const DEFAULT_DESIGN: &str = "prj/printer_v01/printer.ri";
+const DEFAULT_DESIGN: &str = "prj/printer_v01/dev_capstan.ri";
 const ITERATIONS: usize = 5;
 
 type Engine = Arc<Mutex<EngineSession>>;

@@ -432,7 +432,8 @@ design change rather than an optimisation.
 
 **Measured** (task 6752) on the real OCCT kernel through the production boot
 path (`EngineSession::with_registered_kernel`), release build,
-`prj/printer_v01/dev_capstan.ri` (10 meshes, 64,494 faces), HEAD `d598d1e8e8`,
+`prj/printer_v01/dev_capstan.ri` (10 meshes, 64,494 faces), on 2026-09-30 on
+task 6752's branch at the pre-rebase commit patch-identical to `7e0d366f3e`,
 medians of 5 on a shared host (loadavg 54–110 on 32 cpus):
 
 | Measured | Median |
