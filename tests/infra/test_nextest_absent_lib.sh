@@ -1265,6 +1265,39 @@ else
     echo "  SKIP: 10k: env(1) on this host has no --default-signal (GNU coreutils >= 8.31), so the probe cannot be handed a default disposition; under an inherited SIG_IGN arm 10c SKIPs that signal instead"
 fi
 
+# (l) What the operator SEES for a sub-arm that could not run: a loud SKIP that
+#     names the signal and the inherited disposition, and no PASS/FAIL line at
+#     all. assert() always emits one of those, so their absence proves nothing
+#     was counted. The subshell keeps any counter it bumps away from the suite.
+_t10l() {
+    local _out="$NX_TRAP_DIR/report-HUP.out" _bad=0
+    _t10c_under_ignored HUP 0 _t10c_report HUP > "$_out" 2>&1 || true
+    if ! grep -qE '^  SKIP: .*SIGHUP' "$_out"; then
+        echo "no '  SKIP:' line naming SIGHUP"
+        _bad=1
+    fi
+    if ! grep -qi 'ignored on entry' "$_out"; then
+        echo "the report never says SIGHUP was ignored on entry"
+        _bad=1
+    fi
+    if grep -qE '^  (PASS|FAIL): ' "$_out"; then
+        echo "an assert verdict was recorded for a sub-arm that could not run"
+        _bad=1
+    fi
+    if grep -q 'is not implemented' "$_out"; then
+        echo "the report still reads as a trap-contract regression"
+        _bad=1
+    fi
+    if [ "$_bad" -ne 0 ]; then
+        echo "--- _t10c_report HUP output ---"
+        cat "$_out"
+    fi
+    return "$_bad"
+}
+
+assert "10l: a 10c sub-arm whose signal was ignored on entry is reported as a loud SKIP naming the signal and the inherited disposition, never as a PASS or FAIL" \
+    _t10l
+
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------
 #
