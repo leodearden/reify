@@ -217,6 +217,31 @@ fn unannotated_generic_fn_whose_body_type_is_an_arithmetic_placeholder_is_silent
     }
 }
 
+/// A body that only sometimes hands back an input is not judged: an arm that
+/// computes, branches of different types, or a match binder that merely shares
+/// a param's name (in the last source the first arm's `v` is the payload, not
+/// the param `v`).
+#[test]
+fn unannotated_generic_fn_whose_body_only_sometimes_hands_back_an_input_is_silent() {
+    for source in [
+        "enum Side { L, R }\nfn mixed<T>(s: Side, a: T, b: T) { match s { L => a, R => b * 2 } }\n",
+        "fn differ<T>(c: Bool, a: T, n: Int) { if c then a else n }\n",
+        "enum Slot<A> { Full { a: A }, Vacant }\nfn payload_or<T, U>(v: T, s: Slot<U>) { match s { Full { a: v } => v, Vacant => v } }\n",
+    ] {
+        let module = compile_source(source);
+        assert!(
+            with_code(&module, DiagnosticCode::FnReturnTypeUnannotated).is_empty(),
+            "expected no FnReturnTypeUnannotated for {source:?}, got: {:?}",
+            module.diagnostics
+        );
+        assert!(
+            with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+            "expected no FnReturnTypeMismatch for {source:?}, got: {:?}",
+            module.diagnostics
+        );
+    }
+}
+
 #[test]
 fn unannotated_fn_with_erroring_body_reports_only_the_root_cause() {
     let module = compile_source("fn broken() { no_such_name }\n");

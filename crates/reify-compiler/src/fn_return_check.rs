@@ -3,6 +3,8 @@
 //! from the signature, and evaluation returns the body value unconverted, so a
 //! body the signature contradicts hands every caller a mistyped value.
 
+use std::collections::HashMap;
+
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 
@@ -61,31 +63,33 @@ pub(crate) fn reconcile_fn_return(
         return;
     }
     let declared = &compiled.return_type;
-    let produced = &compiled.body.result_expr.result_type;
+    let Some(produced) = judged_body_type(&fn_def.name, compiled) else {
+        return;
+    };
     let body_span = body.result_expr.span;
     match &fn_def.return_type {
         None => {
-            if body_contradicts(declared, produced) {
+            if body_contradicts(declared, &produced) {
                 push_once_per_body(
                     diagnostics,
                     unannotated_return(
                         &owner.subject(&compiled.name),
                         declared,
-                        produced,
+                        &produced,
                         body_span,
                     ),
                 );
             }
         }
         Some(annotation) => {
-            if annotation_is_reconciled(declared) && body_contradicts(declared, produced) {
+            if annotation_is_reconciled(declared) && body_contradicts(declared, &produced) {
                 push_once_per_body(
                     diagnostics,
                     mismatched_return(
                         &owner.subject(&compiled.name),
                         declared,
                         annotation.span,
-                        produced,
+                        &produced,
                         body_span,
                     ),
                 );
@@ -180,20 +184,97 @@ fn annotation_is_reconciled(declared: &Type) -> bool {
     matches!(declared, Type::Int | Type::Scalar { .. })
 }
 
+/// The type a body is judged to produce, or `None` when it cannot be judged.
+///
+/// A bare generic static type is trusted only when the body hands back an input
+/// of that type unchanged: arithmetic on a type parameter keeps the parameter's
+/// type whatever the true result (`x * x` is T², `a / b` is dimensionless).
+/// `scope_entity` is the fn's name, which both fn compile paths build the body
+/// scope under; nested binders mint other entities, so they never alias a param.
+fn judged_body_type(scope_entity: &str, compiled: &CompiledFunction) -> Option<Type> {
+    let static_type = &compiled.body.result_expr.result_type;
+    if is_bare_generic(static_type) {
+        exact_body_type(scope_entity, compiled)
+    } else {
+        Some(static_type.clone())
+    }
+}
+
+fn is_bare_generic(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::TypeParam(_) | Type::ScalarParam(_) | Type::Projection { .. }
+    )
+}
+
+/// Each name in scope that is exactly one of the fn's inputs (a param, or a let
+/// that returns one unchanged), with that input's type. Any other name is absent.
+type ExactBindings<'a> = HashMap<&'a str, Type>;
+
+/// The type of the input a body hands back unchanged, if it does.
+///
+/// Lets are folded in order, so a let that shadows a param (or an earlier let)
+/// replaces its binding, and drops it when the let is not itself exact.
+fn exact_body_type(scope_entity: &str, compiled: &CompiledFunction) -> Option<Type> {
+    let mut bindings: ExactBindings<'_> = compiled
+        .params
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty.clone()))
+        .collect();
+    for (name, value) in &compiled.body.let_bindings {
+        match exact_type(value, scope_entity, &bindings) {
+            Some(ty) => {
+                bindings.insert(name.as_str(), ty);
+            }
+            None => {
+                bindings.remove(name.as_str());
+            }
+        }
+    }
+    exact_type(&compiled.body.result_expr, scope_entity, &bindings)
+}
+
+/// The type of the input `expr` evaluates to unchanged: a param or let
+/// reference, or a conditional or match whose every branch is one and all agree.
+fn exact_type(
+    expr: &CompiledExpr,
+    scope_entity: &str,
+    bindings: &ExactBindings<'_>,
+) -> Option<Type> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) if id.entity == scope_entity => {
+            bindings.get(id.member.as_str()).cloned()
+        }
+        CompiledExprKind::Conditional {
+            then_branch,
+            else_branch,
+            ..
+        } => agreed(
+            [then_branch, else_branch].map(|branch| exact_type(branch, scope_entity, bindings)),
+        ),
+        CompiledExprKind::Match { arms, .. } => agreed(
+            arms.iter()
+                .map(|arm| exact_type(&arm.body, scope_entity, bindings)),
+        ),
+        _ => None,
+    }
+}
+
+/// The one type every entry is, or `None` when there are no entries, any entry
+/// is `None`, or two differ.
+fn agreed(types: impl IntoIterator<Item = Option<Type>>) -> Option<Type> {
+    let mut types = types.into_iter();
+    let first = types.next()??;
+    types.all(|ty| ty.as_ref() == Some(&first)).then_some(first)
+}
+
 /// Whether a body producing `body` contradicts a signature declaring
 /// `declared`.
 ///
-/// Never true when either side is `Type::Error` (its root cause is already
-/// reported), nor for a bare generic body (`TypeParam` / `ScalarParam` /
-/// `Projection`), whose agreement depends on the instantiation (task #7008).
+/// Never true when either side is `Type::Error`: its root cause is already
+/// reported.
 fn body_contradicts(declared: &Type, body: &Type) -> bool {
     if declared.is_error() || body.is_error() {
-        return false;
-    }
-    if matches!(
-        body,
-        Type::TypeParam(_) | Type::ScalarParam(_) | Type::Projection { .. }
-    ) {
         return false;
     }
     !type_compatible(declared, body)
