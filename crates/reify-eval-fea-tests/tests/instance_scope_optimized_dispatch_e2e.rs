@@ -19,17 +19,40 @@ use reify_eval::CheckResult;
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
-/// Cantilever beam whose FEA-derived cells are read through a `sub`.
-///
-/// `Asm` instantiates `Beam` with NO constructor overrides, so the instance's
-/// inputs are value-identical to the template's and the two scopes must agree.
+/// Which loads the beam's solve carries.
+#[derive(Clone, Copy)]
+enum BeamLoads {
+    /// The String-targeted `tip` load only.
+    StringTarget,
+    /// `tip` plus `press`, whose `face` is a TYPED named-leaf selector over the
+    /// geometry let `body` — so the instance's solve can only equal the
+    /// template's if the instance's `body` mints the same symbolic geometry
+    /// handle the template's does.
+    ///
+    /// `FixedSupport.target` is still `String` (#5312 types it), so the typed
+    /// target rides `PressureLoad.face : Option<FaceSelector>` — the same
+    /// hoisted named-leaf selector mechanism.
+    WithTypedSelectorTarget,
+}
+
+/// The cantilever beam every fixture here reads through a `sub`, declared as
+/// `structure {name}`.
 ///
 /// Kept deliberately small and P1 (bare `ElasticOptions()`) — the assertions
 /// below are existence / determinacy / cross-scope-equality only, never a
 /// numeric tolerance, so there is nothing here that a coarser mesh can break.
-fn instance_scope_fea_source() -> &'static str {
-    r#"
-        structure Beam {
+fn beam_structure(name: &str, loads: BeamLoads) -> String {
+    let (typed_target_lets, load_list) = match loads {
+        BeamLoads::StringTarget => ("", "[tip]"),
+        BeamLoads::WithTypedSelectorTarget => (
+            r#"let body     = box(span, w, h)
+            let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))"#,
+            "[tip, press]",
+        ),
+    };
+    format!(
+        r#"
+        structure {name} {{
             param span : Length = 1000mm
             param w    : Length = 100mm
             param h    : Length = 100mm
@@ -38,57 +61,50 @@ fn instance_scope_fea_source() -> &'static str {
             let material = Steel_AISI_1045()
             let tip      = PointLoad(point: "tip", force: load)
             let mount    = FixedSupport(target: "root")
+            {typed_target_lets}
 
             let r_static = solve_elastic_static(
-                material, span, w, h, [tip], [mount], ElasticOptions()
+                material, span, w, h, {load_list}, [mount], ElasticOptions()
             )
             let defl     = max(r_static.displacement)
             let k        : Stiffness = load * 1N / defl
-        }
-
-        structure Asm {
-            sub beam = Beam()
-            let k_from_sub = self.beam.k
-            constraint self.beam.k > 1N / 1m
-        }
-    "#
+        }}
+        "#
+    )
 }
 
-/// [`instance_scope_fea_source`] with a TYPED selector target in the solve's
-/// direct read set: `press.face` is a named-leaf selector over the geometry let
-/// `body`, so the instance cell can only equal the template's if `Asm.beam.body`
-/// mints the same symbolic geometry handle `Beam.body` does.
-///
-/// `FixedSupport.target` is still `String` (#5312 types it), so the typed
-/// target rides `PressureLoad.face : Option<FaceSelector>` — the same hoisted
-/// named-leaf selector mechanism.
-fn instance_scope_fea_source_with_typed_selector_target() -> &'static str {
-    r#"
-        structure Beam {
-            param span : Length = 1000mm
-            param w    : Length = 100mm
-            param h    : Length = 100mm
-            param load : Real   = 1000.0
-
-            let material = Steel_AISI_1045()
-            let body     = box(span, w, h)
-            let tip      = PointLoad(point: "tip", force: load)
-            let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))
-            let mount    = FixedSupport(target: "root")
-
-            let r_static = solve_elastic_static(
-                material, span, w, h, [tip, press], [mount], ElasticOptions()
-            )
-            let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
-        }
-
-        structure Asm {
+/// `Beam` read through a `sub`. `Asm` instantiates it with NO constructor
+/// overrides, so the instance's inputs are value-identical to the template's
+/// and the two scopes must agree.
+fn instance_scope_fea_source(loads: BeamLoads) -> String {
+    format!(
+        r#"
+        {beam}
+        structure Asm {{
             sub beam = Beam()
             let k_from_sub = self.beam.k
             constraint self.beam.k > 1N / 1m
-        }
-    "#
+        }}
+        "#,
+        beam = beam_structure("Beam", loads)
+    )
+}
+
+/// `BeamAuto` read through an override-free `sub` by solver-visible
+/// constraints over an `auto`.
+fn solver_visible_fea_source(loads: BeamLoads) -> String {
+    format!(
+        r#"
+        {beam}
+        structure AsmAuto {{
+            sub beam = BeamAuto()
+            param budget : Stiffness = auto
+            constraint budget <= self.beam.k
+            constraint budget >= 1N / 1m
+        }}
+        "#,
+        beam = beam_structure("BeamAuto", loads)
+    )
 }
 
 /// Extract a named field from an `ElasticResult` value, handling both the
@@ -107,7 +123,7 @@ fn extract_field(result: &Value, field: &str) -> Option<Value> {
 /// values, and the whole downstream chain stays determinate.
 #[test]
 fn instance_scope_fea_cells_equal_template_solved_values() {
-    assert_instance_fea_cells_equal_template(instance_scope_fea_source());
+    assert_instance_fea_cells_equal_template(&instance_scope_fea_source(BeamLoads::StringTarget));
 }
 
 /// Steps (1)-(5) of the `Beam`/`Asm` acceptance check, shared by the
@@ -290,32 +306,9 @@ fn assert_instance_fea_cells_equal_template(source: &str) -> CheckResult {
 /// body-inline sentinel by a reeval pass.
 #[test]
 fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
-    let source = r#"
-        structure BeamAuto {
-            param span : Length = 1000mm
-            param w    : Length = 100mm
-            param h    : Length = 100mm
-            param load : Real   = 1000.0
-
-            let material = Steel_AISI_1045()
-            let tip      = PointLoad(point: "tip", force: load)
-            let mount    = FixedSupport(target: "root")
-
-            let r_static = solve_elastic_static(
-                material, span, w, h, [tip], [mount], ElasticOptions()
-            )
-            let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
-        }
-
-        structure AsmAuto {
-            sub beam = BeamAuto()
-            param budget : Stiffness = auto
-            constraint budget <= self.beam.k
-            constraint budget >= 1N / 1m
-        }
-    "#;
-    assert_solver_visible_instance_fea_cell_survives(source);
+    assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
+        BeamLoads::StringTarget,
+    ));
 }
 
 /// Steps (a)-(c) of the `BeamAuto`/`AsmAuto` solver-visible guard, shared by
@@ -522,42 +515,17 @@ fn assert_typed_target_cells_equal_template(result: &CheckResult, template: &str
 /// solve must reuse the template's solved value through `press.face`.
 #[test]
 fn instance_scope_fea_cells_equal_template_solved_values_with_typed_selector_target() {
-    let result = assert_instance_fea_cells_equal_template(
-        instance_scope_fea_source_with_typed_selector_target(),
-    );
+    let result = assert_instance_fea_cells_equal_template(&instance_scope_fea_source(
+        BeamLoads::WithTypedSelectorTarget,
+    ));
     assert_typed_target_cells_equal_template(&result, "Beam", "Asm.beam");
 }
 
 /// The solver-visible guard above with the typed selector target.
 #[test]
 fn solver_visible_instance_scope_fea_cell_with_typed_selector_target_is_not_clobbered() {
-    let source = r#"
-        structure BeamAuto {
-            param span : Length = 1000mm
-            param w    : Length = 100mm
-            param h    : Length = 100mm
-            param load : Real   = 1000.0
-
-            let material = Steel_AISI_1045()
-            let body     = box(span, w, h)
-            let tip      = PointLoad(point: "tip", force: load)
-            let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))
-            let mount    = FixedSupport(target: "root")
-
-            let r_static = solve_elastic_static(
-                material, span, w, h, [tip, press], [mount], ElasticOptions()
-            )
-            let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
-        }
-
-        structure AsmAuto {
-            sub beam = BeamAuto()
-            param budget : Stiffness = auto
-            constraint budget <= self.beam.k
-            constraint budget >= 1N / 1m
-        }
-    "#;
-    let result = assert_solver_visible_instance_fea_cell_survives(source);
+    let result = assert_solver_visible_instance_fea_cell_survives(&solver_visible_fea_source(
+        BeamLoads::WithTypedSelectorTarget,
+    ));
     assert_typed_target_cells_equal_template(&result, "BeamAuto", "AsmAuto.beam");
 }
