@@ -19,10 +19,13 @@
 #           The probe runs inside a throwaway scratch repo, so the hook's audit
 #           write never reaches the store's shared main-gate log, and under a
 #           fixed timeout; a timeout counts as not live.
-#   PINNED  extensions.worktreeConfig is on and core.hooksPath is set in THIS
-#           worktree's config.worktree.  The shared value is exactly what the
-#           clobber rewrites, so a worktree resting on it can go dark mid-session;
-#           a per-worktree pin outranks it for the life of the worktree.
+#   PINNED  THIS worktree's config.worktree pins core.hooksPath to the
+#           canonical value scripts/setup-main-gate-worktree-config.sh writes
+#           (both read it through scripts/lib_worktree_hooks_pin.sh, so `arm`'s
+#           "already armed" is exactly the setup script's "nothing to write").
+#           The shared value is exactly what the clobber rewrites, so a worktree
+#           resting on it can go dark mid-session; a per-worktree pin outranks it
+#           for the life of the worktree.
 #
 # Usage:
 #   scripts/hooks-armed-guard.sh <subcommand> [target_dir]
@@ -74,6 +77,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for _var in $REIFY_GIT_ENV_SCRUB_VARS; do
     unset "$_var"
 done
+# shellcheck source=scripts/lib_worktree_hooks_pin.sh
+. "$_SCRIPT_DIR/lib_worktree_hooks_pin.sh"
 
 readonly PROBE_TIMEOUT_SECS=10
 readonly PROBE_KILL_AFTER_SECS=2
@@ -139,17 +144,6 @@ _probe_refuses() {
     esac
 }
 
-# _pinned — is core.hooksPath set in $TOP's own config.worktree?  The extension
-# is read first: `config --worktree` aborts when it is off and the store has
-# several worktrees.
-_pinned() {
-    local ext pin
-    ext="$(git -C "$TOP" config --local --bool --get extensions.worktreeConfig 2>/dev/null || true)"
-    [ "$ext" = "true" ] || return 1
-    pin="$(git -C "$TOP" config --worktree --get core.hooksPath 2>/dev/null || true)"
-    [ -n "$pin" ]
-}
-
 _unmet() {
     UNMET+=("$1")
 }
@@ -158,7 +152,7 @@ _unmet() {
 # into UNMET.  Returns 0 armed | 1 not armed | 3 could not check (the hooks dir
 # does not resolve, or the liveness probe could not run).
 _assess() {
-    local hook probe_rc=0
+    local hook pin probe_rc=0
     UNMET=()
     HOOKS_DIR="$(git -C "$TOP" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)" || {
         echo "[error] hooks-armed-guard: cannot resolve the hooks dir of $TOP" >&2
@@ -179,7 +173,12 @@ _assess() {
             *) return 3 ;;
         esac
     fi
-    _pinned || _unmet "core.hooksPath is not pinned in this worktree's config.worktree, so it rests on the shared value Claude Code's worktree feature rewrites"
+    pin="$(worktree_hooks_pin "$TOP")"
+    if [ -z "$pin" ]; then
+        _unmet "core.hooksPath is not pinned in this worktree's config.worktree, so it rests on the shared value Claude Code's worktree feature rewrites"
+    elif [ "$pin" != "$WORKTREE_HOOKS_PIN" ]; then
+        _unmet "this worktree's config.worktree pins core.hooksPath to '$pin', not the canonical '$WORKTREE_HOOKS_PIN'"
+    fi
     [ "${#UNMET[@]}" -eq 0 ]
 }
 

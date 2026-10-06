@@ -741,3 +741,7 @@ scripts/seed-warm-lane.sh    tests/infra/test_hooks_armed_guard.sh
 scripts/setup-main-gate-worktree-config.sh    tests/infra/test_hooks_armed_guard.sh
 hooks/reference-transaction    tests/infra/test_hooks_armed_guard.sh
 hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
+# The pin's one definition, sourced by both the guard and the setup script, so
+# an edit to it selects both suites.
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh

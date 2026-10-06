@@ -330,6 +330,16 @@ class ArmContract(GuardFixture):
         self.assert_rc(self.run_guard("check", self.lane), 0)
         self.assert_push_refused()
 
+    def test_t11_arm_rewrites_a_live_non_canonical_pin(self):
+        # Pinned means pinned to the value the setup script writes, so arm's
+        # "already armed" is exactly the setup script's "nothing to write".
+        self.pin(str(self.lane / "hooks"))
+        self.assert_rc(self.run_guard("check", self.lane), 1)
+        self.assert_rc(self.run_guard("arm", self.lane), 0)
+        self.assertEqual(self.git_out(self.lane, "config", "--worktree", "--get",
+                                      "core.hooksPath"), "hooks")
+        self.assert_push_refused()
+
     def test_t12_arm_on_a_plain_directory_cannot_check(self):
         plain = self.tmpdir / "plain"
         plain.mkdir()
