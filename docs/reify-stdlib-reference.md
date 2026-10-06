@@ -722,10 +722,10 @@ The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.
 ### 3.7 `std.geometry.transform`
 
 ```
-fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G  // not implemented — see note below
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
-fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
 fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
 fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
@@ -734,6 +734,8 @@ fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
 Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
+
+**Not implemented — vector-argument forms (2026-10):** three signatures above take their displacement, axis and point as `Vector3`/`Point3` values — `translate(geometry, displacement)`, `rotate(geometry, axis, angle)` and `rotate_around(geometry, point, axis, angle)` — and a call written in those forms is rejected by the compiler's arity check. The shipped forms take scalar components: `translate(geometry, dx, dy, dz)`, `rotate(geometry, ax, ay, az, angle)` (alongside the orientation form) and `rotate_around(geometry, px, py, pz, ax, ay, az, angle)`. The accepted arities are owned by `compile_transform_op` in `crates/reify-compiler/src/geometry_transform.rs`; the agent-facing `stdlib` language-reference chunk (`crates/reify-mcp/src/tools/chunks/stdlib.md`) documents the shipped forms.
 
 **LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
 

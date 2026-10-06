@@ -892,8 +892,8 @@ fn area(surface: Surface) -> Scalar<Area> { ... }
 fn area(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 ```
 
 ### 4.3 Function Declarations (`fn`)
