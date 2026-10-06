@@ -1129,6 +1129,76 @@ assert "10g: at factor 4 an always-starved probe FAILS after exactly 4 attempts,
 assert "10h: at factor 4 a contract verdict FAILS after exactly one attempt (a real regression is never retried)" \
     _t10c_retry_expect contract 4 "$_T10C_RC_CONTRACT" no 1
 
+# -- Test 10i-10l: arm 10c under an inherited SIG_IGN (nohup, bare &) ----------
+#
+# A non-interactive bash cannot trap a signal that was SIG_IGN on entry: `trap`
+# returns 0 and installs nothing (task 7360). nohup leaves HUP ignored, and a
+# bare `cmd &` from a shell without job control leaves INT/QUIT ignored, in
+# every descendant. 10c's probe then ran init, its self-kill was a no-op, and the
+# arm reported a trap-contract regression: a verdict about the lib drawn from a
+# fact about the launcher. These arms hand the probe an ignored-on-entry SIG the
+# same way those launchers do, `( trap '' SIG; ... )`, and drive the REAL probe
+# through _t10c_probe so they keep 10c's starvation tolerance.
+echo ""
+echo "--- Test 10i-10l: arm 10c under an inherited SIG_IGN (nohup, bare &) ---"
+
+# _t10c_under_ignored SIG RESET CMD... — run CMD in a subshell whose SIG is
+# SIG_IGN, with the host's disposition-reset capability forced to RESET (0|1).
+# The subshell keeps both overrides away from the parent suite.
+_t10c_under_ignored() {
+    local _sig="$1" _reset="$2"
+    shift 2
+    ( trap '' "$_sig"; _T10C_CAN_RESET_DISPOSITION="$_reset"; "$@" )
+}
+
+# (i) With no reset available, every sub-arm must come back IGNORED_ON_ENTRY:
+#     named as the environment fact it is, never in contract language, and
+#     before nextest_absent_init (no WORKDIR= line, so nothing could leak).
+_t10i() {
+    local _sig _m _out _rc _bad _fail=0
+    local _want="${_T10C_RC_IGNORED_ON_ENTRY:-}"
+    for _sig in INT TERM HUP; do
+        _m="$NX_TRAP_DIR/ignored-$_sig.marker"
+        _out="$NX_TRAP_DIR/ignored-$_sig.out"
+        _rc=0
+        _bad=0
+        _t10c_under_ignored "$_sig" 0 _t10c_probe "$_sig" "$_m" > "$_out" 2>&1 || _rc=$?
+        if [ -z "$_want" ]; then
+            echo "SIG$_sig: verdict code _T10C_RC_IGNORED_ON_ENTRY is not defined (probe rc=$_rc)"
+            _bad=1
+        elif [ "$_rc" != "$_want" ]; then
+            echo "SIG$_sig: probe verdict rc=$_rc, expected IGNORED_ON_ENTRY (rc=$_want)"
+            _bad=1
+        fi
+        if ! grep -qi 'ignored on entry' "$_out"; then
+            echo "SIG$_sig: the diagnostic never says SIG$_sig was ignored on entry"
+            _bad=1
+        fi
+        if grep -q 'is not implemented' "$_out"; then
+            echo "SIG$_sig: the diagnostic still reports a trap-contract regression"
+            _bad=1
+        fi
+        if [ -f "$_m" ] && grep -q '^WORKDIR=' "$_m"; then
+            echo "SIG$_sig: the probe ran nextest_absent_init before reporting, so it"
+            echo "had a workdir to leak"
+            _bad=1
+        fi
+        if [ "$_bad" -ne 0 ]; then
+            echo "--- SIG$_sig probe output ---"
+            cat "$_out"
+            _fail=1
+        fi
+    done
+    return "$_fail"
+}
+
+assert "10i: with SIG_IGN inherited and no reset, each of 10c's INT/TERM/HUP sub-arms reports IGNORED_ON_ENTRY, not a trap-contract verdict" \
+    _t10i
+
+# (j) The disposition is deterministic, so retrying it only burns forks.
+assert "10j: at factor 4 an IGNORED_ON_ENTRY verdict FAILS after exactly one attempt (an environment fact is never retried)" \
+    _t10c_retry_expect ignored 4 "${_T10C_RC_IGNORED_ON_ENTRY:-}" no 1
+
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------
 #
