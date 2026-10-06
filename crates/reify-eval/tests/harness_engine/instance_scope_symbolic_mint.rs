@@ -259,3 +259,50 @@ fn phase15_scratch_overlay_carries_the_minted_selector_into_a_nested_sub_arg() {
          symbolic mint phase 2 applies"
     );
 }
+
+/// A `Solid` PARAM default must mint at instance scope too, so an override-free
+/// sub's selector over it reuses the template's dispatched value.
+#[test]
+fn override_free_sub_reuses_through_a_selector_over_a_solid_param_default() {
+    let source = r#"
+        @optimized("test::sel777")
+        fn sel_probe(s : FaceSelector) -> Int {
+            42
+        }
+
+        structure ParamBody {
+            param len : Length = 10mm
+            param body : Solid = box(len, 10mm, 10mm)
+            let r = sel_probe(face(body, "x_max"))
+        }
+
+        structure ParamOuter {
+            sub same = ParamBody()
+        }
+    "#;
+    let result = eval_with_const777(source, "test::sel777");
+
+    assert_eq!(
+        cell(&result, "ParamBody", "r"),
+        &Value::Int(777),
+        "premise: template-scope ParamBody.r must be the dispatched 777"
+    );
+
+    let template_body = cell(&result, "ParamBody", "body");
+    let instance_body = cell(&result, "ParamOuter.same", "body");
+    assert!(
+        matches!(instance_body, Value::GeometryHandle { .. }),
+        "ParamOuter.same.body must be a symbolic GeometryHandle minted from the \
+         param default, got {instance_body:?}"
+    );
+    assert_eq!(
+        instance_body, template_body,
+        "ParamOuter.same.body must equal the template's ParamBody.body"
+    );
+    assert_eq!(
+        cell(&result, "ParamOuter.same", "r"),
+        cell(&result, "ParamBody", "r"),
+        "ParamOuter.same.r must reuse the template's dispatched 777 (Undef = the \
+         param default never minted `body`; Int(42) = the reuse gate declined)"
+    );
+}
