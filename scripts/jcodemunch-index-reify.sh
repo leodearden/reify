@@ -78,7 +78,8 @@ silently truncated by the max_folder_files cap.
                       assertions against the already-present DB only.
   --print-repo-id     Print the index identity this script would index for
                       --project-root (local/<basename>-<sha1[:8]>), then exit 0.
-                      Runs no indexer and reads no config or DB.
+                      Runs no indexer and reads no config or DB. Exclusive
+                      with --dry-run and --check-only.
   -h, --help          Show this help and exit.
 
 Refusal markers (stderr, always non-zero exit):
@@ -111,6 +112,12 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$PRINT_REPO_ID" -eq 1 ] && { [ "$DRY_RUN" -eq 1 ] || [ "$CHECK_ONLY" -eq 1 ]; }; then
+    echo "jcodemunch-index-reify.sh: --print-repo-id cannot be combined with --dry-run or --check-only" >&2
+    usage >&2
+    exit 64
+fi
 
 say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
 die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }

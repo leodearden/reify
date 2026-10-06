@@ -1627,6 +1627,17 @@ check_malformed_id_never_printed() {
     fi
 }
 
+# expect_usage_refusal [args...] — the invocation is CLI misuse: exit 64 and
+# EMPTY stdout, so no mode ran and no identity was printed.
+expect_usage_refusal() {
+    local out rc=0
+    out="$("$JC_INDEX" "$@" 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 64 ] || [ -n "$out" ]; then
+        printf 'expected exit 64 and empty stdout, got exit %s and:\n%s\n' "$rc" "$out" >&2
+        return 1
+    fi
+}
+
 PRINT_ROOT="$(mk_tmpdir)"
 PRINT_INDEX="$(mk_tmpdir)"
 PRINT_PRODUCER_DIR="$(mk_tmpdir)"
@@ -1662,6 +1673,12 @@ else
     # (P5) Validation precedes the print.
     assert "--print-repo-id never prints a malformed producer answer" \
         check_malformed_id_never_printed "$PRINT_PRODUCER_DIR/reify-audit" "$PRINT_ROOT"
+
+    # (P6) The modes are exclusive, whichever flag comes first.
+    assert "--check-only --print-repo-id is refused as CLI misuse (exit 64)" \
+        expect_usage_refusal --check-only --print-repo-id --project-root "$PRINT_ROOT"
+    assert "--print-repo-id --dry-run is refused as CLI misuse (exit 64)" \
+        expect_usage_refusal --print-repo-id --dry-run --project-root "$PRINT_ROOT"
 fi
 
 test_summary
