@@ -864,25 +864,32 @@ pub fn build_against_mock_kernel(
 /// compiled default expression. Callers needing only the compiled default
 /// expression should prefer [`get_let_expr_in`], which delegates here.
 ///
-/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
-/// template holding two value cells that share a member name under
-/// different entities cannot be resolved this way, and this function
-/// panics, naming the colliding entities (see # Panics). The realistic
-/// producer is a scoped sub/connect `Auto` cell (`id.entity =
-/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
-/// same-named cell — real `.ri` source produces this with zero diagnostics,
-/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
-/// If a specific entity's cell matters, disambiguate before calling, e.g.
-/// by searching `template.value_cells` directly for the desired
-/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
-/// walk and is subject to the identical ambiguity contract.
+/// Resolution keys on `id.member`. When several value cells share a member
+/// name under different entities, the template's own cell (`id.entity` equal
+/// to the template's name) wins, matching how `.ri` source names the member
+/// inside that template: the scoped override in `sub v : Vent { area = auto }`
+/// is `v.area`, so a parent `let area = ...` beside it resolves to the
+/// parent's own cell.
+///
+/// The collision stays ambiguous, and this function panics naming the
+/// colliding entities (see # Panics), when no colliding cell is the
+/// template's own or more than one is. The realistic producer is two scoped
+/// sub/connect overrides of one member with no same-named parent cell —
+/// `sub v : Vent { area = auto }` beside `sub w : Vent { area = auto }` — and
+/// scoped cells are always defaultless `Auto` cells (`id.entity =
+/// "Parent.sub"`, `default_expr: None`). If a specific entity's cell matters,
+/// disambiguate before calling, e.g. by searching `template.value_cells`
+/// directly for the desired full id (`vc.id == ValueCellId::new(entity,
+/// member)`). [`get_let_expr_in_template`] shares this same resolution walk
+/// and is subject to the identical ambiguity contract.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name, naming the colliding entities.
+///   cell shares that member name and the template's own entity does not single one out,
+///   naming the colliding entities.
 #[track_caller]
 pub fn get_value_cell_in<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -897,7 +904,8 @@ pub fn get_value_cell_in<'a>(
 
 /// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
 /// [`get_let_expr_in_template`]: resolves `cell_name` against
-/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+/// `template.value_cells` by `id.member`, preferring the template's own cell when
+/// several share it.
 ///
 /// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
 /// the realistic producer of a collision and the disambiguation route.
@@ -906,7 +914,8 @@ pub fn get_value_cell_in<'a>(
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
 ///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
-///   value cell shares that member name, naming the colliding `id.entity` values.
+///   value cell shares that member name and the template's own entity does not single one
+///   out, naming the colliding `id.entity` values.
 #[track_caller]
 fn lookup_value_cell<'a>(
     template: &'a TopologyTemplate,
@@ -930,14 +939,39 @@ fn lookup_value_cell<'a>(
             )
         }
         [only] => only,
-        many => {
-            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+        many => resolve_member_collision(template, cell_name, many),
+    }
+}
+
+/// Resolves a member collision among `colliding` (every cell of `template` sharing
+/// `cell_name`) to the template's own cell: the one whose `id.entity` is the template's name.
+///
+/// # Panics
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` unless exactly one
+///   of the `colliding` cells is the template's own, naming the colliding `id.entity` values.
+#[track_caller]
+fn resolve_member_collision<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+    colliding: &[&'a reify_compiler::ValueCellDecl],
+) -> &'a reify_compiler::ValueCellDecl {
+    let own: Vec<_> = colliding
+        .iter()
+        .copied()
+        .filter(|vc| vc.id.entity == template.name)
+        .collect();
+    match own.as_slice() {
+        [only_own] => only_own,
+        _ => {
+            let template_name = &template.name;
+            let colliding_count = colliding.len();
+            let entities: Vec<&str> = colliding.iter().map(|vc| vc.id.entity.as_str()).collect();
             panic!(
-                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
-                 member, under entities {entities:?}; this lookup resolves on id.member alone, \
-                 so disambiguate by searching `template.value_cells` for the desired id.entity",
-                template.name,
-                many.len()
+                "ambiguous cell name '{cell_name}' in template '{template_name}': \
+                 {colliding_count} value cells share this member, under entities {entities:?}; \
+                 the template's own entity '{template_name}' does not single one out, so \
+                 disambiguate by searching `template.value_cells` for the desired full id \
+                 (`vc.id == ValueCellId::new(entity, member)`)"
             )
         }
     }
@@ -978,7 +1012,8 @@ fn require_default_expr<'a>(
 /// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
 ///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
-///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
+///   cell shares that member name and the template's own entity does not single one out (see
+///   [`get_value_cell_in`]'s rustdoc for the hazard).
 /// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in_template<'a>(
@@ -1001,7 +1036,8 @@ pub fn get_let_expr_in_template<'a>(
 /// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
 ///   is absent (raised by [`get_value_cell_in`]).
 /// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
-///   cell shares that member name (raised by [`get_value_cell_in`]).
+///   cell shares that member name and the template's own entity does not single one out
+///   (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
 #[track_caller]
 pub fn get_let_expr_in<'a>(
@@ -2700,11 +2736,12 @@ mod tests {
     /// this layer would add coverage of the new entry point only, not of new
     /// behavior (task #5831 review).
     ///
-    /// What IS specific to this layer: `get_let_expr_in_template` matches on
-    /// `id.member` alone, so a template holding two value cells that share a
-    /// member name under different entities is unresolvable by member name
-    /// alone — there is no principled way to pick between them. This pins
-    /// that the lookup aborts rather than silently returning one of the two.
+    /// What IS specific to this layer: `get_let_expr_in_template` resolves a
+    /// member shared by several cells in favour of the template's own cell.
+    /// This fixture's colliding entities ("First", "Second") are neither the
+    /// template's own ("Bracket"), so nothing singles one out and there is no
+    /// principled way to pick between them. This pins that the lookup aborts
+    /// rather than silently returning one of the two.
     #[test]
     #[should_panic(expected = "ambiguous cell name")]
     fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
