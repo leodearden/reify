@@ -377,85 +377,69 @@ test_serial_2.sh intra-run-serial
 test_hostx_1.sh host-exclusive
 EOF
 
-    CNT_T9="$TMPDIR_T9/counters"
-    mkdir -p "$CNT_T9"
+    # _h2t9_probe_group_reset <dir> <budget_base>
+    # (Re)initialise a probe group: live/peak overlap (cur, max), cumulative
+    # entries (arrived), the per-member outcomes log, and the window budget
+    # BASE. Members load-scale the base at run time, so one set of mock files
+    # serves a lower-bound run and an upper-bound run.
+    _h2t9_probe_group_reset() {
+        local _dir="$1" _budget_base="$2"
+        mkdir -p "$_dir"
+        echo 0 > "$_dir/cur"; echo 0 > "$_dir/max"; echo 0 > "$_dir/arrived"
+        : > "$_dir/outcomes"
+        echo "$_budget_base" > "$_dir/budget_base"
+    }
 
-    # _h2t9_write_pool_mock <path> <exit_code>
-    # Mock that proves concurrent overlap: flock-guarded increment of a
-    # shared "current"/"max" counter pair, then a load-tolerant BARRIER
-    # (poll until >= 2 siblings have arrived, bounded by
-    # load_tolerant_attempts so the wait auto-extends under host load
-    # instead of guessing a fixed sleep) before decrementing. All reads use
-    # `-ge`/equality only -- no `-le`/`-lt` wall-clock upper bound.
-    _h2t9_write_pool_mock() {
-        local _path="$1" _exit_code="$2"
-        cat > "$_path" <<'MOCKBODY'
-#!/usr/bin/env bash
-set -euo pipefail
-source "$H2_T9_LOAD_LIB"
-LOCK="$H2_T9_POOL_LOCK"; CUR="$H2_T9_POOL_CUR"; MAX="$H2_T9_POOL_MAX"; ARRIVED="$H2_T9_POOL_ARRIVED"
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
-    echo "$c" > "$CUR"
-    m=$(cat "$MAX" 2>/dev/null || echo 0)
-    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
-    a=$(( $(cat "$ARRIVED" 2>/dev/null || echo 0) + 1 ))
-    echo "$a" > "$ARRIVED"
-) 201>>"$LOCK"
+    # _h2t9_write_probe_mock <path> <exit_code> <group_dir> <group_size>
+    # Successor-rendezvous probe member: takes an arrival ordinal, then holds
+    # until the next ordinal (capped at <group_size>) has arrived or
+    # load_tolerant_attempts(budget_base) ticks of 0.1s are spent. Members
+    # scheduled concurrently overlap by construction; members scheduled
+    # serially can never see a successor, so each non-last member sits out its
+    # WHOLE window -- the window an `== 1` claim needs to mean anything. The
+    # hold ends `met` (successor arrived) or `exhausted` (budget spent), and
+    # the outcome is recorded either way, never silent. The last member and a
+    # Phase-2.5 retry (ordinal past the group size) meet at once. Reads use
+    # `-ge`/equality only -- no wall-clock upper bound.
+    _h2t9_write_probe_mock() {
+        local _path="$1" _exit_code="$2" _group_dir="$3" _group_size="$4"
+        {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'source %q\n' "$LOAD_TOLERANCE_LIB_T9"
+            printf 'GROUP_DIR=%q\nGROUP_SIZE=%q\n' "$_group_dir" "$_group_size"
+            cat <<'MOCKBODY'
+LOCK="$GROUP_DIR/lock"
+me=$(
+    (
+        flock -x 201
+        c=$(( $(cat "$GROUP_DIR/cur") + 1 ))
+        echo "$c" > "$GROUP_DIR/cur"
+        if [ "$c" -gt "$(cat "$GROUP_DIR/max")" ]; then echo "$c" > "$GROUP_DIR/max"; fi
+        a=$(( $(cat "$GROUP_DIR/arrived") + 1 ))
+        echo "$a" > "$GROUP_DIR/arrived"
+        echo "$a"
+    ) 201>>"$LOCK"
+)
 
-attempts=$(load_tolerant_attempts "${H2_T9_POLL_BASE:-3}")
+want=$(( me < GROUP_SIZE ? me + 1 : GROUP_SIZE ))
+budget=$(load_tolerant_attempts "$(cat "$GROUP_DIR/budget_base")")
+outcome=exhausted
 i=0
-while [ "$i" -lt "$attempts" ]; do
-    a=$( ( flock -x 201; cat "$ARRIVED" 2>/dev/null || echo 0 ) 201>>"$LOCK" )
-    if [ "$a" -ge "${H2_T9_ARRIVE_THRESHOLD:-2}" ]; then break; fi
+while [ "$i" -lt "$budget" ]; do
+    arrived=$( ( flock -x 201; cat "$GROUP_DIR/arrived" ) 201>>"$LOCK" )
+    if [ "$arrived" -ge "$want" ]; then outcome=met; break; fi
     sleep 0.1
     i=$((i + 1))
 done
 
 (
     flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
-    echo "$c" > "$CUR"
+    echo "$outcome" >> "$GROUP_DIR/outcomes"
+    echo $(( $(cat "$GROUP_DIR/cur") - 1 )) > "$GROUP_DIR/cur"
 ) 201>>"$LOCK"
 MOCKBODY
-        echo "exit $_exit_code" >> "$_path"
-        chmod +x "$_path"
-    }
-
-    # _h2t9_write_serial_mock <path> <exit_code>
-    # No barrier -- just a short flock-guarded pause while holding the
-    # counter incremented, so an accidental overlap (regression) is still
-    # observable via the max counter.
-    _h2t9_write_serial_mock() {
-        local _path="$1" _exit_code="$2"
-        cat > "$_path" <<'MOCKBODY'
-#!/usr/bin/env bash
-set -euo pipefail
-source "$H2_T9_LOAD_LIB"
-LOCK="$H2_T9_SERIAL_LOCK"; CUR="$H2_T9_SERIAL_CUR"; MAX="$H2_T9_SERIAL_MAX"
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
-    echo "$c" > "$CUR"
-    m=$(cat "$MAX" 2>/dev/null || echo 0)
-    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
-) 201>>"$LOCK"
-
-pause_attempts=$(load_tolerant_attempts "${H2_T9_SERIAL_PAUSE_BASE:-2}")
-j=0
-while [ "$j" -lt "$pause_attempts" ]; do
-    sleep 0.05
-    j=$((j + 1))
-done
-
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
-    echo "$c" > "$CUR"
-) 201>>"$LOCK"
-MOCKBODY
-        echo "exit $_exit_code" >> "$_path"
+            echo "exit $_exit_code"
+        } > "$_path"
         chmod +x "$_path"
     }
 
@@ -468,43 +452,21 @@ MOCKBODY
         grep -cx -- "$_outcome" "$_outcomes" || true
     }
 
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_1.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_2.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_3.sh" 1
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_1.sh" 0
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_2.sh" 0
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_hostx_1.sh" 0
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_1.sh" 0 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_2.sh" 0 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_3.sh" 1 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_serial_1.sh" 0 "$PROBE_SERIAL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_serial_2.sh" 0 "$PROBE_SERIAL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_hostx_1.sh" 0 "$PROBE_SERIAL_T9" 3
 
-    export H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9"
-    export H2_T9_POOL_LOCK="$CNT_T9/pool.lock"
-    export H2_T9_POOL_CUR="$CNT_T9/pool.cur"
-    export H2_T9_POOL_MAX="$CNT_T9/pool.max"
-    export H2_T9_POOL_ARRIVED="$CNT_T9/pool.arrived"
-    export H2_T9_SERIAL_LOCK="$CNT_T9/serial.lock"
-    export H2_T9_SERIAL_CUR="$CNT_T9/serial.cur"
-    export H2_T9_SERIAL_MAX="$CNT_T9/serial.max"
-    export H2_T9_POLL_BASE=3
-    export H2_T9_ARRIVE_THRESHOLD=2
-    export H2_T9_SERIAL_PAUSE_BASE=2
-
-    # T9a specifically proves overlap (pool max-concurrency >= 2), so its
-    # ARRIVED>=2 barrier uses a much larger poll base than the shared default
-    # -- in practice a deadlock backstop rather than a race the
-    # first-arriving mock could lose on a severely descheduled host (overlap
-    # should be near-guaranteed, not merely probabilistic; the bound stays
-    # finite so a genuine bug still fails the test instead of hanging it).
-    # This override applies ONLY to the T9a invocation below (env-prefixed on
-    # that one command) -- T9b intentionally keeps the small shared default:
-    # with REIFY_RUN_ALL_POOL_CONCURRENCY=1 its sole running pool member can
-    # never observe ARRIVED>=2 (no sibling runs concurrently), so it always
-    # burns the full poll budget serially, and inflating that budget would
-    # only add wall-clock to T9b with no proof-strength benefit.
-    H2_T9_POLL_BASE_T9A=100
+    # Budget base per claim direction: 100 is a lower-bound backstop (members
+    # leave the moment their successor arrives); 3 is the upper-bound
+    # exclusive window each non-last member must sit out with no successor.
 
     # -- 9a: REIFY_RUN_ALL_POOL_CONCURRENCY=4 (4 slots, 3 pool members -- all
     # admitted concurrently) ------------------------------------------------
-    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
-    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    _h2t9_probe_group_reset "$PROBE_POOL_T9" 100
+    _h2t9_probe_group_reset "$PROBE_SERIAL_T9" 3
     LOCK_T9A="$TMPDIR_T9/pool-semaphore-a.lock"
 
     t9a_rc=0
@@ -513,14 +475,15 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-        H2_T9_POLL_BASE="$H2_T9_POLL_BASE_T9A" \
         bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9a_rc=$?
 
-    t9a_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
-    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max)" \
+    t9a_pool_max="$(cat "$PROBE_POOL_T9/max" 2>/dev/null || echo 0)"
+    t9a_pool_met="$(_h2t9_probe_count "$PROBE_POOL_T9" met)"
+    t9a_pool_exhausted="$(_h2t9_probe_count "$PROBE_POOL_T9" exhausted)"
+    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max; successor rendezvous: $t9a_pool_met met, $t9a_pool_exhausted exhausted)" \
         test "$t9a_pool_max" -ge 2
 
-    t9a_serial_max="$(cat "$H2_T9_SERIAL_MAX" 2>/dev/null || echo 0)"
+    t9a_serial_max="$(cat "$PROBE_SERIAL_T9/max" 2>/dev/null || echo 0)"
     assert "T9a: serial group max-concurrency == 1 (got: $t9a_serial_max)" \
         test "$t9a_serial_max" -eq 1
 
@@ -558,8 +521,8 @@ MOCKBODY
         test "$t9a_rc" -eq 1
 
     # -- 9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 (bound honored -- pool serializes) --
-    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
-    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    _h2t9_probe_group_reset "$PROBE_POOL_T9" 3
+    _h2t9_probe_group_reset "$PROBE_SERIAL_T9" 3
     LOCK_T9B="$TMPDIR_T9/pool-semaphore-b.lock"
 
     t9b_rc=0
@@ -570,7 +533,7 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9b_rc=$?
 
-    t9b_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    t9b_pool_max="$(cat "$PROBE_POOL_T9/max" 2>/dev/null || echo 0)"
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (got: $t9b_pool_max)" \
         test "$t9b_pool_max" -eq 1
 
@@ -1690,18 +1653,18 @@ test_pool_5.sh pool
 test_pool_6.sh pool
 EOF
 
-    CNT_T20="$TMPDIR_T20/counters"
-    mkdir -p "$CNT_T20"
-
-    # Reuse Test 9's flock CUR/MAX + ARRIVED-barrier pool mock verbatim (all
-    # 6 members pass -- this test is about spawn-footprint/observability,
-    # not failure classification).
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_1.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_2.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_3.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_4.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_5.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_6.sh" 0
+    # Reuse Test 9's successor-rendezvous probe (all 6 members pass -- this
+    # test is about spawn-footprint/observability, not failure
+    # classification). At N=2 each member is released when its successor is
+    # admitted and the last meets at once, so the chain cannot deadlock.
+    PROBE_T20="$TMPDIR_T20/probe"
+    _h2t9_probe_group_reset "$PROBE_T20" 100
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_1.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_2.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_3.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_4.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_5.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_6.sh" 0 "$PROBE_T20" 6
 
     SLOT_LOG_T20="$TMPDIR_T20/slot-events.log"
 
@@ -1712,13 +1675,6 @@ EOF
         REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         REIFY_SLOT_EVENT_LOG="$SLOT_LOG_T20" \
-        H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9" \
-        H2_T9_POOL_LOCK="$CNT_T20/pool.lock" \
-        H2_T9_POOL_CUR="$CNT_T20/pool.cur" \
-        H2_T9_POOL_MAX="$CNT_T20/pool.max" \
-        H2_T9_POOL_ARRIVED="$CNT_T20/pool.arrived" \
-        H2_T9_POLL_BASE=100 \
-        H2_T9_ARRIVE_THRESHOLD=2 \
         bash "$RUN_ALL" "$TMPDIR_T20" 2>&1)" || t20_rc=$?
 
     t20_peak="$(grep -oE 'shells=[0-9]+' <<<"$t20_out" | head -1 | cut -d= -f2)" || true
@@ -1735,8 +1691,10 @@ EOF
         assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (got: $t20_out)" false
     fi
 
-    t20_pool_max="$(cat "$CNT_T20/pool.max" 2>/dev/null || echo 0)"
-    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max)" \
+    t20_pool_max="$(cat "$PROBE_T20/max" 2>/dev/null || echo 0)"
+    t20_pool_met="$(_h2t9_probe_count "$PROBE_T20" met)"
+    t20_pool_exhausted="$(_h2t9_probe_count "$PROBE_T20" exhausted)"
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max; successor rendezvous: $t20_pool_met met, $t20_pool_exhausted exhausted)" \
         test "$t20_pool_max" -ge 2
 
     if [ -s "$SLOT_LOG_T20" ] && grep -q 'ACQUIRE' "$SLOT_LOG_T20"; then
