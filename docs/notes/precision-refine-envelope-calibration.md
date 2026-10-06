@@ -754,7 +754,7 @@ coordinate of many was walked.
 | | |
 |---|---|
 | binary | `target/release/reify`, built 2026-10-06 16:59 — newer than every `crates/` commit reachable from the measured HEAD (the last is the task/6188 merge `fca4a9ad5f`, 15:32 the same day); not rebuilt afterwards |
-| HEAD | `8e81ea8339` (branch `task/6318`) when measured. The branch was later rebased onto `18d86776e7`; the only `crates/` paths that changed (`reify-test-support`'s helpers and one of its tests) are not in `reify-cli`'s normal dependency graph (`cargo tree -p reify-cli -e normal -i reify-test-support` prints nothing), so the binary is unaffected and every datum below comes from this one binary |
+| HEAD | `8e81ea8339` (branch `task/6318`) when measured. The branch was later rebased onto `18d86776e7`; the only `crates/` paths that changed (`reify-test-support`'s helpers and one of its tests) are not in `reify-cli`'s normal dependency graph (`cargo tree --offline -p reify-cli -e normal -i reify-test-support` reports `nothing to print`), so the binary is unaffected and every datum below comes from this one binary |
 | kernel | OCCT 7.8 (26 `libTK*.so.7.8` ldd lines, 26 distinct sonames; `has_occt` live, confirmed functionally — every probe below realized and passed the §0 Caveat-2 datum gate). 27 `libTK*.so.7.9` lines are also linked, via gmsh; reify's own calls bind 7.8 |
 | machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-31 |
 | load | **45 – 541** 1-min loadavg at probe start across the session; per §0 Caveat 1 this moves wall clocks only |
@@ -952,7 +952,7 @@ What the rows show (**measured**):
   few 1e-4 mm wide, pinned next.
 * **Isolated lows too.** Offset 400 reads 0.9977 at 0.13 mm, between 2.67 (0.12) and 5.78 (0.14).
 * **It is expensive.** The finest rungs cost minutes each under load — offset 400 at 0.05 mm took
-  375 s, offset 500 at 0.06 mm took 273 s — against 3.9 s for the *coaxial* loft at 0.1 mm and
+  375 s, offset 500 at 0.06 mm took 273 s and at 0.025 mm (a halving-chain member, §3.1) 602 s — against 3.9 s for the *coaxial* loft at 0.1 mm and
   92 s for offset 400 at the same 0.1 mm. (Two contended wall clocks: indicative, per §0 Caveat 1.)
 
 *Hypothesis (not established by these samples):* the offset spelling's lateral face is a non-analytic
@@ -1007,13 +1007,12 @@ n = ⌈log₂ K⌉ = ⌈6.14⌉ = **7** (derived; §3.1).
 * *No turnover.* §1.5's criterion for a `supremum` (from #6545's review) is a fall that exceeds the
   oscillation amplitude seen elsewhere in the same ladder. Here that amplitude is itself 3.5× across a
   single 0.00004 mm step (4.736e-3 at 0.06716 mm, 1.361e-3 at 0.0672 mm), and the offset-500 ladder runs
-  6.88 → 62.42 across 0.06 → 0.064 mm. A low reading at the finest rungs (6.90 at 0.05 mm, offset 400) is
-  therefore not a turnover, and none is, or could be, demonstrated.
-* *Budget wall.* A rung finer than ≈ 0.05 mm costs, by §2.1's 1/deflection scaling (**derived**), well over
-  the 375 s the 0.05 mm rung took. This class is budget-limited at fine `d`, like sweep, pipe and
-  spline and unlike nurbs_surface. What lies below is unknown: the two finest rungs measured (offset 400 at
-  0.05 mm, 6.90; offset 500 at 0.06 mm, 6.88) read below the spikes above them, which says nothing about
-  0.03 mm.
+  6.88 → 62.42 across 0.06 → 0.064 mm. Low readings at the finest rungs (6.90 at 0.05 mm on offset 400; 8.20 at 0.05 mm and 15.52 at 0.025 mm on
+  offset 500) are therefore not a turnover, and none is, or could be, demonstrated.
+* *Budget wall.* The finest rung measured, 0.025 mm on offset 500 (a halving-chain member, §3.1), cost
+  602 s and read 15.52 — below the spikes above it; the next halving would cost ≈ 1200 s
+  (**derived**, §2.1's 1/deflection scaling). This class is budget-limited at fine `d`, like sweep, pipe and
+  spline and unlike nurbs_surface, and what lies below 0.025 mm is unknown.
 * *One coordinate of many.* Walked: five spellings and one offset coordinate. **Not** walked: top radius
   (250 mm throughout), height (800 mm), a y-offset or rotation of the top section, section count beyond
   three, section shape beyond circle/ellipse/rectangle. The leader sits on the planned range's boundary.
@@ -1034,29 +1033,29 @@ subject `loft(circle(500mm), circle(250mm))` — §0 Caveat 2's shape exactly: `
 (`E_MODULE_PATH_MISMATCH`, **exit 1**) both returned `NO-DATUM`; an anchor not present exactly once returned
 `SED-FAILED` without running `reify`; `timeout 1` returned `TIMEOUT` (rc 124). The positive control — the
 committed subject at 20 mm — read 1.156e-2. **No measurement run produced a token**: every one of the
-1696 runs below emitted the datum line, so neither a non-realization nor a timeout is hiding in any
+1778 runs below emitted the datum line, so neither a non-realization nor a timeout is hiding in any
 table.
 
 Re-runs: the five gate rungs, the three offset-0 control rungs, **every rung whose ratio is ≥ 2** and each
-spelling's highest rung were run again — 444 probes compared, **444 byte-identical, 0
-divergent**. **Exception:** 63 rungs with ratio ≥ 2 ran once (2 from stage `s3b-lead`, 8 from stage `s3c-fine`, 12 from stage `s3d-edge`, 3 from stage `s3e-ext`, 12 from stage `s5-chain`, 22 from stage `s6-chain`, 4 from stage `s6-small`; all at d ≤ 1.25 mm). The headline plateau was run three times at 0.067 mm and the 0.064 mm spike twice; both sides
+spelling's highest rung were run again — 507 probes compared, **507 byte-identical, 0
+divergent**. The headline plateau was run three times at 0.067 mm and the 0.064 mm spike twice; both sides
 of the pinned edge were re-run. A plateau edge is where a facet count changes, so it is where a
 non-deterministic tie-break would surface if one existed; none did. Wall clocks varied with load, no
 achieved value did (§0 Caveat 1).
 
 **Deviation from §4, disclosed.** §4 prescribes `timeout 240`. The finest off-axis rungs would have been
-killed by it (offset 400 at 0.05 mm took 375 s), turning a datum into a `TIMEOUT` — a cost result,
+killed by it (offset 500 at 0.025 mm took 602 s, offset 400 at 0.05 mm 375 s), turning a datum into a `TIMEOUT` — a cost result,
 which is exactly what this class's budget-limited status should not be allowed to hide. `timeout 240`
 was used for the spines, the grids and the 0.05 mm-step walk. **Every off-axis rung finer than 0.1 mm**, and
 every halving-chain member (§3.1), ran under `timeout 600` (the lazily evaluated deep chains under 1500 s).
 None hit its limit.
 
-**Totals across the block:** **1696 runs over 1236 probes** (a probe is one subject at one
-`d`), covering 274 distinct `d`; 423 of the runs are repetitions. Neither tally should
+**Totals across the block:** **1778 runs over 1236 probes** (a probe is one subject at one
+`d`), covering 274 distinct `d`; 505 of the runs are repetitions. Neither tally should
 be read as the other, and several `d` recur across stages and spellings. Every run emitted the datum line;
 not a single `OK`, `INDETERMINATE`, `NO-DATUM` or `TIMEOUT` occurred in a measurement run (the four
 non-datum results in the raw log are the deliberate validation runs above). No achieved value differed
-between repetitions anywhere. Finest `d` probed: 0.05 mm; most expensive run: 602 s. The raw log records **completed** runs only: probes
+between repetitions anywhere. Finest `d` probed: 0.025 mm; most expensive run: 602 s. The raw log records **completed** runs only: probes
 in flight when the orchestrator restarted mid-session were killed and are not counted; every one was re-run.
 
 **History.** Until task **#6188** this section read "Loft is unreachable from the source language" and
