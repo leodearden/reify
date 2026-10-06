@@ -42,8 +42,9 @@ most likely failure mode of this whole exercise is a table of confident near-zer
 that are silent non-realizations.
 
 There is also a *third* outcome, distinct from both: `INDETERMINATE`, which is what a
-construct that compiles but never realizes produces (loft, degenerate cone — §1.5,
-§2.3).
+construct that compiles but never realizes produces (a degenerate cone — §1.3). Loft was
+listed here until task #6188 made it realizable; §1.6 records what it measures now, and its
+same-plane form is a live instance of the `OK` trap above.
 
 **Caveat 3 — sampled lower bound.** The reported deviation is a sampled lower bound on
 the true Hausdorff chord error (4 interior points per facet), and per PRD §2.1 only the
@@ -60,6 +61,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 
 | class | regime coordinate | sup K | at | status |
 |---|---|---|---|---|
+| loft | x-offset / `bottom_r`, `d` ‡ | **≥ 70.73** | `x/r` = 1.0, `d` = 0.06696 mm | **lower bound**, chaotic in `d`, budget-limited |
 | sphere | `d/R` | **2.079** | `d/R` = 3.12e-4 | supremum |
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
@@ -68,7 +70,6 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
-| loft | — | **no datum** | — | blocked at realization |
 
 † Two caveats, distinct from the other lower-bound rows. First, `d/span` reflects the
 committed **1000 mm × 1000 mm control net** only (§1.5) — unlike cone/torus/fillet, whose
@@ -87,6 +88,16 @@ continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were
 (P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
 So `lower bound` no longer means the structure is un-understood, and never meant a wall
 was hit — it means 1.0010 is a floor that further walking can only raise.
+
+‡ The worst class measured, and the least settled. The committed coaxial spelling is **not**
+the subject of this row: it measures as a cone (byte-identical `a` to `cone(500mm, 250mm,
+800mm)` at 19 of 19 rungs, K = 0.9210). The row is an **off-axis** loft — the top section's
+centre offset in x — whose `a` is piecewise-constant in `d` with isolated spikes: 70.73 at
+0.06696 mm sits beside ≈ 20 on both neighbouring plateaus, so no ladder samples it, and no
+turnover is shown. The largest values sit at the fine end of the walked range, where each
+rung costs minutes; one regime coordinate (the offset) was walked, at one top radius and one
+height. `K` > 16 is established — the true ratio at the headline `d` lies in [70.721,
+70.736) — but the value is a floor, and §3.1 consumes it as one. Full account: §1.6.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -169,9 +180,14 @@ Every class shows a **floor** at coarse `d`: achieved stops falling because the
 tessellator has hit its minimum facet count. Sphere is pinned at `6.006e-2` for all
 `d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm;
 nurbs_surface identical at 400 mm, 200 mm and 100 mm (§1.5), so its topmost mandated rung
-sits inside the floor as well.
+sits inside the floor as well; loft's coaxial spelling is identical from 400 mm down to 20 mm
+(`1.156e-2`, the same string as the cone control) and its off-axis spelling at 100, 50 and 20
+mm (`2.910e-3` at x-offset 200 mm; §1.6).
 In the floor regime `a/d < 1` **trivially**, so a coarse sweep reports a falsely
-comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4).
+comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4), and
+loft shows it in its most extreme measured form: the x-offset-500 spelling reads 0.1458 at 20
+mm, 2.3840 at 10 mm, 5.2975 at 4 mm and **70.73 at 0.06696 mm** (§1.6), so a sweep that
+stopped at the floor would have reported 0.1458.
 
 ### 1.5 Non-analytic classes
 
@@ -215,7 +231,9 @@ Not measurable, recorded honestly:
 * **sweep along a helix**, either profile — `TIMEOUT > 90 s` at every `d` tried.
 * **`nurbs(…)`** is excluded on semantics, not behaviour: it returns a **Wire**, which
   has no facets and therefore no chord deviation.
-* **loft** — blocked at realization, both failure modes below.
+
+(**loft** was listed here as blocked at realization until task #6188 made it realizable. It
+is measured in §1.6, not here, and is the worst class in §1.1.)
 
 **`nurbs_surface(…)` is measurable and does not belong in the list above.** The
 `INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
@@ -873,24 +891,28 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 
 | class | sup K | required n |
 |---|---|---|
+| loft | ≥ 70.73 ‡ | ≥ **7** ‡ |
 | sphere | 2.079 | **2** |
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
 | nurbs surface | ≥ 1.0010 † | 1 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
-| loft | no datum | — |
 
-**No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
-`required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
+**One measured class exceeds K = 16: loft.** Its off-axis spelling reads **≥ 70.73** (§1.1,
+§1.6), so `n ≥ ⌈log2 70.73⌉ = ⌈6.14⌉ =` **7** (derived) — above the cap of 4, and a lower
+bound, so the true `n` can only be higher. Every other class stays at or below the sphere's
+2.079, needing `n = 2`. Of those, nurbs_surface is the one class measured **above** the
+K = 1 boundary, and so the one whose `required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
 that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above 1, so the
 crossing is established rather than merely not excluded. Per the † note below that value is
 still a lower bound, so the true supremum can only be higher. Even so this changes nothing
 at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
 class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within [0.9623, 1.0010],
 with no second branch like the sphere's ~2.07 tread. Cap 4
-covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
+covers K up to 16 at `B = d0`. Against the sphere — the worst class before loft had a datum
+— that was **7.7× headroom** (16 / 2.079). Against loft it is a **shortfall**: 16 / 70.73 =
+0.23, i.e. K exceeds what cap 4 covers by at least **4.4×** (derived), and K is a floor.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
 unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justified by
@@ -907,6 +929,11 @@ were pinned (a fourth plateau was walked only as a control), and a dense search 
 prove a supremum over a continuum — so the true K can only be *higher* than 1.0010. That
 does not disturb the cap: `n = 1` is nowhere near the cap-4 budget, and no plausible
 reading of this class's data approaches K ≈ 16.
+
+‡ Lower bound for the reasons §1.6 gives: `a` is piecewise-constant in `d` with isolated
+spikes, the walk stopped where each rung costs minutes, and one regime coordinate of many was
+walked. `n = ⌈log2 70.73⌉ = 7` inherits the floor. The coaxial spelling is not this row: it
+is the cone class (§1.6), `n = 0`.
 
 ### 3.2 Cost
 
@@ -982,7 +1009,7 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
 | `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
 | `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` | nurbs surface |
-| `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
+| `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — off-axis spelling, pinned at the §1.6 headline rung; minutes per run, use `timeout 600` |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
 
 A single probe:
@@ -1008,6 +1035,42 @@ done
 
 **A regime walk** — same loop, with a second `sed` expression rewriting the constructor,
 e.g. `s/torus\(1000mm, 100mm\)/torus(1000mm, 20mm)/`.
+
+**A loft subject swap** (task #6318) — sed is fragile for a subject full of parentheses and
+commas, so the spellings and offsets of §1.6 are produced by an exactly-once Python rewrite of
+the `let g = …` line. Anchoring on that line rather than on a spelling keeps the recipe valid
+whichever spelling the fixture has committed (it is pinned at the offset-500 leader). Same
+conventions as the dense walk above — one parent dir per probe, basename kept, `out` captured
+before the exit code is read, distinct failure tokens:
+
+```python
+# loft_probe.py — run from the repo root.  probe(d_mm [, rhs]) -> "<a>" | NO-DATUM | TIMEOUT | SED-FAILED
+import os, re, subprocess, tempfile
+F = "tests/prd-gate/fixtures/pnrg_envelope_loft.ri"
+DATUM = re.compile(r"sampled facet deviation (\S+) m exceeds bound 1\.000e-6 m")
+
+def probe(d_mm, rhs=None):
+    src = open(F).read()
+    if rhs is not None:                      # replace the whole `let g =` line, exactly once
+        src, n = re.subn(r"^(    let g = ).*$", lambda m: m.group(1) + rhs, src, flags=re.M)
+        if n != 1: return "SED-FAILED"
+    src, n = re.subn(r"^#precision\([^)]*\)$", f"#precision({d_mm}mm)", src, flags=re.M)
+    if n != 1: return "SED-FAILED"
+    path = os.path.join(tempfile.mkdtemp(prefix="pnrg_loft_"), os.path.basename(F))
+    open(path, "w").write(src)
+    p = subprocess.run(["timeout", "600", "./target/release/reify", "check", path],
+                       capture_output=True, text=True)
+    if p.returncode == 124: return "TIMEOUT"
+    m = DATUM.search(p.stdout + p.stderr)
+    return m.group(1) if m else "NO-DATUM"      # `OK` and E_MODULE_PATH_MISMATCH land here
+
+S1 = lambda x: f"loft(circle(500mm), translate(circle(250mm), {x}mm, 0mm, 800mm))"  # x = offset, mm
+# probe(20, S1(0))      -> 1.156e-2   coaxial control (== cone(500mm, 250mm, 800mm))
+# probe(5,  S1(200))    -> 2.175e-2   §1.6 reproduction gate
+# probe(0.06696)        -> 4.736e-3   the committed fixture: the headline
+```
+
+The other spellings (S2–S4) are in the §1.6 table; pass each as `rhs`.
 
 **A dense parallel walk** (task #7128) — what the plain ladder above does not cover. Three
 things differ once probes run concurrently and the ratios are read to 4 dp:

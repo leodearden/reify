@@ -1,4 +1,4 @@
-// Fixture: precision-nominal α (task 6166) — LOFT probe.
+// Fixture: precision-nominal α (task 6166) — LOFT probe (datum: task 6318).
 //
 // Copies the pnrg_envelope_sphere.ri layout (one geometry `let`, a separate
 // typed checker, a deliberately unreachable 1 μm bound as a read-out
@@ -7,27 +7,40 @@
 // emits `sampled facet deviation <X> m`; `OK` means the subject never realized.
 //
 // Profile constructors take no plane argument, so the two sections are placed
-// on separate planes with translate().  That this exact spelling compiles and
-// realizes a frustum is pinned by
-// crates/reify-eval/tests/harness_sweep/loft_e2e.rs.
+// on separate planes with translate().  That the COAXIAL spelling,
 //
-// No achieved/requested datum has been recorded for the loft class yet; that
-// measurement belongs to task 6318.
+//     loft(circle(500mm), translate(circle(250mm), 0mm, 0mm, 800mm))
+//
+// compiles and realizes a frustum is pinned by
+// crates/reify-eval/tests/harness_sweep/loft_e2e.rs.  It is NOT this fixture's
+// subject: it measures byte-identically to `cone(500mm, 250mm, 800mm)` at 19 of
+// 19 rungs (note §1.6), so it probes the cone class, not loft, and is kept
+// only as a control.  The subject below offsets the top section 500 mm in x
+// (x/r = 1.0, r = the 500 mm bottom radius), which breaks that identity and
+// makes the probe loft-specific.
+//
+// Headline datum (note §1.6; summary §1.1; cap consequence §3.1 and §3.3): at
+// #precision(0.06696mm) this fixture reports a = 4.736e-3 m, i.e. a/d = 70.73
+// — a lower bound on the loft class's K, far above the 16 that
+// REFINE_ATTEMPT_CAP = 4 covers.  The value is a narrow plateau of `a` in d,
+// not a trend: at 0.06692 mm the same subject reports 1.329e-3 and at
+// 0.0672 mm 1.361e-3.  Cost: minutes per run on a contended box — use
+// `timeout 600`, not the note's usual 90 s.
 //
 // ── Reproduction ──
 //
-//   reify check tests/prd-gate/fixtures/pnrg_envelope_loft.ri
+//   timeout 600 reify check tests/prd-gate/fixtures/pnrg_envelope_loft.ri
 //
 // NOT wired into any probe set or auto-run gate.
 
 module pnrg_envelope_loft
 
-#precision(20mm)
+#precision(0.06696mm)
 
 // Subject: a frustum lofted between a 500 mm circle at z = 0 and a 250 mm
-// circle at z = 800 mm.
+// circle at z = 800 mm whose centre is offset 500 mm in x.
 structure PnrgLoft {
-    let g = loft(circle(500mm), translate(circle(250mm), 0mm, 0mm, 800mm))
+    let g = loft(circle(500mm), translate(circle(250mm), 500mm, 0mm, 800mm))
 }
 
 structure PnrgLoftCheck {
