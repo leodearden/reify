@@ -40,8 +40,9 @@
 #   check  0 = armed
 #          1 = not armed (stderr names the toplevel, the resolved hooks dir,
 #              each unmet condition and the remediation)
-#          3 = could not check (usage error, or the target is not a git work
-#              tree)
+#          3 = could not check (usage error, the target is not a git work
+#              tree, or the liveness probe could not run — e.g. mktemp or the
+#              `git init` of its scratch repo failed; stderr names the step)
 #   arm    0 = armed (already, or re-armed by this run)
 #          2 = the pin cannot fix it (pinned, but the hook itself does not gate)
 #          ANY OTHER NON-ZERO = this run failed.  Branch on `0 | 2 | *`, never on
@@ -114,15 +115,23 @@ _toplevel() {
 
 # _probe_refuses <hook> — does <hook>, run as git runs it for a refs/stash
 # create, refuse under ENFORCE?  Runs in a scratch repo, removed on every path.
+# Returns 0 refuses | 1 does not refuse (exits 0, or times out) | 2 the probe
+# could not run (stderr names the step), which says nothing about the hook.
 _probe_refuses() {
     local hook="$1" scratch rc=0
-    scratch="$(mktemp -d "${TMPDIR:-/tmp}/hooks-armed-probe.XXXXXX")" || return 1
-    if git init -q "$scratch" >/dev/null 2>&1; then
-        ( cd "$scratch" \
-            && REIFY_STASH_GUARD_ENFORCE=1 REIFY_STASH_GUARD_BYPASS=0 \
-               timeout -k "$PROBE_KILL_AFTER_SECS" "$PROBE_TIMEOUT_SECS" "$hook" prepared \
-               <<<"$ZERO_OID $PROBE_OID refs/stash" >/dev/null 2>&1 ) || rc=$?
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/hooks-armed-probe.XXXXXX")" || {
+        echo "[error] hooks-armed-guard: cannot run the liveness probe: mktemp -d under ${TMPDIR:-/tmp} failed" >&2
+        return 2
+    }
+    if ! git init -q "$scratch" >/dev/null 2>&1; then
+        echo "[error] hooks-armed-guard: cannot run the liveness probe: git init of its scratch repo $scratch failed" >&2
+        rm -rf "$scratch"
+        return 2
     fi
+    ( cd "$scratch" \
+        && REIFY_STASH_GUARD_ENFORCE=1 REIFY_STASH_GUARD_BYPASS=0 \
+           timeout -k "$PROBE_KILL_AFTER_SECS" "$PROBE_TIMEOUT_SECS" "$hook" prepared \
+           <<<"$ZERO_OID $PROBE_OID refs/stash" >/dev/null 2>&1 ) || rc=$?
     rm -rf "$scratch"
     case "$rc" in
         0|124|137) return 1 ;;
@@ -146,9 +155,10 @@ _unmet() {
 }
 
 # _assess — resolve HOOKS_DIR for $TOP and collect every unmet ARMED condition
-# into UNMET.  Returns 0 armed | 1 not armed | 3 could not resolve the hooks dir.
+# into UNMET.  Returns 0 armed | 1 not armed | 3 could not check (the hooks dir
+# does not resolve, or the liveness probe could not run).
 _assess() {
-    local hook
+    local hook probe_rc=0
     UNMET=()
     HOOKS_DIR="$(git -C "$TOP" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)" || {
         echo "[error] hooks-armed-guard: cannot resolve the hooks dir of $TOP" >&2
@@ -161,8 +171,13 @@ _assess() {
         _unmet "the effective hooks dir holds no reference-transaction hook"
     elif [ ! -x "$hook" ]; then
         _unmet "reference-transaction is not executable, so git skips it"
-    elif ! _probe_refuses "$hook"; then
-        _unmet "reference-transaction does not refuse a refs/stash push under REIFY_STASH_GUARD_ENFORCE=1"
+    else
+        _probe_refuses "$hook" || probe_rc=$?
+        case "$probe_rc" in
+            0) ;;
+            1) _unmet "reference-transaction does not refuse a refs/stash push under REIFY_STASH_GUARD_ENFORCE=1" ;;
+            *) return 3 ;;
+        esac
     fi
     _pinned || _unmet "core.hooksPath is not pinned in this worktree's config.worktree, so it rests on the shared value Claude Code's worktree feature rewrites"
     [ "${#UNMET[@]}" -eq 0 ]

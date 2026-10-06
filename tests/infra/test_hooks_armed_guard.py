@@ -136,9 +136,13 @@ class GuardFixture(unittest.TestCase):
     def git_out(self, where, *args):
         return self.git(where, *args).stdout.strip()
 
-    def run_guard(self, *argv):
-        return subprocess.run([str(GUARD), *map(str, argv)], env=self.env,
+    def run_guard(self, *argv, env=None):
+        return subprocess.run([str(GUARD), *map(str, argv)], env=env or self.env,
                               capture_output=True, text=True)
+
+    def run_guard_without_tmp(self, *argv):
+        """The guard on a host whose TMPDIR cannot hold the probe's scratch repo."""
+        return self.run_guard(*argv, env=dict(self.env, TMPDIR=str(self.tmpdir / "no-tmp")))
 
     # -- store state ------------------------------------------------------
 
@@ -275,6 +279,13 @@ class CheckContract(GuardFixture):
     def test_t7_help_exits_0(self):
         self.assert_rc(self.run_guard("--help"), 0)
 
+    def test_t7_unrunnable_probe_cannot_check(self):
+        # The hook gates (the oracle refuses), so a 1 here would blame a
+        # healthy hook for the host's broken tmp dir.
+        self.pin("hooks")
+        self.assert_rc(self.run_guard_without_tmp("check", self.lane), 3)
+        self.assert_push_refused()
+
 
 class ArmContract(GuardFixture):
     """`arm`: 0 armed | 2 the pin cannot fix it | * failed; lane-scoped repair."""
@@ -325,6 +336,13 @@ class ArmContract(GuardFixture):
         self.assert_rc(self.run_guard("arm", plain), 3)
         self.assertEqual(list(plain.iterdir()), [])
 
+    def test_t12_arm_with_an_unrunnable_probe_cannot_check(self):
+        # The pin does fix this lane (the oracle refuses), so a 2 and a
+        # "still DARK" line would both be false.
+        self.clobber_shared(str(self.tmpdir / "nonexistent"))
+        self.assert_rc(self.run_guard_without_tmp("arm", self.lane), 3)
+        self.assertEqual(self.liveness_lines(), [])
+        self.assert_push_refused()
 
 
 class SeedWiring(GuardFixture):
