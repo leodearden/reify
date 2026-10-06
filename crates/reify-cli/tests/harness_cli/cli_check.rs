@@ -372,8 +372,9 @@ fn check_strict_indeterminate_exits_failure_naming_constraint() {
         "stderr should contain 'Strict check failed' (strict detail goes to stderr), got stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
-        stderr.contains("Bracket#constraint[1]"),
-        "stderr should name 'Bracket#constraint[1]', got stderr: {stderr}\nstdout: {stdout}"
+        stderr.contains("Bracket#constraint[1]: undefined inputs: Bracket.tolerance"),
+        "stderr should name 'Bracket#constraint[1]' with its recorded reason, got \
+         stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
         !stdout.contains("No constraints violated"),
@@ -478,6 +479,57 @@ fn check_strict_purpose_indeterminate_exits_failure() {
 }
 
 // ── end task 4488 θ step-7 ───────────────────────────────────────────────────
+
+// ── task 5418 DIC δ: the recorded indeterminate reason is rendered ────────────
+
+/// B9: the strict detail and the per-constraint line both name the reason the
+/// checker recorded for the inert connect — never the old guessed header.
+#[test]
+fn check_strict_inert_connect_renders_the_recorded_reason() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        &common::fixture_path("dic_inert_connect.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --strict must fail on an indeterminate constraint.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("frame_align_a_b: operator undefined for these operand kinds"),
+        "the strict detail must name the recorded reason, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("inputs undefined (e.g."),
+        "the guessed reason must be gone, got stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE frame_align_a_b: operator undefined for these operand kinds"),
+        "the per-constraint line must name the recorded reason, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("OK connect_compat_a_b"),
+        "the satisfied connect constraint is reported unchanged, got stdout: {stdout}"
+    );
+}
+
+/// R4: without `--strict` the inert connect keeps today's green exit and summary.
+#[test]
+fn check_inert_connect_without_strict_is_unchanged() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", &common::fixture_path("dic_inert_connect.ri")]);
+
+    assert!(
+        status.success(),
+        "reify check (no --strict) must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No constraints violated (1 indeterminate)."),
+        "the legacy summary must be unchanged, got: {stdout}"
+    );
+}
 
 // --- B10 LEAF: W_UNDERDETERMINED on `reify check` (task κ #4019, PRD §3.6/§10.2) ---
 

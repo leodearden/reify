@@ -1,0 +1,12 @@
+// transform_inverse_length.ri — the control for transform_inverse_dimensionless.ri:
+// a LENGTH translation still exits 0 and prints the inverse with its translation in
+// SI metres, so the sibling's exit 1 is the gate rather than a broken builtin.
+//
+// Declares its module explicitly, as its sibling does, so stderr carries no
+// W_MODULE_DECL_MISSING warning.
+
+module transform_inverse_length
+
+structure def TransformInverseLength {
+    let t = transform_inverse(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+}

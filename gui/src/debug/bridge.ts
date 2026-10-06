@@ -22,6 +22,7 @@ import {
   DEFAULT_CONSTRAINT_HEIGHT,
 } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
+import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -86,7 +87,7 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //    would answer a malformed REQUEST with a true-looking OBSERVATION.
 //
 // The canonical enumeration is the exported `TYPE_GUARDED_RESOLVER_TOOLS`
-// below — FOURTEEN tool names, served by ELEVEN guard copies. It lives there
+// below — SIXTEEN tool names, served by TWELVE guard copies. It lives there
 // as a VALUE, not here as prose, so that a tool added without a guard fails a
 // test instead of merely making a comment stale; see its docblock. What the
 // flat list cannot express, and what this comment therefore carries, is the
@@ -104,7 +105,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 //  * `resolveElement`'s single copy, on the whole-selector `selector`, SHARED
 //    by query_selector, get_layout_metrics and get_computed_style;
 //  * query_selector_all's own inline copy of that same `selector` guard — it
-//    needs the whole NodeList, so it never routes through `resolveElement`.
+//    needs the whole NodeList, so it never routes through `resolveElement`;
+//  * `driveFormControl`'s single copy, on the whole-selector `selector`, in
+//    ./formControl, SHARED by scrub_range_input and edit_text_input. It
+//    resolves STRICTLY — exactly one match, else an error — deliberately
+//    diverging from `resolveElement`'s first match, for the reason
+//    `pickFeaChannelSelect` gives: guessing between N form controls would
+//    misapply a value silently.
 //
 // (Grep `typeof .* !== 'string'` in this file and you will also hit wait_for's
 // `predicate.path is required for store kind` — that one is NOT in this list:
@@ -119,12 +126,13 @@ export const SET_FEA_CHANNEL_ERRORS = {
 // The guards are INDEPENDENT COPIES, not one shared helper, so each needs its
 // own coverage or it can be reverted alone with the suite green. That makes the
 // unit of coverage the guard COPY, not the tool name: the `boundary guards above
-// the escape` block of debugBridge.test.tsx carries one row per copy — twelve
-// rows for eleven copies, since driveTreeNode's single copy interpolates two
+// the escape` block of debugBridge.test.tsx carries one row per copy — thirteen
+// rows for twelve copies, since driveTreeNode's single copy interpolates two
 // different testid prefixes and so earns a row each. A new tool joining this
 // list needs its own row unless it demonstrably SHARES an existing copy, as
-// collapse_tree_node shares expand_tree_node's and get_layout_metrics /
-// get_computed_style share query_selector's — in which case name the sharer.
+// collapse_tree_node shares expand_tree_node's, get_layout_metrics /
+// get_computed_style share query_selector's, and edit_text_input shares
+// scrub_range_input's — in which case name the sharer.
 export const RESOLVE_BY_TESTID_ERRORS = {
   notFound: (testId: string) => `element with data-testid="${testId}" not found`,
   notFoundForViewport: (testId: string, id: string) =>
@@ -145,7 +153,7 @@ export const RESOLVE_BY_TESTID_ERRORS = {
  * and the comments point at it instead of restating it.
  *
  * Order follows the rule's own prose: the seven `testId` tools, `open_menu`'s
- * `name`, the two tree tools' shared `path`, then the four whole-selector
+ * `name`, the two tree tools' shared `path`, then the six whole-selector
  * tools. NOT a dispatch table — nothing reads it at runtime.
  */
 export const TYPE_GUARDED_RESOLVER_TOOLS = [
@@ -163,6 +171,8 @@ export const TYPE_GUARDED_RESOLVER_TOOLS = [
   'query_selector_all',
   'get_layout_metrics',
   'get_computed_style',
+  'scrub_range_input',
+  'edit_text_input',
 ] as const;
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -364,17 +374,41 @@ export interface ResolvedByTestId {
 }
 
 /**
+ * Every `data-testid` match in document order, optionally scoped to one pane (#5891).
+ *
+ * The scoped selector is descendant-OR-SELF because FeaModeToolbar stamps
+ * `data-testid` and `data-viewport-id` on the SAME root element, which a
+ * descendant-only selector would miss. `querySelectorAll` de-duplicates, so that
+ * root, matching both arms, is counted once.
+ */
+function queryAllByTestId(testId: string, viewportId: string | undefined): Element[] {
+  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
+  if (viewportId === undefined) {
+    return Array.from(document.querySelectorAll(idSel));
+  }
+  const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
+  return Array.from(document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`));
+}
+
+/** The one malformed-`viewportId` check, shared by the drive and observe paths. */
+function narrowViewportId(
+  viewportId: unknown,
+): { viewportId: string | undefined } | { error: string } {
+  if (viewportId !== undefined && typeof viewportId !== 'string') {
+    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+  }
+  return { viewportId };
+}
+
+/**
  * Resolve a single element by `data-testid`, optionally scoped to one pane (#5891).
  *
  * Deliberately mirrors `pickFeaChannelSelect`'s ladder above — same param name,
  * same non-string rejection FIRST, same scoped-then-document-wide ordering, same
  * distinct not-found-for-viewport error — so the two read as one convention:
- *  1. params.viewportId present → reject non-string, then a descendant-OR-SELF
- *     scoped query. The self arm is load-bearing: FeaModeToolbar stamps
- *     `data-testid` and `data-viewport-id` on the SAME root element, so a
- *     descendant-only selector would resolve the nine sibling controls but not
- *     the root by its own testid. No match is `notFoundForViewport` (distinct
- *     from a bare `notFound`, which means no such testid exists ANYWHERE).
+ *  1. params.viewportId present → reject non-string, then the scoped
+ *     `queryAllByTestId`. No match is `notFoundForViewport` (distinct from a
+ *     bare `notFound`, which means no such testid exists ANYWHERE).
  *  2. No id → today's document-wide lookup; zero is `notFound`.
  *
  * THE ONE DIVERGENCE from `pickFeaChannelSelect`: a request matching more than
@@ -391,42 +425,24 @@ export interface ResolvedByTestId {
  * testid can repeat inside a single pane. Such a request is first-match and
  * reports `matchCount` exactly as an unscoped one does.
  *
- * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
- * element matching both arms of the scoped selector list is counted once — the
- * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
- * the common case — and `matchCount` stays truthful.
- *
- * THAT COMPENSATING CONTROL DOES NOT REACH EVERY CALLER. `paneDiagnostics` makes
- * the guess visible only to callers that spread it into a payload — the DRIVE
- * tools. `buildSelectorPredicate` takes `el` and drops the rest, and the two
- * tools built on it report no viewportId/matchCount by design, so on the OBSERVE
- * path first-match is a SILENT guess rather than a reported one. How it misleads
- * is enumerated once in docs/debug-mcp-recipe.md under "wait_for_selector: the
- * unscoped-wait trap"; widening this resolver to expose the full match list is
- * tracked by #6564. Any such fix must leave the DRIVE path first-match — that is
- * #5891's back-compat promise, argued in the divergence note above.
+ * First-match serves the DRIVE tools only — #5891's back-compat promise, argued
+ * in the divergence note above. The OBSERVE path does not pick at all:
+ * `buildSelectorPredicate` quantifies over `queryAllByTestId`'s full set.
  */
 function resolveByTestId(
   testId: string,
-  viewportId: unknown,
+  rawViewportId: unknown,
 ): ResolvedByTestId | { error: string } {
-  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
-
-  let matches: NodeListOf<Element>;
-  if (viewportId !== undefined) {
-    if (typeof viewportId !== 'string') {
-      return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-    }
-    const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
-    matches = document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`);
-    if (matches.length === 0) {
-      return { error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId) };
-    }
-  } else {
-    matches = document.querySelectorAll(idSel);
-    if (matches.length === 0) {
-      return { error: RESOLVE_BY_TESTID_ERRORS.notFound(testId) };
-    }
+  const narrowed = narrowViewportId(rawViewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
+  const matches = queryAllByTestId(testId, viewportId);
+  if (matches.length === 0) {
+    return {
+      error: viewportId === undefined
+        ? RESOLVE_BY_TESTID_ERRORS.notFound(testId)
+        : RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId),
+    };
   }
 
   const el = matches[0];
@@ -549,44 +565,29 @@ async function pollUntil(
 
 /**
  * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
- * Resolves el through `resolveByTestId(testId, viewportId)`, so an optional
- * `viewportId` scopes the wait to one pane (#5891).
- * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
- * 'gone':    el===null OR !isElementVisible(el)
+ * The quantified rule it implements, and the residual unscoped-wait caveat, are
+ * stated in docs/debug-mcp-recipe.md "wait_for_selector: the unscoped-wait trap".
  *
  * Returns `{error}` INSTEAD of a predicate when `viewportId` is present but not a
  * string. That check is hoisted out of the closure deliberately: a malformed
  * param is a property of the REQUEST, not a DOM state that could become true on
  * a later tick, so re-deciding it every 16 ms would burn the caller's whole
  * timeout budget only to report the same rejection. Both call sites return it
- * immediately. Every other resolver error — `notFound`, `notFoundForViewport` —
- * IS a transient DOM state and is folded into `el === null`, which is exactly
- * what 'gone' waits for and what 'visible' polls past.
+ * immediately. An absent testid or pane IS a transient DOM state: it is just an
+ * empty match set, which is exactly what 'gone' waits for and what 'visible'
+ * polls past.
  *
  * ASYMMETRY WORTH KNOWING (documented on both tools' schemas, pinned by
- * waitFor.test.ts case (g)): because `notFoundForViewport` folds into
- * `el === null`, a `viewportId` naming a pane that does not exist AT ALL — not
- * yet mounted, or simply a typo — satisfies 'gone' vacuously and resolves at
- * waited_ms 0, indistinguishably from a real teardown. That is deliberate, not
- * an oversight: a pane torn down WITH its contents is a legitimate way for an
+ * waitFor.test.ts case (g)): because zero matches makes `every` vacuously true,
+ * a `viewportId` naming a pane that does not exist AT ALL — not yet mounted, or
+ * simply a typo — satisfies 'gone' and resolves at waited_ms 0,
+ * indistinguishably from a real teardown. That is deliberate, not an
+ * oversight: a pane torn down WITH its contents is a legitimate way for an
  * element to be gone from it, and demanding the pane still exist would make
  * "wait for this pane to disappear" un-expressible and turn a correct green into
  * a timeout. The cost is that a typo'd id reads as instant success, so callers
  * proving a teardown should confirm the pane exists first. Under 'visible' the
  * same typo fails loudly (timeout), which is why only this arm needs the note.
- *
- * THE OTHER KNOWN TRAP, and the one this predicate OWNS — the UNSCOPED path.
- * With no `viewportId`, `resolveByTestId` commits to the document-order-FIRST
- * match and only THEN does this closure evaluate `state` on that one element;
- * it never looks for the first element that SATISFIES the state. So an unscoped
- * wait is not proof about any one pane in either direction. It misleads in three
- * distinct ways, enumerated once in docs/debug-mcp-recipe.md under
- * "wait_for_selector: the unscoped-wait trap" and pinned as behaviour by
- * waitFor.test.ts cases (h)/(i)/(j) — do not read the asymmetry above as the
- * whole list. Unlike that asymmetry this is a known limitation rather than a
- * deliberate contract: first-match is #5891's back-compat promise for the DRIVE
- * tools, but this predicate only OBSERVES, so quantifying over all matches here
- * would break no caller. That fix is tracked by #6564.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
@@ -594,25 +595,21 @@ function buildSelectorPredicate(opts: {
   text?: string;
   viewportId?: unknown;
 }): (() => boolean) | { error: string } {
-  const { testId, state, text, viewportId } = opts;
-  if (viewportId !== undefined && typeof viewportId !== 'string') {
-    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
-  }
+  const { testId, state, text } = opts;
+  const narrowed = narrowViewportId(opts.viewportId);
+  if ('error' in narrowed) return narrowed;
+  const { viewportId } = narrowed;
   return () => {
-    // Re-resolve on EVERY tick rather than hoisting the lookup: this predicate
+    // Re-query on EVERY tick rather than hoisting the lookup: this predicate
     // exists to observe an element appearing or disappearing mid-poll, so a
-    // resolution captured once at t=0 would freeze the answer.
-    const r = resolveByTestId(testId, viewportId);
-    const el = 'error' in r ? null : r.el;
+    // match set captured once at t=0 would freeze the answer.
+    const matches = queryAllByTestId(testId, viewportId);
     if (state === 'gone') {
-      return el === null || !isElementVisible(el);
+      return matches.every((el) => !isElementVisible(el));
     }
-    // state === 'visible'
-    if (!el || !isElementVisible(el)) return false;
-    if (text !== undefined) {
-      return (el as HTMLElement).textContent?.trim() === text;
-    }
-    return true;
+    return matches.some(
+      (el) => isElementVisible(el) && (text === undefined || el.textContent?.trim() === text),
+    );
   };
 }
 
@@ -1261,6 +1258,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
       return { ok: true };
     },
+
+    scrub_range_input: (params) => driveFormControl(RANGE_INPUT, params),
+    edit_text_input: (params) => driveFormControl(TEXT_INPUT, params),
 
     type_in_editor: (params) => {
       const content = params.content as string;

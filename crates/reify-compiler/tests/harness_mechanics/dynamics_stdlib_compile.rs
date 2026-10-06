@@ -10,8 +10,8 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::{BinOp, CompiledExprKind, CompiledFunction, Value};
-use reify_test_support::compile_source_with_stdlib;
+use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib, get_function_in};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -45,27 +45,6 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
                     .iter()
                     .map(|t| (&t.name, &t.entity_kind))
                     .collect::<Vec<_>>()
-            )
-        })
-}
-
-/// Look up a compiled function by name within the `std/dynamics` module.
-///
-/// This mirrors `trajectory_stdlib_compile.rs`'s `find_function` (itself
-/// layered on that file's generic `find_named`) rather than sharing it:
-/// integration-test binaries each compile as a separate crate, so a private
-/// helper in one `tests/*.rs` file cannot be called from another.
-fn find_function(name: &str) -> &'static CompiledFunction {
-    let module = load_stdlib_module();
-    module
-        .functions
-        .iter()
-        .find(|f| f.name == name)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected `{}` in std/dynamics; found functions: {:?}",
-                name,
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
             )
         })
 }
@@ -824,7 +803,7 @@ structure def Probe {
 
 #[test]
 fn inverse_dynamics_signature_uses_mechanism_and_motion_trajectory() {
-    let inverse_dynamics = find_function("inverse_dynamics");
+    let inverse_dynamics = get_function_in(load_stdlib_module(), "inverse_dynamics");
     assert!(inverse_dynamics.is_pub, "inverse_dynamics should be pub");
     assert_eq!(
         inverse_dynamics.params,
@@ -862,7 +841,8 @@ fn inverse_dynamics_at_snapshot_signature_uses_mechanism_and_snapshot() {
     // equality arm fails for that unrelated reason, not because Mechanism/Snapshot
     // regressed — update the q_dot/q_ddot expected type below to match rather than
     // loosening the Mechanism/Snapshot checks this test exists to guard.
-    let inverse_dynamics_at_snapshot = find_function("inverse_dynamics_at_snapshot");
+    let inverse_dynamics_at_snapshot =
+        get_function_in(load_stdlib_module(), "inverse_dynamics_at_snapshot");
     assert!(
         inverse_dynamics_at_snapshot.is_pub,
         "inverse_dynamics_at_snapshot should be pub"

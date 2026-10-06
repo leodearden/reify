@@ -44,3 +44,5 @@ mod auto_type_param_template_literal_seed_tests;
 mod auto_type_param_unevaluated_constraint_tests;
 #[path = "harness_auto_binding/auto_type_params_max_depth_config.rs"]
 mod auto_type_params_max_depth_config;
+#[path = "harness_auto_binding/guarded_auto_let_tests.rs"]
+mod guarded_auto_let_tests;

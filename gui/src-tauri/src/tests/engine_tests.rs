@@ -17,7 +17,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    assert_rigid_mass_props_determined, bounded_bracket_source, find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
@@ -1650,29 +1650,6 @@ fn export_end_to_end() {
 //    above — the unbounded happy path, which the gate must leave untouched. It is not
 //    restated as a standalone test: a twin of that body would have to be kept in step
 //    with it, and both would be pinning the one export-success contract.
-
-/// [`bracket_source`] plus a non-circular checker structure declaring the bound, so
-/// the DECLARED BOUND is the ONLY delta between the case [`export_end_to_end`] exports
-/// green and the refused cases below. This is the CLI's
-/// `representation_within_satisfied.ri` idiom (geometry-owning structure + a separate
-/// `structure XCheck { param subject : X  constraint RepresentationWithin(subject,
-/// <bound>) }`) grafted onto that source.
-///
-/// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
-/// η refuses on module shape alone, before any deviation is measured, so it fires
-/// identically for any bound.
-///
-/// `pub(super)` so `commands_tests.rs` shares this ONE definition — a per-file twin
-/// lets a future `RepresentationWithin` / `param subject` syntax change reach one copy
-/// and not the other, silently voiding the "only delta" invariant above. The canonical
-/// home is `crate::tests::test_helpers` (or `reify_test_support::fixtures`, beside
-/// `bracket_source`); both are outside task 6190's lock footprint.
-pub(super) fn bounded_bracket_source() -> String {
-    format!(
-        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
-        bracket_source()
-    )
-}
 
 /// η / C-SURFACE (2) at the GUI export boundary: a design declaring a
 /// `RepresentationWithin` bound the export path cannot demonstrate it honours must
@@ -13979,7 +13956,7 @@ structure def Mock : PhysicalMock {
 ///
 /// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
 /// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
-/// `reify-compiler/tests/examples_smoke.rs`).
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`).
 #[test]
 fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
@@ -15996,16 +15973,19 @@ fn build_constraints_sorts_constraints_by_node_id() {
                 id: ConstraintNodeId::new("Zeta", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Alpha", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Mid", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
         ],
         diagnostics: vec![],
@@ -17418,7 +17398,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
     // ../../examples resolves to the repo-root examples/ directory — same idiom as
-    // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
+    // crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (EXAMPLES_DIR).
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");

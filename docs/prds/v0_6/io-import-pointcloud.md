@@ -3,6 +3,12 @@
 **Milestone:** v0_6 · **Status:** DEFERRED forward-stub · **Date:** 2026-06-03
 **Parent:** `io-export-import-completion.md` §8 (deferred row 1). **Tracker:** task ι.
 
+> **Seam re-pointed (step-assembly-import ο #8067).** The "geometry-import seam" named below is
+> no longer the parent's single-shape `step_import`; it is C3 (foreign-module provider) of
+> `docs/prds/v0_6/step-assembly-import.md`. Read every "`step_import` precedent" / "geometry-import
+> seam" reference in this stub as that PRD's C3. `PointCloudInput`/`PointCloudFormat` (stdlib-reference §9 rows) are
+> left untouched by that PRD's docs-truth leaf ξ (#8066).
+
 ## Why deferred
 
 Closes the `std.io.formats` import gaps **`PointCloudInput`** + **`PointCloudFormat`** + the

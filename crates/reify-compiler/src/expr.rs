@@ -5625,9 +5625,11 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::Auto { .. } => {
-            // Auto expressions should not appear inside compile_expr — they are
-            // handled at the param compilation level. If we reach here, emit an
-            // Undef literal as a safe fallback.
+            // Every binding site reads `auto` via `extract_auto_free` before it
+            // compiles any expression, so reaching this arm means `auto` appeared
+            // outside a binding site. The Undef literal is the anti-cascade
+            // fallback for that case; E_AUTO_NOT_AT_BINDING_SITE covers the
+            // reachable operand positions before they get here.
             CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
         }
         reify_ast::ExprKind::Conditional {

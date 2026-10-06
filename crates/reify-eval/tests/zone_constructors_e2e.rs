@@ -16,7 +16,7 @@ use reify_compiler::{
 };
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
-use reify_test_support::fixtures::assert_rel;
+use reify_test_support::mesh_fixtures::assert_rel;
 use reify_test_support::*;
 
 // ─── zone_cylinder (step 1 RED / step 2 GREEN) ───────────────────────────────

@@ -1,0 +1,68 @@
+// Executable mirror of the signatures listed in the ```reify-schematic blocks of
+// the listing-gated chunks (today crates/reify-mcp/src/tools/chunks/geometry.md)
+// — one call per listed (name, arity) form that unfenced_signatures_smoke.ri and
+// stdlib_geometry_ops_smoke.ri do not already exercise, over type-plausible
+// arguments.
+//
+// SYNC CONTRACT: every signature in those listings is mirrored here or in one of
+// those two fixtures at its listed arity — guarded by
+// crates/reify-compiler/tests/harness_doc_chunks/schematic_listing_gate.rs — and
+// this file compiles clean — guarded by
+// crates/reify-compiler/tests/harness_doc_chunks/signature_fixtures.rs.
+// Which of these calls the compiler truly arity-checks, and which it passes
+// silently, is stated in unfenced_signature_gate.rs's module doc.
+
+structure def PreludeListing {
+    let p2  = point2(0mm, 0mm)
+    let v2  = vec2(1.0, 0.0)
+    // Every vertex coordinate is a length; three vertices is the minimum.
+    let tri = polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+}
+
+structure def SolidPrimitivesListing {
+    let bc = box_centered(10mm, 20mm, 5mm)
+    let cy = cylinder(5mm, 10mm)
+    let co = cone(5mm, 3mm, 10mm)
+    let to = torus(10mm, 2mm)
+    let we = wedge(10mm, 10mm, 10mm, 5mm)
+    let tu = tube(10mm, 5mm, 20mm)
+    // corner_r > 0 and 2*corner_r < min(width, depth).
+    let rb = rounded_box(20mm, 20mm, 10mm, 3mm)
+    // The boundary POINT is a Length position; the outward NORMAL is a
+    // direction, so its components are dimensionless.
+    let hs = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+}
+
+structure def ProfilesListing {
+    let el = ellipse(10mm, 5mm)
+    // corner_r > 0 and 2*corner_r < min(width, depth).
+    let rr = rounded_rect(20mm, 10mm, 2mm)
+}
+
+structure def ToleranceZonesListing {
+    let axis = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm)
+
+    // zone_slab's first argument is a FACE or profile, not a solid.
+    let slab = zone_slab(rectangle(40mm, 20mm), 2mm)
+    // The axis wire's own length sets the extent; width is the DIAMETER.
+    let cyl  = zone_cylinder(axis, 8mm)
+    // `length` is accepted but unused: the axis wire sets the swept extent.
+    let ann  = zone_annulus(axis, 20mm, 4mm, 20mm)
+    let prof = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+}
+
+structure def FreeFormListing {
+    // control_points and weights are NESTED (u-major × v) grids; the knot
+    // vectors are FLAT; the degrees are bare integers.
+    let patch = nurbs_surface(
+        [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+        [[1.0,1.0],[1.0,1.0]],
+        [0,0,1,1],
+        [0,0,1,1],
+        1,
+        1
+    )
+    // `iso:` and `adaptive:` bind positionally as the 2nd and 3rd arguments;
+    // omitted, they default at eval (iso 0.0, not adaptive).
+    let shell = isosurface(box(10mm, 10mm, 10mm))
+}

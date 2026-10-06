@@ -92,8 +92,9 @@ type DecomposedTransform = (QuatComponents, [f64; 3], DimensionVector);
 /// - any component is non-numeric or non-finite.
 ///
 /// This consolidates the destructure-and-validate pattern shared by
-/// `transform_compose`, `transform_inverse`, `transform_log`, and
-/// `transform_exp`.
+/// `transform_compose`, `transform_log`, and — through
+/// [`classify_transform_operand_args`] — `transform_inverse` and
+/// `affine_from_transform`.
 fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
     let (rotation, translation) = match v {
         Value::Transform {
@@ -171,12 +172,12 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
 ///
 /// SCOPE BOUNDARY, so a future reader does not over-read the line above: `"transform3"`
 /// applies NO dimension gate at all to its translation (only a 3-`Vector` shape check),
-/// and `transform_compose` / `transform_inverse` propagate whatever dimension they are
-/// handed. So `transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still CONSTRUCTS,
-/// and the rejection only surfaces downstream at `transform_log`. That asymmetric seam
-/// is deliberate and owned elsewhere: #6089 rules `Transform` translation LENGTH and
-/// stamps the constructor arms, and #5747 R12/R8 narrows the affine and pose-decode
-/// readers. Closing it here would double-migrate their work.
+/// and `transform_compose` propagates whatever dimension it is handed. So
+/// `transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still CONSTRUCTS, and the
+/// rejection only surfaces downstream — at `transform_log`, or at `transform_inverse` /
+/// `affine_from_transform`, which reject a non-LENGTH translation (RULING #6089). The
+/// constructor and compose narrowing is #7625's, and #5747 R12/R8 narrows the affine
+/// and pose-decode readers. Closing it here would double-migrate their work.
 ///
 /// This const is the SINGLE source of truth for the admitted DIMENSION, consulted by
 /// the `transform_log` eval arm, the `transform_exp` eval arm, and both of
@@ -594,15 +595,13 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // `affine_from_transform(t)`: widen a rigid Transform to a general affine
         // map. The rotation quaternion becomes an orthogonal 3×3 (det=+1) whose
         // columns are R·x̂, R·ŷ, R·ẑ (built via quat_rotate on the basis vectors),
-        // and the translation passes through in SI meters. The identity quaternion
-        // yields the identity matrix exactly. Non-Transform / bad arity → Undef.
+        // and the translation passes through in SI meters, so it must be LENGTH
+        // (RULING #6089). The identity quaternion yields the identity matrix
+        // exactly. Non-Transform / bad arity / non-LENGTH translation → Undef,
+        // the last explained by `diagnose`.
         "affine_from_transform" => {
-            if args.len() != 1 {
+            let Ok((q, translation)) = classify_transform_operand_args(args) else {
                 return Some(Value::Undef);
-            }
-            let (q, translation, _dim) = match decompose_transform(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
             };
             // Rotation-matrix columns = R applied to each basis vector.
             let (c0x, c0y, c0z) = quat_rotate(q, 1.0, 0.0, 0.0);
@@ -901,12 +900,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         }
 
         "transform_inverse" => {
-            if args.len() != 1 {
+            // A non-LENGTH translation is Undef here (RULING #6089) and explained
+            // by `diagnose`; the output translation is therefore LENGTH too.
+            let Ok((r_q, t)) = classify_transform_operand_args(args) else {
                 return Some(Value::Undef);
-            }
-            let (r_q, t, t_dim) = match decompose_transform(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
             };
             // Normalize R first (1e-24 gate — see normalize_quat_input).
             let r_n = match normalize_quat_input(r_q) {
@@ -929,9 +926,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             Value::Transform {
                 rotation: Box::new(r_inv_val),
                 translation: Box::new(Value::Vector(vec![
-                    make_dimensioned_component(t_dim, -rtx),
-                    make_dimensioned_component(t_dim, -rty),
-                    make_dimensioned_component(t_dim, -rtz),
+                    Value::length(-rtx),
+                    Value::length(-rty),
+                    Value::length(-rtz),
                 ])),
             }
         }
@@ -1524,6 +1521,10 @@ fn decode_direction(v: &Value) -> Option<[f64; 3]> {
 /// origin — so a classifier that destructured `Value::Plane { origin, .. }` and
 /// read only the origin would emit a LENGTH rejection for a plane whose actual
 /// fault is a malformed normal.
+///
+/// The same vocabulary serves [`classify_transform_operand_args`] (RULING
+/// #6089), whose one diagnosable fault is likewise a non-LENGTH displacement
+/// operand.
 enum DatumFault {
     /// Every SHAPE / CONSISTENCY cause: wrong arity, the wrong `Value` variant,
     /// a component count other than three, a non-numeric or non-finite
@@ -1537,7 +1538,8 @@ enum DatumFault {
     /// ONE fault this family diagnoses.
     NotLength {
         /// The offending parameter as the author wrote it, taken from the
-        /// datum-constructor signature block in `reify-compiler/src/units.rs`.
+        /// datum-constructor signature block in `reify-compiler/src/units.rs`
+        /// (or, for a `Transform` operand, its field path `t.translation`).
         arg_name: &'static str,
         /// Minted by the shared owner, so the wording is never re-rendered here
         /// (Contract C1 invariant (i)).
@@ -1714,6 +1716,44 @@ fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
     let x = decode_direction(&args[1]).ok_or(DatumFault::Shape)?;
     let z = decode_direction(&args[2]).ok_or(DatumFault::Shape)?;
     Ok((o, x, z))
+}
+
+/// Decode the one `Transform` operand of `affine_from_transform(t)` and
+/// `transform_inverse(t)` into its quaternion and its translation in SI metres.
+///
+/// RULING #6089 (Leo, 2026-08-07): a `Transform`'s translation is a displacement
+/// and carries LENGTH. This is the ONE predicate both eval arms and their
+/// [`diagnose`] arm read (the [`DatumFault`] discipline), and `t.translation`
+/// names the offending field of the builtins' `t` parameter.
+///
+/// Every [`decompose_transform`] failure — a rotation fault included — is judged
+/// BEFORE the dimension and is a `Shape` fault, so it is never blamed on the
+/// translation.
+///
+/// NOT the owner for `transform_log`, which admits the same set but gates through
+/// [`TWIST_LINEAR_DIM`] and words its rejection per RULING #6126, a wording its
+/// CLI test pins. Converging it onto this predicate is #7625's, which owns that
+/// test.
+fn classify_transform_operand_args(
+    args: &[Value],
+) -> Result<(QuatComponents, [f64; 3]), DatumFault> {
+    let [operand @ Value::Transform { translation, .. }] = args else {
+        return Err(DatumFault::Shape);
+    };
+    let Value::Vector(translation_items) = translation.as_ref() else {
+        return Err(DatumFault::Shape);
+    };
+    let (q, xyz, dim) = decompose_transform(operand).ok_or(DatumFault::Shape)?;
+    if dim == DimensionVector::LENGTH {
+        return Ok((q, xyz));
+    }
+    // `decompose_transform` accepted a well-formed non-LENGTH group, so the
+    // `Shape` fallback is unreachable; it fails CLOSED, as `classify_affine_map_args` does.
+    let rejection = length_group_rejection(translation_items).ok_or(DatumFault::Shape)?;
+    Err(DatumFault::NotLength {
+        arg_name: "t.translation",
+        rejection,
+    })
 }
 
 /// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
@@ -2134,6 +2174,10 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   vector legitimately has bare components (decision D3). The arity-3
 ///   `offset` — the γ RELATION — is never served, which its classifier enforces
 ///   rather than this list.
+/// - **`affine_from_transform`** / **`transform_inverse`** (exactly 1 arg) — a
+///   `Transform` operand whose TRANSLATION is not `Vector3<Length>` (RULING
+///   #6089), named `t.translation`, read through
+///   [`classify_transform_operand_args`], the same classifier as the eval arms.
 ///
 /// Invariant: the twist dimension arms consult [`TWIST_LINEAR_DIM`] and
 /// [`TWIST_ANGULAR_DIM`] — the SAME consts the eval gates use — and read BOTH twist
@@ -2171,9 +2215,10 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 /// - EVERY dimension arm is `Severity::Error` — `transform_log` and BOTH halves of
 ///   `transform_exp` (RULING #6126 for `linear`, RULING #6080 for `angular`), `bbox`
 ///   (task 6081), `affine_translate` / `affine_map` (task 5747, units-length ζ,
-///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11), and ε's
-///   two construction-datum families (task 5746, same PRD, R11 / D4). ONE reason
-///   serves all six rather than one argued per family: a wrong dimension
+///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11), ε's
+///   two construction-datum families (task 5746, same PRD, R11 / D4), and the
+///   Transform consumers (RULING #6089). ONE reason
+///   serves all of them rather than one argued per family: a wrong dimension
 ///   is a design-correctness fault and an outright CONSTRUCTION failure — no twist,
 ///   no BoundingBox, no AffineMap is produced at all — not a drop-and-continue.
 ///   Per Leo's severity amendment (2026-08-19, via esc-6080-6), `reify eval` must
@@ -2184,8 +2229,9 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   two arms joined it there rather than opening a third way.
 ///
 /// `DiagnosticCode` is NOT uniform across the arms, but every DIMENSION arm
-/// agrees. All EIGHT — `transform_log`, BOTH halves of `transform_exp`, `bbox`,
-/// ζ's `affine_translate` / `affine_map` and ε's `plane_*` / `axis_*` — carry the
+/// agrees. All of them — `transform_log`, BOTH halves of `transform_exp`, `bbox`,
+/// ζ's `affine_translate` / `affine_map`, ε's `plane_*` / `axis_*` and the
+/// RULING #6089 Transform consumers — carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
 /// `Severity::Error` runtime dimension rejection of a positional argument). The
@@ -2417,6 +2463,10 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
         // not restate it.
         "offset" => datum_fault_diagnostic(name, classify_offset_plane_args(args).err()),
         "frame_at" => datum_fault_diagnostic(name, classify_frame_at_args(args).err()),
+        // RULING #6089's Transform consumers, on the same shared-classifier footing.
+        "affine_from_transform" | "transform_inverse" => {
+            datum_fault_diagnostic(name, classify_transform_operand_args(args).err())
+        }
         _ => None,
     }
 }
@@ -5429,7 +5479,7 @@ mod tests {
 
     /// transform_inverse((R=90Z, t=[1,0,0])) has R = -90Z (conjugate of 90Z) and t = -R^-1 * (1,0,0) = (0,1,0).
     /// Computation: R^-1 = conj(R) = (s, 0, 0, -s). R^-1 * (1,0,0) = quat_rotate(R^-1, (1,0,0)) = (0,-1,0).
-    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0).
+    /// t_inv = -R^-1 * t = -(0,-1,0) = (0,1,0), each component a LENGTH Scalar.
     #[test]
     fn transform_inverse_90z_with_translation() {
         let t = make_transform(make_rot90z(), 1.0, 0.0, 0.0);
@@ -5443,6 +5493,13 @@ mod tests {
                 assert_orientation_approx!(*rotation, s, 0.0, 0.0, -s, sign_insensitive = 1e-12);
                 match *translation {
                     Value::Vector(items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            assert!(
+                                matches!(item, Value::Scalar { .. })
+                                    && item.dimension() == DimensionVector::LENGTH,
+                                "translation[{i}] must be a LENGTH Scalar, got {item:?}"
+                            );
+                        }
                         let tx = items[0].as_f64().unwrap();
                         let ty = items[1].as_f64().unwrap();
                         let tz = items[2].as_f64().unwrap();
@@ -5578,6 +5635,55 @@ mod tests {
             eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
             "expected Undef for overflow-corner quaternion with non-zero translation"
         );
+    }
+
+    /// The four NON-LENGTH translation shapes a Transform consumer must reject
+    /// (RULING #6089: a Transform's translation is a displacement and carries
+    /// LENGTH). Each triple shares ONE dimension, so `decompose_transform`
+    /// succeeds and only the LENGTH verdict can reject — the same exhaustive
+    /// `got` shapes `length_rejection_wording_is_the_shared_arg_rejection_template`
+    /// enumerates.
+    fn non_length_translation_triples() -> [(&'static str, [Value; 3]); 4] {
+        let scalar = |v: f64, dimension| Value::Scalar {
+            si_value: v,
+            dimension,
+        };
+        [
+            (
+                "bare Real",
+                [Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)],
+            ),
+            ("bare Int", [Value::Int(1), Value::Int(2), Value::Int(3)]),
+            (
+                "dimensionless Scalar",
+                [
+                    scalar(1.0, DimensionVector::DIMENSIONLESS),
+                    scalar(2.0, DimensionVector::DIMENSIONLESS),
+                    scalar(3.0, DimensionVector::DIMENSIONLESS),
+                ],
+            ),
+            (
+                "MASS Scalar",
+                [
+                    scalar(1.0, DimensionVector::MASS),
+                    scalar(2.0, DimensionVector::MASS),
+                    scalar(3.0, DimensionVector::MASS),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn transform_inverse_non_length_translation_returns_undef() {
+        for (shape, triple) in non_length_translation_triples() {
+            let t = make_transform_with_translation(triple);
+            assert!(
+                eval_builtin("transform_inverse", &[t]).is_undef(),
+                "{shape}: RULING #6089 — a Transform translation carries LENGTH, so \
+                 transform_inverse must reject a non-LENGTH translation as Undef rather \
+                 than propagate its dimension"
+            );
+        }
     }
 
     // ── transform_log tests (step-19) ────────────────────────────────────────
@@ -7530,6 +7636,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn affine_from_transform_non_length_translation_returns_undef() {
+        for (shape, triple) in non_length_translation_triples() {
+            let t = make_transform_with_translation(triple);
+            assert!(
+                eval_builtin("affine_from_transform", &[t]).is_undef(),
+                "{shape}: RULING #6089 — an AffineMap's translation is stored in SI metres, \
+                 so widening a Transform whose translation is not LENGTH must be Undef \
+                 rather than silently reinterpret each unit as one metre"
+            );
+        }
+    }
+
     // ── diagnose classifier tests (step-15) ───────────────────────────────────
     // The post-Undef diagnose hook (mirrors stackup_diagnose/fea_diagnose) lets a
     // pure value constructor surface a CLI warning for the two distinguishable
@@ -7999,7 +8118,8 @@ mod tests {
     /// `Real`, `Int` and `Scalar` ever arrive; a LENGTH `Scalar` is accepted rather
     /// than rejected, leaving the dimensionless and dimensioned `Scalar` forms. R11's
     /// plane offset is gated by `as_f64` directly, so the same four shapes exhaust it
-    /// too.
+    /// too, as they do the RULING #6089 Transform-translation rows (decoded by the
+    /// same `decompose_xyz3`).
     #[test]
     fn length_rejection_wording_is_the_shared_arg_rejection_template() {
         use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
@@ -8035,6 +8155,10 @@ mod tests {
             };
 
             let triple = vec![offender.clone(), zero.clone(), zero];
+            let transform = Value::Transform {
+                rotation: Box::new(make_identity_orientation()),
+                translation: Box::new(Value::Vector(triple.clone())),
+            };
             for (builtin, arg_name, args) in [
                 ("affine_translate", "dx/dy/dz", triple.clone()),
                 (
@@ -8044,6 +8168,12 @@ mod tests {
                 ),
                 ("plane_yz", "offset", vec![offender]),
                 ("axis_x", "ox/oy/oz", vec![Value::Point(triple.clone())]),
+                (
+                    "affine_from_transform",
+                    "t.translation",
+                    vec![transform.clone()],
+                ),
+                ("transform_inverse", "t.translation", vec![transform]),
             ] {
                 let diag = super::diagnose(builtin, &args)
                     .unwrap_or_else(|| panic!("{builtin} / {shape}: must be diagnosed"));
@@ -8166,6 +8296,88 @@ mod tests {
         assert!(
             super::diagnose("transform_log", &[Value::Real(1.0)]).is_none(),
             "a non-Transform argument is a shape failure, not a dimension failure"
+        );
+    }
+
+    // ── diagnose: Transform-consumer translation arm (RULING #6089) ───────────
+    // affine_from_transform and transform_inverse reject a non-LENGTH translation;
+    // the rejection must be an explained Error, and every NON-dimension Undef cause
+    // must stay silent so it is never blamed on the translation.
+
+    const TRANSFORM_CONSUMERS: [&str; 2] = ["affine_from_transform", "transform_inverse"];
+
+    #[test]
+    fn diagnose_transform_consumer_non_length_is_error_with_dimensioned_arg_code() {
+        let t =
+            make_transform_with_translation([Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        for name in TRANSFORM_CONSUMERS {
+            let diag = super::diagnose(name, std::slice::from_ref(&t))
+                .unwrap_or_else(|| panic!("{name}: a bare Real translation must be diagnosed"));
+            assert_eq!(
+                diag.severity,
+                reify_core::Severity::Error,
+                "{name}: {diag:?}"
+            );
+            assert_eq!(
+                diag.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{name}: {diag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_consumers_silent_on_non_dimension_causes() {
+        let length_t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let mixed_t = make_transform_with_translation([
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::length(0.0),
+        ]);
+        for name in TRANSFORM_CONSUMERS {
+            assert!(
+                super::diagnose(name, std::slice::from_ref(&length_t)).is_none(),
+                "{name}: a valid Vector3<Length> translation must not be diagnosed"
+            );
+            for (label, args) in [
+                ("zero args", vec![]),
+                ("two args", vec![length_t.clone(), length_t.clone()]),
+                ("a Real", vec![Value::Real(1.0)]),
+                ("an Orientation", vec![make_identity_orientation()]),
+                ("a MIXED-dimension translation", vec![mixed_t.clone()]),
+            ] {
+                assert!(
+                    eval_builtin(name, &args).is_undef(),
+                    "{name} / {label}: precondition — eval must reject this shape fault"
+                );
+                assert!(
+                    super::diagnose(name, &args).is_none(),
+                    "{name} / {label}: a shape fault must not be blamed on a dimension"
+                );
+            }
+        }
+
+        let overflow_t = make_transform(
+            Value::Orientation {
+                w: 1e200,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1.0,
+            2.0,
+            3.0,
+        );
+        assert!(
+            eval_builtin("transform_inverse", std::slice::from_ref(&overflow_t)).is_undef(),
+            "precondition: the overflow quaternion must make transform_inverse Undef"
+        );
+        assert!(
+            super::diagnose("transform_inverse", &[overflow_t]).is_none(),
+            "a rotation fault on a LENGTH Transform must not be blamed on the translation"
         );
     }
 

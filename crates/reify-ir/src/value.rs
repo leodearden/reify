@@ -1162,12 +1162,14 @@ pub enum Value {
         y: f64,
         z: f64,
     },
-    /// Coordinate frame: an origin point and a basis orientation.
+    /// Coordinate frame: an origin point and a basis orientation. The origin is a
+    /// `Point3<Length>` (RULING #6089).
     Frame {
         origin: Box<Value>,
         basis: Box<Value>,
     },
     /// Rigid-body transformation: a rotation (Orientation) and a translation (Vector).
+    /// The translation is a `Vector3<Length>` — a displacement (RULING #6089).
     Transform {
         rotation: Box<Value>,
         translation: Box<Value>,
@@ -1242,7 +1244,8 @@ pub enum Value {
     },
     /// General 3D affine map x ↦ linear·x + translation.
     ///
-    /// `linear` is dimensionless row-major 3×3; `translation` carries Length (meters).
+    /// `linear` is dimensionless row-major 3×3; `translation` carries Length (meters),
+    /// per RULING #6089.
     /// Stored inline (no `Box<Value>`) because the shape is fixed at 9+3 f64s.
     AffineMap {
         linear: [[f64; 3]; 3],

@@ -75,7 +75,7 @@ conditional_compilation/
 
 ## Note on the bulk examples smoke test
 
-`crates/reify-compiler/tests/examples_smoke.rs` compiles every `examples/**/*.ri`
+`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` compiles every `examples/**/*.ri`
 **single-file** (`compile_with_stdlib`, no cfg DAG).  `main.ri`'s `param p : Platform`
 is resolvable only through the cfg-gated import, so single-file it is a hard
 `unresolved type` error — `main.ri` is therefore listed in the smoke `SKIP_SET` with

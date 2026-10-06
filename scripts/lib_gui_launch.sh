@@ -5,7 +5,7 @@
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/lib_gui_launch.sh"
 #   or:   source "$REPO_ROOT/scripts/lib_gui_launch.sh"
 #
-# Sourced by BOTH scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
+# Sourced by scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
 # (dev). The two launchers differ in build profile and in whether they run a
 # vite dev server, but they must agree EXACTLY on the environment they hand
 # the binary — and on the preflight that decides a launch is hopeless before
@@ -23,9 +23,8 @@
 # `set -euo pipefail`, and none of them call `exit` — they return non-zero and
 # leave the exit decision to the launcher.
 #
-# NOT sourced by gui/test/visual/lib_e2e_smoke.sh, which still carries its own
-# copy of the WebKit default (its §2b). Folding that third copy in requires
-# editing a file #7254 does not hold a lock for; it is left for a follow-up.
+# Also sourced by gui/test/visual/lib_e2e_smoke.sh (#7273), which calls
+# gui_launch_env_pin in its §2b, after its own /opt/reify-deps/lib prepend.
 
 # Source guard — prevent double-sourcing (mirrors scripts/lib_portable.sh).
 if [ "${_REIFY_LIB_GUI_LAUNCH_SH_SOURCED:-}" = "1" ]; then
@@ -71,6 +70,18 @@ gui_launch_preflight_display() {
     return 1
 }
 
+# _gui_launch_pin_leads_ld_library_path
+#
+# True when LD_LIBRARY_PATH's FIRST entry is exactly the tbb pin dir. Compared
+# as a whole colon-delimited component, so a sibling such as
+# /opt/reify-deps/tbb-pin-old does not count as the pin.
+_gui_launch_pin_leads_ld_library_path() {
+    case ":${LD_LIBRARY_PATH:-}:" in
+        ":$GUI_LAUNCH_TBB_PIN_DIR:"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # gui_launch_env_pin
 #
 # Set the two environment defaults every direct reify-gui invocation needs.
@@ -79,12 +90,18 @@ gui_launch_preflight_display() {
 # the launcher makes (today: the optional /snap/freecad OCCT prepend, which
 # stays launcher-local). This function PREPENDS, so whatever runs after it
 # would end up ahead of the pin and defeat it.
+#
+# IDEMPOTENT: when LD_LIBRARY_PATH already leads with the pin dir, the pin step
+# changes nothing and prints no notice. That is the normal state of a launcher
+# run as a CHILD of one that already pinned (lib_e2e_smoke.sh pins, then runs
+# scripts/run-gui-dev.sh, which sources this lib afresh); a second prepend
+# there would only duplicate the entry and repeat the notice.
 gui_launch_env_pin() {
     # Disable WebKit's GBM/DMABuf renderer by default. On systems where the
     # NVIDIA driver exposes DRI fds but the Mesa EGL GBM backend cannot create
     # a screen, WebKitGTK aborts with
     # "Could not create GBM EGL display: EGL_NOT_INITIALIZED". =1 forces the
-    # GLX/xlib fallback path. Mirrors gui/test/visual/lib_e2e_smoke.sh §2b.
+    # GLX/xlib fallback path.
     # The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
     # restore the DMABUF path on a host where it works.
     export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
@@ -99,7 +116,7 @@ gui_launch_env_pin() {
     # dies on a missing symbol. Leading with the pin dir restores #5192's
     # guarantee while PRESERVING the caller's entries — we never scrub or
     # reorder them. (#7254)
-    if [ -d "$GUI_LAUNCH_TBB_PIN_DIR" ]; then
+    if [ -d "$GUI_LAUNCH_TBB_PIN_DIR" ] && ! _gui_launch_pin_leads_ld_library_path; then
         export LD_LIBRARY_PATH="$GUI_LAUNCH_TBB_PIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         if [ -n "$_GUI_LAUNCH_INHERITED_LD_LIBRARY_PATH" ]; then
             echo "==> Note: inherited LD_LIBRARY_PATH preserved, but $GUI_LAUNCH_TBB_PIN_DIR prepended ahead of it (the loader searches LD_LIBRARY_PATH before DT_RUNPATH, so an inherited /usr/lib path would otherwise bind system libtbb 12.11 over the deps 12.18 — see #5192/#7254)"

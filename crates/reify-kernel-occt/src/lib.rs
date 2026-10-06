@@ -49,8 +49,10 @@ pub use ffi::ffi::TopologyCacheBuildCounts;
 
 /// Zero the calling thread's boolean-op-pass count (task 5213).
 ///
-/// Incremented once per completed OCCT boolean `Build()` (the binary
-/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// Incremented once per completed OCCT boolean `Build()`, at the single
+/// `Build()` site every boolean goes through: the binary fuse/cut/common ops,
+/// their `*_with_history` siblings (the production realization path) and the
+/// single-pass `fuse_shape_list`.  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
 /// single-pass change.
@@ -95,6 +97,14 @@ pub fn reset_boolean_pass_count() {}
 pub fn boolean_pass_count() -> u64 {
     0
 }
+
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+mod boolean_parallelism;
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use boolean_parallelism::{
+    BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
+};
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -655,19 +665,11 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
-/// type, for ops whose result kind depends on their input rather than being
-/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
-/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
-/// [`BRepKind::Solid`] (matches `store`'s implicit default).
-///
-/// Callers:
-/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
-///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
-///   must not claim a multi-body result is a single `Solid`.
-/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
-///   `loft_guided_profiles` solidify only when the section(s) were faces and
-///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
+/// Map an `OcctShape`'s top-level TopAbs type to its [`BRepKind`]: `SOLID` →
+/// [`BRepKind::Solid`]; the multi-body aggregates `COMPSOLID` and `COMPOUND` →
+/// [`BRepKind::Compound`]; `SHELL`/`WIRE`/`FACE`/`EDGE`/`VERTEX` → the
+/// same-named kind; anything unrecognized → [`BRepKind::Solid`] (`store`'s
+/// default).
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
@@ -820,6 +822,17 @@ impl OcctKernel {
             id: GeometryHandleId(id),
             repr: Some(repr),
         }
+    }
+
+    /// Store `shape` stamped with the [`BRepKind`] of its real top-level type
+    /// (see [`brep_kind_of_shape`]), for ops whose result kind depends on
+    /// their inputs.
+    fn store_classified(
+        &mut self,
+        shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let repr = brep_kind_of_shape(&shape)?;
+        Ok(self.store_with_repr(shape, repr))
     }
 
     /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
@@ -1181,19 +1194,14 @@ impl OcctKernel {
             }
             ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
         };
-        // Stamp the repr from the ACTUAL result type rather than assuming
-        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
-        // COMPSOLID for a disjoint one, and — in the single-element identity
-        // path — the sole input shape unchanged (any kind). A hardcoded Solid
-        // would mislead future `repr_of()` consumers that trust it to tell a
-        // single solid from a multi-body compound/compsolid.
-        let repr = if handles.len() == 1 {
-            // Identity passthrough: preserve the sole input's classification.
-            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
-        } else {
-            brep_kind_of_shape(&fused)?
-        };
-        Ok(self.store_with_repr(fused, repr))
+        // The single-element path is an identity passthrough of the sole
+        // input shape (any kind), so it keeps that input's classification;
+        // a real fuse is classified by `store_classified`.
+        if handles.len() == 1 {
+            let repr = self.repr_of(handles[0]).unwrap_or(BRepKind::Solid);
+            return Ok(self.store_with_repr(fused, repr));
+        }
+        self.store_classified(fused)
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).
@@ -1713,10 +1721,11 @@ impl OcctKernel {
     ///
     /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
     /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
-    /// arm, and the handle's `BRepKind` is classified from that real shape —
-    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
-    /// not `Solid`. The history records describe the parent ↔ result correspondence
-    /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
+    /// arm, and the handle's `BRepKind` is classified from that real shape by
+    /// `store_classified` — so a disjoint fuse registers as the multi-body
+    /// `BRepKind::Compound`, not `Solid`. The history records describe the
+    /// parent ↔ result correspondence emitted by
+    /// `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
     /// topology attributes onto the result handles.
@@ -1733,7 +1742,7 @@ impl OcctKernel {
         right: GeometryHandleId,
     ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
         // Run the FFI call inside a scope that drops the immutable borrow
-        // before we mutate `self` via `store_with_repr`.
+        // before we mutate `self` via `store_classified`.
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
@@ -1741,19 +1750,17 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_cut` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1772,19 +1779,17 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_common` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1803,13 +1808,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
@@ -2798,15 +2797,10 @@ impl OcctKernel {
                 ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // The three binary booleans return EARLY rather than falling
-            // through to the shared `Ok(self.store(shape))` tail below, which
-            // hardcodes `BRepKind::Solid`. Since task 7054 the C++ side
-            // normalizes every boolean result (`normalize_boolean_result`), so
-            // a fuse of disjoint operands genuinely yields a COMPSOLID and a
-            // hardcoded Solid would be a lie to any `repr_of()` consumer that
-            // trusts it to tell a single solid from a multi-body aggregate.
-            // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
-            // already uses — deliberately not a second classifier.
+            // The three binary booleans return EARLY through `store_classified`
+            // rather than falling through to the shared `Ok(self.store(shape))`
+            // tail below, which hardcodes `BRepKind::Solid`: since task 7054 a
+            // fuse of disjoint operands genuinely yields a multi-body result.
             //
             // One consumer does more than READ the repr: `run_local_feature_with_history`
             // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
@@ -2818,24 +2812,21 @@ impl OcctKernel {
                 let r = self.get_shape(*right)?;
                 let fused = ffi::ffi::boolean_fuse(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&fused)?;
-                return Ok(self.store_with_repr(fused, repr));
+                return self.store_classified(fused);
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let cut = ffi::ffi::boolean_cut(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&cut)?;
-                return Ok(self.store_with_repr(cut, repr));
+                return self.store_classified(cut);
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let common = ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&common)?;
-                return Ok(self.store_with_repr(common, repr));
+                return self.store_classified(common);
             }
             GeometryOp::Fillet {
                 target,
@@ -3457,8 +3448,7 @@ impl OcctKernel {
                 // Solid on the latter would make `repr_of()` report a closed
                 // solid for a shape whose `IsClosed` is false, and mislead the
                 // sub-shape classification keyed off the repr.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                return self.store_classified(shape);
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3488,8 +3478,7 @@ impl OcctKernel {
                 // `loft_guided()` can supply — is capped into a SOLID, while a
                 // mixed or all-wire set stays an un-capped SHELL. Stamp the
                 // repr the shape actually has rather than the default Solid.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                return self.store_classified(shape);
             }
             GeometryOp::LineSegment {
                 x1,

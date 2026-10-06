@@ -189,9 +189,22 @@ void reset_boolean_pass_count();
 
 /// Read the calling thread's count of completed OCCT boolean passes — only the
 /// passes this thread performed itself.  Incremented once per successful Build()
-/// in boolean_fuse/boolean_cut/boolean_common and once per single-pass
+/// at the single Build() site every boolean goes through: once per binary
+/// fuse/cut/common, once per *_with_history sibling and once per single-pass
 /// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
+
+/// Set whether the CALLING THREAD's BOP algorithms Build() in OCCT's parallel
+/// mode (task 7439).  Per-thread, like the pass counter; other threads' modes
+/// are untouched.
+void set_boolean_run_parallel(bool parallel);
+
+/// Read the calling thread's BOP parallelism mode.
+bool boolean_run_parallel();
+
+/// Read the calling thread's count of completed BOP Builds whose algorithm
+/// reported RunParallel() afterwards: what OCCT ran, not what was requested.
+uint64_t parallel_bop_build_count();
 
 /// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
 /// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",

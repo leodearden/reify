@@ -18,7 +18,7 @@
 //!
 //! GREEN after step-2: engine_eval.rs wires compute_cache_key at the 3 sites.
 
-use reify_core::ContentHash;
+use reify_core::{ContentHash, ValueCellId};
 use reify_eval::compute_cache_key;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -26,13 +26,25 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 // always in sync with the user-facing example file (single-source-of-truth).
 static CANTILEVER_SRC: &str = include_str!("../../../../examples/fea_cantilever_smoke.ri");
 
-/// Eval the cantilever fixture through the @optimized lowering path, returning
-/// `(stored_cache_key, computed_cache_key)` for the `solver::elastic_static`
-/// ComputeNode.
+/// What `eval_and_extract_node_facts` reads back off the evaluated
+/// `solver::elastic_static` ComputeNode.
+struct NodeFacts {
+    /// `node.cache_key` as set by engine_eval.rs — the COMPLETE persistent key
+    /// (`Engine::persistent_cache_key`), not the bare `compute_cache_key`.
+    stored_key: ContentHash,
+    /// `compute_cache_key(&node, &graph)` — the structural half only.
+    computed_key: ContentHash,
+    /// `node.value_inputs` verbatim, as emitted by the `@optimized` lowering.
+    value_inputs: Vec<ValueCellId>,
+}
+
+/// Eval `source` through the @optimized lowering path and read the facts above
+/// off the `solver::elastic_static` ComputeNode.
 ///
-/// `stored_cache_key`  — `node.cache_key` as set by engine_eval.rs.
-/// `computed_cache_key` — `compute_cache_key(&node, &graph)` (what it should be).
-fn eval_and_extract_cache_keys(source: &str) -> (ContentHash, ContentHash) {
+/// `make_simple_engine()` (no kernel) is sufficient: everything under test here
+/// — the lowering, the `value_inputs` walk and the cache-key composition — runs
+/// BEFORE the trampoline dispatches, so no real solve is needed.
+fn eval_and_extract_node_facts(source: &str) -> NodeFacts {
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = make_simple_engine();
     reify_eval::compute_targets::register_compute_fns(&mut engine);
@@ -54,10 +66,52 @@ fn eval_and_extract_cache_keys(source: &str) -> (ContentHash, ContentHash) {
              @optimized lowering site",
         );
 
-    let stored_key = node_data.cache_key;
-    let computed_key = compute_cache_key(node_data, &snapshot.graph);
-    (stored_key, computed_key)
+    NodeFacts {
+        stored_key: node_data.cache_key,
+        computed_key: compute_cache_key(node_data, &snapshot.graph),
+        value_inputs: node_data.value_inputs.clone(),
+    }
 }
+
+/// Eval the cantilever fixture through the @optimized lowering path, returning
+/// `(stored_cache_key, computed_cache_key)` for the `solver::elastic_static`
+/// ComputeNode.
+///
+/// `stored_cache_key`  — `node.cache_key` as set by engine_eval.rs.
+/// `computed_cache_key` — `compute_cache_key(&node, &graph)` (what it should be).
+fn eval_and_extract_cache_keys(source: &str) -> (ContentHash, ContentHash) {
+    let facts = eval_and_extract_node_facts(source);
+    (facts.stored_key, facts.computed_key)
+}
+
+/// The reduced form of the task #6661 repro: one value cell reaching TWO
+/// parameters of a single `@optimized` call.
+///
+/// This is `examples/fea_cantilever_smoke.ri` with exactly one substantive
+/// edit — `height` occupies BOTH the `width` and the `height` slot of
+/// `solve_elastic_static`, i.e. a square cross-section written the way an
+/// author naturally writes one. It is the reduced form of the dogfood repro in
+/// `prj/printer_v01/printer.ri`'s `GantryFea`, which had to introduce a
+/// `let h_eq2 = h_eq * 1.0` alias solely to dodge the duplicate-`ValueCellId`
+/// abort this file now pins against.
+const DUP_CELL_SRC: &str = r#"
+structure FeaDupCellSmoke {
+    // 1 m long beam with a 100 mm SQUARE cross-section — one `height` cell
+    // deliberately supplies both section dimensions.
+    param length : Length = 1000mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    // `height` in BOTH the width and the height slot: the legal authoring
+    // shape that task #6661 is about.
+    let result = solve_elastic_static(
+        material, length, height, height, [tip_load], [mount], ElasticOptions()
+    )
+}
+"#;
 
 // ── Assertion 1: main correctness check ──────────────────────────────────────
 
@@ -188,5 +242,97 @@ fn cache_key_changes_when_load_changes() {
          and the cache returns a stale result. The arg_values fold in \
          persistent_cache_key closes this hole. both keys: {:?}",
         key_1000n,
+    );
+}
+
+
+// ── Assertion 5: the lowering emits a duplicate-free dependency SET ───────────
+
+/// Task #6661, end to end: the `@optimized` lowering must emit `value_inputs`
+/// as a genuine dependency SET even when one value cell reaches two parameters
+/// of one call. Rationale: `compute_cache_key`'s §"Missing-input and
+/// duplicate-input policy".
+///
+/// Two independent guarantees are asserted here:
+///
+/// 1. **No abort.** Merely reaching this assertion proves `reify eval` no longer
+///    kills the process on `DUP_CELL_SRC` — the reported symptom. This half is a
+///    permanent regression guard even after the lowering is fixed.
+/// 2. **Duplicate-free.** `value_inputs` carries each `ValueCellId` at most
+///    once. RED until the lowering dedupes: `height` is pushed twice today.
+#[test]
+fn duplicate_value_cell_arg_lowers_to_a_duplicate_free_value_inputs_set() {
+    let facts = eval_and_extract_node_facts(DUP_CELL_SRC);
+
+    let mut sorted = facts.value_inputs.clone();
+    sorted.sort();
+    assert!(
+        sorted.windows(2).all(|w| w[0] != w[1]),
+        "the @optimized lowering must emit value_inputs as a duplicate-free \
+         dependency set even when one value cell is passed to two parameters \
+         (task #6661); got {:?}",
+        facts.value_inputs,
+    );
+
+    assert_ne!(
+        facts.stored_key,
+        ContentHash(0),
+        "the duplicate-cell design must still receive a real, input-content-addressed \
+         cache_key, not the ContentHash(0) placeholder",
+    );
+}
+
+// ── Assertion 6: POSITION survives the dedupe ────────────────────────────────
+
+/// Companion guard to the dedupe above, and expected GREEN on arrival. It pins
+/// task #6661's "the key must still distinguish POSITION" clause: collapsing
+/// duplicates in the value bucket must not cost the stored key its ability to
+/// tell `f(.., width, height, ..)` from `f(.., height, width, ..)`.
+///
+/// The signal deliberately does NOT come from the value bucket (both variants
+/// below yield the identical `{length, width, height}` set); it comes from
+/// `Engine::persistent_cache_key`'s fold over the ORDERED evaluated
+/// `arg_values`. A future refactor that drops that fold — or that "restores"
+/// multiplicity to the value bucket to recover position — fails here.
+#[test]
+fn stored_cache_key_still_distinguishes_argument_position() {
+    // Make width and height DIFFER, so swapping them is observable at all.
+    let src_wh = CANTILEVER_SRC.replace(
+        "param height : Length = 100mm",
+        "param height : Length = 50mm",
+    );
+    assert_ne!(
+        CANTILEVER_SRC, src_wh,
+        "fixture must contain `param height : Length = 100mm` for this test to vary it",
+    );
+
+    // Same design, same cells, only the ARG ORDER differs.
+    let src_hw = src_wh.replace(
+        "material, length, width, height, [tip_load]",
+        "material, length, height, width, [tip_load]",
+    );
+    assert_ne!(
+        src_wh, src_hw,
+        "fixture must contain the literal arg list `material, length, width, height, \
+         [tip_load]` for this test to reorder it",
+    );
+
+    let facts_wh = eval_and_extract_node_facts(&src_wh);
+    let facts_hw = eval_and_extract_node_facts(&src_hw);
+
+    assert_ne!(
+        facts_wh.stored_key, facts_hw.stored_key,
+        "swapping two differently-valued args (width=100mm, height=50mm) must change the \
+         STORED cache_key — position lives in persistent_cache_key's ordered arg_values \
+         fold. both keys: {:?}",
+        facts_wh.stored_key,
+    );
+
+    // And document that the bare structural key is the part that is (correctly)
+    // position-blind: the two variants reference the identical cell SET.
+    assert_eq!(
+        facts_wh.computed_key, facts_hw.computed_key,
+        "the bare compute_cache_key is order-invariant by design (3503); if this ever \
+         differs, the value bucket has grown a position signal it is not supposed to have",
     );
 }

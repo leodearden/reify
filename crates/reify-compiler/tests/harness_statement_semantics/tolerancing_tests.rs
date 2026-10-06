@@ -2939,6 +2939,7 @@ mod mirror_gate {
 
     use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
     use reify_core::ModulePath;
+    use reify_test_support::examples_corpus::examples_dir;
     use std::collections::BTreeSet;
 
     /// The stdlib module whose declared names the lineage files must not shadow.
@@ -2946,8 +2947,6 @@ mod mirror_gate {
         env!("CARGO_MANIFEST_DIR"),
         "/stdlib/tolerancing.ri"
     ));
-
-    const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
     /// Every template + enum name declared by `source`, compiled as a module named
     /// `module_name`.
@@ -2987,9 +2986,9 @@ mod mirror_gate {
 
     /// Names declared by `examples/<rel_path>`.
     fn example_declared_names(rel_path: &str) -> BTreeSet<String> {
-        let path = format!("{EXAMPLES_DIR}/{rel_path}");
+        let path = examples_dir().join(rel_path);
         let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{path} should exist and be readable: {e}"));
+            .unwrap_or_else(|e| panic!("{} should exist and be readable: {e}", path.display()));
         let stem = rel_path
             .rsplit('/')
             .next()

@@ -361,6 +361,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     TMPDIR_T9="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T9")
 
+    # Probe group directories: each group's counters and per-member outcomes
+    # log live under its own directory (read back via _h2t9_probe_count).
+    PROBE_POOL_T9="$TMPDIR_T9/probe-pool"
+    PROBE_SERIAL_T9="$TMPDIR_T9/probe-serial"
+
     # Fixture manifest: 3 `pool` (one fails), 2 `intra-run-serial`, 1 `host-exclusive`.
     MANIFEST_T9="$TMPDIR_T9/classification.manifest"
     cat > "$MANIFEST_T9" <<'EOF'
@@ -372,125 +377,96 @@ test_serial_2.sh intra-run-serial
 test_hostx_1.sh host-exclusive
 EOF
 
-    CNT_T9="$TMPDIR_T9/counters"
-    mkdir -p "$CNT_T9"
+    # _h2t9_probe_group_reset <dir> <budget_base>
+    # (Re)initialise a probe group: live/peak overlap (cur, max), cumulative
+    # entries (arrived), the per-member outcomes log, and the window budget
+    # BASE. Members load-scale the base at run time, so one set of mock files
+    # serves a lower-bound run and an upper-bound run.
+    _h2t9_probe_group_reset() {
+        local _dir="$1" _budget_base="$2"
+        mkdir -p "$_dir"
+        echo 0 > "$_dir/cur"; echo 0 > "$_dir/max"; echo 0 > "$_dir/arrived"
+        : > "$_dir/outcomes"
+        echo "$_budget_base" > "$_dir/budget_base"
+    }
 
-    # _h2t9_write_pool_mock <path> <exit_code>
-    # Mock that proves concurrent overlap: flock-guarded increment of a
-    # shared "current"/"max" counter pair, then a load-tolerant BARRIER
-    # (poll until >= 2 siblings have arrived, bounded by
-    # load_tolerant_attempts so the wait auto-extends under host load
-    # instead of guessing a fixed sleep) before decrementing. All reads use
-    # `-ge`/equality only -- no `-le`/`-lt` wall-clock upper bound.
-    _h2t9_write_pool_mock() {
-        local _path="$1" _exit_code="$2"
-        cat > "$_path" <<'MOCKBODY'
-#!/usr/bin/env bash
-set -euo pipefail
-source "$H2_T9_LOAD_LIB"
-LOCK="$H2_T9_POOL_LOCK"; CUR="$H2_T9_POOL_CUR"; MAX="$H2_T9_POOL_MAX"; ARRIVED="$H2_T9_POOL_ARRIVED"
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
-    echo "$c" > "$CUR"
-    m=$(cat "$MAX" 2>/dev/null || echo 0)
-    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
-    a=$(( $(cat "$ARRIVED" 2>/dev/null || echo 0) + 1 ))
-    echo "$a" > "$ARRIVED"
-) 201>>"$LOCK"
+    # _h2t9_write_probe_mock <path> <exit_code> <group_dir> <group_size>
+    # Successor-rendezvous probe member: takes an arrival ordinal, then holds
+    # until the next ordinal (capped at <group_size>) has arrived or
+    # load_tolerant_attempts(budget_base) ticks of 0.1s are spent. Members
+    # scheduled concurrently overlap by construction; members scheduled
+    # serially can never see a successor, so each non-last member sits out its
+    # WHOLE window -- the window an `== 1` claim needs to mean anything. The
+    # hold ends `met` (successor arrived) or `exhausted` (budget spent), and
+    # the outcome is recorded either way, never silent. The last member and a
+    # Phase-2.5 retry (ordinal past the group size) meet at once. Reads use
+    # `-ge`/equality only -- no wall-clock upper bound.
+    _h2t9_write_probe_mock() {
+        local _path="$1" _exit_code="$2" _group_dir="$3" _group_size="$4"
+        {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            printf 'source %q\n' "$LOAD_TOLERANCE_LIB_T9"
+            printf 'GROUP_DIR=%q\nGROUP_SIZE=%q\n' "$_group_dir" "$_group_size"
+            cat <<'MOCKBODY'
+LOCK="$GROUP_DIR/lock"
+me=$(
+    (
+        flock -x 201
+        c=$(( $(cat "$GROUP_DIR/cur") + 1 ))
+        echo "$c" > "$GROUP_DIR/cur"
+        if [ "$c" -gt "$(cat "$GROUP_DIR/max")" ]; then echo "$c" > "$GROUP_DIR/max"; fi
+        a=$(( $(cat "$GROUP_DIR/arrived") + 1 ))
+        echo "$a" > "$GROUP_DIR/arrived"
+        echo "$a"
+    ) 201>>"$LOCK"
+)
 
-attempts=$(load_tolerant_attempts "${H2_T9_POLL_BASE:-3}")
+want=$(( me < GROUP_SIZE ? me + 1 : GROUP_SIZE ))
+budget=$(load_tolerant_attempts "$(cat "$GROUP_DIR/budget_base")")
+outcome=exhausted
 i=0
-while [ "$i" -lt "$attempts" ]; do
-    a=$( ( flock -x 201; cat "$ARRIVED" 2>/dev/null || echo 0 ) 201>>"$LOCK" )
-    if [ "$a" -ge "${H2_T9_ARRIVE_THRESHOLD:-2}" ]; then break; fi
+while [ "$i" -lt "$budget" ]; do
+    arrived=$( ( flock -x 201; cat "$GROUP_DIR/arrived" ) 201>>"$LOCK" )
+    if [ "$arrived" -ge "$want" ]; then outcome=met; break; fi
     sleep 0.1
     i=$((i + 1))
 done
 
 (
     flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
-    echo "$c" > "$CUR"
+    echo "$outcome" >> "$GROUP_DIR/outcomes"
+    echo $(( $(cat "$GROUP_DIR/cur") - 1 )) > "$GROUP_DIR/cur"
 ) 201>>"$LOCK"
 MOCKBODY
-        echo "exit $_exit_code" >> "$_path"
+            echo "exit $_exit_code"
+        } > "$_path"
         chmod +x "$_path"
     }
 
-    # _h2t9_write_serial_mock <path> <exit_code>
-    # No barrier -- just a short flock-guarded pause while holding the
-    # counter incremented, so an accidental overlap (regression) is still
-    # observable via the max counter.
-    _h2t9_write_serial_mock() {
-        local _path="$1" _exit_code="$2"
-        cat > "$_path" <<'MOCKBODY'
-#!/usr/bin/env bash
-set -euo pipefail
-source "$H2_T9_LOAD_LIB"
-LOCK="$H2_T9_SERIAL_LOCK"; CUR="$H2_T9_SERIAL_CUR"; MAX="$H2_T9_SERIAL_MAX"
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) + 1 ))
-    echo "$c" > "$CUR"
-    m=$(cat "$MAX" 2>/dev/null || echo 0)
-    if [ "$c" -gt "$m" ]; then echo "$c" > "$MAX"; fi
-) 201>>"$LOCK"
-
-pause_attempts=$(load_tolerant_attempts "${H2_T9_SERIAL_PAUSE_BASE:-2}")
-j=0
-while [ "$j" -lt "$pause_attempts" ]; do
-    sleep 0.05
-    j=$((j + 1))
-done
-
-(
-    flock -x 201
-    c=$(( $(cat "$CUR" 2>/dev/null || echo 0) - 1 ))
-    echo "$c" > "$CUR"
-) 201>>"$LOCK"
-MOCKBODY
-        echo "exit $_exit_code" >> "$_path"
-        chmod +x "$_path"
+    # _h2t9_probe_count <group_dir> <outcome>
+    # How many members of a probe group recorded <outcome> (`met` or
+    # `exhausted`) in the group's outcomes log; 0 when it recorded nothing.
+    _h2t9_probe_count() {
+        local _outcomes="$1/outcomes" _outcome="$2"
+        [ -f "$_outcomes" ] || { echo 0; return 0; }
+        grep -cx -- "$_outcome" "$_outcomes" || true
     }
 
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_1.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_2.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T9/test_pool_3.sh" 1
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_1.sh" 0
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_serial_2.sh" 0
-    _h2t9_write_serial_mock "$TMPDIR_T9/test_hostx_1.sh" 0
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_1.sh" 0 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_2.sh" 0 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_pool_3.sh" 1 "$PROBE_POOL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_serial_1.sh" 0 "$PROBE_SERIAL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_serial_2.sh" 0 "$PROBE_SERIAL_T9" 3
+    _h2t9_write_probe_mock "$TMPDIR_T9/test_hostx_1.sh" 0 "$PROBE_SERIAL_T9" 3
 
-    export H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9"
-    export H2_T9_POOL_LOCK="$CNT_T9/pool.lock"
-    export H2_T9_POOL_CUR="$CNT_T9/pool.cur"
-    export H2_T9_POOL_MAX="$CNT_T9/pool.max"
-    export H2_T9_POOL_ARRIVED="$CNT_T9/pool.arrived"
-    export H2_T9_SERIAL_LOCK="$CNT_T9/serial.lock"
-    export H2_T9_SERIAL_CUR="$CNT_T9/serial.cur"
-    export H2_T9_SERIAL_MAX="$CNT_T9/serial.max"
-    export H2_T9_POLL_BASE=3
-    export H2_T9_ARRIVE_THRESHOLD=2
-    export H2_T9_SERIAL_PAUSE_BASE=2
-
-    # T9a specifically proves overlap (pool max-concurrency >= 2), so its
-    # ARRIVED>=2 barrier uses a much larger poll base than the shared default
-    # -- in practice a deadlock backstop rather than a race the
-    # first-arriving mock could lose on a severely descheduled host (overlap
-    # should be near-guaranteed, not merely probabilistic; the bound stays
-    # finite so a genuine bug still fails the test instead of hanging it).
-    # This override applies ONLY to the T9a invocation below (env-prefixed on
-    # that one command) -- T9b intentionally keeps the small shared default:
-    # with REIFY_RUN_ALL_POOL_CONCURRENCY=1 its sole running pool member can
-    # never observe ARRIVED>=2 (no sibling runs concurrently), so it always
-    # burns the full poll budget serially, and inflating that budget would
-    # only add wall-clock to T9b with no proof-strength benefit.
-    H2_T9_POLL_BASE_T9A=100
+    # Budget base per claim direction: 100 is a lower-bound backstop (members
+    # leave the moment their successor arrives); 3 is the upper-bound
+    # exclusive window each non-last member must sit out with no successor.
 
     # -- 9a: REIFY_RUN_ALL_POOL_CONCURRENCY=4 (4 slots, 3 pool members -- all
     # admitted concurrently) ------------------------------------------------
-    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
-    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    _h2t9_probe_group_reset "$PROBE_POOL_T9" 100
+    _h2t9_probe_group_reset "$PROBE_SERIAL_T9" 3
     LOCK_T9A="$TMPDIR_T9/pool-semaphore-a.lock"
 
     t9a_rc=0
@@ -499,16 +475,21 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T9A" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=4 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-        H2_T9_POLL_BASE="$H2_T9_POLL_BASE_T9A" \
         bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9a_rc=$?
 
-    t9a_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
-    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max)" \
+    t9a_pool_max="$(cat "$PROBE_POOL_T9/max" 2>/dev/null || echo 0)"
+    t9a_pool_met="$(_h2t9_probe_count "$PROBE_POOL_T9" met)"
+    t9a_pool_exhausted="$(_h2t9_probe_count "$PROBE_POOL_T9" exhausted)"
+    assert "T9a: pool group max-concurrency >= 2 (got: $t9a_pool_max; successor rendezvous: $t9a_pool_met met, $t9a_pool_exhausted exhausted)" \
         test "$t9a_pool_max" -ge 2
 
-    t9a_serial_max="$(cat "$H2_T9_SERIAL_MAX" 2>/dev/null || echo 0)"
+    t9a_serial_max="$(cat "$PROBE_SERIAL_T9/max" 2>/dev/null || echo 0)"
     assert "T9a: serial group max-concurrency == 1 (got: $t9a_serial_max)" \
         test "$t9a_serial_max" -eq 1
+
+    t9a_serial_exhausted="$(_h2t9_probe_count "$PROBE_SERIAL_T9" exhausted)"
+    assert "T9a control: serial group -- each of the 2 non-last members held its full exclusive window with no successor arriving (exhausted: $t9a_serial_exhausted of 2)" \
+        test "$t9a_serial_exhausted" -eq 2
 
     if [[ "$t9a_out" == *"=== Summary: 6 discovered, 1 failed ==="* ]]; then
         assert "T9a: byte-exact Summary line (6 discovered, 1 failed)" true
@@ -540,8 +521,8 @@ MOCKBODY
         test "$t9a_rc" -eq 1
 
     # -- 9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 (bound honored -- pool serializes) --
-    echo 0 > "$H2_T9_POOL_CUR"; echo 0 > "$H2_T9_POOL_MAX"; echo 0 > "$H2_T9_POOL_ARRIVED"
-    echo 0 > "$H2_T9_SERIAL_CUR"; echo 0 > "$H2_T9_SERIAL_MAX"
+    _h2t9_probe_group_reset "$PROBE_POOL_T9" 3
+    _h2t9_probe_group_reset "$PROBE_SERIAL_T9" 3
     LOCK_T9B="$TMPDIR_T9/pool-semaphore-b.lock"
 
     t9b_rc=0
@@ -552,18 +533,24 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         bash "$RUN_ALL" "$TMPDIR_T9" 2>&1)" || t9b_rc=$?
 
-    t9b_pool_max="$(cat "$H2_T9_POOL_MAX" 2>/dev/null || echo 0)"
+    t9b_pool_max="$(cat "$PROBE_POOL_T9/max" 2>/dev/null || echo 0)"
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (got: $t9b_pool_max)" \
         test "$t9b_pool_max" -eq 1
+
+    t9b_pool_exhausted="$(_h2t9_probe_count "$PROBE_POOL_T9" exhausted)"
+    assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (exhausted: $t9b_pool_exhausted of 2)" \
+        test "$t9b_pool_exhausted" -eq 2
 else
     assert "T9a: pool group max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: serial group max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9a control: serial group -- each of the 2 non-last members held its full exclusive window with no successor arriving (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: ^FAILED classifier marker names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: === FAILED: human line names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Test 10: H2 pool N observability (INFO line + knob echo) -------------------
@@ -1666,18 +1653,18 @@ test_pool_5.sh pool
 test_pool_6.sh pool
 EOF
 
-    CNT_T20="$TMPDIR_T20/counters"
-    mkdir -p "$CNT_T20"
-
-    # Reuse Test 9's flock CUR/MAX + ARRIVED-barrier pool mock verbatim (all
-    # 6 members pass -- this test is about spawn-footprint/observability,
-    # not failure classification).
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_1.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_2.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_3.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_4.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_5.sh" 0
-    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_6.sh" 0
+    # Reuse Test 9's successor-rendezvous probe (all 6 members pass -- this
+    # test is about spawn-footprint/observability, not failure
+    # classification). At N=2 each member is released when its successor is
+    # admitted and the last meets at once, so the chain cannot deadlock.
+    PROBE_T20="$TMPDIR_T20/probe"
+    _h2t9_probe_group_reset "$PROBE_T20" 100
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_1.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_2.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_3.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_4.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_5.sh" 0 "$PROBE_T20" 6
+    _h2t9_write_probe_mock "$TMPDIR_T20/test_pool_6.sh" 0 "$PROBE_T20" 6
 
     SLOT_LOG_T20="$TMPDIR_T20/slot-events.log"
 
@@ -1688,13 +1675,6 @@ EOF
         REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         REIFY_SLOT_EVENT_LOG="$SLOT_LOG_T20" \
-        H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9" \
-        H2_T9_POOL_LOCK="$CNT_T20/pool.lock" \
-        H2_T9_POOL_CUR="$CNT_T20/pool.cur" \
-        H2_T9_POOL_MAX="$CNT_T20/pool.max" \
-        H2_T9_POOL_ARRIVED="$CNT_T20/pool.arrived" \
-        H2_T9_POLL_BASE=100 \
-        H2_T9_ARRIVE_THRESHOLD=2 \
         bash "$RUN_ALL" "$TMPDIR_T20" 2>&1)" || t20_rc=$?
 
     t20_peak="$(grep -oE 'shells=[0-9]+' <<<"$t20_out" | head -1 | cut -d= -f2)" || true
@@ -1711,8 +1691,10 @@ EOF
         assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (got: $t20_out)" false
     fi
 
-    t20_pool_max="$(cat "$CNT_T20/pool.max" 2>/dev/null || echo 0)"
-    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max)" \
+    t20_pool_max="$(cat "$PROBE_T20/max" 2>/dev/null || echo 0)"
+    t20_pool_met="$(_h2t9_probe_count "$PROBE_T20" met)"
+    t20_pool_exhausted="$(_h2t9_probe_count "$PROBE_T20" exhausted)"
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max; successor rendezvous: $t20_pool_met met, $t20_pool_exhausted exhausted)" \
         test "$t20_pool_max" -ge 2
 
     if [ -s "$SLOT_LOG_T20" ] && grep -q 'ACQUIRE' "$SLOT_LOG_T20"; then
@@ -2343,19 +2325,21 @@ fi
 # marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error
 # mislabel instead of test_failure. RED sub-case: a fast-failing pool member
-# ("boom") plus a slow pool member ("hang") under REIFY_RUN_ALL_POOL_CONCURRENCY=2
+# ("boom") plus a pool member ("hang") that is held until the test releases it,
+# under REIFY_RUN_ALL_POOL_CONCURRENCY=2
 # (both admitted concurrently, no lock contention -- keeps this test's markers
 # independent of Test 24's). The harness polls (bounded, not a fixed sleep)
 # for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
 # (discovered via a private TMPDIR override -- the same authoritative state
-# _ra_partial_failed_names itself scans), confirming the failure landed
+# _ra_partial_failed_names itself scans), then waits for hang's READY
+# announcement, confirming the failure landed and the run is still mid-flight
 # before firing SIGTERM itself -- decoupling the signal's timing from
 # absolute wall-clock guesswork under host load -- while the parent is
 # blocked in the Phase-1 `wait` for hang, into the new trap. Output is
 # captured to a FILE, not `$(...)`: the
 # orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
-# an inherited copy of the original pipe's write end while it finishes its ~8s
-# sleep) would otherwise hold a command-substitution pipe open long past
+# an inherited copy of the original pipe's write end until the test releases
+# it) would otherwise hold a command-substitution pipe open long past
 # run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
 # timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
 # Summary) -- proves the trap is signal-only and never fires on the normal path.
@@ -2367,13 +2351,31 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     TMPDIR_T25="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T25")
 
+    # Paths the hang member owns: ready (its PID), release (created by this
+    # test) and outcome (how its hold ended).
+    T25_HANG_DIR="$TMPDIR_T25/hang"
+    mkdir -p "$T25_HANG_DIR"
+
     MANIFEST_T25="$TMPDIR_T25/classification.manifest"
     cat > "$MANIFEST_T25" <<'EOF'
 test_pool_boom.sh pool
 test_pool_hang.sh pool
 EOF
     printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25/test_pool_boom.sh"
-    printf '#!/usr/bin/env bash\nsleep 8\nexit 0\n' > "$TMPDIR_T25/test_pool_hang.sh"
+    # hang announces READY with its PID (tmp+mv, so READY is never seen empty),
+    # then stays until the test releases it. Its 600-iteration wait is only a
+    # broken-infra backstop and is recorded as `backstop` if it ever ends the hold.
+    {
+        printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+        printf 'source %q\n' "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+        printf 'READY=%q\nRELEASE=%q\nOUTCOME=%q\n' \
+            "$T25_HANG_DIR/ready" "$T25_HANG_DIR/release" "$T25_HANG_DIR/outcome"
+        cat <<'HANGBODY'
+echo "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"
+if holder_wait_for_marker "$RELEASE" 600; then echo released > "$OUTCOME"; else echo backstop > "$OUTCOME"; fi
+exit 0
+HANGBODY
+    } > "$TMPDIR_T25/test_pool_hang.sh"
     chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
 
     LOCK_T25="$TMPDIR_T25/pool-t25.lock"
@@ -2394,13 +2396,11 @@ EOF
     mkdir -p "$H2WD_PARENT_T25"
 
     # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
-    # the SIGTERM can be fired right after boom's `.rc` write confirms its
-    # failure landed. The bounded poll below caps the wait at 4s (comfortably
-    # under hang's 8s sleep, so a slow-but-not-wedged host still exercises
-    # the intended mid-run interrupt) and reacts as soon as the write lands
-    # rather than always waiting the full window. A background SIGKILL
-    # fallback mirrors `timeout`'s -k grace period, in case the TERM trap
-    # somehow doesn't reap it.
+    # the SIGTERM can be fired once boom's `.rc` write confirms its failure
+    # landed and hang has announced READY. The bounded poll below reacts as
+    # soon as the write lands rather than always waiting the full window. A
+    # background SIGKILL fallback mirrors `timeout`'s -k grace period, in case
+    # the TERM trap somehow doesn't reap it.
     env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
         RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
@@ -2410,14 +2410,11 @@ EOF
         bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
     t25_pid=$!
 
-    # Poll bound: base 40 attempts (4s) on an idle host, scaled by the same
-    # /proc/loadavg-derived factor load_tolerance_lib.sh already applies
-    # elsewhere in this suite (e.g. Test 9's ARRIVED barrier) -- a heavily
-    # loaded host gets a proportionally longer window instead of a fixed
-    # guess, while the early-exit below still reacts immediately once boom's
-    # write lands (no extra wall-clock cost on an idle/normal host).
+    # Poll bound: a broken-infra backstop only. hang is held until the test
+    # releases it, so it always outlives this poll. Worst case
+    # 100 x 0.1s x CAP 8 = 80s < hang's own backstop, 600 x 0.2s = 120s.
     source "$LOAD_TOLERANCE_LIB_T9"
-    t25_poll_attempts=$(load_tolerant_attempts 40)
+    t25_poll_attempts=$(load_tolerant_attempts 100)
 
     t25_wd=""
     t25_rc_file=""
@@ -2462,12 +2459,23 @@ EOF
         echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
     fi
 
+    # SIGTERM must land on a run still mid-flight: wait for hang's READY
+    # rather than assuming it from timing.
+    if holder_wait_for_marker "$T25_HANG_DIR/ready"; then t25_hang_started=1; else t25_hang_started=0; fi
     kill -TERM "$t25_pid" 2>/dev/null || true
     ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
     t25_killer=$!
     wait "$t25_pid" 2>/dev/null || t25_rc=$?
     kill "$t25_killer" 2>/dev/null || true
     wait "$t25_killer" 2>/dev/null || true
+
+    # End the orphaned hang member now rather than leaving it to its backstop.
+    t25_hang_pid="$(cat "$T25_HANG_DIR/ready" 2>/dev/null || true)"
+    if [ -n "$t25_hang_pid" ]; then
+        holder_release "$T25_HANG_DIR/release" "$t25_hang_pid" || true
+    else
+        touch "$T25_HANG_DIR/release"
+    fi
 
     if grep -q 'INTERRUPTED' "$T25_OUT"; then
         assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
@@ -2489,6 +2497,16 @@ EOF
 
     assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
         test "$t25_rc" -ne 0
+
+    assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight" \
+        test "$t25_hang_started" -eq 1
+
+    t25_hang_outcome="$(cat "$T25_HANG_DIR/outcome" 2>/dev/null || true)"
+    if [ "$t25_hang_outcome" = released ]; then
+        assert "T25 control: the hang member held until the test released it (outcome: released), not until its own backstop" true
+    else
+        assert "T25 control: the hang member held until the test released it (outcome: ${t25_hang_outcome:-none}), not until its own backstop" false
+    fi
 
     # -- GREEN regression sub-case: normal (untouched) path stays byte-identical --
     TMPDIR_T25B="$(mktemp -d)"
@@ -2531,6 +2549,8 @@ else
     assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25c: the partial FAILED line names test_pool_boom.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25 control: the hang member held until the test released it, not until its own backstop (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25g: GREEN regression -- normal path emits no (partial) marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false

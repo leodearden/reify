@@ -80,9 +80,10 @@ not replicate.
 
 ### 3.2 `arg_acceptance` is dimension-generic and FROZEN; there is no `angle_spec`
 
-`crates/reify-eval/src/arg_acceptance.rs` (219 lines): `ArgSpec` :28, `Acceptance` :40,
-`ArgRejection` :52, `ArgRejection::message` :69, `density_spec` :86, `length_spec` :103,
-`accept_arg` :117. Wording template:
+`crates/reify-eval/src/arg_acceptance.rs` (219 lines) *(pre-relocation; #5791 moved the module to
+`crates/reify-ir/src/arg_acceptance.rs`)*: `ArgSpec` :28, `Acceptance` :40, `ArgRejection` :52,
+`ArgRejection::message` :69, `density_spec` :86, `length_spec` :103, `accept_arg` :117.
+Wording template:
 
 ```
 {builtin}: {arg_name} argument expects {type_name}, got {got}[; {migration_hint}]
@@ -340,7 +341,7 @@ four docs-truth leaves.
 ### C1 — Angle acceptance
 
 ```rust
-// crates/reify-eval/src/arg_acceptance.rs  (additive; core semantics FROZEN)
+// crates/reify-ir/src/arg_acceptance.rs  (additive; core semantics FROZEN)
 pub fn angle_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Angle",
@@ -513,7 +514,7 @@ flexures/joints/dynamics semantic change owned by PRD 5's territory, recorded in
 > #5799, not defended. Sequencing: **η lands first**; #5799 depends on it.
 > *Why the ruling went that way:* a `NAMED_DIMENSIONS` alias row cannot separate two
 > quantities for a dimension-checked reader — `accept_arg` keys on
-> `*dimension == spec.dimension` (`reify-eval/src/arg_acceptance.rs:123`) and
+> `*dimension == spec.dimension` (`reify-ir/src/arg_acceptance.rs`) and
 > `ArgSpec.type_name` is display-only — so PRD 5's `rotational_stiffness_spec()` would
 > otherwise have accepted a torque, permanently. Probe-measured at `d57cb55bc9`: with
 > `rad⁻¹`, `k·θ` evaluates to `m^2·kg·s^-2` (Energy) and `½kθ²` to `m^2·kg·rad·s^-2` (matches
@@ -704,7 +705,7 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
 ### Phase 1 — foundation
 
 - **β — `angle_spec()` in `arg_acceptance`; retire the hint-less inline ANGLE spec.**
-  *Modules:* `crates/reify-eval/src/arg_acceptance.rs`, `crates/reify-eval/src/geometry_ops.rs`
+  *Modules:* `crates/reify-ir/src/arg_acceptance.rs`, `crates/reify-eval/src/geometry_ops.rs`
   (`:8767-8771`).
   *Change:* closes the spec §14.5 breaking-change-obligation gap PRD 1's §7/D9(i) assigns here.
   Reuses PRD 1 task β's `DiagnosticCode`; mints none.

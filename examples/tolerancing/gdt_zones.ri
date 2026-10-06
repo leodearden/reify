@@ -8,7 +8,7 @@
 //
 // This is the worked example chunks/geometry.md's "GD&T Tolerance Zones" section
 // cites for all four, and that claim is gated: see
-// stdlib_chunk_geometry_ops_smoke.rs::geometry_chunk_example_citations_hold_against_the_real_examples.
+// geometry_chunk_smoke.rs::geometry_chunk_example_citations_hold_against_the_real_examples.
 //
 // `reify eval` must: exit 0, emit no Error diagnostics, and print
 //   cyl_zone, ann_zone, prof_zone, slab_zone (geometry cell names)

@@ -1249,4 +1249,53 @@ describe('MechanismPanel', () => {
       }
     });
   });
+
+  // Every evaluating→idle transition refreshes the store with freshly
+  // deserialized descriptors. If that remounted the rows, a slider the user is
+  // holding would be detached mid-gesture and its `change` would never fire.
+  describe('(l) a store refresh keeps the slider mounted', () => {
+    async function renderOverRealStore(initial: MechanismDescriptor) {
+      let served: MechanismDescriptor[] = [initial];
+      const store = createMechanismStore({ getMechanismDescriptors: async () => served });
+      await store.refresh();
+      render(() => (
+        <MechanismPanel
+          descriptors={store.state.descriptors}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()}
+          onScrubLocal={vi.fn()}
+          getEffectiveValueSi={store.getEffectiveValueSi}
+        />
+      ));
+      const refreshWith = (next: MechanismDescriptor) => {
+        served = [next];
+        return store.refresh();
+      };
+      return { slider: screen.getByRole('slider') as HTMLInputElement, refreshWith };
+    }
+
+    it('(l.1) value-identical descriptors leave the same slider node connected', async () => {
+      const desc = makeDescriptor({ cell_id: 'Kinematic.m1' });
+      const { slider, refreshWith } = await renderOverRealStore(desc);
+
+      await refreshWith(structuredClone(desc));
+
+      expect(screen.getByRole('slider')).toBe(slider);
+      expect(slider.isConnected).toBe(true);
+    });
+
+    it('(l.2) a changed joint value updates the same slider node in place', async () => {
+      const desc = makeDescriptor({ cell_id: 'Kinematic.m1' });
+      const { slider, refreshWith } = await renderOverRealStore(desc);
+      expect(slider.value).toBe('100');
+
+      await refreshWith(makeDescriptor({
+        cell_id: 'Kinematic.m1',
+        joints: [makeJoint({ joint_index: 0, current_value_si: 0.25 })],
+      }));
+
+      expect(screen.getByRole('slider')).toBe(slider);
+      expect(slider.isConnected).toBe(true);
+      expect(slider.value).toBe('250');
+    });
+  });
 });

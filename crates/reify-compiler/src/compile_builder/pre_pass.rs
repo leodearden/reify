@@ -99,7 +99,8 @@ pub(crate) fn effective_prelude<'a>(
 ///
 /// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
 /// Returns `Some(Diagnostic::warning(...))` if `declared` is `None` (W_MODULE_DECL_MISSING).
-/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match (E_MODULE_PATH_MISMATCH).
+/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match
+/// (E_MODULE_PATH_MISMATCH); the error names the declaration that fixes it.
 ///
 /// This is a pure helper so it can be unit-tested without a full compilation context.
 /// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
@@ -110,17 +111,24 @@ pub fn check_module_path_decl(
     match declared {
         None => Some(Diagnostic::warning(format!(
             "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
-             expected `module {}` (spec \u{00a7}7.1)",
-            expected.0.join(".")
+             expected `{}` (spec \u{00a7}7.1)",
+            module_declaration(expected)
         ))),
         Some(d) if d != expected => Some(Diagnostic::error(format!(
             "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' (derived from file location)",
+             expected path '{}' (derived from file location); declare `{}` instead \
+             (spec \u{00a7}7.1)",
             d.0.join("."),
-            expected.0.join(".")
+            expected.0.join("."),
+            module_declaration(expected)
         ))),
         Some(_) => None,
     }
+}
+
+/// The source spelling of a top-of-file declaration of `path`, e.g. `module sub.dep`.
+fn module_declaration(path: &ModulePath) -> String {
+    format!("module {}", path.0.join("."))
 }
 
 /// References into `parsed.declarations` collected by [`collect_decl_refs`],
@@ -263,6 +271,11 @@ mod tests {
             "message should contain 'W_MODULE_DECL_MISSING', got: {}",
             diag.message
         );
+        assert!(
+            diag.message.contains("module foo"),
+            "message should name the expected declaration 'module foo', got: {}",
+            diag.message
+        );
     }
 
     #[test]
@@ -275,7 +288,7 @@ mod tests {
     #[test]
     fn mismatched_decl_returns_error_with_both_paths() {
         let declared = ModulePath::from_dotted("a.b.c").unwrap();
-        let expected = ModulePath::single("foo");
+        let expected = ModulePath::from_dotted("sub.dep").unwrap();
         let diag = check_module_path_decl(Some(&declared), &expected)
             .expect("should return Some(diag) for mismatch");
         assert_eq!(diag.severity, Severity::Error);
@@ -290,8 +303,13 @@ mod tests {
             diag.message
         );
         assert!(
-            diag.message.contains("foo"),
-            "message should name the expected path 'foo', got: {}",
+            diag.message.contains("'sub.dep'"),
+            "message should name the expected path 'sub.dep', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("module sub.dep"),
+            "message should name the corrective declaration 'module sub.dep', got: {}",
             diag.message
         );
     }

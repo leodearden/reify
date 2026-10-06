@@ -403,6 +403,38 @@ pub enum DiagnosticCode {
     ///
     /// The human-readable mnemonic used in task prose is `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`.
     FnParamDefaultTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/fn_return_check.rs::reconcile_fn_return`.
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' declares return type `<D>` but its body produces `<B>`"`.
+    ///
+    /// Emitted when a fn's EXPLICIT return annotation resolves to an `Int`/`Scalar{..}`
+    /// type that the compiled body's result type is not `type_compatible` with. Call
+    /// sites type the result from the signature, and evaluation returns the body value
+    /// unconverted, so the two must agree. Labels anchor the return annotation and the
+    /// body's result expression.
+    ///
+    /// Severity comes from `FN_RETURN_RECONCILE_SEVERITY`: `Warning` during the
+    /// warn-mode phase; the promotion to `Error` is #7007.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_RETURN_TYPE_MISMATCH`.
+    FnReturnTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/fn_return_check.rs` (`reconcile_fn_return`
+    /// and `require_bodyless_return_annotation`).
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' has no return type annotation, so callers type its result as `Real`, but its body produces `<B>`; annotate its return type"`.
+    ///
+    /// Emitted when a fn has NO return annotation and either (a) its body's type
+    /// contradicts the `Real` the signature defaults to (call sites type from that
+    /// default), or (b) it is a bodyless required trait assoc fn, which has no body
+    /// that could ever reconcile it.
+    ///
+    /// Severity comes from `FN_RETURN_RECONCILE_SEVERITY`: `Warning` during the
+    /// warn-mode phase; the promotion to `Error` is #7007.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_RETURN_TYPE_UNANNOTATED`.
+    FnReturnTypeUnannotated,
     /// Origin: `crates/reify-compiler/src/entity.rs::check_param_default_type`.
     ///
     /// Canonical message form:

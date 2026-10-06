@@ -27,7 +27,7 @@
 //!     `process_dfm_metrology_example.rs`).
 //!
 //! Compile coverage for `std_process_dfm_thickness.ri` (kernel-independent)
-//! is provided by `crates/reify-compiler/tests/examples_smoke.rs` which
+//! is provided by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` which
 //! discovers `examples/**/*.ri` automatically and gates on Error-severity
 //! compile diagnostics.
 //!

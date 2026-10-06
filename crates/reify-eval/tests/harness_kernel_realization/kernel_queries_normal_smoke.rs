@@ -45,7 +45,8 @@
 
 use reify_core::Type;
 use reify_ir::{GeometryOp, GeometryQuery, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+
+use super::fixture_scaffolding::read_and_compile_fixture;
 
 const NORMAL_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -65,19 +66,12 @@ const NORMAL_SMOKE_PATH: &str = concat!(
 fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
     // ── assertion 1: fixture exists, compiles, NormalSmoke.n typed Vec3<Real> ──
 
-    // Read the fixture unconditionally so a missing file fails even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(NORMAL_SMOKE_PATH)
-        .expect("examples/kernel_queries/normal_smoke.ri should exist (task 3615 step-8)");
-
-    // Validate fixture compilation unconditionally — a grammar or type-system
-    // regression (e.g. `normal` signature change) should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/normal_smoke.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
+    // Read and compile the fixture unconditionally — a missing file or a grammar
+    // or type-system regression (e.g. `normal` signature change) should fail on
+    // every runner, independent of OCCT.
+    let compiled = read_and_compile_fixture(
+        NORMAL_SMOKE_PATH,
+        "examples/kernel_queries/normal_smoke.ri (task 3615 step-8)",
     );
 
     // Locate the NormalSmoke topology template.

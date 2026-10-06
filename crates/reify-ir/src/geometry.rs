@@ -11454,6 +11454,10 @@ mod tests {
     // ── 3MF serializer tests ─────────────────────────────────────────────────
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    ///
+    /// Judgment call (task #7137): a deliberate local copy of the canonical
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`, kept in step by
+    /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]
@@ -11477,7 +11481,7 @@ mod tests {
             // -Y face
             0, 1, 5,  0, 5, 4,
             // +Y face
-            3, 6, 2,  3, 7, 6,
+            3, 7, 6,  3, 6, 2,
             // -X face
             0, 4, 7,  0, 7, 3,
             // +X face

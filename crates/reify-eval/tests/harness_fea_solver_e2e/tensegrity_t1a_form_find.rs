@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine, point3};
 
 // ── step-7: stdlib declaration type-checks ───────────────────────────────────
 
@@ -100,30 +100,17 @@ structure def F {
 
 // ── step-9: trampoline-unit tests (crafted Values, no compile pipeline) ───────
 
-/// A Length-typed coordinate Scalar (SI metres) — how `point3(..m, ..)` lowers.
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
-
-/// A 3-component `Value::Point` node.
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
-}
-
 /// Anchored cable net: free node 0 (off-solution initial guess) plus four
 /// anchors at (±1,0,0),(0,±1,1); `struts: []`, four cable spokes 0→{1,2,3,4}.
 /// With equal q the analytic solution for node 0 is the anchor centroid
 /// (0, 0, 0.5).
 fn cable_net_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(0.3, 0.2, 0.4),  // free node 0 — deliberately off-solution
-        node(1.0, 0.0, 0.0),  // anchor 1
-        node(-1.0, 0.0, 0.0), // anchor 2
-        node(0.0, 1.0, 1.0),  // anchor 3
-        node(0.0, -1.0, 1.0), // anchor 4
+        point3(0.3, 0.2, 0.4),  // free node 0 — deliberately off-solution
+        point3(1.0, 0.0, 0.0),  // anchor 1
+        point3(-1.0, 0.0, 0.0), // anchor 2
+        point3(0.0, 1.0, 1.0),  // anchor 3
+        point3(0.0, -1.0, 1.0), // anchor 4
     ]);
     let struts = Value::List(vec![]);
     let cables = Value::List(vec![
@@ -282,9 +269,9 @@ fn trampoline_sign_violation_is_failed_with_diagnostic() {
 /// `disconnected_free_node_is_singular_reduced_stiffness` golden).
 fn disconnected_free_node_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0), // free node 0 — cabled to the anchor
-        node(5.0, 0.0, 0.0), // free node 1 — floating: no members touch it
-        node(1.0, 0.0, 0.0), // anchor 2
+        point3(0.0, 0.0, 0.0), // free node 0 — cabled to the anchor
+        point3(5.0, 0.0, 0.0), // free node 1 — floating: no members touch it
+        point3(1.0, 0.0, 0.0), // anchor 2
     ]);
     let struts = Value::List(vec![]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(2)])]);
@@ -478,11 +465,11 @@ fn membrane_tensegrity() -> Value {
 /// it cares about — without restating the 5-node diamond.
 fn membrane_tensegrity_with_surfaces(tris: &[[i64; 3]]) -> Value {
     let nodes = Value::List(vec![
-        node(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
-        node(1.0, 0.0, 0.0),  // 1: anchor
-        node(0.0, 1.0, 0.0),  // 2: anchor
-        node(-1.0, 0.0, 0.0), // 3: anchor
-        node(0.0, -1.0, 0.0), // 4: anchor
+        point3(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
+        point3(1.0, 0.0, 0.0),  // 1: anchor
+        point3(0.0, 1.0, 0.0),  // 2: anchor
+        point3(-1.0, 0.0, 0.0), // 3: anchor
+        point3(0.0, -1.0, 0.0), // 4: anchor
     ]);
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), nodes),
@@ -506,9 +493,9 @@ fn membrane_tensegrity_with_surfaces(tris: &[[i64; 3]]) -> Value {
 /// DegenerateTriangle rather than assemble a NaN/∞ stencil.
 fn degenerate_membrane_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(0.0, 0.0, 0.0), // 0: free — collinear with 1,2 (zero-area triangle)
-        node(1.0, 0.0, 0.0), // 1: anchor
-        node(2.0, 0.0, 0.0), // 2: anchor
+        point3(0.0, 0.0, 0.0), // 0: free — collinear with 1,2 (zero-area triangle)
+        point3(1.0, 0.0, 0.0), // 1: anchor
+        point3(2.0, 0.0, 0.0), // 2: anchor
     ]);
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), nodes),

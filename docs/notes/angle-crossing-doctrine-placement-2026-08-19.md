@@ -290,6 +290,22 @@ files, which per `CLAUDE.md` forces the full `--scope all --profile both`
 gate — a high-risk gate change has no place on a branch whose entire
 verdict is "change nothing."
 
+### Update, 2026-09-29 (#6931)
+
+The gap above is now split in two:
+
+- **Hard constraint 3 (`FIELD_OP_NAMES` chunk coverage) is CLOSED.**
+  #6931 committed the ledger `crates/reify-audit/pdoccover-baseline.txt`
+  and a merge gate, `tests/infra/test_reify_audit_pdoccover.sh`, that runs
+  PDOCCOVER against it: a field operator losing its last chunk mention is a
+  new `undocumented-name:` the ledger does not absorb, so the gate goes RED.
+  `COVERAGE_OWNED_REGISTRIES` in `crates/reify-audit/tests/pdoccover.rs`
+  anchors `FIELD_OP_NAMES` as coverage-owned, so the census cannot silently
+  stop seeing the registry either.
+- **Hard constraint 4 (`Hz`/`rad/s` vocabulary) is still OPEN.** Those are
+  unit names in prose, not registry names, so they are outside PDOCCOVER's
+  census by construction; only the hand-run grep in §1 holds them.
+
 ## 5. Re-verification
 
 The counts below are lower than an earlier pass on this branch recorded,
@@ -399,3 +415,7 @@ current text:
   opposite direction. A later revision re-anchored every diff instrument
   in §5 to `git diff --name-only "$(git merge-base HEAD main)" HEAD`,
   which is invariant under both rebase and sibling drift.
+- **2026-09-29 — §4 update for #6931.** Added "Update, 2026-09-29" to §4:
+  the PDOCCOVER gate and the `COVERAGE_OWNED_REGISTRIES` anchor now hold
+  hard constraint 3; hard constraint 4 remains open. The earlier §4 text is
+  kept as the record of why the gap existed.

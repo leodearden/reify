@@ -13,9 +13,9 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
-    ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, ReprKind, Satisfaction, StructureInstanceData, StructureTypeId, Value,
-    ValueMap,
+    ConstraintResult, DeterminacyState, GeometryHandleId, IndeterminateReason, KernelHandle,
+    OptimizedImplInput, PersistentMap, ReprKind, Satisfaction, StructureInstanceData,
+    StructureTypeId, TransientReason, Value, ValueMap,
 };
 
 use crate::graph::EvaluationGraph;
@@ -609,10 +609,14 @@ impl Engine {
                     // in the text so `labeled_diagnostics` can substitute a
                     // user-facing label, exactly as the language-level checker's
                     // message does.
-                    if matches!(satisfaction, Satisfaction::Indeterminate)
+                    //
+                    // The RECORDED reason, unlike the diagnostic, is set on every
+                    // Indeterminate (R1), the C1 case included.
+                    let indeterminate_reason = (satisfaction == Satisfaction::Indeterminate)
+                        .then(|| self.representation_within_indeterminate_reason());
+                    if let Some(reason) = &indeterminate_reason
                         && self.achieved_repr_tol.is_empty()
                     {
-                        let reason = self.unmeasured_reason();
                         messages.push(
                             Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
                                 .with_code(DiagnosticCode::ConstraintIndeterminate),
@@ -623,6 +627,7 @@ impl Engine {
                         id,
                         satisfaction,
                         diagnostics: ConstraintDiagnostics { messages },
+                        indeterminate_reason,
                     });
                     any_rw = true;
                 }
@@ -826,8 +831,9 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
-    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
-    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
+    /// The reason a `RepresentationWithin` Indeterminate records — and its
+    /// diagnostic states — on a run whose `achieved_repr_tol` is empty
+    /// (task-6169 ζ, C-SURFACE 1).
     ///
     /// A pure function of two engine properties, because an empty map has THREE
     /// distinct causes and each has a different fix:
@@ -914,6 +920,22 @@ impl Engine {
              representation tolerance; check that the subject declares a \
              realization"
         }
+    }
+
+    /// The reason recorded on a `RepresentationWithin` Indeterminate decided by
+    /// the engine. An empty `achieved_repr_tol` has the causes of
+    /// [`Engine::unmeasured_reason`]; a non-empty one means this surface DID
+    /// measure, just not this subject, so the reason names no kernel and no
+    /// other surface.
+    fn representation_within_indeterminate_reason(&self) -> IndeterminateReason {
+        let detail = if self.achieved_repr_tol.is_empty() {
+            self.unmeasured_reason()
+        } else {
+            "this run recorded no achieved representation deviation for the subject"
+        };
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+            detail: detail.to_string(),
+        })
     }
 
     /// Whether this engine holds a geometry kernel that can produce the
@@ -1109,12 +1131,20 @@ impl Engine {
         result: ConstraintResult,
         label: Option<&str>,
     ) -> (ConstraintCheckEntry, Vec<Diagnostic>) {
+        debug_assert!(
+            result.indeterminate_reason.is_none()
+                || result.satisfaction == Satisfaction::Indeterminate,
+            "constraint {} records an indeterminate reason on a {:?} verdict",
+            result.id,
+            result.satisfaction,
+        );
         let mut msgs = result.diagnostics.messages;
         Self::labeled_diagnostics(&mut msgs, &result.id, label);
         let entry = ConstraintCheckEntry {
             id: result.id,
             label: label.map(|s| s.to_string()),
             satisfaction: result.satisfaction,
+            indeterminate_reason: result.indeterminate_reason,
         };
         (entry, msgs)
     }
@@ -2237,23 +2267,18 @@ impl Engine {
             .and_then(|n| self.geometry_kernels.get(n));
 
         for w in work {
-            let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
-                GdtConformanceResolution::Indeterminate(reason) => (
-                    Satisfaction::Indeterminate,
-                    Some(gdt_indeterminate_diag(w.span, &reason)),
-                ),
+            let (satisfaction, reason, diag) = match w.resolution {
+                GdtConformanceResolution::Indeterminate(detail) => gdt_unmeasured(w.span, detail),
                 GdtConformanceResolution::Resolved {
                     actual,
                     feature,
                     zone_m,
                 } => match &kernel {
-                    None => (
-                        Satisfaction::Indeterminate,
-                        Some(gdt_indeterminate_diag(
-                            w.span,
-                            "no geometry kernel available to measure the `actual` deviation \
-                             against the nominal feature",
-                        )),
+                    None => gdt_unmeasured(
+                        w.span,
+                        "no geometry kernel available to measure the `actual` deviation \
+                         against the nominal feature"
+                            .to_string(),
                     ),
                     Some(k) => {
                         let query = reify_ir::GeometryQuery::MaxDeviation {
@@ -2264,23 +2289,17 @@ impl Engine {
                         match k.query(&query) {
                             Ok(reply) => match measured_deviation_m(&reply) {
                                 Some(measured_m) => gdt_verdict(zone_m, measured_m, w.span),
-                                None => (
-                                    Satisfaction::Indeterminate,
-                                    Some(gdt_indeterminate_diag(
-                                        w.span,
-                                        &format!(
-                                            "geometry kernel returned an unusable MaxDeviation \
-                                             reply ({reply:?})"
-                                        ),
-                                    )),
+                                None => gdt_unmeasured(
+                                    w.span,
+                                    format!(
+                                        "geometry kernel returned an unusable MaxDeviation \
+                                         reply ({reply:?})"
+                                    ),
                                 ),
                             },
-                            Err(err) => (
-                                Satisfaction::Indeterminate,
-                                Some(gdt_indeterminate_diag(
-                                    w.span,
-                                    &format!("geometry kernel MaxDeviation query failed: {err}"),
-                                )),
+                            Err(err) => gdt_unmeasured(
+                                w.span,
+                                format!("geometry kernel MaxDeviation query failed: {err}"),
                             ),
                         }
                     }
@@ -2290,13 +2309,14 @@ impl Engine {
             // Weave: OVERRIDE the matching entry in caller order; push if absent
             // (defensive — the scalar path normally pre-populates it).
             if let Some(entry) = constraint_results.iter_mut().find(|e| e.id == w.id) {
-                entry.satisfaction = satisfaction;
+                entry.set_verdict(satisfaction, reason);
             } else {
-                constraint_results.push(ConstraintCheckEntry {
-                    id: w.id.clone(),
-                    label: Some("Conforms".to_string()),
+                constraint_results.push(ConstraintCheckEntry::new(
+                    w.id.clone(),
+                    Some("Conforms".to_string()),
                     satisfaction,
-                });
+                    reason,
+                ));
             }
             if let Some(d) = diag {
                 diagnostics.push(d);
@@ -2634,18 +2654,15 @@ fn measured_deviation_m(reply: &Value) -> Option<f64> {
 /// else Violated with a diagnostic carrying the measured magnitude + zone width
 /// (both in mm). Mirrors the shipped scalar predicate `effective_tolerance_zone(...)
 /// >= measured_deviation`.
-fn gdt_verdict(
-    zone_m: f64,
-    measured_m: f64,
-    span: SourceSpan,
-) -> (Satisfaction, Option<Diagnostic>) {
+fn gdt_verdict(zone_m: f64, measured_m: f64, span: SourceSpan) -> GdtOutcome {
     if zone_m >= measured_m {
-        return (Satisfaction::Satisfied, None);
+        return (Satisfaction::Satisfied, None, None);
     }
     let measured_mm = measured_m * 1e3;
     let zone_mm = zone_m * 1e3;
     (
         Satisfaction::Violated,
+        None,
         Some(
             Diagnostic::error(format!(
                 "Conforms VIOLATED: measured deviation {measured_mm:.4} mm exceeds the \
@@ -2657,16 +2674,24 @@ fn gdt_verdict(
     )
 }
 
-/// Build the Indeterminate diagnostic for a geometric Conforms that could not be
-/// measured (missing kernel, unrealizable handle, kernel error). Warning, not
-/// error — Indeterminate never fails the check (C1).
-fn gdt_indeterminate_diag(span: SourceSpan, reason: &str) -> Diagnostic {
-    Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
+/// A woven geometric-Conforms verdict: the satisfaction, the reason recorded
+/// when it is Indeterminate, and the diagnostic reporting it.
+type GdtOutcome = (Satisfaction, Option<IndeterminateReason>, Option<Diagnostic>);
+
+/// The Indeterminate outcome for a geometric Conforms that could not be
+/// measured (missing kernel, unrealizable handle, kernel error). The warning is
+/// rendered from the recorded reason; Warning, not error — Indeterminate never
+/// fails the check (C1).
+fn gdt_unmeasured(span: SourceSpan, detail: String) -> GdtOutcome {
+    let reason =
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable { detail });
+    let diagnostic = Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
         .with_code(DiagnosticCode::ConstraintIndeterminate)
         .with_label(DiagnosticLabel::new(
             span,
             "geometric conformance could not be measured",
-        ))
+        ));
+    (Satisfaction::Indeterminate, Some(reason), Some(diagnostic))
 }
 
 /// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
@@ -3281,8 +3306,8 @@ mod gdt_conformance_tests {
     use reify_core::DimensionVector;
     use reify_core::identity::{RealizationNodeId, ValueCellId};
     use reify_ir::{
-        CompiledExprKind, GeometryHandleId, PersistentMap, Satisfaction, StructureInstanceData,
-        StructureTypeId, Value, ValueMap,
+        CompiledExprKind, GeometryHandleId, IndeterminateReason, PersistentMap, Satisfaction,
+        StructureInstanceData, StructureTypeId, TransientReason, Value, ValueMap,
     };
     use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
@@ -3418,6 +3443,7 @@ structure def Probe {
             id: node_id.clone(),
             label,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3462,10 +3488,16 @@ structure def Probe {
         );
         let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
+        // The scalar path's Indeterminate, with the reason it recorded, is the
+        // entry the geometric verdict upgrades.
+        let scalar_reason = IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![ref_cell(conforms, "actual")],
+        });
         let mut results = vec![ConstraintCheckEntry {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Indeterminate,
+            indeterminate_reason: Some(scalar_reason),
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3474,6 +3506,10 @@ structure def Probe {
             results[0].satisfaction,
             Satisfaction::Satisfied,
             "measured 0mm within the 0.1mm zone → Satisfied"
+        );
+        assert_eq!(
+            results[0].indeterminate_reason, None,
+            "an upgraded verdict must not keep the scalar path's stale reason"
         );
         assert!(
             !diags.iter().any(|d| d.message.contains("VIOLATED")),
@@ -3498,6 +3534,7 @@ structure def Probe {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3508,15 +3545,53 @@ structure def Probe {
             "no kernel → Indeterminate (never a false Violated)"
         );
         assert_ne!(results[0].satisfaction, Satisfaction::Violated);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
         let msg = diags
             .iter()
             .map(|d| d.message.as_str())
             .find(|m| m.contains("INDETERMINATE"))
             .unwrap_or_else(|| panic!("expected an INDETERMINATE diagnostic, got: {diags:#?}"));
-        assert!(
-            msg.to_lowercase().contains("kernel"),
-            "Indeterminate diagnostic must name the missing kernel: {msg}"
+        assert_eq!(
+            msg,
+            format!("Conforms INDETERMINATE: {detail}"),
+            "the warning is rendered from the recorded reason"
         );
+    }
+
+    /// The defensive push-if-absent arm records the same reason as the
+    /// override arm: an appended Indeterminate entry is never reasonless.
+    #[test]
+    fn explicit_actual_no_kernel_appended_entry_records_its_reason() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        let mut results = Vec::new();
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "the absent entry is appended");
+        assert_eq!(results[0].label.as_deref(), Some("Conforms"));
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
+    }
+
+    fn measurement_unavailable_detail(entry: &ConstraintCheckEntry) -> &str {
+        match &entry.indeterminate_reason {
+            Some(IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+                detail,
+            })) => detail,
+            other => panic!("expected a MeasurementUnavailable reason, got {other:?}"),
+        }
     }
 
     /// (d) A Conforms with NO explicit actual: the pass must leave its scalar
@@ -3539,6 +3614,7 @@ structure def Probe {
             id: node_id,
             label: Some("Conforms".to_string()),
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &ValueMap::new(), &mut results, &mut diags);

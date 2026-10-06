@@ -11,7 +11,7 @@
 //! `process_dfm_measure.rs`.  A CI run on a host without the OCCT kernel
 //! therefore shows all three tests as "passed" but having made no assertions.
 //! **Compile coverage for the example file in that environment is provided by
-//! `crates/reify-compiler/tests/examples_smoke.rs`**, which discovers
+//! `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`**, which discovers
 //! `examples/**/*.ri` automatically and gates on Error-severity compile
 //! diagnostics — no OCCT kernel required.  The integration assertions here
 //! (build + check + diagnostic multiset) are deliberately OCCT-gated because

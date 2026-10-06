@@ -691,3 +691,41 @@ gui/vitest-worker-rpc-flake-reporter.ts    tests/infra/test_gui_vitest_rpc_harde
 # script OR the .py selects the wrapper.
 scripts/review-readme.sh    tests/infra/test_review_readme.sh
 tests/infra/test_review_readme.py    tests/infra/test_review_readme.sh
+# Task 7896: scripts/cargo-test-tally.py (one captured test log in, every
+# count out) is pinned by a .py suite behind a thin .sh wrapper — same pair
+# shape as flake_density_report / review_readme above, so an edit to the
+# script OR the .py selects the wrapper.
+scripts/cargo-test-tally.py    tests/infra/test_cargo_test_tally.sh
+tests/infra/test_cargo_test_tally.py    tests/infra/test_cargo_test_tally.sh
+# Task 6932: scripts/pprdstatus-escalate.py (the one-shot PPRDSTATUS escalation
+# raise) is pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/pprdstatus-escalate.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+tests/infra/test_reify_audit_pprdstatus_wiring.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: scripts/docs-truth-sweep.py (the recurring docs-truth sweep that
+# books one L2 adjudication sitting) is pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape. The two modules it shares with
+# scripts/pprdstatus-escalate.py, and the shared test stubs, select BOTH
+# wrappers, since an edit to any of them can break either consumer.
+scripts/docs-truth-sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/test_docs_truth_sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/reify_audit_findings.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/reify_audit_findings.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: the sweep's systemd --user deployment (units, installer, and the
+# shared installer library it introduces) is pinned by a .py suite behind a
+# thin .sh wrapper, same pair shape.
+deploy/systemd/reify-docs-truth-sweep.service    tests/infra/test_docs_truth_sweep_units.sh
+deploy/systemd/reify-docs-truth-sweep.timer    tests/infra/test_docs_truth_sweep_units.sh
+scripts/install-docs-truth-sweep-units.sh    tests/infra/test_docs_truth_sweep_units.sh
+scripts/lib_systemd_user_install.sh    tests/infra/test_docs_truth_sweep_units.sh
+tests/infra/test_docs_truth_sweep_units.py    tests/infra/test_docs_truth_sweep_units.sh
+# Task 6582: scripts/graph-task-conflation-census.py (the read-only census,
+# offline review and repair check of Task-N conflations on the reify Graphiti
+# graph) and its sibling grammar module scripts/task_reference_grammar.py are
+# pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/graph-task-conflation-census.py    tests/infra/test_graph_task_conflation_census.sh
+scripts/task_reference_grammar.py    tests/infra/test_graph_task_conflation_census.sh
+tests/infra/test_graph_task_conflation_census.py    tests/infra/test_graph_task_conflation_census.sh

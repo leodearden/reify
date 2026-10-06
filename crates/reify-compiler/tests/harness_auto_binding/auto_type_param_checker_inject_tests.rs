@@ -59,6 +59,7 @@ impl ConstraintChecker for AlwaysIndeterminate {
                 id: id.clone(),
                 satisfaction: Satisfaction::Indeterminate,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -87,6 +88,7 @@ impl ConstraintChecker for AlwaysViolated {
                 id: id.clone(),
                 satisfaction: Satisfaction::Violated,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -123,6 +125,7 @@ impl ConstraintChecker for CountingIndeterminate {
                 id: id.clone(),
                 satisfaction: Satisfaction::Indeterminate,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }
@@ -453,6 +456,7 @@ fn non_stub_constraint_checkers_return_false_for_is_compile_time_stub() {
                     id: id.clone(),
                     satisfaction: Satisfaction::Indeterminate,
                     diagnostics: ConstraintDiagnostics::default(),
+                    indeterminate_reason: None,
                 })
                 .collect()
         }

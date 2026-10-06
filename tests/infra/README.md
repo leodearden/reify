@@ -163,8 +163,10 @@ and the assertions about contention pass vacuously or fail for the wrong reason.
 Where the holder is itself self-timed it can also be **overrun**: the grace eats
 into the hold, so the contention window shrinks below what the assertions need.
 `slot_holder_handshake_lib.sh` closes the first side with a causal barrier
-(`holder_wait_until_held`, `holder_wait_for_marker`) and the second with a
-test-released holder (`holder_spawn_gated` / `holder_release`).
+(`holder_wait_until_held`, `holder_wait_for_marker`, or
+`holder_wait_until_waiter_queued` when the contended party is a blocked
+*waiter* rather than the holder) and the second with a test-released holder
+(`holder_spawn_gated` / `holder_release`).
 
 A `sleep <number>` statement is flagged iff it carries no `holder-sleep:allow`
 token and either:
@@ -197,17 +199,11 @@ sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
 The reason should say why the fixed interval cannot produce a false PASS, so
 the exemption is auditable.
 
-**Current blessed survivors** (as of task #6247):
+**Current blessed survivors** (as of task #7359):
 - `test_jobserver_balancer.sh` Block 19b: a kernel-reap grace after `kill -9`,
   not a holder handshake at all — nothing holds a lock across it.  It matches
   clause 1 on the lone word *grace*, which is exactly the lexeme over-reach the
   escape exists for.
-- `test_seed_warm_lane.sh` H5d and H9: the settle before each "not done yet"
-  check.  Those checks are one-sided — the holder genuinely holds the lane lock
-  until the test kills it, so an outrun settle can only false-FAIL, never
-  false-pass.  Converting them to a real `holder_wait_until_held` barrier is the
-  better fix, but it is a behavioural change rather than an annotation and is
-  filed as a follow-up.
 
 **Nothing enforces this list**, for the same reason as `wallclock:allow` above:
 `grep -rn 'holder-sleep:allow' tests/infra/*.sh` is the authority, and this
@@ -502,6 +498,34 @@ exclude the machine-written confusion corpus
 selector.  Why, and the existing instances:
 [`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
 §3; when to re-check them: §5.
+
+## Signals ignored on entry (nohup, bare `&`)
+
+A non-interactive bash cannot trap or reset a signal that was `SIG_IGN` when it
+started: `trap '…' SIG` returns 0 and installs nothing, and `trap -p SIG` keeps
+printing `trap -- '' SIG<SIG>`. The disposition is inherited by every
+descendant. `nohup` ignores HUP, and a bare `cmd &` from a shell without job
+control ignores INT and QUIT. `run_all.sh`'s own pool form `( … ) &` was
+measured NOT to leak it (child `SigIgn` 0), so the gate is unaffected. An
+operator or agent who backgrounds a sweep with `nohup` or a bare `&` is
+affected. Diagnose with `grep SigIgn /proc/self/status`, where bit (sig−1) is
+set per ignored signal: `…01` under nohup, `…06` under a bare `&`.
+
+A suite that probes trap behaviour owns two jobs:
+
+- **Construct** the disposition its probe child needs with
+  `env --default-signal=SIG child` (GNU coreutils ≥ 8.31). Scope it to that
+  child, never to the suite: a suite with HUP reset is killable by the very
+  hangup it was nohup'd against.
+- **Detect** the residual case in the probe itself (no reset on this host, or a
+  wrapper that re-ignores it) and report a loud `SKIP`, never a contract `FAIL`.
+
+Worked example: `test_nextest_absent_lib.sh` arm 10c, pinned hermetically by
+arms 10i–10l. `set -m` (`test_with_jcodemunch_serve.sh`) is a narrower tool:
+it avoids bash's OWN async-INT ignore for a child the suite launches, but
+cannot undo a disposition the suite inherited. To background a sweep, use the
+harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
+ignores INT and QUIT (measured `SigIgn` `…06`).
 
 ## Files
 

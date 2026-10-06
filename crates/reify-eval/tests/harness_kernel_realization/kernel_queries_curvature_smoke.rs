@@ -47,8 +47,9 @@
 
 use reify_core::{DimensionVector, Type};
 use reify_ir::{GeometryOp, GeometryQuery, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 use std::f64::consts::{PI, TAU};
+
+use super::fixture_scaffolding::read_and_compile_fixture;
 
 const CURVATURE_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -69,16 +70,11 @@ const CURVATURE_SMOKE_PATH: &str = concat!(
 fn curvature_smoke_compiles_and_occt_query_chain_live() {
     // ── assertion 1: fixture exists and compiles with no ERROR diagnostics ────
 
-    let source = std::fs::read_to_string(CURVATURE_SMOKE_PATH)
-        .expect("examples/kernel_queries/curvature_smoke.ri should exist (task 3621 step-7)");
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/curvature_smoke.ri should compile with no \
-         error-severity diagnostics (Warnings from solid-handle Undef eval are \
-         acceptable pre-Phase-3), got:\n{:#?}",
-        errors_only(&compiled)
+    // Warnings from solid-handle Undef eval are acceptable pre-Phase-3; only
+    // error-severity diagnostics fail the compile.
+    read_and_compile_fixture(
+        CURVATURE_SMOKE_PATH,
+        "examples/kernel_queries/curvature_smoke.ri (task 3621 step-7)",
     );
 
     // ── assertion 2: real-OCCT OcctKernel::query dispatch arms are live ───────
@@ -206,16 +202,10 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
 /// curvature_smoke.ri — until then the cell is not found.
 #[test]
 fn curvature_smoke_surface_face_typechecks_as_matrix_2x2_curvature() {
-    let source = std::fs::read_to_string(CURVATURE_SMOKE_PATH)
-        .expect("examples/kernel_queries/curvature_smoke.ri should exist");
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-
     // No error-severity diagnostics (Warnings from Undef eval are acceptable).
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "curvature_smoke.ri should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
+    let compiled = read_and_compile_fixture(
+        CURVATURE_SMOKE_PATH,
+        "examples/kernel_queries/curvature_smoke.ri",
     );
 
     // Locate the k_surf_face cell — added by step-6.

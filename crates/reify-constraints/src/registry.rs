@@ -702,6 +702,7 @@ impl SolverRegistry {
                         RankedSolveResult::Ranked {
                             candidates,
                             optimality,
+                            ..
                         } => {
                             // I2: candidates is non-empty; index 0 is the optimum.
                             // assert! (always-on, all build profiles) enforces this contract
@@ -932,6 +933,14 @@ impl ConstraintSolver for SolverRegistry {
                 RankedSolveResult::Ranked {
                     candidates,
                     optimality,
+                    // NOT changing the per-component `unique` conjunction
+                    // (`all_unique` / `other_unique`) computed in `solve_inner`.
+                    // Replacing that boolean conjunction with the §3.5
+                    // `Completeness` meet — so the composed verdict names the
+                    // component responsible — is ι/#6903's work. Until then the
+                    // registry has established nothing about the composed solution
+                    // set, and `not_attempted()` is the honest placeholder.
+                    completeness: reify_ir::Completeness::not_attempted(),
                 }
             }
             // Infeasible / NoProgress map structurally, identical to the default lift.
@@ -1170,7 +1179,7 @@ fn solve_lexicographic(
 
 /// Compute the realized cost obj* for a rank at the current solution.
 ///
-/// Mirrors `eval_objective_set` I3 fold (solver.rs:~436):
+/// Mirrors `eval_objective_set` I3 fold (solver.rs):
 ///   Minimize → acc += w·v
 ///   Maximize → acc -= w·v
 /// Returns `None` if any term evaluates to a non-finite value.

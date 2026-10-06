@@ -95,6 +95,13 @@ _LEAF_FALSE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.
 _LEAF_TRUE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
 _PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
 
+_LEAF_FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
+
+
+def _reify_missing_fixture_stderr(fixture: str) -> str:
+    """reify's own rendering of a missing fixture, which names it (reify-cli main.rs)."""
+    return f"Error reading {fixture}: No such file or directory (os error 2)"
+
 
 # ---------------------------------------------------------------------------
 # prereq-1 / TestScaffold: basic importability
@@ -973,7 +980,7 @@ class TestMainCLI(unittest.TestCase):
         """An executed FAIL whose probe could not find its target file."""
         return self._result_record(
             capability, "FAIL", exit_code=1,
-            stderr="Error: No such file or directory (os error 2)",
+            stderr=_reify_missing_fixture_stderr("/fixture.ri"),
         )
 
     def test_synthesize_only_evidence_free_fails_exits_0(self):
@@ -1209,6 +1216,28 @@ class TestBoundaryE2e(unittest.TestCase):
         self.assertFalse(bv.blocks,
                          f"leaf-true-premise.json must PASS; blocking: {bv.blocking}; "
                          f"report: {bv.report}")
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
+    def test_real_alpha_missing_fixture_is_fixture_absent(self):
+        """Real α + reify on a never-written fixture is fixture-absent, not blocking.
+
+        Pins the fixture anchor against what α actually records, so #7257's
+        false block cannot quietly return.
+        """
+        with tempfile.TemporaryDirectory(prefix="pdv_e2e_absent_") as tmpdir:
+            fixture = os.path.join(tmpdir, "never_written.ri")
+            results = self._run_probes_with_alpha({"probes": [
+                {"capability": "ir absent", "probe_kind": "ir", "fixture": fixture,
+                 "expected": {"observation": "present",
+                              "match": {"stderr_contains": "E_NEVER"}}},
+                {"capability": "check absent", "probe_kind": "check",
+                 "fixture": fixture,
+                 "expected": {"observation": "present", "match": {"exit_code": 0}}},
+            ]})
+        bv = pdv.synthesize_batch({"prover": results, "adversary": []})
+        self.assertEqual(sorted(bv.fixture_absent), ["check absent", "ir absent"],
+                         bv.report)
+        self.assertFalse(bv.blocks, bv.report)
 
 
 # ---------------------------------------------------------------------------
@@ -2247,7 +2276,7 @@ class TestFixtureAbsent(unittest.TestCase):
             "capability": capability,
             "probe_kind": "ir",
             "verdict": verdict,
-            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "command": ["reify", "eval", _LEAF_FIXTURE],
             "exit_code": exit_code,
             "stdout": "",
             "stderr": stderr,
@@ -2256,9 +2285,9 @@ class TestFixtureAbsent(unittest.TestCase):
     # ── (1) the verbatim stderr from the observed run ────────────────────────
 
     def test_observed_enoent_stderr_is_not_a_falsification(self):
-        """'Error: No such file or directory (os error 2)' → fixture-absent."""
+        """reify's 'Error reading <fixture>: ... (os error 2)' → fixture-absent."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertNotIn("fixture-absent cap", bv.blocking)
         self.assertFalse(bv.blocks)
@@ -2266,16 +2295,21 @@ class TestFixtureAbsent(unittest.TestCase):
 
     # ── (2) both signature forms, case-insensitively ─────────────────────────
 
-    def test_bare_no_such_file_signature(self):
-        """A bare 'No such file or directory' is enough."""
+    def test_bare_phrase_without_the_fixture_is_not_enough(self):
+        """A bare 'No such file or directory' names no path, so it still blocks."""
         rec = self._result("bare-enoent cap", stderr="No such file or directory")
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
-        self.assertIn("bare-enoent cap", bv.fixture_absent)
-        self.assertFalse(bv.blocks)
+        self.assertTrue(bv.blocks)
+        self.assertIn("bare-enoent cap", bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
 
     def test_signature_match_is_case_insensitive(self):
         """Lower-cased diagnostics match too — the signature is normalized."""
-        rec = self._result("lowercase-enoent cap", stderr="no such file or directory")
+        rec = self._result(
+            "lowercase-enoent cap",
+            stderr=f"error reading {_LEAF_FIXTURE}: no such file or directory")
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("lowercase-enoent cap", bv.fixture_absent)
         self.assertFalse(bv.blocks)
@@ -2284,7 +2318,8 @@ class TestFixtureAbsent(unittest.TestCase):
 
     def test_bare_os_error_2_signature(self):
         """Rust renders ENOENT as 'os error 2'; that alone classifies fixture-absent."""
-        rec = self._result("os-error-2 cap", stderr="failed to open input: os error 2")
+        rec = self._result("os-error-2 cap",
+                           stderr=f"failed to open input {_LEAF_FIXTURE}: os error 2")
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("os-error-2 cap", bv.fixture_absent)
         self.assertFalse(bv.blocks)
@@ -2330,7 +2365,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_record_counts_as_executed(self):
         """The probe DID run — it just could not find its fixture."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.executed, 1)
         self.assertEqual(bv.total, 1)
@@ -2338,7 +2373,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_named_in_its_own_report_section(self):
         """The capability stays visible, under a fixture-absent label."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("fixture-absent cap", bv.report)
         self.assertIn("FIXTURE ABSENT", bv.report)
@@ -2346,7 +2381,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_not_counted_as_malformed(self):
         """The two categories are distinct: one ran without a target, one never ran."""
         rec = self._result("fixture-absent cap",
-                           stderr="Error: No such file or directory (os error 2)")
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.malformed, [])
 
@@ -2386,12 +2421,14 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
     #: (label, stderr) for errnos whose decimal rendering begins with "2" but
     #: which are NOT ENOENT.  Every one is a real failure that must block.
     HOSTILE_ERRNOS = (
-        ("ENOTDIR", "Not a directory (os error 20)"),
-        ("EISDIR", "Is a directory (os error 21)"),
-        ("EINVAL", "Invalid argument (os error 22)"),
-        ("EMFILE", "Too many open files (os error 24)"),
-        ("ENOSPC", "No space left on device (os error 28)"),
+        ("ENOTDIR", f"Error reading {_LEAF_FIXTURE}: Not a directory (os error 20)"),
+        ("EISDIR", f"Error reading {_LEAF_FIXTURE}: Is a directory (os error 21)"),
+        ("EINVAL", f"Error reading {_LEAF_FIXTURE}: Invalid argument (os error 22)"),
+        ("EMFILE", f"Error reading {_LEAF_FIXTURE}: Too many open files (os error 24)"),
+        ("ENOSPC",
+         f"Error reading {_LEAF_FIXTURE}: No space left on device (os error 28)"),
     )
+    ERRNO_212 = f"probe aborted reading {_LEAF_FIXTURE} (os error 212)"
 
     def _result(self, capability: str, verdict: str = "FAIL",
                 stderr: str = "", exit_code: int = 1) -> dict:
@@ -2404,7 +2441,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
             "capability": capability,
             "probe_kind": "ir",
             "verdict": verdict,
-            "command": ["reify", "eval", "tests/prd-gate/fixtures/leaf.ri"],
+            "command": ["reify", "eval", _LEAF_FIXTURE],
             "exit_code": exit_code,
             "stdout": "",
             "stderr": stderr,
@@ -2429,7 +2466,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
 
     def test_three_digit_two_hundred_errno_still_blocks(self):
         """A 3-digit errno beginning with 2 must not be read as ENOENT either."""
-        rec = self._result("errno-212 cap", stderr="probe aborted (os error 212)")
+        rec = self._result("errno-212 cap", stderr=self.ERRNO_212)
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertTrue(bv.blocks)
         self.assertIn("errno-212 cap", bv.blocking)
@@ -2444,7 +2481,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
         so a future regression points at the signature table, not at the
         classification pipeline downstream of it.
         """
-        table = self.HOSTILE_ERRNOS + (("errno-212", "probe aborted (os error 212)"),)
+        table = self.HOSTILE_ERRNOS + (("errno-212", self.ERRNO_212),)
         for label, stderr in table:
             with self.subTest(errno=label):
                 rec = self._result(f"{label} cap", stderr=stderr)
@@ -2459,12 +2496,13 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
 
         The anchor must permit a bare trailing `os error 2` at end-of-string
         (no closing paren) — requiring `)` would break the spelling asserted by
-        TestFixtureAbsent.test_bare_os_error_2_signature.
+        TestFixtureAbsent.test_bare_os_error_2_signature.  The phrase-only
+        spelling is the perror shape, `<program>: <path>: <strerror>`.
         """
         spellings = (
-            ("paren", "Error: No such file or directory (os error 2)"),
-            ("bare-errno-eos", "failed to open input: os error 2"),
-            ("phrase-only", "No such file or directory"),
+            ("paren", _reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+            ("bare-errno-eos", f"failed to open input {_LEAF_FIXTURE}: os error 2"),
+            ("phrase-only", f"cat: {_LEAF_FIXTURE}: No such file or directory"),
         )
         for label, stderr in spellings:
             with self.subTest(spelling=label):
@@ -2485,12 +2523,122 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
         Textually adjacent to ENOENT's phrase ("No such ...") and numerically
         adjacent to the 2X block, so it pins both edges at once.
         """
-        rec = self._result("enodev cap", stderr="No such device (os error 19)")
+        rec = self._result(
+            "enodev cap",
+            stderr=f"Error reading {_LEAF_FIXTURE}: No such device (os error 19)")
         self.assertFalse(pdv.fixture_absent_evidence(rec))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertTrue(bv.blocks)
         self.assertIn("enodev cap", bv.blocking)
         self.assertEqual(bv.fixture_absent, [])
+
+
+# ---------------------------------------------------------------------------
+# task #7304 (RED): the ENOENT must name the probe's own fixture
+# ---------------------------------------------------------------------------
+
+class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
+    """Fixture-absent needs an ENOENT on a stderr line naming the probe's fixture.
+
+    "Fixture absent" means the OS reported the probe's TARGET missing.  ENOENT
+    text that is quoted, about another path, or on a line without the target
+    says nothing about the target, so the FAIL it rides on must keep blocking.
+    """
+
+    def _result(self, capability: str, stderr: str, verdict: str = "FAIL",
+                command=None) -> dict:
+        return {
+            "capability": capability,
+            "probe_kind": "check",
+            "verdict": verdict,
+            "command": ["reify", "check", _LEAF_FIXTURE] if command is None else command,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    def _assert_blocks(self, rec: dict) -> None:
+        cap = rec["capability"]
+        self.assertFalse(pdv.fixture_absent_evidence(rec))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+        bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+        self.assertTrue(bv.blocks)
+        self.assertIn(cap, bv.blocking)
+        self.assertEqual(bv.fixture_absent, [])
+
+    def test_genuine_fail_quoting_the_enoent_text_blocks(self):
+        self._assert_blocks(self._result(
+            "quoted enoent cap",
+            'AssertionError: expected the import diagnostic to read '
+            '"No such file or directory (os error 2)", got "module \'lib\' not found"'))
+
+    def test_enoent_about_a_different_file_blocks(self):
+        self._assert_blocks(self._result(
+            "other file cap",
+            _reify_missing_fixture_stderr("tests/prd-gate/fixtures/helper_lib.ri")))
+
+    def test_bare_errno_without_a_path_blocks(self):
+        self._assert_blocks(self._result("bare errno cap", "failed to spawn: os error 2"))
+
+    def test_relay_mislabelled_harness_enoent_blocks(self):
+        """A FAIL whose argv is α's own invocation: the ENOENT is about α's script."""
+        self._assert_blocks(self._result(
+            "relayed harness cap",
+            "python3: can't open file 'scripts/prd-capability-check.py': "
+            "[Errno 2] No such file or directory",
+            command=["python3", "scripts/prd-capability-check.py",
+                     "--json", "/tmp/ps.json"]))
+
+    def test_fixture_and_enoent_on_different_lines_blocks(self):
+        self._assert_blocks(self._result(
+            "split lines cap",
+            f"warning: in {_LEAF_FIXTURE}: unused parameter\n"
+            + _reify_missing_fixture_stderr("tests/prd-gate/fixtures/other.ri")))
+
+    def test_argv_without_an_argument_blocks(self):
+        self._assert_blocks(self._result(
+            "no argument cap", "bash: reify: No such file or directory",
+            command=["reify"]))
+
+    def test_enoent_line_after_warnings_is_fixture_absent(self):
+        rec = self._result(
+            "warned absent cap",
+            "warning: W_X: something\n" + _reify_missing_fixture_stderr(_LEAF_FIXTURE))
+        self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+
+    def test_longer_path_ending_in_the_fixture_name_blocks(self):
+        """A relayed short fixture is a path token, not a suffix of any path."""
+        for other in ("tests/prd-gate/fixtures/subleaf.ri", "/other/leaf.ri"):
+            with self.subTest(other=other):
+                self._assert_blocks(self._result(
+                    f"suffix {other} cap", _reify_missing_fixture_stderr(other),
+                    command=["reify", "check", "leaf.ri"]))
+
+    def test_fixture_delimited_as_a_whole_token_is_fixture_absent(self):
+        for label, stderr in (
+            ("reify", _reify_missing_fixture_stderr("leaf.ri")),
+            ("perror", "cat: leaf.ri: No such file or directory"),
+            ("quoted", "can't open file 'leaf.ri': [Errno 2] No such file or directory"),
+            ("backticked", "failed to read `leaf.ri` (os error 2)"),
+        ):
+            with self.subTest(spelling=label):
+                rec = self._result(f"{label} cap", stderr,
+                                   command=["reify", "check", "leaf.ri"])
+                self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+
+    def test_missing_grammar_fixture_still_blocks(self):
+        """tree-sitter's missing-file report names neither the path nor ENOENT.
+
+        Pins today's fail-closed outcome for grammar probes (#8122), whose
+        fixture-absent case the reify-specific anchor cannot see.
+        """
+        self._assert_blocks(dict(
+            self._result(
+                "grammar absent cap",
+                "Error: No files were found at or matched by the provided "
+                "pathname/glob",
+                command=["tree-sitter", "parse", "--quiet", _LEAF_FIXTURE]),
+            probe_kind="grammar"))
 
 
 # ---------------------------------------------------------------------------
@@ -3368,7 +3516,8 @@ class TestUserObservableSignal(unittest.TestCase):
                 {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
                  "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
                  "exit_code": 1, "stdout": "",
-                 "stderr": "Error: No such file or directory (os error 2)"},
+                 "stderr": _reify_missing_fixture_stderr(
+                     "tests/prd-gate/fixtures/not-yet.ri")},
             ],
             "adversary": [
                 # (4) an evidence-backed falsification whose command is a STRING
@@ -3588,8 +3737,10 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
 
     def test_fail_with_the_same_enoent_stderr_is_still_fixture_absent(self):
         """The carve-out still applies where its rationale applies — to a probe."""
-        rec = self._executed("missing deliverable cap", "FAIL",
-                             stderr="Error: No such file or directory (os error 2)")
+        rec = dict(
+            self._executed("missing deliverable cap", "FAIL",
+                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+            command=["reify", "check", _LEAF_FIXTURE])
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertFalse(bv.blocks)
         self.assertEqual(bv.fixture_absent, ["missing deliverable cap"])
@@ -3663,7 +3814,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
         """The drift that motivated the extraction."""
         bv = pdv.synthesize_batch({"prover": [self._rec(
             "fixture-absent cap", "FAIL",
-            "Error: No such file or directory (os error 2)")], "adversary": []})
+            _reify_missing_fixture_stderr("f.ri"))], "adversary": []})
         self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
         self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
 
@@ -3687,7 +3838,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
                                     1, self._STDOUT, "stderr text")
         for stderr, category in (
             ("type mismatch: expected axis", "blocking"),
-            ("Error: No such file or directory (os error 2)", "fixture-absent"),
+            (_reify_missing_fixture_stderr("f.ri"), "fixture-absent"),
         ):
             with self.subTest(category=category):
                 bv = pdv.synthesize_batch({"prover": [

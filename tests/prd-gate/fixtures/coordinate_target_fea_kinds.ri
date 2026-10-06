@@ -1,0 +1,41 @@
+module coordinate_target_fea_kinds
+
+trait ProbeLoad {}
+trait ProbeSupport {}
+
+structure def ProbePointSupport : ProbeSupport {
+    param at       : Point3<Length>
+    param radius   : Length = 0mm
+    param restrain : List<Vector3<Dimensionless>> = [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)]
+    constraint radius >= 0mm
+}
+
+structure def ProbePointForce : ProbeLoad {
+    param at     : Point3<Length>
+    param force  : Vector3<Force>
+    param radius : Length = 0mm
+    constraint radius >= 0mm
+}
+
+structure def ProbePointMass : ProbeLoad {
+    param at     : Point3<Length>
+    param mass   : Mass
+    param radius : Length = 0mm
+    constraint radius >= 0mm
+    constraint mass >= 0kg
+}
+
+structure def ProbeOptions {
+    param point_masses : List<ProbePointMass> = []
+}
+
+structure Kinds {
+    param head_x : Length = 250mm
+    let s = ProbePointSupport(at: point3(100mm, 160mm, 6mm), radius: 4mm, restrain: [vec3(0.0, 0.0, 1.0), vec3(0.6, 0.8, 0.0)])
+    let s_default = ProbePointSupport(at: point3(100mm, 160mm, 6mm))
+    let f = ProbePointForce(at: point3(head_x, 0mm, 12mm), force: vec3(0N, 0N, -75N), radius: 10mm)
+    let m = ProbePointMass(at: point3(head_x, 0mm, 12mm), mass: 7.5kg, radius: 10mm)
+    let loads : List<ProbeLoad> = [f, m]
+    let o = ProbeOptions(point_masses: [m])
+    let o_default = ProbeOptions()
+}

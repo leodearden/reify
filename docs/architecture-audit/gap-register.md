@@ -369,15 +369,15 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 
 | Field | Value |
 |---|---|
-| Mechanism | `CorrespondenceMap.vertex_to_vertex` is structurally empty; any P1 mesh with surface nodes on B-rep vertices fails morph (`ProjectionFailure::MissingCorrespondence`) |
-| State | **FICTION** (data structure shipped with known-empty hole) |
+| Mechanism | `CorrespondenceMap.vertex_to_vertex` was structurally empty in v0.2, so any P1 mesh with surface nodes on B-rep vertices failed morph (`ProjectionFailure::MissingCorrespondence`) |
+| State | **FICTION → WIRED** (2026-05-17: task 3590 / mesh-morphing-phase-2 §3.2 β landed `0bac6c0210` — `stage_b_eligible` populates `vertex_to_vertex` through the shared `match_one_kind` helper) |
 | Failure mode | F1 |
 | Evidence | `findings/mesh-morphing.md` M-002; transitively `findings/persistent-naming-v2.md` |
 | Cited by PRDs | mesh-morphing, persistent-naming-v2 (transitive) |
-| Blocks tasks | Per cluster C-21 |
+| Blocks tasks | Per cluster C-21; resolved by **task #3590** |
 | Disposition | **PRD-shape — RESOLVED 2026-05-13 by `docs/prds/v0_3/mesh-morphing-phase-2.md`.** Phase-2 sibling PRD bundles GR-023 vertex_to_vertex fill with M-005 (Gmsh `NodeAttachment` producer), M-006 (OCCT `Projector` impl), and engine-wire 2947 (dep extension). Five-task DAG: α PNv2 vertex widening (cross-PRD seam, PNv2-owned), β Stage-B vertex bijection fill (deletes 6 active-drift-pin tests + named v0.2-always-empty test per Phase-3 §3 new-pattern-A), γ Gmsh `NodeAttachment` producer, δ OCCT `Projector` impl, ε engine-wire 2947 deps extended. Resolution mode: portfolio approach E (cross-PRD seam ownership) + H (design-first + two-way boundary tests). Mesh-morph half of GR-017 (cluster C-14) resolves naturally when ε lands. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — "known-empty hole in shipped data structure." Reciprocal mesh-morph ↔ PNv2 audit cite. **Resolution mechanism: `docs/prds/v0_3/mesh-morphing-phase-2.md`** (authored 2026-05-13 via `/prd` from session-prompt at `docs/architecture-audit/gr023-mesh-morph-prd-revisit-session-prompt.md`). PNv2 widening (task α) symmetric: adds `BRepKind::Vertex`, `OcctKernel::extract_vertices`, per-op vertex-attribute seeding; PNv2 PRD remains owning_prd via task metadata + real cross-batch `add_dependency` edge per [[preferences_cross_prd_deps_real_edges]]. Engine-wire 2947 unchanged in spec; only deps extended via `update_task` in the phase-2 decompose pass. Cross-link: GR-017 / cluster C-14 engine-wire disposition (engine-integration-norm §3.2 — VolumeMesh realization-kind dispatch). |
+| Notes | Phase-3 synthesis classified this under "Clusters fitting NO Phase-2 pattern" — "known-empty hole in shipped data structure." Reciprocal mesh-morph ↔ PNv2 audit cite. **Resolution mechanism: `docs/prds/v0_3/mesh-morphing-phase-2.md`** (authored 2026-05-13 via `/prd` from session-prompt at `docs/architecture-audit/gr023-mesh-morph-prd-revisit-session-prompt.md`). PNv2 widening (task α) symmetric: adds `BRepKind::Vertex`, `OcctKernel::extract_vertices`, per-op vertex-attribute seeding; PNv2 PRD remains owning_prd via task metadata + real cross-batch `add_dependency` edge per [[preferences_cross_prd_deps_real_edges]]. Engine-wire 2947 unchanged in spec; only deps extended via `update_task` in the phase-2 decompose pass. Cross-link: GR-017 / cluster C-14 engine-wire disposition (engine-integration-norm §3.2 — VolumeMesh realization-kind dispatch). The β leaf landed as task 3590 (`0bac6c0210`, 2026-05-17); task 7276 (2026-10-01) retired the downstream stale "always-empty" prose in reify-mesh-morph and replaced its inert tripwire with a Stage-B-driven seam test. |
 
 ### GR-024 — Eigenvalue solver + geometric stiffness K_g (cluster C-22)
 

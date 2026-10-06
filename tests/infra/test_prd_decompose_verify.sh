@@ -134,7 +134,7 @@ cat > "$_TMP_MIXED" <<'EOJSON'
             "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
             "exit_code": 1,
             "stdout": "",
-            "stderr": "Error: No such file or directory (os error 2)"
+            "stderr": "Error reading tests/prd-gate/fixtures/not-yet.ri: No such file or directory (os error 2)"
         }
     ],
     "adversary": [

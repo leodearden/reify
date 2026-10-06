@@ -20,7 +20,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [features]
-test-support = []
+test-support = ["tokio/time"]
 
 [dev-dependencies]
 reify-test-support.workspace = true

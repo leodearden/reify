@@ -25,7 +25,7 @@
 // Covered by crates/reify-eval/tests/result_fallback_e2e.rs (numeric eval
 // signal), crates/reify-cli/tests/cli_eval_result_fallback.rs (rendered CLI
 // stdout signal), and the examples compile-clean smoke sweep
-// (crates/reify-compiler/tests/examples_smoke.rs).
+// (crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs).
 
 structure def Valid {
     // A fallible stdlib op that yields Result<Length, String> today (a

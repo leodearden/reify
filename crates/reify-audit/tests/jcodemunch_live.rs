@@ -756,7 +756,7 @@ fn serve_identity_probe(url: &str) -> Result<(), String> {
         .into_string()
         .map_err(|e| format!("could not read {url}'s `initialize` reply: {e}"))?;
 
-    let parsed = parse_mcp_body(&ctype, &body)
+    let parsed = reify_audit::mcp_wire::decode_body(&ctype, &body)
         .map_err(|e| format!("{url} did not answer `initialize` with MCP JSON: {e}"))?;
 
     let name = parsed["result"]["serverInfo"]["name"].as_str();
@@ -791,28 +791,6 @@ fn status_conjunct_failure(url: &str, code: u16) -> String {
          flag doc in src/bin/reify-audit.rs and in \
          scripts/with-jcodemunch-serve.sh)"
     )
-}
-
-/// Decode an MCP reply body, which may arrive as bare JSON or as SSE.
-///
-/// The streamable-HTTP transport answers `Accept: text/event-stream` with an
-/// `event:`/`data:` frame rather than a bare object, so a plain
-/// `serde_json::from_str` on the body would reject a perfectly good serve.
-/// Mirrors `jcodemunch_session_live.rs`'s `parse_mcp_body`, but returns
-/// `Result` instead of panicking: here a malformed body is a legitimate
-/// *verdict* about the endpoint (it is not a jcodemunch serve), not a harness
-/// fault.
-fn parse_mcp_body(content_type: &str, body: &str) -> Result<serde_json::Value, String> {
-    if content_type.contains("text/event-stream") {
-        for line in body.lines() {
-            if let Some(rest) = line.strip_prefix("data:") {
-                return serde_json::from_str(rest.trim())
-                    .map_err(|e| format!("parse SSE data line: {e}; body={body}"));
-            }
-        }
-        return Err(format!("no SSE data line in response body: {body}"));
-    }
-    serde_json::from_str(body).map_err(|e| format!("parse JSON body: {e}; body={body}"))
 }
 
 /// [`serve_identity_probe`], but a failure is FATAL.

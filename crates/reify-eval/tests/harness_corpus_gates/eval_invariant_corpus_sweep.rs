@@ -92,6 +92,7 @@
 //! - `harness_cache::snapshot_cache_divergence_gate::seeded_skip_committed_divergence_is_exempted`
 
 use crate::eval_gate_support;
+use reify_test_support::examples_corpus::discover_ri_files;
 
 // ── The repo-relative shard key ────────────────────────────────────
 
@@ -201,9 +202,8 @@ fn corpus_files() -> Vec<CorpusFile> {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = workspace_root();
 
-    let mut files = Vec::new();
-    eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
-    eval_gate_support::collect_ri_files(&root.join(EXAMPLES_ROOT), &mut files);
+    let mut files = discover_ri_files(&manifest_dir.join("tests/fixtures"));
+    files.extend(discover_ri_files(&root.join(EXAMPLES_ROOT)));
     files.push(root.join(SELECTOR_CONSUMER_REL));
 
     let mut corpus: Vec<CorpusFile> = files

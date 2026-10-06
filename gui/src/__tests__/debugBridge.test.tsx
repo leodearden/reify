@@ -41,41 +41,12 @@ import {
 } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import {
+  makeCmdDispatcher,
+  makeDebugStores,
+  type DebugRequestHandler,
+} from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
-
-type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
-
-/**
- * Build a describe-block's `dispatchCmd`: invoke the captured debug-request
- * handler and return the parsed `debug_response` payload.
- *
- * Every block in this file had its own byte-identical copy of this nine-line
- * body (17 of them), so a change to the response envelope meant 17 edits and any
- * missed one drifted silently. Takes a THUNK rather than the handler itself
- * because each block's `capturedHandler` is reassigned by its `beforeEach` —
- * capturing the value here would freeze it at `undefined`.
- *
- * The per-block `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
- * they genuinely differ (some call `initDebugBridge` up front, others per test;
- * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
- * to be parameterised into something longer than the four lines it replaced.
- */
-function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
-  return async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await getHandler()!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  };
-}
 
 // jsdom 25 does not implement document.elementFromPoint — the method is simply
 // absent from the document prototype. vi.spyOn requires the property to exist
@@ -90,67 +61,19 @@ if (typeof document.elementFromPoint !== 'function') {
   });
 }
 
+/** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
+  const stores = makeDebugStores();
   return {
-    engine: {
-      state: {
-        meshes: {} as any,
-        values: {} as any,
-        constraints: {} as any,
-        evalStatus: { phase: 'idle' },
-        compileDiagnostics: [],
-        tessellationDiagnostics: [],
-      },
-      initFromState: vi.fn(),
-      setCompileDiagnostics: vi.fn(),
-      setTessellationDiagnostics: vi.fn(),
-    },
-    editor: {
-      state: {
-        openFiles: [],
-        activeFile: null,
-        dirtyFiles: [],
-        externallyChanged: [],
-        cursorPosition: null,
-      },
-      openFile: vi.fn(),
-      closeFile: vi.fn(),
-    },
+    ...stores,
     selection: {
+      ...stores.selection,
       state: {
+        ...stores.selection.state,
         selectedEntity: selectedEntities[selectedEntities.length - 1] ?? null,
-        // Cast to any until step-36 adds the fields to the DebugStores type
-        ...(selectedEntities.length > 0 ? { selectedEntities } : { selectedEntities: [] }),
-        ...(anchorEntity !== null ? { anchorEntity } : { anchorEntity: null }),
-        hoveredEntity: null,
-        highlightedParams: [],
-      } as any,
-      selectEntity: vi.fn(),
-      hoverEntity: vi.fn(),
-      clearSelection: vi.fn(),
-      toggleSelect: vi.fn(),
-    },
-    claude: {
-      state: {
-        messages: [],
-        sessionStatus: 'idle',
-        currentMessageId: null,
+        selectedEntities,
+        anchorEntity,
       },
-    },
-    viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
     },
   };
 }
@@ -4973,11 +4896,12 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // The TESTID escape — this resolver's busiest arm, since every #5891 scoped
-  // tool reaches it — is pinned by the `resolveByTestId testId` row of the
-  // `debug bridge escapeAttrValue` table at the end of this file, so this block
-  // carries no case for it. Case (f) above keeps the sibling VIEWPORTID arm,
-  // which no row covers.
+  // The TESTID escape — it lives in `queryAllByTestId`, beneath this resolver
+  // and `buildSelectorPredicate`, so every #5891 scoped tool reaches it — is
+  // pinned by the `queryAllByTestId testId` row of the `debug bridge
+  // escapeAttrValue` table at the end of this file, so this block carries no
+  // case for it. Case (f) above keeps the sibling VIEWPORTID arm, which no row
+  // covers.
 });
 
 // ---------------------------------------------------------------------------
@@ -5062,13 +4986,13 @@ type EscapeSite = {
  *
  * INVENTORY CAVEAT — these rows are the `escapeAttrValue` call sites reachable
  * with a caller-supplied value, with ONE deliberate omission:
- * `resolveByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
+ * `queryAllByTestId`'s VIEWPORTID arm, covered instead by case (f) of the
  * `debug bridge resolveByTestId viewport scoping` block (which also asserts the
  * no-cross-pane-bleed property, that no row here has). Case (f) is MISS-only,
  * and — that block installing no CSS stub — runs under the fallback arm alone.
  * Both omissions follow from the split above rather than contradicting it: MISS
  * is the half that carries the site-level pin, and the semantics an added HIT
- * half would re-prove belong to the shared helper, which the `resolveByTestId
+ * half would re-prove belong to the shared helper, which the `queryAllByTestId
  * testId` row below already pins on BOTH arms. What (f) genuinely lacks is a
  * success-SHAPE assertion of its own — the one thing promoting it to a row here
  * would add. This table is NOT a proof that every selector interpolation in
@@ -5082,13 +5006,13 @@ type EscapeSite = {
  * escape` block below.
  */
 const ESCAPE_SITES: EscapeSite[] = [
-  // resolveByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
+  // queryAllByTestId's testId arm — the busiest site: all SEVEN #5891 scoped
   // tools (dom_query, click_element, focus_element, scroll, element_screenshot,
-  // wait_for_selector and wait_for's selector arm) reach the escape here, over
-  // six `resolveByTestId(…)` call sites — `buildSelectorPredicate` serves the
-  // last two from one.
+  // wait_for_selector and wait_for's selector arm) reach the escape here — the
+  // first five through `resolveByTestId(…)`'s five call sites, the two waiters
+  // through `buildSelectorPredicate`.
   {
-    label: 'resolveByTestId testId',
+    label: 'queryAllByTestId testId',
     prefix: 'row',
     dispatch: (value) => ['click_element', { testId: value }],
     setUpMiss: () => () => {},
@@ -5290,14 +5214,14 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
    * param at its OWN boundary, BEFORE resolution — so `{"testId": 3}` can never
    * coerce to `"3"` and be answered with a claim about the DOM. Most of them
    * resolve by `testId`; `open_menu` resolves by `name`, the tree-node tools by
-   * `path`, and the four whole-selector tools by `selector`, and the rule binds
+   * `path`, and the six whole-selector tools by `selector`, and the rule binds
    * those identically.
    *
    * These are a separate table from `ESCAPE_SITES` because they are a different
    * SHAPE of duplication. The escape is one shared helper, so the table above is
-   * one row per CALL SITE and seven tools ride on its `resolveByTestId testId`
-   * row. The guards are ELEVEN independent hand-written copies, so a row here
-   * that covered only one of them would leave the other ten free to regress with
+   * one row per CALL SITE and seven tools ride on its `queryAllByTestId testId`
+   * row. The guards are TWELVE independent hand-written copies, so a row here
+   * that covered only one of them would leave the other eleven free to regress with
    * the suite green — which is what #6178 measured for the five guards it
    * rewrote, and its review measured again for the ninth and for the two
    * whole-selector copies.
@@ -5418,8 +5342,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
       expected: { error: 'testId is required' },
     },
     {
-      // wait_for reaches the same resolver through `buildSelectorPredicate`, and
-      // guards the NESTED `predicate.testId` — hence its own distinct wording.
+      // wait_for reaches the same testid query through `buildSelectorPredicate`,
+      // and guards the NESTED `predicate.testId` — hence its own distinct wording.
       label: 'wait_for (selector predicate)',
       decoyTestId: '3',
       dispatch: () => [
@@ -5495,6 +5419,19 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
         expected: { error: 'selector is required' },
       }),
     ),
+    // `driveFormControl`'s single whole-selector copy (./formControl), the
+    // twelfth, shared by scrub_range_input and edit_text_input. `value` and
+    // `commit` are valid, so the selector guard is the only thing standing
+    // between the array and a drive of the decoy.
+    {
+      label: 'scrub_range_input',
+      decoyTestId: SELECTOR_DECOY_TESTID,
+      dispatch: () => [
+        'scrub_range_input',
+        { selector: [`[data-testid="${SELECTOR_DECOY_TESTID}"]`], value: '1', commit: 'change' },
+      ],
+      expected: { error: 'selector is required' },
+    },
   ];
 
   /**
@@ -5512,6 +5449,8 @@ describe('debug bridge escapeAttrValue (shared by every selector interpolation)'
     // `resolveElement`; `query_selector_all` is NOT here — it keeps its own copy.
     get_layout_metrics: 'query_selector',
     get_computed_style: 'query_selector',
+    // Both form-control tools are served by the single `driveFormControl`.
+    edit_text_input: 'scrub_range_input',
   };
 
   describe('boundary guards above the escape', () => {

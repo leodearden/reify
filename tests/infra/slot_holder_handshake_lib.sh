@@ -29,8 +29,9 @@
 # identically-named _wait_for_reader_lock twin, layered over a helper of its own
 # and with its own unit tests (its Block RH).  That file was outside task 6247's
 # lock set, so the copy stands; migrating it is follow-up work.  Until then this
-# lib is the single home for its four users, NOT for every marker-poll in
-# tests/infra — do not read the SPOT claim wider than that list.
+# lib is the single home for the suites that source it (`git grep -l
+# slot_holder_handshake_lib.sh -- tests/infra` lists them), NOT for every
+# marker-poll in tests/infra — do not read the SPOT claim wider than that set.
 #
 # The two argument conventions differ where a caller was migrated: this lib
 # counts POLL ITERATIONS (load-scaled), where _wait_for_reader_lock took a
@@ -38,8 +39,9 @@
 #
 # WHAT THESE FUNCTIONS ASSERT — AND WHAT THEY DO NOT:
 # every barrier here returns on a CAUSAL OUTCOME (a non-blocking flock probe
-# fails; a marker file exists; a process has exited).  None of them measures or
-# compares a wall-clock magnitude.  Per PRD docs/prds/infra-test-wallclock-deflake.md
+# fails; a marker file exists; a blocked waiter is listed in /proc/locks; a
+# process has exited).  None of them measures or compares a wall-clock
+# magnitude.  Per PRD docs/prds/infra-test-wallclock-deflake.md
 # decision D1, absolute wall-clock upper bounds are ABANDONED for this class
 # rather than re-tuned, so a caller must never rebuild one on top of these.
 #
@@ -131,6 +133,55 @@ holder_wait_for_marker() {
     return 1
 }
 export -f holder_wait_for_marker
+
+# holder_wait_until_waiter_queued SLOT_FILE [BASE_ITERS=100]
+# Return 0 once some process is BLOCKED waiting for SLOT_FILE's flock — the
+# waiter-side fact the barriers above cannot see, since a held slot probes the
+# same whether or not anyone is queued behind its owner.
+#
+# The kernel lists every blocked flock(2) request in /proc/locks, under the lock
+# blocking it, as a `->`-prefixed line carrying the same dev:inode key.  The key
+# format is fs/locks.c lock_get_status's `%02x:%02x:%lu` — hex major, hex
+# minor, decimal inode — rebuilt here from stat.  The owner's own line can never
+# match: it has no `->`, so every field sits one column left (type in field 2,
+# key in field 6).
+#
+# ASSUMPTION: stat's st_dev equals the superblock s_dev the kernel prints.  That
+# holds on ext4, xfs and tmpfs, but NOT on btrfs (stat reports a per-subvolume
+# anonymous dev) or overlayfs (stat reports the underlying file's dev).  There
+# the key never matches and the barrier exhausts its backstop: it fails closed,
+# never a false pass.
+#
+# The key is re-resolved on every poll, so a file that appears later still
+# converges.  Read-only: unlike holder_wait_until_held this never creates
+# SLOT_FILE, because no waiter can queue on a file that does not exist and
+# creating one would mask a wrong path.  Every probe failure (missing file,
+# unreadable /proc/locks) sits inside the `if` and means "not yet", so it never
+# trips a caller's `set -euo pipefail`.
+#
+# BASE_ITERS x 0.2s (scaled by load_tolerant_attempts) is a BROKEN-INFRA
+# BACKSTOP so a never-arriving waiter cannot hang the suite — it is NOT a
+# timing assertion.  Returns non-zero if the budget is exhausted first.
+holder_wait_until_waiter_queued() {
+    local _slot="$1"
+    local _budget
+    _budget="$(load_tolerant_attempts "${2:-100}")"
+    local _i=0 _stat
+    while [ "$_i" -lt "$_budget" ]; do
+        if _stat="$(stat -c '%Hd %Ld %i' -- "$_slot" 2>/dev/null)" \
+            && awk -v stat="$_stat" '
+                BEGIN { split(stat, s, " "); key = sprintf("%02x:%02x:%s", s[1], s[2], s[3]) }
+                $2 == "->" && $3 == "FLOCK" && $7 == key { found = 1; exit }
+                END { exit !found }
+            ' /proc/locks 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.2
+        _i=$(( _i + 1 ))
+    done
+    return 1
+}
+export -f holder_wait_until_waiter_queued
 
 # holder_spawn_gated SLOT_FILE READY_FILE RELEASE_FILE [BASE_ITERS=600]
 # Spawn a background owner that takes SLOT_FILE's exclusive flock, touches

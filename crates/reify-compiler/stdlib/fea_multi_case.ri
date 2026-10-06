@@ -6,8 +6,8 @@
 //   - `MultiCaseResult` — solver-output container: a Map from case names to
 //                         per-case `ElasticResult` instances
 //
-// PRD reference: docs/prds/v0_3/structural-analysis-fea.md, "Multi-load-case
-// FEA" section (task #1, task #2).
+// PRD reference: docs/prds/v0_3/multi-load-case-fea.md, "Decomposition plan"
+// task 1 (LoadCase / MultiCaseResult) and task 2 (solve_load_cases).
 //
 // Module placement: `std.fea.multi_case` leaves room for future `std.fea.*`
 // siblings (e.g. `std.fea.modal`, `std.fea.thermal_coupling`) without
@@ -254,8 +254,8 @@ structure def LoadCase {
 //     callers must bind each per-case value directly to the desired
 //     scalar Field and pass the identity lambda `|f| f`.  See the
 //     `WORST_CASE_SOURCE` docstring in
-//     `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs` for the
-//     full rationale and the worked-example identity-lambda fixture.
+//     `crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs`
+//     for the full rationale and the worked-example identity-lambda fixture.
 //
 // Field rationale:
 //   `cases` — Map from case name to `ElasticResult`. Keys match the
@@ -442,7 +442,8 @@ structure def PressureLoad : Load {
 //                land; mirrors the `traction` key in the retired builtin.
 //
 // All fields default so a bare `TractionLoad()` constructor succeeds (covers
-// FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
+// FEA-2 boundary tests in
+// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
@@ -472,7 +473,8 @@ structure def TractionLoad : Load {
 //                     retired builtin.
 //
 // All fields default so a bare `BodyForce()` constructor succeeds (covers
-// FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
+// FEA-2 boundary tests in
+// `crates/reify-eval/tests/harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs`).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
@@ -511,8 +513,10 @@ structure def BodyForce : Load {
 //                  Default vec3(0, 0, -1) = −Z (canonical downward direction).
 //                  Caller is responsible for supplying a unit vector; non-unit
 //                  vectors silently scale effective gravity by |direction|.
-//                  `direction` is declared LAST (same rationale as PointLoad:
-//                  positional binding preserves existing callers that omit it).
+//                  `direction` is declared LAST for the same reason as
+//                  `PointLoad.direction`: ctor args bind BY NAME (task 4522),
+//                  and declaration order governs only UNLABELLED args, so a
+//                  positional `Gravity(m)` still binds `m` to `magnitude`.
 //
 // Future solver bridge (leaf β): body force contribution = ρ · magnitude · direction
 // component-wise per integration point (see docs/prds/v0_6 §4.2).

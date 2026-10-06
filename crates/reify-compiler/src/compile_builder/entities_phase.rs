@@ -1618,8 +1618,12 @@ fn check_expr_fn_calls(
 }
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
-/// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>`, a bare `StructureRef(_)`, or a `Type::Vector { .. }`.
+/// `check_trait_arg_conformance` on each named or positionally bound arg, EXCEPT
+/// one bound to a bare `Type::TraitObject` field (the D6 exemption, see the loop).
+///
+/// Since task 5302 every other field type goes through the shared conformance
+/// walker, at `CTOR_FIELD_CONFORMANCE_SEVERITY` (`Error` since δ, task 5306).
+/// The user-facing rules are `docs/reify-language-spec.md` §4.9.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -1627,26 +1631,6 @@ fn check_expr_fn_calls(
 /// `StructureInstanceCtor` expressions and were not checked.  By walking the
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
-///
-/// **Scope: `List<TraitObject>`, `StructureRef`, and `Type::Vector` params.**
-/// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
-/// are intentionally excluded — those are either already covered by the
-/// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
-/// (e.g. `ConstitutiveLawInput`).  Extending this walk to bare `TraitObject`
-/// params would regress those escape-hatch call sites, so it is deliberately
-/// out of scope here.
-///
-/// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
-/// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` StructureRef arm, which emits
-/// `TypeNotConformingToStructureRef` for concrete type mismatches.
-///
-/// `Type::Vector` params (task-4622): vector params like `axis : Vector3<Length>`
-/// are routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` Vector arm, which emits
-/// `TypeNotConformingToVector` for non-vector args (bare scalars).  The check
-/// is shape-based (not `type_compatible`) so a dimensionless `vec3(…)` arg is
-/// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     // task 5465 (family 4 + amendment): the templates/traits/enums trio,
@@ -1681,19 +1665,26 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
-            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
-            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
-            // Selector) to every concrete field type, routed through the shared
-            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            // task 5302 (struct-ctor-conformance α): check ALL params EXCEPT a bare
+            // `Type::TraitObject(_)`, at CTOR_FIELD_CONFORMANCE_SEVERITY.
             //
-            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
-            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
-            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
-            // component paths. REVISIT this exemption once those escape-hatch call
-            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
-            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
-            // trait params are checked too.
+            // Bare TraitObject params stay EXEMPT here (PRD
+            // docs/prds/struct-ctor-field-type-conformance.md, D6): they were
+            // deliberate type-coercion escape hatches, the original being
+            // `ConstitutiveLawInput.law : ConstitutiveLaw` (that shim was retired in
+            // task 4442).
+            //
+            // SCOPE: only this expression-position path is exempt. `sub x = T(…)`
+            // and `sub x : T { … }` go through `PendingBoundCheck::TraitArgConformance`,
+            // which DOES check bare trait params — compare
+            // `sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct`
+            // (harness_traits/trait_typed_param_tests.rs) with
+            // `boundary9_bare_trait_param_value_cell_is_exempt`. Authors see the
+            // exemption in docs/reify-language-spec.md §4.9.
+            //
+            // REVISIT once no escape-hatch call site relies on it (measuring that is
+            // #7957): drop the `!matches!(… TraitObject …)` guard so bare trait
+            // params are checked here too.
             let should_check = template
                 .value_cells
                 .iter()

@@ -150,8 +150,9 @@ export function parseTextPayload(text) {
  *                               `element_screenshot` now has one, falls through to branch 4,
  *                               and yields `{viewportId, matchCount}` instead of `null`. The
  *                               image block itself is never a payload in either case. (The
- *                               sibling decoder `./rpc.ts` is positional on `content[0]` and
- *                               deliberately ignores that block — the two disagree on purpose.)
+ *                               sibling decoder `./rpc.ts` disagrees ON PURPOSE — see
+ *                               docs/debug-mcp-contract.md §2 "JS-side decoders" → "The §2d
+ *                               divergence — canonical statement".)
  *   4. text block, JSON       → `{payload: <parsed>}`. A frontend in-band `{error: "<msg>"}`
  *                               passes through UNCHANGED — it already speaks the target dialect.
  *   5. text block, non-JSON   → `{payload: <raw text>}`.

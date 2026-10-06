@@ -17,7 +17,7 @@ module surface_finish_viewport
 //                        bright) flows into display_appearance — frontend composes
 //                        override-over-functional.
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs (zero Error gate).
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (zero Error gate).
 // Deterministic backstops:
 //   engine_tests.rs::examples_surface_finish_viewport_renders_functional_finish
 //   engine_tests.rs::examples_surface_finish_viewport_display_override_beats_functional

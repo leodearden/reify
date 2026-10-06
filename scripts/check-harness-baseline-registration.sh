@@ -36,6 +36,20 @@
 #   stdin             if no args, newline-separated repo-relative paths
 #   --from-git        self-derive the added-file set from git (see step-6)
 #
+# TRAP — NEVER invoke with NO arguments from an agent/CI shell (task #7313). A
+# no-arg call falls through to the stdin form, which fails two ways:
+#   - stdin is a socket/pipe that never reaches EOF (a backgrounded agent-harness
+#     shell): the script HANGS indefinitely in the `read` loop.
+#   - stdin is `< /dev/null` (or an empty pipe): zero candidates are read, so it
+#     prints `PASS` / `SUMMARY added=0 violations=0` and exits 0 — byte-identical
+#     to a real clean pass, though NOTHING was checked.
+# `added=0` is therefore NOT evidence of a check unless the diff truly adds no
+# files. The trustworthy forms are `--from-git` (what scripts/verify.sh runs) or
+# explicit positional paths of files that exist in the tree; pair either with a
+# control that should FAIL. The empty-stdin green is pinned by
+# tests/infra/test_harness_baseline_registration_gate.sh: rc 0 and the SUMMARY
+# line (Section J), silent stderr (Section P2).
+#
 # OUTPUT — TWO STREAMS, deliberately separated:
 #   STDOUT (structured verdict grammar, rule-(c) style — machine-parseable,
 #   a byte-for-byte contract pinned by tests/infra/test_harness_baseline_registration_gate.sh):

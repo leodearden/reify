@@ -1,0 +1,10 @@
+module coordinate_target_fea_pose_rejected
+structure def ProbePointForce {
+    param at     : Point3<Length>
+    param force  : Vector3<Force>
+    param radius : Length = 0mm
+    constraint radius >= 0mm
+}
+structure Neg {
+    let bad_frame = ProbePointForce(at: frame3(point3(0mm,0mm,0mm), orient_identity()), force: vec3(0N,0N,-1N))
+}

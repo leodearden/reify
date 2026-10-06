@@ -29,6 +29,7 @@ mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
+mod fn_return_check;
 mod forall_elaborate;
 mod functions;
 mod geometry;

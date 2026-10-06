@@ -15,6 +15,8 @@
 
 #![cfg(has_gmsh)]
 
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+use reify_kernel_gmsh::BackgroundSizeField;
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
 use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, MeshSizeScope};
@@ -579,5 +581,70 @@ fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name()
         unknown.is_err(),
         "an unknown option name must be reported as Err, not as a plausible-looking \
          number a guard would then assert against; got {unknown:?}",
+    );
+}
+
+/// Removes a post-processing view on every exit path. Views are process-global
+/// and survive `gmshClear`, so a failing assertion must not leak one into the
+/// later tests of this binary.
+struct ViewRemoval(i32);
+
+impl Drop for ViewRemoval {
+    fn drop(&mut self) {
+        let _ = ffi::view_remove(self.0);
+    }
+}
+
+/// `ffi::view_probe` interpolates a scalar `"SS"` view where an element
+/// contains the point, and reports a miss as an empty result rather than an
+/// error. The list data comes from the production serialiser, so the probe is
+/// read against the same buffer layout `refine_volume` installs.
+#[test]
+fn view_probe_interpolates_inside_a_scalar_tet_view_and_returns_nothing_outside() {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+
+    let one_tet = VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.0, 1.0,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let field = BackgroundSizeField::from_tet_mesh(&one_tet, &[1.0, 2.0, 3.0, 4.0])
+        .expect("a single P1 tet with positive sizes must serialise");
+
+    let tag = ffi::view_add("ffi_smoke_probe").expect("ffi::view_add failed");
+    let _view = ViewRemoval(tag);
+    ffi::view_add_list_data(tag, "SS", field.element_count(), field.list_data())
+        .expect("ffi::view_add_list_data failed");
+
+    let centroid = ffi::view_probe(tag, [0.25, 0.25, 0.25])
+        .expect("probing a point inside the view's element must succeed");
+    assert_eq!(
+        centroid.len(),
+        1,
+        "a scalar view with one time step must yield exactly one value at a contained \
+         point; got {centroid:?}",
+    );
+    assert!(
+        (centroid[0] - 2.5).abs() < 1e-12,
+        "the centroid of a linear tet must interpolate to the mean of its four vertex \
+         values (2.5); got {}",
+        centroid[0],
+    );
+
+    let outside = ffi::view_probe(tag, [5.0, 5.0, 5.0]);
+    assert!(
+        matches!(&outside, Ok(values) if values.is_empty()),
+        "a point no element contains must be reported as an empty Ok, not an error and \
+         not a closest-node value, so a probe can be issued at any point; got {outside:?}",
     );
 }

@@ -127,17 +127,19 @@ the two agree by construction. Codes and remedies:
 
 ```bash
 scripts/with-jcodemunch-serve.sh --port 8901 -- \
-    bash scripts/smoke-jcodemunch-serve.sh --repo local/reify-4ae45bbd
+    bash scripts/smoke-jcodemunch-serve.sh
 ```
 
-`--repo` is **not** optional there. The wrapper's serve answers for the per-path index; the
-default husk would clear assertion 1 and then fail assertion 2 with an empty result. The
-script's own connection-failure hint prints this exact recipe — it is the canonical wording.
+The script derives its default identity from `scripts/jcodemunch-index-reify.sh --print-repo-id`
+(the per-path `local/reify-4ae45bbd` for the canonical checkout) — the identity the wrapper's
+serve answers for; `--repo <id>` overrides it. The script's own connection-failure hint prints
+this exact recipe — it is the canonical wording.
 
 Exits 0 when all three assertions pass:
 
 1. MCP handshake at `http://127.0.0.1:8901/mcp` returns HTTP 200 + a JSON-RPC body.
-2. `get_changed_symbols` for `local/reify-4ae45bbd` returns non-empty `changed_symbols`.
+2. `get_changed_symbols` for the derived identity (`local/reify-4ae45bbd`) returns non-empty
+   `changed_symbols`.
 3. `jcodemunch-watcher.service` is concurrently active — a watcher-write + serve-read
    concurrency check against the shared SQLite store, confirmed non-fatal. It is a
    concurrency assertion about the store, **not** a claim that the watcher indexes reify.

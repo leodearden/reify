@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::fn_return_check::require_bodyless_return_annotation;
+
 /// Resolve a trait-member type annotation (`param x : T` or `let x : T = ...`).
 ///
 /// Control flow:
@@ -118,7 +120,8 @@ fn resolve_trait_member_type_annotation(
 /// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
 /// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
 /// same diagnostics). A missing return type defaults to `Type::dimensionless_scalar()`, matching
-/// `compile_function`'s convention. Added by task 3939 δ.
+/// `compile_function`'s convention; a bodyless one is reported by
+/// `require_bodyless_return_annotation`. Added by task 3939 δ.
 #[allow(clippy::too_many_arguments)]
 fn assoc_fn_sig(
     fn_def: &reify_ast::FnDef,
@@ -290,6 +293,7 @@ pub(crate) fn compile_trait(
                     diagnostics,
                 );
                 if fn_def.body.is_none() {
+                    require_bodyless_return_annotation(fn_def, &trait_decl.name, diagnostics);
                     required_members.push(TraitRequirement {
                         name: fn_def.name.clone(),
                         kind: RequirementKind::Fn(sig),

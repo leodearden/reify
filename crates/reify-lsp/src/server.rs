@@ -9,6 +9,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::blocking_work::BlockingWorkPlacement;
 use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
@@ -167,6 +168,9 @@ pub struct ReifyLanguageServer {
     /// reported once rather than per recovery. Shared across clones, since
     /// the `eval_state` it describes is.
     eval_state_poison_reported: Arc<AtomicBool>,
+    /// Where definition / prepareRename / rename / references run their
+    /// blocking work; see [`crate::blocking_work`].
+    blocking_work: BlockingWorkPlacement,
 }
 
 impl ReifyLanguageServer {
@@ -189,6 +193,15 @@ impl ReifyLanguageServer {
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
             eval_state_poison_reported: Arc::new(AtomicBool::new(false)),
+            blocking_work: BlockingWorkPlacement::default(),
+        }
+    }
+
+    /// Choose where the handlers' blocking work runs; see [`crate::blocking_work`].
+    pub fn with_blocking_work_placement(self, placement: BlockingWorkPlacement) -> Self {
+        Self {
+            blocking_work: placement,
+            ..self
         }
     }
 
@@ -588,62 +601,56 @@ impl LanguageServer for ReifyLanguageServer {
         let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
-        // Move all CPU-bound parsing and blocking filesystem I/O
+        // CPU-bound parsing and blocking filesystem I/O
         // (ModuleResolver::resolve_import_path calls .exists(), and
-        // std::fs::read_to_string) to Tokio's blocking thread pool so the
-        // async worker thread stays free for other LSP requests. The primary
-        // document's parse comes from its per-document cache (one parse per
-        // edit): the Arc<DocumentState> moves into the blocking task and the
-        // parse — cache-filling on the first request after an edit — runs there.
-        let location = match tokio::task::spawn_blocking(move || {
-            let parsed = doc.parsed_module();
-            let primary_source = doc.text.as_str();
-            if let Some(root) = workspace_root {
-                // Build a resolver closure using ModuleResolver for cross-file navigation.
-                // Use explicit stdlib_path if configured; fall back to the dev-mode path
-                // relative to workspace root.
-                let stdlib_root =
-                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
-                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
-                    let path = resolver.resolve_import_path(import_path).ok()?;
-                    // Prefer editor buffer content over disk for open documents,
-                    // so unsaved changes are reflected immediately.
-                    let source = open_docs
-                        .get(&path)
-                        .cloned()
-                        .or_else(|| std::fs::read_to_string(&path).ok())?;
-                    let target_uri = Url::from_file_path(&path).ok()?;
-                    Some((target_uri, source))
-                };
-                crate::goto_def::compute_goto_definition_cross_file_with_parsed(
-                    &parsed,
-                    primary_source,
-                    &uri,
-                    position,
-                    &resolve_import,
-                )
-            } else {
-                // No workspace root — fall back to single-file resolution.
-                crate::goto_def::compute_goto_definition_with_parsed(
-                    &parsed,
-                    primary_source,
-                    &uri,
-                    position,
-                )
-            }
-        })
-        .await
-        {
-            Ok(loc) => loc,
-            Err(e) => {
-                // Log panics from the blocking task rather than silently dropping them.
-                // The client still gets Ok(None) ("definition not found") for graceful
-                // degradation, but the panic is visible in server logs for debugging.
-                tracing::error!("goto_definition blocking task failed: {e}");
-                None
-            }
-        };
+        // std::fs::read_to_string) run per the server's BlockingWorkPlacement
+        // (see crate::blocking_work). The primary document's parse comes from
+        // its per-document cache (one parse per edit): the Arc<DocumentState>
+        // moves into the work and the parse — cache-filling on the first
+        // request after an edit — runs there.
+        let location = self
+            .blocking_work
+            .run("goto_definition", move || {
+                let parsed = doc.parsed_module();
+                let primary_source = doc.text.as_str();
+                if let Some(root) = workspace_root {
+                    // Build a resolver closure using ModuleResolver for cross-file navigation.
+                    // Use explicit stdlib_path if configured; fall back to the dev-mode path
+                    // relative to workspace root.
+                    let stdlib_root =
+                        stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                    let resolver =
+                        reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                    let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                        let path = resolver.resolve_import_path(import_path).ok()?;
+                        // Prefer editor buffer content over disk for open documents,
+                        // so unsaved changes are reflected immediately.
+                        let source = open_docs
+                            .get(&path)
+                            .cloned()
+                            .or_else(|| std::fs::read_to_string(&path).ok())?;
+                        let target_uri = Url::from_file_path(&path).ok()?;
+                        Some((target_uri, source))
+                    };
+                    crate::goto_def::compute_goto_definition_cross_file_with_parsed(
+                        &parsed,
+                        primary_source,
+                        &uri,
+                        position,
+                        &resolve_import,
+                    )
+                } else {
+                    // No workspace root — fall back to single-file resolution.
+                    crate::goto_def::compute_goto_definition_with_parsed(
+                        &parsed,
+                        primary_source,
+                        &uri,
+                        position,
+                    )
+                }
+            })
+            .await
+            .flatten();
         Ok(location.map(GotoDefinitionResponse::Scalar))
     }
 
@@ -740,41 +747,38 @@ impl LanguageServer for ReifyLanguageServer {
         let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
-        let target = match tokio::task::spawn_blocking(move || {
-            let parsed = doc.parsed_module();
-            let primary_source = doc.text.as_str();
-            if let Some(root) = workspace_root {
-                let stdlib_root =
-                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
-                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
-                    let path = resolver.resolve_import_path(import_path).ok()?;
-                    let source = open_docs
-                        .get(&path)
-                        .cloned()
-                        .or_else(|| std::fs::read_to_string(&path).ok())?;
-                    let target_uri = Url::from_file_path(&path).ok()?;
-                    Some((target_uri, source))
-                };
-                crate::references::prepare_rename_cross_file(
-                    primary_source,
-                    &parsed,
-                    &uri,
-                    position,
-                    &resolve_import,
-                )
-            } else {
-                crate::references::prepare_rename(primary_source, &parsed, position)
-            }
-        })
-        .await
-        {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("prepare_rename blocking task failed: {e}");
-                None
-            }
-        };
+        let target = self
+            .blocking_work
+            .run("prepare_rename", move || {
+                let parsed = doc.parsed_module();
+                let primary_source = doc.text.as_str();
+                if let Some(root) = workspace_root {
+                    let stdlib_root =
+                        stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                    let resolver =
+                        reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                    let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                        let path = resolver.resolve_import_path(import_path).ok()?;
+                        let source = open_docs
+                            .get(&path)
+                            .cloned()
+                            .or_else(|| std::fs::read_to_string(&path).ok())?;
+                        let target_uri = Url::from_file_path(&path).ok()?;
+                        Some((target_uri, source))
+                    };
+                    crate::references::prepare_rename_cross_file(
+                        primary_source,
+                        &parsed,
+                        &uri,
+                        position,
+                        &resolve_import,
+                    )
+                } else {
+                    crate::references::prepare_rename(primary_source, &parsed, position)
+                }
+            })
+            .await
+            .flatten();
 
         Ok(target.map(|target| {
             PrepareRenameResponse::RangeWithPlaceholder {
@@ -804,8 +808,8 @@ impl LanguageServer for ReifyLanguageServer {
         // Snapshot open documents: a path-keyed map for resolve_import's
         // editor-buffer-over-disk fallback (and as the open-text override for
         // build_workspace_docs so the in-memory version wins over the disk copy).
-        // The workspace_docs (Url, String) list is built inside spawn_blocking
-        // because it may need to read closed-importer files from disk.
+        // The workspace_docs (Url, String) list is built inside the blocking
+        // work because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
         // Task 7118: the version snapshot is taken HERE, under the same lock
         // acquisition as the text above, so the two provably describe one
@@ -816,33 +820,35 @@ impl LanguageServer for ReifyLanguageServer {
         let stamp_versions = state.client_supports_document_changes;
         drop(state);
 
-        let edit = match tokio::task::spawn_blocking(move || {
-            let parsed = doc.parsed_module();
-            let primary_source = doc.text.as_str();
-            if let Some(root) = workspace_root {
-                let (workspace_docs, resolve_import) =
-                    build_cross_file_rig(&root, stdlib_path, open_docs);
-                crate::references::compute_rename_cross_file(
-                    primary_source,
-                    &parsed,
-                    &uri,
-                    position,
-                    &new_name,
-                    &workspace_docs,
-                    &resolve_import,
-                )
-            } else {
-                crate::references::compute_rename(primary_source, &parsed, &uri, position, &new_name)
-            }
-        })
-        .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::error!("rename blocking task failed: {e}");
-                None
-            }
-        };
+        let edit = self
+            .blocking_work
+            .run("rename", move || {
+                let parsed = doc.parsed_module();
+                let primary_source = doc.text.as_str();
+                if let Some(root) = workspace_root {
+                    let (workspace_docs, resolve_import) =
+                        build_cross_file_rig(&root, stdlib_path, open_docs);
+                    crate::references::compute_rename_cross_file(
+                        primary_source,
+                        &parsed,
+                        &uri,
+                        position,
+                        &new_name,
+                        &workspace_docs,
+                        &resolve_import,
+                    )
+                } else {
+                    crate::references::compute_rename(
+                        primary_source,
+                        &parsed,
+                        &uri,
+                        position,
+                        &new_name,
+                    )
+                }
+            })
+            .await
+            .flatten();
         Ok(edit.map(|edit| {
             if stamp_versions {
                 version_stamped_workspace_edit(edit, &versions)
@@ -860,7 +866,8 @@ impl LanguageServer for ReifyLanguageServer {
         // κ (task 4210): references now follow the import graph. Assemble the same
         // cross-file rig as goto_definition — workspace_root + ModuleResolver +
         // resolve_import (editor buffer over disk) + the open-document snapshot —
-        // and move the parsing + blocking filesystem I/O off the async worker.
+        // and run the parsing + blocking filesystem I/O per the server's
+        // BlockingWorkPlacement (see crate::blocking_work).
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
@@ -871,46 +878,42 @@ impl LanguageServer for ReifyLanguageServer {
         // Snapshot open documents: a path-keyed map for resolve_import's
         // editor-buffer-over-disk fallback (and as the open-text override for
         // build_workspace_docs so the in-memory version wins over the disk copy).
-        // The workspace_docs (Url, String) list is built inside spawn_blocking
-        // because it may need to read closed-importer files from disk.
+        // The workspace_docs (Url, String) list is built inside the blocking
+        // work because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
-        let locations = match tokio::task::spawn_blocking(move || {
-            let parsed = doc.parsed_module();
-            let primary_source = doc.text.as_str();
-            if let Some(root) = workspace_root {
-                let (workspace_docs, resolve_import) =
-                    build_cross_file_rig(&root, stdlib_path, open_docs);
-                crate::references::compute_references_cross_file(
-                    primary_source,
-                    &parsed,
-                    &uri,
-                    position,
-                    include_declaration,
-                    &workspace_docs,
-                    &resolve_import,
-                )
-            } else {
-                // No workspace root — single-file references (cross-module symbols
-                // remain refused, as before κ).
-                crate::references::compute_references(
-                    primary_source,
-                    &parsed,
-                    &uri,
-                    position,
-                    include_declaration,
-                )
-            }
-        })
-        .await
-        {
-            Ok(locs) => locs,
-            Err(e) => {
-                tracing::error!("references blocking task failed: {e}");
-                None
-            }
-        };
+        let locations = self
+            .blocking_work
+            .run("references", move || {
+                let parsed = doc.parsed_module();
+                let primary_source = doc.text.as_str();
+                if let Some(root) = workspace_root {
+                    let (workspace_docs, resolve_import) =
+                        build_cross_file_rig(&root, stdlib_path, open_docs);
+                    crate::references::compute_references_cross_file(
+                        primary_source,
+                        &parsed,
+                        &uri,
+                        position,
+                        include_declaration,
+                        &workspace_docs,
+                        &resolve_import,
+                    )
+                } else {
+                    // No workspace root — single-file references (cross-module symbols
+                    // remain refused, as before κ).
+                    crate::references::compute_references(
+                        primary_source,
+                        &parsed,
+                        &uri,
+                        position,
+                        include_declaration,
+                    )
+                }
+            })
+            .await
+            .flatten();
         Ok(locations)
     }
 
@@ -1058,9 +1061,9 @@ fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>)
 /// - `resolve_import` maps an import-path string to `(Url, source)`, preferring
 ///   the in-memory buffer over the on-disk copy.
 ///
-/// **Per-request cost:** called inside `spawn_blocking` so it does not stall the
-/// async worker, but the disk walk performs O(files) syscalls and reads every
-/// `*.ri` file from disk on every call.  Rename / references latency therefore
+/// **Per-request cost:** runs inside the handlers' blocking work (see
+/// [`crate::blocking_work`]); the disk walk performs O(files) syscalls and
+/// reads every `*.ri` file from disk on every call.  Rename / references latency therefore
 /// scales linearly with project size and the read results are discarded after
 /// each request.  A persistent incremental index (keyed by mtime / dir-generation)
 /// is the documented follow-up optimisation.
@@ -3093,8 +3096,9 @@ structure Assembly {
             .await;
 
         // Fire 3 concurrent goto_definition requests.
-        // With spawn_blocking, these offload to the blocking thread pool and
-        // the single Tokio worker remains free to drive all futures concurrently.
+        // Under the default BlockingPool placement, these offload to the blocking
+        // thread pool and the single Tokio worker remains free to drive all
+        // futures concurrently.
         let (r1, r2, r3) = tokio::join!(
             server.goto_definition(GotoDefinitionParams {
                 text_document_position_params: TextDocumentPositionParams {

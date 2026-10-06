@@ -28,17 +28,9 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::make_simple_engine;
+use reify_test_support::{make_simple_engine, meters, point3};
 
 // ---- Value-construction helpers (mirror tensegrity_t3b_load.rs) -------------
-
-/// A Length-typed coordinate Scalar (SI metres).
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
 
 /// A Force-typed Scalar (SI newtons).
 fn force(n: f64) -> Value {
@@ -62,11 +54,6 @@ fn area(a: f64) -> Value {
         si_value: a,
         dimension: DimensionVector::AREA,
     }
-}
-
-/// A 3-component `Value::Point` node coordinate (Length scalars).
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
 }
 
 /// A 3-component `Value::Vector` force load (Force scalars).
@@ -107,11 +94,11 @@ fn vec3(v: &Value) -> [f64; 3] {
 /// index 1 the cable; the `prestress` payload must follow that order.
 fn combined_pavilion() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 0.0),
-        node(0.0, 1.0, 0.0),
-        node(0.0, 0.0, 0.0),
-        node(0.0, 0.0, 1.0),
-        node(0.0, 0.0, -1.0),
+        point3(1.0, 0.0, 0.0),
+        point3(0.0, 1.0, 0.0),
+        point3(0.0, 0.0, 0.0),
+        point3(0.0, 0.0, 1.0),
+        point3(0.0, 0.0, -1.0),
     ]);
     let struts = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(4)])]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(3)])]);
@@ -177,7 +164,7 @@ fn combined_pavilion_payload() -> Vec<Value> {
         // [6] per-triangle surface prestress (one patch).
         Value::List(vec![pressure(sigma)]),
         // [7] membrane thickness, [8] membrane youngs, [9] membrane poisson.
-        length(t),
+        meters(t),
         pressure(e_fab),
         Value::Real(nu_fab),
     ]
@@ -574,12 +561,12 @@ fn trampoline_out_of_range_support_is_failed() {
 /// the CG Jacobi preconditioner on a missing diagonal.
 fn pavilion_with_orphan() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 0.0),
-        node(0.0, 1.0, 0.0),
-        node(0.0, 0.0, 0.0),
-        node(0.0, 0.0, 1.0),
-        node(0.0, 0.0, -1.0),
-        node(5.0, 5.0, 5.0), // node 5 — FREE ORPHAN: no member/patch, not a support
+        point3(1.0, 0.0, 0.0),
+        point3(0.0, 1.0, 0.0),
+        point3(0.0, 0.0, 0.0),
+        point3(0.0, 0.0, 1.0),
+        point3(0.0, 0.0, -1.0),
+        point3(5.0, 5.0, 5.0), // node 5 — FREE ORPHAN: no member/patch, not a support
     ]);
     let struts = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(4)])]);
     let cables = Value::List(vec![Value::List(vec![Value::Int(2), Value::Int(3)])]);
@@ -695,7 +682,7 @@ fn trampoline_swapped_membrane_section_units_is_failed() {
     let mut value_inputs = combined_pavilion_payload();
     // [7] membrane_thickness := a Pressure, [8] membrane_youngs := a Length.
     value_inputs[7] = pressure(1.0e6);
-    value_inputs[8] = length(0.01);
+    value_inputs[8] = meters(0.01);
     assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
     assert_failed_infeasible(call_membrane_load(&value_inputs), "membrane_thickness");
 }
@@ -755,7 +742,7 @@ fn trampoline_length_in_load_component_is_failed() {
     // [4] loads := five entries (one per node) with loads[1].y a Length.
     value_inputs[4] = Value::List(vec![
         force_vec(0.0, 0.0, 0.0),
-        Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+        Value::Vector(vec![force(0.0), meters(50.0), force(0.0)]),
         force_vec(0.0, 0.0, 0.0),
         force_vec(0.0, 0.0, 0.0),
         force_vec(0.0, 0.0, 0.0),

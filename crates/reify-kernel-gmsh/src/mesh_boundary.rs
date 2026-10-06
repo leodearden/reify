@@ -627,17 +627,10 @@ fn run_meshing_with_entity_queries(
     ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
     // Thread count
-    let num_threads: f64 = if options.deterministic {
-        1.0
-    } else {
-        match options.threads {
-            Some(t) => t as f64,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        }
-    };
-    ffi::option_set_number("General.NumThreads", num_threads)?;
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
 
     // Element order
     let order_value: f64 = match element_order {

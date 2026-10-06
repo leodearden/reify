@@ -1,5 +1,5 @@
 //! Geometry contract for the workspace-canonical box / cylinder fixtures
-//! hoisted into [`reify_test_support::fixtures`] by task #6387.
+//! hoisted into [`reify_test_support::mesh_fixtures`] by task #6387.
 //!
 //! # What this pins, and what it deliberately does not
 //!
@@ -22,7 +22,7 @@
 //! edge absent; being an independent second implementation is a mild bonus.
 
 use reify_ir::Mesh;
-use reify_test_support::fixtures::{
+use reify_test_support::mesh_fixtures::{
     F32_STORAGE_REL, assert_rel, prismatic_box_mesh, tessellated_cylinder_mesh,
     tessellated_cylinder_volume, unwelded_prismatic_box_mesh,
 };

@@ -7,11 +7,11 @@
 //
 // # Algorithm and contributor-walk logic
 //
-//   The `compose_engine_version_hash` and `walk_contributor` functions are NOT
-//   duplicated here. They live in `src/engine_hash_algo.rs`, which is the single
-//   source of truth shared between the library crate (via
-//   `pub(crate) mod engine_hash_algo;` in `lib.rs`) and this build script (via
-//   `include!()` below). Any algorithm change automatically affects both callers.
+//   The whole computation is `engine_version_hash_for` in
+//   `src/engine_hash_algo.rs`, the single source of truth shared between the
+//   library crate (via `pub(crate) mod engine_hash_algo;` in `lib.rs`) and this
+//   build script (via `include!()` below). This script only prints its result,
+//   so the library's tests exercise exactly what is baked here.
 //
 //   `walk_contributor` emits `rerun_paths` entries for BOTH file paths AND
 //   directory paths (every directory visited, including the root and all
@@ -21,36 +21,27 @@
 //   Directory-level directives cause cargo to re-run whenever the directory's
 //   child set changes (file added / renamed / removed).
 //
-// # Contributor categories (per PRD docs/prds/v0_3/persistent-fea-cache.md
-//   §"Cache invalidation on engine version")
-//
-//   1. FEA solver implementation   — crates/reify-solver-elastic (src/ + Cargo.toml)
-//   2. Meshing pipeline            — crates/reify-kernel-gmsh (src/ + Cargo.toml + build.rs)
-//   3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
-//   4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
-//                                    engine_tolerance.rs, engine_purposes.rs
-//   5. Transitive-dep version pin  — NARROWED (task 5272): only the resolved
-//                                    (name, version) pins of reify-eval's
-//                                    build+normal (dev-excluded) closure, read
-//                                    from ../../Cargo.lock + engine_hash_closure.txt
-//                                    (NOT a whole-lockfile walk). See the block
-//                                    after the CONTRIBUTORS_RELATIVE loop below.
+// # Contributors
+//   What is hashed, and why each workspace crate is or is not: the
+//   WORKSPACE_CRATE_COVERAGE table and engine_version_hash_for in
+//   src/engine_hash_algo.rs (PRD docs/prds/v0_3/persistent-fea-cache.md
+//   §"Cache invalidation on engine version").
 //
 // # Deferred contributor
 //   Materials database: PRD line 59 makes this conditional on materials living
 //   in a versioned source file. No such file exists in the repo yet; when one
 //   is introduced (e.g. `crates/reify-stdlib/data/materials.toml`), add it to
-//   CONTRIBUTORS_RELATIVE below. Adding it will naturally invalidate all existing
-//   cache entries (new hash ⇒ miss ⇒ recompute), which is the desired policy.
+//   the owning crate's row of WORKSPACE_CRATE_COVERAGE. Adding it will naturally
+//   invalidate all existing cache entries (new hash ⇒ miss ⇒ recompute), which
+//   is the desired policy.
 //
 // # Safety
 //   Missing contributor ⇒ hard panic. A silent skip would silently shrink the
 //   contributor set and produce a stale hash without anyone noticing.
 
-// Pull in compose_engine_version_hash, walk_contributor, ContributorWalk,
-// and their transitive use statements (std::path::{Path, PathBuf},
-// xxhash_rust::xxh3::xxh3_128) from the single shared source file.
-// There is NO duplicate algorithm here.
+// Pull in engine_version_hash_for and everything it calls, with their use
+// statements (std::path::{Path, PathBuf}, xxhash_rust::xxh3::xxh3_128), from
+// the single shared source file. There is NO duplicate algorithm here.
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/engine_hash_algo.rs"
@@ -90,73 +81,9 @@ fn main() {
     // Re-run when the shared algorithm source changes.
     println!("cargo:rerun-if-changed=src/engine_hash_algo.rs");
 
-    let mut all_parts: Vec<Vec<u8>> = Vec::new();
-
-    for rel in CONTRIBUTORS_RELATIVE {
-        let path = manifest_path.join(rel);
-        if !path.exists() {
-            panic!(
-                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
-                 If this file was renamed, moved, or deleted, update \
-                 CONTRIBUTORS_RELATIVE in crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
-                rel,
-                path.display()
-            );
-        }
-        let walk = walk_contributor(rel, &path);
-        for p in &walk.rerun_paths {
-            println!("cargo:rerun-if-changed={}", p.display());
-        }
-        all_parts.extend(walk.parts);
-    }
-
-    // 5. Transitive-dep version pin — NARROWED to reify-eval's closure pins
-    //    (task 5272). Instead of walking the WHOLE workspace Cargo.lock (which
-    //    over-invalidated the persistent FEA cache on ANY dep bump anywhere in
-    //    the ~716-package lockfile), hash only the resolved (name, version) pins
-    //    of reify-eval's build+normal (dev-excluded) transitive closure — the
-    //    crate NAMES checked in at engine_hash_closure.txt. NO cargo metadata is
-    //    invoked at build time (fragile / offline-hostile / can deadlock on the
-    //    package-cache lock); build.rs only fs-reads the static manifest. The
-    //    drift guard tests/infra/test_engine_hash_closure.sh keeps the manifest
-    //    a superset (⊇) of the live closure. Rationale + narrowing details:
-    //    engine_hash_algo.rs::CONTRIBUTORS_RELATIVE doc-comment.
-    //
-    //    Panic-on-missing is preserved for BOTH inputs (same rename-panic safety
-    //    net as the contributor loop): a silent skip would shrink the hash input
-    //    and bake a stale ENGINE_VERSION_HASH unnoticed.
-    let lock_path = manifest_path.join("../../Cargo.lock");
-    let closure_path = manifest_path.join("engine_hash_closure.txt");
-    for (path, rel) in [
-        (&lock_path, "../../Cargo.lock"),
-        (&closure_path, "engine_hash_closure.txt"),
-    ] {
-        if !path.exists() {
-            panic!(
-                "ENGINE_VERSION_HASH closure-pin input not found: {} (resolved to {}). \
-                 If this file was renamed, moved, or deleted, update the closure-pin \
-                 wiring in crates/reify-eval/build.rs and \
-                 crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
-                rel,
-                path.display()
-            );
-        }
+    let hash = engine_version_hash_for(manifest_path);
+    for path in &hash.rerun_paths {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_else(|e| {
-        panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", lock_path.display())
-    });
-    let manifest_text = std::fs::read_to_string(&closure_path).unwrap_or_else(|e| {
-        panic!(
-            "ENGINE_VERSION_HASH: cannot read {}: {e}",
-            closure_path.display()
-        )
-    });
-    let closure = parse_closure_manifest(&manifest_text);
-    let closure_refs: Vec<&str> = closure.iter().map(|s| s.as_str()).collect();
-    all_parts.extend(cargo_lock_closure_parts(&lock_text, &closure_refs));
-
-    let all_refs: Vec<&[u8]> = all_parts.iter().map(|v| v.as_slice()).collect();
-    let hash = compose_engine_version_hash(&all_refs);
-    println!("cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={hash}");
+    println!("cargo:rustc-env=REIFY_ENGINE_VERSION_HASH={}", hash.hex);
 }

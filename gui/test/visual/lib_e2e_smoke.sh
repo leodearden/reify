@@ -21,16 +21,20 @@
 #   e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>
 #
 # The lifecycle, in order:
-#   1. Resolve REIFY_DEBUG_PORT (env if valid 1..65535, else allocate a free port).
+#   1. Resolve REIFY_DEBUG_PORT and REIFY_VITE_PORT (each: env if valid 1..65535,
+#      else allocate a free port).  The per-run vite port means concurrent lanes
+#      no longer contend for :1420; reify-gui follows it via its startup devUrl
+#      retarget (gui/src-tauri/src/dev_url.rs).
 #   2. Set DISPLAY="${DISPLAY:-:0}" so the Tauri webview can instantiate.
 #  2a. Prepend /opt/reify-deps/lib to LD_LIBRARY_PATH when present.
-#  2b. Disable the WebKit GBM/DMABuf renderer unless the caller overrode it.
+#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): disable the WebKit
+#      GBM/DMABuf renderer unless the caller overrode it, and pin oneTBB first.
 #   3. Install an EXIT/INT/TERM cleanup trap so the GUI is reaped even on early failure.
 #   4. (Unless REIFY_SMOKE_SKIP_PREBUILD=1) run synchronous pre-build steps —
 #      sidecar npm install, sidecar build, gui npm install, cargo build reify-gui —
 #      so the cold-build cost is paid OUTSIDE the readiness window.
 #   5. Background REIFY_SMOKE_LAUNCHER (default: scripts/run-gui-dev.sh) with the
-#      fixture + REIFY_DEBUG=1 / REIFY_DEBUG_PORT=$PORT.
+#      fixture + REIFY_DEBUG=1 / REIFY_DEBUG_PORT=$PORT / REIFY_VITE_PORT=$VITE_PORT.
 #   6. Poll the debug health endpoint up to REIFY_SMOKE_WAIT_MS (default 180000ms)
 #      with a kill -0 liveness check on each iteration — abort early if the
 #      launcher dies rather than waiting the full budget.
@@ -59,14 +63,21 @@
 E2E_SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_SMOKE_REPO_ROOT="$(cd "$E2E_SMOKE_LIB_DIR/../../.." && pwd)"
 
+# Sourced at load time, not inside e2e_smoke_run: lib_gui_launch.sh snapshots
+# the inherited LD_LIBRARY_PATH when sourced, so it must run before step 2a
+# edits that variable.
+# shellcheck source=../../../scripts/lib_gui_launch.sh
+source "$E2E_SMOKE_REPO_ROOT/scripts/lib_gui_launch.sh"
+
 # ---------------------------------------------------------------------------
-# 1. Resolve REIFY_DEBUG_PORT
-#    Mirrors endpoint.ts resolveDebugPort / allocateFreePort semantics and
-#    the setup-worktree-debug-port.sh contract: strict ^[0-9]+$ pattern,
-#    value 1..65535, no whitespace.
+# 1. resolve_port <VAR> — the port named by env var <VAR> (REIFY_DEBUG_PORT or
+#    REIFY_VITE_PORT), else a freshly allocated free port.
+#    Same rule as endpoint.ts resolvePerRunPort (parsePort, else
+#    allocateFreePort) and the setup-worktree-debug-port.sh contract:
+#    strict ^[0-9]+$ pattern, value 1..65535, no whitespace.
 # ---------------------------------------------------------------------------
 resolve_port() {
-    local raw="${REIFY_DEBUG_PORT:-}"
+    local raw="${!1:-}"
     if [[ "$raw" =~ ^[0-9]+$ ]] && [ "$raw" -ge 1 ] && [ "$raw" -le 65535 ]; then
         echo "$raw"
         return
@@ -152,11 +163,14 @@ e2e_smoke_run() {
     local REPO_ROOT="$E2E_SMOKE_REPO_ROOT"
     cd "$REPO_ROOT"
 
-    # -- 1. Debug port ------------------------------------------------------
-    local PORT
-    PORT=$(resolve_port)
+    # -- 1. Debug and vite ports ---------------------------------------------
+    local PORT VITE_PORT
+    PORT=$(resolve_port REIFY_DEBUG_PORT)
     export REIFY_DEBUG_PORT="$PORT"
     echo "${name}: using debug port $PORT"
+    VITE_PORT=$(resolve_port REIFY_VITE_PORT)
+    export REIFY_VITE_PORT="$VITE_PORT"
+    echo "${name}: using vite port $VITE_PORT"
 
     # -----------------------------------------------------------------------
     # 2. Ensure an X display is available (Tauri webview needs one).
@@ -177,13 +191,11 @@ e2e_smoke_run() {
     fi
 
     # -----------------------------------------------------------------------
-    # 2b. Disable WebKit GBM/DMABuf renderer on headless or DRI-unavailable hosts.
-    #     On systems where the Nvidia driver exposes DRI fds but the mesa EGL
-    #     GBM backend cannot create a screen, WebKit crashes with
-    #     "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
-    #     WEBKIT_DISABLE_DMABUF_RENDERER=1 forces fallback to the GLX/xlib path.
+    # 2b. Shared launch-env defaults (WebKit DMABuf disable + oneTBB pin) from
+    #     scripts/lib_gui_launch.sh.  Called AFTER 2a on purpose: the helper
+    #     prepends the tbb-pin dir, which must land ahead of the deps lib.
     # -----------------------------------------------------------------------
-    export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+    gui_launch_env_pin
 
     # -----------------------------------------------------------------------
     # 3. Trap for cleanup — SIGTERM the launcher on exit.
@@ -219,14 +231,15 @@ e2e_smoke_run() {
 
     # -----------------------------------------------------------------------
     # 5. Background the launcher (overridable for testing via REIFY_SMOKE_LAUNCHER).
-    #    REIFY_DEBUG=1 enables the MCP debug listener on port $PORT.
+    #    REIFY_DEBUG=1 enables the MCP debug listener on port $PORT; vite and the
+    #    page reify-gui loads both follow REIFY_VITE_PORT.
     #    The launcher (run-gui-dev.sh) owns reaping of vite+reify-gui via its trap.
     # -----------------------------------------------------------------------
     local LAUNCHER="${REIFY_SMOKE_LAUNCHER:-$REPO_ROOT/scripts/run-gui-dev.sh}"
     local FIXTURE="$REPO_ROOT/$fixture_rel"
     local DRIVER="$REPO_ROOT/$driver_rel"
     echo "${name}: launching GUI with fixture: $FIXTURE"
-    REIFY_DEBUG=1 REIFY_DEBUG_PORT="$PORT" \
+    REIFY_DEBUG=1 REIFY_DEBUG_PORT="$PORT" REIFY_VITE_PORT="$VITE_PORT" \
         bash "$LAUNCHER" "$FIXTURE" &
     GUI_LAUNCHER_PID=$!
     echo "${name}: launcher PID=$GUI_LAUNCHER_PID"

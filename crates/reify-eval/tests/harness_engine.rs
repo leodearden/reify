@@ -152,3 +152,7 @@ mod relate_static_verification_e2e;
 // as #5196's and #5360's above.
 #[path = "harness_engine/discrete_default_on_e2e.rs"]
 mod discrete_default_on_e2e;
+// Task #5418's DIC δ carrier e2e lands here for the same anti-re-accretion
+// reason as #5417's and #5415's above.
+#[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
+mod indeterminate_reason_carrier_e2e;

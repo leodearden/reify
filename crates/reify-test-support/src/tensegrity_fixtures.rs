@@ -1,10 +1,18 @@
-//! The single definition of the triplex tensegrity fixture **in `Value` form**.
+//! The single definitions of the two form-finding goldens: the triplex
+//! tensegrity and the tent membrane.
 //!
 //! The "triplex" is the canonical symmetric triangular T-prism used across the
 //! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
-//! cables. Before this module it existed as hand-maintained copies inside
+//! cables, provided **in `Value` form**. Before this module it existed as
+//! hand-maintained copies inside
 //! `crates/reify-eval/tests/harness_fea_solver_e2e/`, so a topology or node-order
 //! change had to be mirrored across all of them or they silently drifted apart.
+//!
+//! The "tent" is the minimal fixed-boundary membrane: four anchored corners in
+//! one plane, fanned around one free node seeded off that plane (see
+//! [`TENT_NODE_COORDS`]). Besides its `Value` form, [`tent_membrane_tensegrity`],
+//! it is exposed as raw consts, because reify-solver-elastic's `form_find` unit
+//! tests consume it below the `Value` layer.
 //!
 //! ANTI-DRIFT PROPERTY: changing the topology or node order *here* changes every
 //! consuming suite at once. That is the whole point — resist re-inlining a
@@ -16,7 +24,7 @@
 //! reify-solver-elastic’s `tests/`, and #7721 for the `#[cfg(test)]`-internal
 //! ones.
 //!
-//! Two axes on which the superseded copies genuinely differed are preserved
+//! Two axes on which the superseded triplex copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
 //!
 //!   * bottom-triangle height — [`canonical_triplex_tensegrity`] puts it at
@@ -77,10 +85,18 @@ fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     coords
 }
 
-/// [`triplex_node_coords`] as `Value::Point`s of LENGTH-dimensioned SI-metre
+/// Raw coordinates as `Value::Point`s of LENGTH-dimensioned SI-metre
 /// `Value::Scalar`s, via [`crate::values::point3`].
+fn lift_points(coords: impl IntoIterator<Item = [f64; 3]>) -> Vec<Value> {
+    coords
+        .into_iter()
+        .map(|[x, y, z]| point3(x, y, z))
+        .collect()
+}
+
+/// [`triplex_node_coords`], lifted by [`lift_points`].
 fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
-    triplex_node_coords(bottom_z).into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
+    lift_points(triplex_node_coords(bottom_z))
 }
 
 /// Lower index rows (`[[j, k], …]` for struts and cables, `[[i, j, k], …]` for
@@ -168,6 +184,40 @@ pub const TRIPLEX_SEEDS: [f64; 3] = [-1.0, 1.0, 1.0];
 /// solve takes.
 pub fn triplex_seeds() -> Value {
     Value::List(TRIPLEX_SEEDS.into_iter().map(Value::Real).collect())
+}
+
+/// The tent membrane, as raw coordinates: a diamond boundary of four anchored
+/// corners ([`TENT_ANCHORS`]) in the `z = 0` plane plus one free interior node
+/// seeded OFF that plane, fanned by [`TENT_TRIS`].
+///
+/// The minimal surface spanning a planar boundary is flat, so a correct
+/// cotangent assembly pulls the free node back into the boundary plane
+/// (`z → 0`) and leaves a ~0 equilibrium residual, while a wrong assembly drives
+/// it off-plane or blows up the residual. The off-plane seed is what makes that
+/// a non-circular signal. The in-plane `(x, y)` equilibrium is NOT unique — the
+/// flat surface has constant area for any interior position, so the
+/// cotangent-Laplacian vanishes across the whole interior — hence consumers
+/// assert planarity + residual, never an `(x, y)`.
+pub const TENT_NODE_COORDS: [[f64; 3]; 5] = [
+    [0.1, 0.1, 0.3],  // 0: free interior — deliberately off-solution
+    [1.0, 0.0, 0.0],  // 1: anchor
+    [0.0, 1.0, 0.0],  // 2: anchor
+    [-1.0, 0.0, 0.0], // 3: anchor
+    [0.0, -1.0, 0.0], // 4: anchor
+];
+
+/// The tent's triangle fan: one triangle per anchored corner, each hinged on
+/// the free node 0. Consumers size their per-triangle σ arrays from
+/// `TENT_TRIS.len()`.
+pub const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+
+/// The tent's anchored node set: the four corners, leaving node 0 free.
+pub const TENT_ANCHORS: [i64; 4] = [1, 2, 3, 4];
+
+/// The tent as a `Tensegrity` structure: a pure membrane, so struts and cables
+/// are present but empty, and `surfaces` carries [`TENT_TRIS`].
+pub fn tent_membrane_tensegrity() -> Value {
+    tensegrity(lift_points(TENT_NODE_COORDS), &[], &[], Some(&TENT_TRIS))
 }
 
 #[cfg(test)]
@@ -631,5 +681,116 @@ mod tests {
             TRIPLEX_CAPS[1], TRIPLEX_ANCHORS,
             "cap 1 must be the bottom ring, which is exactly the anchored set"
         );
+    }
+
+    /// The tent lowered to a `Tensegrity` Value: a PURE membrane — `surfaces`
+    /// PRESENT and carrying [`TENT_TRIS`], struts and cables present but empty —
+    /// over nodes bit-identical to [`TENT_NODE_COORDS`].
+    #[test]
+    fn tent_membrane_tensegrity_lowers_the_golden() {
+        let v = tent_membrane_tensegrity();
+        let Value::StructureInstance(d) = &v else {
+            panic!("expected a Value::StructureInstance, got {v:?}");
+        };
+        assert_eq!(
+            d.type_name, "Tensegrity",
+            "the type name every consumer matches on"
+        );
+
+        let fields = &d.fields;
+        assert_eq!(
+            fields.len(),
+            4,
+            "nodes/struts/cables/surfaces — `surfaces` must be PRESENT"
+        );
+        assert_eq!(
+            fields.get("surfaces"),
+            Some(&index_lists(&TENT_TRIS)),
+            "`surfaces` carries the tent fan, lowered to nested Int lists"
+        );
+        for key in ["struts", "cables"] {
+            assert_eq!(
+                fields.get(key),
+                Some(&Value::List(vec![])),
+                "a pure membrane: `{key}` must be present and empty"
+            );
+        }
+
+        let nodes = match fields.get("nodes") {
+            Some(Value::List(nodes)) => nodes,
+            other => panic!("`nodes` must be a Value::List, got {other:?}"),
+        };
+        assert_eq!(
+            nodes.len(),
+            TENT_NODE_COORDS.len(),
+            "one node per TENT_NODE_COORDS row"
+        );
+        for (i, (node, want)) in nodes.iter().zip(TENT_NODE_COORDS).enumerate() {
+            let lifted = point_components(node);
+            for (axis, c) in ["x", "y", "z"].iter().zip(0..3) {
+                assert_bits_eq(lifted[c], want[c], &format!("tent node {i} {axis}"));
+            }
+        }
+    }
+
+    /// The relations the tent's consumers lean on, read off the consts rather than
+    /// restated: a planar anchored boundary, ONE free node seeded off that plane
+    /// (without which "the free node returns to z = 0" is vacuous), and a closed
+    /// fan of triangles around that free node.
+    #[test]
+    fn tent_golden_is_a_planar_anchored_fan_around_one_off_plane_free_node() {
+        let node_count = TENT_NODE_COORDS.len() as i64;
+        for a in TENT_ANCHORS {
+            assert!(
+                (0..node_count).contains(&a),
+                "anchor {a} must index a tent node"
+            );
+        }
+        let mut distinct = TENT_ANCHORS.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            TENT_ANCHORS.len(),
+            "anchors must be distinct"
+        );
+
+        let free_nodes: Vec<i64> = (0..node_count)
+            .filter(|n| !TENT_ANCHORS.contains(n))
+            .collect();
+        let [free] = free_nodes[..] else {
+            panic!("the tent must have exactly one free node, got {free_nodes:?}");
+        };
+
+        for a in TENT_ANCHORS {
+            assert_bits_eq(
+                TENT_NODE_COORDS[a as usize][2],
+                0.0,
+                &format!("anchor {a} must lie in the z = 0 boundary plane"),
+            );
+        }
+        let free_z = TENT_NODE_COORDS[free as usize][2];
+        assert!(
+            free_z.abs() > 1e-6,
+            "free node {free} must be seeded OFF the boundary plane, got z = {free_z}"
+        );
+
+        for tri in TENT_TRIS {
+            let corners: Vec<i64> = tri.into_iter().filter(|&n| n != free).collect();
+            let [c0, c1] = corners[..] else {
+                panic!("triangle {tri:?} must be hinged on free node {free} exactly once");
+            };
+            assert!(
+                TENT_ANCHORS.contains(&c0) && TENT_ANCHORS.contains(&c1) && c0 != c1,
+                "triangle {tri:?} must span two distinct anchors besides the free node"
+            );
+        }
+        for a in TENT_ANCHORS {
+            let uses = TENT_TRIS.iter().filter(|tri| tri.contains(&a)).count();
+            assert_eq!(
+                uses, 2,
+                "anchor {a} must sit in exactly two triangles for the fan to close"
+            );
+        }
     }
 }

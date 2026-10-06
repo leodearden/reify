@@ -63,5 +63,7 @@ mod same_module_structure_ctor_compile;
 mod shadowing_warning_tests;
 #[path = "harness_structure_declarations/struct_ctor_field_conformance_tests.rs"]
 mod struct_ctor_field_conformance_tests;
+#[path = "harness_structure_declarations/struct_ctor_spec_table_tests.rs"]
+mod struct_ctor_spec_table_tests;
 #[path = "harness_structure_declarations/structure_in_purpose_ambient_tests.rs"]
 mod structure_in_purpose_ambient_tests;

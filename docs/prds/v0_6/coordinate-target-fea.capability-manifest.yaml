@@ -1,0 +1,1194 @@
+prd: docs/prds/v0_6/coordinate-target-fea.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8251
+  title: 'coordinate-target-fea α: extract the shared node-patch resolver and one
+    strict Point3 reader; 7189''s diagnostics coded'
+  capabilities:
+  - name: point-support-kind-upstream
+    binding: 'producer-upstream — hard add_dependency edge to #7189. PointSupport(at,
+      radius), compute_targets/point_support.rs (extract_point_supports, point_support_nodes,
+      check_on_body, validate, labelled_error, read_radius) and elastic_static.rs::CantileverBcs
+      exist only on task/7189 676fde4c10 (seat C 1a-1g). D13 (Leo): 7189 merges as
+      accepted. F1: 7189 conflicts with main in elastic_static.rs (synthetic_cantilever_mesh
+      vs #7448''s cantilever_tip_load / realized_cantilever_bc_node_sets; the Dirichlet
+      block) and must rebase on its own side.'
+    verdict: PASS
+  - name: node-patch-resolver
+    binding: 'producer-self (C2) — new compute_targets/node_patch.rs: PointTarget,
+      OffBody, patch_nodes, check_on_body, max_tet_edge_length and nearest_node (7189
+      moved the last two from modal_ops into point_support.rs; modal_ops::end_face_neutral_axis_node
+      imports nearest_node — seat C surprise 4). Rule unchanged from 7189''s point_support_nodes:
+      radius patch, boundary inclusive, else the single nearest node (seat C 1b).
+      A test module cannot spell a pub(crate) fn definition, so rule 4 is safe.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub\(crate\) fn patch_nodes\b
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/node_patch.rs
+  - name: off-body-check-kind-agnostic
+    binding: producer-self (C2) — check_on_body returns OffBody{at, nearest_distance,
+      h_max}; the caller formats it into a diagnostic naming its own kind (7189's
+      check_on_body returns a formatted String, seat C 1b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn check_on_body\b
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/node_patch.rs
+  - name: shared-strict-point3-reader
+    binding: 'producer-self (C2, F5; critic item 10) — ONE Point3<Length> reader:
+      elastic_static.rs::extract_point3_si becomes the strict crate-visible triple
+      parser (exact 3 finite LENGTH components; the trailing-components test retired;
+      its AABB callers keep working), and the kind / list-index / field / span LABELLING
+      wrapper lives in node_patch.rs, which point_support.rs and modal_ops::point_support_bcs
+      call; point_support.rs::read_length_point3 is deleted. Bound to the POSITIVE
+      call site (overlay rule 3): the wrapper in node_patch.rs calls extract_point3_si.
+      Accepted gap: a rename false-FAILs; the field-error e2e rows are the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: extract_point3_si\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/node_patch.rs
+  - name: reader-keeps-7189-strictness
+    binding: 'producer-self (F5, seat C surprise 3) — extract_point3_si today accepts
+      >=3 components (pinned by extract_point3_si_ignores_trailing_components_past_three),
+      checks no finiteness and errors with FeaValueShapeError naming no field, index
+      or span; read_length_point3 is exact-3, finite, and names ''PointSupport #i:
+      at''. α adopts 7189''s rules and retires the trailing-components test.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: α''s unit tests plus point_support_e2e rows for a 2-component
+        at, a non-finite coordinate and a negative radius, each naming ''PointSupport
+        #i: <field>''.'
+  - name: radius-nonnegative-at-rust-boundary
+    binding: 'G6 branch 4, producer-self (Q-D) — the .ri ''constraint radius >= 0mm''
+      is inert (F2: a template constraint is evaluated against the template default
+      only; radius -1mm/-10mm -> OK, exit 0; seat A rows 4/5c/5d; #5765 pending, #6609
+      deferred). 7189''s point_support.rs::read_radius already rejects radius < 0;
+      α moves it into the shared reader and drops the .ri constraint from PointSupport.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed by α's negative-radius e2e row (coded FeaPointTargetFieldInvalid);
+        removing the inert .ri line is not grep-checkable without matching documentation
+        prose.
+  - name: code-FeaPointOffBody
+    binding: 'producer-self (C9; Q-A: under recommendation (1) #7189 mints it during
+      its rebase — present either way) — Error; message names the kind, at, the distance
+      and h_max. Replaces the code-less point_support.rs::labelled_error site through
+      which off-body Errors flow (F1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointOffBody\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaPointSupportsUnderRestrained
+    binding: producer-self (C9; Q-A) — Error naming the free-mode count; 7189's collinear
+      rule via unrestrained_rigid_body_modes (ε generalises it to the rank rule over
+      directions).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointSupportsUnderRestrained\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaPointTargetRequiresTet
+    binding: producer-self (C9; Q-A) — Error; route_with_point_supports with ShellForce::On
+      (7189's code-less Diagnostic::error site, F1; seat C surprise 6). Message cites
+      M2 as the shell-path owner.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointTargetRequiresTet\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaPointTargetShellFallback
+    binding: producer-self (C9; Q-A) — Warning; shell-classified body with ShellForce::Auto
+      falls back to tets (7189's code-less Diagnostic::warning site in route_with_point_supports,
+      F1).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointTargetShellFallback\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaAdaptiveDeclinedPointTarget
+    binding: producer-self (C9; Q-A) — Warning; 7189's any-radius adaptive decline
+      (seat C 1d, code-less, F1). θ narrows it to radius = 0 (C7).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaAdaptiveDeclinedPointTarget\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaPointTargetFieldInvalid
+    binding: producer-self (seat D HIT row 4, PRD correction list; NOT in PRD C9 as
+      authored) — Error for the reader's missing / non-finite / negative / wrong-arity
+      field, naming kind, list index and field. A dimension mismatch keeps the existing
+      DimensionedArgRejected (substrate, present on main). Under Q-A (1) this is the
+      one code α mints itself.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointTargetFieldInvalid\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: pdiag-no-codeless-sites
+    binding: 'G7 diagnostics-carry-codes (F1) — measured with the real reify-audit
+      --pattern PDIAG on a git archive of task/7189: elastic_static.rs 12->15, modal_ops.rs
+      25->26, point_support.rs 1 (new file, no row); reify-audit rc=3 on 7189 vs 0
+      on main. After α: crates/reify-audit/pdiag-baseline.txt rows 12 and 25 not exceeded;
+      point_support.rs and node_patch.rs have no row and no code-less site.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the mechanical gate already exists: tests/infra/test_reify_audit_pdiag.sh
+        (scenario a) runs in every merge gate; a grep cannot count coded vs code-less
+        sites.'
+  - name: off-body-and-collinear-rejection
+    binding: 'G6 branch 4 — 7189''s point_support_off_body.ri / point_support_collinear.ri
+      exit 1 through reify eval (F3: reify check never dispatches FEA trampolines).
+      D3: on main the off-body fixture already exits 1 for the WRONG reason (PointSupport
+      unresolved: does not conform to trait ''Support''), so the signal asserts MESSAGE
+      text (kind, at, distance, h_max / the free-mode count) and the e2e asserts the
+      code by identity — never exit 1 alone (F3: the CLI prints messages, not code
+      names).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: point_support_e2e.rs code-identity assertions; an exit
+        code alone cannot express its own failure here (D3 finding).'
+  - name: every-c9-error-fails-the-solve
+    binding: G7 result-fields-populated-or-owned ([CODES]) — every C9 Error returns
+      ComputeOutcome::Failed (cell Undef, UndefCause::SolveFailed), never an Error
+      inside Completed beside a plausible number.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: outcome-shape property, asserted by the e2e reading the cell as Undef.
+- label: ζ
+  task_id: 8252
+  title: 'coordinate-target-fea ζ: plate-capable synthetic grid; grid counts in ModalCacheKey'
+  capabilities:
+  - name: resolver-and-codes-upstream
+    binding: 'producer-upstream — intra-batch hard edge to α (node_patch resolver,
+      strict reader, C9 codes), transitively #7189.'
+    verdict: PASS
+  - name: one-synthetic-grid-function
+    binding: producer-self (C8, D10) — synthetic_grid(dims, has_coordinate_kind, element_order)
+      -> (nx, ny, nz) replaces elastic_static.rs::synthetic_grid_counts (ny = 1, NX_MAX
+      clamp) and modal_ops::build_beam_mesh's private rule (ny = 1, no clamp) — seat
+      C 9, F6. Absent on main.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn synthetic_grid\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: modal-builder-uses-the-one-function
+    binding: 'producer-self, wired-on-main — modal_ops::build_beam_mesh calls synthetic_grid
+      (no second copy). Accepted gap: a definition placed in modal_ops.rs also satisfies
+      the pattern; BT10/BT12 are the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: synthetic_grid\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+  - name: grid-counts-in-modal-cache-key
+    binding: producer-self (BT12) over substrate — reify-stdlib/src/modal/trampoline.rs::ModalCacheKey
+      = {length, width, height, youngs_modulus, poisson_ratio, density, element_order},
+      compared by f64::to_bits in matches; no grid and no BC field (seat C 10, F6).
+      ζ adds the grid counts and keeps the key BC-independent.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the field name is ζ's choice; the warm-engine BT12 test (toggle a PointSupport
+        at the same dims -> cache miss, frequencies equal the cold solve) is the observation.
+  - name: code-FeaSyntheticGridCapped
+    binding: producer-self (C8, C9) — Warning when the DOF ceiling binds and the in-plane
+      size is coarsened equally in x and y.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaSyntheticGridCapped\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: dof-ceiling-decided-here
+    binding: 'a binding the leaf must MAKE (PRD §10: ''Decide in ζ from a measured
+      solve time'') — the constant and its measurement are recorded in the task result
+      and a code comment citing C8.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: a ruling recorded by ζ; no measurement exists before it runs.
+  - name: coded-info-with-structured-payload
+    binding: substrate + producer-self (seat D HIT row 7, heuristic 12; critic blocker
+      3) — the per-support resolved coordinate and patch node count travel as a CODED
+      Info with a structured payload, never parsed from text. reify-solver-elastic/src/diagnostics.rs::FeaDiagnosticDetail
+      exists on main with exactly Unconstrained / ProblemElements / UnresolvedSelector,
+      so ζ MINTS the variant PointTargetResolved { kind, index, node_count, centroid
+      } there and surfaces it through reify-compute-contract::ComputeOutcome structured_detail;
+      the e2e reads it on the FIRST (cold) eval (precedent crates/reify-eval/tests/harness_fea_solver_e2e/fea_structured_detail_e2e.rs
+      — the warm in-process cache re-emits no structured_detail). θ reuses the variant.
+      PDIAG does not anchor on Diagnostic::info (pdiag.rs), so coding the Info is
+      a choice this batch makes.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointTargetResolved\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/diagnostics.rs
+  - name: legacy-scenes-byte-identical
+    binding: BT10, D10 — every scene without a coordinate kind keeps exactly today's
+      counts per caller, including synthetic_grid_counts' NX_MAX clamp and the uniform
+      lane's (2nx, 2ny, 2nz) doubling (F6).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'byte-identity over the existing fixture set is a behavioural comparison,
+        not a grep (brief: never grep BT10).'
+  - name: p2-modal-substrate
+    binding: substrate — modal_ops::assemble_modal_km has a ModalMesh::P2 arm (consistent_element_mass_tet_p2);
+      modal honours element order, static does not (seat C 8).
+    verdict: PASS
+  - name: plate-modal-first-frequency-finite
+    binding: 'G6 exact by construction — three non-collinear, fully restrained (3-direction)
+      interior patches restrain all six rigid-body modes, so the first frequency is
+      finite; each resolved node lies within one element of the requested y (patch_nodes:
+      radius ball else nearest node, on-body bounded by h_max) once ny > 1. Supports
+      at mid-thickness (PRD §10).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed by the e2e's finite-frequency read and the per-support structured
+        payload.
+  - name: deterministic-above-parallel-threshold
+    binding: 'substrate — reify-solver-elastic/src/solver.rs::PARALLEL_DOF_THRESHOLD
+      (10_000): above it results are bit-stable only for a fixed thread count; gated
+      fixtures set deterministic: true (C8).'
+    verdict: PASS
+  - name: rebaseline-7189-fixtures
+    binding: producer-self — 7189's fixtures (crates/reify-eval-fea-tests/tests/fixtures/point_support_beam_static.ri,
+      point_support_beam_modes.ri, point_support_off_body.ri, point_support_collinear.ri)
+      change grid because they carry a coordinate kind; old -> new values recorded
+      in the test with the reason.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value re-baseline inside the test diff.
+- label: β
+  task_id: 8253
+  title: 'coordinate-target-fea β: SolveBoundary, nodal-volume patch weights, PointForce
+    (vertical slice)'
+  capabilities:
+  - name: grid-resolver-codes-upstream
+    binding: 'producer-upstream — intra-batch hard edge to ζ (-> α -> #7189): coordinate-aware
+      grid, node_patch resolver, strict reader, FeaPointOffBody / FeaPointTargetFieldInvalid
+      / shell-policy codes.'
+    verdict: PASS
+  - name: pointforce-shape-grammar
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/coordinate_target_fea_kinds.ri
+      (mirror ProbePointForce{at : Point3<Length>; force : Vector3<Force>; radius
+      : Length = 0mm}): tree-sitter parse --quiet 0 ERROR nodes (2026-09-30 generated
+      grammar); reify check exit 0, reify eval exit 0 with every field populated (e5f638d029;
+      seat A 1a/1c/1d; re-run on the committed copy 2026-10-06, same result). No novel
+      syntax.'
+    verdict: PASS
+  - name: pointforce-stdlib-kind
+    binding: 'producer-self (C1, Q-D) — structure def PointForce : Load in fea_multi_case.ri,
+      without the inert ''constraint radius >= 0mm''. Today PointForce(...) is ''warning:
+      unresolved function'', exit 0, value undef (seat A 3a/3b), so ''resolves'' is
+      asserted by the absence of that warning, not by exit 0 (D3).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure def PointForce\b
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+  - name: solve-boundary
+    binding: 'producer-self (C4, D8, F5) — 7189''s CantileverBcs{node_override, apply_face_clamp,
+      point_supports} renamed and extended with point_forces, point_masses (filled
+      by γ) and gravity; no second struct. #5313 builds its selector variant on it
+      (D8; #5313 gains an edge on β). Pattern admits an enum in case #5313''s variant
+      reshapes it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (struct|enum) SolveBoundary\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: patch-weights-nodal-volume-share
+    binding: producer-self (C3, D9) — weights sum to 1; a node's volume is the sum
+      of element volume / node count (4 or 10). Does NOT call boundary/patch_load.rs::apply_patch_resultant
+      (#7448's tip-traction rule, substrate on main since e5f638d029 — seat C 17).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn patch_weights\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+      - crates/reify-solver-elastic/src
+  - name: legacy-pointload-path-and-noloads
+    binding: 'substrate + producer-self — I5: extract_loads -> cantilever_tip_load
+      -> apply_patch_resultant stays for PointLoad (seat C 2, 17). I6: FeaNoLoads
+      is emitted only when no_tip_force && pressures.is_empty() && no_body_force (seat
+      C 18), which a PointForce-only list would trip spuriously (seat C surprise 8);
+      β feeds point forces into the predicate. #5802''s TractionLoad/BodyForce targets
+      stay intact (F7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: I5 is a preserved path — a grep on a legitimately refactorable fn would
+        false-FAIL γ/ε; I6 is observed by a PointForce-only fixture emitting no FeaNoLoads.
+  - name: buckling-refuses-pointforce
+    binding: 'G6 branch 4, producer-self (BT11, C6, F7, Q-C) — today buckling.rs::extract_total_load
+      silently turns a Vector3<Force> list into its 1.0 N sentinel (seat C 4) and
+      FeaLoadKindUnsupported has no production emitter (seat C 5: definition + compute_persist.rs
+      test stub only). β adds a type_name guard in #5802''s shape returning ComputeOutcome::Failed;
+      the message cites the honour owner #7081 (Q-C (3)). #5802 may land the arm first
+      — either producer delivers the refusal in this file. Pattern covers both DiagnosticCode::FeaLoadKindUnsupported
+      and an FeaFailure::LoadKindUnsupported mapping.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LoadKindUnsupported
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+  - name: bt11-observed-through-eval
+    binding: F3 / seat D HIT row 11 — reify check never dispatches FEA trampolines,
+      so BT11's non-zero exit is asserted through reify eval, together with the buckling
+      cell Undef; the CLI prints "unsupported FEA load kind 'PointForce'", never the
+      code name (D3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural e2e: code by identity, cell Undef, eval exit non-zero.'
+  - name: bt1-solve-boundary-rejections
+    binding: 'G6 branch 4, producer-self (BT1, F4) — today a dimensionless force (vec(0,
+      0, -1) stored where Vector3<Force> is required), a negative radius (-0.001 m
+      stored) and an omitted required field are ACCEPTED by compile, check and eval,
+      exit 0 (seat A 5a-5d; #7874 deferred). β''s solve boundary rejects each naming
+      the list index and field (FeaPointTargetFieldInvalid from α / the existing DimensionedArgRejected),
+      observable only through a fixture that calls solve_elastic_static.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural e2e rows; the codes are minted upstream (α) or already exist.
+  - name: bt1-real-radius-compile-rejection
+    binding: rejection observed (BT1, D3 refinement (c)) — a Real radius at a Length
+      param is a compile-time ArgTypeMismatch, exit 1, before any solve (F4). Substrate;
+      β pins it with a fixture.
+    verdict: PASS
+  - name: bt14-pose-at-at-rejected
+    binding: 'rejection observed (BT14; P4 D3 unchanged) — tests/prd-gate/fixtures/coordinate_target_fea_pose_rejected.ri
+      (ProbePointForce(at: frame3(...))): reify check and reify eval both exit 1 with
+      "error: argument ''at'' has type ''Frame3'' but param ''at'' requires type ''Point3<Scalar[m]>''"
+      (e5f638d029; seat A 2a-2c; re-run on the committed copy 2026-10-06). tree-sitter
+      0 ERROR nodes: the rejection is type-level, not a parse failure.'
+    verdict: PASS
+  - name: bt3-position-ratio-floor
+    binding: 'floor: 10% > ~5.5% error budget (PRD §7 G6 note) — shear deformation
+      < 0.5% at L/h = 20; the resultant''s offset from at is <= radius + h ~ 13 mm
+      on a = 500 mm, moving a^2(3L-a) by < 5% (~4.7% at a = L/2, ~2% at a = L); P1-tet
+      stiffening (the overlay''s bending-lock hazard) is a near-common factor because
+      the element shape is uniform along the beam. Expected ratio f(L/2)/f(L) = 0.3125.
+      Holds only for radius > 0 (the ~13 mm figure assumes radius ~10 mm; a radius
+      = 0 force at a2 = L adds a mesh-dependent point-singular indentation at the
+      tip that this budget omits) and for the dims-overload box (a tube section needs
+      the body overload, ι).'
+    verdict: PASS
+  - name: bt13-weights-converge-harness
+    binding: 'exact by construction, producer-self (BT13, D3 refinement (c)) — sum
+      w_i = 1 and resultant = force * sum w_i to rounding; the weighted centroid lies
+      within radius + h of at (patch nodes within radius, else the nearest node within
+      h_max). A Rust harness test in crates/reify-eval-fea-tests: ElasticResult exposes
+      no centroid or resultant field.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Rust harness assertion over two successive refinements.
+  - name: multi-case-pass-through
+    binding: substrate — multi_case.rs::solve_multi_case_trampoline calls the static
+      trampoline per case and propagates diagnostics (seat D advisory); β adds one
+      assertion that a PointForce in a LoadCase equals the direct solve_elastic_static
+      result.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: equality assertion in β's e2e.
+  - name: shell-route-policy
+    binding: 'producer-upstream (α over 7189) — route_with_point_supports: ShellForce::On
+      -> FeaPointTargetRequiresTet, Auto -> tets with FeaPointTargetShellFallback
+      (seat C surprise 6); β routes PointForce the same way.'
+    verdict: PASS
+  - name: radius-zero-singularity-info
+    binding: producer-self (C9 note) — a single-shot solve with a radius = 0 kind
+      emits a coded Info that max_von_mises includes a mesh-dependent point singularity.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Info code name is β's choice; asserted by identity in the e2e.
+  - name: pdrop-declaration-handoff
+    binding: 'G7 declared-param-reaches-kernel (seat D HIT row 2) — PDROP is chartered,
+      not shipped (#7079 mechanism, #7085 gate, pending): β writes the PointForce{at,
+      force, radius} rows in-diff if #7079 is on main (honored on elastic_static and
+      multi_case; refused on buckling/buckling_multi_case), else appends them to #7085
+      (buckling rows to #7081). ω verifies the hand-off.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record / declaration hand-off, verified by ω.
+  - name: user-facing-example
+    binding: producer-self — examples/fea/gantry_head_force.ri, compile-swept by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
+      (recursive walk); no assertion. examples/fea/ does not exist on main.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - examples/fea/gantry_head_force.ri
+- label: γ
+  task_id: 8255
+  title: 'coordinate-target-fea γ: PointMass — static weight under Gravity and modal
+    nodal inertia'
+  capabilities:
+  - name: solve-boundary-and-weights-upstream
+    binding: producer-upstream — intra-batch hard edge to β (SolveBoundary with point_masses
+      and gravity declared, patch_weights, the buckling refusal arm).
+    verdict: PASS
+  - name: pdrop-mechanism-upstream
+    binding: 'producer-upstream — hard add_dependency edge to #7079 (Q-C (1)): PDROP''s
+      declaration mechanism and W_PARAM_NOT_APPLICABLE. Neither it nor ParamNotApplicable
+      is on main (seat D HIT row 1: only comments in compute_persist.rs). Replaces
+      the PRD''s FeaPointMassNotApplicable, withdrawn as a lock-step duplicate (PRD
+      correction list).'
+    verdict: PASS
+  - name: pointmass-and-options-grammar
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/coordinate_target_fea_kinds.ri:
+      ProbePointMass{at, mass : Mass, radius} and ProbeOptions{point_masses : List<ProbePointMass>
+      = []} — tree-sitter 0 ERROR nodes; check/eval exit 0; eval prints o_default
+      point_masses: [] and o with one populated mass (seat A 1d). ''constraint mass
+      >= 0kg'' on the required param is INDETERMINATE on every check (seat A 4), so
+      mass >= 0 moves to the Rust boundary (C1).'
+    verdict: PASS
+  - name: pointmass-stdlib-kind
+    binding: 'producer-self (C1) — structure def PointMass : Load (fea_multi_case.ri
+      per the draft; the pattern spans the stdlib dir in case module visibility puts
+      it beside ModalOptions). Today ''warning: unresolved function: PointMass'',
+      exit 0, value undef (seat A 3a/3b); D3: ''resolves'' must be asserted by the
+      absence of that warning.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: structure def PointMass\b
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib
+  - name: modal-options-point-masses-param
+    binding: 'producer-self (C1) — ModalOptions gains point_masses : List<PointMass>
+      = []; ModalOptions has 8 params today and is shared with mechanism_modal_analysis
+      (seat C 6).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: param point_masses\b
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis.ri
+  - name: point-masses-reach-the-modal-kernel
+    binding: 'producer-self, wired-on-main (anti-orphan) — the modal trampoline /
+      eigensolve reads ModalOptions.point_masses; no point_mass/nodal_mass hook exists
+      in modal_ops.rs today (seat C 6). Accepted gap: a test-only mention in these
+      files false-PASSes; BT4 is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: point_masses
+      expect: present
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      - crates/reify-stdlib/src/modal
+  - name: cached-mass-matrix-not-mutated
+    binding: substrate hazard (F6, seat C 13) — eigensolve_modal projects a SHARED
+      &assembly.m_full from the cached ModalAssembly; γ clones, augments, then project_free.
+      mass_matrix_norm, participation_mass and mass-normalisation read the augmented
+      matrix; solve_modal_core_participation_mass_satisfies_completeness is extended
+      to sum m_eff = body mass + sum point masses (INV-PD-2).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed by the extended completeness test and BT12-style warm/cold
+        equality.
+  - name: code-FeaPointMassNoGravity
+    binding: 'producer-self (C6, C9) — Warning: a PointMass in a static List<Load>
+      with no Gravity contributes nothing.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaPointMassNoGravity\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: static-weight-needs-no-density
+    binding: 'producer-self (C6, D3) — weight m * g * w_i with g = SolveBoundary.gravity;
+      no material density. The heterogeneous-material gravity Warning in elastic_static.rs
+      is corrected and coded while touched (uncoded today; seat D advisory). I6: a
+      point mass under gravity counts as a load.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: BT2 and a heterogeneous-material fixture.'
+  - name: bt2-force-mass-agree-floor
+    binding: 'floor: CG tolerance >> ~1e-15 relative RHS rounding — same patch, same
+      weights, so the two load vectors differ only by rounding and the displacement
+      fields agree to the CG tolerance (the e2e compares at a relative tolerance no
+      tighter than the solver''s CG rtol). Condition: the PointForce literal uses
+      Gravity()''s own g (9.81 vs 9.80665 is 3.5e-4, far above any CG tolerance).'
+    verdict: PASS
+  - name: bt4-ordering-exact-in-direction
+    binding: 'G6 exact in direction (PRD §7) — positive added mass cannot raise any
+      eigenvalue (Rayleigh quotient); a mass nearer the first-mode antinode lowers
+      f1 more; mass on restrained support DOFs gives <=. Conditions the fixture must
+      meet: (a) TWO fully restrained supports PER END across the width (7189''s point_support_beam_modes.ri
+      shape; critic blocker 1) with patch radius >= one element edge — a single point
+      per end on the axis leaves the rotation about that axis free, making f1 a rigid
+      mode (C5: modal adds no guard), so the fixture asserts no rigid-body Warning;
+      (b) the head mass is large enough that each strict gap exceeds the eigensolver
+      tolerance.'
+    verdict: PASS
+  - name: mechanism-modal-not-applicable
+    binding: 'producer-self via #7079 (Q-C (1)/(2)) — ModalOptions.point_masses declared
+      not_applicable on modal::mechanism_modal (the lumped model carries mass per
+      body via point_mass / mass_properties) and W_PARAM_NOT_APPLICABLE emitted; #7084
+      amended from 8 to 9 params.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: declaration + upstream mechanism; observed by γ's mechanism_modal e2e
+        row.
+  - name: buckling-refuses-pointmass
+    binding: 'producer-upstream β + producer-self — γ extends β''s buckling type_name
+      arm to PointMass (FeaLoadKindUnsupported, owner #7081 per Q-C (3)); solve_load_cases
+      passes it through.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: extends an arm whose presence is β's check; observed by γ's e2e.
+  - name: bt14-pose-at-pointmass-rejected
+    binding: 'rejection observed — tests/prd-gate/fixtures/coordinate_target_fea_pose_rejected.ri:
+      the typed at : Point3<Length> rejects frame3(...) with exit 1 (the mechanism
+      is the param type, independent of the kind). D3: on main a pose at PointMass.at
+      is accepted with only an unresolved-function warning because PointMass is undefined
+      — γ''s kind closes that.'
+    verdict: PASS
+  - name: bt1-negative-or-missing-mass
+    binding: 'G6 branch 4, producer-self — the .ri mass constraint is INDETERMINATE
+      (seat A 4) and an omitted ctor param compiles silently (F4, #7874); the Rust
+      boundary rejects a negative, non-finite or missing mass / at naming list index
+      and field.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural e2e rows (codes from α).
+  - name: pdrop-handoff-and-modal-overloads
+    binding: 'G7 declared-param-reaches-kernel (seat D HIT rows 2, 13; Q-C (2), (4))
+      — PointMass rows and ModalOptions.point_masses rows written in-diff or appended
+      to #7085 / #7084; #7142 (body-arg modal) and #7166 (graph overload) must honour
+      or declare point_masses (amended at decompose). ω verifies.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record / declaration hand-off, verified by ω.
+  - name: distinct-from-point-mass-builtin
+    binding: substrate — reify-compiler/src/units.rs::DYNAMICS_CONSTRUCTOR_NAMES =
+      [mass_properties, point_mass] (seat C surprise 10); different case-spelling,
+      no hard clash; no rename (PRD §10); κ's chunk says so.
+    verdict: PASS
+- label: ε
+  task_id: 8256
+  title: 'coordinate-target-fea ε: directional restraint — per-node basis change,
+    static and modal'
+  capabilities:
+  - name: solve-boundary-upstream
+    binding: 'producer-upstream — intra-batch hard edge to β (SolveBoundary, patch
+      resolution), transitively α''s FeaPointSupportsUnderRestrained. ε does NOT depend
+      on γ: whichever of the two lands first introduces the modal matrix clone (see
+      modal-path-rotates).'
+    verdict: PASS
+  - name: restrain-shape-grammar
+    binding: 'grammar-fixture — tests/prd-gate/fixtures/coordinate_target_fea_kinds.ri:
+      restrain : List<Vector3<Dimensionless>> with the three-axis list default and
+      an oblique populated list [vec3(0.0, 0.0, 1.0), vec3(0.6, 0.8, 0.0)] — 0 ERROR
+      nodes; eval prints both populated (seat A 1a/1d).'
+    verdict: PASS
+  - name: restrain-stdlib-param
+    binding: 'producer-self (C1, D4) — PointSupport gains param restrain (Dimensionless:
+      only the direction is consumed, matching PointLoad.direction / Gravity.direction
+      / ModalOptions.reference_direction).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: param restrain\b
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+  - name: no-directional-constraint-today
+    binding: substrate absence (seat C 12a-12d) — boundary/dirichlet.rs::apply_dirichlet_row_elimination
+      takes global DOFs only; mpc.rs::apply_mpc_row_elimination has no production
+      caller and leaves K unsymmetric (and panics unless every redistribution target
+      is stored); buckling_kernel.rs::build_expansion_map is private and forbids chained
+      pivots (the PRD's 'sharing a node' wording is imprecise, conclusion holds);
+      RollerSupport is a Value::Map nothing reads. ε is the producer.
+    verdict: PASS
+  - name: full-nodal-blocks-keep-sparsity
+    binding: substrate — assembly/global.rs::emit_element_triplets emits every 3x3
+      nodal entry; modal_ops::assemble_global_matrix uses the same path (seat C 11),
+      so a per-node basis change preserves the sparsity pattern (D5).
+    verdict: PASS
+  - name: nodal-basis-module
+    binding: producer-self (C5, D5) — pub struct NodalBasis{node, q} (orthonormal,
+      restrained directions first) with rotate_system / rotate_matrix / rotate_vector
+      / back_rotate in a new reify-solver-elastic module.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct NodalBasis\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/boundary/nodal_basis.rs
+  - name: displacements-leave-global
+    binding: producer-self (C5) — back_rotate before stress recovery, nodal recovery,
+      the returned displacement and the stored warm state.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn back_rotate\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/boundary/nodal_basis.rs
+  - name: modal-path-rotates
+    binding: 'producer-self, wired-on-main — rotate_matrix on K and on M (γ''s augmented
+      copy when γ has landed) before project_free (modal_ops.rs), mode shapes back-rotated,
+      participation vector Q^T d. Cache hazard (F6, seat C 13): ModalAssembly.k_full
+      and .m_full are SHARED cached references that eigensolve_modal projects with
+      project_free(&assembly.k_full / &assembly.m_full); rotate_matrix takes &mut,
+      so ε rotates clones, never the cached assembly. Absent today.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rotate_matrix\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+  - name: static-path-rotates
+    binding: producer-self, wired-on-main — rotate_system after assembly, first k
+      local DOFs fixed per patch node, warm start forward-rotated. Where the call
+      lands (solve_cantilever_fea or the solver crate) is ε's choice.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: call site not fixed by the contract; BT5's static half (zero along restrained
+        directions) cannot pass unwired.
+  - name: code-FeaRestraintDirectionsInvalid
+    binding: producer-self (C5, C9) — Error for a zero vector, a count outside 1-3,
+      or rank below the count, naming the support's list index.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaRestraintDirectionsInvalid\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-ModalRigidBodyMode
+    binding: 'producer-self (seat D HIT row 8; PRD correction list) — codes the pre-existing
+      message-prefix Warning at modal_ops.rs::rigid_body_mode_diagnostic (code: None
+      today); modal_ops baseline falls.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ModalRigidBodyMode\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-ModalNoModesComputed
+    binding: producer-self (seat D HIT row 8) — codes the pre-existing SingularKOverCeiling
+      Error in modal_ops.rs::eigensolve_modal (K_free singular above DENSE_FALLBACK_MAX_DIM
+      = 1024).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ModalNoModesComputed\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: rank-guard-over-directions
+    binding: 'producer-self over upstream (F5) — 7189''s validate(..., require_rigid_restraint)
+      / unrestrained_rigid_body_modes assume global-axis DOFs; ε generalises to 6
+      - rank(constraint rows in rigid-mode space), skipped under a face clamp. BT6
+      is exact: three z-only points leave x, y translation and z rotation free ->
+      3.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: integer rank, asserted by the BT6 e2e (FeaPointSupportsUnderRestrained
+        naming 3).
+  - name: bt5-exact-by-construction
+    binding: G6 exact by construction (PRD §7) — the restrained local DOF is eliminated,
+      so n . u = 0 to rounding (the e2e compares against a machine-ε multiple of max|u|,
+      not a literal 0, since back_rotate adds rounding) and the free direction is
+      non-zero. A rank-6 cone / vee / flat mount needs the vee's in-plane direction
+      non-parallel to the cone-to-vee line; a wrong fixture is self-diagnosing (the
+      static guard fires).
+    verdict: PASS
+  - name: bt6-modal-outcome-pinned
+    binding: substrate — modal_ops.rs::DENSE_FALLBACK_MAX_DIM = 1024; C5 adds no modal
+      guard. The flat-only fixture states its free-DOF count against 1024 so ONE outcome
+      (ModalRigidBodyMode Warning below, ModalNoModesComputed Error above) is asserted,
+      never a disjunction (seat D HIT row 8).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: fixture-level pin asserted by code identity.
+  - name: pdrop-handoff-and-buckling-owner
+    binding: 'G7 declared-param-reaches-kernel (Q-C (3), (4)) — PointSupport.restrain
+      honored on elastic_static, multi_case, free_vibration; supports dropped on buckling
+      with owner #7081 (amended to cover PointSupport with restrain in its modal build_dirichlet_bcs
+      port); #7142 / #7166 amended. ω verifies.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record / declaration hand-off, verified by ω.
+- label: θ
+  task_id: 8257
+  title: 'coordinate-target-fea θ: adaptive refinement with coordinate kinds (both
+    lanes carry SolveBoundary)'
+  capabilities:
+  - name: directional-restraint-upstream
+    binding: 'producer-upstream — intra-batch hard edge to ε (-> β -> ζ -> α): SolveBoundary,
+      the rank guard, patch weights, FeaAdaptiveDeclinedPointTarget (minted by α).'
+    verdict: PASS
+  - name: adaptive-problems-carry-solve-boundary
+    binding: producer-self (C4 I2, D6) over substrate — elastic_static.rs::CantileverAdaptiveProblem
+      and RealizedAdaptiveProblem rebuild the mesh and re-derive BCs by a hard-coded
+      root-face rule, which is why 7189 declines adaptivity at any radius (seat C
+      1d). Both hold the SolveBoundary and re-resolve on each solve_and_estimate.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: field placement is θ's; BT7 (loop runs, no decline) and BT9 (localized
+        lane does not fall back) are the observation.
+  - name: off-body-against-seed-h-max
+    binding: producer-self (I4) — the off-body check uses the SEED mesh's h_max for
+      the whole run; the rank guard runs on each solved mesh.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: a point that snaps on the seed stays on-body through refinement
+        (θ''s test).'
+  - name: decline-narrowed-to-radius-zero
+    binding: 'producer-self over α''s code (C7, D7) — FeaAdaptiveDeclinedPointTarget
+      fires only when some coordinate kind has radius = 0 and adaptive: true; single-shot
+      result with the non-adaptive defaults; the message cites M3''s task id as the
+      lifting owner.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT8 asserts the code by identity; BT7 asserts its absence for radius
+        > 0 by identity — no absent grep on the message (a test literal would wedge
+        it, overlay rule 4).
+  - name: bt7-node-counts-non-decreasing
+    binding: G6 exact by construction — on the dims overload the uniform lane doubles
+      (nx, ny, nz) each iteration (F6), so every grid nests the previous one's nodes
+      and a radius ball's node set can only grow. Holds for nested refinement only;
+      the localized remesh lane does not nest, so BT7 is asserted on the dims overload.
+    verdict: PASS
+  - name: coded-per-iteration-info
+    binding: producer-self (C7, seat D HIT row 7) — a coded Info per iteration with
+      the per-patch node count as a structured payload, reusing ζ's FeaDiagnosticDetail::PointTargetResolved
+      variant; the e2e reads it on the first (cold) eval; spelling decided here (PRD
+      §10).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: code / payload names are θ's; the e2e asserts code + payload, never
+        the text.
+  - name: bt9-gmsh-harness-reachable
+    binding: substrate — engine_admin.rs::Engine::ensure_gmsh_kernel exists with test-only
+      callers (seat C 16), enough for a Rust harness test on the body overload in
+      crates/reify-eval/tests (gmsh is a DEV-dep of reify-eval only — critic blocker
+      4; precedent solve_elastic_static_body_e2e.rs); the CLI path is ι's.
+    verdict: PASS
+  - name: weights-recomputed-per-mesh
+    binding: producer-upstream β (patch_weights) — recomputed on each mesh; BT13's
+      property holds per iteration; BT9 asserts sum w_i = 1 on an unstructured mesh.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: BT9 harness.'
+- label: ι
+  task_id: 8258
+  title: 'coordinate-target-fea ι: coordinate kinds on a realized body from the CLI'
+  capabilities:
+  - name: adaptive-boundary-upstream
+    binding: producer-upstream — intra-batch hard edge to θ (localized lane carries
+      SolveBoundary; BT9 harness).
+    verdict: PASS
+  - name: body-overload-from-cli-upstream
+    binding: 'producer-upstream — hard add_dependency edges to #6660 and #7417 (D12,
+      not re-filed): Engine::ensure_gmsh_kernel has no non-test caller; reify-cli
+      and gui/src-tauri do not reference reify-kernel-gmsh (seat C 16).'
+    verdict: PASS
+  - name: populated-result-not-hollow
+    binding: 'field-population (sentinel Value::Undef; D3 refinement (c); INV-PD-2)
+      — the fixture reduces max(result.displacement) and max(von_mises(result.stress))
+      and the signal asserts FINITE, NON-ZERO values; exit 0 alone is satisfied by
+      a hollow Converged ElasticResult (#6660) or by the current ComputeOutcome::Failed
+      { diagnostics: vec![] } body-path guard (seat C 16 nuance).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value read through reify eval; a grep cannot see population.
+  - name: off-body-on-realized-mesh
+    binding: G6 branch 4 — FeaPointOffBody (α) fires against the realized mesh's h_max;
+      the off-body variant exits non-zero through reify eval printing the off-body
+      message (F3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: message on stderr, code by identity in the e2e.'
+  - name: realized-fixture
+    binding: 'producer-self (critic blocker 4) — a body the synthetic box cannot express
+      (L-bracket or plate with a hole), as a reify-cli SUBPROCESS e2e fixture (crates/reify-cli/tests/fixtures
+      + harness_cli, the shape #6660 plans), because gmsh is reachable from the binary
+      but is not a dependency of reify-eval-fea-tests.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-cli/tests/fixtures/bracket_point_targets.ri
+- label: κ
+  task_id: 8259
+  title: 'coordinate-target-fea κ: docs — FEA chunk, best-practice exemplar, design
+    index, stdlib reference'
+  capabilities:
+  - name: kinds-delivered-upstream
+    binding: producer-upstream — intra-batch hard edges to γ, ε, ζ, θ; the documented
+      kinds, params and diagnostics exist before the docs are written.
+    verdict: PASS
+  - name: fea-chunk-file
+    binding: 'producer-self, CO-OWNED with #7088 (critic blocker 2; Q-C (5)) — crates/reify-mcp/src/tools/chunks/
+      holds 17 chunks today and none for FEA; the registry is hand-maintained (language_chunks.rs:
+      include_str! const, TOPICS row, get_chunk arm, the hard-coded assert_eq! on
+      available_topics().len(); plus reference_tools_tests.rs ALL_TOPICS). Whichever
+      of κ and #7088 lands first creates fea.md with those five edits, the other extends.
+      A crates/**/*.md is include_str!''d (lands as code).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fea.md
+  - name: fea-chunk-documents-point-masses
+    binding: producer-self — the chunk documents the three kinds and ModalOptions.point_masses
+      (a name the other chunks do not carry).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: point_masses
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fea.md
+  - name: chunk-fence-gate
+    binding: substrate — PDOCCOVER (crates/reify-audit/src/pdoccover.rs; tests/infra/test_reify_audit_pdoccover.sh)
+      checks the chunk's fenced signatures against the stdlib.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the existing PDOCCOVER gate is the mechanical check.
+  - name: best-practice-exemplar
+    binding: producer-self — examples/best_practices/fea_point_targets.ri, compile-gated
+      by examples_smoke.rs (examples/ walked recursively; SKIP_SET forbidden for best_practices).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - examples/best_practices/fea_point_targets.ri
+  - name: index-row
+    binding: producer-self — a row in examples/best_practices/INDEX.md (table rows
+      name the .ri file).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_point_targets\.ri
+      expect: present
+      paths:
+      - examples/best_practices/INDEX.md
+  - name: reify-design-index-line
+    binding: producer-self — one index line in .claude/skills/reify-design/SKILL.md
+      pointing at the corpus (not an inline playbook).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_point_targets|chunks/fea\.md
+      expect: present
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+  - name: stdlib-reference-subsection
+    binding: producer-self — docs/reify-stdlib-reference.md §15 std.fea exists today
+      (stress-invariant result only) and names none of the three kinds; κ adds the
+      subsection.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointForce
+      expect: present
+      paths:
+      - docs/reify-stdlib-reference.md
+  - name: notes-file-generalised
+    binding: 'producer-upstream #7189 — docs/notes/fea-point-supports.md exists only
+      on task/7189; κ generalises it to the three kinds.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: prose generalisation; the file's existence is 7189's.
+  - name: p4-d2-pointer
+    binding: producer-self — docs/prds/naming-convergence/P4-region-ref-fea-selector-unification.md
+      D2 says coordinate loads are 'a named future follow-up' and names no PRD; κ
+      points it at this PRD.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: coordinate-target-fea
+      expect: present
+      paths:
+      - docs/prds/naming-convergence/P4-region-ref-fea-selector-unification.md
+  - name: goal-phrased-discoverability
+    binding: Docs-truth gate arm 4 — an author searching 'support a plate at three
+      points' or 'mass at a position on a beam' lands on the chunk or index line.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a search judgement, not a grep.
+- label: λ
+  task_id: 8260
+  title: 'coordinate-target-fea λ: printer_v01 adopts the coordinate kinds (GantryFea
+    head at head_x; EZBed modal on three supports)'
+  capabilities:
+  - name: kinds-upstream
+    binding: producer-upstream — intra-batch hard edges to γ (PointMass, point_masses)
+      and ε (restrain).
+    verdict: PASS
+  - name: no-edges-on-7383-or-5312
+    binding: 'Q-E (Leo, 2026-10-06): NO add_dependency edge on #7383 (reify check
+      prj/printer_v01/printer.ri exits 139 in an OCCT boolean fuse on e5f638d029 —
+      seat B — unrelated to λ; the full-file check is noted, not gated, until it lands)
+      and NO edge on #5312 (it rewrites GantryFea''s String targets in the same block,
+      but the shared prj/printer_v01/printer.ri file lock already serialises the two
+      in either order, and #5312 is a long-stall risk gated on in-progress #8102).
+      No edge on #8102 either (§3 sub-instance probe: #8102 mints geometry/selector
+      values; a point3 from an overridden param is already correct).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a dependency-graph ruling, verified by the absence of the edges at filing.
+  - name: committed-extracted-fixtures
+    binding: producer-self (critic item 11) — the durable signal is two COMMITTED
+      extracted fixtures with an e2e (each carries only the structure and its deps,
+      asserting the new cells finite and non-Undef), not a one-off probe of the full
+      file.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval-fea-tests/tests/fixtures/gantry_fea_head.ri
+      - crates/reify-eval-fea-tests/tests/fixtures/ezbed_modes.ri
+  - name: instance-scope-reuse-holds
+    binding: substrate (F8) — an @optimized FEA cell in a sub is reused from the template
+      only when every input equals the template's (unfold/optimized_instance_reuse.rs);
+      Printer instantiates GantryFea() with no args and EZBed with default-equal values,
+      and λ adds no per-sub override reaching an FEA input. The per-instance dispatch
+      gap itself is reported out of the PRD (Q-B (ii)).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: design rule enforced in λ's diff; idler_seat_e2e.rs::check_printer stays
+        green.
+  - name: eval-not-check-for-fea-cells
+    binding: F3 (seat D advisory) — reify check never dispatches FEA trampolines,
+      so check clean is compile-level only; the FEA observation is reify eval of each
+      extracted structure printing finite new cells.
+    verdict: PASS
+  - name: printer-compile-and-kernel-free-eval-gates
+    binding: substrate — printer.ri is compile-gated by pin_cell_id_namespace_tests.rs
+      and orientation_constructor_typing_tests.rs and evaluated kernel-free by crates/reify-eval/tests/harness_sweep/idler_seat_e2e.rs::check_printer
+      (corrects PRD §1).
+    verdict: PASS
+  - name: gantry-head-mass-adopted
+    binding: producer-self — GantryFea gains head_x (the identifier already occurs
+      elsewhere in printer.ri, so the check binds the kind) and a PointMass in the
+      static loads and ModalOptions.point_masses. No PointMass( occurs in printer.ri
+      today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointMass\(
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: ezbed-three-support-modal
+    binding: producer-self — EZBed modal cell on three PointSupports with a cone /
+      vee / flat restrain pattern (three z-only points are under-restrained in modal,
+      C5). No PointSupport( in printer.ri today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointSupport\(
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+- label: η
+  task_id: 8265
+  title: 'coordinate-target-fea η (dependency-gated milestone): static plate on three
+    points — probe first, stop if CG does not converge'
+  note: 'Dependency-gated milestone leaf: asserts nothing numerically until its probe
+    runs (OPEN rows); D3 UNENUMERATED.'
+  capabilities:
+  - name: static-p2-upstream
+    binding: 'producer-upstream — hard add_dependency edge to #7075: ElasticOptions.element_order
+      is never read by elastic_static.rs; static meshes are P1 only (seat C 8).'
+    verdict: PASS
+  - name: plate-kinds-upstream
+    binding: producer-upstream — intra-batch hard edges to ζ (quadratic grid rule),
+      ε (cone / vee / flat restrain), γ (weight under Gravity).
+    verdict: PASS
+  - name: probe-first-asserts-nothing-numeric
+    binding: 'η asserts nothing numerically until its probe has run (PRD §7 G6 note,
+      D11). §3: the 800x500x12 box on linear tets does not converge in 2000 Jacobi-CG
+      iterations on main; static P2 and thin-plate CG convergence are unverifiable
+      today. D3 run: UNENUMERATED (no probe vector), expected.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: the probe's measurements (grid, DOFs, CG iterations, residual history,
+        wall time) are the deliverable of η's first step.
+  - name: sag-tolerance-from-probe
+    binding: 'G6 (overlay floors: P1/P2 bending, Dirichlet k~0.67-0.70 for pointwise
+      pins) — the strip-vs-overhanging-beam tolerance is stated from the probe''s
+      measured discretisation error, never guessed.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: bound set by η from measurement.
+  - name: no-converge-branch-releases-m2
+    binding: seat D HIT row 14 resolved — if CG does not converge η escalates with
+      the residual history; Leo's resolution (done with the recorded outcome, or cancelled)
+      is what releases M2.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an escalation / human ruling, not code.
+- label: M1
+  task_id: 8261
+  title: '[MILESTONE] coordinate-target-fea M1: prestressed modal analysis — β landed
+    → escalate for a human /prd session'
+  capabilities:
+  - name: human-ruling-gate
+    binding: deterministic pure gate (born-at-L2 milestone_gate on dispatch; gate
+      = β landed) — the deliverable is Leo's Expand / Re-defer / Decline ruling on
+      prestressed modal analysis (C6, §8; Q-N).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a human ruling; nothing to grep.
+  - name: geometric-stiffness-substrate
+    binding: substrate for the future session, not bound to code here — reify-solver-elastic/src/prestress_stability.rs::assemble_geometric_stiffness
+      (pub(crate)) exists; the PRD's 'geometric_stiffness' names it loosely.
+    verdict: PASS
+- label: M2
+  task_id: 8262
+  title: '[MILESTONE] coordinate-target-fea M2: coordinate kinds on the MITC3 shell
+    path — η resolved → escalate for a human /prd session'
+  capabilities:
+  - name: human-ruling-gate
+    binding: 'deterministic pure gate (gate = η resolved: done-with-outcome or cancelled)
+      — the deliverable is Leo''s Expand / Re-defer / Decline ruling on coordinate
+      kinds on the MITC3 shell path (§8).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a human ruling; nothing to grep.
+  - name: shell-owner-cite-completable
+    binding: 'G7 nothing-vacuous-and-unowned (seat D advisory) — FeaPointTargetRequiresTet
+      / FeaPointTargetShellFallback messages cite M2; ownership passes to the implementing
+      leaf when the /prd session completes (precedent #7177 -> #7457).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record ownership, not code.
+- label: M3
+  task_id: 8263
+  title: '[MILESTONE] coordinate-target-fea M3: lift D7''s radius-0 adaptivity refusal
+    under a far-field QoI — θ + DWR landed → escalate for a human /prd session'
+  capabilities:
+  - name: dwr-estimator-upstream
+    binding: 'producer-upstream — hard add_dependency edges to #7453, #7454, #7455,
+      #7456, #7457, #7458 (goal-oriented-error-estimation.md) and intra-batch θ.'
+    verdict: PASS
+  - name: human-ruling-gate
+    binding: deterministic pure gate — Leo's Expand / Re-defer / Decline ruling on
+      lifting D7's radius = 0 refusal under a far-field QoI; FeaAdaptiveDeclinedPointTarget's
+      message cites this milestone.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a human ruling; nothing to grep.
+- label: ω
+  task_id: 8264
+  title: 'coordinate-target-fea ω: PRD close — terminal stamp, AS-AUTHORED freeze
+    header, matching manifest header'
+  capabilities:
+  - name: freeze-header-precedent
+    binding: substrate — docs/prds/v0_6/data-carrying-enums.md and docs/prds/kernel-seam-contracts.md
+      headers (as landed in edd9703fae); the PPRDSTATUS detector (crates/reify-audit/src/pprdstatus.rs)
+      reads the terminal Status token.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed header is the deliverable; a status-token grep would fire
+        on this manifest's own prose.
+  - name: pdrop-handoffs-verified
+    binding: 'G7 (seat D HIT row 2, advisory ω row) — before stamping, ω verifies
+      the PDROP declaration rows (in-diff or appended to #7085 / #7084 / #7081) and
+      the #7142 / #7166 / #7081 amendments, and names any gap in the header rather
+      than stamping over it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record inspection, not code.

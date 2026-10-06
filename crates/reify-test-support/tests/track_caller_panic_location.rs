@@ -122,6 +122,34 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
     );
 }
 
+#[test]
+fn lookup_ambiguity_panic_reports_caller_not_helpers_rs() {
+    let template = reify_test_support::TopologyTemplateBuilder::new("Bracket")
+        .auto_param("First", "x", reify_core::Type::dimensionless_scalar())
+        .auto_param("Second", "x", reify_core::Type::dimensionless_scalar())
+        .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr_in_template(&template, "x");
+    });
+
+    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
+    // file identity is the contract; the exact line is diagnostic-only.
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "the lookup's ambiguity panic must attribute to the CALLER (this \
+         file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains("ambiguous cell name"),
+        "panic message changed; got: {}",
+        site.message,
+    );
+}
+
 #[cfg(feature = "eval-helpers")]
 #[test]
 fn cell_value_panic_reports_caller_not_helpers_rs() {

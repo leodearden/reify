@@ -24,7 +24,7 @@
 //! # Relationship to the workspace-canonical fixtures
 //!
 //! Since task #6387 the workspace's canonical box/cube fixtures live in
-//! `reify_test_support::fixtures` — `prismatic_box_mesh`,
+//! `reify_test_support::mesh_fixtures` — `prismatic_box_mesh`,
 //! `unit_cube_mesh`, `unwelded_prismatic_box_mesh` and the curved
 //! `tessellated_cylinder_mesh`, together with the derived
 //! `F32_STORAGE_REL` tolerance. Prefer those in any test that CAN reach
@@ -53,7 +53,7 @@ use crate::kernel::manifold_from_reify_mesh;
 /// # Judgment call (task #6387)
 ///
 /// This function keeps its own box literal and deliberately does NOT
-/// delegate to `reify_test_support::fixtures::unit_cube_mesh`, even
+/// delegate to `reify_test_support::mesh_fixtures::unit_cube_mesh`, even
 /// though that is now the workspace-canonical copy. Three reasons, in
 /// order of how binding they are:
 ///

@@ -166,6 +166,11 @@ _nextest_absent_mirror_source() {
 #       caller's handler is thereby upgraded to EXIT/INT/TERM/HUP even if it only
 #       asked for EXIT — see the fallback in _nextest_absent_arm_traps).
 #
+#       A signal the sourcing shell inherited as SIG_IGN (nohup → HUP) cannot be
+#       trapped, so the dispatcher is silently not armed for it. Harmless: that
+#       signal cannot terminate the shell either, and EXIT still runs on a normal
+#       exit. See tests/infra/README.md, "Signals ignored on entry".
+#
 #       ONE CONSEQUENCE, and it is not new: because the dispatcher does not
 #       re-raise, a handler replayed on INT/TERM/HUP may run AGAIN at EXIT if the
 #       shell resumes and then exits normally. A COMPOSED HANDLER MUST THEREFORE

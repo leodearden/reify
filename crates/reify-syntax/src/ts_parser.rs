@@ -849,21 +849,15 @@ impl<'a> Lowering<'a> {
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
     /// the structure that uses `pp.Pulley()` still binds.
     ///
-    /// **This file's OWN imports only — no external seeding hook (task ν).**
-    /// `known_enums` can be pre-seeded from outside the file
-    /// (`parse_with_prelude_enums` → `with_prelude_enums`); these two maps
-    /// cannot — by construction they see only the `import_declaration` nodes of
-    /// the file being parsed. So a qualifier that `std.prelude` supplies, or
-    /// that a facade re-exports via `pub import` (PRD D-4, §10 Q1), is absent
-    /// from this file's import set and `lower_namespaced_call`'s gate rejects
-    /// it at PARSE time.
-    ///
-    /// The enum precedent is deliberately not mirrored yet: a
-    /// `with_prelude_bindings` seed has no caller until the N3 prelude work
-    /// (PRD §8 ι) ships `std.prelude`, so it would be untested surface today.
-    /// Widening the gate to prelude-supplied and re-exported bindings is
-    /// ν's (task 5505), alongside the qualified lookup that gives such a
-    /// binding a module to resolve against.
+    /// **Per-file by construction: nothing outside the file seeds these
+    /// bindings.** `known_enums` takes an external seed
+    /// (`parse_with_prelude_enums`) because enum names are pub DEFS, which cross
+    /// module boundaries; a namespace binding never does. The qualifier is the
+    /// importing file's OWN binding name (docs/prds/v0_6/stdlib-namespace.md
+    /// NS-Q1 / D-7), and a `pub import` re-exports its target's pub defs, not
+    /// its binding (docs/prds/v0_6/resolution-unification.md D-7). So `import
+    /// std.prelude` binds `prelude` alone: what the facade re-exports is reached
+    /// as `prelude.Name` or unqualified, never as `units.Name`.
     fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
         let Some(import) = self.lower_import(node) else {
             return;
@@ -966,7 +960,18 @@ impl<'a> Lowering<'a> {
         let alias_node = node.child_by_field_name("alias");
 
         let (path, kind) = if let Some(items) = items_node {
-            // Destructured: `import a.b.{C, D}`
+            // Destructured: `import a.b.{C, D}` — canonical per the
+            // `import_path` production in `docs/reify-language-spec.md` §15
+            // "Grammar Summary".
+            //
+            // The `items`/`alias` FIELDS are what select the ImportKind here,
+            // which is why the brace list stays a field on `import_declaration`
+            // rather than folding into `import_path` as the spec EBNF nests it.
+            //
+            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
+            // directly instead of routing through `check_and_lower!`, so an
+            // ERROR nested in the subtree never becomes a diagnostic. Latent,
+            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();
@@ -1253,8 +1258,11 @@ impl<'a> Lowering<'a> {
     /// `sub_structure_name_whitespace_is_normalised` in
     /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
     ///
-    /// **Pre-ν loudness is per-POSITION, not blanket** — measured on this
-    /// branch with `target/debug/reify check`:
+    /// **Pre-ν loudness is per-POSITION, not blanket** — pinned end-to-end
+    /// (the exit status a user observes AND the diagnostic text) by the
+    /// `reify check` regression cases in
+    /// `crates/reify-cli/tests/harness_cli/cli_check_qualified_ref_positions.rs`
+    /// (task #6499). Read those before softening either diagnostic here:
     ///
     /// - TYPE position is loud on its own: `param p : obj.width` answers
     ///   `error: unresolved type: obj.width` (exit 1).
@@ -5357,7 +5365,9 @@ impl<'a> Lowering<'a> {
     /// still is, now with a message instead of an anonymous ERROR node. The
     /// rejection lowers nothing, so no fabricated multi-segment name reaches the
     /// AST — and `lower_binding_value` propagates the `None`, so the enclosing
-    /// member is dropped rather than half-built.
+    /// member is dropped rather than half-built. All three rejections in this
+    /// function name the GR-040 no-method-call rule, whatever the receiver shape
+    /// (pinned by `tests/harness_syntax_lowering/method_call_rejection_lowering_tests.rs`).
     ///
     /// **Import-binding guard (D-7).** `namespaced_call` captures EVERY
     /// two-segment `ident.ident(args)`, not only the import-qualified ones.
@@ -5388,6 +5398,8 @@ impl<'a> Lowering<'a> {
     /// parse time, and their disambiguation is deferred to ν exactly as
     /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
     fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        const NO_METHOD_CALL_SYNTAX: &str = "Reify has no method-call syntax";
+
         let callee = node.child_by_field_name("callee")?;
         let object = callee.child_by_field_name("object")?;
         let member = callee.child_by_field_name("member")?;
@@ -5404,9 +5416,11 @@ impl<'a> Lowering<'a> {
                     "unsupported qualified call `{callee_text}(...)`: the callee of a \
                      qualified call must be a simple `binding.Name(...)` through an \
                      `import ... as binding` alias, but `{object_text}` is not a binding \
-                     name{scope_note}",
+                     name{scope_note}. {NO_METHOD_CALL_SYNTAX}, so `{member_text}` cannot \
+                     be called on it",
                     callee_text = self.node_text(callee),
                     object_text = self.node_text(object),
+                    member_text = self.node_text(member),
                 ),
                 self.span(callee),
             );
@@ -5425,7 +5439,7 @@ impl<'a> Lowering<'a> {
                     "qualifier `{qualifier}` in `{callee_text}(...)` is not a module \
                      namespace: an import in this file binds `{qualifier}`, but as \
                      {binding_note}, and the qualifier of a qualified call must be a \
-                     module namespace. Reify has no method-call syntax, so this cannot \
+                     module namespace. {NO_METHOD_CALL_SYNTAX}, so this cannot \
                      be a call on the entity `{qualifier}`{capitalisation_hint}",
                     binding_note = Self::entity_binding_note(kind),
                     capitalisation_hint = Self::entity_binding_capitalisation_hint(kind),
@@ -5435,8 +5449,8 @@ impl<'a> Lowering<'a> {
                     "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
                      of a qualified call must be a module namespace bound by an import, but \
                      no import in this file binds `{qualifier}` — declare one as \
-                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
-                     no method-call syntax, so this cannot be a call on a value named \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. \
+                     {NO_METHOD_CALL_SYNTAX}, so this cannot be a call on a value named \
                      `{qualifier}`"
                 ),
             };

@@ -5,7 +5,7 @@
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
-use crate::fence_gate::repo_root;
+use crate::chunk_io::repo_root;
 
 /// The executable transcription of stdlib.md's "Key Geometry Operations" and
 /// "Curves" sections, repo-relative.
@@ -17,10 +17,18 @@ pub(crate) const STDLIB_GEOMETRY_OPS_FIXTURE: &str =
 pub(crate) const UNFENCED_SIGNATURES_FIXTURE: &str =
     "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
 
+/// The mirror of every other signature in the gated chunks'
+/// ```` ```reify-schematic ```` listings, repo-relative.
+pub(crate) const SCHEMATIC_LISTING_SIGNATURES_FIXTURE: &str =
+    "crates/reify-compiler/tests/fixtures/schematic_listing_signatures_smoke.ri";
+
 /// Every fixture whose calls can exercise a documented form, each repo-relative
 /// — the currency every violation names a fixture in.
-pub(crate) const SIGNATURE_FIXTURES: &[&str] =
-    &[UNFENCED_SIGNATURES_FIXTURE, STDLIB_GEOMETRY_OPS_FIXTURE];
+pub(crate) const SIGNATURE_FIXTURES: &[&str] = &[
+    UNFENCED_SIGNATURES_FIXTURE,
+    STDLIB_GEOMETRY_OPS_FIXTURE,
+    SCHEMATIC_LISTING_SIGNATURES_FIXTURE,
+];
 
 /// The source of the repo-relative fixture at `path`.
 pub(crate) fn read_fixture(path: &str) -> String {
@@ -32,6 +40,10 @@ pub(crate) fn read_fixture(path: &str) -> String {
 /// one per line: any `Severity::Error`, a call to a name nothing resolves, and a
 /// builtin called at an argument shape it does not recognise. Any other warning
 /// never counts.
+///
+/// Deliberately STRICTER than the doc-sample sense of clean
+/// (`module_compile::compile_module`, Errors only): a fixture's calls stand for
+/// signatures, so the two warnings that mean "no such signature" count too.
 pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
     compile_source_with_stdlib(source)
         .diagnostics

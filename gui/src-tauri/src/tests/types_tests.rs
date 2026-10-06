@@ -160,6 +160,7 @@ fn constraint_data_status_wire_tokens_are_lowercase() {
                 id: ConstraintNodeId::new("T", 0),
                 label: None,
                 satisfaction,
+                indeterminate_reason: None,
             }],
             diagnostics: vec![],
             resolved_params: std::collections::HashMap::new(),

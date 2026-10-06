@@ -26,7 +26,7 @@
 // the override dispatch path.
 //
 // This file is auto-discovered by
-//   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate) and
+//   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (clean-compile gate) and
 //   crates/reify-eval/tests/trait_assoc_fn_cylinder.rs (eval-value gate:
 //   Assembly.wetted ≈ pi * 8mm * 40mm;
 //   HalfAssembly.wetted ≈ pi * 8mm * 40mm / 2).

@@ -36,6 +36,20 @@
 
 **Special values:** `undef` (not yet decided), `auto` (solver decides), `some(v)`/`none` (Option)
 
+## Module Declaration
+
+A file may open with `module <path>`. Comments may precede it; it must come before any `import`.
+
+`<path>` is not a free-form label. It must equal the path derived from the file's location:
+- For the file you run (`reify eval`, `reify check`, `reify build`, the GUI), that is its stem: `bracket.ri` declares `module bracket`.
+- For an imported file it is the dotted import path. `import parts.bolt` resolves, relative to the directory of the file you run, to `bolt.ri` in a `parts` directory (or to `mod.ri` in a `bolt` directory inside `parts`), and that file declares `module parts.bolt`.
+
+A mismatch is the error `E_MODULE_PATH_MISMATCH`, which names the declaration to write; on the file you run, every CLI subcommand exits 1. Omitting the line is only a `W_MODULE_DECL_MISSING` warning.
+
+Copying or renaming a `.ri` file changes its expected path. For a scratch probe, either update the `module` line or keep the basename and vary the directory.
+
+Name files with `snake_case` identifiers. A stem like `my-part.ri` or `v1.2.ri` can never be matched, because `module my-part` and `module v1.2` are parse errors.
+
 ## Declaration Shape
 
 All entity declarations follow:

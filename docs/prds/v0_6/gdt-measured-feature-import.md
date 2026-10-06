@@ -4,6 +4,11 @@
 `gdt-geometric-zones-and-containment.md` §6. Do **not** decompose; a deferred bookmark task
 points here. Promote to a full B+H PRD only when the activation gate below is met.
 
+> **Seam re-pointed (step-assembly-import ο #8067).** The "first B-rep import seam" cited under
+> #4289 below is now C3 (foreign-module provider) of `docs/prds/v0_6/step-assembly-import.md`,
+> which rewrites #4289; a scanned/CMM-fitted B-rep would ride that provider, not a single-shape
+> `step_import`.
+
 ## Goal (when activated)
 
 Feed Reify's geometric conformance check (`Conforms(tolerance: t, actual: <measured>)`) with

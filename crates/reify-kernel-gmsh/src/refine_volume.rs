@@ -110,17 +110,11 @@ use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 /// than incrementally refining the current volume mesh (see module-level doc
 /// for the cost/accuracy rationale).
 ///
-/// # Threading: pinned to one worker, `options` unread
+/// # Threading
 ///
-/// Every field of `options` is ignored. The background field forces
-/// `General.NumThreads = 1` — gmsh 4.15.2 deadlocks in `mesh_generate` when it
-/// evaluates a `PostView` size field from several mesher threads (the measured
-/// table lives at the option write). `threads` is contractually a pure
-/// performance hint excluded from the cache key, so narrowing it cannot change
-/// the mesh; and one worker makes this path bit-deterministic with respect to
-/// threading whether or not `deterministic` is set, which is why that flag is
-/// not read either. The parameter stays in the signature because the stub arm
-/// and every sibling entry point take it.
+/// `options.threads` and `options.deterministic` are honoured through
+/// [`MeshingOptions::resolved_num_threads`], as in the sibling entry points.
+/// `options.mesh_size` is deliberately unread; see the `Mesh.MeshSizeMax` write.
 ///
 /// # Errors
 ///
@@ -138,13 +132,13 @@ use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 ///    point a `PostView` mesh-size field at it as the background mesh.
 /// 2. Turn `Mesh.MeshSizeFromPoints` OFF, so that background field is the only
 ///    thing deciding element size.
-/// 3. Pin `General.NumThreads` to 1 instead of deriving it from `options` —
-///    gmsh deadlocks evaluating the field from several mesher threads.
+/// 3. Pre-build the view's lookup octree before meshing (see
+///    `BackgroundFieldGuard::install`).
 #[cfg(has_gmsh)]
 pub fn refine_volume_with_size_field(
     surface: &Mesh,
     size_field: &BackgroundSizeField,
-    _options: &MeshingOptions,
+    options: &MeshingOptions,
     order: ElementOrderTag,
 ) -> Result<VolumeMesh, GeometryError> {
     use crate::{ffi, init};
@@ -192,46 +186,15 @@ pub fn refine_volume_with_size_field(
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
-    // --- Gmsh options (mirrors mesh_to_volume, except the thread pin) ---
+    // --- Gmsh options (mirrors mesh_to_volume) ---
     //
-    // SINGLE-THREADED, UNCONDITIONALLY. Unlike `mesh_to_volume`, this path
-    // ignores `options.threads` and `options.deterministic` and always asks
-    // gmsh for one worker, because gmsh 4.15.2 DEADLOCKS in
-    // `gmshModelMeshGenerate(3)` when a `PostView` background size field —
-    // installed unconditionally a few lines below — is evaluated from several
-    // mesher threads at once. Measured on `tests/mesher_poison_recovery.rs`,
-    // varying nothing but this value:
-    //
-    // | General.NumThreads | outcome                   |
-    // |--------------------|---------------------------|
-    // | 1                  | 5 passed, 17.58 s         |
-    // | 2                  | 5 passed, 24.37 s         |
-    // | 8                  | hang, SIGKILLed at 100 s  |
-    // | 32 (= nproc)       | hang, SIGKILLed at 100 s  |
-    //
-    // A block, not slowness: at 8+ the process sat with CPU time frozen at
-    // 00:00:40 across 2.5 minutes of wall clock, RSS flat at 33 MB, and all 35
-    // threads in `futex_do_wait`. It reproduces for a valid unit cube, so it is
-    // not confined to the mesher's failure path. `Mesh.MaxNumThreads3D = 1`
-    // with `General.NumThreads = 32` still hangs, so pinning the 3D stage alone
-    // is not a fix; only the global worker count is.
-    //
-    // The threshold above is that binary's, and it does NOT generalise — which
-    // is why this is a pin at 1 and not a cap at some measured ceiling. The
-    // same sweep on a CLEAN process (`tests/refine_volume_tests.rs`, unit cube,
-    // uniform field) passes at 8 and hangs at 16, 24 and 32. `mesher_poison_
-    // recovery` hangs at 8 because its gmsh has already been through this
-    // module's `finalize`/`initialize` recovery cycle. Two fixtures, two
-    // different safe ceilings; 1 is the only value measured safe on both.
-    //
-    // This costs the caller nothing it was promised. `MeshingOptions::threads`
-    // is documented as a pure performance hint that is deliberately excluded
-    // from the cache key because it cannot change the answer, and `None` hands
-    // the decision to the kernel outright — so clamping it narrows performance,
-    // never output. The bonus: with one worker this path is bit-deterministic
-    // with respect to threading whatever `options.deterministic` says, which is
-    // why that flag is no longer read here at all.
-    ffi::option_set_number("General.NumThreads", 1.0)?;
+    // Threads resolve exactly as in the sibling entry points. Safe only because
+    // `BackgroundFieldGuard::install` pre-builds the view's lookup octree; see
+    // docs/notes/gmsh-postview-background-field-threading.md.
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
     let element_order_value: f64 = match order {
         ElementOrderTag::P1 => 1.0,
         ElementOrderTag::P2 => 2.0,
@@ -493,9 +456,15 @@ struct BackgroundFieldGuard<'g> {
     _lock: std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>,
 }
 
+/// Where `BackgroundFieldGuard::install` probes its view. Any point works: a
+/// hit and a miss both build the view's lookup octree.
+#[cfg(has_gmsh)]
+const OCTREE_BUILD_PROBE_POINT: [f64; 3] = [0.0; 3];
+
 #[cfg(has_gmsh)]
 impl<'g> BackgroundFieldGuard<'g> {
-    /// Install `size_field` as the model's background mesh size field.
+    /// Install `size_field` as the model's background mesh size field, ready
+    /// to be evaluated concurrently by the multi-threaded mesher.
     ///
     /// Armed before the first fallible step that needs cleaning up, so the
     /// `?`s below unwind through this type's own `Drop` rather than through a
@@ -520,6 +489,12 @@ impl<'g> BackgroundFieldGuard<'g> {
             size_field.element_count(),
             size_field.list_data(),
         )?;
+        // gmsh 4.15.2 builds a view's lookup octree lazily behind an orphaned
+        // OpenMP barrier that deadlocks when first reached from inside the
+        // multi-threaded mesher. Probing once here, on the calling thread,
+        // builds it outside any parallel region; see
+        // docs/notes/gmsh-postview-background-field-threading.md.
+        ffi::view_probe(view_tag, OCTREE_BUILD_PROBE_POINT)?;
 
         let field_tag = ffi::field_add("PostView")?;
         installed.field_tag = Some(field_tag);

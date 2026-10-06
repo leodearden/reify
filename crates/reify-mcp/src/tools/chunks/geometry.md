@@ -58,7 +58,7 @@ point2(x, y)          point3(x, y, z)
 vec2(x, y)            vec3(x, y, z)
 line_segment(x1, y1, z1, x2, y2, z2)
 arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
-polygon(x1, y1, x2, y2, x3, y3, ...)   rectangle(width, height)
+polygon(x1, y1, x2, y2, x3, y3, …)   rectangle(width, height)
 ```
 
 ## Solid Primitives
@@ -81,11 +81,13 @@ half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED —
 boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
 pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
 not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
-required; intersect it with a finite solid to get a bounded result usable for export and
-mass-property queries:
+required; intersect it with a finite solid, as `bounded` does here, to get a bounded result usable
+for export and mass-property queries:
 
-```reify-fragment
-intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+```reify
+structure def BoundedHalfSpace {
+    let bounded = intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+}
 ```
 
 Worked example: `examples/half_space.ri`.
@@ -98,7 +100,7 @@ vertex coordinates, not auto-centred (see the Anchoring & orientation table belo
 
 ```reify-schematic
 rectangle(width, height)   circle(radius)
-polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)
+polygon(x1, y1, x2, y2, x3, y3, …)   ellipse(semi_major, semi_minor)
 rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
 ```
 
@@ -160,8 +162,8 @@ When in doubt, prefer the `_centered` variant over a manual
        - the section's CALL FORMS, i.e. `name(`, which is what the fence below carries.
      The three sentinel constructors (`translate`, `polygon`, `nurbs`) must appear in BOTH — named
      by a table row AND called by the fence — so neither half can cover for the other losing one.
-     geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile compiles the ```reify
-     fence below as a whole module, so the migration forms are verified rather than asserted. Both
+     fence_gate.rs::every_reify_tagged_fence_compiles_clean compiles the ```reify fence below as a
+     whole module, so the migration forms are verified rather than asserted. Both
      scans are scoped BYTE-EXACTLY by the `LENGTH-ARGS-SECTION` marker on the line above,
      NOT by this heading's wording, which is free to change — keep the marker directly under the
      heading it opens.
@@ -302,17 +304,20 @@ isosurface(grid, iso: level, adaptive: flag)         -> Solid
 `nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
 **nested** (u-major × v) list of `point3(...)`, and `weights` is a matching nested list of reals;
 but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
-integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
+integers. `patch` below is a bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`), one
+argument per line:
 
-```reify-fragment
-nurbs_surface(
-    [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
-    [[1.0,1.0],[1.0,1.0]],
-    [0,0,1,1],
-    [0,0,1,1],
-    1,
-    1
-)
+```reify
+structure def BilinearPatch {
+    let patch = nurbs_surface(
+        [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+        [[1.0,1.0],[1.0,1.0]],
+        [0,0,1,1],
+        [0,0,1,1],
+        1,
+        1
+    )
+}
 ```
 
 A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid profile for
@@ -355,12 +360,15 @@ Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
 
 <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs verifies, for all
      five query names: that this section documents each as a call form, that each is a real registry
-     entry, that the ```reify fences below COMPILE, and that each `name(...) -> Type` signature here
-     is exercised by a fence call at the SAME arity. So editing an arity in this section without
-     editing the matching fence is RED. It still covers names/arity/parse only — argument DIMENSION
-     is unchecked. The RUNTIME claims in "Clearance-query traps" are pinned (where they are pinned at
-     all) by the eval/CLI tests mapped in the SYNC block at that subsection — read it before relying
-     on a trap, and before changing one of those behaviours.
+     entry, that the ```reify fences below call each one, that each `name(...) -> Type`
+     signature here is exercised by a fence call at the SAME arity, and that every arity a fence
+     calls one at is documented by such a signature. So editing an arity in this section without
+     editing the matching fence, or the reverse, is RED. That those fences COMPILE is verified by
+     crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs, over every chunk. It still
+     covers names/arity/parse only — argument DIMENSION is unchecked. The RUNTIME claims in
+     "Clearance-query traps" are pinned (where they are pinned at all) by the eval/CLI tests mapped
+     in the SYNC block at that subsection — read it before relying on a trap, and before changing
+     one of those behaviours.
 
      The `ORACLE-SECTION` marker on the line above is what scopes that guard's scan, matched
      byte-exactly — NOT this heading's wording, which is free to change. Keep the marker directly
@@ -439,11 +447,11 @@ a swept unary `interferes` is not.
 ### Clearance-query traps
 
 <!--
-SYNC: which trap below is pinned by an executable test, and where. The chunk guard
-(geometry_chunk_smoke.rs) establishes only name existence + fence compile-acceptance, so
-these runtime claims would otherwise rot silently. Named here so a behaviour change lands in
-a file whose grep leads back to this doc — and so the UNPINNED ones are visibly unpinned
-rather than looking equally guarded.
+SYNC: which trap below is pinned by an executable test, and where. The chunk guards
+(geometry_chunk_smoke.rs, and fence_gate.rs for the fences) establish only name existence +
+fence compile-acceptance, so these runtime claims would otherwise rot silently. Named here so a
+behaviour change lands in a file whose grep leads back to this doc — and so the UNPINNED ones
+are visibly unpinned rather than looking equally guarded.
 
 FORMAT IS LOAD-BEARING. Every cite is written WHOLE on ONE line as `<path>::<fn_name>`, never
 wrapped across lines and never tabulated into a two-column layout.
@@ -547,8 +555,8 @@ gate.
 
      Chunk-side guards (all in that one file, cited whole on one line each):
        geometry_chunk_smoke.rs::measurement_query_family_documented_in_geometry_chunk
-       geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile
-       geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
+       geometry_chunk_smoke.rs::geometry_reify_fences_call_every_worked_example_form
+       geometry_chunk_smoke.rs::measurement_signature_arities_match_the_compiling_fences
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
      That last guard scopes the region BETWEEN the `NOT-HOISTED-TRAP` and

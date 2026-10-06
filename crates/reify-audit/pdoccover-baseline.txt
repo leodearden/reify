@@ -1,0 +1,66 @@
+# PDOCCOVER baseline — accepted registry<->chunk name-drift debt.
+#
+# Two row kinds, one per line:
+#   <name>               a registry name no chunk documents (undocumented-name)
+#   <chunk path>:<name>  a call-shaped name that chunk claims but no compiler or
+#                        stdlib source declares (fabricated-name)
+#
+# GENERATED — do not hand-edit. Regenerate with:
+#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . \
+#     > crates/reify-audit/pdoccover-baseline.txt
+#
+# The default regeneration only DROPS stale rows. `--admit-new` is the only way
+# to add debt, and every row it adds must be justified in review; the real fix
+# is to document the name, correct the chunk, or mark the line
+# `pdoccover:allow — <reason>`.
+#
+# A row that matches no live debt is STALE and hard-FAILs
+# `reify-audit --pattern PDOCCOVER`: delete it, or rerun the default generator.
+#
+# A regeneration is valid for EXACTLY the tree it ran against. Any later rebase,
+# merge, amend or cherry-pick is a different tree and invalidates it. Re-verify
+# on the COMMITTED tree:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . \
+#     | diff -u crates/reify-audit/pdoccover-baseline.txt -
+affine_compose
+affine_from_transform
+affine_identity
+affine_inverse
+affine_map
+affine_scale
+affine_shear_xy
+affine_shear_xz
+affine_shear_yx
+affine_shear_yz
+affine_shear_zx
+affine_shear_zy
+affine_translate
+axis_through
+axis_x
+axis_y
+axis_z
+bbox
+bbox_center
+bbox_size
+body_mass_props
+envelope_displacement_magnitude
+envelope_max_principal
+envelope_von_mises
+frame_at
+is_bounded
+is_closed
+is_connected
+is_manifold
+is_orientable
+is_watertight
+mass_properties
+midplane
+plane_through
+plane_xy
+plane_xz
+plane_yz
+point_mass
+crates/reify-mcp/src/tools/chunks/geometry.md:InnerSolution
+crates/reify-mcp/src/tools/chunks/geometry.md:Value
+crates/reify-mcp/src/tools/chunks/geometry.md:new

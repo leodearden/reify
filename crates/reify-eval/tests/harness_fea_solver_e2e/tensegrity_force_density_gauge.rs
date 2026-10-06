@@ -26,13 +26,12 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, Value};
-use reify_test_support::point3;
-// The triplex geometry, its member index space and the `Tensegrity` assembly have
-// ONE definition, in `reify_test_support::tensegrity_fixtures`. This suite uses the
-// unit-height variant, `canonical_triplex_tensegrity`.
+// The triplex geometry, its member index space, the tent membrane golden and the
+// `Tensegrity` assembly have ONE definition, in `reify_test_support::tensegrity_fixtures`.
+// This suite uses the unit-height triplex variant, `canonical_triplex_tensegrity`.
 use reify_test_support::tensegrity_fixtures::{
-    TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS,
-    canonical_triplex_tensegrity, tensegrity, triplex_group_ids,
+    TENT_ANCHORS, TENT_TRIS, TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS,
+    TRIPLEX_STRUTS, canonical_triplex_tensegrity, tent_membrane_tensegrity, triplex_group_ids,
 };
 
 /// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
@@ -48,27 +47,6 @@ const BASE_Q: [f64; TRIPLEX_MEMBERS.len()] =
 /// anchored line-only solve.
 fn prism_tensegrity() -> Value {
     canonical_triplex_tensegrity(Some(&[]))
-}
-
-/// The tent's triangle fan: one triangle per anchored corner, each hinged on the
-/// free interior node 0. A const so `solve_membrane`'s per-surface σ array is sized
-/// from it rather than from a second literal that has to agree by hand.
-const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
-
-/// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
-/// fanned by [`TENT_TRIS`], no struts/cables. Mirrors the kernel's `tent_membrane()`
-/// golden — reused solely to reach the NON-EMPTY `surface_stresses` echo branch.
-/// Stays local because it is that golden rather than the triplex; only its
-/// assembly is shared. Collapsing the mirror onto the golden is #7284.
-fn membrane_tensegrity() -> Value {
-    let nodes = vec![
-        point3(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
-        point3(1.0, 0.0, 0.0),  // 1: anchor
-        point3(0.0, 1.0, 0.0),  // 2: anchor
-        point3(-1.0, 0.0, 0.0), // 3: anchor
-        point3(0.0, -1.0, 0.0), // 4: anchor
-    ];
-    tensegrity(nodes, &[], &[], Some(&TENT_TRIS))
 }
 
 type Trampoline = fn(
@@ -106,11 +84,17 @@ fn solve_at(q: &[f64]) -> PersistentMap<String, Value> {
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
-/// Anchored SURFACES solve of the tent membrane at one isotropic σ per triangle
-/// (no struts/cables ⇒ an empty `force_densities`).
+/// Anchored SURFACES solve of the shared tent membrane golden,
+/// `tent_membrane_tensegrity`, at one isotropic σ per triangle (no struts/cables ⇒
+/// an empty `force_densities`). Used solely to reach the NON-EMPTY
+/// `surface_stresses` echo branch.
 fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
-    let inputs =
-        [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; TENT_TRIS.len()])];
+    let inputs = [
+        tent_membrane_tensegrity(),
+        reals(&[]),
+        ints(TENT_ANCHORS),
+        reals(&[sigma; TENT_TRIS.len()]),
+    ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
@@ -272,7 +256,7 @@ fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
 
 /// The anchored emission site (`build_result`), on BOTH of its solve paths: line-only,
 /// and surfaces carrying a non-empty member set. The surfaces path needs its own
-/// fixture because `membrane_tensegrity` has zero struts and zero cables — there
+/// fixture because `solve_membrane`'s tent has zero struts and zero cables — there
 /// `member_forces` is empty, so `force_si` and the qᵢ·Lᵢ pairing never run on it. One
 /// solve each, no gauge rescale; the surfaces gauge rescale lives in
 /// `rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_path`.
@@ -320,7 +304,11 @@ fn force_density_and_surface_stress_echoes_carry_no_dimension() {
     const SIGMA: f64 = 2.0;
     let membrane = solve_membrane(SIGMA);
     let surface_stresses = list_field(&membrane, "surface_stresses");
-    assert_eq!(surface_stresses.len(), 4, "one echoed σ per triangle — a NON-empty list");
+    assert_eq!(
+        surface_stresses.len(),
+        TENT_TRIS.len(),
+        "one echoed σ per triangle — a NON-empty list"
+    );
     for (t, ss) in surface_stresses.iter().enumerate() {
         let s = dimensionless_echo("surface_stresses", ss);
         assert_eq!(s, SIGMA, "surface_stresses[{t}] must echo the prescribed σ exactly");

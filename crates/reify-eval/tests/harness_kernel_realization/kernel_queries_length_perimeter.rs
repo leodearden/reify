@@ -40,7 +40,8 @@
 //! `kernel_queries_normal_smoke.rs`.
 
 use reify_ir::{GeometryOp, GeometryQuery, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+
+use super::fixture_scaffolding::read_and_compile_fixture;
 
 const LENGTH_PERIMETER_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -60,16 +61,11 @@ const LENGTH_PERIMETER_PATH: &str = concat!(
 fn length_perimeter_compiles_and_occt_queries_match_expected() {
     // ── assertion 1: fixture exists and compiles with no ERROR diagnostics ────
 
-    let source = std::fs::read_to_string(LENGTH_PERIMETER_PATH)
-        .expect("examples/kernel_queries/length_perimeter.ri should exist (task 3622 step-6)");
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/length_perimeter.ri should compile with no \
-         error-severity diagnostics (Warnings from Undef eval are acceptable \
-         pre-Phase-3), got:\n{:#?}",
-        errors_only(&compiled)
+    // Warnings from Undef eval are acceptable pre-Phase-3; only error-severity
+    // diagnostics fail the compile.
+    read_and_compile_fixture(
+        LENGTH_PERIMETER_PATH,
+        "examples/kernel_queries/length_perimeter.ri (task 3622 step-6)",
     );
 
     // ── assertion 2: real-OCCT kernel query composition is live ──────────────

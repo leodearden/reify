@@ -28,7 +28,7 @@ separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
 ### Source of truth
 
 **`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
-authoritative list of advertised MCP tools (currently **66**).  Every `ToolDef`
+authoritative list of advertised MCP tools (currently **68**).  Every `ToolDef`
 entry there becomes visible to MCP clients via `tools/list`.
 
 Do **not** maintain a separate exhaustive list here — that list would itself be
@@ -41,7 +41,7 @@ a drift surface.  The invariant is enforced at test time (see below).
 | Liveness / engine | `health`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
 | Screenshots | `screenshot`, `screenshot_window`, `element_screenshot` |
 | DOM / style / layout / window | `dom_query`, `query_selector`, `query_selector_all`, `get_computed_style`, `get_layout_metrics`, `active_element`, `list_elements`, `get_window_state`, `ui_outline` |
-| Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
+| Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `scrub_range_input`, `edit_text_input`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
 | Viewport / selection | `viewport_state`, `select_entity`, `pick_entity_at`, `fit_to_view`, `set_camera`, `set_test_mode` |
 | Editor / LSP | `editor_content`, `open_file`, `completion_at`, `definition_at` |
 | Menus | `open_menu`, `menu_state` |
@@ -783,6 +783,18 @@ input:
 | Native drag-and-drop (`dragstart`, `drop`) | ✗ not triggered | ✓ triggered |
 | OS / compositor hit-testing (`elementFromPoint`) | ✗ not involved | ✓ involved |
 | `focus` / `blur` side-effects (click on input) | partial — only if `focus()` called explicitly | ✓ automatic |
+| Native form-control value (`<input type=range\|text>`) | ✗ not reachable — an untrusted event runs no default action, and `drag` / `keyboard` never assign `.value` | ✓ the browser's default action moves it |
+
+A native form control's value is reached programmatically, by `scrub_range_input`
+(range) and `edit_text_input` (text).  They assign `.value` and dispatch only the
+events the control's own handlers bind, so they assert application logic, not the
+browser's thumb or caret behaviour.
+
+Coordinate-addressed tools (`click_at`, `hover`, `drag`) cannot be reliably aimed
+at a control clipped by an `overflow:hidden` ancestor: `query_selector` /
+`get_layout_metrics` bounds are the unclipped `getBoundingClientRect`, and
+`visible` ignores clipping (#7770).  Address such a control by CSS selector
+instead.
 
 **Practical implication:** tools that dispatch synthetic events can assert that
 JS-registered handlers fire (click handlers, React `onClick`, Three.js pointer

@@ -4,7 +4,7 @@
 ; canonical CI regression signal is:
 ;   - crates/reify-cli/tests/harness_cli/cli_check.rs::check_io_formats_exits_success_no_unresolved
 ;     (runs the real `reify check` binary on examples/io_formats.ri)
-;   - crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib
+;   - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib
 ;     (auto-discovers examples/**/*.ri and fails on any Error-severity diagnostic)
 ;
 ; Run `tree-sitter test` locally from tree-sitter-reify/ to validate these shapes.

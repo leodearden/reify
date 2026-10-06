@@ -5244,7 +5244,7 @@ impl Engine {
                         diagnostics.push(d.clone());
                     }
                 }
-                entry.satisfaction = new_sat;
+                entry.set_verdict(new_sat, None);
             }
             // A2 (task #4734): add DFM build-level diagnostics from the
             // post-geometry constraint harvest unconditionally. These are
