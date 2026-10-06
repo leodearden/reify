@@ -16,29 +16,17 @@
 
 use crate::common;
 
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 
 /// The discriminator itself: printed by every `reify doc` usage error and by
 /// no other failure.  Named once so a change to the contract is one edit.
 const USAGE_BANNER: &str = "Usage: reify doc";
 
-/// Run `reify doc <args...>` and return `(status, stdout, stderr)`.
-///
-/// Thin wrapper around `Command::new(env!("CARGO_BIN_EXE_reify"))` that
-/// prepends the `"doc"` subcommand and forwards the rest of `args`.
+/// Run `reify doc <args...>` via [`common::run_with_args`], prepending the
+/// `doc` subcommand, and return `(status, stdout, stderr)`.
 fn run_doc(args: &[&str]) -> (ExitStatus, String, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify"));
-    cmd.arg("doc");
-    cmd.args(args);
-    let output = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
+    let argv: Vec<&str> = std::iter::once("doc").chain(args.iter().copied()).collect();
+    common::run_with_args(&argv)
 }
 
 /// Assert the whole usage-error contract: exit 1, the `guard_line` naming
@@ -663,13 +651,7 @@ fn doc_listed_in_top_level_usage() {
     // Regression guard: invoking `reify` with no arguments prints a usage
     // listing on stderr.  That listing must mention the `doc` subcommand so
     // users can discover it.  Pins the line added to `main()` in step 6.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let (_status, _stdout, stderr) = common::run_with_args(&[]);
     assert!(
         stderr.contains("doc <file>"),
         "top-level usage hint must list 'doc <file>', got stderr: {stderr}"
