@@ -1265,12 +1265,10 @@ impl<'a> Lowering<'a> {
     /// (task #6499). Read those before softening either diagnostic here:
     ///
     /// - TYPE position is loud on its own: `param p : obj.width` answers
-    ///   `error: unresolved type: obj.width` (exit 1). Pinned by
-    ///   `check_unbound_qualified_ref_in_type_position_is_loud`.
+    ///   `error: unresolved type: obj.width` (exit 1).
     /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
     ///   `error: sub-component "s" references unknown structure "obj.width"`
-    ///   (exit 1). Pinned by
-    ///   `check_unbound_qualified_ref_in_sub_position_is_loud`.
+    ///   (exit 1).
     /// - EXPRESSION position is NOT, because the compiler has no unknown-function
     ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
     ///   by `lower_namespaced_call`'s import-binding guard for an undeclared

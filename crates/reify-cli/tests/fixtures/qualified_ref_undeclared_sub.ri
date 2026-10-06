@@ -1,10 +1,4 @@
-// Fixture (task #6499): an UNBOUND qualified reference in `sub`
-// structure_name position. `obj` is not a declared import binding, so
-// `obj.width` must not resolve to a template. Read by
-// harness_cli/cli_check_qualified_ref_positions.rs; deliberately fails
-// `reify check` (exit 1) — that rejection IS the observation. Guards the
-// `sub` half of the per-position loudness claim on `namespaced_name_text`
-// against task #5505 (ν)'s resolution-side rewrite.
+// Unbound qualified ref in `sub` position; see harness_cli/cli_check_qualified_ref_positions.rs.
 
 module qualified_ref_undeclared_sub
 
