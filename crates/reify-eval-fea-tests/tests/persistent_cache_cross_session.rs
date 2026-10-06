@@ -710,6 +710,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // this fixture models a real entry rather than a shape no writer produces.
     let seed = WithDiagnostics {
         diagnostics: Vec::new(),
+        structured_detail: Vec::new(),
         value: fixture.clone(),
     };
     write_entry(root, ENGINE_VERSION_HASH, &good_hash, &seed)
