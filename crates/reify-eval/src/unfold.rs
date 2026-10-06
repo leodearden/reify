@@ -16,6 +16,7 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
+use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_cell_value};
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
 /// the gate, its decline report, and the shape probe they share (task #6662).
@@ -1310,6 +1311,26 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// `val` unless it is `Undef`; then the symbolic mint template scope applies to
+/// the same cell ([`mint_symbolic_cell_value`]), so an instance cell agrees with
+/// its template cell for value-identical inputs. `cell_id` is the
+/// template-scoped id and `scope.values` the map `val` was evaluated against.
+///
+/// The mint's diagnostics are discarded, as `runtime_sink`'s are: they are
+/// type-level, so template scope already reports them once for this expression.
+fn mint_instance_cell_if_undef(
+    val: Value,
+    order: SymbolicMintOrder,
+    cell_id: &ValueCellId,
+    expr: &reify_ir::CompiledExpr,
+    scope: &SymbolicMintScope<'_>,
+) -> Value {
+    if !matches!(val, Value::Undef) {
+        return val;
+    }
+    mint_symbolic_cell_value(order, cell_id, Some(expr), scope, &mut Vec::new()).unwrap_or(val)
+}
+
 /// The Param cells of `child_template` in dependency order, so a default that
 /// reads a sibling param sees it already in `child_values`. Same
 /// [`extract_dependency_trace`] + [`topological_sort`] pair
@@ -1879,14 +1900,25 @@ fn elaborate_child_lets_only<'t, 'f>(
             // Unreusable falls through to body-inlining, unchanged from
             // pre-#6662 behaviour — only the silence is removed.
             OptimizedInstanceResolution::NotOptimized
-            | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                &child_values,
+            | OptimizedInstanceResolution::Unreusable { .. } => mint_instance_cell_if_undef(
+                eval_child_expr(
+                    &child_values,
+                    expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                ),
+                SymbolicMintOrder::SelectorFirst,
+                child_cell_id,
                 expr,
-                functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
+                &SymbolicMintScope {
+                    template: child_template,
+                    values: &child_values,
+                    functions,
+                    meta_map,
+                },
             ),
         };
         child_values.insert(child_cell_id.clone(), val.clone());

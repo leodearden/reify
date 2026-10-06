@@ -34,6 +34,7 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
+use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_cell_value};
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
@@ -8590,33 +8591,23 @@ impl Engine {
                             // &runtime_sink before the mutable snapshot_values.insert below.
                             let _ = default_or;
 
-                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
-                            // (geometry handle for solid params, then selector).
+                            // R3d (#4900): see `symbolic_cell_mint`.
                             let was_undef = matches!(val, Value::Undef);
                             let (val, det) = if was_undef {
-                                let geom = Engine::mint_symbolic_geometry_handle_for_cell(
+                                match mint_symbolic_cell_value(
+                                    SymbolicMintOrder::GeometryHandleFirst,
                                     &cell.id,
-                                    &template.realizations,
-                                    &values,
-                                    &self.functions,
-                                    &self.meta_map,
-                                );
-                                if let Some(v) = geom {
-                                    (v, DeterminacyState::Determined)
-                                } else if let Some(ref expr) = cell.default_expr {
-                                    if let Some(v) =
-                                        crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                            expr,
-                                            &values,
-                                            &mut diagnostics,
-                                        )
-                                    {
-                                        (v, DeterminacyState::Determined)
-                                    } else {
-                                        (val, det)
-                                    }
-                                } else {
-                                    (val, det)
+                                    cell.default_expr.as_ref(),
+                                    &SymbolicMintScope {
+                                        template,
+                                        values: &values,
+                                        functions: &self.functions,
+                                        meta_map: &self.meta_map,
+                                    },
+                                    &mut diagnostics,
+                                ) {
+                                    Some(v) => (v, DeterminacyState::Determined),
+                                    None => (val, det),
                                 }
                             } else {
                                 (val, det)
@@ -8802,28 +8793,22 @@ impl Engine {
                                 ),
                             );
 
-                            // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
-                            // (selector for Let cells, then geometry handle).
+                            // R3d (#4900): see `symbolic_cell_mint`.
                             let was_undef = matches!(val, Value::Undef);
                             let val = if was_undef {
-                                let sel =
-                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                        expr,
-                                        &values,
-                                        &mut diagnostics,
-                                    );
-                                if let Some(v) = sel {
-                                    v
-                                } else {
-                                    Engine::mint_symbolic_geometry_handle_for_cell(
-                                        &cell.id,
-                                        &template.realizations,
-                                        &values,
-                                        &self.functions,
-                                        &self.meta_map,
-                                    )
-                                    .unwrap_or(val)
-                                }
+                                mint_symbolic_cell_value(
+                                    SymbolicMintOrder::SelectorFirst,
+                                    &cell.id,
+                                    Some(expr),
+                                    &SymbolicMintScope {
+                                        template,
+                                        values: &values,
+                                        functions: &self.functions,
+                                        meta_map: &self.meta_map,
+                                    },
+                                    &mut diagnostics,
+                                )
+                                .unwrap_or(val)
                             } else {
                                 val
                             };
@@ -10360,34 +10345,24 @@ impl Engine {
                         );
                         continue;
                     };
-                    // R3d (#4900): if eval returned Undef, try the in-walk
-                    // symbolic mint — geometry handle first (for solid params),
-                    // then topology selector — so downstream consumer cells that
-                    // reference this cell read the minted value at topo-order
-                    // time rather than Undef.  Invariant: upstream params are
+                    // R3d (#4900): see `symbolic_cell_mint`. Upstream params are
                     // already in `values` at this slot, so the GHR-β hash fold
                     // is byte-identical to the build path.
                     let was_undef = matches!(val, Value::Undef);
                     let val = if was_undef {
-                        let geom = Engine::mint_symbolic_geometry_handle_for_cell(
+                        mint_symbolic_cell_value(
+                            SymbolicMintOrder::GeometryHandleFirst,
                             &cell.id,
-                            &template.realizations,
-                            values,
-                            functions,
-                            meta_map,
-                        );
-                        if let Some(geom) = geom {
-                            geom
-                        } else if let Some(ref expr) = cell.default_expr {
-                            crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                expr,
+                            cell.default_expr.as_ref(),
+                            &SymbolicMintScope {
+                                template,
                                 values,
-                                diagnostics,
-                            )
-                            .unwrap_or(val)
-                        } else {
-                            val
-                        }
+                                functions,
+                                meta_map,
+                            },
+                            diagnostics,
+                        )
+                        .unwrap_or(val)
                     } else {
                         val
                     };
@@ -10870,26 +10845,22 @@ impl Engine {
                             continue;
                         }
                     };
-                    // R3d (#4900): if eval returned Undef, try the in-walk
-                    // symbolic mint — topology selector first (for selector lets),
-                    // then geometry handle (for any geometry let with a value cell).
+                    // R3d (#4900): see `symbolic_cell_mint`.
                     let was_undef = matches!(val, Value::Undef);
                     let val = if was_undef {
-                        let sel = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr, values, diagnostics,
-                        );
-                        if let Some(sel) = sel {
-                            sel
-                        } else {
-                            Engine::mint_symbolic_geometry_handle_for_cell(
-                                &cell_id,
-                                &template.realizations,
+                        mint_symbolic_cell_value(
+                            SymbolicMintOrder::SelectorFirst,
+                            &cell_id,
+                            Some(expr),
+                            &SymbolicMintScope {
+                                template,
                                 values,
                                 functions,
                                 meta_map,
-                            )
-                            .unwrap_or(val)
-                        }
+                            },
+                            diagnostics,
+                        )
+                        .unwrap_or(val)
                     } else {
                         val
                     };
