@@ -335,11 +335,11 @@ fn render_input_value(value: &Value) -> String {
 /// The geometry case DOES reach `Reuse` at `eval()`: an instance's geometry
 /// cell is minted with the TEMPLATE's realization id and an upstream hash over
 /// the instance's own inputs (identity rule:
-/// `symbolic_cell_mint::mint_symbolic_cell_value`), so an override-free sub's
+/// `symbolic_cell_mint::mint_symbolic_if_undef`), so an override-free sub's
 /// geometry arg equals the template's and is reused, while an override that
 /// reaches the realization's inputs changes the hash and declines as
 /// `InputsDiffer`. That discriminator is pinned here by
-/// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`.
+/// `resolve_optimized_instance_cell_geometry_reuse_keys_on_realization_ref_and_upstream_hash`.
 /// Whether the template-cell edge above refreshes such a reused cell through
 /// `build()` is unpinned end to end — it needs a kernel-backed handle this
 /// crate's tests cannot mint. Tracked by #7184.
@@ -871,7 +871,7 @@ mod tests {
     /// entity or the upstream hash stops participating in it (the
     /// `InputsDiffer` arms would start reusing — the actual staleness hazard).
     #[test]
-    fn resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref() {
+    fn resolve_optimized_instance_cell_geometry_reuse_keys_on_realization_ref_and_upstream_hash() {
         use reify_core::identity::RealizationNodeId;
 
         let source = r#"
@@ -1013,7 +1013,7 @@ mod tests {
     ///
     /// The gate is type-blind (a raw `ValueMap` lookup plus `Value` equality), so
     /// the maps are hand-built here exactly as
-    /// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`
+    /// `resolve_optimized_instance_cell_geometry_reuse_keys_on_realization_ref_and_upstream_hash`
     /// hand-mints its `GeometryHandle`s — the declaration's type is not what the
     /// comparison reads.
     #[test]

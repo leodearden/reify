@@ -34,7 +34,9 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
-use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_cell_value};
+use crate::symbolic_cell_mint::{
+    SymbolicMintOrder, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
+};
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
@@ -8592,31 +8594,25 @@ impl Engine {
                             let _ = default_or;
 
                             // R3d (#4900): see `symbolic_cell_mint`.
-                            let was_undef = matches!(val, Value::Undef);
-                            let (val, det) = if was_undef {
-                                match mint_symbolic_cell_value(
-                                    SymbolicMintOrder::GeometryHandleFirst,
-                                    &cell.id,
-                                    cell.default_expr.as_ref(),
-                                    &SymbolicMintScope {
-                                        template,
-                                        values: &values,
-                                        functions: &self.functions,
-                                        meta_map: &self.meta_map,
-                                    },
-                                    &mut diagnostics,
-                                ) {
-                                    Some(v) => (v, DeterminacyState::Determined),
-                                    None => (val, det),
-                                }
-                            } else {
-                                (val, det)
-                            };
+                            let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                                val,
+                                SymbolicMintOrder::GeometryHandleFirst,
+                                &cell.id,
+                                cell.default_expr.as_ref(),
+                                &SymbolicMintScope {
+                                    template,
+                                    values: &values,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                },
+                                &mut diagnostics,
+                            );
+                            let det = if minted { DeterminacyState::Determined } else { det };
                             // R3e (#4907): record cells the in-walk mint
                             // actually resolved, so the post-mint re-eval pass
                             // below knows which same-pass consumers to
                             // re-check.
-                            if was_undef && !matches!(val, Value::Undef) {
+                            if minted {
                                 minted_in_walk.insert(cell.id.clone());
                             }
 
@@ -8794,29 +8790,24 @@ impl Engine {
                             );
 
                             // R3d (#4900): see `symbolic_cell_mint`.
-                            let was_undef = matches!(val, Value::Undef);
-                            let val = if was_undef {
-                                mint_symbolic_cell_value(
-                                    SymbolicMintOrder::SelectorFirst,
-                                    &cell.id,
-                                    Some(expr),
-                                    &SymbolicMintScope {
-                                        template,
-                                        values: &values,
-                                        functions: &self.functions,
-                                        meta_map: &self.meta_map,
-                                    },
-                                    &mut diagnostics,
-                                )
-                                .unwrap_or(val)
-                            } else {
-                                val
-                            };
+                            let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                                val,
+                                SymbolicMintOrder::SelectorFirst,
+                                &cell.id,
+                                Some(expr),
+                                &SymbolicMintScope {
+                                    template,
+                                    values: &values,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                },
+                                &mut diagnostics,
+                            );
                             // R3e (#4907): record cells the in-walk mint
                             // actually resolved, so the post-mint re-eval pass
                             // below knows which same-pass consumers to
                             // re-check.
-                            if was_undef && !matches!(val, Value::Undef) {
+                            if minted {
                                 minted_in_walk.insert(cell.id.clone());
                             }
 
@@ -10348,28 +10339,23 @@ impl Engine {
                     // R3d (#4900): see `symbolic_cell_mint`. Upstream params are
                     // already in `values` at this slot, so the GHR-β hash fold
                     // is byte-identical to the build path.
-                    let was_undef = matches!(val, Value::Undef);
-                    let val = if was_undef {
-                        mint_symbolic_cell_value(
-                            SymbolicMintOrder::GeometryHandleFirst,
-                            &cell.id,
-                            cell.default_expr.as_ref(),
-                            &SymbolicMintScope {
-                                template,
-                                values,
-                                functions,
-                                meta_map,
-                            },
-                            diagnostics,
-                        )
-                        .unwrap_or(val)
-                    } else {
-                        val
-                    };
+                    let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                        val,
+                        SymbolicMintOrder::GeometryHandleFirst,
+                        &cell.id,
+                        cell.default_expr.as_ref(),
+                        &SymbolicMintScope {
+                            template,
+                            values,
+                            functions,
+                            meta_map,
+                        },
+                        diagnostics,
+                    );
                     // R3e (#4907): record cells the in-walk mint actually
                     // resolved, so the post-mint re-eval pass below knows
                     // which same-pass consumers to re-check.
-                    if was_undef && !matches!(val, Value::Undef) {
+                    if minted {
                         minted_in_walk.insert(cell.id.clone());
                     }
                     values.insert(cell.id.clone(), val.clone());
@@ -10846,28 +10832,23 @@ impl Engine {
                         }
                     };
                     // R3d (#4900): see `symbolic_cell_mint`.
-                    let was_undef = matches!(val, Value::Undef);
-                    let val = if was_undef {
-                        mint_symbolic_cell_value(
-                            SymbolicMintOrder::SelectorFirst,
-                            &cell_id,
-                            Some(expr),
-                            &SymbolicMintScope {
-                                template,
-                                values,
-                                functions,
-                                meta_map,
-                            },
-                            diagnostics,
-                        )
-                        .unwrap_or(val)
-                    } else {
-                        val
-                    };
+                    let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
+                        val,
+                        SymbolicMintOrder::SelectorFirst,
+                        &cell_id,
+                        Some(expr),
+                        &SymbolicMintScope {
+                            template,
+                            values,
+                            functions,
+                            meta_map,
+                        },
+                        diagnostics,
+                    );
                     // R3e (#4907): record cells the in-walk mint actually
                     // resolved, so the post-mint re-eval pass below knows
                     // which same-pass consumers to re-check.
-                    if was_undef && !matches!(val, Value::Undef) {
+                    if minted {
                         minted_in_walk.insert(cell_id.clone());
                     }
                     let dep_trace = take_trace(

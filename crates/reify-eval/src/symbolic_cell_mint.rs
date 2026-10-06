@@ -29,10 +29,17 @@ pub(crate) struct SymbolicMintScope<'a> {
     pub(crate) meta_map: &'a HashMap<String, HashMap<String, String>>,
 }
 
-/// Mint `cell_id` (a cell of `scope.template`) symbolically, trying the two
-/// mints in `order`; the first `Some` wins. Call only for a cell whose plain
-/// evaluation returned `Undef`. A selector kind-closure violation returns
-/// `Some(Value::Undef)` verbatim, with its diagnostic pushed to `diagnostics`.
+/// A cell's value after [`mint_symbolic_if_undef`].
+pub(crate) struct SymbolicMintOutcome {
+    pub(crate) value: Value,
+    /// `true` iff the evaluated value was `Undef` and the mint replaced it.
+    pub(crate) minted: bool,
+}
+
+/// `evaluated` unchanged unless it is `Undef`; then `cell_id` (a cell of
+/// `scope.template`) is minted symbolically, trying the two mints in `order`
+/// (the first `Some` wins). A selector kind-closure violation leaves the cell
+/// `Undef`, with its diagnostic pushed to `diagnostics`.
 ///
 /// Realization identity: a minted handle names `scope.template`'s
 /// `RealizationDecl` id at EVERY scope and folds its `upstream_values_hash` over
@@ -41,7 +48,33 @@ pub(crate) struct SymbolicMintScope<'a> {
 /// an unequal one. The build path agrees: `seed_cross_sub_named_steps` gives a
 /// no-args sub the template's kernel handles and re-realizes only under
 /// overrides.
-pub(crate) fn mint_symbolic_cell_value(
+pub(crate) fn mint_symbolic_if_undef(
+    evaluated: Value,
+    order: SymbolicMintOrder,
+    cell_id: &ValueCellId,
+    default_expr: Option<&CompiledExpr>,
+    scope: &SymbolicMintScope<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SymbolicMintOutcome {
+    if !matches!(evaluated, Value::Undef) {
+        return SymbolicMintOutcome {
+            value: evaluated,
+            minted: false,
+        };
+    }
+    match mint_symbolic(order, cell_id, default_expr, scope, diagnostics) {
+        Some(value) if !matches!(value, Value::Undef) => SymbolicMintOutcome {
+            value,
+            minted: true,
+        },
+        _ => SymbolicMintOutcome {
+            value: Value::Undef,
+            minted: false,
+        },
+    }
+}
+
+fn mint_symbolic(
     order: SymbolicMintOrder,
     cell_id: &ValueCellId,
     default_expr: Option<&CompiledExpr>,

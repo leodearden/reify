@@ -16,7 +16,7 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
-use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_cell_value};
+use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef};
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
 /// the gate, its decline report, and the shape probe they share (task #6662).
@@ -1326,8 +1326,7 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
-/// `val` unless it is `Undef`; then the symbolic mint template scope applies to
-/// the same cell ([`mint_symbolic_cell_value`]), so an instance cell agrees with
+/// [`mint_symbolic_if_undef`] at instance scope, so an instance cell agrees with
 /// its template cell for value-identical inputs. `cell_id` is the
 /// template-scoped id and `scope.values` the map `val` was evaluated against.
 ///
@@ -1340,10 +1339,7 @@ fn mint_instance_cell_if_undef(
     expr: &reify_ir::CompiledExpr,
     scope: &SymbolicMintScope<'_>,
 ) -> Value {
-    if !matches!(val, Value::Undef) {
-        return val;
-    }
-    mint_symbolic_cell_value(order, cell_id, Some(expr), scope, &mut Vec::new()).unwrap_or(val)
+    mint_symbolic_if_undef(val, order, cell_id, Some(expr), scope, &mut Vec::new()).value
 }
 
 /// The Param cells of `child_template` in dependency order, so a default that
