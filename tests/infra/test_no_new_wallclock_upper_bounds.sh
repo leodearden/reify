@@ -702,4 +702,57 @@ _detect_wallclock_upper_bound "$SCRIPT_DIR" "$_guard_base" 2>&1 || _s3_rc=$?
 assert "live scan: no un-escaped wall-clock upper-bound asserts in tests/infra (returns 0)" \
     test "$_s3_rc" -eq 0
 
+# ===========================================================================
+# Section 4: call-site independence (task #7358) — the detector must behave
+#             the same one function level below top as it does at top level.
+#
+# The hazard: a cleanup hung on a function's own scope (`trap ... RETURN`) is
+# not scoped to it. The trap stays installed in the caller and fires again when
+# an ENCLOSING function returns, after the function's locals are gone, where
+# `set -u` aborts the shell. Sections 1-3 call the detector from top level and
+# cannot see that. These cases pin what any caller observes, not how the
+# detector is built.
+# ===========================================================================
+echo ""
+echo "--- Section 4: detector called from a nested helper (task #7358) ---"
+
+_s4_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4_tmpdir")
+mkdir "$_s4_tmpdir/fixture" "$_s4_tmpdir/tmp"
+
+printf '#!/usr/bin/env bash\n' > "$_s4_tmpdir/fixture/fixture.sh"
+printf '%s "%s val too slow" test "$el" %s 3\n' \
+    "$_ASS_WORD" "$_WC_LEX_PART" "$_UB_OP" >> "$_s4_tmpdir/fixture/fixture.sh"
+
+# _wc_nested_scan_rc DIR -- echo the detector's exit code, from one function
+# level below top: the call depth at which a RETURN-trapped cleanup stops
+# resolving its locals.
+_wc_nested_scan_rc() {
+    local _rc=0
+    _detect_wallclock_upper_bound "$1" 2>/dev/null || _rc=$?
+    echo "$_rc"
+}
+
+# Run inside a command substitution with `|| _s4_status=$?`, so a detector that
+# aborts its enclosing shell fails 4a instead of this whole guard. TMPDIR is
+# scoped to that subshell, so assert's own mktemp is not counted by 4d.
+_s4_status=0
+_s4_out="$(
+    exec 2>"$_s4_tmpdir/stderr"
+    export TMPDIR="$_s4_tmpdir/tmp"
+    _wc_nested_scan_rc "$_s4_tmpdir/fixture"
+)" || _s4_status=$?
+
+_s4_trap="$(_detect_wallclock_upper_bound "$_s4_tmpdir/fixture" 2>/dev/null || true; trap -p RETURN)"
+
+assert "4a: a nested call completes (the enclosing subshell exits 0)" \
+    test "$_s4_status" -eq 0
+assert "4b: a nested call still reports the planted violation (returns 1)" \
+    test "$_s4_out" = 1
+assert "4c: a nested call leaves stderr empty (the helper already discards the detector's own report)" \
+    test ! -s "$_s4_tmpdir/stderr"
+assert "4d: a nested call leaves no file in its TMPDIR" \
+    test -z "$(ls -A "$_s4_tmpdir/tmp")"
+assert "4e: the detector leaves no RETURN trap installed in its caller" \
+    test -z "$_s4_trap"
+
 test_summary
