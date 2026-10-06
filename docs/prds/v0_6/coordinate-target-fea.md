@@ -1,7 +1,9 @@
 # PRD — Coordinate-target FEA (the P4 D2 follow-up)
 
 > **Status:** active — authored 2026-10-05 via `/prd` (Leo + Claude), at Leo's ruling on esc-7189-9
-> ("A and /prd coordinate-target FEA"). Not yet decomposed; leaf task ids are assigned at decompose.
+> ("A and /prd coordinate-target FEA"). Decomposed 2026-10-06: leaf task ids are in §7 and the
+> decompose-time corrections are in §11; the capability manifest and its stamped sidecar sit beside this
+> file.
 >
 > **Milestone:** v0.6. **Approach:** B + H (FEA is a load-bearing seam; §5 contract, §6 boundary tests).
 >
@@ -354,28 +356,28 @@ Prerequisites outside this batch: **#7189** (all leaves), **#7075** (η), **#666
 
 | Leaf | Title | Depends on | Observable signal |
 |---|---|---|---|
-| **α** | Extract the shared node-patch resolver; code 7189's diagnostics | #7189 | Intermediate — unlocks every other leaf. 7189's off-body and collinear fixtures still exit 1 through `reify eval`, now with the C9 codes asserted by identity in `point_support_e2e.rs`; `reify-audit --pattern PDIAG` finds no code-less site in the two modules. |
-| **ζ** | Plate-capable synthetic grid; grid in `ModalCacheKey` | α | `plate_three_point_modes.ri` (P2 modal, three interior fully restrained `PointSupport`s on a 500×800×12 plate): the e2e reads a finite first frequency and an Info line showing each support resolved within one element of its requested `y`. BT10, BT12. 7189's fixtures are re-baselined here. |
-| **β** | `SolveBoundary`, volume weights, `PointForce` (vertical slice) | ζ | `gantry_head_force.ri`: a cantilever tube with a `PointForce` at two head positions; `reify eval` prints two deflections in the BT3 ratio. BT1, BT11, BT13, BT14. `examples/fea/gantry_head_force.ri` is the user-facing copy. |
-| **γ** | `PointMass`: static weight and modal inertia | β | `gantry_head_mass.ri`: static deflection equals the equivalent `PointForce` (BT2); `first_frequency` with the head at `L/2`, `L/4` and a support is ordered as BT4. `mechanism_modal_analysis` with `point_masses` warns. |
-| **ε** | Directional restraint, static and modal | β | `kinematic_mount.ri`: a block on a cone / vee / flat mount evaluates in both solves (BT5); the flat-only variant fails as BT6. |
-| **θ** | Adaptive refinement with coordinate kinds | ε | CLI, dims overload: BT7 and BT8. Rust harness: BT9. |
-| **ι** | Coordinate kinds on a realized body from the CLI | θ, #6660, #7417 | `bracket_point_targets.ri` (a body the box cannot express): `reify eval` prints a populated `ElasticResult`; an off-body point exits non-zero with `FeaPointOffBody`. |
-| **κ** | Docs: FEA chunk, exemplar, index, reference | γ, ε, ζ, θ | A new `crates/reify-mcp/src/tools/chunks/fea.md` whose fenced signatures pass the chunk fence gate; `examples/best_practices/fea_point_targets.ri` and its `INDEX.md` row; one index line in `.claude/skills/reify-design/SKILL.md`; a `std.fea` subsection in `docs/reify-stdlib-reference.md`; `docs/notes/fea-point-supports.md` generalised to the three kinds; the P4 D2 pointer updated. An author searching "support a plate at three points" or "mass at a position on a beam" finds the kind from the chunk or the index. |
-| **λ** | printer_v01 adopts the kinds | γ, ε | `GantryFea` gains a `head_x` param and a `PointMass`; `EZBed` gains a modal cell on its three supports. `reify check prj/printer_v01/printer.ri` is clean and a standalone `reify eval` of each structure prints the new cells. Its dependency on #8102 is decided by the §3 sub-instance probe. |
-| **η** | *Milestone, dependency-gated:* static plate on three points | ζ, ε, γ, #7075 | First step: probe a P2 static solve of the 500×800×12 plate on minimal point restraint. If CG converges, add `plate_three_point_sag.ri` (reported sag; a narrow strip on two supports against the overhanging-beam closed form) and the EZBed sag cell. If it does not, η stops and returns the solver question to Leo. |
-| **ω** | PRD close | α–λ | The terminal `Status` header, per the overlay's freeze shape. η and the milestones are named there as open or landed. |
+| **α** #8251 | Extract the shared node-patch resolver; code 7189's diagnostics | #7189 | Intermediate — unlocks every other leaf. 7189's off-body and collinear fixtures still exit 1 through `reify eval`, now with the C9 codes asserted by identity in `point_support_e2e.rs`; `reify-audit --pattern PDIAG` finds no code-less site in the two modules. |
+| **ζ** #8252 | Plate-capable synthetic grid; grid in `ModalCacheKey` | α | `plate_three_point_modes.ri` (P2 modal, three interior fully restrained `PointSupport`s on a 500×800×12 plate): the e2e reads a finite first frequency and an Info line showing each support resolved within one element of its requested `y`. BT10, BT12. 7189's fixtures are re-baselined here. |
+| **β** #8253 | `SolveBoundary`, volume weights, `PointForce` (vertical slice) | ζ | `gantry_head_force.ri`: a cantilever tube with a `PointForce` at two head positions; `reify eval` prints two deflections in the BT3 ratio. BT1, BT11, BT13, BT14. `examples/fea/gantry_head_force.ri` is the user-facing copy. |
+| **γ** #8255 | `PointMass`: static weight and modal inertia | β | `gantry_head_mass.ri`: static deflection equals the equivalent `PointForce` (BT2); `first_frequency` with the head at `L/2`, `L/4` and a support is ordered as BT4. `mechanism_modal_analysis` with `point_masses` warns. |
+| **ε** #8256 | Directional restraint, static and modal | β | `kinematic_mount.ri`: a block on a cone / vee / flat mount evaluates in both solves (BT5); the flat-only variant fails as BT6. |
+| **θ** #8257 | Adaptive refinement with coordinate kinds | ε | CLI, dims overload: BT7 and BT8. Rust harness: BT9. |
+| **ι** #8258 | Coordinate kinds on a realized body from the CLI | θ, #6660, #7417 | `bracket_point_targets.ri` (a body the box cannot express): `reify eval` prints a populated `ElasticResult`; an off-body point exits non-zero with `FeaPointOffBody`. |
+| **κ** #8259 | Docs: FEA chunk, exemplar, index, reference | γ, ε, ζ, θ | A new `crates/reify-mcp/src/tools/chunks/fea.md` whose fenced signatures pass the chunk fence gate; `examples/best_practices/fea_point_targets.ri` and its `INDEX.md` row; one index line in `.claude/skills/reify-design/SKILL.md`; a `std.fea` subsection in `docs/reify-stdlib-reference.md`; `docs/notes/fea-point-supports.md` generalised to the three kinds; the P4 D2 pointer updated. An author searching "support a plate at three points" or "mass at a position on a beam" finds the kind from the chunk or the index. |
+| **λ** #8260 | printer_v01 adopts the kinds | γ, ε | `GantryFea` gains a `head_x` param and a `PointMass`; `EZBed` gains a modal cell on its three supports. `reify check prj/printer_v01/printer.ri` is clean and a standalone `reify eval` of each structure prints the new cells. Its dependency on #8102 is decided by the §3 sub-instance probe. |
+| **η** #8265 | *Milestone, dependency-gated:* static plate on three points | ζ, ε, γ, #7075 | First step: probe a P2 static solve of the 500×800×12 plate on minimal point restraint. If CG converges, add `plate_three_point_sag.ri` (reported sag; a narrow strip on two supports against the overhanging-beam closed form) and the EZBed sag cell. If it does not, η stops and returns the solver question to Leo. |
+| **ω** #8264 | PRD close | α–λ | The terminal `Status` header, per the overlay's freeze shape. η and the milestones are named there as open or landed. |
 
 **Milestones** (dependency-gated bookmark tasks filed in the same batch; each is a `/prd` session, not
 an implementation leaf):
 
 | Milestone | Gate | Trigger to design |
 |---|---|---|
-| **M1** prestressed modal analysis: `ModalOptions.preload : List<Load>`, a static solve, `K_g(σ)` from `geometric_stiffness`, eigen of `K + K_g` | β | a consumer with a belt, string, membrane or column whose modes shift under preload |
-| **M2** coordinate kinds on the MITC3 shell path (general shell boundary conditions) | η | η's probe: quadratic tets fail to converge on the plate, or a consumer's thickness ratio makes tets impractical |
-| **M3** lift D7's `radius = 0` refusal under a far-field quantity of interest | θ, DWR leaves #7453–#7458 | the goal-oriented estimator lands |
+| **M1** #8261 prestressed modal analysis: `ModalOptions.preload : List<Load>`, a static solve, `K_g(σ)` from `geometric_stiffness`, eigen of `K + K_g` | β | a consumer with a belt, string, membrane or column whose modes shift under preload |
+| **M2** #8262 coordinate kinds on the MITC3 shell path (general shell boundary conditions) | η | η's probe: quadratic tets fail to converge on the plate, or a consumer's thickness ratio makes tets impractical |
+| **M3** #8263 lift D7's `radius = 0` refusal under a far-field quantity of interest | θ, DWR leaves #7453–#7458 | the goal-oriented estimator lands |
 
-At decompose, #5313 gains a dependency on β and a note pointing at D8.
+At decompose, #5313 gained a dependency on β #8253 and a note pointing at D8.
 
 **G6 notes on the numeric signals.**
 
@@ -445,3 +447,52 @@ the same diff.
   names; κ's chunk says so in one line. Rename only if dogfood shows confusion.
 - **Support height on a plate.** 7189's note warns that pinning off the neutral plane stiffens
   bending; the plate fixtures place supports at mid-thickness.
+
+## 11. Decompose amendments (2026-10-06)
+
+Recorded at decompose (Leo's rulings Q-A–Q-F, the D3 run `wf_61a00e7b-afe`, and a critic pass); the
+design decisions D1–D13 stand. Each item names the section it amends. The capability manifest beside
+this file carries the evidence.
+
+- **D13 (Q-A).** #7189 mints and applies its five C9 codes (`FeaPointOffBody`,
+  `FeaPointSupportsUnderRestrained`, `FeaPointTargetRequiresTet`, `FeaPointTargetShellFallback`,
+  `FeaAdaptiveDeclinedPointTarget`) during the rebase it needs — measured with `reify-audit --pattern
+  PDIAG`, the branch as of `676fde4c10` adds five code-less sites and reds the ratchet. α #8251 extracts
+  the resolver and the shared reader.
+- **§1.** `printer.ri` is compile-gated by two tests and evaluated kernel-free by
+  `idler_seat_e2e.rs::check_printer`; "no test evaluates printer.ri" was too strong.
+- **§3, last row (λ).** Probed: λ does not depend on #8102 (a `point3` from an overridden param is
+  already correct at instance scope; #8102 mints geometry/selector values). An `@optimized` FEA cell in a
+  `sub` with a non-default argument is body-inlined to its sentinel (undef, exit 0, one Warning); the
+  per-instance dispatch gap is filed as #8249 and λ keeps its inputs at template scope. Q-E: no edges on
+  #7383 (the `printer.ri` SIGSEGV, unrelated) or #5312 (same-file ordering; the file lock serialises).
+- **§5 C1 (Q-D).** `constraint radius >= 0mm` is dropped from all three kinds (and 7189's
+  `PointSupport`): a stdlib template constraint is evaluated against the template default only, never an
+  instance argument (probed), so the Rust boundary is the enforcement.
+- **§5 C2.** `extract_point3_si` stays the strict triple parser (exact 3, finite); the kind / list-index
+  / field labelling wrapper lives in `node_patch.rs` (the AABB callers have none to pass).
+- **§5 C9.** Added: `FeaPointTargetFieldInvalid` (α; missing / non-finite / negative / wrong-arity
+  field, naming kind, index and field — a dimension mismatch keeps `DimensionedArgRejected`);
+  `ModalRigidBodyMode` and `ModalNoModesComputed` (ε codes the two pre-existing uncoded modal sites
+  BT5/BT6 assert on — Q-F). Withdrawn: `FeaPointMassNotApplicable` — γ #8255 depends on #7079 and emits
+  PDROP's `W_PARAM_NOT_APPLICABLE` instead (Q-C; #7084 amended to nine `ModalOptions` params). The CLI
+  prints diagnostic message text, never a code name; signals assert the message, tests the code.
+- **§5 C8 / ζ.** The per-support Info carries a structured payload: ζ mints
+  `FeaDiagnosticDetail::PointTargetResolved` (the enum has three variants today) and the e2e reads it on
+  the first (cold) eval. Every fixture with a coordinate kind sets `deterministic: true` (the `ny` rule
+  takes a slender dims solve past `PARALLEL_DOF_THRESHOLD`).
+- **§6 header.** Most rows run on a `.ri` fixture; BT9 and BT13 are Rust harness tests (`ElasticResult`
+  exposes no centroid or resultant; gmsh is a dev-dep of reify-eval). BT1: a `Real` radius is a
+  compile-time `ArgTypeMismatch`; the solve-boundary rows are a dimensionless force, a negative radius or
+  mass, and an omitted field. BT3: `radius > 0`, on the solid dims box. BT4: two supports per end across
+  the width (a single point per end leaves torsion free in modal). BT6: one pinned outcome per fixture.
+- **§6 / ι.** ι's fixture and e2e are a reify-cli subprocess test under `crates/reify-cli/tests/`.
+- **§8 / C6 owner cites.** The loud rejection of `TractionLoad`/`BodyForce` is #5802's, the wire-up
+  #5800's; #5313/#8078 own the selector variant. β's buckling `FeaLoadKindUnsupported` arm is built in
+  #5802's shape and cites #7081 as the honour owner (Q-C: #7081 amended to honour `PointForce`/`PointMass`
+  and `PointSupport` with `restrain` on buckling; #7142 and #7166 amended to honour or declare
+  `point_masses` and `restrain`; #7088 co-owns the FEA doc chunk with κ #8259).
+- **§9.** Additional seams: #5802/#5800 (load-kind rejection), #7079/#7084/#7085 (PDROP), #7142/#7166
+  (other `ModalOptions` consumers), #7088 (FEA chunk), #7383 (`printer.ri` crash), #5312 (same-file
+  ordering), #8248 (adaptive `bc_override` defect, filed on Q-B).
+- **Probes.** §3 was re-run on the 2026-10-05 binary (`e5f638d029`); every row confirmed.
