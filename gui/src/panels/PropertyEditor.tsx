@@ -79,13 +79,13 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // frontend intentionally enforces the stricter rule.
 //
 // The bare-number half is not unconditional (task #5757): a cell whose
-// dimension a curated ladder COVERS requires a unit, gated by
+// declared dimension a curated ladder COVERS requires a unit, gated by
 // `acceptsBareNumber` in the same module. Coverage, not dimensionedness, is the
 // key — where no unit can be typed, refusing the bare number would leave the
 // row with no accepted input at all. Unlike the whitespace rule above, this one
 // is NOT the frontend being deliberately stricter — it mirrors the backend
-// exactly, reading the same ladder map the engine's `LADDER_COVERAGE` is built
-// from. So gating here only decides whether the user finds out inline, with the
+// exactly, reading the declared dimension the engine gates on and the same
+// ladder map the engine's `LADDER_COVERAGE` is built from. So gating here only decides whether the user finds out inline, with the
 // typed text kept for correction, or asynchronously via a toast that discards
 // it.
 //
@@ -135,8 +135,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   /**
    * The typed-quantity gate (task #6028), resolved PER CELL: the accepted unit
-   * alphabet is the static floor unioned with just the ladder the cell's own
-   * dimension advertises — so a Length cell takes the Length rungs and refuses
+   * alphabet is the static floor unioned with just the ladder the cell's
+   * declared dimension advertises — so a Length cell takes the Length rungs and refuses
    * a Density literal, and a Volume cell the reverse. Before this it was a
    * hard-coded five-unit alternation that rejected every unit the backend
    * supports beyond those five; widening it to the union over ALL dimensions
@@ -405,7 +405,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * the same invariant `displayForPicker` already relies on.
    */
   function editSeedUnitLabel(val: ValueData): string | undefined {
-    const ladder = ladderForDimension(props.unitLadders ?? {}, val.dimension ?? '');
+    const ladder = ladderForDimension(props.unitLadders ?? {}, val.declared_dimension ?? '');
     const candidate = ladder?.find((u) => u.is_default)?.label ?? ladder?.[0]?.label ?? val.unit;
     // Same IPC-payload caution as `quantityUnitAlphabet`: these labels cross a
     // Tauri boundary, so their string-ness is a claim about serde, not a
@@ -454,7 +454,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    */
   function editSeed(val: ValueData): string {
     const magnitude = displayValue(val);
-    if (acceptsBareNumber(val.dimension, props.unitLadders)) return magnitude;
+    if (acceptsBareNumber(val.declared_dimension, props.unitLadders)) return magnitude;
     const unit = editSeedUnitLabel(val);
     if (!unit) return magnitude;
     const seeded = `${magnitude}${unit}`;
@@ -483,16 +483,16 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   /**
    * Whether `value` is an acceptable literal for the cell `cellId`. The cell is
    * load-bearing, not decoration: the accepted unit alphabet is scoped to that
-   * cell's dimension (see `quantityReFor`).
+   * cell's declared dimension (see `quantityReFor`).
    */
   function isValidValue(value: string, cellId: string): boolean {
     if (value === '') return false;
-    const dimension = props.values[cellId]?.dimension;
+    const dimension = props.values[cellId]?.declared_dimension;
     // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity).
-    // `acceptsBareNumber` gates the whole branch (task #5757): a cell whose dimension a
-    // curated ladder covers needs a unit, because the engine used to resolve `20` in a
-    // Volume cell silently as 20 CUBIC METRES. It reads the same `dimension` AND the same
-    // ladder map the quantity branch below consults for `quantityReFor`, so the gate and
+    // `acceptsBareNumber` gates the whole branch (task #5757): a cell whose declared dimension
+    // a curated ladder covers needs a unit, because the engine used to resolve `20` in a
+    // Volume cell silently as 20 CUBIC METRES. It reads the same declared dimension AND the
+    // same ladder map the quantity branch below consults for `quantityReFor`, so the gate and
     // the per-cell alphabet are two consumers of one coverage notion — a cell is told to
     // supply a unit only when the alphabet beside it can express one.
     if (
