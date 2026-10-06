@@ -2349,6 +2349,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     TMPDIR_T25="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T25")
 
+    # Paths the hang member owns: ready (its PID), release (created by this
+    # test) and outcome (how its hold ended).
+    T25_HANG_DIR="$TMPDIR_T25/hang"
+    mkdir -p "$T25_HANG_DIR"
+
     MANIFEST_T25="$TMPDIR_T25/classification.manifest"
     cat > "$MANIFEST_T25" <<'EOF'
 test_pool_boom.sh pool
@@ -2444,12 +2449,14 @@ EOF
         echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
     fi
 
+    if [ -s "$T25_HANG_DIR/ready" ]; then t25_hang_started=1; else t25_hang_started=0; fi
     kill -TERM "$t25_pid" 2>/dev/null || true
     ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
     t25_killer=$!
     wait "$t25_pid" 2>/dev/null || t25_rc=$?
     kill "$t25_killer" 2>/dev/null || true
     wait "$t25_killer" 2>/dev/null || true
+    touch "$T25_HANG_DIR/release"
 
     if grep -q 'INTERRUPTED' "$T25_OUT"; then
         assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
@@ -2471,6 +2478,16 @@ EOF
 
     assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
         test "$t25_rc" -ne 0
+
+    assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight" \
+        test "$t25_hang_started" -eq 1
+
+    t25_hang_outcome="$(cat "$T25_HANG_DIR/outcome" 2>/dev/null || true)"
+    if [ "$t25_hang_outcome" = released ]; then
+        assert "T25 control: the hang member held until the test released it (outcome: released), not until its own backstop" true
+    else
+        assert "T25 control: the hang member held until the test released it (outcome: ${t25_hang_outcome:-none}), not until its own backstop" false
+    fi
 
     # -- GREEN regression sub-case: normal (untouched) path stays byte-identical --
     TMPDIR_T25B="$(mktemp -d)"
@@ -2513,6 +2530,8 @@ else
     assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25c: the partial FAILED line names test_pool_boom.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25 control: the hang member held until the test released it, not until its own backstop (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T25g: GREEN regression -- normal path emits no (partial) marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
