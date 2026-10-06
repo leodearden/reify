@@ -2235,7 +2235,10 @@ impl EngineSession {
             .core
             .compiled()
             .ok_or_else(|| "No module loaded".to_string())?;
-        find_value_cell_decl(compiled, cell_id)
+        compiled
+            .templates
+            .iter()
+            .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *cell_id))
             .map(|vc| &vc.cell_type)
             .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))
     }
@@ -5162,18 +5165,18 @@ fn format_determined_cell(
     (value, unit, si_value, dimension)
 }
 
-/// The value-cell declaration `id` names in some compiled template — the one
-/// definition of "what a cell id denotes", shared by
-/// `EngineSession::resolve_known_cell_type` (preview / write-back) and
-/// `surface_geometry_derived_cells` (declared dimension for display).
-fn find_value_cell_decl<'a>(
-    module: &'a CompiledModule,
-    id: &ValueCellId,
-) -> Option<&'a reify_compiler::ValueCellDecl> {
+/// Every value cell of `module`, keyed by id, with its
+/// [`declared_scalar_dimension`] — one pass, so a caller formatting many cells
+/// pays one lookup per cell rather than a scan of every template.
+fn declared_dimension_index(
+    module: &CompiledModule,
+) -> HashMap<&ValueCellId, Option<DimensionVector>> {
     module
         .templates
         .iter()
-        .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *id))
+        .flat_map(|t| &t.value_cells)
+        .map(|vc| (&vc.id, declared_scalar_dimension(&vc.cell_type)))
+        .collect()
 }
 
 fn build_values(
@@ -5214,12 +5217,13 @@ fn build_values(
             // the GUI displays the last good number, NOT the current
             // un-recomputed one (arch §8 prune-safety scenario 3 — "the displayed
             // number equals the last good value"). Computed ONLY for Pending
-            // cells; final/intermediate/failed cells carry `None`. Formatted via
-            // `format_value(..).0` (value part only), matching `value` above.
+            // cells; final/intermediate/failed cells carry `None`. Read through
+            // `value_as_declared` and formatted via `format_value(..).0` (value
+            // part only), matching `value` above.
             let last_substantive_value = if freshness == "pending" {
                 engine.and_then(|e| {
                     e.last_substantive_value(&NodeId::Value(cell.id.clone()))
-                        .map(|v| format_value(&v).0)
+                        .map(|v| format_value(&value_as_declared(&v, declared)).0)
                 })
             } else {
                 None
@@ -5495,6 +5499,10 @@ fn surface_geometry_derived_cells(
     // tracked-pattern comment, since the curator assigns the task id asynchronously
     // and a cite must resolve to a live task to be valid.
     let mut dispatched_entities: Option<HashSet<String>> = None;
+    // Task #6962: the declared dimension each surfaced cell is formatted under,
+    // built LAZILY on the first surfaced cell for the same reason as
+    // `dispatched_entities`.
+    let mut declared_dimensions: Option<HashMap<&ValueCellId, Option<DimensionVector>>> = None;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -5543,8 +5551,11 @@ fn surface_geometry_derived_cells(
                 }
             }
         };
-        let declared = find_value_cell_decl(module, &id)
-            .and_then(|decl| declared_scalar_dimension(&decl.cell_type));
+        let declared = declared_dimensions
+            .get_or_insert_with(|| declared_dimension_index(module))
+            .get(&id)
+            .copied()
+            .flatten();
         let (value, unit, si_value, dimension) = format_determined_cell(&val, declared);
         cell.value = value;
         cell.unit = unit;

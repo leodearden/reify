@@ -85,9 +85,9 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
 // row with no accepted input at all. Unlike the whitespace rule above, this one
 // is NOT the frontend being deliberately stricter — it mirrors the backend
 // exactly, reading the declared dimension the engine gates on and the same
-// ladder map the engine's `LADDER_COVERAGE` is built from. So gating here only decides whether the user finds out inline, with the
-// typed text kept for correction, or asynchronously via a toast that discards
-// it.
+// ladder map the engine's `LADDER_COVERAGE` is built from. So gating here only
+// decides whether the user finds out inline, with the typed text kept for
+// correction, or asynchronously via a toast that discards it.
 //
 // The rule and the edit buffer have to be designed together: `editSeed` below
 // seeds a COVERED cell with a unit-BEARING literal, so an unmodified commit
