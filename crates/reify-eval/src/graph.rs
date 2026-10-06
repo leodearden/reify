@@ -13,7 +13,7 @@ use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Va
 
 pub mod cell_contributions;
 
-use cell_contributions::{ContributedCell, InsertPolicy, SubShape, contributed_cells};
+use cell_contributions::{ContributedCell, SubShape, contributed_cells};
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -318,10 +318,9 @@ fn insert_contributed_cell(
     cells: &mut PersistentMap<ValueCellId, ValueCellNode>,
     cell: ContributedCell<'_>,
 ) {
-    let id = cell.graph_id();
-    if cell.insert_policy() == InsertPolicy::KeepExisting && cells.contains_key(&id) {
+    let Some(id) = cell.landing_id(|id| cells.contains_key(id)) else {
         return;
-    }
+    };
     let expr_hash = cell
         .default_expr()
         .map(|e| e.content_hash)
@@ -455,7 +454,7 @@ impl EvaluationGraph {
                     continue; // skip unknown structures silently
                 };
                 match elab.shape {
-                    SubShape::Collection { .. } => {
+                    SubShape::Collection => {
                         // Stored for count-driven re-elaboration.
                         if let Some(count_id) = &sub.count_cell {
                             graph.collection_subs.push(CollectionSubInfo {

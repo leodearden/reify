@@ -20,7 +20,7 @@ static GUARD_CELL_TYPE: Type = Type::Bool;
 
 /// How a contribution lands in a value-cell map that may already hold its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InsertPolicy {
+enum InsertPolicy {
     /// Replace whatever is there: the last contribution for an id wins.
     Overwrite,
     /// Insert only if the id is absent, so a parent's override of a plain
@@ -104,7 +104,16 @@ impl<'a> ContributedCell<'a> {
         }
     }
 
-    pub fn insert_policy(&self) -> InsertPolicy {
+    /// The id to write this cell at in a value-cell map, or `None` when its
+    /// policy keeps the cell `is_present` reports is already there.
+    /// `from_templates` folds every contribution through this.
+    pub fn landing_id(&self, is_present: impl FnOnce(&ValueCellId) -> bool) -> Option<ValueCellId> {
+        let id = self.graph_id();
+        let keeps_existing = self.insert_policy() == InsertPolicy::KeepExisting && is_present(&id);
+        (!keeps_existing).then_some(id)
+    }
+
+    fn insert_policy(&self) -> InsertPolicy {
         match self.0 {
             Source::SubInstance {
                 slot:
@@ -125,14 +134,46 @@ impl<'a> ContributedCell<'a> {
 pub fn contributed_cells(
     templates: &[TopologyTemplate],
 ) -> impl Iterator<Item = ContributedCell<'_>> {
+    enumerate(templates, Instances::Every)
+}
+
+/// The `cell_type` of every [`contributed_cells`] cell, with each sub's
+/// instances collapsed to its first. A sub-instance cell has its child
+/// declaration's type whatever its slot, so this yields the same set of types
+/// at a cost that does not grow with a collection's instance count.
+pub fn contributed_cell_types(templates: &[TopologyTemplate]) -> impl Iterator<Item = &Type> {
+    enumerate(templates, Instances::First).map(|cell| cell.cell_type())
+}
+
+/// Which of a sub's instance slots [`enumerate`] expands.
+#[derive(Clone, Copy)]
+enum Instances {
+    Every,
+    First,
+}
+
+impl Instances {
+    fn limit(self) -> usize {
+        match self {
+            Instances::Every => usize::MAX,
+            Instances::First => 1,
+        }
+    }
+}
+
+fn enumerate(
+    templates: &[TopologyTemplate],
+    instances: Instances,
+) -> impl Iterator<Item = ContributedCell<'_>> {
     templates
         .iter()
-        .flat_map(move |template| template_cells(templates, template))
+        .flat_map(move |template| template_cells(templates, template, instances))
 }
 
 fn template_cells<'a>(
     templates: &'a [TopologyTemplate],
     template: &'a TopologyTemplate,
+    instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
     let own = template.value_cells.iter().map(declared_cell);
     let guarded = template.guarded_groups.iter().flat_map(|group| {
@@ -140,7 +181,7 @@ fn template_cells<'a>(
             .chain(group.members.iter().map(declared_cell))
             .chain(group.else_members.iter().map(declared_cell))
     });
-    own.chain(sub_instance_cells(templates, template))
+    own.chain(sub_instance_cells(templates, template, instances))
         .chain(guarded)
 }
 
@@ -151,32 +192,35 @@ fn declared_cell(decl: &ValueCellDecl) -> ContributedCell<'_> {
 fn sub_instance_cells<'a>(
     templates: &'a [TopologyTemplate],
     parent: &'a TopologyTemplate,
+    instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
     parent
         .sub_components
         .iter()
         .filter_map(move |sub| resolve_sub(templates, parent, sub))
         .flat_map(move |elab| {
-            let SubElaboration {
-                sub, child, shape, ..
-            } = elab;
-            shape.slot_indices().flat_map(move |index| {
-                let slot = InstanceSlot {
-                    parent: &parent.name,
-                    sub_name: &sub.name,
-                    index,
-                };
-                child
-                    .value_cells
-                    .iter()
-                    .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
-            })
+            let SubElaboration { sub, child, .. } = elab;
+            elab.slot_indices()
+                .take(instances.limit())
+                .flat_map(move |index| {
+                    let slot = InstanceSlot {
+                        parent: &parent.name,
+                        sub_name: &sub.name,
+                        index,
+                    };
+                    child
+                        .value_cells
+                        .iter()
+                        .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+                })
         })
 }
 
 /// A sub-component resolved against the template slice: the child template
-/// its instances are stamped from, and how many instances there are.
+/// its instances are stamped from, and the shape of its instance slots.
+#[derive(Clone, Copy)]
 pub(crate) struct SubElaboration<'a> {
+    parent: &'a TopologyTemplate,
     pub sub: &'a SubComponentDecl,
     pub child: &'a TopologyTemplate,
     /// The child's structure name: a keyed sub's element type, not "Keyed".
@@ -186,18 +230,19 @@ pub(crate) struct SubElaboration<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum SubShape<'a> {
-    /// `sub xs : List<T>`; `count` is `None` unless statically known.
-    Collection {
-        count: Option<i64>,
-    },
+    /// `sub xs : List<T>`; its instance count is read only when its cells
+    /// are enumerated.
+    Collection,
     Keyed(&'a [MemberKey]),
     Single,
 }
 
-impl<'a> SubShape<'a> {
+impl<'a> SubElaboration<'a> {
+    /// A collection whose count is not statically known has no slots.
     fn slot_indices(self) -> impl Iterator<Item = SlotIndex<'a>> {
-        let (positional, keyed, single) = match self {
-            SubShape::Collection { count } => {
+        let (positional, keyed, single) = match self.shape {
+            SubShape::Collection => {
+                let count = static_count(self.parent, self.sub);
                 (count.map(|n| (0..n).map(SlotIndex::Positional)), None, None)
             }
             SubShape::Keyed(keys) => (None, Some(keys.iter().map(SlotIndex::Keyed)), None),
@@ -221,15 +266,14 @@ pub(crate) fn resolve_sub<'a>(
     let element_structure = element_structure_name(sub);
     let child = find_template(templates, element_structure)?;
     let shape = if sub.is_collection {
-        SubShape::Collection {
-            count: static_count(parent, sub),
-        }
+        SubShape::Collection
     } else if !sub.keyed_members.is_empty() {
         SubShape::Keyed(&sub.keyed_members)
     } else {
         SubShape::Single
     };
     Some(SubElaboration {
+        parent,
         sub,
         child,
         element_structure,
@@ -275,13 +319,13 @@ fn literal_int(expr: &CompiledExpr) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind};
     use reify_constraints::SimpleConstraintChecker;
     use reify_core::{ModulePath, Type, ValueCellId};
 
-    use super::{ContributedCell, InsertPolicy, contributed_cells};
+    use super::{ContributedCell, InsertPolicy, contributed_cell_types, contributed_cells};
     use crate::graph::EvaluationGraph;
 
     /// A `.ri` input chosen to reach one `from_templates` value-cell arm, and
@@ -393,34 +437,43 @@ structure Tray {
         reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)
     }
 
-    /// The value-cell map a consumer gets by inserting every contribution in
-    /// iteration order under its own [`InsertPolicy`].
+    /// The value-cell map a consumer gets by writing every contribution, in
+    /// iteration order, where its `landing_id` says: `from_templates`' fold
+    /// without the node construction.
     fn replay(templates: &[TopologyTemplate]) -> HashMap<ValueCellId, ContributedCell<'_>> {
         let mut cells = HashMap::new();
         for cell in contributed_cells(templates) {
-            let id = cell.graph_id();
-            if cell.insert_policy() == InsertPolicy::KeepExisting && cells.contains_key(&id) {
-                continue;
+            if let Some(id) = cell.landing_id(|id| cells.contains_key(id)) {
+                cells.insert(id, cell);
             }
-            cells.insert(id, cell);
         }
         cells
     }
 
     /// The enumeration IS `from_templates`' value-cell set: replaying it
     /// reproduces `graph.value_cells` id for id, so a value-cell insert that
-    /// bypasses the enumeration goes red on whichever input reaches it.
+    /// bypasses the fold goes red on whichever input reaches it. Every input
+    /// is checked before the test fails.
     #[test]
     fn contributed_cells_replay_reproduces_from_templates_value_cells() {
-        for entry in CORPUS {
-            let compiled = compile(entry.src);
-            let graph = EvaluationGraph::from_templates(&compiled.templates);
-            assert_witnesses_reached(entry, &compiled.templates, &graph);
-            assert_replay_equals_graph(entry, &compiled.templates, &graph);
-            assert_guard_contributions_are_bool_lets(entry, &compiled.templates);
-        }
-        assert_parent_override_is_kept();
-        assert_same_id_contributions_resolve_last_writer_wins();
+        let failing_arms: Vec<&str> = CORPUS
+            .iter()
+            .filter(|entry| std::panic::catch_unwind(|| assert_replay_oracle(entry)).is_err())
+            .map(|entry| entry.arm)
+            .collect();
+        assert!(
+            failing_arms.is_empty(),
+            "the replay oracle failed on {failing_arms:#?}; each failure's panic \
+             message is printed above",
+        );
+    }
+
+    fn assert_replay_oracle(entry: &CorpusEntry) {
+        let compiled = compile(entry.src);
+        let graph = EvaluationGraph::from_templates(&compiled.templates);
+        assert_witnesses_reached(entry, &compiled.templates, &graph);
+        assert_replay_equals_graph(entry, &compiled.templates, &graph);
+        assert_guard_contributions_are_bool_lets(entry, &compiled.templates);
     }
 
     /// Anti-vacuity: each input still reaches the arm it was chosen for.
@@ -529,7 +582,8 @@ structure Tray {
     /// The task-3806 precedence branch is exercised, not merely tolerated: the
     /// child-default contribution for `A.b.bore` is offered as KeepExisting and
     /// loses to the parent's `auto` override.
-    fn assert_parent_override_is_kept() {
+    #[test]
+    fn plain_sub_child_default_keeps_parent_override() {
         let compiled = compile(PARENT_OVERRIDE.src);
         let graph = EvaluationGraph::from_templates(&compiled.templates);
         let bore = ValueCellId::new("A.b", "bore");
@@ -551,7 +605,8 @@ structure Tray {
     /// `Bearing.seal : TypeParam("T")` comes first, and the graph holds the
     /// LAST same-id contribution — the overwrite that makes a successful
     /// monomorph safe to evaluate.
-    fn assert_same_id_contributions_resolve_last_writer_wins() {
+    #[test]
+    fn same_id_contributions_resolve_last_writer_wins() {
         let compiled = compile(SUCCESSFUL_MONOMORPH.src);
         let graph = EvaluationGraph::from_templates(&compiled.templates);
         let seal = ValueCellId::new("Bearing", "seal");
@@ -581,6 +636,49 @@ structure Tray {
             "({}) graph `{seal}` (left) must equal the LAST same-id contribution \
              (right); contributions in order: {seal_types:#?}",
             SUCCESSFUL_MONOMORPH.arm,
+        );
+    }
+
+    #[test]
+    fn contributed_cell_types_are_the_contributed_cells_type_set() {
+        for entry in CORPUS {
+            let compiled = compile(entry.src);
+            let full: HashSet<&Type> = contributed_cells(&compiled.templates)
+                .map(|c| c.cell_type())
+                .collect();
+            let collapsed: HashSet<&Type> = contributed_cell_types(&compiled.templates).collect();
+            assert_eq!(
+                collapsed, full,
+                "({}) contributed_cell_types (left) must yield exactly the types \
+                 contributed_cells does (right)",
+                entry.arm,
+            );
+        }
+    }
+
+    #[test]
+    fn contributed_cell_types_does_not_grow_with_instance_count() {
+        let rack = |count: u32| {
+            compile(&format!(
+                "structure def Screw {{ param d : Real = 3.0 }}\n\
+                 structure Rack {{\n    sub screws : List<Screw>\n    \
+                 constraint screws.count == {count}\n}}\n"
+            ))
+        };
+        let (few, many) = (rack(2), rack(50));
+        let cell_count = |m: &CompiledModule| contributed_cells(&m.templates).count();
+        let type_count = |m: &CompiledModule| contributed_cell_types(&m.templates).count();
+        assert!(
+            cell_count(&many) > cell_count(&few),
+            "anti-vacuity: 50 screws must contribute more cells than 2 ({} vs {})",
+            cell_count(&many),
+            cell_count(&few),
+        );
+        assert_eq!(
+            type_count(&many),
+            type_count(&few),
+            "contributed_cell_types must collapse a collection's instances, so its \
+             length is the same for 50 screws (left) as for 2 (right)",
         );
     }
 }

@@ -25,8 +25,8 @@ use tower_lsp::lsp_types;
 /// `from_templates` would insert is unrepresentable. Allocation-free, and never
 /// a hit of its own — see that function's "## Cost" section.
 fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
-    reify_eval::graph::cell_contributions::contributed_cells(&compiled.templates)
-        .all(|cell| reify_eval::is_representable_cell_type(cell.cell_type()))
+    reify_eval::graph::cell_contributions::contributed_cell_types(&compiled.templates)
+        .all(reify_eval::is_representable_cell_type)
 }
 
 /// `Some((id, cell_type))` when the evaluation graph `compiled` would build
@@ -128,11 +128,13 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 ///
 /// Stage 1, [`stage_one_proves_absence`], is an allocation-free
 /// `all(is_representable_cell_type)` scan over
-/// `reify_eval::graph::cell_contributions::contributed_cells` — the
-/// enumeration `from_templates` itself folds into `graph.value_cells` — so
-/// "every contributed cell representable" implies "every graph cell
-/// representable" by construction. reify-eval owns that enumeration's arms and
-/// the test that replaying it reproduces the graph; the guarded-member arm a
+/// `reify_eval::graph::cell_contributions::contributed_cell_types` — the types
+/// of the enumeration `from_templates` itself folds into `graph.value_cells` —
+/// so "every contributed type representable" implies "every graph cell
+/// representable" by construction. That view collapses each sub's instances
+/// to one, so the scan stays linear in declared cells however large a
+/// collection's literal count. reify-eval owns the enumeration's arms and the
+/// test that replaying it reproduces the graph; the guarded-member arm a
 /// narrower scan once missed is pinned here by case (5) of
 /// `tests::unrepresentable_cell_predicate_tracks_the_graph_not_the_diagnostic_codes`
 /// and by `tests::stage_one_proves_absence_only_where_the_graph_is_safe`.
@@ -434,11 +436,12 @@ mod tests {
         //
         // This case doubles as the pin for the STAGE-1 FAST PATH inside
         // `first_unrepresentable_cell`. That stage scans every contributed
-        // cell, the surviving generic template's included — the very
-        // formulation rejected here — and is sound only as an ABSENCE proof. This fixture is exactly the shape where it finds a
-        // candidate and the graph is nevertheless safe, so an edit that let
-        // stage 1 answer `true` on its own (rather than falling through to
-        // the exact `from_templates` walk) goes RED right here.
+        // cell type, the surviving generic template's included — the very
+        // formulation rejected here — and is sound only as an ABSENCE proof.
+        // This fixture is exactly the shape where it finds a candidate and
+        // the graph is nevertheless safe, so an edit that let stage 1 answer
+        // `true` on its own (rather than falling through to the exact
+        // `from_templates` walk) goes RED right here.
         assert!(
             !fires(
                 r#"trait Seal {}
@@ -513,8 +516,9 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
 
     /// Pin stage 1 of [`super::first_unrepresentable_cell`] from both sides.
     ///
-    /// Its soundness (every graph cell is scanned) is owned by reify-eval's
-    /// replay oracle over `contributed_cells`, the enumeration stage 1 scans.
+    /// Its soundness (every graph cell's type is scanned) is owned by
+    /// reify-eval's replay oracle over `contributed_cells`, whose type set
+    /// stage 1 scans.
     /// What stays here is the LSP's own wiring: stage 1 declines on both
     /// unsubstituted-`TypeParam` arms so stage 2 runs and names the offender,
     /// and it DOES prove absence on healthy modules — a stage 1 that always
