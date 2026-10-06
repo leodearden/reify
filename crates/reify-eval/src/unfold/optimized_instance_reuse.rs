@@ -332,15 +332,17 @@ fn render_input_value(value: &Value) -> String {
 /// `elaborate_child_params_only` commits `DependencyTrace::default()` for EVERY
 /// param, reused or not.
 ///
-/// What remains unpinned end to end is the narrower claim that the geometry
-/// case never reaches the reuse arm at all — BELIEVED so because a
-/// geometry-typed arg's instance value carries an instance-scoped realization
-/// ref, so the read comparison declines first. The DISCRIMINATOR that belief
-/// rests on is pinned here by
-/// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`;
-/// what no fixture on this branch reaches is the same path through `build()`,
-/// which needs a kernel-backed handle this crate's tests cannot mint. Tracked
-/// by #7184.
+/// The geometry case DOES reach `Reuse` at `eval()`: an instance's geometry
+/// cell is minted with the TEMPLATE's realization id and an upstream hash over
+/// the instance's own inputs (identity rule:
+/// `symbolic_cell_mint::mint_symbolic_cell_value`), so an override-free sub's
+/// geometry arg equals the template's and is reused, while an override that
+/// reaches the realization's inputs changes the hash and declines as
+/// `InputsDiffer`. That discriminator is pinned here by
+/// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`.
+/// Whether the template-cell edge above refreshes such a reused cell through
+/// `build()` is unpinned end to end — it needs a kernel-backed handle this
+/// crate's tests cannot mint. Tracked by #7184.
 ///
 /// `instance_values` is this instance's map (`child_values` in phase 2, the
 /// running `overlay` in phase 1.5); `global_values` is the global map holding
@@ -847,27 +849,27 @@ mod tests {
         }
     }
 
-    /// The STALENESS note argues that the geometry-consuming case never reaches
-    /// the `Reuse` arm, because a geometry-typed arg's INSTANCE value carries
-    /// an instance-scoped realization ref and the read comparison therefore
-    /// declines first. That is the load-bearing soundness claim for every
-    /// geometry-consuming `@optimized` target in the stdlib (`fdm::slice`,
-    /// `fdm::as_printed_material_r_fast`).
+    /// The STALENESS note's geometry discriminator. `Value::GeometryHandle`
+    /// equality is `GeometryHandleRef`'s, which compares `realization_ref` +
+    /// `upstream_values_hash` and deliberately EXCLUDES `kernel_handle`
+    /// (reify-ir/src/value.rs, GHR-β §DD). An instance's geometry cell names
+    /// the TEMPLATE's realization id with an upstream hash over the instance's
+    /// inputs (`symbolic_cell_mint`), so arm (c) — identical handles ⇒ `Reuse`
+    /// — is an override-free sub, and arm (b) — same ref, different hash ⇒
+    /// `InputsDiffer` — is a sub whose override reaches the realization's
+    /// inputs: the load-bearing decline for every geometry-consuming
+    /// `@optimized` target in the stdlib (`fdm::slice`,
+    /// `fdm::as_printed_material_r_fast`). Arm (a) guards entity-scoped
+    /// realization ids.
     ///
-    /// The blocker recorded there ("needs a kernel-backed handle this crate's
-    /// tests cannot mint") is real only for the END-TO-END path through
-    /// `build()`. The DISCRIMINATOR is fully expressible here:
-    /// `Value::GeometryHandle` equality is `GeometryHandleRef`'s, which compares
-    /// `realization_ref` + `upstream_values_hash` and deliberately EXCLUDES
-    /// `kernel_handle` (reify-ir/src/value.rs, GHR-β §DD), and
-    /// `RealizationNodeId::new(entity, index)` is entity-scoped — so two
-    /// symbolic (`kernel_handle: None`) handles differing only in their ref's
-    /// ENTITY are exactly the instance-vs-template shape the claim depends on.
+    /// Symbolic (`kernel_handle: None`) handles express all three here; only
+    /// the END-TO-END path through `build()` needs a kernel-backed handle
+    /// (#7184).
     ///
     /// This test reds if `GeometryHandleRef`'s equality ever widens to include
-    /// `kernel_handle` (the `Reuse` arm would start declining), or if
-    /// realization ids stop being entity-scoped (the `InputsDiffer` arms would
-    /// start reusing — the actual staleness hazard).
+    /// `kernel_handle` (the `Reuse` arm would start declining), or if the ref's
+    /// entity or the upstream hash stops participating in it (the
+    /// `InputsDiffer` arms would start reusing — the actual staleness hazard).
     #[test]
     fn resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref() {
         use reify_core::identity::RealizationNodeId;
@@ -910,9 +912,9 @@ mod tests {
         global_values.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 1));
         global_values.insert(ValueCellId::new("GeomLike", "r"), Value::Int(777));
 
-        // (a) INSTANCE-SCOPED realization ref ⇒ decline. `Asm.beam` is the
-        // entity an instantiated `sub beam : GeomLike` realizes under, so its
-        // ref can never equal the template's.
+        // (a) A realization ref naming ANOTHER entity ⇒ decline. Instance
+        // mints carry the template's id, so this guards entity-scoped ids
+        // rather than a live instance shape.
         let mut instance_values = ValueMap::new();
         instance_values.insert(ValueCellId::new("GeomLike", "g"), handle("Asm.beam", 1));
         match resolve_optimized_instance_cell(
@@ -926,9 +928,8 @@ mod tests {
         ) {
             OptimizedInstanceResolution::Unreusable { cause, .. } => assert!(
                 matches!(cause, DeclineCause::InputsDiffer { .. }),
-                "a geometry arg whose realization ref is instance-scoped must \
-                 decline as InputsDiffer — this is the comparison the STALENESS \
-                 note's 'should decline first' rests on: {cause:?}"
+                "a geometry arg whose realization ref names another entity \
+                 must decline as InputsDiffer: {cause:?}"
             ),
             OptimizedInstanceResolution::Reuse(v) => panic!(
                 "REUSED a geometry-consuming @optimized value across scopes ({v:?}) — \
@@ -941,9 +942,9 @@ mod tests {
             }
         }
 
-        // (b) Same entity, DIFFERENT upstream hash ⇒ decline too. Pins the
-        // second of `GeometryHandleRef`'s two equality fields, so a widening of
-        // the ref's identity is caught from both sides.
+        // (b) Same ref, DIFFERENT upstream hash ⇒ decline. The overridden-sub
+        // shape: its mint names the template's realization but folds the
+        // override into the hash.
         let mut same_entity_other_hash = ValueMap::new();
         same_entity_other_hash.insert(ValueCellId::new("GeomLike", "g"), handle("GeomLike", 2));
         assert!(
