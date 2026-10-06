@@ -700,7 +700,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector and carries that tool's unscoped-wait trap — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit to wait over every match document-wide. This arm builds the SAME selector predicate as wait_for_selector and shares that tool's semantics — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -708,7 +708,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches on the same visible element when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -718,7 +718,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md under the heading 'wait_for_selector: the unscoped-wait trap'. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the matches in the pane whose [data-viewport-id] subtree contains (or is) them. Omit to wait over every match document-wide. Either way 'visible' is satisfied by ANY visible match, 'gone' only once EVERY match is hidden or absent. Return shape is unchanged — this tool observes rather than drives, so it reports no viewportId/matchCount. So an unscoped green is not proof about any one pane; scope the wait whenever the follow-up action is scoped (docs/debug-mcp-recipe.md, 'wait_for_selector: the unscoped-wait trap'). Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }

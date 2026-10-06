@@ -1755,6 +1755,133 @@ fn half_space_at_bounded_param_emits_geometry_unbounded_diagnostic() {
     );
 }
 
+/// A transform of an unbounded producer stays unbounded at a `Bounded` slot
+/// (task #6188): the transform must see its direct-call operand rather than
+/// falling back to the all-traits default.
+#[test]
+fn translate_of_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: translate(half_space(0mm, 0mm, 0mm, 0, 0, 1), 0mm, 0mm, 1mm))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        !geometry_unbounded.is_empty(),
+        "expected at least one GeometryUnbounded diagnostic for translate(half_space(...)) \
+         at a Bounded slot, but got no such diagnostic. All diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// POSITIVE CONTROL for the test above: a transform of a bounded producer at a
+/// `Bounded` slot emits no `GeometryUnbounded`.
+#[test]
+fn translate_of_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            sub x = Foo(g: translate(box(1mm, 1mm, 1mm), 0mm, 0mm, 1mm))
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let geometry_unbounded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .collect();
+
+    assert!(
+        geometry_unbounded.is_empty(),
+        "expected no GeometryUnbounded diagnostic for translate(box(...)) at a Bounded \
+         slot, but got: {:?}",
+        geometry_unbounded
+    );
+}
+
+// ─── binary booleans see their direct-call operands (task #6188 / #8191) ─────
+
+const HALF_SPACE: &str = "half_space(0mm, 0mm, 0mm, 0, 0, 1)";
+const UNIT_BOX: &str = "box(1mm, 1mm, 1mm)";
+
+/// How many `GeometryUnbounded` diagnostics compiling `geometry` at a
+/// `param g : Bounded` slot produces.
+fn geometry_unbounded_count_at_bounded_param(geometry: &str) -> usize {
+    let source = format!(
+        r#"
+        structure def Foo {{
+            param g : Bounded
+        }}
+        structure def Top {{
+            sub x = Foo(g: {geometry})
+        }}
+    "#
+    );
+    compile_source_with_stdlib(&source)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .count()
+}
+
+/// A union with an unbounded operand is unbounded.
+#[test]
+fn union_of_half_space_and_box_at_bounded_param_emits_geometry_unbounded() {
+    let geometry = format!("union({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        1,
+        "{geometry}"
+    );
+}
+
+/// A difference inherits boundedness from its cuttee.
+#[test]
+fn difference_from_half_space_at_bounded_param_emits_geometry_unbounded() {
+    let geometry = format!("difference({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        1,
+        "{geometry}"
+    );
+}
+
+/// POSITIVE CONTROL: a bounded operand bounds an intersection.
+#[test]
+fn intersection_of_half_space_and_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let geometry = format!("intersection({HALF_SPACE}, {UNIT_BOX})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        0,
+        "{geometry}"
+    );
+}
+
+/// POSITIVE CONTROL: cutting an unbounded cutter from a bounded cuttee stays
+/// bounded.
+#[test]
+fn difference_of_half_space_from_box_at_bounded_param_emits_no_geometry_unbounded() {
+    let geometry = format!("difference({UNIT_BOX}, {HALF_SPACE})");
+    assert_eq!(
+        geometry_unbounded_count_at_bounded_param(&geometry),
+        0,
+        "{geometry}"
+    );
+}
+
 // ─── extrude_infinite: Bounded=false producer (task #3466) ──────────────────
 
 /// Negative end-to-end: `extrude_infinite(...)` at a `param g : Bounded` slot

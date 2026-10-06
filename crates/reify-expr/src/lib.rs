@@ -1440,10 +1440,10 @@ fn eval_ad_hoc_selector(
 /// candidate. With `is_generic == false` the head tier's `heads_unifiable` arm
 /// is gated off and head genuinely IS a subset of wildcard — the same relation
 /// [`reify_core::overload`]'s module doc states. So tier 2 CAN drop a
-/// non-generic candidate: a concrete param facing an arg that CARRIES a type
-/// param without BEING a bare `Type::TypeParam` (e.g. `Option<T>`) passes tier
-/// 3's arg-side `type_carries_type_param` disjunct (D4) and fails tier 2's
-/// bare-`TypeParam` one. Being a filter over tier 3's survivors, tier 2 can
+/// non-generic candidate: a concrete same-head param facing an arg whose heads
+/// unify only through an R1 placeholder slot (e.g. `Result<Length, String>` vs
+/// `Result<Length, ?E>`) passes tier 3 and fails tier 2's bare-user-`TypeParam`
+/// disjunct. Being a filter over tier 3's survivors, tier 2 can
 /// still only ever narrow — never admit a candidate tier 3 rejected.
 ///
 /// The narrowing is per-CANDIDATE but its effect is per-SET, and the

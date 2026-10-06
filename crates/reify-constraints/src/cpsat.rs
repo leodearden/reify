@@ -1173,6 +1173,11 @@ impl CpSatSolver {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            // Mapping `SolveAllResult::Enumerated.complete` to `Exhaustive` /
+            // `Partial{BoxBudgetExhausted}` is #6903's, and not a flag copy:
+            // `complete` is a claim about the SEARCH, `Exhaustive` one about the
+            // CARRIED set, which is truncated to `RANKED_CANDIDATE_CAP`.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -1249,6 +1254,7 @@ fn lift_feasibility(solved: SolveResult) -> RankedSolveResult {
                 unique,
             }],
             optimality: OptimalityStatus::FeasibilityOnly,
+            completeness: reify_ir::Completeness::not_attempted(),
         },
         non_solved => non_solved
             .into_ranked_pass_through()
@@ -3177,6 +3183,7 @@ mod solve_ranked_override_tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => (candidates, optimality),
             other => panic!("expected RankedSolveResult::Ranked; got {other:?}"),
         }
@@ -3518,6 +3525,33 @@ mod solve_ranked_override_tests {
              they disagree; if they ever agree here, one of them has quietly \
              been redefined as the other",
         );
+    }
+
+    /// BT13 (solution-set-completeness): CpSat does not opt into the
+    /// completeness axis yet, so BOTH of its `Ranked` construction sites report
+    /// `not_attempted()` — the scored tail of `solve_ranked_with_budget`, reached
+    /// under an objective, and `lift_feasibility`, reached without one. The
+    /// mapping that replaces it is #6903's; see the scored tail's comment.
+    #[test]
+    fn both_ranked_construction_sites_report_not_attempted() {
+        let unscored = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        );
+        for (site, p) in [
+            ("scored tail", a_or_b_scored(ObjectiveSense::Minimize)),
+            ("lift_feasibility", unscored),
+        ] {
+            match CpSatSolver.solve_ranked(&p) {
+                RankedSolveResult::Ranked { completeness, .. } => assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "{site}: BT13"
+                ),
+                other => panic!("{site}: expected RankedSolveResult::Ranked; got {other:?}"),
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

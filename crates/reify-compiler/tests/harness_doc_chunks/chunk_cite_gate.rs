@@ -13,11 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::chunk_io::{all_chunks, chunk_label, repo_root, report};
 use crate::chunk_prose::{
     EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, HtmlComment, html_comments,
     stray_comment_terminators,
 };
-use crate::fence_gate::{all_chunks, chunk_label, repo_root, report};
 
 /// Every `.rs`/`.ri` file under `crates/` and `examples/`, keyed by basename.
 type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;

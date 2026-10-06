@@ -604,8 +604,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -629,8 +630,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_cut_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -654,8 +656,9 @@ impl OcctKernelHandle {
     /// history records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_common_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///

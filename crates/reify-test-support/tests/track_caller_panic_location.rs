@@ -8,12 +8,13 @@
 //! closure form, and the caller's line for a `let-else` form with the
 //! `panic!` directly in the `#[track_caller]` fn body.
 //!
-//! This file guards two `reify-test-support` helpers against regressing
-//! back to the closure form: `require_default_expr` (reached through the
-//! public `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr`
-//! wrappers) and `cell_value`. Each guard asserts the reported location plus
-//! a SHORT payload substring — never full message prose, per the wording
-//! rule `dimensioned_assertions.rs` already follows.
+//! This file guards three `reify-test-support` panic sites against the
+//! closure form: `require_default_expr` and the ambiguity panic of the shared
+//! cell-lookup walk `lookup_value_cell` (both reached through the public
+//! `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr` wrappers), and
+//! `cell_value`. Each guard asserts the reported location plus a SHORT
+//! payload substring — never full message prose, per the wording rule
+//! `dimensioned_assertions.rs` already follows.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
@@ -113,6 +114,34 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
     );
     assert!(
         site.message.contains("has no default expr"),
+        "panic message changed; got: {}",
+        site.message,
+    );
+}
+
+#[test]
+fn lookup_ambiguity_panic_reports_caller_not_helpers_rs() {
+    let template = reify_test_support::TopologyTemplateBuilder::new("Bracket")
+        .auto_param("First", "x", reify_core::Type::dimensionless_scalar())
+        .auto_param("Second", "x", reify_core::Type::dimensionless_scalar())
+        .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr_in_template(&template, "x");
+    });
+
+    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
+    // file identity is the contract; the exact line is diagnostic-only.
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "the lookup's ambiguity panic must attribute to the CALLER (this \
+         file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains("ambiguous cell name"),
         "panic message changed; got: {}",
         site.message,
     );

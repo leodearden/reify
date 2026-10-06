@@ -14,10 +14,8 @@
 //! in both build modes; the cfg gates pick the right arm.
 
 // The serialising mutex and the defaults-relying probe are shared verbatim
-// with this crate's other process-global mesh-size guards. Declared by path
-// rather than through `common/mod.rs`, which #6387 reduced to a re-export shim
-// over `reify_test_support::mesh_fixtures` and which is scheduled for deletion; see
-// `common/clamp_probe.rs` for why one copy matters.
+// with this crate's other process-global mesh-size guards. Declared by
+// `#[path]`; see `common/clamp_probe.rs` for why, and why one copy matters.
 #[cfg(has_gmsh)]
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;

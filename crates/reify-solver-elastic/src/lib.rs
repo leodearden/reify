@@ -40,6 +40,7 @@
 //!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
+//!     apply_patch_resultant, free_faces_within,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
 //!     solve_cg, solve_cg_warm, CgSolverOptions, CgResult, SolverMode,
@@ -598,8 +599,8 @@ pub use assembly::{
     assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
-    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
-    apply_traction_load,
+    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination,
+    apply_patch_resultant, apply_point_load, apply_traction_load, free_faces_within,
 };
 pub use constitutive::{
     ConstitutiveLaw, IsotropicElastic, OrthotropicMaterial, TransverseIsotropicMaterial,

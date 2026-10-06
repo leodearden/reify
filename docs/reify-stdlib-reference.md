@@ -83,6 +83,9 @@ std
     query        // interferes(), interferes_with(), min_clearance()
   result
     mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
+  fea              // StressInvariants — result of stress_invariants()
+  solver
+    elastic        // ElementOrder, ElasticOptions, ElasticResult, solve_elastic_static (§16)
 ```
 
 ---
@@ -250,6 +253,15 @@ fn ELEMENTARY_CHARGE()         -> Charge             -- 1.602176634e-19 C       
 ```
 
 Reify has no top-level `const`; dimensionful values carry their dimension via the zero-arg function's return type, while dimensionless math constants (`pi`, `tau`, `e`) are bare compiler builtins.
+
+**Pressure-power aliases.** `units.ri` declares two more `pub type` aliases in its physical-constants alias block, alongside the constants' return-type aliases. They name powers of pressure that have no standard named quantity, so the names are positional: the digit is the exponent. Both are usable from user code.
+
+```
+pub type Pressure2 = Pressure * Pressure     // Pa²  — StressInvariants.i2 (§15)
+pub type Pressure3 = Pressure2 * Pressure    // Pa³  — StressInvariants.i3 (§15)
+```
+
+`Pressure3` chains through `Pressure2` because a type-alias right-hand side admits neither `^` nor parentheses (the same grammar limit that makes `StefanBoltzmannDim` spell T⁴ as four repeated factors).
 
 ---
 
@@ -482,9 +494,9 @@ joint's local frame. Giving those columns their own structure, and correcting
 
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
-compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
-coordinate arguments rather than the structured types shown; each is annotated
+compiler's current lowering for a few of these constructors (`half_space`,
+`extrude_infinite`, `polygon`, `line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat
+positional coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
 
@@ -507,12 +519,23 @@ fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
 fn rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid
 
-// Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
-// fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+fn half_space(plane: Plane) -> Solid     // Unbounded — Bounded = false
+// current compiler form: half_space(px, py, pz, nx, ny, nz) — a point ON the
+// boundary plane (px, py, pz: Length, so `mm` literals) and the OUTWARD normal
+// toward the retained material (nx, ny, nz: a dimensionless direction). Being
+// unbounded, it must be intersected with a finite solid before export or a
+// mass-property query, e.g.
+// intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+// Worked example: examples/half_space.ri.
 
-// Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
-// see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
-// fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
+fn extrude_infinite(profile: Surface, axis: Vector3<Dimensionless>, direction: String) -> Solid     // Unbounded — Bounded = false
+// current compiler form: extrude_infinite(profile, dx, dy, dz, direction) — the
+// sweep axis (dx, dy, dz: a dimensionless direction, so bare literals) and a
+// trailing `direction` STRING choosing which way the profile is swept to
+// infinity: "positive", "negative" or "both". Being unbounded, it must be
+// intersected with a finite solid before export or a mass-property query, e.g.
+// intersection(extrude_infinite(circle(5mm), 0, 0, 1, "positive"), box(20mm, 20mm, 10mm))
+// Worked example: examples/extrude_infinite.ri.
 ```
 
 **Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
@@ -531,9 +554,11 @@ convention changes:
 | `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
 | `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
+| `tube` | base at z=0, axis +Z, x/y centred | outer `cylinder` minus inner `cylinder` (§3.3), so it inherits `cylinder`'s anchor |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
 | `rounded_box` | centred at origin, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
 | `rounded_rect` (2D) | planar XY at z=0, centred at origin | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
+| `polygon` (2D) | planar XY at z=0; positioned by its explicit vertices | not auto-centred, unlike the other 2D shapes |
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
@@ -590,10 +615,48 @@ fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, kno
 // weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
 // count is n_points + degree + 1. e.g.
 // nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
-
-// Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
-// fn nurbs_surface(/* NURBS surface parameters */) -> Surface
 ```
+
+**Free-form & implicit surfaces:**
+
+```
+fn nurbs_surface(control_points: List<List<Point3<Length>>>, weights: List<List<Real>>,
+                 u_knots: List<Real>, v_knots: List<Real>, u_degree: Int, v_degree: Int) -> Surface
+// The six arguments differ in SHAPE: control_points is a NESTED (u-major × v)
+// grid of point3(...) and weights a matching nested grid of reals, but
+// u_knots/v_knots are FLAT clamped knot vectors and the degrees are plain
+// integers. A bilinear patch (degree 1 × 1):
+// nurbs_surface([[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+//               [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)
+fn isosurface(grid: Geometry) -> Solid
+fn isosurface(grid: Geometry, iso: Length) -> Solid
+fn isosurface(grid: Geometry, iso: Length, adaptive: Bool) -> Solid
+// Marching cubes over a Voxel-repr grid; a BRep or Mesh operand is voxelized
+// first. Omitted, iso resolves to 0.0 and adaptive to false at evaluation. The
+// iso:/adaptive: labels are the recommended spelling but bind POSITIONALLY
+// (2nd argument → iso, 3rd → adaptive), so adaptive cannot be passed without iso.
+```
+
+A NURBS patch is neither Closed nor Planar, so it is not a valid profile for
+`extrude`/`revolve`/`sweep`/`loft`. `isosurface`'s result is a `Solid` (Bounded,
+Watertight, Connected), not a bare mesh handle.
+
+**GD&T tolerance zones:**
+
+```
+fn zone_slab(face: Surface, width: Length) -> Solid
+fn zone_cylinder(axis: Curve, width: Length) -> Solid
+fn zone_annulus(axis: Curve, nominal_radius: Length, width: Length, length: Length) -> Solid
+fn zone_profile(solid: Solid, width: Length) -> Solid
+```
+
+Each builds a tolerance zone as a real `Solid` centred on its input (`±width/2`).
+`zone_slab` takes a face or 2D profile, not a solid; `zone_profile` is its
+solid-input sibling. `zone_cylinder`'s `width` is the zone DIAMETER, and its
+extent is the axis wire's own length. `zone_annulus`' `length` is accepted and
+validated but unused: the axis wire sets its extent too. Worked example of all
+four: `examples/tolerancing/gdt_zones.ri`. The GD&T tolerance traits are
+§7.2's.
 
 ### 3.3 `std.geometry.compound`
 
@@ -654,13 +717,15 @@ fn loft(profiles: List<Surface>) -> Solid
 fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
+The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.2, beside `half_space`, the other unbounded producer.
+
 ### 3.7 `std.geometry.transform`
 
 ```
-fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G  // not implemented — see note below
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
-fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
 fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
 fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
@@ -670,15 +735,17 @@ Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
 
+**Not implemented — vector-argument forms (2026-10):** three signatures above take their displacement, axis and point as `Vector3`/`Point3` values — `translate(geometry, displacement)`, `rotate(geometry, axis, angle)` and `rotate_around(geometry, point, axis, angle)` — and a call written in those forms is rejected by the compiler's arity check. The shipped forms take scalar components: `translate(geometry, dx, dy, dz)`, `rotate(geometry, ax, ay, az, angle)` (alongside the orientation form) and `rotate_around(geometry, px, py, pz, ax, ay, az, angle)`. The accepted arities are owned by `compile_transform_op` in `crates/reify-compiler/src/geometry_transform.rs`; the agent-facing `stdlib` language-reference chunk (`crates/reify-mcp/src/tools/chunks/stdlib.md`) documents the shipped forms.
+
 **LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
 
 ### 3.8 `std.geometry.pattern`
 
 ```
 fn mirror<G: Transformable>(geometry: G, plane: Plane) -> G
-fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Length>, count: Int, spacing: Length) -> List<G>
+fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Dimensionless>, count: Int, spacing: Length) -> List<G>
 fn circular_pattern<G: Transformable>(geometry: G, axis: Axis, count: Int, angle: Angle) -> List<G>
-fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Length>, count1: Int, spacing1: Length, dir2: Vector3<Length>, count2: Int, spacing2: Length) -> List<G>
+fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Dimensionless>, count1: Int, spacing1: Length, dir2: Vector3<Dimensionless>, count2: Int, spacing2: Length) -> List<G>
 fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3>>) -> List<G>
 ```
 
@@ -968,9 +1035,9 @@ enum Directionality { In, Out, Bidi }
 
 structure def Frame3 {
     param origin : Vector3<Length>
-    param x_axis : Vector3<Length>
-    param y_axis : Vector3<Length>
-    param z_axis : Vector3<Length>
+    param x_axis : Vector3<Dimensionless>
+    param y_axis : Vector3<Dimensionless>
+    param z_axis : Vector3<Dimensionless>
 }
 
 trait LocatedPort : Port {
@@ -1459,6 +1526,9 @@ constraint def Conforms {
 }
 ```
 
+A tolerance zone as a real `Solid` — `zone_slab`, `zone_cylinder`, `zone_annulus`,
+`zone_profile` — is built by §3.2's GD&T tolerance-zone constructors.
+
 ### 7.3 `std.tolerancing.surface`
 
 ```
@@ -1762,11 +1832,31 @@ and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 **Stress post-processing (`std.analysis.stress`):**
 
 ```
+// Pointwise — a concrete 3×3 stress tensor (e.g. 100MPa * outer(e1, e1))
+fn von_mises(stress: Tensor<2, 3, Pressure>) -> Pressure
+fn principal_stresses(stress: Tensor<2, 3, Pressure>) -> List<Pressure>
+fn safety_factor(stress: Tensor<2, 3, Pressure>, yield_strength: Pressure) -> Real
+fn max_shear(stress: Tensor<2, 3, Pressure>) -> Pressure
+
+// Field-lifted — the same reduction at every sample point (e.g. ElasticResult.stress, §16)
 fn von_mises(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
-fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> List<Field<Point3<Length>, Scalar<Pressure>>>
+fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, List<Scalar<Pressure>>>
 fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_strength: Pressure) -> Field<Point3<Length>, Scalar<Dimensionless>>
 fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
 ```
+
+The argument's shape picks the form: a `Field` argument takes the field-lifted
+path, a concrete tensor the pointwise one. The pointwise form is the one PRD
+v0_3/structural-analysis-fea.md task 5 specifies, ruled by #2884:
+`von_mises(stress: Tensor<2,3,Pressure>) -> Pressure`. Each field-lifted form is
+that reduction applied at every sample point. `principal_stresses` yields the
+three principal stresses in ascending order — over a field, every sample is
+that three-element list. The tensor argument is not dimension-checked today, so
+`von_mises`, `max_shear` and `principal_stresses` carry the tensor's own
+quantity: a dimensionless tensor yields `Real` (the same rule §15 states for
+`stress_invariants`).
+
+`stress_invariants`, the fifth stress-tensor reduction, is documented with its result structure in §15 (`std.fea`). Unlike the four above, it takes a concrete 3×3 tensor only and has no `Field` form.
 
 ---
 
@@ -1812,7 +1902,8 @@ fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> 
 **`ElasticResult` derivative channels.** Distinct from the operators above:
 these are *result channels* populated by `solve_elastic_static`, not operators
 you apply. They are documented here so the operator `curl` and the result
-channel `curl` sit adjacent and cannot be confused.
+channel `curl` sit adjacent and cannot be confused. The full `ElasticResult`
+declaration, and which channels each solve route fills, is in §16.3.
 
 ```
 ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
@@ -2001,7 +2092,7 @@ This hierarchy is enforced via nominal conformance, not merely declared: `bind`/
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
-`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
@@ -2233,3 +2324,228 @@ Recovery is driven by the subject (first argument): an `Ok` yields its carried v
 | `map_err(r, f)` | `r` unchanged (`f` not applied) | `Err { error: f(e) }` | `undef` |
 
 `ok_or(o, err)` is the `Option` → `Result` bridge: `some(x) -> Ok { value: x }`, `none -> Err { error: err }`, `undef -> undef`.
+
+---
+
+## 15. `std.fea` — stress-invariant result structure
+
+`std.fea` (`crates/reify-compiler/stdlib/fea.ri`) declares the named structure the `stress_invariants` builtin returns.
+
+```
+structure def StressInvariants {
+    param i1 : Pressure     // I1 = tr(σ)                                                 (Pa)
+    param i2 : Pressure2    // I2 = (tr(σ)² − tr(σ²)) / 2  — sum of principal 2×2 minors  (Pa²)
+    param i3 : Pressure3    // I3 = det(σ)                                                (Pa³)
+}
+
+fn stress_invariants(stress: Tensor<2, 3, Pressure>) -> StressInvariants
+```
+
+The fields hold the three classical scalar invariants of a symmetric 3×3 Cauchy stress tensor. They are unchanged by a rotation of the coordinate frame. Expanded, I2 = σxx·σyy + σyy·σzz + σzz·σxx − σxy² − σyz² − σzx². Each field carries the matching power of the tensor's dimension (Pressure, Pressure², Pressure³; see §2.4 for the `Pressure2`/`Pressure3` aliases).
+
+The fields are dimension-checked: `inv.i1` passes where a `Pressure` is demanded, `inv.i2` where a `Pressure2` is demanded, and `inv.i3` where a `Pressure3` is demanded.
+
+`stress_invariants` takes exactly one argument, a concrete 3×3 tensor such as `matrix([[...]])` of Pa values. The tensor must be symmetric: asymmetric input is a precondition violation, asserted in debug builds; release builds read only the upper triangle. Any other argument evaluates to `undef`: a non-tensor, a non-3×3 matrix, or a `Field`. The result type stays `StressInvariants` even for a `Field` argument, because evaluation has no `Field` form for this reduction (contrast the reductions in §10). A dimensionless input tensor yields plain `Real` values in all three fields.
+
+Worked example — the `INVARIANT_POWERS_FIXTURE` in `crates/reify-eval/tests/harness_fea_solver_e2e/fea_stress_reductions_smoke.rs`, whose values are asserted there:
+
+```
+let stress = matrix([[2.0e6Pa, 0.0Pa,   0.0Pa],
+                     [0.0Pa,   3.0e6Pa, 0.0Pa],
+                     [0.0Pa,   0.0Pa,   5.0e6Pa]])
+
+let inv = stress_invariants(stress)
+// inv.i1 = 10 MPa   (1.0e7 Pa)    — I1 = 2 + 3 + 5
+// inv.i2 = 31 MPa²  (3.1e13 Pa²)  — I2 = 2·3 + 3·5 + 2·5
+// inv.i3 = 30 MPa³  (3.0e19 Pa³)  — I3 = 2·3·5
+```
+
+---
+
+## 16. `std.solver.elastic` — linear-elastic static FEA
+
+`std.solver.elastic` (`crates/reify-compiler/stdlib/solver_elastic.ri`) declares the option and result types of the linear-elastic static solver and its entry point, `solve_elastic_static`. The types it consumes come from other modules, not covered in this section — read their source files: the material traits `ConstitutiveLaw` and `ElasticMaterial` from `std.materials.fea` (`crates/reify-compiler/stdlib/materials_fea.ri`), the orthotropic, transverse-isotropic and anisotropic materials from `std.constitutive` (`crates/reify-compiler/stdlib/constitutive.ri`), and the `Load` / `Support` marker traits of its load and support lists from `std.fea.types` (`crates/reify-compiler/stdlib/fea_types.ri`). The shapes, defaults and constraints of the declarations below are pinned by `crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_tests.rs`.
+
+### 16.1 Option and status enums
+
+```
+enum ElementOrder { P1, P2 }          // linear (4-node) or quadratic (10-node) tetrahedra
+enum ShellForce { Off, Auto, On }     // shell routing: never / classify by shell_threshold / always
+enum BudgetReason { TargetMissed, MaxIterations, MaxDofs, Stalled }
+enum ConvergenceStatus {
+    Converged { final_indicator: Real },    // final global relative energy-norm error
+    NotConverged { reason: BudgetReason }   // adaptive loop stopped short of target_accuracy
+}
+enum QoIDescriptor {}                 // empty stub — accepted and ignored
+```
+
+`BudgetReason` names what stopped the adaptive refinement loop: its budget ran out with the error estimate still above `target_accuracy` (`TargetMissed`), it hit the `max_refinement_iterations` cap (`MaxIterations`), the next refinement would exceed `max_dofs` (`MaxDofs`), or the error estimate stopped improving (`Stalled`). `QoIDescriptor` reserves a type for future goal-oriented error estimation; it has no variants yet.
+
+### 16.2 `ElasticOptions`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial. Which knobs the solver
+// reads today is stated in the table below, not in these comments.
+structure def ElasticOptions {
+    param element_order : ElementOrder = ElementOrder.P1
+    param mesh_size : Option<Length> = none
+    param max_iter : Int = 1000
+    param cg_tolerance : Real = 0.000001         // = 1e-6, dimensionless
+    param threads : Option<Int> = none
+    param shell_threshold : Real = 0.2           // dimensionless
+    param shell_voxel_size : Option<Length> = none
+    param shell_branch_prune_ratio : Real = 1.0  // dimensionless
+    param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
+    param deterministic : Bool = false
+    param target_accuracy : Real = 0.05          // dimensionless
+    param max_refinement_iterations : Int = 5
+    param max_dofs : Int = 5000000
+    param target_quantity_of_interest : Option<QoIDescriptor> = none
+    param adaptive : Bool = false
+
+    constraint max_iter > 0
+    constraint cg_tolerance > 0
+    constraint cg_tolerance < 1
+    constraint shell_threshold > 0
+    constraint shell_threshold < 1
+    constraint shell_branch_prune_ratio > 0
+    constraint !(force_tet && require_hex_wedge)
+    constraint target_accuracy > 0
+    constraint target_accuracy < 1
+    constraint max_refinement_iterations >= 0
+    constraint max_dofs > 0
+}
+```
+
+Every param has a default, so a bare `ElasticOptions()` is the standard setup; override knobs by name, e.g. `ElasticOptions(adaptive: true, target_accuracy: 0.02)`. The constraints cover every knob, including the ones `solve_elastic_static` does not read today:
+
+| Knob | Meaning | Read by `solve_elastic_static` today? |
+|---|---|---|
+| `element_order` | P1 or P2 tetrahedra | **No** — the static solve always assembles P1. `BucklingOptions` and `ModalOptions` declare their own `element_order`, which those solvers honour. |
+| `mesh_size` | target mesh edge length; `none` = solver's choice | **No** |
+| `max_iter` | conjugate-gradient (CG) iteration cap | **No** — the static solve uses its own fixed CG tolerance and iteration cap |
+| `cg_tolerance` | CG relative-residual convergence threshold | **No** — see `max_iter` |
+| `threads` | worker-thread count; `none` = host CPU count | **Yes**; small problems run single-threaded whatever the value |
+| `shell_threshold` | thickness/extent ratio below which `Auto` picks the shell route | **Yes**, on the box-dimension overloads; the `body : Solid` overload always solves as a solid |
+| `shell_voxel_size` | voxel size for medial-axis extraction; `none` = solver's choice | **No** — any value is discarded |
+| `shell_branch_prune_ratio` | medial-axis branch-pruning threshold | **No effect on the result** — read only by the shell route's medial-axis extraction step, which today runs on a stand-in slab rather than the body |
+| `shell_force` | shell routing: `Off` solid, `Auto` classify by `shell_threshold`, `On` shell | **Yes**, as `shell_threshold` |
+| `force_tet` | disable hex/wedge promotion | **No** — the static solve meshes tetrahedra only |
+| `require_hex_wedge` | make a fall-back to tetrahedra an error | **No** — see `force_tet` |
+| `deterministic` | single-threaded, fixed-order reductions: bit-identical results across runs and machines | **Yes** |
+| `target_accuracy` | relative energy-norm error target of the adaptive loop | **Yes**, with `adaptive: true`; a non-default value without it draws a warning |
+| `max_refinement_iterations` | refinement-iteration cap; `0` = coarse pass only | **Yes**, as `target_accuracy` |
+| `max_dofs` | degrees-of-freedom cap on a refined mesh | **Yes**, as `target_accuracy` |
+| `target_quantity_of_interest` | goal-oriented error-estimation hook | **No**, by design — `QoIDescriptor` is an empty stub |
+| `adaptive` | opt into a-posteriori adaptive refinement | **Yes**, on the solid route with an isotropic material; any other material draws a warning and gets a single solve. The shell route ignores it. |
+
+The declarations depart from PRD `docs/prds/v0_3/structural-analysis-fea.md` in two ways. The PRD's `Integer` (e.g. `iterations : Integer`) is spelled `Int`, Reify's builtin name. And the PRD's defaults for `mesh_size` (an automatic size) and `threads` (`num_cpus::get()`, every hardware thread) cannot be written as `.ri` defaults, so both ship as `Option<T> = none`, meaning "no preference": the solver picks the value (for `threads`, the host CPU count).
+
+### 16.3 `ElasticResult` and `ShellStress`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial.
+structure def ElasticResult {
+    param displacement : Field<Point3<Length>, Vector3<Length>>
+    param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param divergence : Field<Point3<Length>, Real>                  // tr(ε), volumetric strain
+    param gradient : Field<Point3<Length>, Tensor<2, 3, Real>>      // ∇u
+    param curl : Field<Point3<Length>, Vector3<Dimensionless>>      // ∇×u
+    param rotation : Field<Point3<Length>, Vector3<Angle>>          // ∇×u / 2
+    param shear_angles : Field<Point3<Length>, Vector3<Angle>>      // (γ_yz, γ_zx, γ_xy)
+    param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
+    param shell_channels : ShellStress
+    param max_von_mises : Pressure
+    param converged : Bool
+    param iterations : Int
+    param error_indicator : Option<Field<Point3<Length>, Pressure>> = none
+    param global_relative_energy_error : Option<Real> = none
+    param convergence_status : ConvergenceStatus = Converged { final_indicator: 0.0 }
+
+    constraint iterations >= 0
+    constraint max_von_mises >= 0
+}
+
+structure def ShellStress {
+    param top : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+}
+```
+
+`solve_elastic_static` builds the result; constructing one yourself is not meaningful. Which fields it fills depends on the route the solve took (§16.2's `shell_force`):
+
+| Field | Solid (tetrahedral) result | Shell result |
+|---|---|---|
+| `displacement` | sampled field | `undef` |
+| `stress` | sampled field | mid-surface stress |
+| `divergence`, `gradient`, `curl`, `rotation`, `shear_angles` | sampled fields | `undef` |
+| `frame` | `undef` | `undef` |
+| `shell_channels` | `undef` | `ShellStress`; `mid` equals `stress` |
+| `max_von_mises`, `converged`, `iterations` | set | set |
+| `error_indicator`, `global_relative_energy_error`, `convergence_status` | the adaptive loop's values when it ran (§16.2's `adaptive`), else the defaults | the defaults |
+
+`max_von_mises` is the peak von Mises stress over the mesh's elements — on a shell result, over the top, mid and bottom layers. It is not the same number as `max(von_mises(result.stress))` (§10): `stress` is resampled from the element values onto a sample grid, and on a solid result that field reduction is never higher, so `max_von_mises` is the more conservative yield check. `converged` and `iterations` report the conjugate-gradient solve against the solver's own iteration cap, not `ElasticOptions.max_iter` (§16.2), so `iterations` can exceed `max_iter`. The defaults of the three a-posteriori fields — `none`, `none` and `Converged { final_indicator: 0.0 }` — are what a single-shot, non-adaptive solve reports. For what the derivative channels mean — why `curl` is dimensionless and `rotation` / `shear_angles` carry `Angle` — see §11's "`ElasticResult` derivative channels".
+
+### 16.4 `solve_elastic_static`
+
+```
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : Field<Point3<Length>, AnisotropicMaterial>,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    body      : Solid,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+pub structure def FEAMaterialInput {
+    param material : ElasticMaterial
+}
+```
+
+All three overloads dispatch to the same solver; their `.ri` bodies are fallbacks that never run.
+
+- **Homogeneous box** (first overload): solves a `length` × `width` × `height` box of one material. `material` accepts any `ConstitutiveLaw` conformer directly — an `ElasticMaterial` such as `Steel_AISI_1045()`, or an `OrthotropicMaterial` / `TransverseIsotropicMaterial`. `options` may be omitted.
+- **Heterogeneous box** (second overload): the same box, with a spatially varying `Field<Point3<Length>, AnisotropicMaterial>` such as `as_printed_material` produces. It has no `options` parameter, so every knob takes its default.
+- **Body** (third overload): realizes `body` to a tetrahedral mesh and solves on that mesh, always as a solid — the shell route is box-only. `options` may be omitted.
+
+`loads` and `supports` take list literals of conformers, e.g. `[PointLoad(...)]` and `[FixedSupport(...)]`. The conformers — `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` and `Gravity` for loads, `FixedSupport` and `PinnedSupport` for supports — are declared in `crates/reify-compiler/stdlib/fea_multi_case.ri`. `docs/stdlib/multi-load-fea.md` shows them in use and covers solving several load cases at once.
+
+`FEAMaterialInput` wraps a material — `FEAMaterialInput(material: mat)` — so that its `.material` is typed `ElasticMaterial`. It was introduced so a concrete material could reach `solve_buckling`'s `material : ElasticMaterial` parameter, and the buckling examples still use it that way. Neither solver needs it today: `solve_elastic_static` and `solve_buckling` both accept a conformer such as `Steel_AISI_1045()` directly, and the wrapped and direct forms give the same result.
+
+Worked example — `examples/fea_cantilever_smoke.ri`, built by `crates/reify-cli/tests/harness_cli/cli_build_fea.rs`, solves a clamped steel cantilever under a tip load:
+
+```
+let material = Steel_AISI_1045()
+let tip_load = PointLoad(point: "tip", force: 1000.0)
+let mount = FixedSupport(target: "root")
+let result = solve_elastic_static(
+    material, length, width, height, [tip_load], [mount], ElasticOptions()
+)
+```

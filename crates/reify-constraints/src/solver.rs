@@ -4489,6 +4489,9 @@ fn rank_single(
                     unique,
                 }],
                 optimality,
+                // DimensionalSolver does not reason about the solution set at
+                // task α — `unique` still comes from the perturbation probe.
+                completeness: reify_ir::Completeness::not_attempted(),
             }
         }
         // Infeasible and NoProgress are structurally identical to the default
@@ -4735,6 +4738,10 @@ impl DimensionalSolver {
                     optimality: OptimalityStatus::BestFound {
                         reason: best_found_reason(winner_iter_limited),
                     },
+                    // Best-of-K multistart establishes nothing about the set: the
+                    // K candidates are NOT deduplicated, so their count is not a
+                    // solution count (C5 basin identity arrives at ζ #6711 → #6902).
+                    completeness: reify_ir::Completeness::not_attempted(),
                 }
             }
             non_solved => non_solved
@@ -8926,6 +8933,7 @@ mod tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => {
                 assert_eq!(
                     candidates.len(),

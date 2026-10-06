@@ -339,7 +339,14 @@ fn value_type_kind_matches(
         Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
-        Value::Enum { .. } => matches!(ty, Type::Enum(_)),
+        Value::Enum { type_name, .. } => match ty {
+            Type::Enum(_) => true,
+            // Annotated generic enum (`param r : Result<Length, String>`): type
+            // args are compile-time only (PRD generic-enum-type-arg-retention
+            // C-5), so the runtime match is name-only, as for StructureInstance.
+            Type::Applied { name, .. } => name == type_name,
+            _ => false,
+        },
         Value::List(_) => matches!(ty, Type::List(_)),
         Value::Set(_) => matches!(ty, Type::Set(_)),
         Value::Map(_) => matches!(ty, Type::Map(_, _)),
@@ -2336,6 +2343,61 @@ mod tests {
         assert!(
             !value_type_kind_matches(&v, &t, Some(&reg)),
             "StructureInstance must NOT match Applied with different name"
+        );
+    }
+
+    // ── value_type_kind_matches: Enum arm vs Applied (task 8017 / θ) ────────────
+    // An annotated generic-enum param (`param r : Result<Length, String>`) keeps
+    // `Type::Applied`, while its runtime `Value::Enum` carries only the bare
+    // `type_name`: type args are compile-time only, so the match is name-only.
+
+    /// A real `Result::Ok` construction: bare enum name, non-empty named payload.
+    fn result_ok_enum_value() -> reify_ir::Value {
+        reify_ir::Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            payload: vec![("value".to_string(), reify_ir::Value::length(0.005))],
+        }
+    }
+
+    /// θ: Applied type with the SAME name as the enum value → true (phantom
+    /// args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::length(), Type::String],
+        };
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match Applied with the same name (phantom args ignored)"
+        );
+    }
+
+    /// θ: Applied type with a DIFFERENT name — a generic-STRUCTURE head such as
+    /// `Holder<Length>`, which `Type::Applied` also carries — → false.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Holder".to_string(),
+            args: vec![Type::length()],
+        };
+        assert!(
+            !value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must NOT match Applied with a different name"
+        );
+    }
+
+    /// θ regression guard: the bare `Type::Enum` arm keeps its kind-level match.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_bare_enum_type_returns_true() {
+        use reify_core::Type;
+        let t = Type::Enum("Result".to_string());
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match a bare Type::Enum"
         );
     }
 

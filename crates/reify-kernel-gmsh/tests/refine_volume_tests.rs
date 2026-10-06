@@ -9,10 +9,8 @@
 
 // The clamp probe and its serialising mutex are shared verbatim with
 // `tests/mesh_size_option_hermeticity.rs`, the other half of this
-// discipline. Declared by path rather than through `common/mod.rs`, which
-// #6387 reduced to a re-export shim over `reify_test_support::mesh_fixtures` and
-// which is scheduled for deletion; see `common/clamp_probe.rs` for why one
-// copy matters.
+// discipline. Declared by `#[path]`; see `common/clamp_probe.rs` for why, and
+// why one copy matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 

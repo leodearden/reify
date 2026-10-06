@@ -71,6 +71,8 @@ use reify_compiler::CompiledModule;
 use reify_core::{Diagnostic, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
+use crate::chunk_io::{FUNCTIONS_CHUNK_PATH as CHUNK_PATH, read_chunk};
+
 /// The centralised label every `arg_check.rs` arity rejection carries
 /// (`crates/reify-compiler/src/arg_check.rs:72`). NOT universal — see
 /// [`arg_count_rejections`].
@@ -178,7 +180,7 @@ struct DocSignature {
 ///
 /// # Why fence-agnostic and tag-agnostic
 ///
-/// The obvious reuse would be `geometry_chunk_smoke::reify_tagged_fences`, which
+/// The obvious reuse would be `chunk_markdown::tagged_fence_bodies`, which
 /// is already parameterised by info string. But it matches that string BYTE-
 /// EXACTLY, and task #5479 will retag this very fence `reify-schematic` (its
 /// `{ ... }` bodies are literal elisions that can never compile). A tag-keyed
@@ -433,20 +435,6 @@ fn wrapped(
 
 // ── The live chunk ───────────────────────────────────────────────────────────
 
-/// The chunk under test. Read, never written. If it moves, this const must move
-/// with it — the failure mode is a loud panic on the read, never a silent skip.
-const CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/functions.md"
-);
-
-/// Read [`CHUNK_PATH`], panicking loudly (never skipping) if it has moved.
-fn read_chunk() -> String {
-    std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
-        panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
-    })
-}
-
 /// THE GATE. Every example signature the chunk declares, called BARE at the
 /// arity written, must draw no argument-count diagnostic.
 ///
@@ -462,7 +450,7 @@ fn read_chunk() -> String {
 /// resolution having to succeed.
 #[test]
 fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin() {
-    let signatures = declared_signatures(&read_chunk());
+    let signatures = declared_signatures(&read_chunk(CHUNK_PATH));
     assert!(
         !signatures.is_empty(),
         "no `fn` declaration was scanned out of {CHUNK_PATH} — a restructured chunk must be RED \
@@ -509,7 +497,7 @@ fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin()
 /// any other section would hold this green) and for the separate by-TYPE gap.
 #[test]
 fn functions_chunk_still_illustrates_overloading_by_arity() {
-    let signatures = declared_signatures(&read_chunk());
+    let signatures = declared_signatures(&read_chunk(CHUNK_PATH));
 
     let overloaded: Vec<&str> = signatures
         .windows(2)
