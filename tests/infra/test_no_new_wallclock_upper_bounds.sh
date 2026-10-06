@@ -38,6 +38,116 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== Wall-clock upper-bound regression guard ==="
 
 # ---------------------------------------------------------------------------
+# _wallclock_logical_lines <file>
+#
+# Prints one "<first-physical-lineno> TAB <logical-line>" record per logical
+# line of <file> to stdout: the unit the detector below filters on.
+# ---------------------------------------------------------------------------
+_wallclock_logical_lines() {
+    # Join backslash-continued lines AND lines inside a still-open
+    # single- OR double-quoted string (e.g. a multi-line `bash -c '...'`
+    # block, the test_occt_flock_gate.sh / test_proc_reaper.sh idiom, OR
+    # a multi-line "..." assert description — bash permits a literal
+    # embedded newline inside double quotes too) into one logical line.
+    # A line ending in `\` continues the join exactly as before; a line
+    # that leaves EITHER a single-quoted OR a double-quoted string OPEN
+    # continues the join even with no trailing backslash, and the join
+    # only terminates once none of the three conditions holds.
+    #
+    # Quote tracking is a left-to-right character scan, NOT a naive
+    # apostrophe parity count — a bare `'` is only a real single-quote
+    # toggle when it appears OUTSIDE a double-quoted span.  tests/infra
+    # prose is full of possessives/contractions inside double-quoted
+    # assert descriptions (e.g. "...other branch's job") and inside `#`
+    # comments (e.g. "# _START15's perspective"), each contributing
+    # exactly ONE apostrophe on its physical line; a whole-line odd/even
+    # count desyncs on the first such line and then mis-joins (or
+    # mis-splits) everything downstream. The scanner tracks single-quote
+    # (inq1) and double-quote (inq2) state independently: a `'` only
+    # toggles inq1 while NOT inside inq2, matching real shell quoting
+    # (apostrophes inside "..." are literal text, never a quote
+    # boundary). `'"$VAR"'`-style interpolation (close-quote, dquote-var,
+    # reopen-quote, as used by test_occt_flock_gate.sh's barrier loops)
+    # is thus handled precisely rather than by parity-cancellation luck:
+    # the first `'` toggles inq1 off, `"..."` opens/closes inq2 without
+    # touching inq1, and the final `'` toggles inq1 back on.
+    #
+    # A `#` starts a comment (stops the scan early — nothing after it can
+    # affect quote state, matching real bash) only when reached OUTSIDE
+    # both inq1 and inq2 and at a word boundary (start of line, or
+    # preceded by a space/tab); this keeps prose apostrophes in full-line
+    # or trailing comments from ever reaching the parity logic. The
+    # comment text itself is still appended to `buf` unmodified — only
+    # the SCAN stops early — because a `# wallclock:allow` escape token
+    # is itself a comment and must survive into the logical line for the
+    # downstream escape-regex to see it.
+    #
+    # A backslash escapes the single next character everywhere (outside
+    # quotes, and inside a double-quoted span) so `\"` inside `"..."`
+    # cannot prematurely close it. Inside a single-quoted span nothing is
+    # special but the terminating `'` (real bash: single quotes have no
+    # escape mechanism), so the scanner does not consult backslashes
+    # there.
+    #
+    # `q`/`dq` (passed via -v) hold one apostrophe / double-quote so this
+    # awk script body never needs either literally — a literal `'` would
+    # break out of the surrounding bash single-quoted string.
+    #
+    # Statement-boundary reset: a logical line is only ever printed once
+    # cont_bs, inq1, AND inq2 all hold false (see the continuation guard
+    # below), so by construction inq1/inq2 are already both closed at
+    # that point — the explicit `inq1 = 0; inq2 = 0` reset is therefore
+    # always a true "already-terminated" reset, never a forced one, and
+    # an already-terminated statement can never leak open-quote state
+    # into an unrelated later statement (fixture 2j).
+    awk -v q="'" -v dq="\"" '
+        BEGIN { inq1 = 0; inq2 = 0; active = 0; buf = "" }
+        {
+            orig = $0
+            cont_bs = (orig ~ /\\$/)
+            line = orig
+            if (cont_bs) { sub(/\\$/, "", line) }
+
+            n = length(line)
+            i = 1
+            while (i <= n) {
+                c = substr(line, i, 1)
+                if (inq1) {
+                    if (c == q) { inq1 = 0 }
+                    i++
+                    continue
+                }
+                if (inq2) {
+                    if (c == "\\") { i += 2; continue }
+                    if (c == dq) { inq2 = 0 }
+                    i++
+                    continue
+                }
+                if (c == "\\") { i += 2; continue }
+                if (c == q) { inq1 = 1; i++; continue }
+                if (c == dq) { inq2 = 1; i++; continue }
+                if (c == "#") {
+                    prevc = (i == 1) ? "" : substr(line, i - 1, 1)
+                    if (i == 1 || prevc == " " || prevc == "\t") { break }
+                }
+                i++
+            }
+
+            if (!active) { startline = NR; active = 1 }
+            buf = buf line
+
+            if (cont_bs || inq1 || inq2) {
+                next
+            }
+
+            print startline "\t" buf
+            buf = ""; active = 0; inq1 = 0; inq2 = 0
+        }
+        END { if (active) print startline "\t" buf }
+    ' "$1"
+}
+
+# ---------------------------------------------------------------------------
 # _detect_wallclock_upper_bound <dir> [exclude_basename]
 #
 # Scans all *.sh files in <dir> (except <exclude_basename>) for
@@ -92,16 +202,8 @@ _detect_wallclock_upper_bound() {
     _wc_var_sfx='ELAP''SED|_M?S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
     _wc_re="${_wc_re}|${_wc_var_sfx}"
 
-    local _viof; _viof="$(mktemp)"
-    local _linesf; _linesf="$(mktemp)"
-    local _detector_cleanup_done=0
-    _detector_cleanup() {
-        if [ "$_detector_cleanup_done" = "0" ]; then
-            rm -f "$_viof" "$_linesf"
-            _detector_cleanup_done=1
-        fi
-    }
-    trap '_detector_cleanup' RETURN
+    # Local array, not a temp file: nothing outlives the call to clean up (Section 4 pins this).
+    local -a _viol=()
 
     local f
     for f in "$dir"/*.sh; do
@@ -110,109 +212,6 @@ _detect_wallclock_upper_bound() {
         if [ -n "$exclude_base" ] && [ "$base" = "$exclude_base" ]; then
             continue
         fi
-
-        # Join backslash-continued lines AND lines inside a still-open
-        # single- OR double-quoted string (e.g. a multi-line `bash -c '...'`
-        # block, the test_occt_flock_gate.sh / test_proc_reaper.sh idiom, OR
-        # a multi-line "..." assert description — bash permits a literal
-        # embedded newline inside double quotes too) into one logical line.
-        # A line ending in `\` continues the join exactly as before; a line
-        # that leaves EITHER a single-quoted OR a double-quoted string OPEN
-        # continues the join even with no trailing backslash, and the join
-        # only terminates once none of the three conditions holds.
-        #
-        # Quote tracking is a left-to-right character scan, NOT a naive
-        # apostrophe parity count — a bare `'` is only a real single-quote
-        # toggle when it appears OUTSIDE a double-quoted span.  tests/infra
-        # prose is full of possessives/contractions inside double-quoted
-        # assert descriptions (e.g. "...other branch's job") and inside `#`
-        # comments (e.g. "# _START15's perspective"), each contributing
-        # exactly ONE apostrophe on its physical line; a whole-line odd/even
-        # count desyncs on the first such line and then mis-joins (or
-        # mis-splits) everything downstream. The scanner tracks single-quote
-        # (inq1) and double-quote (inq2) state independently: a `'` only
-        # toggles inq1 while NOT inside inq2, matching real shell quoting
-        # (apostrophes inside "..." are literal text, never a quote
-        # boundary). `'"$VAR"'`-style interpolation (close-quote, dquote-var,
-        # reopen-quote, as used by test_occt_flock_gate.sh's barrier loops)
-        # is thus handled precisely rather than by parity-cancellation luck:
-        # the first `'` toggles inq1 off, `"..."` opens/closes inq2 without
-        # touching inq1, and the final `'` toggles inq1 back on.
-        #
-        # A `#` starts a comment (stops the scan early — nothing after it can
-        # affect quote state, matching real bash) only when reached OUTSIDE
-        # both inq1 and inq2 and at a word boundary (start of line, or
-        # preceded by a space/tab); this keeps prose apostrophes in full-line
-        # or trailing comments from ever reaching the parity logic. The
-        # comment text itself is still appended to `buf` unmodified — only
-        # the SCAN stops early — because a `# wallclock:allow` escape token
-        # is itself a comment and must survive into the logical line for the
-        # downstream escape-regex to see it.
-        #
-        # A backslash escapes the single next character everywhere (outside
-        # quotes, and inside a double-quoted span) so `\"` inside `"..."`
-        # cannot prematurely close it. Inside a single-quoted span nothing is
-        # special but the terminating `'` (real bash: single quotes have no
-        # escape mechanism), so the scanner does not consult backslashes
-        # there.
-        #
-        # `q`/`dq` (passed via -v) hold one apostrophe / double-quote so this
-        # awk script body never needs either literally — a literal `'` would
-        # break out of the surrounding bash single-quoted string.
-        #
-        # Statement-boundary reset: a logical line is only ever printed once
-        # cont_bs, inq1, AND inq2 all hold false (see the continuation guard
-        # below), so by construction inq1/inq2 are already both closed at
-        # that point — the explicit `inq1 = 0; inq2 = 0` reset is therefore
-        # always a true "already-terminated" reset, never a forced one, and
-        # an already-terminated statement can never leak open-quote state
-        # into an unrelated later statement (fixture 2j).
-        # Output format: <first-physical-lineno> TAB <logical-line>
-        awk -v q="'" -v dq="\"" '
-            BEGIN { inq1 = 0; inq2 = 0; active = 0; buf = "" }
-            {
-                orig = $0
-                cont_bs = (orig ~ /\\$/)
-                line = orig
-                if (cont_bs) { sub(/\\$/, "", line) }
-
-                n = length(line)
-                i = 1
-                while (i <= n) {
-                    c = substr(line, i, 1)
-                    if (inq1) {
-                        if (c == q) { inq1 = 0 }
-                        i++
-                        continue
-                    }
-                    if (inq2) {
-                        if (c == "\\") { i += 2; continue }
-                        if (c == dq) { inq2 = 0 }
-                        i++
-                        continue
-                    }
-                    if (c == "\\") { i += 2; continue }
-                    if (c == q) { inq1 = 1; i++; continue }
-                    if (c == dq) { inq2 = 1; i++; continue }
-                    if (c == "#") {
-                        prevc = (i == 1) ? "" : substr(line, i - 1, 1)
-                        if (i == 1 || prevc == " " || prevc == "\t") { break }
-                    }
-                    i++
-                }
-
-                if (!active) { startline = NR; active = 1 }
-                buf = buf line
-
-                if (cont_bs || inq1 || inq2) {
-                    next
-                }
-
-                print startline "\t" buf
-                buf = ""; active = 0; inq1 = 0; inq2 = 0
-            }
-            END { if (active) print startline "\t" buf }
-        ' "$f" > "$_linesf"
 
         local lineno logical
         while IFS=$'\t' read -r lineno logical; do
@@ -227,16 +226,14 @@ _detect_wallclock_upper_bound() {
             # (3) Time-measurement signal (description lexeme OR var-suffix)
             if ! [[ "$logical" =~ $_wc_re ]]; then continue; fi
             # Violation: all four conditions met
-            echo "${f}:${lineno}: ${logical}" >> "$_viof"
-        done < "$_linesf"
+            _viol+=("${f}:${lineno}: ${logical}")
+        done < <(_wallclock_logical_lines "$f")
     done
 
-    if [ -s "$_viof" ]; then
-        cat "$_viof" >&2
-        _detector_cleanup
+    if [ "${#_viol[@]}" -gt 0 ]; then
+        printf '%s\n' "${_viol[@]}" >&2
         return 1
     fi
-    _detector_cleanup
     return 0
 }
 
