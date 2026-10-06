@@ -713,7 +713,8 @@ fn elaborate_child_instance_nested<'t, 'f>(
                 // against, a `sub sink = Leaf(seed: computed)` would silently
                 // receive the stale sentinel. That is a quieter instance of the
                 // defect #6662 exists to fix, which is why it routes through
-                // the SAME helper rather than a second copy of the rule.
+                // the SAME helper rather than a second copy of the rule. The
+                // symbolic mint is applied here for the same parity reason.
                 //
                 // No diagnostic is emitted here: phase 2 is the authoritative
                 // site and sees the same cell, so reporting from both would
@@ -742,15 +743,29 @@ fn elaborate_child_instance_nested<'t, 'f>(
                 ) {
                     OptimizedInstanceResolution::Reuse(v) => v,
                     OptimizedInstanceResolution::NotOptimized
-                    | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                        &overlay,
-                        expr,
-                        functions,
-                        meta_map,
-                        &snapshot.values,
-                        &arg_runtime_sink,
-                        &arg_containment,
-                    ),
+                    | OptimizedInstanceResolution::Unreusable { .. } => {
+                        let evaluated = eval_child_expr(
+                            &overlay,
+                            expr,
+                            functions,
+                            meta_map,
+                            &snapshot.values,
+                            &arg_runtime_sink,
+                            &arg_containment,
+                        );
+                        mint_instance_cell_if_undef(
+                            evaluated,
+                            SymbolicMintOrder::SelectorFirst,
+                            key,
+                            expr,
+                            &SymbolicMintScope {
+                                template: child_template,
+                                values: &overlay,
+                                functions,
+                                meta_map,
+                            },
+                        )
+                    }
                 };
                 overlay.insert(key.clone(), v);
             }
