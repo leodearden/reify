@@ -813,6 +813,12 @@ kill -KILL $$
 echo "SURVIVED_KILL" >> "$_m"
 TRAP_SIG
 
+# env --default-signal: GNU coreutils >= 8.31; BSD env and older GNU env lack it.
+_T10C_CAN_RESET_DISPOSITION=0
+if env --default-signal=TERM true >/dev/null 2>&1; then
+    _T10C_CAN_RESET_DISPOSITION=1
+fi
+
 # THE PER-ATTEMPT VERDICT TRAVELS ON THE EXIT CODE, not in a diagnostic string,
 # so the retry policy below branches on a value instead of re-parsing prose:
 #   _T10C_RC_OK        the trap contract held for this signal.
@@ -1217,6 +1223,31 @@ assert "10i: with SIG_IGN inherited and no reset, each of 10c's INT/TERM/HUP sub
 # (j) The disposition is deterministic, so retrying it only burns forks.
 assert "10j: at factor 4 an IGNORED_ON_ENTRY verdict FAILS after exactly one attempt (an environment fact is never retried)" \
     _t10c_retry_expect ignored 4 "${_T10C_RC_IGNORED_ON_ENTRY:-}" no 1
+
+# (k) Where the host can reset a disposition, an inherited SIG_IGN must not cost
+#     10c its coverage: the probe is handed SIG at default and the arm runs.
+_t10k() {
+    local _sig _out _rc _fail=0
+    for _sig in INT TERM HUP; do
+        _out="$NX_TRAP_DIR/reset-$_sig.out"
+        _rc=0
+        _t10c_under_ignored "$_sig" 1 _t10c_probe "$_sig" "$NX_TRAP_DIR/reset-$_sig.marker" > "$_out" 2>&1 || _rc=$?
+        if [ "$_rc" -ne "$_T10C_RC_OK" ]; then
+            echo "SIG$_sig: under an inherited SIG_IGN the probe returned rc=$_rc, not OK"
+            echo "--- SIG$_sig probe output ---"
+            cat "$_out"
+            _fail=1
+        fi
+    done
+    return "$_fail"
+}
+
+if [ "$_T10C_CAN_RESET_DISPOSITION" = 1 ]; then
+    assert "10k: with SIG_IGN inherited (as under nohup or a bare &), 10c's INT/TERM/HUP sub-arms still run and pass because the probe is handed a default disposition" \
+        _t10k
+else
+    echo "  SKIP: 10k: env(1) on this host has no --default-signal (GNU coreutils >= 8.31), so the probe cannot be handed a default disposition; under an inherited SIG_IGN arm 10c SKIPs that signal instead"
+fi
 
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------
