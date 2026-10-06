@@ -778,7 +778,9 @@ _t10b() {
 # wraps infra tests in `timeout --kill-after`, so an outer kill must still tear
 # the temp tree down AND still run the caller's handler. Exercised by having the
 # probe signal ITSELF, once per child per signal, so a lib that replays on only
-# one of the three cannot pass an arm whose title claims all three.
+# one of the three cannot pass an arm whose title claims all three. The probe is
+# spawned via _t10c_spawn with SIG at default disposition, so an inherited
+# SIG_IGN (nohup, a bare `&`) cannot turn that self-signal into a no-op.
 #
 # WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
 # this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
@@ -843,6 +845,20 @@ _T10C_RC_IGNORED_ON_ENTRY=3
 # diagnostics this arm has always echoed and returns one of the four verdict
 # codes above.
 #
+# _t10c_spawn SIG MARKER — run 10c's probe child with SIG at DEFAULT disposition.
+# This CONSTRUCTS the arm's precondition, a deliverable SIG, instead of inheriting
+# whatever the launcher left. The reset is scoped to this short-lived child on
+# purpose: resetting the suite itself would make it killable by the very hangup
+# an operator nohup'd it against. The probe's own IGNORED_ON_ENTRY check stays
+# the check at use, for hosts without the capability.
+_t10c_spawn() {
+    if [ "$_T10C_CAN_RESET_DISPOSITION" = 1 ]; then
+        env --default-signal="$1" bash "$NX_TRAP_SIG" "$REPO_ROOT" "$2" "$1"
+    else
+        bash "$NX_TRAP_SIG" "$REPO_ROOT" "$2" "$1"
+    fi
+}
+
 # PRECEDENCE. IGNORED_ON_ENTRY is classified FIRST, before both other classes:
 # the probe writes it and exits before init, so it carries no WORKDIR= line and
 # the checks below would misread it as STARVED and retry it. Otherwise, when an
@@ -857,7 +873,7 @@ _t10c_probe_once() {
     rm -f "$_m"
     # 2>/dev/null: the parent shell reports the child's death as "Killed",
     # which is the expected outcome here, not evidence.
-    bash "$NX_TRAP_SIG" "$REPO_ROOT" "$_m" "$_sig" 2>/dev/null || true
+    _t10c_spawn "$_sig" "$_m" 2>/dev/null || true
     echo "--- SIG$_sig ---"
     if [ ! -f "$_m" ]; then
         echo "SIG$_sig: the probe wrote no marker at all"
