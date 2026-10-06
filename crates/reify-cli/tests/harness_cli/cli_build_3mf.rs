@@ -1,4 +1,17 @@
+use std::path::Path;
+use std::process::ExitStatus;
+
 use crate::common;
+
+/// Run `reify build <design> -o <output_path>`; return `(status, stdout, stderr)`.
+fn run_build_to(design: &str, output_path: &Path) -> (ExitStatus, String, String) {
+    common::run_with_args(&[
+        "build",
+        design,
+        "-o",
+        output_path.to_str().expect("temp path is not valid UTF-8"),
+    ])
+}
 
 /// Build a box fixture to a `.3mf` output path and assert valid OPC package
 /// structure in the resulting bytes (Stored=uncompressed, no zip reader needed).
@@ -10,12 +23,7 @@ fn build_box_to_3mf_writes_valid_package() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let output_path = dir.path().join("out.3mf");
 
-    let (status, stdout, stderr) = common::run_with_args(&[
-        "build",
-        &common::fixture_path("box_3mf.ri"),
-        "-o",
-        output_path.to_str().expect("temp path is not valid UTF-8"),
-    ]);
+    let (status, stdout, stderr) = run_build_to(&common::fixture_path("box_3mf.ri"), &output_path);
 
     assert!(
         status.success(),
@@ -65,12 +73,8 @@ fn build_colored_box_to_3mf_writes_basematerials() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let output_path = dir.path().join("out.3mf");
 
-        let (status, stdout, stderr) = common::run_with_args(&[
-            "build",
-            &common::fixture_path("box_3mf_colored.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ]);
+        let (status, stdout, stderr) =
+            run_build_to(&common::fixture_path("box_3mf_colored.ri"), &output_path);
 
         assert!(
             status.success(),
@@ -103,12 +107,8 @@ fn build_colored_box_to_3mf_writes_basematerials() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let output_path = dir.path().join("out.3mf");
 
-        let (status, stdout, stderr) = common::run_with_args(&[
-            "build",
-            &common::fixture_path("box_3mf.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ]);
+        let (status, stdout, stderr) =
+            run_build_to(&common::fixture_path("box_3mf.ri"), &output_path);
 
         assert!(
             status.success(),
