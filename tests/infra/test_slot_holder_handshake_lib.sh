@@ -217,7 +217,59 @@ assert "holder_release: an unreleased owner still holds its slot (release file i
 holder_release "$_RELEASE_D" "$_PID_D" || true
 
 # ============================================================================
-# (e) holder_max_concurrent — R-technique event-log predicate
+# (e) holder_wait_until_waiter_queued — causal blocked-waiter barrier
+#
+# Sections (a)-(d) observe the HOLDER side.  This one observes the WAITER side:
+# "some process is blocked in flock(2) on this slot", a fact no holder probe
+# can see, because the slot reads as held whether or not anyone is queued.
+# ============================================================================
+echo ""
+echo "--- holder_wait_until_waiter_queued: causal blocked-waiter barrier ---"
+
+_SLOT_G="$_TMPD/g.slot"
+_PID_G="$(holder_spawn_gated "$_SLOT_G" "$_TMPD/g.ready" "$_TMPD/g.release")"
+_SPAWNED_PIDS+=("$_PID_G")
+_SLOT_G2="$_TMPD/g2.slot"
+_PID_G2="$(holder_spawn_gated "$_SLOT_G2" "$_TMPD/g2.ready" "$_TMPD/g2.release")"
+_SPAWNED_PIDS+=("$_PID_G2")
+holder_wait_for_marker "$_TMPD/g.ready"
+holder_wait_for_marker "$_TMPD/g2.ready"
+
+# ONE real blocked waiter on g.slot, spawned with no grace pause: the barrier
+# IS the wait.
+( flock -x 9 ) 9>>"$_SLOT_G" &
+_PID_GW=$!
+_SPAWNED_PIDS+=("$_PID_GW")
+
+assert "holder_wait_until_waiter_queued: observes a real blocked flock waiter queued behind a live owner (returns 0)" \
+    holder_wait_until_waiter_queued "$_SLOT_G"
+
+# Same export pin as (a): without it the negative controls below would pass
+# vacuously as command-not-found.
+assert "holder_wait_until_waiter_queued: the exported helper really runs in a child shell" \
+    bash -c "holder_wait_until_waiter_queued '$_SLOT_G'"
+
+# NEGATIVE CONTROL, run while g.slot's waiter is still queued: g2.slot is HELD
+# but nobody waits on it.  A predicate matching any queued waiter, or the
+# holder's own line, goes RED here.
+assert "holder_wait_until_waiter_queued: a held slot with nobody queued is NOT reported (inode-bound, holder line ignored)" \
+    bash -c "! holder_wait_until_waiter_queued '$_SLOT_G2' 2"
+
+holder_release "$_TMPD/g.release" "$_PID_G" || true
+wait "$_PID_GW" 2>/dev/null || true
+
+# NEGATIVE CONTROL: the waiter has acquired and exited, so a PAST waiter must
+# not satisfy the barrier.
+assert "holder_wait_until_waiter_queued: a waiter that already acquired and exited is NOT reported (live waiters only)" \
+    bash -c "! holder_wait_until_waiter_queued '$_SLOT_G' 2"
+
+assert "holder_wait_until_waiter_queued: a missing slot file returns non-zero without aborting" \
+    bash -c "! holder_wait_until_waiter_queued '$_TMPD/g-missing.slot' 2"
+
+holder_release "$_TMPD/g2.release" "$_PID_G2" || true
+
+# ============================================================================
+# (f) holder_max_concurrent — R-technique event-log predicate
 #
 # Purely synthetic log inputs: no real invocations, no pauses, cannot flake.
 # Log format (scripts/lib_slot_acquire.sh REIFY_SLOT_EVENT_LOG contract):
@@ -268,7 +320,7 @@ assert "holder_max_concurrent: EMPTY log -> 0" \
     test "$(holder_max_concurrent "$_LOG_EMPTY")" -eq 0
 
 # ============================================================================
-# (f) Backstop budget is load-scaled, and is counted in POLLS, never measured
+# (g) Backstop budget is load-scaled, and is counted in POLLS, never measured
 #
 # The budget exists only so a never-arriving owner cannot hang the suite.  It
 # is a BROKEN-INFRA BACKSTOP, not a timing assertion, so what is asserted here
