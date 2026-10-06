@@ -62,8 +62,8 @@
 //! # Runtime
 //!
 //! A real Nelder-Mead-over-FEA loop, so it is evicted from the merge gate by its
-//! own test-scoped atom in `scripts/heavy-test-filter-lib.sh`. That atom's
-//! comment is the single record of this test's measured cost.
+//! own test-scoped atom in `scripts/heavy-test-filter-lib.sh`; that atom's
+//! comment carries its measured cost.
 
 use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
