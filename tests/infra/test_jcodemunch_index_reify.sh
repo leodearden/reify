@@ -1562,4 +1562,106 @@ else
     fi
 fi
 
+# -- Test 15: --print-repo-id ------------------------------------------------
+#
+# The narrow seam scripts/smoke-jcodemunch-serve.sh derives its default identity
+# from, so the identity formula, producer chain and canonical root keep ONE home.
+echo ""
+echo "--- Test 15: --print-repo-id prints the one derived identity and nothing else ---"
+
+# expect_printed_id <want> [args...] — `--print-repo-id [args...]` exits 0 and
+# its WHOLE stdout is <want>, so a stray summary line fails.
+expect_printed_id() {
+    local want="$1"; shift
+    require_nonempty "expected repo id" "$want" || return 1
+    local out rc=0
+    out="$("$JC_INDEX" --print-repo-id "$@")" || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$out" != "$want" ]; then
+        printf 'expected exit 0 and stdout:\n%s\ngot exit %s and stdout:\n%s\n' "$want" "$rc" "$out" >&2
+        return 1
+    fi
+}
+
+# check_printed_id_matches_summary <root> — the flag and the summary's repo-id
+# field come from one resolution.
+check_printed_id_matches_summary() {
+    local printed summary
+    printed="$("$JC_INDEX" --print-repo-id --project-root "$1")" || return 1
+    summary="$(jc_field repo-id --check-only --project-root "$1")"
+    require_nonempty "printed repo id" "$printed" || return 1
+    if [ "$printed" != "$summary" ]; then
+        printf 'printed %s\nsummary %s\n' "$printed" "${summary:-<absent>}" >&2
+        return 1
+    fi
+}
+
+# check_print_repo_id_ignores_config <root> <want> — run under a CODE_INDEX_PATH
+# whose config.jsonc is unparsable. --dry-run must refuse on that config (proving
+# the fixture is poisonous) while --print-repo-id still answers. The env cap is
+# unset on both, since it would otherwise bypass the config read entirely.
+check_print_repo_id_ignores_config() {
+    local root="$1" want="$2" out rc=0 dry_err
+    out="$(env -u JCODEMUNCH_MAX_FOLDER_FILES "$JC_INDEX" --print-repo-id --project-root "$root")" || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$out" != "$want" ]; then
+        printf 'under a poisoned config.jsonc: expected exit 0 and %s, got exit %s and:\n%s\n' "$want" "$rc" "$out" >&2
+        return 1
+    fi
+    if dry_err="$(env -u JCODEMUNCH_MAX_FOLDER_FILES "$JC_INDEX" --dry-run --project-root "$root" 2>&1 >/dev/null)"; then
+        echo "--dry-run succeeded under the poisoned config.jsonc, so the fixture proves nothing" >&2
+        return 1
+    fi
+    if ! printf '%s\n' "$dry_err" | grep -qF -- "$CODE_INDEX_PATH/config.jsonc"; then
+        printf '--dry-run failed, but not on the poisoned config.jsonc:\n%s\n' "$dry_err" >&2
+        return 1
+    fi
+}
+
+# check_malformed_id_never_printed <producer> <root> — a producer answer that
+# fails the local/<name> validation must die with EMPTY stdout.
+check_malformed_id_never_printed() {
+    local out rc=0
+    out="$(REIFY_JC_REPO_ID_BIN="$1" "$JC_INDEX" --print-repo-id --project-root "$2" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ] || [ -n "$out" ]; then
+        printf 'expected a non-zero exit and empty stdout, got exit %s and:\n%s\n' "$rc" "$out" >&2
+        return 1
+    fi
+}
+
+PRINT_ROOT="$(mk_tmpdir)"
+PRINT_INDEX="$(mk_tmpdir)"
+PRINT_PRODUCER_DIR="$(mk_tmpdir)"
+PRINT_SLUG="$(recompute_repo_name "${PRINT_ROOT:-/nonexistent}")"
+
+if [ -z "$PRINT_ROOT" ] || [ -z "$PRINT_INDEX" ] || [ -z "$PRINT_PRODUCER_DIR" ] \
+   || [ -z "$PRINT_SLUG" ]; then
+    echo "  FAIL: could not create the --print-repo-id fixtures"
+    FAIL=$((FAIL + 1))
+else
+    printf '{ not json\n' > "$PRINT_INDEX/config.jsonc"
+    # Same shape as cli.rs's fake_repo_id_producer: one line on stdout, exit 0.
+    printf '#!/bin/sh\necho bogus\n' > "$PRINT_PRODUCER_DIR/reify-audit"
+    chmod 0755 "$PRINT_PRODUCER_DIR/reify-audit"
+
+    # (P1) The canonical-root default, asserted from this lane's cwd.
+    assert "with NO --project-root, --print-repo-id prints exactly $CANONICAL_REPO_ID" \
+        expect_printed_id "$CANONICAL_REPO_ID"
+
+    # (P2) Derived, not a constant: the python3 recompute for a fresh path.
+    assert "--print-repo-id derives a temp root's identity (independently recomputed)" \
+        expect_printed_id "local/$PRINT_SLUG" --project-root "$PRINT_ROOT"
+
+    # (P3) One resolution feeds both outputs.
+    assert "--print-repo-id agrees with the summary's repo-id field for the same root" \
+        check_printed_id_matches_summary "$PRINT_ROOT"
+
+    # (P4) It exits before the cap resolution, so config.jsonc cannot block it.
+    assert "--print-repo-id answers under an unparsable config.jsonc that makes --dry-run refuse" \
+        with_index_path "$PRINT_INDEX" \
+            check_print_repo_id_ignores_config "$PRINT_ROOT" "local/$PRINT_SLUG"
+
+    # (P5) Validation precedes the print.
+    assert "--print-repo-id never prints a malformed producer answer" \
+        check_malformed_id_never_printed "$PRINT_PRODUCER_DIR/reify-audit" "$PRINT_ROOT"
+fi
+
 test_summary
