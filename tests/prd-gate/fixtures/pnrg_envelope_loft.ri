@@ -13,23 +13,27 @@
 //
 // compiles and realizes a frustum is pinned by
 // crates/reify-eval/tests/harness_sweep/loft_e2e.rs.  It is NOT this fixture's
-// subject: it measures byte-identically to `cone(500mm, 250mm, 800mm)` at 19 of
-// 19 rungs (note §1.6), so it probes the cone class, not loft, and is kept
-// only as a control.  The subject below offsets the top section 500 mm in x
-// (x/r = 1.0, r = the 500 mm bottom radius), which breaks that identity and
-// makes the probe loft-specific.
+// subject: it measures byte-identically to `cone(500mm, 250mm, 800mm)` (note
+// §1.6), so it probes the cone class, not loft, and is kept only as a control.
+// The subject below offsets the top section 500 mm in x (x/r = 1.0, r = the
+// 500 mm bottom radius), which breaks that identity and makes the probe
+// loft-specific.
 //
-// Headline datum (note §1.6; summary §1.1; cap consequence §3.1 and §3.3): at
-// #precision(0.06694mm) this fixture reports a = 4.736e-3 m, i.e. a/d = 70.75
-// — a lower bound on the loft class's K, far above the 16 that
-// REFINE_ATTEMPT_CAP = 4 covers.  The value is a narrow plateau of `a` in d,
-// not a trend: at 0.06693 mm the same subject reports 1.329e-3 and at
-// 0.0672 mm 1.361e-3.  Cost: minutes per run on a contended box — use
-// `timeout 600`, not the note's usual 90 s.
+// `#precision` is pinned at the headline rung of note §1.6, so the reproduction
+// below reads out the loft class's headline datum rather than a floor reading.
+// The datum, its neighbouring rungs and their status are recorded in the note
+// (§1.6; summary §1.1; cap consequence §3.1 and §3.3), not here: they are
+// kernel-dependent measurements.  On this class `a` is piecewise constant in
+// `d` and the headline sits at a plateau's lower edge, so any change to
+// `#precision` changes the datum — re-walk the rung with note §4's loft recipe
+// rather than editing it by hand.
 //
 // ── Reproduction ──
 //
 //   timeout 600 reify check tests/prd-gate/fixtures/pnrg_envelope_loft.ri
+//
+// Minutes per run on a contended box; 600 s is the budget note §1.6 used for
+// rungs this fine.
 //
 // NOT wired into any probe set or auto-run gate.
 

@@ -1037,8 +1037,10 @@ committed subject at 20 mm — read 1.156e-2. **No measurement run produced a to
 table.
 
 Re-runs: the five gate rungs, the three offset-0 control rungs, **every rung whose ratio is ≥ 2** and each
-spelling's highest rung were run again — 507 probes compared, **507 byte-identical, 0
-divergent**. The headline plateau was run three times at 0.067 mm and the 0.064 mm spike twice; both sides
+spelling's highest rung were run again — 507 probes compared (any probe with two or more runs),
+**507 byte-identical, 0 divergent**. Not all 507 are determinism picks: for 470 every repeat is a
+determinism re-run, for 20 the only repeat is a halving-chain re-reach (§3.1) of a probe an earlier walk
+had already measured, and 17 carry both. The headline plateau was run three times at 0.067 mm and the 0.064 mm spike twice; both sides
 of the pinned edge were re-run. A plateau edge is where a facet count changes, so it is where a
 non-deterministic tie-break would surface if one existed; none did. Wall clocks varied with load, no
 achieved value did (§0 Caveat 1).
@@ -1053,7 +1055,9 @@ None hit its limit.
 **Totals across the block:** **1778 runs over 1236 probes** (a probe is one subject at one
 `d`), covering 274 distinct `d`; 542 of the runs repeat a probe already run — 505 as determinism
 re-runs and 37 as halving-chain members (§3.1) that an earlier walk had already measured. Neither
-tally should be read as the other, and several `d` recur across stages and spellings. Every run emitted the datum line;
+tally should be read as the other, and several `d` recur across stages and spellings. The 542 repeats
+fall on the 507 probes compared above: 489 ran twice, one three times and 17 four times
+(489 + 2 + 3 × 17 = 542). Every run emitted the datum line;
 not a single `OK`, `INDETERMINATE`, `NO-DATUM` or `TIMEOUT` occurred in a measurement run (the four
 non-datum results in the raw log are the deliberate validation runs above). No achieved value differed
 between repetitions anywhere. Finest `d` probed: 0.025 mm; most expensive run: 602 s. The raw log records **completed** runs only: probes
@@ -1511,26 +1515,30 @@ exercised by lowering `timeout 240` to `timeout 1` (prints `0.12mm TIMEOUT`, ret
 **A loft subject swap** (task #6318) — sed is fragile for a subject full of parentheses and
 commas, so the spellings and offsets of §1.6 are produced by an exactly-once Python rewrite of
 the `let g = …` line. Anchoring on that line rather than on a spelling keeps the recipe valid
-whichever spelling the fixture has committed (it is pinned at the offset-500 leader). Same
+whichever spelling the fixture has committed (it is pinned at the offset-500 leader). The fixture
+text comes from `git show HEAD:`, not the working tree, so an uncommitted edit cannot change the
+apparatus — §1.6's harness likewise rewrote a snapshot of the committed fixture. Same
 conventions as the dense walk above — one parent dir per probe, basename kept, `out` captured
 before the exit code is read, distinct failure tokens:
 
 ```python
 # loft_probe.py — run from the repo root.  probe(d_mm [, rhs]) -> "<a>" | NO-DATUM | TIMEOUT | SED-FAILED
-import os, re, subprocess, tempfile
+import re, subprocess, tempfile
+from pathlib import Path
 F = "tests/prd-gate/fixtures/pnrg_envelope_loft.ri"
 DATUM = re.compile(r"sampled facet deviation (\S+) m exceeds bound 1\.000e-6 m")
 
 def probe(d_mm, rhs=None):
-    src = open(F).read()
+    src = subprocess.run(["git", "show", f"HEAD:{F}"],     # committed text, never the working tree
+                         capture_output=True, text=True, check=True).stdout
     if rhs is not None:                      # replace the whole `let g =` line, exactly once
         src, n = re.subn(r"^(    let g = ).*$", lambda m: m.group(1) + rhs, src, flags=re.M)
         if n != 1: return "SED-FAILED"
     src, n = re.subn(r"^#precision\([^)]*\)$", f"#precision({d_mm}mm)", src, flags=re.M)
     if n != 1: return "SED-FAILED"
-    path = os.path.join(tempfile.mkdtemp(prefix="pnrg_loft_"), os.path.basename(F))
-    open(path, "w").write(src)
-    p = subprocess.run(["timeout", "600", "./target/release/reify", "check", path],
+    path = Path(tempfile.mkdtemp(prefix="pnrg_loft_")) / Path(F).name
+    path.write_text(src)
+    p = subprocess.run(["timeout", "600", "./target/release/reify", "check", str(path)],
                        capture_output=True, text=True)
     if p.returncode == 124: return "TIMEOUT"
     m = DATUM.search(p.stdout + p.stderr)
@@ -1545,7 +1553,10 @@ S1 = lambda x: f"loft(circle(500mm), translate(circle(250mm), {x}mm, 0mm, 800mm)
 The other spellings (S2–S4) are in the §1.6 table; pass each as `rhs`.
 
 *Checked.* The block above was extracted from this file and run verbatim: `probe(20, S1(0))`
-printed `1.156e-2` and `probe(5, S1(200))` printed `2.175e-2`. The committed fixture, run
+printed `1.156e-2`, `probe(5, S1(200))` printed `2.175e-2` and `probe(0.06694)` printed `4.736e-3`
+(the last in 199 s, 1-min loadavg 125 at launch). The `HEAD:` read was checked with the working-tree
+fixture deliberately dirty: each scratch copy carried the committed header, not the edited one. The
+committed fixture, run
 directly as `timeout 700 ./target/release/reify check
 tests/prd-gate/fixtures/pnrg_envelope_loft.ri`, printed `error: RepresentationWithin: sampled
 facet deviation 4.736e-3 m exceeds bound 1.000e-6 m for PnrgLoftCheck` and exited 1, in 249 s
