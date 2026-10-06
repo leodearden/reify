@@ -2613,6 +2613,24 @@ mod tests {
         super::get_value_cell_in(&module, "Bracket", "x");
     }
 
+    /// The module route to the same resolution as
+    /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
+    /// (`get_let_expr_in` and `get_let_expr` reach it through this function): a
+    /// scoped sub cell colliding with the template's own cell resolves to the
+    /// own cell.
+    #[test]
+    fn test_get_value_cell_in_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let module = super::compile_source(MANIFOLD_OWN_AND_SCOPED_AREA);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let cell = super::get_value_cell_in(&module, "Manifold", "area");
+
+        assert_eq!(cell.id, ValueCellId::new("Manifold", "area"));
+        assert_eq!(cell.kind, reify_compiler::ValueCellKind::Let);
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
 
     /// get_let_expr_in_template should return the default_expr of the named
@@ -2634,6 +2652,16 @@ mod tests {
             expr.result_type
         );
     }
+
+    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
+    /// `value_cells` and a first-match resolver would pick the wrong one.
+    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
+        structure def Vent { param area : Length = 1mm }
+        structure def Manifold {
+            sub v : Vent { area = auto }
+            let area = 2mm
+        }
+    "#;
 
     /// Two value cells sharing member name "x" under different entities on
     /// one "Bracket" template — the ambiguity fixture shared by the two
@@ -2695,35 +2723,124 @@ mod tests {
         let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
-    /// The realistic producer of a same-member collision is a scoped
-    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
-    /// None`) sitting alongside the parent's own same-named `let`/defaulted
-    /// `param` cell — real `.ri` source produces exactly this with zero
-    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
-    /// `let area = ...`. With the `sub` declared first, as below, the scoped
-    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
-    /// the ambiguity check must fire before the `default_expr` deref — not
-    /// after — or this fixture would report a missing default instead of an
-    /// ambiguity.
+    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
+    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
+    /// returned expression IS that cell's `default_expr`, not the scoped cell's
+    /// (which is defaultless) and not whichever cell comes first.
+    ///
+    /// The precondition pins the shape of the collision, so the test cannot
+    /// pass vacuously or by first-match resolution.
+    #[test]
+    fn test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let (template, diags) = super::compile_template(MANIFOLD_OWN_AND_SCOPED_AREA, "Manifold");
+        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
+
+        let colliding_ids: Vec<ValueCellId> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == "area")
+            .map(|vc| vc.id.clone())
+            .collect();
+        assert_eq!(
+            colliding_ids,
+            vec![
+                ValueCellId::new("Manifold.v", "area"),
+                ValueCellId::new("Manifold", "area"),
+            ],
+            "precondition: the scoped cell must collide with, and precede, the own cell"
+        );
+        let own_default = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
+            .expect("Manifold's own 'area' cell")
+            .default_expr
+            .as_ref()
+            .expect("Manifold's own 'area' is a `let`, so it carries a default expr");
+
+        let expr = super::get_let_expr_in_template(&template, "area");
+
+        assert!(
+            std::ptr::eq(expr, own_default),
+            "expected Manifold's own 'area' default expr, got {expr:?}"
+        );
+    }
+
+    /// With no same-named parent cell, two scoped sub/connect `Auto` cells of
+    /// one member (`id.entity = "Parent.sub"`, `default_expr: None`) stay
+    /// ambiguous, because neither is the template's own. Real `.ri` source
+    /// produces exactly this with zero diagnostics, via `sub v : Vent { area =
+    /// auto }` beside `sub w : Vent { area = auto }`. Both cells are
+    /// defaultless, so the ambiguity check must fire before the
+    /// `default_expr` deref — not after — or this fixture would report a
+    /// missing default instead of an ambiguity.
     ///
     /// The zero-diagnostics assertion below is a precondition guard: it
     /// keeps a fixture that stops compiling cleanly from being misread as
     /// this test failing to detect the ambiguity, rather than failing on the
     /// precondition with a message naming the actual diagnostics.
     #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
+    fn test_lookup_still_panics_when_no_colliding_cell_is_the_templates_own() {
         let source = r#"
             structure def Vent { param area : Length = 1mm }
             structure def Manifold {
                 sub v : Vent { area = auto }
-                let area = 2mm
+                sub w : Vent { area = auto }
             }
         "#;
         let module = super::compile_source(source);
-        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+        super::assert_no_diagnostics(&module.diagnostics, "two-subs Vent/Manifold fixture");
 
-        let _ = super::get_let_expr_in(&module, "Manifold", "area");
+        let message = panic_message(|| {
+            super::get_let_expr_in(&module, "Manifold", "area");
+        });
+
+        assert!(
+            message.contains("ambiguous cell name 'area'"),
+            "expected an ambiguity panic, got: {message}"
+        );
+        assert!(
+            message.contains("[\"Manifold.v\", \"Manifold.w\"]"),
+            "panic message should name the colliding entities, got: {message}"
+        );
+        assert!(
+            !message.contains("has no default expr"),
+            "ambiguity must be reported before the missing default, got: {message}"
+        );
+    }
+
+    /// The own-entity preference applies only when it singles out EXACTLY ONE
+    /// colliding cell. Two cells both claiming the template's own entity
+    /// (`Bracket`) stay ambiguous: picking the first would be silently wrong.
+    ///
+    /// Builder-only fixture — the compiler never emits two cells with one id.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_lookup_panics_when_two_colliding_cells_claim_the_templates_own_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "Bracket",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Bracket",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let _ = super::get_let_expr_in_template(&template, "x");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
