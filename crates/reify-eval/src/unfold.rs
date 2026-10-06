@@ -1604,15 +1604,29 @@ fn elaborate_child_params_only<'f>(
             match resolution {
                 OptimizedInstanceResolution::Reuse(v) => v,
                 OptimizedInstanceResolution::NotOptimized
-                | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                    &child_values,
-                    default_expr,
-                    functions,
-                    meta_map,
-                    &snapshot.values,
-                    &runtime_sink,
-                    &containment,
-                ),
+                | OptimizedInstanceResolution::Unreusable { .. } => {
+                    let evaluated = eval_child_expr(
+                        &child_values,
+                        default_expr,
+                        functions,
+                        meta_map,
+                        &snapshot.values,
+                        &runtime_sink,
+                        &containment,
+                    );
+                    mint_instance_cell_if_undef(
+                        evaluated,
+                        SymbolicMintOrder::GeometryHandleFirst,
+                        &cell.id,
+                        default_expr,
+                        &SymbolicMintScope {
+                            template: child_template,
+                            values: &child_values,
+                            functions,
+                            meta_map,
+                        },
+                    )
+                }
             }
         } else {
             Value::Undef
@@ -1915,8 +1929,8 @@ fn elaborate_child_lets_only<'t, 'f>(
             // Unreusable falls through to body-inlining, unchanged from
             // pre-#6662 behaviour — only the silence is removed.
             OptimizedInstanceResolution::NotOptimized
-            | OptimizedInstanceResolution::Unreusable { .. } => mint_instance_cell_if_undef(
-                eval_child_expr(
+            | OptimizedInstanceResolution::Unreusable { .. } => {
+                let evaluated = eval_child_expr(
                     &child_values,
                     expr,
                     functions,
@@ -1924,17 +1938,20 @@ fn elaborate_child_lets_only<'t, 'f>(
                     &snapshot.values,
                     &runtime_sink,
                     &containment,
-                ),
-                SymbolicMintOrder::SelectorFirst,
-                child_cell_id,
-                expr,
-                &SymbolicMintScope {
-                    template: child_template,
-                    values: &child_values,
-                    functions,
-                    meta_map,
-                },
-            ),
+                );
+                mint_instance_cell_if_undef(
+                    evaluated,
+                    SymbolicMintOrder::SelectorFirst,
+                    child_cell_id,
+                    expr,
+                    &SymbolicMintScope {
+                        template: child_template,
+                        values: &child_values,
+                        functions,
+                        meta_map,
+                    },
+                )
+            }
         };
         child_values.insert(child_cell_id.clone(), val.clone());
 
