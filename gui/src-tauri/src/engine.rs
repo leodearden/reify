@@ -2235,10 +2235,7 @@ impl EngineSession {
             .core
             .compiled()
             .ok_or_else(|| "No module loaded".to_string())?;
-        compiled
-            .templates
-            .iter()
-            .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *cell_id))
+        find_value_cell_decl(compiled, cell_id)
             .map(|vc| &vc.cell_type)
             .ok_or_else(|| format!("Unknown parameter '{}'", cell_id_str))
     }
@@ -5112,6 +5109,29 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Read a bare `Value::Int`/`Value::Real` held by a cell whose declared type
+/// is dimensioned as the `Value::Scalar` reify-eval's dimension wildcard makes
+/// of it: the number IS the canonical SI magnitude. Why such a value reaches a
+/// dimensioned cell at all: [`parse_value_string_for_cell`]'s doc. Every other
+/// value, and any value in an undimensioned cell, is returned as-is.
+fn value_as_declared(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> std::borrow::Cow<'_, Value> {
+    use std::borrow::Cow;
+    match (val, declared) {
+        (Value::Int(i), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *i as f64,
+            dimension,
+        }),
+        (Value::Real(r), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *r,
+            dimension,
+        }),
+        _ => Cow::Borrowed(val),
+    }
+}
+
 /// Format the four display fields a `ValueData` cell derives directly from its
 /// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
 /// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
@@ -5123,7 +5143,16 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
 /// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
 /// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
 /// exactly as `format_value` renders the value itself.
-fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+///
+/// `declared` is the cell's [`declared_scalar_dimension`]. A bare Int/Real in
+/// a declared-dimensioned cell is formatted as that dimension's SI magnitude
+/// (see [`value_as_declared`]), so the badge survives a bare-number edit.
+fn format_determined_cell(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> (String, String, Option<f64>, String) {
+    let val = value_as_declared(val, declared);
+    let val = val.as_ref();
     let (value, unit) = format_value(val);
     let (si_value, dim) = match display_scalar(val) {
         Some((s, d)) => (Some(s), Some(d)),
@@ -5131,6 +5160,20 @@ fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) 
     };
     let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
     (value, unit, si_value, dimension)
+}
+
+/// The value-cell declaration `id` names in some compiled template — the one
+/// definition of "what a cell id denotes", shared by
+/// `EngineSession::resolve_known_cell_type` (preview / write-back) and
+/// `surface_geometry_derived_cells` (declared dimension for display).
+fn find_value_cell_decl<'a>(
+    module: &'a CompiledModule,
+    id: &ValueCellId,
+) -> Option<&'a reify_compiler::ValueCellDecl> {
+    module
+        .templates
+        .iter()
+        .find_map(|t| t.value_cells.iter().find(|vc| vc.id == *id))
 }
 
 fn build_values(
@@ -5142,8 +5185,10 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
-            let declared_dimension = declared_scalar_dimension(&cell.cell_type)
+            let declared = declared_scalar_dimension(&cell.cell_type);
+            let (formatted_value, unit, si_value, dimension) =
+                format_determined_cell(&val, declared);
+            let declared_dimension = declared
                 .and_then(|d| d.canonical_name())
                 .unwrap_or("")
                 .to_string();
@@ -5498,7 +5543,9 @@ fn surface_geometry_derived_cells(
                 }
             }
         };
-        let (value, unit, si_value, dimension) = format_determined_cell(&val);
+        let declared = find_value_cell_decl(module, &id)
+            .and_then(|decl| declared_scalar_dimension(&decl.cell_type));
+        let (value, unit, si_value, dimension) = format_determined_cell(&val, declared);
         cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
@@ -8019,9 +8066,10 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 /// [`unwrap_optional`] type, if that is a non-dimensionless `Type::Scalar`.
 ///
 /// The one definition of "a dimensioned cell" — consumed by the bare-number
-/// gate in [`parse_value_string_for_cell`] and by `build_values`'
-/// `ValueData.declared_dimension` — so the panel's input gate and the
-/// backend's agree by construction (task #6962).
+/// gate in [`parse_value_string_for_cell`], by `build_values`'
+/// `ValueData.declared_dimension`, and by [`format_determined_cell`]'s reading
+/// of a bare number — so the panel's input gate and the backend's agree by
+/// construction (task #6962).
 /// `!is_dimensionless()` is explicit so a `param x : Real` (compiled to
 /// `Scalar { DIMENSIONLESS }`) is never treated as dimensioned.
 pub(crate) fn declared_scalar_dimension(cell_type: &reify_core::Type) -> Option<DimensionVector> {
