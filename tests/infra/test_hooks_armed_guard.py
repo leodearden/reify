@@ -216,6 +216,11 @@ class GuardFixture(unittest.TestCase):
     def assert_rc(self, completed, rc):
         self.assertEqual(completed.returncode, rc, _diag(completed))
 
+    def _assert_one_liveness_line_naming_the_lane(self):
+        lines = self.liveness_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(str(self.lane), lines[0])
+
 
 class CheckContract(GuardFixture):
     """`check`: 0 armed | 1 not armed | 3 could not check; read-only."""
@@ -289,11 +294,6 @@ class CheckContract(GuardFixture):
 
 class ArmContract(GuardFixture):
     """`arm`: 0 armed | 2 the pin cannot fix it | * failed; lane-scoped repair."""
-
-    def _assert_one_liveness_line_naming_the_lane(self):
-        lines = self.liveness_lines()
-        self.assertEqual(len(lines), 1, lines)
-        self.assertIn(str(self.lane), lines[0])
 
     def test_t8_arm_repairs_a_clobbered_lane(self):
         clobbered = str(self.tmpdir / "nonexistent")
@@ -385,10 +385,23 @@ class SeedWiring(GuardFixture):
     def test_t14_acquire_is_fail_open_when_the_pin_cannot_help(self):
         hook = self.lane / "hooks" / "reference-transaction"
         hook.chmod(hook.stat().st_mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-        completed = self.run_seed()
-        self.assertIn("hooks-armed-guard", completed.stderr)
-        lines = self.liveness_lines()
-        self.assertTrue(any(str(self.lane) in line for line in lines), lines)
+        self.run_seed()
+        # arm's exit 2, seen through seed: it pinned the lane, re-checked it,
+        # and logged it still dark.
+        self.assertEqual(self.git_out(self.lane, "config", "--worktree", "--get",
+                                      "core.hooksPath"), "hooks")
+        self._assert_one_liveness_line_naming_the_lane()
+        self.assert_rc(self.run_guard("check", self.lane), 1)
+        self.assert_push_succeeds()
+
+    def test_t15_acquire_is_fail_open_when_the_guard_itself_fails(self):
+        # setup-main-gate-worktree-config.sh refuses a store whose shared
+        # config says core.bare=true, so arm fails before it can pin or log.
+        self.git(self.main, "config", "core.bare", "true")
+        self.run_seed()
+        self.assertFalse(self.lane_worktree_config().exists())
+        self.assertEqual(self.liveness_lines(), [])
+        self.assert_rc(self.run_guard("check", self.lane), 1)
 
 
 if __name__ == "__main__":
