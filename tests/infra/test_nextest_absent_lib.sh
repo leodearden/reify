@@ -777,10 +777,12 @@ _t10b() {
 # (c) The composition is armed on ALL FOUR signals, not just EXIT — verify.sh
 # wraps infra tests in `timeout --kill-after`, so an outer kill must still tear
 # the temp tree down AND still run the caller's handler. Exercised by having the
-# probe signal ITSELF, once per child per signal, so a lib that replays on only
-# one of the three cannot pass an arm whose title claims all three. The probe is
-# spawned via _t10c_spawn with SIG at default disposition, so an inherited
-# SIG_IGN (nohup, a bare `&`) cannot turn that self-signal into a no-op.
+# probe signal ITSELF, once per child per signal, and reported as one assert per
+# signal whose title claims exactly that signal, so a lib that replays on only
+# one of the three cannot pass the other two. The probe is spawned via
+# _t10c_spawn with SIG at default disposition, so an inherited SIG_IGN (nohup, a
+# bare `&`) cannot turn that self-signal into a no-op; where the host cannot
+# reset it, that sub-arm SKIPs instead of being counted.
 #
 # WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
 # this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
@@ -957,12 +959,27 @@ _t10c_probe() {
     return "$_rc"
 }
 
-_t10c() {
-    local sig rc=0
-    for sig in INT TERM HUP; do
-        _t10c_probe "$sig" "$NX_TRAP_DIR/signal-$sig.marker" || rc=1
-    done
-    return "$rc"
+# _t10c_replay OUT RC — replay an already-run probe's evidence under assert(), so
+# it lands in the FAIL dump, and hand back that probe's verdict.
+_t10c_replay() {
+    cat "$1"
+    return "$2"
+}
+
+# _t10c_report SIG — run 10c's SIG sub-arm and report it as ONE verdict. A signal
+# ignored on entry, and not resettable on this host, is a loud SKIP printed
+# OUTSIDE assert(), which shows captured output only on FAIL; nothing is counted
+# for a sub-arm that could not run.
+_t10c_report() {
+    local _sig="$1" _out="$NX_TRAP_DIR/signal-$1.out" _rc=0
+    _t10c_probe "$_sig" "$NX_TRAP_DIR/signal-$_sig.marker" > "$_out" 2>&1 || _rc=$?
+    if [ "$_rc" -eq "$_T10C_RC_IGNORED_ON_ENTRY" ]; then
+        echo "  SKIP: 10c SIG$_sig sub-arm not run: SIG$_sig was ignored on entry to the probe shell (inherited SIG_IGN, e.g. nohup for HUP, a bare & for INT) and could not be reset on this host — not a trap-contract verdict"
+        sed 's/^/  | /' "$_out"
+        return 0
+    fi
+    assert "10c: the composed trap is armed on SIG$_sig as well as EXIT" \
+        _t10c_replay "$_out" "$_rc"
 }
 
 # (d) The REAL consumer's shape, not a reduced probe, and the filesystem
@@ -1135,7 +1152,10 @@ _t10c_retry_expect() {
 
 assert "10a: a handler registered BEFORE nextest_absent_init still fires, after the lib's own teardown" _t10a
 assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear the env down itself" _t10b
-assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
+for _sig in INT TERM HUP; do
+    _t10c_report "$_sig"
+done
+unset _sig
 assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CALLER's temp dirs too" _t10d
 
 echo ""
