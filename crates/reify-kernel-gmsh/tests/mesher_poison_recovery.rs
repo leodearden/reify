@@ -85,7 +85,7 @@ fn unmeshable_open_triangle() -> Mesh {
 /// into that weaker form.
 ///
 /// Returns the error it checked, so a caller with more to say about the
-/// message — the captured-log test at the foot of this file — states this
+/// message — the captured-log tests at the foot of this file — states this
 /// premise by reusing it rather than by re-deriving a weaker copy.
 #[track_caller]
 fn assert_failed_at_the_mesher<T>(
@@ -93,7 +93,7 @@ fn assert_failed_at_the_mesher<T>(
     result: Result<T, GeometryError>,
 ) -> GeometryError {
     let Err(err) = result else {
-        panic!("{entry_point}: an open triangle bounds no volume — it must report a failure");
+        panic!("{entry_point}: this fixture cannot be tet-meshed — it must report a failure");
     };
     let msg = format!("{err:?}");
     assert!(
@@ -138,7 +138,7 @@ fn poison_via_mesh_to_volume() {
 /// the open triangle: a degenerate field would be rejected at construction and
 /// the failure would land before gmsh, proving nothing about recovery.
 /// `assert_failed_at_the_mesher` is what holds that line.
-fn poison_via_refine() {
+fn poison_via_refine() -> GeometryError {
     assert_failed_at_the_mesher(
         "refine_volume_with_size_field",
         refine_volume_with_size_field(
@@ -147,6 +147,63 @@ fn poison_via_refine() {
             &many_threads(),
             ElementOrderTag::P1,
         ),
+    )
+}
+
+/// Require `err` — a failure [`assert_failed_at_the_mesher`] already placed at
+/// the mesher — to carry gmsh's captured log on top of the last-error line,
+/// folded in exactly once.
+///
+/// One copy for every mesher-failure test in this binary; why each assertion
+/// is there is set out on
+/// [`a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`].
+/// Display, not Debug: this is the form that reaches a log or the GUI.
+#[track_caller]
+fn assert_carries_gmshs_captured_log_once(entry_point: &str, err: &GeometryError) {
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
+        "{entry_point}: the pre-existing last-error annotation must be preserved, not \
+         replaced; got: {msg}",
+    );
+    assert!(
+        msg.contains("gmsh log ("),
+        "{entry_point}: expected the captured-log header; got: {msg}",
+    );
+    assert!(
+        msg.contains("Info:"),
+        "{entry_point}: expected a captured Info line — gmshLoggerGetLastError can never \
+         supply one; got: {msg}",
+    );
+    assert_eq!(
+        msg.matches("gmsh log (").count(),
+        1,
+        "{entry_point}: the mesher failure must be annotated exactly ONCE — \
+         init::mesh_generate_with_recovery folds the capture in itself, so a \
+         LogCapture seam drawn over that call would append the same tail a \
+         second time; got: {msg}",
+    );
+}
+
+/// Require gmsh's capture to be stopped and drained after `entry_point` failed
+/// at the mesher — the exit shape where recovery recycled the library holding
+/// the buffer while the capture was armed.
+///
+/// Call it after the entry point has returned: it takes `GMSH_LOCK` itself, so
+/// the read is serialised against any concurrent mesher rather than racing one
+/// mid-flight, and the caller's `CLAMP_TEST_ORDER` keeps this binary's siblings
+/// out of the window. Mirrors
+/// `mesh_to_volume_tests::mesh_to_volume_leaves_the_gmsh_logger_stopped`.
+#[track_caller]
+fn assert_capture_left_stopped_and_drained(entry_point: &str) {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "a {entry_point} that failed AT THE MESHER must still leave gmsh's capture \
+         stopped and drained, even though recovery recycled the library holding the \
+         buffer mid-window; {} lines left: {leftover:?}",
+        leftover.len(),
     );
 }
 
@@ -331,12 +388,13 @@ fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
 ///
 /// The tail is folded in exactly ONCE. `init::mesh_generate_with_recovery`
 /// annotates its own failure — it has to, since it destroys the library
-/// holding the capture — so `mesh_to_volume` deliberately leaves that one
-/// call outside its `LogCapture` seam. Only a comment marks that exclusion at
-/// the call site, and a later edit extending the seam over it "for symmetry"
-/// with its two neighbours would fail SILENTLY: every mesher-failure message
-/// would carry the same ~40 lines twice. The count assertion below is what
-/// reds instead.
+/// holding the capture — so every mesher deliberately leaves that one call
+/// outside its `LogCapture` seams. Only a comment marks that exclusion at
+/// each call site, and a later edit extending a seam over it "for symmetry"
+/// with its neighbours would fail SILENTLY: every mesher-failure message
+/// would carry the same ~40 lines twice. The count assertion in
+/// [`assert_carries_gmshs_captured_log_once`], shared by every mesher-failure
+/// test here, is what reds instead.
 ///
 /// The capture is still stopped and drained afterwards. This is the third
 /// and riskiest of the guard's exit shapes:
@@ -360,42 +418,27 @@ fn a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error() 
         ),
     );
 
-    // Display, not Debug: this is the form that reaches a log or the GUI.
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
-        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
-    );
-    assert!(
-        msg.contains("gmsh log ("),
-        "expected the captured-log header; got: {msg}",
-    );
-    assert!(
-        msg.contains("Info:"),
-        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
-    );
-    assert_eq!(
-        msg.matches("gmsh log (").count(),
-        1,
-        "the mesher failure must be annotated exactly ONCE — \
-         init::mesh_generate_with_recovery folds the capture in itself, so a \
-         LogCapture seam drawn over that call would append the same tail a \
-         second time; got: {msg}",
-    );
+    assert_carries_gmshs_captured_log_once("mesh_to_volume", &err);
+    assert_capture_left_stopped_and_drained("mesh_to_volume");
+}
 
-    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
-    // serialised against any concurrent mesher rather than racing one
-    // mid-flight — and `_order` above keeps this binary's siblings out of the
-    // window. Mirrors `mesh_to_volume_leaves_the_gmsh_logger_stopped`, on the
-    // path where recovery destroyed and rebuilt the library holding the buffer
-    // while the capture was armed.
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
-    assert!(
-        leftover.is_empty(),
-        "a mesh_to_volume that failed AT THE MESHER must still leave gmsh's capture \
-         stopped and drained, even though recovery recycled the library holding the \
-         buffer mid-window; {} lines left: {leftover:?}",
-        leftover.len(),
-    );
+/// A `refine_volume_with_size_field` that fails at the mesher must report
+/// gmsh's own diagnosis too, folded in exactly once, and leave the capture
+/// stopped and drained.
+///
+/// The exactly-once assertion is what stops a `LogCapture` seam being drawn
+/// over refine's own `init::mesh_generate_with_recovery` call. The drained
+/// check carries more weight here than at `mesh_to_volume`: after recovery
+/// recycles the library, refine's `BackgroundFieldGuard::drop` tears its field
+/// down against the NEW library and logs errors into the still-armed capture
+/// (measured: `Error: Cannot delete field id 1, it does not exist`), so those
+/// lines too must be drained before the call returns.
+#[test]
+fn a_failed_refine_reports_gmshs_captured_log_not_just_the_last_error() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = poison_via_refine();
+
+    assert_carries_gmshs_captured_log_once("refine_volume_with_size_field", &err);
+    assert_capture_left_stopped_and_drained("refine_volume_with_size_field");
 }
