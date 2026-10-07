@@ -360,7 +360,7 @@ pub(crate) fn note_violations(chunk_path: &str, markdown: &str) -> Vec<String> {
 /// read across every chunk, and the chunks carrying at least one. EXACT live
 /// values — re-measure them by the protocol stated once next to
 /// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_CORPUS_CITES: usize = 72;
+const MINIMUM_CORPUS_CITES: usize = 74;
 const MINIMUM_CITING_CHUNKS: usize = 7;
 
 /// Every repo path any chunk cites must exist — a `docs/…md` pointer, a

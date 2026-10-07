@@ -17,6 +17,8 @@ const FUNCTIONS: &str = include_str!("chunks/functions.md");
 const UNITS: &str = include_str!("chunks/units.md");
 const TYPES: &str = include_str!("chunks/types.md");
 const STDLIB: &str = include_str!("chunks/stdlib.md");
+const MEASUREMENT: &str = include_str!("chunks/measurement.md");
+const TOPOLOGY: &str = include_str!("chunks/topology.md");
 
 /// All available topic names, in alphabetical order.
 pub const TOPICS: &[&str] = &[
@@ -28,12 +30,14 @@ pub const TOPICS: &[&str] = &[
     "functions",
     "geometry",
     "guards",
+    "measurement",
     "occurrences",
     "parameters",
     "purposes",
     "stdlib",
     "structures",
     "syntax",
+    "topology",
     "traits",
     "types",
     "units",
@@ -61,6 +65,8 @@ pub fn get_chunk(topic: &str) -> Option<&'static str> {
         "units" => Some(UNITS),
         "types" => Some(TYPES),
         "stdlib" => Some(STDLIB),
+        "measurement" => Some(MEASUREMENT),
+        "topology" => Some(TOPOLOGY),
         _ => None,
     }
 }

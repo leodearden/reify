@@ -64,3 +64,4 @@ point_mass
 crates/reify-mcp/src/tools/chunks/geometry.md:InnerSolution
 crates/reify-mcp/src/tools/chunks/geometry.md:Value
 crates/reify-mcp/src/tools/chunks/geometry.md:new
+crates/reify-mcp/src/tools/chunks/measurement.md:new
