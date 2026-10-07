@@ -272,7 +272,8 @@ structure def FlexureJoint : DrivingJoint { }
 // `DiagnosticCode::NoMatchingOverload` (PRD-prose mnemonic
 // `E_NO_MATCHING_OVERLOAD`). Boundary tests: PRD §7.3 BT1/BT2 —
 // `reify-cli/tests/harness_cli/cli_check.rs` (the user-observable exit-code
-// flip) and `reify-compiler/tests/flexures_stdlib_compile.rs` (the typed code).
+// flip) and `reify-compiler/tests/harness_mechanics/flexures_stdlib_compile.rs`
+// (the typed code).
 //
 // What this did NOT change: the RUNTIME representation. Joints are still
 // `Value::Map` per `reify-stdlib/src/joints.rs`. PRD §7.1's rejection of the

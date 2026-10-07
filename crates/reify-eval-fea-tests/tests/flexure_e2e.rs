@@ -692,7 +692,7 @@ fn flexures_example_dir() -> std::path::PathBuf {
 /// COVERAGE OVERLAP, DELIBERATE — do not delete the wrong half:
 /// - Half **(a)**, the zero-compile-Error gate, is a deliberately-redundant
 ///   LOCALIZED RESTATEMENT of repo-wide coverage that already exists in
-///   `crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`,
+///   `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`,
 ///   which recursively discovers every `examples/**/*.ri` and applies the same
 ///   gate (its `SKIP_SET` holds no flexures entry, so all six are covered
 ///   there). It is kept because the compile is required anyway to produce

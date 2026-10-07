@@ -1144,8 +1144,9 @@ structure def PrbCellType {
 /// mnemonics live only in doc-comment prose — and this task contractually
 /// freezes the no-matching-overload message text, so the mnemonic is never
 /// rendered and a CLI substring assertion cannot reach it.  The typed code is
-/// therefore asserted here with the house `d.code == Some(...)` idiom
-/// (cf. expr.rs:9203, :7167), and the CLI test carries the §G2 exit flip.
+/// therefore asserted here with the house `d.code == Some(...)` idiom (cf.
+/// `expr.rs`'s `no_matching_overload_error_carries_no_matching_overload_code`),
+/// and the CLI test carries the §G2 exit flip.
 ///
 /// FAILURE READING. Zero Error diagnostics (rather than a wrongly-coded one)
 /// means `flexure_compliance` has regressed to a parameter type that `5mm`

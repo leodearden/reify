@@ -1825,7 +1825,7 @@ structure def TrampolineSeverityProbe {
 // headline is an exit-code flip, so it is asserted here at the CLI boundary
 // rather than inside the compiler.  The companion typed-code assertion
 // (`code == Some(DiagnosticCode::NoMatchingOverload)`) lives in
-// `crates/reify-compiler/tests/flexures_stdlib_compile.rs` because
+// `crates/reify-compiler/tests/harness_mechanics/flexures_stdlib_compile.rs` because
 // `DiagnosticCode` has no `Display`/`code_str()` — the `E_*` mnemonics are
 // doc-comment prose, never rendered — and this task requires the
 // no-matching-overload MESSAGE TEXT to stay byte-identical, so the mnemonic

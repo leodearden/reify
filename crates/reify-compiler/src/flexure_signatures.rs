@@ -299,7 +299,10 @@ mod tests {
         );
         // Empty / unknown / bare prefix.
         assert!(!is_flexure_typed_fn(""), "must reject empty name");
-        assert!(!is_flexure_typed_fn("prb_"), "must reject bare 'prb_' prefix");
+        assert!(
+            !is_flexure_typed_fn("prb_"),
+            "must reject bare 'prb_' prefix"
+        );
         assert!(
             !is_flexure_typed_fn("prb_does_not_exist"),
             "must reject unknown prb_-prefixed name"
