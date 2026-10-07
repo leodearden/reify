@@ -56,6 +56,13 @@ pub enum StepBodyError {
         index: u32,
         solid_count: u32,
     },
+    /// The tree promises this body but the native document could not produce
+    /// it: a reader defect, not a bad request. `detail` is for humans only.
+    Native {
+        product: ProductRef,
+        index: u32,
+        detail: String,
+    },
 }
 
 impl fmt::Display for StepBodyError {
@@ -75,6 +82,15 @@ impl fmt::Display for StepBodyError {
             } => write!(
                 f,
                 "product {product} has {solid_count} solid(s), so body {index} does not exist"
+            ),
+            Self::Native {
+                product,
+                index,
+                detail,
+            } => write!(
+                f,
+                "body {index} of product {product} is in the product tree but the STEP \
+                 reader's native document could not produce it (a reader defect): {detail}"
             ),
         }
     }
@@ -165,19 +181,15 @@ impl StepDocument {
                 solid_count,
             });
         }
-        // The tree and the native document come from one walk, so a validated
-        // request failing here is a reader defect, not a user error.
         let product_index =
             u32::try_from(position).expect("product positions come from u32 walk indices");
-        let shape = ffi::step_document_body(&self.native, product_index, body_index)
-            .unwrap_or_else(|exception| {
-                panic!(
-                    "STEP document {}: body {body_index} of validated product {product} is \
-                     missing from the native walk: {exception}",
-                    self.path.display()
-                )
-            });
-        Ok(shape)
+        ffi::step_document_body(&self.native, product_index, body_index).map_err(|exception| {
+            StepBodyError::Native {
+                product: product.clone(),
+                index: body_index,
+                detail: exception.what().to_string(),
+            }
+        })
     }
 }
 
