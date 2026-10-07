@@ -63,6 +63,11 @@
 //! Wired into `expr.rs`'s `NoUserFunctions` ladder after the `is_joint_typed_fn`
 //! arm. The family is pinned disjoint from all sibling families by the `units.rs`
 //! disjointness test, which is what makes that arm position unobservable.
+//!
+//! Registry τ4 (#6006, pending) migrates this family into `reify-builtins` rows
+//! and DELETES this slice and its `is_known_builtin` arm, per
+//! `unresolved_function.rs`'s "registry arm is where the rest of this union is
+//! going" contract — it must not leave both the rows and this slice.
 
 use reify_core::Type;
 
