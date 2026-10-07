@@ -718,7 +718,7 @@ _b11_concurrent_clone_during_flip() {
     # completes well before the flip's Step-6 GC sweep runs (~490ms measured
     # for the whole flip, refresh-warm-base.sh) — so the reader was always
     # gone by the time GC ran, GC correctly saw no active reader, and reaped
-    # gen.1 out from under this test (task #5866). _wait_for_marker on the
+    # gen.1 out from under this test (task #5866). holder_wait_for_marker on the
     # ready marker only proves the lock was ACQUIRED, never that it is still
     # HELD later — the walk's duration is exactly what determines whether
     # the reader is still gone or still holding by the time GC fires.
@@ -735,7 +735,7 @@ _b11_concurrent_clone_during_flip() {
         "$_b11_gen1" "$_b11_clone_dir/target" "" always
     local _b11_reader_pid="$_PINNING_READER_PID"
     # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847).
-    _wait_for_marker "$_b11_ready" 30
+    holder_wait_for_marker "$_b11_ready" 150
 
     # Step 6: record df --output=avail before the flip (MiB)
     # Measured on ws_root (the block's actual workspace dir) rather than the
@@ -761,7 +761,7 @@ _b11_concurrent_clone_during_flip() {
     # reader down (kill+wait), releasing flock -s so the post-drain refresh
     # can reap gen.1. Generous anti-hang deadline (technique T); measured
     # slack is large (copy ~120ms vs. the flip alone ~490ms).
-    _wait_for_marker "$_b11_clone_done" 300
+    holder_wait_for_marker "$_b11_clone_done" 1500
     kill "$_b11_reader_pid" 2>/dev/null || true
     wait "$_b11_reader_pid" 2>/dev/null || true
 
@@ -1383,48 +1383,6 @@ _refresh_capture() {
     fi
 }
 
-# _wait_for_marker <marker-file> <deadline-seconds>
-# Generic causal-ordering (technique R) poll: waits for <marker-file> to
-# appear, polling in 0.05s ticks, returning 0 as soon as it exists, or
-# non-zero once the generous deadline elapses (technique T anti-hang guard).
-# The deadline is deliberately generous — it is an anti-hang guard only,
-# never a timing discriminator.
-#
-# Extracted from _wait_for_reader_lock (task #4847), which delegates to this
-# for its flock-acquisition-specific marker; also used directly for a
-# copy-completion handshake (_spawn_pinning_reader, task #5866).
-_wait_for_marker() {
-    local marker="$1"
-    local deadline_s="$2"
-    # Poll every 0.05s; max_ticks = deadline_s × 20
-    local max_ticks=$(( deadline_s * 20 ))
-    local tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
-        [ -f "$marker" ] && return 0
-        sleep 0.05
-        tick=$(( tick + 1 ))
-    done
-    return 1
-}
-
-# _wait_for_reader_lock <ready-marker> <deadline-seconds>
-# Causal ordering (technique R) for reader-readiness: polls for the READY
-# marker file in 0.05s ticks, returning 0 as soon as it appears, or non-zero
-# once the generous deadline elapses (technique T anti-hang guard).
-#
-# The READY marker is touched by the reader AFTER acquiring flock -s on the
-# lock file, so returning 0 causally guarantees the reader holds flock -s at
-# the caller's next statement.
-#
-# The deadline is deliberately generous (5-60s for normal scheduling) — it
-# is an anti-hang guard only, never a timing discriminator.
-#
-# Used by the rewired SGSWAP3/SGSWAP4/GC/B11 fixtures.
-# Task: #4847
-_wait_for_reader_lock() {
-    _wait_for_marker "$1" "$2"
-}
-
 # _spawn_pinning_reader <lock_file> <ready_marker> <clone_done_marker> <src> <dst> [hold_s] [reflink_mode]
 # Backgrounds a reader that: takes flock -s on <lock_file>, signals
 # <ready_marker>, runs `cp -a --reflink=<reflink_mode> <src> <dst>`, signals
@@ -1471,7 +1429,7 @@ _wait_for_reader_lock() {
 # (A `pid=$(...)` capture is impossible here: command substitution would
 # run the reader in a subshell that exits immediately, dropping the flock.)
 #
-# fd 205: 9, 200 and 201 are already in use elsewhere in this file.
+# fd 205: 200 and 201 are already in use elsewhere in this file.
 # Task: #5866
 _spawn_pinning_reader() {
     local lock_file="$1"
@@ -2623,7 +2581,7 @@ touch "$_SGSWAP3_LOCK" 2>/dev/null || true
 ( flock -s 201; touch "$_SGSWAP3_READY"; sleep 120 ) 201>"$_SGSWAP3_LOCK" &
 _SGSWAP3_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847)
-_wait_for_reader_lock "$_SGSWAP3_READY" 30
+holder_wait_for_marker "$_SGSWAP3_READY" 150
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_BOOT" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
 # Capture live gen + identify the retained retired gen before releasing the reader.
@@ -2667,7 +2625,7 @@ touch "$_SGSWAP4_LOCK" 2>/dev/null || true
 ( flock -s 200; touch "$_SGSWAP4_READY"; sleep 120 ) 200>"$_SGSWAP4_LOCK" &
 _SGSWAP4_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.1 — #4847)
-_wait_for_reader_lock "$_SGSWAP4_READY" 30
+holder_wait_for_marker "$_SGSWAP4_READY" 150
 # Second refresh: creates gen.2, re-points symlink; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_SGSWAP_LANE/target" "$_SGSWAP_BASE_SECOND" \
     --landed-commit "$_SGSWAP_LANE_HEAD"
@@ -2728,7 +2686,7 @@ touch "$_GC_LOCK_FILE" 2>/dev/null || true
 ( flock -s 200; touch "$_GC_READY"; sleep 120 ) 200>"$_GC_LOCK_FILE" &
 _GC_READER_PID=$!
 # Causal handshake: wait until reader has acquired flock -s (replaces fixed sleep 0.2 — #4847)
-_wait_for_reader_lock "$_GC_READY" 30
+holder_wait_for_marker "$_GC_READY" 150
 
 # Second refresh: creates gen.2, symlink → gen.2; gen.1 GC deferred (reader holds lock)
 _refresh_capture "$_GC_LANE/target" "$_GC_BASE" --landed-commit "$_GC_LANE_HEAD"
