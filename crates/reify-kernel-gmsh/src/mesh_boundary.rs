@@ -37,7 +37,6 @@ use reify_ir::ElementOrderTag;
 use std::borrow::Cow;
 #[cfg(has_gmsh)]
 use crate::{
-    CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE,
     auto_size::AutoSizeConfig,
     mesh_size_scope::MeshSizeScope,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
@@ -576,7 +575,9 @@ fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool 
 /// deliberately mirrors the structure of `kernel_real.rs::mesh_to_volume`
 /// (acquiring `GMSH_LOCK`, calling the same FFI sequence) while adding the
 /// entity-membership queries between `mesh_generate(3)` and `ffi::clear()`.
-/// The existing `mesh_to_volume` function is left unchanged.
+/// It shares `mesh_to_volume`'s region builder,
+/// `kernel_real::build_meshable_region`, and arms the same
+/// [`crate::log_capture::LogCapture`].
 #[cfg(has_gmsh)]
 fn run_meshing_with_entity_queries(
     surface: &Mesh,
@@ -584,7 +585,6 @@ fn run_meshing_with_entity_queries(
     element_order: ElementOrderTag,
     attribution: &EntityAttribution,
 ) -> Result<(VolumeMesh, Vec<(u32, NodeAttachment)>), GeometryError> {
-    use std::collections::HashMap;
     use crate::{ffi, init};
 
     // --- Input validation (mirrors kernel_real.rs checks) ---
@@ -613,6 +613,9 @@ fn run_meshing_with_entity_queries(
     let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
+    // gmsh's diagnosis now reaches only the capture; armed and dropped exactly
+    // as at `kernel_real::GmshKernel::mesh_to_volume`'s arm site (`log_capture`).
+    let log_capture = crate::log_capture::LogCapture::armed(&_guard);
 
     // Mesh-size options: this function's own deviation from the size defaults
     // the scope just established, and dying with it.
@@ -653,58 +656,39 @@ fn run_meshing_with_entity_queries(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    // Classify surfaces + create geometry.
-    //
-    // NOTE: this producer and `mesh_to_volume` now share ONE definition of the
-    // classify angles — [`CLASSIFY_FEATURE_ANGLE`] / [`CLASSIFY_CURVE_ANGLE`],
-    // defined in `kernel_real.rs` and re-exported from the crate root. Until
-    // #6200 `mesh_to_volume` passed FRAC_PI_2 (90°) here while this path passed
-    // FRAC_PI_4 (45°); consuming the constant removes the second definition, so
-    // the two producers cannot drift apart again.
-    //
-    // WHY the value must stay strictly below 90° (task 3591's finding, and
-    // #6200's root cause): a cube's dihedral angle is exactly 90° and gmsh's
-    // sharp-edge test is strictly-greater-than, so a 90° feature angle
-    // registers none of a box's own edges and fails to separate adjacent
-    // faces. gmsh then falls back to a topological split with no corner
-    // (dim-0) entities, which costs BOTH producers: attribution yields zero
-    // OnVertex attachments, and volume meshing hands HXT a region smaller than
-    // the solid (measured on a box: aabb fill 0.74, B-rep census
-    // dim0/dim1/dim2 = 4/4/2). At 45° the cube's 90° edges are safely above
-    // the threshold and corners, edges and faces are all recovered (census
-    // 8/14/8, fill 1.000000). See `tests/node_attachment_producer.rs` (signal
-    // test), `tests/classify_feature_angle.rs` (B-rep census guard),
-    // `tests/volume_fill_fraction.rs` (fill guard) and
-    // `tests/gmsh_classify_diagnostics.rs` (pinned re-meshing property).
-    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
-    ffi::create_geometry(&[])?;
-
-    // Wrap in surface loop + volume
-    let surface_tags = ffi::get_entity_tags(2)?;
-    if surface_tags.is_empty() {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(
-            "gmsh produced no dim=2 entities after classify_surfaces+create_geometry".into(),
-        ));
-    }
-    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-    ffi::geo_synchronize()?;
+    // Shared with `mesh_to_volume`; the classify-angle rationale lives there.
+    crate::kernel_real::build_meshable_region(&_guard).map_err(|e| log_capture.annotate(e))?;
 
     // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
     // a failure here must not outlive this call. See that function.
     //
-    // This site is NOT test-covered, unlike `mesh_to_volume`'s and
-    // `refine_volume_with_size_field`'s. Reaching a failed `mesh_generate(3)`
-    // from here needs a surface this entry point's own watertight preflight
-    // accepts, and `tests/mesher_poison_recovery.rs`'s open triangle is not
-    // one: it is rejected upstream of gmsh as `MeshContractViolation {
-    // invariant: Closed, open_edges: 3 }`. A probe of the two cheap
-    // closed-but-degenerate candidates — a doubled triangle enclosing no
-    // volume, then two interpenetrating cubes — was killed at 25 minutes with
-    // neither call having returned. A fixture that can hang the suite is worse
-    // than an uncovered site, so this stays verified by code review.
+    // Driven from `tests/mesher_poison_recovery.rs` by two disjoint closed
+    // cubes, which pass this entry point's watertight preflight and fail HXT
+    // in ~50 ms; those tests cover both the recovery and the single
+    // captured-log annotation. Outside both `log_capture` seams because it
+    // annotates its own failure — a seam over it would append the tail twice.
     init::mesh_generate_with_recovery(&_guard, 3)?;
+
+    read_back_attributed_volume(&_guard, element_order, attribution)
+        .map_err(|e| log_capture.annotate(e))
+}
+
+/// Query gmsh's entity membership for the mesh just generated, read the volume
+/// mesh back out of the process-global model, and attribute its nodes to the
+/// caller's B-rep handles.
+///
+/// The [`crate::init::GmshGuard`] is an admission ticket only, as in
+/// `kernel_real::build_meshable_region`. Split out of
+/// [`run_meshing_with_entity_queries`] so this span's failures reach the
+/// caller's `LogCapture` at one seam.
+#[cfg(has_gmsh)]
+fn read_back_attributed_volume(
+    _guard: &crate::init::GmshGuard,
+    element_order: ElementOrderTag,
+    attribution: &EntityAttribution,
+) -> Result<(VolumeMesh, Vec<(u32, NodeAttachment)>), GeometryError> {
+    use crate::{ffi, init};
+    use std::collections::HashMap;
 
     // -----------------------------------------------------------------------
     // Entity-membership queries (must happen BEFORE ffi::clear)

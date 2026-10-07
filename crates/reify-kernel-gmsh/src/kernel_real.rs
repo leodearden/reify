@@ -112,8 +112,10 @@ pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 /// Split out of [`GmshKernel::mesh_to_volume`] so this span — six `?` sites,
 /// each of whose failures gmsh explains in its captured message stream rather
 /// than in the last-error line — folds that stream into its error at ONE seam
-/// instead of six.
-fn build_meshable_region(_guard: &init::GmshGuard) -> Result<(), GeometryError> {
+/// instead of six. The attributed producer
+/// (`mesh_boundary::run_meshing_with_entity_queries`) calls it too: its span
+/// was a byte-for-byte copy of this one, using the same `CLASSIFY_*` constants.
+pub(crate) fn build_meshable_region(_guard: &init::GmshGuard) -> Result<(), GeometryError> {
     // Reclassify the discrete surface and build geometry so 3D meshing has
     // a parametric region to fill.
     //

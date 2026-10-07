@@ -9,17 +9,19 @@
 //!
 //! Every test here therefore fails a mesh on purpose. Most then assert the
 //! process is still usable — that the damage is confined to the call that
-//! earned it. The last asserts what that failing call REPORTS, which needs
-//! the same deliberate failure to observe. The failing call itself is
-//! expected to be loud; what is under test is the state it leaves behind and
-//! the diagnosis it hands back.
+//! earned it. The `*_reports_gmshs_captured_log_*` tests assert what that
+//! failing call REPORTS, which needs the same deliberate failure to observe.
+//! The failing call itself is expected to be loud; what is under test is the
+//! state it leaves behind and the diagnosis it hands back.
 //!
-//! Two of this crate's four `mesh_generate` sites are driven from here —
-//! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions.
-//! The other two are uncovered for a measured reason stated at each site:
-//! `mesh_profile_2d.rs` (no cheap 2D geometry that fails `mesh_generate(2)`
-//! was identified) and `mesh_boundary.rs` (its watertight preflight rejects
-//! every unmeshable fixture this binary has before gmsh is reached).
+//! Three of this crate's four `mesh_generate` sites are driven from here:
+//! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions,
+//! and `mesh_surface_to_volume_with_attribution`, via two disjoint closed
+//! cubes that pass its watertight preflight. Only `mesh_profile_2d.rs`'s
+//! `mesh_generate(2)` stays uncovered at the mesher, for a measured reason:
+//! degenerate outlines make it succeed with zero elements (rejected at the
+//! readback, and tested in `mesh_plane_2d_tests.rs`), and a NaN vertex fails
+//! it only after ~98 s.
 //!
 //! These tests live in their own binary rather than in
 //! `mesh_to_volume_tests.rs` so that a recovery regression reds one binary
