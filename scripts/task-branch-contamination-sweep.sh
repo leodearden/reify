@@ -840,7 +840,8 @@ fi
 # costs no git work at all beyond the one for-each-ref, and a task with no
 # branch costs none. Every ref outside that intersection is still ACCOUNTED
 # for — by a named skip counter, or by an UNKNOWN row when the store itself is
-# what could not be consulted. Rows are emitted in ascending task id.
+# what could not be consulted. Rows are emitted in ascending task id, whatever
+# --branch-prefix is.
 N_BRANCHES=0; N_SUSPECT=0; N_PEER_FILES=0; N_OUT_OF_SCOPE=0
 N_UNDECLARED=0; N_CLEAN=0; N_UNKNOWN=0
 N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0; N_SKIPPED_NO_TASK=0
@@ -867,15 +868,25 @@ _tally() {
     esac
 }
 
-while IFS= read -r _ref; do
-    [ -n "$_ref" ] || continue
-    _id="${_ref#"${BRANCH_PREFIX}"}"
+# _fleet_suffixes — the suffix after refs/heads/<prefix> of every fleet ref,
+# one per line, ascending numerically. The sort key is the suffix itself (the
+# task id), so the order holds for any --branch-prefix. `%(refname)`, not
+# `%(refname:short)`: the short form is `heads/<name>` whenever a tag shares
+# the name.
+_fleet_suffixes() {
+    local ref
+    _git for-each-ref --format='%(refname)' "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null |
+        while IFS= read -r ref; do printf '%s\n' "${ref#"refs/heads/${BRANCH_PREFIX}"}"; done |
+        sort -n
+}
+
+while IFS= read -r _id; do
     case "$_id" in
         ''|*[!0-9]*)
             # Never silently dropped and never an error: 48 of the live pool's
             # 1095 task/* refs have non-numeric suffixes (task/1741-recovered,
             # task/208-merge, task/2962-20260530T173412Z).
-            warn "Skipping non-numeric branch: $_ref"
+            warn "Skipping non-numeric branch: ${BRANCH_PREFIX}${_id}"
             N_SKIPPED_NONNUMERIC=$((N_SKIPPED_NONNUMERIC + 1))
             continue ;;
     esac
@@ -904,9 +915,8 @@ while IFS= read -r _ref; do
     _measure_branch "$_id"
     _tally
     _append_row
-done < <(_git for-each-ref --format='%(refname:short)' \
-             "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null | sort -t/ -k2 -n)
-unset _ref _id
+done < <(_fleet_suffixes)
+unset _id
 
 # The two aggregate stderr diagnostics, emitted once and only when they apply.
 # A pool of refs whose tag holds NO live task at all is never a legitimate

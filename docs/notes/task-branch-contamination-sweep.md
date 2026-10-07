@@ -191,6 +191,8 @@ something the store positively said, never a guess standing in for an answer it 
   `task/208-merge`, `task/2962-20260530T173412Z`). **48 of the live pool's 1095 `task/*` refs** are
   in this class; they are skipped with a note on stderr, never silently dropped and never an error.
 
+Fleet rows are emitted in ascending task id, whatever `--branch-prefix` is.
+
 A task with no branch ref produces no row at all in fleet mode. In `--task` mode it *does* get a
 row — a degraded `UNKNOWN` one — because the caller asked about that branch by name and is owed an
 answer.
