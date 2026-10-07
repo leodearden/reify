@@ -3,15 +3,7 @@
 // `location : FaceSelector` overload in
 // crates/reify-compiler/stdlib/modal_analysis_fns.ri.
 //
-// MEASURED 2026-10-07, main 90b846861f (debug build, task #7373):
-//   `reify check` EXIT 0, "All constraints satisfied.", zero Errors and four
-//   warnings: W_MODULE_DECL_MISSING plus an `@optimized` "no registered compute
-//   trampoline" for each of modal::free_vibration, modal::transient_response and
-//   modal::displacement_at.
-//   `reify eval` EXIT 0, W_MODULE_DECL_MISSING its only diagnostic; `tip` is a
-//   non-empty List<Length>, not undef.
-//   `tree-sitter parse --quiet` (the grammar gate) EXIT 0.
-//   This header once claimed `reify check` exits 1; #6123 retracted that.
+// MEASURED 2026-10-07, main 7d1e6ba692: `reify check` EXIT 0.
 //
 // Machine pins, cited by SYMBOL, not file:line: nothing recompiles this fixture
 // when those files are edited, so a pinned line number would drift silently,
@@ -37,8 +29,8 @@
 // `displacement_at_accepts_selector_location_overload` in
 // r3b_modal_selector_displacement.rs, over an INLINE twin of this structure,
 // not this file.
-// NO pin evaluates this file: the whole-file exit codes and the `tip` result in
-// the MEASURED block are a dated record, not a gate.
+// NO pin evaluates this file: the whole-file `reify check` EXIT 0 in the
+// MEASURED line is a dated record, not a gate.
 //
 // History: originally fed a TOPOLOGY SELECTOR where `displacement_at` accepted
 // only a String location, proving the eval-path selector->node resolver was
