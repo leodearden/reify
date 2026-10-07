@@ -86,7 +86,7 @@ the bending plane because linear tets shear-lock in proportion to (δx/δz)².
 deliberately independent of boundary conditions.
 
 **The realized-body overload does not run from the CLI.** No gmsh kernel is registered per engine and
-the solve returns a hollow result (pending #6660, #7417).
+the solve returns a hollow result (#6660; #7417 was folded into #6660).
 
 ## 3. Substrate verification (G3)
 
@@ -104,7 +104,7 @@ the solve returns a hollow result (pending #6660, #7417).
 | Persistent FEA cache keys cover the new inputs | **Exists** | `engine_eval.rs::persistent_cache_key` hashes every evaluated argument value. Modal is not persisted. |
 | `max(result.displacement)` reads a deflection | **Exists** | `GantryFea.defl_cant` in `printer.ri`. |
 | Static P2, and Jacobi-CG converging on a thin plate | **Unverifiable today** — η is staged behind it | #7075 is pending; the 800×500×12 box on linear tets does not converge in 2000 iterations on main. |
-| Body overload from the CLI | **Prerequisite for ι only** | Pending #6660, #7417. |
+| Body overload from the CLI | **Prerequisite for ι only** | #6660 (#7417 was folded into #6660). |
 | A coordinate kind solving at sub-instance scope with a non-default argument | **To probe at decompose** (λ only) | `unfold/optimized_instance_reuse.rs` reuses the template's solved value only when inputs match. |
 
 ## 4. Resolved design decisions
@@ -117,12 +117,12 @@ the solve returns a hollow result (pending #6660, #7417).
 | **D4** | **Restraint is a list of directions**: `restrain : List<Vector3<Dimensionless>>`, default the three global axes (7189's behaviour). One to three linearly independent directions; oblique directions in the first cut; static and modal. | Leo, 2026-10-05 |
 | **D5** | **Directional restraint is a per-node basis change**, not an MPC. It keeps `K` and `M` symmetric and their sparsity pattern, so the existing CG and eigensolve paths are unchanged. | this session |
 | **D6** | **Coordinates re-resolve on every mesh.** Nothing coordinate-addressed is held as a node index across a mesh change (§5 C4). | Leo, 2026-10-05 |
-| **D7** | **`radius = 0` always resolves, and refuses energy-norm adaptivity** with a coded Warning. A point constraint or point force on a 3-D solid has no finite-energy solution, so the estimator would spend every mark at the point. `radius > 0` refines normally. If any coordinate kind in the solve has `radius = 0`, the whole solve refuses. The refusal lifts for a far-field quantity of interest once the goal-oriented estimator lands. | Leo, 2026-10-05 |
+| **D7** | **`radius = 0` always resolves, and refuses energy-norm adaptivity** with a coded Warning. A point constraint or point force on a 3-D solid has no finite-energy solution, so the estimator would spend every mark at the point. `radius > 0` refines normally. If any coordinate kind in the solve has `radius = 0`, the whole solve refuses, and the result reports the explicit declined `ConvergenceStatus` variant (#8266), never the non-adaptive defaults, which report `Converged{0.0}` (C7). The refusal lifts for a far-field quantity of interest once the goal-oriented estimator lands. | Leo, 2026-10-05 |
 | **D8** | **This PRD owns `SolveBoundary`**, the solver's located-load and located-support input (§5 C4). #5313 builds on it for selector-resolved loads and adds its own variant, shaped with #8078; this PRD defines only the coordinate variant. | Leo, 2026-10-05 |
 | **D9** | **One weight rule for force, weight and inertia: nodal volume share over the patch** (§5 C3). It is continuous under refinement, needs no free surface, and works on tet10 meshes. A surface-traction rule was rejected: whether a ball patch contains a boundary face is mesh-dependent, so the load would jump between rules under refinement. | this session |
 | **D10** | **The dims mesh gains `y` resolution only when a coordinate kind is present** (§5 C8). The lock-avoiding through-thickness rule is kept for linear tets. Every scene without a coordinate kind is byte-identical. | Leo, 2026-10-05 (scope); rule this session |
 | **D11** | **The static plate is staged.** A credible plate sag needs quadratic tets (#7075) and a linear solve that converges on a thin plate, and neither can be probed today. Leaf η is filed as a dependency-gated milestone that probes first. The modal plate needs neither and ships in ζ. | this session — **Q-K** |
-| **D12** | **The body overload from the CLI is not re-filed.** Leaf ι depends on #6660 and #7417. | this session — **Q-L** |
+| **D12** | **The body overload from the CLI is not re-filed.** Leaf ι depends on #6660 (#7417 was folded into #6660). | this session — **Q-L** |
 | **D13** | **7189 merges as accepted**; leaf α extracts the shared resolver and codes its diagnostics. | Leo, 2026-10-05 |
 
 ## 5. Contract (the H half)
@@ -219,11 +219,12 @@ so that an implementer of a lane or overload keeps the behaviour without re-deri
   rule, which is why 7189 had to decline adaptivity. *Lifetime:* permanent.
 - **I3.** `node_override` stays index-based and keeps today's behaviour (its presence refuses the
   localized lane). *Why:* #4092's path is not reworked here. *Lifetime:* transitional, until #5313 and
-  #8078 replace it.
-- **I4.** The restraint-rank guard runs on each mesh that is solved. The off-body check runs against
-  the **seed** mesh's `h_max` for the whole refinement run. *Why:* `h_max` shrinks under refinement,
-  so a point that snapped on the seed must not become off-body three iterations in. *Lifetime:*
-  permanent.
+  #8078 replace it. **On the body overload the uniform lane is never entered** (#8248):
+  `node_override`'s presence leads to #8248's per-trigger handling, never to a synthetic-box solve.
+- **I4.** The restraint-rank guard and the off-body check each run on every mesh that is solved. The
+  off-body check measures against the **seed** mesh's `h_max` for the whole refinement run. *Why:*
+  `h_max` shrinks under refinement, so a point that snapped on the seed must not become off-body three
+  iterations in. *Lifetime:* permanent.
 - **I5.** The legacy summed tip force stays for `PointLoad`. *Lifetime:* transitional, until #5313.
 - **I6.** `FeaNoLoads` counts point forces, and point masses under gravity, as loads. *Why:* a
   `PointForce`-only scene would otherwise warn "no loads". *Lifetime:* permanent.
@@ -280,7 +281,8 @@ coordinate matter: milestone M1 in §7.
 ### C7. Adaptive refinement
 
 - Any coordinate kind with `radius = 0` and `adaptive: true` → `FeaAdaptiveDeclinedPointTarget`
-  Warning; the result is the single-shot solve with the non-adaptive defaults (7189's shape).
+  Warning; the result is the single-shot solve (7189's shape) and reports the explicit declined
+  `ConvergenceStatus` variant from #8266, never the non-adaptive defaults, which report `Converged{0.0}`.
 - Otherwise both lanes run with the `SolveBoundary`. A coordinate-only boundary no longer forces the
   localized lane to fall back.
 - Each iteration emits an Info line with each patch's node count on that mesh.
@@ -330,7 +332,8 @@ material has no single density.
 
 Every row runs in an evaluating integration test in `crates/reify-eval-fea-tests/tests/`, on a `.ri`
 fixture through the production eval path. `examples/` is compile-gated only, so it holds the
-user-facing positive designs and carries no assertion.
+user-facing positive designs and carries no assertion. Every static fixture asserts
+`result.converged == true`, so that no signal passes on an unconverged iterate (β depends on #8244).
 
 | # | Scenario | Precondition | Postcondition | Leaf |
 |---|---|---|---|---|
@@ -348,21 +351,23 @@ user-facing positive designs and carries no assertion.
 | BT12 | Warm modal cache | Same dims, a `PointSupport` toggled on a warm engine | A cache miss; frequencies equal the cold solve | ζ |
 | BT13 | Weights converge | A `radius > 0` force on two successive refinements | Weighted centroid within `radius + h` of `at` on both; resultant exact on both | β |
 | BT14 | `at` rejects a pose | `frame3(...)` at each kind's `at` | Compile-time Error | β, γ |
+| BT15 | Body overload never boxes | Body overload, coordinate kinds with `radius > 0`, `adaptive: true`, a forced `RefineError` from the remesh | #8248's handling: the last good iterate with a "stopped" status, or a coded Error when no iterate solved; never a synthetic-box result | θ |
 
 ## 7. Decomposition plan
 
-Prerequisites outside this batch: **#7189** (all leaves), **#7075** (η), **#6660 + #7417** (ι).
+Prerequisites outside this batch: **#7189** (all leaves), **#8244** (β), **#7075** (η), **#6660** (ι;
+#7417 was folded into #6660).
 #7448 landed on 2026-10-05, so `apply_patch_resultant` and its load block are on main.
 
 | Leaf | Title | Depends on | Observable signal |
 |---|---|---|---|
 | **α** #8251 | Extract the shared node-patch resolver; code 7189's diagnostics | #7189 | Intermediate — unlocks every other leaf. 7189's off-body and collinear fixtures still exit 1 through `reify eval`, now with the C9 codes asserted by identity in `point_support_e2e.rs`; `reify-audit --pattern PDIAG` finds no code-less site in the two modules. |
 | **ζ** #8252 | Plate-capable synthetic grid; grid in `ModalCacheKey` | α | `plate_three_point_modes.ri` (P2 modal, three interior fully restrained `PointSupport`s on a 500×800×12 plate): the e2e reads a finite first frequency and an Info line showing each support resolved within one element of its requested `y`. BT10, BT12. 7189's fixtures are re-baselined here. |
-| **β** #8253 | `SolveBoundary`, volume weights, `PointForce` (vertical slice) | ζ | `gantry_head_force.ri`: a cantilever tube with a `PointForce` at two head positions; `reify eval` prints two deflections in the BT3 ratio. BT1, BT11, BT13, BT14. `examples/fea/gantry_head_force.ri` is the user-facing copy. |
+| **β** #8253 | `SolveBoundary`, volume weights, `PointForce` (vertical slice) | ζ, #8244 | `gantry_head_force.ri`: a cantilever tube with a `PointForce` at two head positions; `reify eval` prints two deflections in the BT3 ratio. BT1, BT11, BT13, BT14. `examples/fea/gantry_head_force.ri` is the user-facing copy. |
 | **γ** #8255 | `PointMass`: static weight and modal inertia | β | `gantry_head_mass.ri`: static deflection equals the equivalent `PointForce` (BT2); `first_frequency` with the head at `L/2`, `L/4` and a support is ordered as BT4. `mechanism_modal_analysis` with `point_masses` warns. |
 | **ε** #8256 | Directional restraint, static and modal | β | `kinematic_mount.ri`: a block on a cone / vee / flat mount evaluates in both solves (BT5); the flat-only variant fails as BT6. |
 | **θ** #8257 | Adaptive refinement with coordinate kinds | ε | CLI, dims overload: BT7 and BT8. Rust harness: BT9. |
-| **ι** #8258 | Coordinate kinds on a realized body from the CLI | θ, #6660, #7417 | `bracket_point_targets.ri` (a body the box cannot express): `reify eval` prints a populated `ElasticResult`; an off-body point exits non-zero with `FeaPointOffBody`. |
+| **ι** #8258 | Coordinate kinds on a realized body from the CLI | θ, #6660 | `bracket_point_targets.ri` (a body the box cannot express): `reify eval` prints a populated `ElasticResult`; an off-body point exits non-zero with `FeaPointOffBody`. |
 | **κ** #8259 | Docs: FEA chunk, exemplar, index, reference | γ, ε, ζ, θ | A new `crates/reify-mcp/src/tools/chunks/fea.md` whose fenced signatures pass the chunk fence gate; `examples/best_practices/fea_point_targets.ri` and its `INDEX.md` row; one index line in `.claude/skills/reify-design/SKILL.md`; a `std.fea` subsection in `docs/reify-stdlib-reference.md`; `docs/notes/fea-point-supports.md` generalised to the three kinds; the P4 D2 pointer updated. An author searching "support a plate at three points" or "mass at a position on a beam" finds the kind from the chunk or the index. |
 | **λ** #8260 | printer_v01 adopts the kinds | γ, ε | `GantryFea` gains a `head_x` param and a `PointMass`; `EZBed` gains a modal cell on its three supports. `reify check prj/printer_v01/printer.ri` is clean and a standalone `reify eval` of each structure prints the new cells. Its dependency on #8102 is decided by the §3 sub-instance probe. |
 | **η** #8265 | *Milestone, dependency-gated:* static plate on three points | ζ, ε, γ, #7075 | First step: probe a P2 static solve of the 500×800×12 plate on minimal point restraint. If CG converges, add `plate_three_point_sag.ri` (reported sag; a narrow strip on two supports against the overhanging-beam closed form) and the EZBed sag cell. If it does not, η stops and returns the solver question to Leo. |
@@ -386,7 +391,8 @@ At decompose, #5313 gained a dependency on β #8253 and a note pointing at D8.
   `at`, at most `radius + h` ≈ 13 mm on `a = 500 mm`, which moves `a²(3L−a)` by under 5%; and the
   linear-tet stiffness error, which scales both deflections by nearly the same factor because the
   element shape is uniform along the tube. `max(displacement)` is the tip deflection for a cantilever
-  loaded at `a ≤ L`.
+  loaded at `a ≤ L`. The budget has no CG-residual term, which is why the signal asserts
+  `result.converged == true` and β depends on #8244.
 - **BT4** is exact in direction: adding positive mass cannot raise any eigenvalue, and a mass nearer
   an antinode lowers the first mode more.
 - **BT5** is exact by construction: the restrained local DOF is eliminated.
@@ -417,8 +423,8 @@ the same diff.
 - **Honouring `TractionLoad` and `BodyForce`**, retiring the legacy tip force, and selector-resolved
   loads: #5313, #8078.
 - **Selector typing of the remaining target fields:** #5312. **The pose-vs-set verifier:** #4833.
-- **Boundary fidelity of the remesh** (curved faces frozen at the seed facets): the sibling
-  investigation `adaptive-boundary-fidelity-2026-10-05`.
+- **Boundary fidelity of the remesh** (curved faces frozen at the seed facets): #8270, the fidelity
+  milestone (§9).
 
 ## 9. Cross-PRD relationship (G4)
 
@@ -430,17 +436,26 @@ the same diff.
 | #5313 selector consumption | produces for | `SolveBoundary` | this PRD owns the struct (β); #5313 adds its selector variant | pending |
 | #8078 face triangles for selector loads | neighbour | the selector variant's representation | 8078 with 5313 | pending |
 | #7075 static P2 | consumes | `element_order` on `elastic_static`; selects C8's quadratic rule | 7075 | pending |
-| #6660 / #7417 gmsh in CLI and engine | consumes | per-engine kernel registration | those tasks | pending |
+| #6660 gmsh in CLI and engine | consumes | per-engine kernel registration | #6660 (#7417 was folded into it) | pending |
 | `a-posteriori-error-estimation.md` | modifies | the two `AdaptiveProblem` structs | this PRD (θ) for the boundary they carry; the lanes stay theirs | landed |
 | `goal-oriented-error-estimation.md` (#7453–#7458) | neighbour | the same structs; coordinate-addressed QoI | DWR for the estimator; milestone M3 for lifting D7's refusal | pending |
 | #7890 size proxy | neighbour | `RealizedAdaptiveProblem::current_sizes` | 7890 | pending |
-| Adaptive boundary fidelity (sibling session) | neighbour | the surface fed to the remesh | that work. `FeaPointOffBody`'s `h_max` bound holds either way | investigating |
+| Adaptive boundary fidelity (frozen-facet remesh surface) | neighbour | the surface fed to the remesh | #8270, the fidelity milestone. `FeaPointOffBody`'s `h_max` bound holds either way | G6 not established; gated on #8270 |
+| #8246 refined results | neighbour | the displacement, stress and `error_indicator` an adaptive solve reports; θ edits both `AdaptiveProblem` structs | #8246 for the result fields, θ for the boundary they carry; sequence the two | — |
+| #8266 `convergence_status` default | consumes | the explicit declined `ConvergenceStatus` variant that C7's refusal reports | #8266 | — |
+| #7781 redispatch swallow | neighbour | the engine's post-hydration redispatch of the body overload's compute node discards `DispatchError::Failed` | #7781 | — |
+| #8254 degenerate-tet threshold | neighbour | the `FeaSingularStiffness` degenerate-tet check in the shared solve, which a fine realized mesh can trip | #8254 | — |
+| #8244 CG cap and options | consumes | `ElasticOptions.max_iter` and `cg_tolerance` reaching the solve; an exhausted cap is not a valid result | #8244 (β prerequisite) | — |
+| #8248 body-overload cube fallback | consumes | the uniform lane is never entered on the body overload (C4 I3, BT15) | #8248 for the per-trigger handling, θ for the `SolveBoundary` on both lanes | — |
+| `docs/prds/v0_6/meshing-service.md` | neighbour | the realized mesh the body overload remeshes; face identity carried across a remesh | that PRD | — |
+| #8270 fidelity milestone | neighbour | measurement gating the meshing service's fidelity increments | #8270 | — |
 | P4 (naming convergence) | parent | D1 / D3 | P4; this PRD updates only its D2 pointer (κ) | active |
 | `flexible-modal` A2 (#7143) | neighbour | selector supports on the modal path | 7143 | pending |
 
 ## 10. Open questions (tactical)
 
-- **The DOF ceiling in C8.** Decide in ζ from a measured solve time.
+- **The DOF ceiling in C8.** Decide in ζ from a measured solve time and the CG iteration count at the
+  candidate ceiling, both recorded.
 - **Whether axis-aligned restraint skips the rotation** (C5 allows either). Decide in ε.
 - **Spelling of the per-iteration patch Info line** (C7). Decide in θ.
 - **`PointMass` versus the existing `point_mass(m)` dynamics builtin.** Different things with similar
@@ -496,3 +511,26 @@ this file carries the evidence.
   (other `ModalOptions` consumers), #7088 (FEA chunk), #7383 (`printer.ri` crash), #5312 (same-file
   ordering), #8248 (adaptive `bc_override` defect, filed on Q-B).
 - **Probes.** §3 was re-run on the 2026-10-05 binary (`e5f638d029`); every row confirmed.
+
+### 2026-10-06 — adaptive-boundary-fidelity rulings (Q-m, Q-n, Q-o, Q-u, Q-z)
+
+Recorded after the adaptive-boundary-fidelity investigation. Each item names the section it amends; the
+normative text in §4–§10 is edited in place.
+
+- **§5 C7 / §4 D7.** The `radius = 0` refusal reports the explicit declined `ConvergenceStatus` variant
+  from #8266, not the non-adaptive defaults, which report `Converged{0.0}`.
+- **§5 C4 I3.** On the body overload the uniform lane is never entered (#8248); `node_override`'s presence
+  leads to #8248's per-trigger handling, never to a synthetic-box solve.
+- **§5 C4 I4.** The off-body check runs on every mesh solved, against the seed mesh's `h_max`.
+- **§6.** New BT15: body overload, coordinate kinds with `radius > 0`, `adaptive: true`, a forced
+  `RefineError` gives #8248's handling (last good iterate with a "stopped" status, or a coded Error),
+  never a box result. Leaf θ.
+- **§6 / §7 / §10.** Every static fixture asserts `result.converged == true`. β #8253 depends on #8244
+  (CG cap and options honesty); the BT3 budget note says why. ζ's DOF ceiling records the CG iteration
+  count as well as the solve time.
+- **§7 / §2 / §3 / §4 D12 / §9.** ι #8258 depends on #6660 only: #7417 was folded into #6660.
+- **§8 / §9.** Neighbour rows for #8246 (refined results), #8266 (status default), #7781 (redispatch
+  swallow), #8254 (degenerate threshold), #8244 (CG), #8248 (cube fallback), the meshing-service PRD
+  (`docs/prds/v0_6/meshing-service.md`) and #8270 (fidelity milestone). The adaptive-boundary-fidelity
+  row now records the outcome: G6 not established; gated on #8270. The §8 fidelity bullet cites #8270.
+  The Status cells of the new rows are left as "—", because task status is not cited here.
