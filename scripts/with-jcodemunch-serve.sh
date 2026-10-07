@@ -34,7 +34,8 @@
 # is exported with the same spelling. `/mcp/` is NOT equivalent: a real serve
 # 307-redirects it and the redirect DROPS the `mcp-session-id` header, so the
 # session contract silently breaks downstream instead of failing here. Already
-# pinned at `crates/reify-audit/src/bin/reify-audit.rs:185-188` and reused by
+# pinned in `crates/reify-audit/src/bin/reify-audit.rs` (`Args::jcodemunch_url`
+# and the `JCODEMUNCH_URL` default in `parse_args`) and reused by
 # `scripts/smoke-jcodemunch-serve.sh`; do not "tidy" a slash onto either.
 #
 # ── READINESS IS AN IDENTITY CHECK, NOT A LIVENESS CHECK ────────────────────
@@ -83,9 +84,9 @@
 #
 # ── STDERR DISCIPLINE IS A CORRECTNESS CONSTRAINT, NOT COSMETICS ────────────
 #
-# `reify-audit` writes its JSON findings array to STDERR
-# (`crates/reify-audit/src/bin/reify-audit.rs:689-695`) and every consumer
-# extracts it as the TRAILING block — `scripts/smoke-predone-hook.sh:233` pipes
+# `reify-audit` writes its JSON findings array to STDERR (`to_writer_pretty` in
+# `main`, `crates/reify-audit/src/bin/reify-audit.rs`) and every consumer
+# extracts it as the TRAILING block — `scripts/smoke-predone-hook.sh` pipes
 # through `awk 'BEGIN{p=0} /^\[/{p=1} p{print}' | jq -e 'type=="array"'`, and
 # `crates/reify-audit/tests/cli.rs` uses `rfind("\n[")`. So:
 #
@@ -590,7 +591,7 @@ cleanup() {
 # ON THE HEALTHY PATH THIS PRINTS NOTHING AT ALL, to either stream. That is not
 # tidiness: it is what leaves a wrapped command's trailing stderr block — a
 # reify-audit findings array — as the last thing on stderr, so the consumers
-# that extract it (smoke-predone-hook.sh:233's awk, cli.rs's `rfind("\n[")`)
+# that extract it (smoke-predone-hook.sh's awk, cli.rs's `rfind("\n[")`)
 # still see a well-formed array. See the stderr-discipline block in the header.
 #
 # A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the
