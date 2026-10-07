@@ -913,10 +913,7 @@ pub fn get_value_cell_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a reify_compiler::ValueCellDecl {
-    // The not-found `panic!` stays in this `#[track_caller]` body rather than moving
-    // into an `unwrap_or_else` closure: `#[track_caller]` does not propagate into a
-    // closure, so the closure form would report this file's line instead of the
-    // caller's.
+    // let-else, not a closure: see tests/track_caller_panic_location.rs
     let Some(cell) = try_get_value_cell_in_template(template, cell_name) else {
         let available: Vec<String> = template
             .value_cells
