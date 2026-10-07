@@ -2,7 +2,6 @@
 #include "rust/cxx.h"
 #include <Precision.hxx>
 #include <TCollection_ExtendedString.hxx>
-#include <TDF_Label.hxx>
 #include <TDocStd_Document.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
@@ -1721,10 +1720,11 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema);
 /// One product of a read STEP document. Products are stored in DFS pre-order
 /// first-visit order over the free roots, which is the dedupe-index contract.
 struct OcctStepProduct {
-    TDF_Label label;
     TCollection_ExtendedString name;
     bool is_assembly = false;
-    std::uint32_t solid_count = 0;
+    /// A part's solids in its local frame, in TopExp_Explorer SOLID order: the
+    /// order body indices address. Empty for an assembly.
+    std::vector<TopoDS_Shape> solids;
     /// This product's components are `components[first_component ..
     /// first_component + component_count]` of the owning document.
     std::uint32_t first_component = 0;
@@ -1741,10 +1741,10 @@ struct OcctStepComponent {
     std::array<double, 3> translation{};
 };
 
-/// An XCAF document read from a STEP file plus its flattened product walk.
-/// Holding the document keeps every product label's shape alive for body
-/// access. `status` is meaningful on every instance; the walk vectors are
-/// populated only when it is `StepReadStatus::Read`.
+/// An XCAF document read from a STEP file plus its flattened product walk,
+/// whose parts hold their solids for body access. `status` is meaningful on
+/// every instance; the walk vectors are populated only when it is
+/// `StepReadStatus::Read`.
 struct OcctStepDocument {
     Handle(TDocStd_Document) document;
     StepReadStatus status;
@@ -1763,10 +1763,9 @@ std::unique_ptr<OcctStepDocument> read_step_document(rust::Str path);
 /// The document's status and flat walk records, names converted to UTF-8.
 StepTreeRecords step_document_tree(const OcctStepDocument& doc);
 
-/// The `body_index`-th solid (0-based, in the TopExp_Explorer SOLID order that
-/// `solid_count` counts) of product `product_index`, taken from the PRODUCT
-/// label, so in that product's local frame. Out-of-range indices throw a
-/// contract violation: the caller validates against the tree first.
+/// The `body_index`-th of product `product_index`'s `solids`, so in that
+/// product's local frame. Out-of-range indices throw a contract violation: the
+/// caller validates against the tree first.
 std::unique_ptr<OcctShape> step_document_body(
     const OcctStepDocument& doc,
     std::uint32_t product_index,

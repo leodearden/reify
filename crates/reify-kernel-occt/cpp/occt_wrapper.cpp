@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -7091,8 +7092,7 @@ std::unique_ptr<OcctShapeVec> split_shape(
 // ReadFile pipelines) use process-global state (XSAlgo session, interface
 // model, shape naming tables, and the Interface_Static parameters such as
 // `write.step.schema` and `xstep.cascade.unit`) that is not thread-safe. This
-// mutex serializes all of them across all kernel threads. It is named for its
-// first user and cited by this name in the step-assembly-import PRD.
+// mutex serializes all of them across all kernel threads.
 static std::mutex g_step_export_mutex;
 
 namespace {
@@ -7900,59 +7900,74 @@ enum class StepGuardDisposition {
 // taught which corruption to expect, so it has to detect it the same way it
 // would detect a real one.
 
-/// RAII override of the `step.angleunit.mode` Interface_Static, used by the
-/// `StepGuardFault::AngleModeDeg` fault.
+/// RAII override of one process-global Interface_Static parameter, for every
+/// place reify temporarily sets one: the `StepGuardFault::AngleModeDeg` fault
+/// (`step.angleunit.mode`) and the STEP reader's length unit
+/// (`xstep.cascade.unit`).
 ///
-/// RESTORATION IS THE WHOLE DESIGN. The static is PROCESS-GLOBAL and the
-/// integration harness runs its tests as threads in one process, so a value
-/// left behind would make every later export in the binary refuse — turning
-/// one negative test into a cascade of unrelated failures. Restoring from a
-/// destructor covers the throwing path, which is the only path this fault ever
-/// takes: the export it enables is refused by
-/// `step_angle_mode_refusal` by construction.
+/// RESTORATION IS THE WHOLE DESIGN. The statics are PROCESS-GLOBAL and the
+/// integration harnesses run their tests as threads in one process, so a value
+/// left behind leaks into every later STEP read or write in the binary —
+/// turning one test into a cascade of unrelated failures. The destructor
+/// restores the saved value on every path, throwing included.
 ///
-/// Constructed while the caller already holds `g_step_export_mutex`, so the
-/// temporary value is never observable by a concurrent export either.
+/// The constructor refuses a static this OCCT build has not registered, or a
+/// value it rejects, rather than constructing inert; `unregistered` says what
+/// that absence means to the caller.
 ///
-/// This is the ONE place reify writes this static, and it exists solely to
-/// prove the guard that refuses it works. Production code must never set it
-/// (#6184: reify "never sets this static, and MUST NOT").
-class StepAngleModeOverride {
+/// Construct it only while holding `g_step_export_mutex`, so the temporary
+/// value is never observable by a concurrent STEP read or write either.
+///
+/// `Value` picks the accessor pair: `Standard_Integer` (IVal/SetIVal) or
+/// `std::string` (CVal/SetCVal).
+template <typename Value>
+class InterfaceStaticOverride {
+    static_assert(std::is_same_v<Value, Standard_Integer> || std::is_same_v<Value, std::string>,
+                  "Interface_Static values are read and written as integers or strings");
+
 public:
-    explicit StepAngleModeOverride(bool active) {
-        if (!active) {
-            return;
+    InterfaceStaticOverride(const char* name, const Value& value, const char* unregistered)
+        : name_(name) {
+        if (Interface_Static::IsPresent(name) != Standard_True) {
+            throw ContractViolation(unregistered);
         }
-        if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
-            throw ContractViolation(
-                "cannot inject the AngleModeDeg fault: this OCCT build has "
-                "not registered the `step.angleunit.mode` static, so the trap "
-                "this fault models is unreachable and the test would pass "
-                "vacuously");
+        saved_ = get(name);
+        if (!set(name, value)) {
+            throw ContractViolation(std::string("OCCT rejected the override of `") + name + "`");
         }
-        saved_ = Interface_Static::IVal("step.angleunit.mode");
-        Interface_Static::SetIVal("step.angleunit.mode", 2);  // 2 = Deg
-        active_ = true;
     }
 
-    ~StepAngleModeOverride() {
-        if (!active_) {
-            return;
-        }
-        // Swallow: this runs during stack unwinding on the throwing path, and
-        // letting anything escape a destructor there calls std::terminate.
+    ~InterfaceStaticOverride() {
+        // Swallow: this also runs during stack unwinding, where an escaping
+        // exception calls std::terminate.
         try {
-            Interface_Static::SetIVal("step.angleunit.mode", saved_);
+            set(name_, saved_);
         } catch (...) {
         }
     }
 
-    StepAngleModeOverride(const StepAngleModeOverride&) = delete;
-    StepAngleModeOverride& operator=(const StepAngleModeOverride&) = delete;
+    InterfaceStaticOverride(const InterfaceStaticOverride&) = delete;
+    InterfaceStaticOverride& operator=(const InterfaceStaticOverride&) = delete;
 
 private:
-    bool active_ = false;
-    Standard_Integer saved_ = 0;
+    static Value get(const char* name) {
+        if constexpr (std::is_same_v<Value, Standard_Integer>) {
+            return Interface_Static::IVal(name);
+        } else {
+            return Value(Interface_Static::CVal(name));
+        }
+    }
+
+    static bool set(const char* name, const Value& value) {
+        if constexpr (std::is_same_v<Value, Standard_Integer>) {
+            return Interface_Static::SetIVal(name, value) == Standard_True;
+        } else {
+            return Interface_Static::SetCVal(name, value.c_str()) == Standard_True;
+        }
+    }
+
+    const char* name_;
+    Value saved_{};
 };
 
 /// Rebuild `ctx`'s `Units()` array, keeping only the units `keep_pred`
@@ -8100,7 +8115,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                             StepGuardFault fault) {
     if (fault == StepGuardFault::None || fault == StepGuardFault::AngleModeDeg) {
         // AngleModeDeg is not a model mutation and is applied EARLIER, before
-        // Transfer, by `StepAngleModeOverride` — the static is consumed during
+        // Transfer, by an `InterfaceStaticOverride` — the static is consumed during
         // Transfer, so injecting it here would be too late to change anything.
         return;
     }
@@ -8730,9 +8745,21 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // what consumes `step.angleunit.mode` (via STEPControl_ActorWrite::Transfer
     // -> InitializeFactors). It restores itself on the way out — on the
     // throwing path under `Refuse` and on the early return under `Report`
-    // alike. Production callers pass StepGuardFault::None, so this constructs
-    // inert.
-    StepAngleModeOverride angle_mode_override(fault == StepGuardFault::AngleModeDeg);
+    // alike. Production callers pass StepGuardFault::None, so nothing is
+    // overridden.
+    //
+    // This is the ONE place reify writes this static, and it exists solely to
+    // prove the guard that refuses it works. Production code must never set it
+    // (#6184: reify "never sets this static, and MUST NOT").
+    std::optional<InterfaceStaticOverride<Standard_Integer>> angle_mode_override;
+    if (fault == StepGuardFault::AngleModeDeg) {
+        angle_mode_override.emplace(
+            "step.angleunit.mode", 2 /* Deg */,
+            "cannot inject the AngleModeDeg fault: this OCCT build has "
+            "not registered the `step.angleunit.mode` static, so the trap "
+            "this fault models is unreachable and the test would pass "
+            "vacuously");
+    }
 
     writer.Transfer(shape.shape, STEPControl_AsIs);
 
@@ -8881,44 +8908,6 @@ StepGuardProbeResult step_guard_probe_for_test(const OcctShape& shape,
 
 namespace {
 
-/// RAII override of the process-global `xstep.cascade.unit` static, the length
-/// unit STEPCAFControl_Reader converts into during Transfer
-/// (`STEPControl_Reader::SetSystemLengthUnit` was measured to have no effect:
-/// docs/prds/v0_6/step-assembly-import.evidence/README.md). The destructor
-/// restores the saved value on every path, throwing included, so a read leaves
-/// behind nothing it set. Constructed while the caller holds
-/// `g_step_export_mutex`, after a STEPCAFControl_Reader has registered the
-/// STEP statics.
-class XstepCascadeUnitOverride {
-public:
-    explicit XstepCascadeUnitOverride(const char* unit) {
-        if (Interface_Static::IsPresent("xstep.cascade.unit") != Standard_True) {
-            throw ContractViolation(
-                "the `xstep.cascade.unit` static is not registered after constructing "
-                "STEPCAFControl_Reader, so lengths cannot be converted to metres");
-        }
-        saved_ = Interface_Static::CVal("xstep.cascade.unit");
-        if (Interface_Static::SetCVal("xstep.cascade.unit", unit) != Standard_True) {
-            throw ContractViolation(std::string("OCCT rejected `xstep.cascade.unit` = ") + unit);
-        }
-    }
-
-    ~XstepCascadeUnitOverride() {
-        // Swallow: this also runs during stack unwinding, where an escaping
-        // exception calls std::terminate.
-        try {
-            Interface_Static::SetCVal("xstep.cascade.unit", saved_.c_str());
-        } catch (...) {
-        }
-    }
-
-    XstepCascadeUnitOverride(const XstepCascadeUnitOverride&) = delete;
-    XstepCascadeUnitOverride& operator=(const XstepCascadeUnitOverride&) = delete;
-
-private:
-    std::string saved_;
-};
-
 /// ReadFile, root check and Transfer into `document`, with lengths converted to
 /// metres. Everything that touches the XSTEP process-global state — including
 /// the reader's construction, which registers the STEP statics — happens under
@@ -8928,7 +8917,13 @@ StepReadStatus transfer_step_file(const std::string& path,
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     STEPCAFControl_Reader reader;
     reader.SetNameMode(true);
-    XstepCascadeUnitOverride metres("M");
+    // `xstep.cascade.unit` is the length unit Transfer converts into;
+    // `STEPControl_Reader::SetSystemLengthUnit` was measured to have no effect
+    // (docs/prds/v0_6/step-assembly-import.evidence/README.md).
+    InterfaceStaticOverride<std::string> metres(
+        "xstep.cascade.unit", "M",
+        "the `xstep.cascade.unit` static is not registered after constructing "
+        "STEPCAFControl_Reader, so lengths cannot be converted to metres");
 
     if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
         return StepReadStatus::Unreadable;
@@ -8952,16 +8947,18 @@ TCollection_ExtendedString step_label_name(const TDF_Label& label) {
     return TCollection_ExtendedString();
 }
 
-std::uint32_t step_product_solid_count(const TDF_Label& product) {
+/// A part's solids in TopExp_Explorer SOLID order, the order body indices
+/// address. Taken from the PRODUCT label, never a component label, so each is
+/// in the product's own frame rather than placed by an occurrence.
+std::vector<TopoDS_Shape> step_product_solids(const TDF_Label& product) {
+    std::vector<TopoDS_Shape> solids;
     TopoDS_Shape shape;
-    if (!XCAFDoc_ShapeTool::GetShape(product, shape)) {
-        return 0;
+    if (XCAFDoc_ShapeTool::GetShape(product, shape)) {
+        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+            solids.push_back(ex.Current());
+        }
     }
-    std::uint32_t count = 0;
-    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
-        ++count;
-    }
-    return count;
+    return solids;
 }
 
 /// The component's name and its placement in the parent product's frame: the
@@ -9027,21 +9024,20 @@ private:
         const std::size_t index = doc_.products.size();
 
         OcctStepProduct product;
-        product.label = label;
         product.name = step_label_name(label);
         product.is_assembly = XCAFDoc_ShapeTool::IsAssembly(label) == Standard_True;
         if (product.is_assembly) {
-            reserve_components(product);
+            reserve_components(label, product);
         } else {
-            product.solid_count = step_product_solid_count(label);
+            product.solids = step_product_solids(label);
         }
-        doc_.products.push_back(product);
+        doc_.products.push_back(std::move(product));
         return static_cast<std::uint32_t>(index);
     }
 
-    void reserve_components(OcctStepProduct& assembly) {
+    void reserve_components(const TDF_Label& label, OcctStepProduct& assembly) {
         TDF_LabelSequence component_labels;
-        XCAFDoc_ShapeTool::GetComponents(assembly.label, component_labels);
+        XCAFDoc_ShapeTool::GetComponents(label, component_labels);
         PendingAssembly pending;
         pending.first_component = doc_.components.size();
         assembly.first_component = static_cast<std::uint32_t>(pending.first_component);
@@ -9108,7 +9104,7 @@ StepTreeRecords step_document_tree(const OcctStepDocument& doc) {
         StepProductRecord record;
         record.name = step_name_utf8(product.name);
         record.is_assembly = product.is_assembly;
-        record.solid_count = product.solid_count;
+        record.solid_count = static_cast<std::uint32_t>(product.solids.size());
         record.first_component = product.first_component;
         record.component_count = product.component_count;
         out.products.push_back(std::move(record));
@@ -9139,24 +9135,16 @@ std::unique_ptr<OcctShape> step_document_body(const OcctStepDocument& doc,
                                     " is out of range for " +
                                     std::to_string(doc.products.size()) + " products");
         }
-        // The PRODUCT label, never a component label: its shape is in the
-        // product's own frame, not placed by any occurrence.
-        TopoDS_Shape shape;
-        if (!XCAFDoc_ShapeTool::GetShape(doc.products[product_index].label, shape)) {
-            throw ContractViolation("product " + std::to_string(product_index) + " has no shape");
+        const std::vector<TopoDS_Shape>& solids = doc.products[product_index].solids;
+        if (body_index >= solids.size()) {
+            throw ContractViolation("body index " + std::to_string(body_index) +
+                                    " is out of range for product " +
+                                    std::to_string(product_index) + "'s " +
+                                    std::to_string(solids.size()) + " solids");
         }
-        std::uint32_t solid = 0;
-        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next(), ++solid) {
-            if (solid == body_index) {
-                auto body = std::make_unique<OcctShape>();
-                body->shape = ex.Current();
-                return body;
-            }
-        }
-        throw ContractViolation("body index " + std::to_string(body_index) +
-                                " is out of range for product " +
-                                std::to_string(product_index) + "'s " +
-                                std::to_string(solid) + " solids");
+        auto body = std::make_unique<OcctShape>();
+        body->shape = solids[body_index];
+        return body;
     });
 }
 
