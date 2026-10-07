@@ -944,8 +944,8 @@ input class. Note the symmetry that proves the compile layer is fine: for a fiel
 *dimensionless* holding a `Real`, `constraint efficiency > 5mm` **already is** a hard compile
 error today, via that very same arm.
 
-**The stdlib already documents this exact failure mode** —
-`crates/reify-compiler/stdlib/modal_analysis.ri:497-499`: *"Dimensioned literal `0N` … is
+**The stdlib already documents this exact failure mode** — `crates/reify-compiler/stdlib/modal_analysis.ri`
+(StepForce's constraint note, since corrected by #6038): *"Dimensioned literal `0N` … is
 required to keep eval_cmp dim-equality matching at runtime; a bare `0` would yield
 `Indeterminate` per task #3115 esc-3115-112"*. The research doc's framing ("constraints are
 NOT a backstop") is **correct as stated**; the reason is the constructor, not the comparator.

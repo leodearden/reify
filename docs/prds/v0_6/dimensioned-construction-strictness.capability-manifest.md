@@ -106,7 +106,7 @@ Evidence vocabulary: `grep:<file>:<line>` (wired on main) · `probe:<id>` (execu
 | **the recovery ε CAN pin** — the mechanism exists in the param-default configuration | `probe:epsilon-mechanism` — `param magnitude : Force = -10N` + `constraint magnitude > 0N` → `VIOLATED Root#constraint[0]`, `error: constraint … violated`, exit **1**; the positive twin → `OK`, exit 0 | PASS |
 | **the recovery target's before-image** — PRD §10.3's causal chain, observed, at **gate 3** | `probe:epsilon-recovery-target` — `param magnitude : Force = -10.0` (bare literal at a dimensioned default) → `INDETERMINATE`, `warning: … operator undefined for these operand kinds: Real`, exit **0**. This is the `eval_cmp` Real-vs-dimensioned → `Undef` → Indeterminate chain **verbatim**, and the gate that admits the bare literal is `entity.rs:479-485` — **δ₁'s**, not γ's. | PASS |
 | §10.3's residual-defect analysis is sound | `grep:crates/reify-constraints/src/lib.rs:183-215` (`Undef → Indeterminate`, `Diagnostic::warning` at `:211`), `classify_undef` `:78-111` computes the distinction and puts it in the message — confirmed verbatim by the two probes above (`operator undefined for these operand kinds` vs `undefined inputs`) | PASS |
-| the stdlib documents this exact failure mode (ε's doc pointer) | `grep:crates/reify-compiler/stdlib/modal_analysis.ri:497-499` — *"a bare `0` would yield `Indeterminate` per task #3115 esc-3115-112"* | PASS |
+| the stdlib documents this exact failure mode (ε's doc pointer) | `grep:crates/reify-compiler/stdlib/modal_analysis.ri` (StepForce constraint note; since corrected by #6038) — *"a bare `0` would yield `Indeterminate` per task #3115 esc-3115-112"* | PASS |
 
 ## ζ₁–ζ₄ — Docs-truth quartet
 
