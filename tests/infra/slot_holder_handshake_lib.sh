@@ -29,11 +29,11 @@
 # unit tests that covered them were retired as redundant with
 # tests/infra/test_slot_holder_handshake_lib.sh section (b).
 #
-# Legacy copies of _wait_for_reader_lock remain in other suites (`git grep -n
-# '^_wait_for_reader_lock()' -- tests/infra` lists them): this lib is the
-# canonical home for new code, not proof that none remain.  They take a
-# deadline in SECONDS at a 0.05s tick, where this lib counts POLL ITERATIONS
-# (load-scaled) at 0.2s: 30s there is 150 iterations here.
+# Any suite that still defines its own _wait_for_reader_lock (`git grep -n
+# '^_wait_for_reader_lock()' -- tests/infra` lists them) carries a legacy copy
+# of holder_wait_for_marker: it takes a deadline in SECONDS at a 0.05s tick,
+# where this lib counts POLL ITERATIONS (load-scaled) at 0.2s, so 30s there is
+# 150 iterations here.  New code belongs on this lib.
 #
 # WHAT THESE FUNCTIONS ASSERT — AND WHAT THEY DO NOT:
 # every barrier here returns on a CAUSAL OUTCOME (a non-blocking flock probe
