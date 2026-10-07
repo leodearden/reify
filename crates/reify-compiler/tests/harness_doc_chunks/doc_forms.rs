@@ -9,7 +9,8 @@
 //! `-> Type`. Concrete idioms, expressions, declarations, qualified or
 //! capitalised names and lambdas are prose, never signatures — see
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
-//! span, as [`listing_signature_spans`] cuts it, through that same rule.
+//! span, as [`listing_signature_spans`] cuts it, through that same rule. What
+//! counts as a call-shaped opening at all is [`span_callee`]'s one definition.
 //!
 //! A source's call forms are read off its parsed AST by [`call_forms`], and a
 //! chunk's ```` ```reify ```` fences are read the same way, one module per
@@ -62,11 +63,11 @@ impl DocForm {
 /// makes the form `AtLeast`; every other argument counts one.
 pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
     let span = span.trim();
-    let open = span.find('(')?;
+    let name = span_callee(span)?;
+    let open = name.len();
     let close = open + span[open..].find(')')?;
-    let name = &span[..open];
     let params = &span[open + 1..close];
-    if !is_metavariable(name) || params.contains('(') || !is_return_annotation(&span[close + 1..]) {
+    if params.contains('(') || !is_return_annotation(&span[close + 1..]) {
         return None;
     }
 
@@ -94,6 +95,14 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
             Arity::Exact(count)
         },
     })
+}
+
+/// The name `span` opens by calling: the text before its first `(`, when that
+/// is a lowercase snake_case identifier; `None` for any other opening. The
+/// caller trims.
+pub(crate) fn span_callee(span: &str) -> Option<&str> {
+    let name = &span[..span.find('(')?];
+    is_metavariable(name).then_some(name)
 }
 
 /// One signature-shaped span in a chunk's unfenced prose.
