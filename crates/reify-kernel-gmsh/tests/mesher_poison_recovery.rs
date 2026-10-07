@@ -53,6 +53,8 @@ mod size_field;
 
 use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
+#[cfg(feature = "mesh-morph")]
+use reify_kernel_gmsh::{EntityAttribution, mesh_surface_to_volume_with_attribution};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, refine_volume_with_size_field};
 use reify_test_support::mesh_fixtures::unit_cube_mesh;
 use size_field::uniform_unit_cube_size_field;
@@ -69,6 +71,38 @@ fn unmeshable_open_triangle() -> Mesh {
     Mesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         indices: vec![0, 1, 2],
+        normals: None,
+    }
+}
+
+/// Two disjoint closed unit cubes, the second shifted +3 in x.
+///
+/// Both shells are closed, consistently wound and welded, so the attributed
+/// producer's watertight preflight (#4876) accepts them and the call reaches
+/// gmsh. Gmsh's single surface loop over two shells then fails HXT. MEASURED
+/// (libgmsh 4.15.2): `Info: some volumes of the BRep were not found`, then
+/// `Error: HXT 3D mesh failed`, in ~50 ms at [`poison_via_attributed`]'s
+/// options. Not hoisted into `reify_test_support::mesh_fixtures`, for the same
+/// reason as [`unmeshable_open_triangle`]: it has one consumer.
+#[cfg(feature = "mesh-morph")]
+fn two_disjoint_unit_cubes() -> Mesh {
+    const OFFSET_X: f32 = 3.0;
+    let cube = unit_cube_mesh();
+    let cube_vertex_count =
+        u32::try_from(cube.vertices.len() / 3).expect("a unit cube's vertex count fits in u32");
+
+    let mut vertices = cube.vertices.clone();
+    vertices.extend(
+        cube.vertices
+            .chunks_exact(3)
+            .flat_map(|v| [v[0] + OFFSET_X, v[1], v[2]]),
+    );
+    let mut indices = cube.indices.clone();
+    indices.extend(cube.indices.iter().map(|&i| i + cube_vertex_count));
+
+    Mesh {
+        vertices,
+        indices,
         normals: None,
     }
 }
@@ -146,6 +180,37 @@ fn poison_via_refine() -> GeometryError {
             &uniform_unit_cube_size_field(0.5),
             &many_threads(),
             ElementOrderTag::P1,
+        ),
+    )
+}
+
+/// Poison the shared mesher through `mesh_surface_to_volume_with_attribution`.
+///
+/// `mesh_size` and `deterministic` are both pinned because they set what the
+/// failure costs: measured 4-6 s per failure under `MeshingOptions::default()`,
+/// against ~50 ms here. The empty attribution matches nothing, which costs
+/// nothing either: the call fails before any matching runs.
+#[cfg(feature = "mesh-morph")]
+fn poison_via_attributed() -> GeometryError {
+    assert_failed_at_the_mesher(
+        "mesh_surface_to_volume_with_attribution",
+        mesh_surface_to_volume_with_attribution(
+            &two_disjoint_unit_cubes(),
+            &MeshingOptions {
+                mesh_size: Some(0.5),
+                deterministic: true,
+                ..MeshingOptions::default()
+            },
+            ElementOrderTag::P1,
+            None,
+            None,
+            None,
+            &EntityAttribution {
+                faces: vec![],
+                edges: vec![],
+                vertices: vec![],
+                match_tolerance: 0.0,
+            },
         ),
     )
 }
@@ -441,4 +506,36 @@ fn a_failed_refine_reports_gmshs_captured_log_not_just_the_last_error() {
 
     assert_carries_gmshs_captured_log_once("refine_volume_with_size_field", &err);
     assert_capture_left_stopped_and_drained("refine_volume_with_size_field");
+}
+
+/// A `mesh_surface_to_volume_with_attribution` that fails at the mesher must
+/// report gmsh's own diagnosis too, folded in exactly once, and leave the
+/// capture stopped and drained.
+///
+/// Measured on [`two_disjoint_unit_cubes`], the capture is where the
+/// explanation lives — `Info: some volumes of the BRep were not found` — while
+/// the last error says only `HXT 3D mesh failed`.
+#[cfg(feature = "mesh-morph")]
+#[test]
+fn a_failed_attributed_mesh_reports_gmshs_captured_log_not_just_the_last_error() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = poison_via_attributed();
+
+    assert_carries_gmshs_captured_log_once("mesh_surface_to_volume_with_attribution", &err);
+    assert_capture_left_stopped_and_drained("mesh_surface_to_volume_with_attribution");
+}
+
+/// A failed attributed mesh must leave `mesh_to_volume` fully usable — the
+/// recovery half of the attributed producer's `mesh_generate` site.
+///
+/// Validated by mutation: with that site's `init::mesh_generate_with_recovery`
+/// replaced by a bare `ffi::mesh_generate(3)`, this test reds.
+#[cfg(feature = "mesh-morph")]
+#[test]
+fn a_failed_attributed_mesh_leaves_mesh_to_volume_usable() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    poison_via_attributed();
+    assert_cube_still_meshes("a failed mesh_surface_to_volume_with_attribution");
 }
