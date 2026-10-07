@@ -27,6 +27,8 @@ use clamp_probe::{
 };
 #[cfg(has_gmsh)]
 use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
+#[cfg(has_gmsh)]
+use reify_kernel_gmsh::{ffi, init};
 use reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d;
 
 /// Triangle path: `recombine=false` on a unit square produces a triangle
@@ -257,6 +259,54 @@ fn mesh_plane_2d_with_hole_avoids_hole_interior() {
             "triangle {t_idx} centroid ({cx}, {cy}) lies strictly inside the hole rect",
         );
     }
+}
+
+/// A degenerate outline's rejection carries gmsh's captured log, folded in
+/// exactly once, and leaves the capture stopped and drained.
+///
+/// MEASURED: three collinear points enclose no area, yet
+/// `gmshModelMeshGenerate(2)` reports success with zero elements, so the call
+/// fails in the READBACK (`verify_plane_readback`), not at the mesher. That
+/// rejection's own message never contains an `Info:` or `Warning:` line, so
+/// either can arrive only through the capture. gmsh's decisive diagnosis here
+/// is a `Warning:` ("No elements in surface ..."); its exact phrasing and the
+/// line count are version-sensitive and deliberately not pinned.
+#[cfg(has_gmsh)]
+#[test]
+fn a_degenerate_outline_reports_gmshs_captured_log_not_just_the_empty_readback() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = mesh_plane_2d(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], &[], None, false, true)
+        .expect_err("three collinear points bound no area and must be rejected");
+    let msg = format!("{err}");
+
+    assert!(
+        msg.contains("neither triangles nor quads"),
+        "the empty-readback rejection must stay the message's prefix; got: {msg}"
+    );
+    assert_eq!(
+        msg.matches("gmsh log (").count(),
+        1,
+        "gmsh's captured log must be folded into the error exactly ONCE; got: {msg}"
+    );
+    assert!(
+        msg.contains("Info:"),
+        "an Info: line can only arrive through the capture; got: {msg}"
+    );
+    assert!(
+        msg.contains("Warning:"),
+        "gmsh's diagnosis of an empty surface is a Warning: line; got: {msg}"
+    );
+
+    // `mesh_plane_2d` released GMSH_LOCK on return, so this read cannot race
+    // a mesher mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "mesh_plane_2d must leave gmsh's capture stopped and drained; {} lines left: {leftover:?}",
+        leftover.len(),
+    );
 }
 
 /// Stub-build companion: the cfg(not(has_gmsh)) arm of `mesh_plane_2d`
