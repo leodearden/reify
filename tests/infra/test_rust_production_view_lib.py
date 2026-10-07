@@ -198,6 +198,17 @@ class TestProductionView(TempDirCase):
         self.assertEqual([int(n) for n in lines_of(result)], PRODUCTION_VIEW_VISIBLE)
         self.assertEqual(result.stderr, "")
 
+    def test_lines_wholly_inside_a_carried_construct_are_skipped(self):
+        path = self.write(
+            "carried.rs",
+            'fn a() {}\n/* start {\n   inside {\nend */ fn b() {}\n'
+            'let s = "one\ntwo\nthree";\n',
+        )
+        result = run_view("{ print FNR }", path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([int(n) for n in lines_of(result)], [1, 2, 4, 5, 7])
+        self.assertEqual(result.stderr, "")
+
     def test_consumer_rule_reads_the_lexed_code(self):
         path = self.write("code.rs", 'let s = "{";\n')
         result = run_view("{ print code }", path)
