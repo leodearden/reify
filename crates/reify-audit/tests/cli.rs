@@ -4156,6 +4156,7 @@ mod freshness_gate {
     use crate::common::index_fixture::{
         expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
     };
+    use crate::common::mcp_mock::{InitializeReply, MockConfig, spawn_mock_mcp_configured};
 
     const BOGUS_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -4602,6 +4603,60 @@ mod freshness_gate {
         assert!(
             !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
             "the gate must not fire when no serve was reached; stderr:\n{stderr}"
+        );
+    }
+
+    /// BOUNDARY B3 — a responder that assigns a session id but answers
+    /// `initialize` with a body that is not an MCP `InitializeResult` (here a
+    /// bare `{}`) is not a live seam, so the binary must take the
+    /// CONSTRUCTION fail-soft exactly as it does for a serve that is down.
+    ///
+    /// No index is written, on purpose. Had the handshake been accepted, the
+    /// §4.3 gate would find no index under this jcodemunch-only run set and
+    /// refuse with `E_JC_INDEX_EMPTY` / exit 125. So the absence of every
+    /// `E_JC_INDEX_` marker, next to the unreachable breadcrumb, is what shows
+    /// construction failed rather than being admitted.
+    #[test]
+    fn non_mcp_initialize_responder_takes_the_construction_fail_soft() {
+        let s = scenario();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let config = MockConfig {
+            initialize: InitializeReply::Raw {
+                status: 200,
+                body: "{}",
+            },
+            ..MockConfig::default()
+        };
+        let mock = spawn_mock_mcp_configured(listener, config, |_args| None);
+        let out = s.run("PLAYER", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a non-MCP initialize reply must fail-soft like a down serve, not \
+             refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have been REJECTED, taking the construction \
+             fail-soft breadcrumb; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the §4.3 gate must not have run: it only runs after a successful \
+             handshake; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "a fail-soft run still emits its findings array; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the degraded seam answers nothing, so PLAYER has nothing to \
+             report; got {findings:?}\nstderr:\n{stderr}"
         );
     }
 

@@ -16,9 +16,10 @@
 //! The mock assigns the header but does not police it — see
 //! [`write_response_with_session`] for why enforcement is off the table.
 //!
-//! ## Wire framing and result shape
+//! ## Wire framing, result shape and initialize reply
 //!
-//! Two orthogonal axes, both chosen per server. [`Framing`] selects the wire
+//! Three orthogonal axes, all chosen per server through [`MockConfig`].
+//! [`Framing`] selects the wire
 //! framing: [`Framing::Json`] drives `mcp_wire::decode_body`'s bare-body
 //! branch and [`Framing::Sse`] its `contains("text/event-stream")` branch.
 //! Under SSE the mock wraps the body as a realistic
@@ -34,7 +35,10 @@
 //! sniff content-type, so SSE-framing that leg would be untestable fiction.
 //! [`ResultShape`] independently selects the `tools/call` result envelope
 //! (`structuredContent` vs the `content[0].text` fallback), mirroring
-//! `call_tool`'s two decode branches.
+//! `call_tool`'s two decode branches. [`InitializeReply`] selects the
+//! handshake: a well-formed MCP `InitializeResult`, or a raw status and body
+//! that still assigns a session id, so a client's handshake validation can be
+//! driven with a reply that only an inspection of the body can reject.
 //!
 //! ## Hang-proofing
 //!
@@ -49,10 +53,9 @@
 //!
 //! [`spawn_mock_mcp`], [`spawn_mock_mcp_on`], [`write_response`] and
 //! [`write_response_with_session`] keep fixed signatures and delegate into
-//! the framing/shape-aware cores ([`spawn_mock_mcp_on_shaped`],
-//! [`write_response_framed`]). They have many call sites across unrelated
-//! suites, so a new axis goes into a core and is reached by a new entry
-//! point, never by changing a wrapper's signature.
+//! the cores ([`spawn_mock_mcp_configured`], [`write_response_framed`]). They
+//! have many call sites across unrelated suites, so a new axis goes into
+//! [`MockConfig`] and the core, never into a wrapper's signature.
 //!
 //! Per the `common` partial-consumer contract, every item here carries
 //! `#[allow(dead_code)]` so a test binary may consume only a subset.
@@ -179,6 +182,45 @@ pub enum Framing {
 pub enum ResultShape {
     StructuredContent,
     ContentText,
+}
+
+/// What the mock answers `initialize` with — the handshake axis,
+/// independent of [`Framing`] and [`ResultShape`].
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum InitializeReply {
+    /// A complete MCP `InitializeResult` — `protocolVersion`, `capabilities`
+    /// and `serverInfo{name, version}` — under status 200, framed per the
+    /// server's [`Framing`], assigning [`MOCK_SESSION_ID`].
+    WellFormed,
+    /// `status` with `body` written verbatim as `application/json`, whatever
+    /// the server's [`Framing`], while STILL assigning [`MOCK_SESSION_ID`].
+    /// A client's session check can therefore never be what rejects this
+    /// reply; only an inspection of the body can.
+    Raw { status: u16, body: &'static str },
+}
+
+/// The three orthogonal axes one mock server answers on; consumed by
+/// [`spawn_mock_mcp_configured`]. [`MockConfig::default`] is the
+/// [`Framing::Json`] / [`ResultShape::StructuredContent`] /
+/// [`InitializeReply::WellFormed`] server [`spawn_mock_mcp`] stands up.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct MockConfig {
+    pub framing: Framing,
+    pub shape: ResultShape,
+    pub initialize: InitializeReply,
+}
+
+#[allow(dead_code)]
+impl Default for MockConfig {
+    fn default() -> Self {
+        Self {
+            framing: Framing::Json,
+            shape: ResultShape::StructuredContent,
+            initialize: InitializeReply::WellFormed,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -358,9 +400,9 @@ where
 /// would be untestable fiction. `shape` (see [`ResultShape`]) selects the
 /// `tools/call` result envelope shape independently of `framing`.
 ///
-/// The accept loop uses a short `set_nonblocking` poll so it wakes
-/// periodically to check the stop flag even without a wakeup connection —
-/// that way a stop request can't hang the test runner.
+/// Thin [`InitializeReply::WellFormed`] wrapper over
+/// [`spawn_mock_mcp_configured`]; see that function for the accept-loop
+/// details.
 #[allow(dead_code)]
 pub fn spawn_mock_mcp_on_shaped<F>(
     listener: TcpListener,
@@ -371,6 +413,38 @@ pub fn spawn_mock_mcp_on_shaped<F>(
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
+    let config = MockConfig {
+        framing,
+        shape,
+        initialize: InitializeReply::WellFormed,
+    };
+    spawn_mock_mcp_configured(listener, config, task_responder)
+}
+
+/// The single core every spawner delegates to: one mock MCP server on an
+/// ALREADY-BOUND `listener`, answering per `config`'s three orthogonal axes
+/// ([`Framing`], [`ResultShape`], [`InitializeReply`]).
+///
+/// The `notifications/initialized` leg always answers 202 with an empty
+/// body, under every config.
+///
+/// The accept loop uses a short `set_nonblocking` poll so it wakes
+/// periodically to check the stop flag even without a wakeup connection —
+/// that way a stop request can't hang the test runner.
+#[allow(dead_code)]
+pub fn spawn_mock_mcp_configured<F>(
+    listener: TcpListener,
+    config: MockConfig,
+    task_responder: F,
+) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let MockConfig {
+        framing,
+        shape,
+        initialize,
+    } = config;
     let addr = listener.local_addr().expect("local_addr");
     let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
     let stop = Arc::new(AtomicBool::new(false));
@@ -432,24 +506,35 @@ where
             }
 
             match method.as_str() {
-                "initialize" => {
-                    let resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {},
-                            "serverInfo": {"name": "mock-mcp", "version": "0.1"}
-                        }
-                    });
-                    write_response_framed(
-                        &mut stream,
-                        200,
-                        Some(MOCK_SESSION_ID),
-                        framing,
-                        resp.to_string().as_bytes(),
-                    );
-                }
+                "initialize" => match initialize {
+                    InitializeReply::WellFormed => {
+                        let resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "protocolVersion": "2024-11-05",
+                                "capabilities": {},
+                                "serverInfo": {"name": "mock-mcp", "version": "0.1"}
+                            }
+                        });
+                        write_response_framed(
+                            &mut stream,
+                            200,
+                            Some(MOCK_SESSION_ID),
+                            framing,
+                            resp.to_string().as_bytes(),
+                        );
+                    }
+                    InitializeReply::Raw { status, body } => {
+                        write_response_framed(
+                            &mut stream,
+                            status,
+                            Some(MOCK_SESSION_ID),
+                            Framing::Json,
+                            body.as_bytes(),
+                        );
+                    }
+                },
                 "notifications/initialized" => {
                     // Always 202/empty regardless of `framing` — see the
                     // doc comment above for why SSE-framing this leg would
