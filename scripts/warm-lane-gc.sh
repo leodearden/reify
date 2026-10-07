@@ -52,7 +52,8 @@
 #                          Required unless --mount is given (or env override set).
 #   --base-target SYMLINK  Symlink at <base>/target → <base>/target.gen.N.
 #                          Required unless --mount is given (or env override set).
-#                          Resolved to its concrete .gen.N dir before invoking α.
+#                          Resolved to its concrete .gen.N dir per lane,
+#                          immediately before each α reseed.
 #   --main-ref REF         Git ref for "main" branch (default: main).
 #   --lane-glob GLOB       Glob matching pool-lane entries (default: _lane-*,_spec-*).
 #                          Matched entries are reset via α, not removed.
@@ -213,8 +214,11 @@
 #     pre-mark live entries was CONSIDERED and rejected: it costs one extra full
 #     scan and only breaks even once ≥2 entries are live at pass start, which a
 #     pool at rest never is.
-#   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
-#     (D8 reader-refcount seam; same contract as the acquire path).
+#   - α reuse: the base symlink is resolved to its concrete gen PER LANE, and
+#     flock -s is held on that gen during that lane's α call (D8 reader-refcount
+#     seam; same contract as the acquire path). Never once per pass: a
+#     refresh-warm-base.sh rotation mid-pass can reap the gen a pass-start
+#     resolve would have named.
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
 #   - Stdout: machine-readable summary line only —
 #     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N reset_cold=N`.
@@ -475,6 +479,24 @@ _is_reclaimable() {
     return 0
 }
 
+# ── per-lane base-generation pin ───────────────────────────────────────────────
+# Print the concrete target.gen.N BASE_TARGET points at right now. The single
+# home of the D8 resolve rule: the seed needs the concrete path, because cp -a
+# copies a symlink rather than its target.
+_resolve_base_gen() { readlink -f "$BASE_TARGET" 2>/dev/null; }
+
+# _reseed_lane_pinned <lane>: resolve the gen live NOW and hold its reader lock
+# (D8) for this one seed, so refresh-warm-base.sh Step 6 cannot reap it mid-clone.
+# Per lane, never per pass, like the live-reference gate; the ( ) body scopes FD 9
+# to the reseed, and `>>` never truncates the lock. See test_warm_lane_gc.sh Block T.
+_reseed_lane_pinned() (
+    local lane="$1" gen
+    gen="$(_resolve_base_gen)" || return 1
+    exec 9>>"${gen}.lock"
+    flock -s 9
+    "$SEED_SCRIPT" "$gen" "$lane" --fresh-checkout --assume-lane-lock-held
+)
+
 # ── reclaim subcommand ─────────────────────────────────────────────────────────
 _do_reclaim() {
     local reset_count=0
@@ -509,16 +531,12 @@ _do_reclaim() {
 
     info "warm-lane-gc.sh reclaim: worktrees_dir=$WORKTREES_DIR  base_target=$BASE_TARGET  main_ref=$MAIN_REF"
 
-    # Resolve the base-target symlink to its concrete gen dir (D8 seam).
-    # α requires the concrete path — cp -a copies the symlink otherwise.
-    local resolved_gen
-    if ! resolved_gen="$(readlink -f "$BASE_TARGET" 2>/dev/null)"; then
+    # Validates the argument only: the gen each reseed consumes is pinned per lane
+    # by _reseed_lane_pinned, never taken from this check.
+    if ! _resolve_base_gen >/dev/null; then
         err "Cannot resolve base-target symlink: $BASE_TARGET"
         return 1  # runtime error; exit 2 is reserved for usage/wiring errors
     fi
-    local gen_lock="${resolved_gen}.lock"
-    touch "$gen_lock" 2>/dev/null || true
-    info "  resolved_gen=$resolved_gen  gen_lock=$gen_lock"
 
     # Enumerate all immediate subdirs in the worktrees-dir.
     # We collect entries first so we can do safety-ranked two-pass order:
@@ -645,21 +663,18 @@ _do_reclaim() {
                 preserved_count=$((preserved_count + 1))
             fi
         else
-            # Invoke α while the lane lock is held in the parent shell (FD 8;
-            # the action subshell inherits it, the parent still owns the lock)
-            # AND a shared gen lock is held on FD 9 (flock -s; D8 reader-refcount
-            # seam). Pass --assume-lane-lock-held: seed-warm-lane.sh acquires the
-            # lane lock BY DEFAULT under --fresh-checkout (esc-5214/task 5354
-            # fail-safe), and its own FD-9 acquire would BOTH self-refuse against
-            # gc's FD-8 lane lock AND clobber gc's FD-9 gen lock. The opt-out
-            # makes seed skip its own acquire; gc's held locks already provide the
-            # inv.2 one-consumer exclusivity + the gen reader-refcount.
+            # Invoke α while the lane lock is held in the parent shell (FD 8; the
+            # helper's subshell inherits it, the parent still owns the lock) AND
+            # _reseed_lane_pinned holds the shared gen lock on FD 9 (flock -s; D8
+            # reader-refcount seam). It passes --assume-lane-lock-held:
+            # seed-warm-lane.sh acquires the lane lock BY DEFAULT under
+            # --fresh-checkout (esc-5214/task 5354 fail-safe), and its own FD-9
+            # acquire would BOTH self-refuse against gc's FD-8 lane lock AND
+            # clobber gc's FD-9 gen lock. The opt-out makes seed skip its own
+            # acquire; gc's held locks already provide the inv.2 one-consumer
+            # exclusivity + the gen reader-refcount.
             info "  resetting lane: $name"
-            if (
-                exec 9>"$gen_lock"
-                flock -s 9
-                "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout --assume-lane-lock-held
-            ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
+            if _reseed_lane_pinned "$lane" 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
                 ok "  reset lane: $name"
                 reset_count=$((reset_count + 1))
             else
