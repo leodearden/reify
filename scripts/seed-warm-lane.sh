@@ -146,6 +146,8 @@
 # Mtime (D5):
 #   --fresh-checkout: bulk-stamp sources to 2020-01-01 (find, pruning target/ & .git/)
 #                     then touch delta (--touch paths + git diff --name-only <base_commit>) to now.
+#                     Delta paths that do not exist are skipped, never created: silently
+#                     for a git-diff deletion, with a [warn] for an explicit --touch path.
 #                     No base resolved from any of the three tiers → nothing is
 #                     delta-touched, so every tracked source keeps the 2020-01-01
 #                     stamp; warns, and `_assert_delta_touch_base_substantiated`
@@ -186,8 +188,8 @@ set -euo pipefail
 
 # Resolved once so sibling scripts/ helpers can be invoked by absolute path
 # regardless of the caller's CWD (this script is run from dark-factory, from
-# tests/infra fixtures, and by hand). Used by the rerere-disarm delegation at
-# the tail of this file.
+# tests/infra fixtures, and by hand). Used by the two delegations at the tail
+# of this file (the rerere disarm and the stash-guard liveness arm).
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── log helpers (all write to stderr) ────────────────────────────────────────
@@ -277,6 +279,8 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
+                      A path that does not exist (a dangling symlink included) is
+                      skipped with a [warn], never created.
   --lane-lock         Accepted; IMPLIED under --fresh-checkout, which turns seed's own
                       acquire ON by default (esc-5214/task 5354 fail-safe); still the
                       explicit opt-in under --reset-in-place.  That default settles
@@ -749,11 +753,26 @@ _assert_delta_touch_base_substantiated() {
     return 1
 }
 
-# Delta path set accumulated during --fresh-checkout: the explicit --touch paths
-# plus every path _touch_git_delta actually touched. Consumed by
-# _assert_delta_newer_than_build_outputs at the end of the block, so both delta
-# sources are visible at one call site without re-running `git diff` a third time.
+# Delta path set accumulated during --fresh-checkout: exactly the paths
+# _touch_existing_delta_path touched — the explicit --touch paths that existed
+# (_touch_explicit_delta) plus the git-diff paths that existed (_touch_git_delta).
+# Consumed by _assert_delta_newer_than_build_outputs at the end of the block, so
+# both delta sources are visible at one call site without re-running `git diff`
+# a third time.
 _DELTA_PATHS=()
+
+# Touch one delta path to now and record it in _DELTA_PATHS, iff it exists.
+# Returns 0 when touched, 1 when absent (each caller owns its miss policy). Never
+# creates: -e follows symlinks, so a dangling link is absent too (task #7231).
+# A touch that FAILS on an existing path exits the seed (fail-closed → cold
+# rebuild). The exit is explicit because callers test this function in an `if`,
+# which suspends errexit for its whole body: a bare `touch` would be swallowed.
+_touch_existing_delta_path() {
+    local path="$1"
+    [ -e "$path" ] || return 1
+    touch "$path" || exit 1
+    _DELTA_PATHS+=("$path")
+}
 
 # Touch every file in LANE_DIR listed by `git diff --name-only <sha>`.
 # Fail-closed: a non-zero git diff exit aborts the seed (err + return 1 →
@@ -772,15 +791,27 @@ _touch_git_delta() {
     if [ -n "$diff_out" ]; then
         while IFS= read -r rel_path; do
             [ -z "$rel_path" ] && continue
-            local abs_path="$LANE_DIR/$rel_path"
-            if [ -e "$abs_path" ]; then
-                touch "$abs_path"
-                _DELTA_PATHS+=("$abs_path")
+            # A path the branch deleted is listed but absent: expected, skipped silently.
+            if _touch_existing_delta_path "$LANE_DIR/$rel_path"; then
                 count=$((count + 1))
             fi
         done <<< "$diff_out"
     fi
     info "Touched $count git delta path(s) from $sha"
+}
+
+# Touch each explicit --touch path. One that does not exist is a caller error:
+# warned and skipped, never created (task #7231).
+_touch_explicit_delta() {
+    local path count=0
+    for path in "$@"; do
+        if _touch_existing_delta_path "$path"; then
+            count=$((count + 1))
+        else
+            warn "--touch path does not exist — skipped, NOT created: $path"
+        fi
+    done
+    info "Touched $count of $# explicit --touch path(s)"
 }
 
 # ── main: record-base mode ────────────────────────────────────────────────────
@@ -1292,9 +1323,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
 
     # Touch the delta to now: explicit --touch paths first
     if [ "${#TOUCH_PATHS[@]}" -gt 0 ]; then
-        info "Touching ${#TOUCH_PATHS[@]} explicit delta path(s) to now ..."
-        touch "${TOUCH_PATHS[@]}"
-        _DELTA_PATHS+=("${TOUCH_PATHS[@]}")
+        _touch_explicit_delta "${TOUCH_PATHS[@]}"
     fi
 
     # Resolve the delta-touch base commit with 3-tier priority (esc-3468-75):
@@ -1652,13 +1681,15 @@ fi
 # CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
 #   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
 #   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
-#   the merge-spec slot, PRESENT TENSE, not hypothetically.  ONE live instance, and
-#   it is benign for its own reason rather than by luck of the gate: the build-dir
+#   the merge-spec slot, PRESENT TENSE, not hypothetically.  TWO live instances, each
+#   benign for its own reason rather than by luck of the gate: the build-dir
 #   invalidation above (lane-scoped, task lanes only — correct here for the first
-#   paragraph's reason).  The lane lock is NOT a second instance, though it reads
-#   like one: seed's own acquire is default-on under $FRESH_CHECKOUT, but DF's
-#   `--assume-lane-lock-held` clears it on BOTH production pool acquires, so that
-#   gate decides nothing for either role — see the --lane-lock note in the header.
+#   paragraph's reason), and the stash-guard liveness arm below (the merge-spec lane
+#   serves speculative merge verifies and is never handed to an agent).  The lane
+#   lock is NOT a third instance, though it reads like one: seed's own acquire is
+#   default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held` clears it
+#   on BOTH production pool acquires, so that gate decides nothing for either
+#   role — see the --lane-lock note in the header.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
@@ -1747,6 +1778,28 @@ if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
     unset _rerere_arm_rc
 elif [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ]; then
     warn "scripts/git-rerere-guard.sh not executable — skipping the shared-store rerere disarm"
+fi
+
+# ── stash-guard liveness at LANE cadence (task 6059) ─────────────────────────
+# DELEGATION: what "armed" means, the repair and the `0 | 2 | *` exit contract are
+# normative in scripts/hooks-armed-guard.sh's header.  FAIL-OPEN, like the block
+# above: an acquire never fails on this advisory defence.  >/dev/null keeps this
+# script's single-use stdout.  Gated on $FRESH_CHECKOUT, so the merge-spec lane is
+# skipped (benign: CONSEQUENCE RULE above).
+if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/hooks-armed-guard.sh" ]; then
+    _hooks_arm_rc=0
+    "$_SCRIPT_DIR/hooks-armed-guard.sh" arm "$LANE_DIR" >/dev/null || _hooks_arm_rc=$?
+    if [ "$_hooks_arm_rc" -eq 0 ]; then
+        info "stash-guard hooks armed in this lane"
+    elif [ "$_hooks_arm_rc" -eq 2 ]; then
+        warn "this lane's own hooks/reference-transaction cannot be armed by the pin;"
+        warn "  run 'scripts/hooks-armed-guard.sh check $LANE_DIR'"
+    else
+        warn "hooks-armed-guard.sh arm failed (exit $_hooks_arm_rc) — seed continues"
+    fi
+    unset _hooks_arm_rc
+elif [ -n "$FRESH_CHECKOUT" ]; then
+    warn "scripts/hooks-armed-guard.sh not executable — skipping the stash-guard liveness arm"
 fi
 
 ok "Warm lane seeded at $LANE_TARGET"

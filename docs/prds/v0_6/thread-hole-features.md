@@ -390,7 +390,7 @@ against INV-SF-1..6 (notes inline; no waivers needed).
   deps: α, β, γ, 5426 ·
   signal: boundary rows 4–5 at example level; external demo per decision 4. New
   examples are auto-swept by the existing examples-CI runner
-  (`crates/reify-compiler/tests/examples_smoke.rs` — substrate verified); volume pins
+  (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` — substrate verified); volume pins
   live in eval e2e tests.
 - **η — doc chunks + reify-design cheatsheet + discoverability (project PRD gate)** ·
   crates: reify-mcp (`chunks/` + `language_chunks.rs` + topic-count tests),

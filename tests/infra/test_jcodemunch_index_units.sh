@@ -13,7 +13,7 @@
 #   C — installer happy path, idempotence, and the watcher guardrail
 #   D — installer CLI guard, source pre-flight, and fail-open
 #   E — repo-side retirement invariants for the old serve unit (task η)
-#   F — smoke-script connection-failure hint contract
+#   F — smoke-script hint contract and default index identity
 #   H — smoke-script query-budget contract (sits with F; both cover $SMOKE)
 #   G — setup-dev.sh wiring (structural grep, no execution)
 #
@@ -687,6 +687,9 @@ assert "E-MODES1: modes.md does not name the retired jcodemunch-serve unit" \
 # a recipe re-introduced at the CURRENT pin, which is the same fifth-copy-of-the-
 # pin failure with a fresh version number on it; only the shape ban survives a
 # bump without an edit.
+#
+# F8-F11 then RUN the smoke end to end to pin which index identity it queries
+# by default: the one scripts/jcodemunch-index-reify.sh --print-repo-id derives.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block F: smoke-script hint contract ---"
@@ -715,26 +718,22 @@ assert "F2: smoke script names no jcodemunch-serve.service unit" \
 assert "F3: connection-failure hint names scripts/with-jcodemunch-serve.sh as the replacement recipe" \
     bash -c 'grep -q "with-jcodemunch-serve[.]sh" "$1"' _ "$SMOKE"
 
-# F4: ...and naming the wrapper does NOT by itself make the recipe runnable.
-# The wrapper spawns its serve under JCODEMUNCH_GIT_ROOT_IDENTITY=0, so that
-# serve answers for the per-path local/reify-<hash> index, while this script's
-# default REPO_ID is the leodearden/reify husk. A recipe that omitted --repo
-# would clear assertion 1 and then fail assertion 2 for a non-obvious identity
-# reason — a misleading hint of exactly the class Block F exists to retire.
+# F4: ...and the hint's recipe is a whole one: the wrapper on a port, running
+# this smoke script. Which identity that run queries is F8-F11's business.
 # Anchored to the hint block itself, not the whole file, so the header's copy of
 # the recipe cannot satisfy it on the hint's behalf.
-assert "F4: the connection-failure hint's recipe passes --repo with the per-path identity" \
+assert "F4: the connection-failure hint's recipe runs this smoke script under the wrapper" \
     bash -c '
         hint=$(sed -n "/FAIL \[1\]: curl to/,/See: docs/p" "$1")
-        printf "%s" "$hint" | grep -q    "with-jcodemunch-serve[.]sh --port" || exit 1
-        printf "%s" "$hint" | grep -q -- "--repo local/reify-"
+        printf "%s" "$hint" | grep -q "with-jcodemunch-serve[.]sh --port" || exit 1
+        printf "%s" "$hint" | grep -q "smoke-jcodemunch-serve[.]sh"
     ' _ "$SMOKE"
 
-# F5: the flag the recipe prints must be one the script really implements —
-# proven by RUNNING it, not by grepping for the string. --help must document it;
-# a valueless --repo must be REFUSED rather than falling back to the default
-# husk, which is how a nominally-runnable recipe would go silently vacuous again;
-# and an unknown flag must be rejected rather than ignored.
+# F5: the --repo override must be one the script really implements — proven by
+# RUNNING it, not by grepping for the string. --help must document it; a
+# valueless --repo must be REFUSED rather than silently falling back to the
+# default, which would ignore the operator's stated intent; and an unknown flag
+# must be rejected rather than ignored.
 assert "F5: --repo is implemented — documented by --help, refused without a value, unknown flags rejected (exit 2)" \
     bash -c '
         bash "$1" --help 2>&1 | grep -q -- "--repo" || exit 1
@@ -755,6 +754,146 @@ assert "F6: smoke script parses and --help exits 0" \
 # F7: watcher guardrail — the hint rewrite must not spill into assertion 3's site
 assert "F7: assertion-3 site still names jcodemunch-watcher.service" \
     bash -c 'grep -q "jcodemunch-watcher[.]service is not active" "$1"' _ "$SMOKE"
+
+# ── F8-F11: the default identity, driven end to end ───────────────────────────
+#
+# The smoke hardcodes 127.0.0.1:8901 and this is a `pool` member, so no serve is
+# bound: `curl` is stubbed at the process boundary, like systemctl above. The
+# stub answers as a healthy serve and records every -d payload as one line, so
+# the assertions bind to the repo the smoke actually SENDS. It lives in its own
+# dir, leaving the installer blocks' PATH unchanged.
+SMOKE_STUB_DIR="$(mktemp -d /tmp/test-jc-index-units-smoke-stub-XXXXXX)"
+_TMPDIRS+=("$SMOKE_STUB_DIR")
+SMOKE_LOG_DIR="$(mktemp -d /tmp/test-jc-index-units-smoke-log-XXXXXX)"
+_TMPDIRS+=("$SMOKE_LOG_DIR")
+
+cat > "$SMOKE_STUB_DIR/curl" << 'STUB_EOF'
+#!/usr/bin/env bash
+out=/dev/null hdr=/dev/null fmt="" data=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -D) hdr="$2"; shift 2 ;;
+        -w) fmt="$2"; shift 2 ;;
+        -d) data="$2"; shift 2 ;;
+        -H|-X|--max-time) shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s\n' "$data" >> "${REIFY_TEST_CURL_LOG:-/dev/null}"
+case "$data" in
+    *'"method":"initialize"'*)
+        printf 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nmcp-session-id: stub-session\r\n\r\n' > "$hdr"
+        printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"jcodemunch-mcp"}}}' > "$out"
+        ;;
+    *'"method":"tools/call"'*)
+        printf 'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n' > "$hdr"
+        printf '%s' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"#MUNCH/1 tool=get_changed_symbols enc=stub\n@1=stub.rs"}]}}' > "$out"
+        ;;
+esac
+if [ -n "$fmt" ]; then printf '200'; fi
+exit 0
+STUB_EOF
+chmod +x "$SMOKE_STUB_DIR/curl"
+
+# mk_fake_producer <answer> — a REIFY_JC_REPO_ID_BIN that prints <answer>, the
+# shape of cli.rs's fake_repo_id_producer. Echoes its path.
+mk_fake_producer() {
+    local bin
+    bin="$(mktemp "$SMOKE_LOG_DIR/producer-XXXXXX")" || return 1
+    printf '#!/bin/sh\necho %s\n' "$1" > "$bin" && chmod 0755 "$bin" && printf '%s\n' "$bin"
+}
+
+# run_smoke <producer> [args...] — run the smoke against the curl stub, with
+# STUB_DIR's systemctl answering assertion 3. <producer> becomes
+# REIFY_JC_REPO_ID_BIN for this run only; "" runs with it unset. Captures
+# OUT / ERR_OUT / RC, and SMOKE_CURL_LOG names this run's fresh payload log.
+run_smoke() {
+    local producer="$1"; shift
+    local env_args=(-u REIFY_JC_REPO_ID_BIN) rc=0
+    if [ -n "$producer" ]; then env_args=(REIFY_JC_REPO_ID_BIN="$producer"); fi
+    SMOKE_CURL_LOG="$(mktemp "$SMOKE_LOG_DIR/curl-log-XXXXXX")" || return 1
+    > "$ERR_FILE"
+    OUT="$(
+        env "${env_args[@]}" \
+            REIFY_TEST_CURL_LOG="$SMOKE_CURL_LOG" \
+            PATH="$SMOKE_STUB_DIR:$STUB_DIR:$PATH" \
+            bash "$SMOKE" "$@" 2>"$ERR_FILE"
+    )" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# sent_repo — the repo argument of every tools/call the last run_smoke sent.
+sent_repo() {
+    jq -r 'select(.method=="tools/call") | .params.arguments.repo' "$SMOKE_CURL_LOG"
+}
+
+# expect_smoke_sent <rc> <repo> — the last run_smoke exited <rc> having sent
+# exactly one tools/call, for <repo>.
+expect_smoke_sent() {
+    local sent
+    sent="$(sent_repo)"
+    if [ "$RC" != "$1" ] || [ -z "$2" ] || [ "$sent" != "$2" ]; then
+        printf 'expected exit %s sending repo %s\ngot exit %s sending:\n%s\nstdout:\n%s\nstderr:\n%s\n' \
+            "$1" "${2:-<empty>}" "$RC" "${sent:-<nothing>}" "$OUT" "$ERR_OUT" >&2
+        return 1
+    fi
+}
+
+check_smoke_default_is_indexer_identity() {
+    local want
+    want="$(env -u REIFY_JC_REPO_ID_BIN bash "$REPO_ROOT/scripts/jcodemunch-index-reify.sh" --print-repo-id 2>/dev/null)" \
+        || { echo "jcodemunch-index-reify.sh --print-repo-id failed" >&2; return 1; }
+    run_smoke "" || return 1
+    expect_smoke_sent 0 "$want"
+}
+
+check_smoke_follows_producer() {
+    run_smoke "$1" || return 1
+    expect_smoke_sent 0 "$2"
+}
+
+check_smoke_repo_override_wins() {
+    run_smoke "$1" --repo "$2" || return 1
+    expect_smoke_sent 0 "$2"
+}
+
+check_smoke_underivable_default_fails_closed() {
+    run_smoke "$1" || return 1
+    if [ "$RC" != "1" ] || [ -n "$(sent_repo)" ] || ! printf '%s\n' "$ERR_OUT" | grep -q -- "--repo"; then
+        printf 'expected exit 1, no tools/call, stderr naming --repo\ngot exit %s, payloads:\n%s\nstderr:\n%s\n' \
+            "$RC" "$(cat "$SMOKE_CURL_LOG")" "$ERR_OUT" >&2
+        return 1
+    fi
+}
+
+FAKE_PRODUCER="$(mk_fake_producer local/fake-0badc0de)"
+BOGUS_PRODUCER="$(mk_fake_producer bogus)"
+
+if [ -z "$FAKE_PRODUCER" ] || [ -z "$BOGUS_PRODUCER" ]; then
+    echo "  FAIL: could not create the fake identity producers"
+    FAIL=$((FAIL + 1))
+else
+    # F8: the default is the identity the indexer maintains, computed in the
+    # same env so both take the same producer branch.
+    assert "F8: with no --repo the smoke queries what jcodemunch-index-reify.sh --print-repo-id prints" \
+        check_smoke_default_is_indexer_identity
+
+    # F9: derivation, not a hardcoded copy — only a derived default can follow
+    # a fake producer.
+    assert "F9: the smoke's default follows the indexer's identity producer" \
+        check_smoke_follows_producer "$FAKE_PRODUCER" local/fake-0badc0de
+
+    # F10: --repo never consults derivation, so it stays usable where
+    # derivation is broken (the bogus producer makes the indexer die).
+    assert "F10: --repo overrides the default without consulting derivation" \
+        check_smoke_repo_override_wins "$BOGUS_PRODUCER" local/override-12345678
+
+    # F11: a default it cannot derive is never queried.
+    assert "F11: an underivable default exits 1 before any tools/call, naming --repo" \
+        check_smoke_underivable_default_fails_closed "$BOGUS_PRODUCER"
+fi
 
 
 # ──────────────────────────────────────────────────────────────────────────────

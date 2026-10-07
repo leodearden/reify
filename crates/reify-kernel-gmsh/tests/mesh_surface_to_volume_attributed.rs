@@ -14,13 +14,20 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
+// The shared size-option read-back. Declared by `#[path]`; see
+// `common/clamp_probe.rs` for why, and why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
 use std::collections::BTreeMap;
 
 use reify_ir::{
     ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment,
 };
 use reify_ir::geometry::MeshInvariant;
-use reify_kernel_gmsh::GmshKernel;
+use reify_kernel_gmsh::{
+    EntityAttribution, GmshKernel, MeshingOptions, mesh_surface_to_volume_with_attribution,
+};
 
 fn h(n: u64) -> GeometryHandleId {
     GeometryHandleId(n)
@@ -448,4 +455,74 @@ fn attributed_producer_output_is_reproducible_across_repeated_calls() {
              verdict `decide_morph_or_remesh` reaches"
         );
     }
+}
+
+/// The attributed producer leaves every mesh-size process-global at gmsh's
+/// default.
+///
+/// One of the four per-entry-point outbound guards task #6968 added — all four
+/// now share one read-back loop,
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
+/// naming options, so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
+///
+/// This guard is OUTBOUND only. The inbound direction for this producer is
+/// covered by `mesh_size_option_hermeticity.rs`'s pair sweep, which owns its
+/// process and serialises its test bodies — a poison-then-call sequence cannot
+/// live in THIS binary, whose many unserialised meshing siblings would erase
+/// the poison in the `GMSH_LOCK` gap and make it pass for the wrong reason.
+///
+/// RED before the fix: `run_meshing_with_entity_queries` (`mesh_boundary.rs`)
+/// writes `Mesh.MeshSizeMin`/`MeshSizeMax` behind
+/// `if let Some(s) = options.mesh_size && s > 0.0` and restores neither, so
+/// both read back as the requested size. gmsh's option table survives
+/// `gmshClear()`, so that size then decided the density of every later
+/// defaults-relying call in the process.
+///
+/// Goes through the free producer rather than the `GeometryKernel` trait
+/// method: `mesh_surface_to_volume_attributed` builds its own
+/// `MeshingOptions { deterministic: true, ..Default::default() }`, whose
+/// `mesh_size` is `None`, which is exactly the path that writes NO clamp — so
+/// the trait method could not make this guard fire at all.
+///
+/// Needs no whole-body serialising mutex, for the reason
+/// `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`
+/// gives: the asserted property is one every sibling in this binary also
+/// leaves behind once the fix is in, so a sibling interleaving between the
+/// call and the read cannot flip the result. Before the fix a sibling leaves
+/// its OWN size in the table, which is still not a default — so the guard is
+/// order-independent in both states.
+#[test]
+fn mesh_surface_to_volume_with_attribution_leaves_every_size_option_at_gmsh_defaults() {
+    /// Unequal to every gmsh size default, so the read cannot pass by accident
+    /// on a table nobody wrote.
+    const REQUESTED: f64 = 0.375;
+
+    let surface = subdivided_unit_cube_surface();
+    let attribution = EntityAttribution {
+        faces: six_face_anchors(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+        match_tolerance: 0.3,
+    };
+    mesh_surface_to_volume_with_attribution(
+        &surface,
+        &MeshingOptions {
+            mesh_size: Some(REQUESTED),
+            deterministic: true,
+            ..Default::default()
+        },
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .expect("mesh_surface_to_volume_with_attribution must succeed on a watertight unit cube");
+
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        &format!("mesh_surface_to_volume_with_attribution(mesh_size: Some({REQUESTED}))"),
+        "`MeshSizeScope` in mesh_boundary.rs",
+    );
 }

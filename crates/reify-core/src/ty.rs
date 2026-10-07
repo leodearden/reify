@@ -75,7 +75,7 @@
 //! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`
 //! (`conformance/mod.rs`, fn-call path, `Severity::Error`) and
 //! `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, ctor
+//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`, ctor
 //! path, `Severity::Warning`).  The `Point` and `Matrix` / `Tensor` arms are
 //! pinned to reach the strict param-side predicate too, by probes sitting
 //! beside those two in the same two modules; they are not re-listed here.
@@ -95,17 +95,22 @@
 //! Stating that explicitly matters because the two spellings do NOT carry the
 //! same authorial intent.  Task 5848's ruling is about `Dimensionless`, whereas
 //! `Real` is also the idiomatic "just a raw number" spelling — including for a
-//! number that is a measurement carried in native units.
-//! `crates/reify-compiler/stdlib/fdm_slice.ri`'s `Bead.centerline`
-//! (`List<Point3<Real>>`) is exactly that: its module doc fixes
-//! a marshalling contract in which centerline coordinates are raw G-code
-//! MILLIMETRES, "Hence `Real` / `Point3<Real>` here, not `Length` /
-//! `Point3<Length>`".  The ruling still applies there, and that is the intended
-//! reading rather than a casualty of it: the declaration says these coordinates
-//! are bare numbers, so a `List<Point3<Length>>` arg is a real breach of that
+//! number that is a measurement carried in native units, where a marshalling
+//! contract fixes the unit and the declaration deliberately erases it.  Where
+//! that second reading applies the ruling still applies too, and that is the
+//! intended outcome rather than a casualty of it: the declaration says those
+//! coordinates are bare numbers, so a dimensioned arg is a real breach of the
 //! contract.  What differs is the PREMISE of the rejection — contract-imposed
 //! erasure rather than an assertion of unit-lessness — so anyone tempted to
-//! retype that param must weigh the marshalling contract, not this rule alone.
+//! retype such a param must weigh the marshalling contract, not this rule alone.
+//!
+//! That second reading has no worked example in `stdlib/` today: every `Real`
+//! param there is dimensionless by nature (tolerances, exponents, knockdown
+//! ratios, loss factors).  It stays legitimate all the same — it is a claim
+//! about authorial intent, which no sweep can rule out for future code — but
+//! weigh a fresh `Real`-for-a-measurement declaration carefully: a unit the
+//! `.ri` surface cannot STATE is exactly how a 1000x disagreement stays
+//! invisible.
 //!
 //! **Measured reach, and what that measurement does NOT cover.**  The tightening
 //! landed with zero new diagnostics: every constructor-arg site at a
@@ -115,17 +120,17 @@
 //! and `designs/` are OUTSIDE the measurement and are evidence neither way; the
 //! nearest latent instance there is `prj/printer_v01/printer.ri`'s cardinal-axis
 //! direction `let`s, written under a unit-magnitude `1m` convention and so
-//! genuinely `Length`-dimensioned.  Inside the measured tree the nearest is that
-//! same `fdm_slice.ri` `Bead.centerline`, absent only because the measurement is
-//! over constructor-ARG sites and no `.ri` file constructs a `Bead` today.  If
-//! one ever did it would NOT stay silent, including from a literal `point3(…)`
-//! arg rather than merely a `List<Point3<Length>>`-typed REF — see the expired
-//! premise below for why a `point3(…)` call now carries a real quantity slot,
-//! recovered from its FIRST argument via the weakness task 5889 owns
-//! (`math_signatures.rs`).
+//! genuinely `Length`-dimensioned.  Inside the measured tree there is no latent
+//! instance to name — see the `stdlib/` sweep above.  The mechanism that would
+//! make one latent still reaches any `Real`-quantity param: a literal
+//! `point3(…)` arg would NOT stay silent, not merely a
+//! `List<Point3<Length>>`-typed REF — see the expired premise below for why a
+//! `point3(…)` call now carries a real quantity slot, recovered from the
+//! dimension its components AGREE on (`math_signatures.rs`; the rule is stated
+//! in full under *What the arg side infers from a literal* below).
 //!
 //! The `.ri` fixtures in
-//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs` drive
+//! `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs` drive
 //! this rule at the ctor path (`Severity::Warning`) through the real
 //! `point3(…)` / `matrix(…)` → `math_fn_result_type` → arm chain that the
 //! direct-`Type` probes in `conformance/mod.rs` deliberately bypass, the `Real`
@@ -199,7 +204,7 @@
 //! non-zero-risk.  This is a ruling, not an oversight — do not "fix" the asymmetry
 //! with the other four arms by symmetry.  Pinned by
 //! `field_param_given_erased_analytical_field_stays_clean`
-//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`); the
+//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`); the
 //! false-warning count that motivated the arm is recorded once, in the
 //! `Type::Field` arm's own comment in `conformance/mod.rs`.
 //!
@@ -248,30 +253,48 @@
 //! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 //! (`struct_ctor_field_conformance_tests.rs`).
 //!
-//! A SECOND residual is specific to the `Matrix`/`Tensor` leg: a `matrix([[…]])`
-//! arg's quantity comes from `matrix_shape` (`math_signatures.rs`), which derives
-//! the whole matrix's quantity from cell `[0][0]` ALONE.  The rule is therefore
-//! only sound for dimension-HOMOGENEOUS literals.  A heterogeneous one — routine
-//! in this domain: a 6x6 stiffness/compliance matrix or a spatial (screw-theory)
-//! Jacobian mixes translational and rotational blocks — can be false-rejected when
-//! `[0][0]` disagrees with the declaration, and, dually, a genuinely wrong matrix
-//! whose `[0][0]` happens to agree sails through.  That inference weakness
-//! pre-dates this rule and was cosmetic while the quantity was never compared;
-//! this ruling makes it load-bearing for a diagnostic.  No site under
-//! `examples/` trips it today (`no_example_emits_ctor_field_conformance_diagnostics`
-//! is green) — that gate discovers files under `EXAMPLES_DIR` ONLY, so `prj/`,
-//! `designs/` and the prd-gate fixtures are NOT evidence either way, and the
-//! claim must not be widened to "the corpus".
+//! **What the arg side infers from a literal (task 5889, CLOSED).**  All three
+//! routes from `.ri` source into a quantity slot — `list_shape` (`vec` /
+//! `diag`), `matrix_shape` (`matrix`), and the inline
+//! `"vec3" | "vec2" | "point3" | "point2"` arm of `math_fn_result_type`, all in
+//! `math_signatures.rs` — infer a quantity ONLY from elements that AGREE on a
+//! dimension, and degrade to `Type::dimensionless_scalar()` otherwise.
+//! Agreement is compared by dimension, not by `Type`: `Int` beside `Real`
+//! agrees, since both are dimensionless and the dimension is all the rule
+//! reads. Elements that agree keep element `[0]`'s `Type` verbatim, so the
+//! narrowing costs no precision where the inference was already sound.
+//! `matrix_shape` inspects every cell of every row, so the heterogeneity a
+//! block-structured matrix actually carries ACROSS row blocks — a 6x6
+//! stiffness/compliance matrix, a spatial (screw-theory) Jacobian mixing
+//! translational and rotational blocks — is seen, not just heterogeneity within
+//! row 0.
 //!
-//! Task 6159's param-side tightening ADDS AN INSTANCE of that same failure
-//! shape: a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param
-//! can now be rejected on cell `[0][0]` alone, where before only a dimensioned
-//! param slot could trip it.  The sibling `list_shape` (`vec` / `diag`) has the
-//! same first-ELEMENT weakness one rank down.  The fix — widen both to detect
-//! heterogeneous cells/elements and degrade to `Type::dimensionless_scalar()`,
-//! which would make the slot yield no dimension and the rule fall silent — is
-//! out of both rulings' scope and is tracked by task 5889, which owns it;
-//! `math_signatures.rs` carries the matching note at each function.
+//! The consequence for THIS rule: a heterogeneous aggregate's arg slot names no
+//! dimension, so `arg_quantity_slot_dimension` (`conformance/mod.rs`) returns
+//! `None` and the rule falls silent BY CONSTRUCTION — no case for it in the
+//! walker, and none is wanted.  Read that precisely in both directions.  The
+//! false-REJECT is GONE: a correctly-declared heterogeneous matrix is no longer
+//! rejected because cell `[0][0]` happened to disagree with the declaration.
+//! The dual false-ACCEPT is NOT detected — a genuinely wrong heterogeneous
+//! matrix is still accepted; what changed is that the silence is now principled
+//! rather than an accident of which cell sat first.  Per-cell dimension checking
+//! would be a separate and much larger ruling, and nothing here should be read
+//! as having made it.
+//!
+//! Pinned end to end, one fixture per route, in
+//! `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`:
+//! `vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean`
+//! (`list_shape`),
+//! `matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean`
+//! (`matrix_shape`, the across-row-block case), and
+//! `vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean`
+//! (the inline arm) — the last paired with
+//! `vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`,
+//! since the two together are what pin that the rule's accept/reject outcome no
+//! longer depends on component ORDER (the inferred `Type` is still element
+//! `[0]`'s, which this rule never reads).  Each has a still-rejecting
+//! HOMOGENEOUS twin — same route, same param — which is what keeps it
+//! non-vacuous.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and
@@ -469,13 +492,22 @@ pub enum Type {
     /// `Frame` / `Transform` / `AffineMap`.
     Orientation(usize),
     /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
+    ///
+    /// The origin is a `Point3<Length>` (RULING #6089, below).
     Frame(usize),
     /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
+    ///
+    /// The translation is a `Vector3<Length>` — a displacement (RULING #6089, below).
     Transform(usize),
     /// General (non-rigid) affine map in N-dimensional space: a linear part + translation.
     ///
     /// Unlike `Transform(usize)` (rigid: rotation+translation), the linear part may scale/shear.
     /// Stored as inline arrays `linear: [[f64;3];3]` + `translation: [f64;3]` in `Value::AffineMap`.
+    ///
+    /// RULING #6089 (Leo, 2026-08-07): `Frame` origin, `Transform` translation and
+    /// this translation (stored in SI metres) all carry Length. The three types are
+    /// deliberately monomorphic at Length, as task-6081 ruled for `BoundingBox`;
+    /// parameterizing them later is a widening, not a correction.
     AffineMap(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
@@ -611,6 +643,10 @@ pub enum Type {
     /// Introduced in task 4602 β (type-args/proj substrate).
     Projection { base: Box<Type>, member: String },
 }
+
+/// Reserved `TypeParam` name prefix of an R1 unbound placeholder. Private:
+/// only `Type::unbound_placeholder` / `Type::is_unbound_placeholder` spell it.
+const UNBOUND_TYPE_ARG_PREFIX: &str = "__unbound_";
 
 impl Type {
     /// Shorthand for a length scalar.
@@ -767,6 +803,16 @@ impl Type {
         }
     }
 
+    /// The static type of a generic-enum type argument that neither the
+    /// payload nor an annotation determined (R1 placeholder; ruling:
+    /// docs/prds/v0_6/generic-enum-type-arg-retention.md §6 R1(c)).
+    ///
+    /// It stays a `TypeParam`, and its name is the same at every site for a
+    /// given declared `param`.
+    pub fn unbound_placeholder(param: &str) -> Self {
+        Type::TypeParam(format!("{UNBOUND_TYPE_ARG_PREFIX}{param}"))
+    }
+
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Scalar { .. })
@@ -830,6 +876,13 @@ impl Type {
     /// from "IS present" to "is NOT present", and update this follow-up section.
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
+    }
+
+    /// Is this an R1 unbound placeholder (see `Type::unbound_placeholder`)?
+    ///
+    /// Top-level only: `Result<Length, ?E>` and `Option<?T>` return `false`.
+    pub fn is_unbound_placeholder(&self) -> bool {
+        matches!(self, Type::TypeParam(name) if name.starts_with(UNBOUND_TYPE_ARG_PREFIX))
     }
 
     /// Returns the inner name for name-carrying variants without allocating.
@@ -2665,5 +2718,40 @@ mod tests {
 
         // (d) Display == "Feature"
         assert_eq!(format!("{}", Type::Feature), "Feature");
+    }
+
+    // ── R1 unbound placeholder (generic-enum-type-arg-retention §6 R1(c)) ────
+
+    #[test]
+    fn unbound_placeholder_is_a_recognisable_type_param() {
+        let e = Type::unbound_placeholder("E");
+
+        // (1) R1(c): it stays a TypeParam, so provisional-binding rules apply.
+        assert!(matches!(e, Type::TypeParam(_)), "got {e:?}");
+        // (2) the predicate recognises it.
+        assert!(e.is_unbound_placeholder());
+
+        // (3) site-independent: no per-site counter in the name or Display.
+        assert_eq!(e, Type::unbound_placeholder("E"));
+        assert_eq!(e.to_string(), Type::unbound_placeholder("E").to_string());
+        assert_ne!(Type::unbound_placeholder("T"), e);
+
+        // (4) negatives — the predicate inspects the top level only.
+        let not_placeholders = [
+            Type::TypeParam("E".into()),
+            Type::TypeParam("__auto_Seal".into()),
+            Type::Int,
+            Type::applied(
+                "Result",
+                vec![Type::length(), Type::unbound_placeholder("E")],
+            ),
+            Type::Option(Box::new(Type::unbound_placeholder("T"))),
+        ];
+        for t in &not_placeholders {
+            assert!(
+                !t.is_unbound_placeholder(),
+                "{t:?} is not an R1 placeholder"
+            );
+        }
     }
 }

@@ -42,6 +42,9 @@
 //! moddir-boundary fixture models: a `#[cfg]`-gated member is a DECLARED member regardless
 //! of cfg state.
 
+#[cfg(unix)]
+#[path = "harness_cli_surface/cli_broken_pipe.rs"]
+mod cli_broken_pipe;
 #[path = "harness_cli_surface/cli_cache.rs"]
 mod cli_cache;
 #[path = "harness_cli_surface/cli_gui.rs"]

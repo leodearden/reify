@@ -246,6 +246,248 @@ mod cli {
         }
     }
 
+    /// `--print-repo-id` must print exactly the same identity
+    /// `reify_audit::jcodemunch_index::resolve_repo_id` derives in-process —
+    /// this is the single derivation task #6459 collapses onto, replacing
+    /// `scripts/jcodemunch-index-reify.sh`'s independent bash re-derivation.
+    /// Exercised against a real tempdir (not a nonexistent path) so the CLI
+    /// path is proven end to end, including its own `Path::new` + stdout
+    /// round trip, not just the pure derivation function in isolation.
+    #[test]
+    fn print_repo_id_matches_resolve_repo_id_derivation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let project_root = tmp.path();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(project_root)
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--print-repo-id must exit 0; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected = reify_audit::jcodemunch_index::resolve_repo_id(project_root);
+        assert_eq!(
+            printed, expected,
+            "--print-repo-id must print exactly what resolve_repo_id derives"
+        );
+    }
+
+    /// `--jcodemunch-repo` overrides the derived identity for
+    /// `--print-repo-id` too — the same override precedence `main` applies
+    /// when constructing the real jcodemunch seam.
+    #[test]
+    fn print_repo_id_honours_jcodemunch_repo_override() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(tmp.path())
+            .args(["--jcodemunch-repo", "leodearden/reify"])
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(out.status.code(), Some(0));
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(printed, "leodearden/reify");
+    }
+
+    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`.
+    ///
+    /// `--dry-run` is the hermetic mode: it prints the summary and the argv it
+    /// WOULD run, then exits, so no uvx, sqlite3 or network is involved. A
+    /// tempdir `CODE_INDEX_PATH` keeps the host store (and its config.jsonc)
+    /// out of the run entirely.
+    fn run_index_script(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> std::process::Output {
+        let script = repo_root().join("scripts/jcodemunch-index-reify.sh");
+        Command::new("bash")
+            .arg(&script)
+            .args(["--dry-run", "--project-root"])
+            .arg(project_root)
+            .env("REIFY_JC_REPO_ID_BIN", repo_id_bin)
+            .env("CODE_INDEX_PATH", code_index)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()))
+    }
+
+    /// A successful `--dry-run`, as its `(repo-id, repo-id-from)` summary pair
+    /// plus the whole run's stderr.
+    ///
+    /// stderr is RETURNED rather than only quoted into panic messages because
+    /// the degradation warnings are themselves part of the contract: the
+    /// found-but-failed case is only distinguishable from a cold checkout
+    /// because the script says so out loud.
+    fn index_script_repo_id(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> (String, String, String) {
+        let out = run_index_script(project_root, code_index, repo_id_bin);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--dry-run must exit 0; got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        let field = |name: &str| -> String {
+            let prefix = format!("jcodemunch-index-reify: {name} ");
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(&prefix))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| {
+                    panic!("no `{name}` summary line in:\n{stdout}\nstderr:\n{stderr}")
+                })
+        };
+        (field("repo-id"), field("repo-id-from"), stderr)
+    }
+
+    /// An executable stub standing in for `reify-audit --print-repo-id` that
+    /// exits 0 having printed `line`.
+    ///
+    /// Drives the script's malformed-identity refusals, which are otherwise
+    /// unreachable: the real binary can only ever print a well-formed id, so a
+    /// producer that answers 0 with something else has to be fabricated.
+    fn fake_repo_id_producer(dir: &Path, name: &str, line: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"))
+            .expect("write fake repo-id producer");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake repo-id producer");
+        path
+    }
+
+    /// The two producers of jcodemunch's repo identity must agree.
+    ///
+    /// `scripts/jcodemunch-index-reify.sh` prefers this binary's
+    /// `--print-repo-id` (the single Rust derivation) and keeps an inline bash
+    /// pipeline for a cold checkout. Which one answers is AMBIENT — it depends
+    /// on whether `target/{release,debug}/reify-audit` happens to exist — so
+    /// the script's own suite silently covers a different branch run to run and
+    /// never covers both. This drives BOTH branches over each root below and
+    /// asserts the printed identity is byte-identical, which is the
+    /// cross-language contract task #6459 is actually about.
+    ///
+    /// SHAPED ROOTS, not one tempdir. `basename`/`Path::file_name()` and
+    /// `basename`/`sha1` agree trivially on an ordinary path, so a single
+    /// point proves almost nothing about the bash half of the formula. `/` is
+    /// the measured counter-example: `basename -- /` prints `/` while
+    /// `Path('/').name` is empty, which shipped as a real divergence
+    /// (`local//-<sha8>` against `local/-<sha8>`) until the script special-
+    /// cased it. A name containing a space covers the quoting half.
+    ///
+    /// Non-vacuous by construction: `repo-id-from` is asserted too, so a leg
+    /// that silently fell back to bash when it was supposed to be exercising
+    /// the binary fails here rather than agreeing with itself.
+    #[test]
+    fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
+        // A path that cannot exec forces the cold-checkout branch.
+        let absent = tmp.path().join("no-such-reify-audit");
+
+        let ordinary = tmp.path().join("some-project");
+        let spaced = tmp.path().join("has space");
+        for dir in [&ordinary, &spaced] {
+            std::fs::create_dir(dir).expect("create project root");
+        }
+
+        for project_root in [ordinary.as_path(), spaced.as_path(), Path::new("/")] {
+            let (rust_id, rust_from, rust_err) =
+                index_script_repo_id(project_root, &code_index, bin);
+            assert!(
+                rust_from.contains("--print-repo-id"),
+                "the binary leg must be answered by reify-audit for {}; \
+                 got repo-id-from `{rust_from}`",
+                project_root.display()
+            );
+            assert!(
+                !rust_err.contains("WARNING"),
+                "the binary leg answered, so nothing should warn about degradation; \
+                 got stderr:\n{rust_err}"
+            );
+
+            let (bash_id, bash_from, bash_err) =
+                index_script_repo_id(project_root, &code_index, &absent);
+            assert!(
+                bash_from.contains("inline bash fallback"),
+                "the fallback leg must be answered by the inline pipeline for {}; \
+                 got repo-id-from `{bash_from}`",
+                project_root.display()
+            );
+            // The degradation must be SAID, not merely taken: a cold checkout
+            // and a broken binary both end up here, and only the warning tells
+            // them apart. 127 is the shell's status for an unexecutable path.
+            assert!(
+                bash_err.contains("WARNING") && bash_err.contains("exited 127"),
+                "the fallback leg must warn, naming the producer's exit status; \
+                 got stderr:\n{bash_err}"
+            );
+
+            assert_eq!(
+                rust_id, bash_id,
+                "the Rust and bash producers derived different identities for {} \
+                 — the gate would then probe an identity the indexer never wrote",
+                project_root.display()
+            );
+        }
+    }
+
+    /// A producer that exits 0 with an identity the DB path cannot express is
+    /// refused, not silently written to a nonexistent directory.
+    ///
+    /// Both shapes are reachable through `REIFY_JC_REPO_ID_BIN`, and the
+    /// slashed one was reachable through the bash fallback too, via
+    /// `--project-root /`. `local/?*` alone does not catch it: `?*` matches
+    /// `/-abc` happily, and `$CODE_INDEX_DIR/local-/-abc.db` then names a file
+    /// under a directory that does not exist.
+    #[test]
+    fn index_script_refuses_a_repo_id_it_cannot_turn_into_a_db_path() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let project_root = tmp.path().join("some-project");
+        std::fs::create_dir(&project_root).expect("create project root");
+
+        for (name, line, expected) in [
+            ("slashed", "local//-42099b4a", "contains a slash"),
+            ("not-local", "leodearden/reify", "malformed"),
+        ] {
+            let producer = fake_repo_id_producer(tmp.path(), name, line);
+            let out = run_index_script(&project_root, &code_index, &producer);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+            assert_ne!(
+                out.status.code(),
+                Some(0),
+                "a producer printing `{line}` must be refused, not accepted\nstderr:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(expected) && stderr.contains(line),
+                "the refusal must name the offending id `{line}` and say `{expected}`; \
+                 got stderr:\n{stderr}"
+            );
+        }
+    }
+
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
     /// table should produce a P5PhantomDone High finding and exit non-zero.
     #[test]
@@ -1119,6 +1361,85 @@ mod cli {
         );
     }
 
+    /// End-to-end regression for the same defect
+    /// `real_git_ops::try_is_gitignored_answers_for_a_leading_dash_path` pins
+    /// at the seam: a `metadata.files` entry beginning with `-` must not
+    /// silence the gitignore filter for the rest of the run.
+    ///
+    /// Deliberately a REAL git repo, not the non-git tempdir the two
+    /// breadcrumb tests above use: there every `check-ignore` exits 128 and the
+    /// filter is legitimately unavailable, so the defect cannot show. Here git
+    /// is healthy, and the only thing that can make the second entry read as
+    /// "not ignored" is the FIRST entry having latched the instance.
+    ///
+    /// `files` is a Vec iterated in order, so the leading-dash entry is probed
+    /// first by construction.
+    #[test]
+    fn leading_dash_metadata_file_does_not_suppress_gitignored_finding() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A committed .gitignore plus a genuinely-ignored build artefact.
+        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n").expect("write .gitignore");
+        std::fs::create_dir_all(dir.join("build")).expect("create build dir");
+        std::fs::write(dir.join("build/generated.rs"), "// generated\n")
+            .expect("write generated.rs");
+
+        let tasks = vec![task_fixture_with_files(
+            "7113",
+            "in-progress",
+            None,
+            None,
+            &["--weird-file", "build/generated.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+        git_init_commit_all(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "7113",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 7113 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("reify-audit: git check-ignore exited"),
+            "a leading-dash declared entry must be passed to git as a path, so a \
+             HEALTHY repo emits no check-ignore breadcrumb at all; full \
+             stderr:\n{stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        let gitignored = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5MetadataFilesGitignored")
+                && f["task_id"].as_str() == Some("7113")
+        });
+        assert!(
+            gitignored.is_some(),
+            "the genuinely-gitignored second entry must still be flagged after a \
+             leading-dash first entry; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            serde_json::to_string(gitignored.unwrap())
+                .expect("serialize finding")
+                .contains("build/generated.rs"),
+            "the finding must name the ignored entry; got:\n{:#}",
+            gitignored.unwrap()
+        );
+    }
+
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
@@ -1700,6 +2021,60 @@ mod cli {
     /// `layer_violations_from_wire` → `player::check` → `Finding{pattern:PLayerViolation, ...}`.
     #[test]
     fn player_dispatch_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Json));
+    }
+
+    /// SSE sibling of `player_dispatch_forwards_canned_layer_violation`: the
+    /// same canned violation and the same assertions, with the mock answering
+    /// `initialize` and `tools/call` as `text/event-stream` frames. Proves the
+    /// jcodemunch client decodes SSE-framed replies end-to-end, not just the
+    /// fused-memory client the `http_loader` SSE tests cover.
+    #[test]
+    fn player_dispatch_via_sse_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Sse));
+    }
+
+    /// A jcodemunch `initialize` reply whose SSE `data:` payload is not JSON
+    /// is refused at construction, so the run fail-softs to zero findings and
+    /// exit 0 — and the breadcrumb names the decode refusal itself.
+    ///
+    /// "jcodemunch unreachable" alone would be a false green: a refused
+    /// connection prints the same prefix. "SSE data parse" is what proves the
+    /// malformed payload was refused rather than skipped. The empty findings
+    /// array doubles as the never-reached-`tools/call` guard: had the canned
+    /// responder been reached, its violation would surface as a finding.
+    #[test]
+    fn player_via_sse_malformed_data_fails_soft_with_the_data_parse_breadcrumb() {
+        let out = run_player_with_canned_violation(Framing::SseMalformedData);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a malformed SSE `initialize` reply must fail soft (exit 0), not refuse; \
+             got {:?}\nstderr: {stderr}",
+            out.status.code(),
+        );
+        assert!(
+            stderr.contains("jcodemunch unreachable"),
+            "expected the construction-layer fail-soft breadcrumb; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("SSE data parse"),
+            "expected the breadcrumb to name the SSE data-parse refusal; stderr: {stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a refused handshake must never reach `tools/call`; got findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// Run `--pattern PLAYER` against a mock jcodemunch speaking `framing`,
+    /// whose `get_layer_violations` answers one canned
+    /// `crates/reify-cli` → `crates/reify-kernel` violation.
+    fn run_player_with_canned_violation(framing: Framing) -> std::process::Output {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -1721,7 +2096,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let mock = spawn_mock_mcp(|_args| {
+        let mock = spawn_mock_mcp_shaped(framing, ResultShape::StructuredContent, |_args| {
             Some(serde_json::json!({
                 "violations": [{
                     "from": "crates/reify-cli",
@@ -1754,7 +2129,12 @@ mod cli {
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
 
         mock.stop();
+        out
+    }
 
+    /// Exactly one `PLayerViolation/Low` finding, carrying the canned
+    /// violation of [`run_player_with_canned_violation`] directionally.
+    fn assert_one_canned_layer_violation(out: &std::process::Output) {
         // PLayerViolation is Severity::Low → high_severity_exit_code == 0.
         assert_eq!(
             out.status.code(),
@@ -2547,20 +2927,28 @@ mod cli {
     /// EMPTY — deliberately the fail-loud direction: every code-less file
     /// surfaces as a `NewFile` High rather than passing vacuously.
     ///
-    /// Three claims, in order of what would break first:
+    /// Five claims, in order of what would break first:
     ///
     /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
     ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
     ///    literal "the detector is reachable from the binary" claim.
     /// 2. The exit code is the count of High FINDINGS — one per code-less
-    ///    file, not one per site. The fixture tree holds 4 code-less sites
-    ///    across 3 files, so exit 3 (not 4) is what pins the ratchet as
+    ///    file, not one per site. The fixture tree holds 6 code-less sites
+    ///    across 4 files, so exit 4 (not 6) is what pins the ratchet as
     ///    per-file.
     /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
     /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
-    ///    code-less site immediately above a reviewed `pdiag:allow`, so it is
-    ///    the end-to-end proof that an opt-out cannot reach backwards over the
+    ///    code-less site immediately above a reviewed opt-out, so it is the
+    ///    end-to-end proof that an opt-out cannot reach backwards over the
     ///    site above it — the hard-gate bypass no other test in this suite saw.
+    /// 5. `scenario07_code_absorption.rs` is counted, TWICE over. It holds one
+    ///    code-less site directly ABOVE a coded one and one to the LEFT of a
+    ///    coded one on a single line, so it is the end-to-end proof that a
+    ///    NEIGHBOURING constructor's code cannot absorb a brand-new site —
+    ///    the other bypass no other fixture sees, and the only one reachable
+    ///    without an opt-out anywhere in the file. Its summary is asserted to
+    ///    name BOTH code-less lines, so the two halves are distinguished here
+    ///    rather than one of them passing on the other's back.
     ///
     /// RED until the dispatch arm and the `--pattern` token validator are
     /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
@@ -2609,17 +2997,18 @@ mod cli {
         // (2) Exit code = High-severity finding count = one per code-less FILE.
         assert_eq!(
             out.status.code(),
-            Some(3),
-            "PDIAG fixture sweep must exit 3 — one NewFile High per code-less file \
+            Some(4),
+            "PDIAG fixture sweep must exit 4 — one NewFile High per code-less file \
              (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
-             above its reviewed escape; 4 sites but 3 files)\nstderr: {stderr}"
+             above its reviewed escape, scenario07 has 2 sites a neighbouring \
+             constructor's code used to absorb; 6 sites but 4 files)\nstderr: {stderr}"
         );
 
         let findings = parse_findings_from_stderr(&stderr);
         assert_eq!(
             findings.len(),
-            3,
-            "PDIAG fixture sweep must emit exactly 3 findings; got:\n{:#}",
+            4,
+            "PDIAG fixture sweep must emit exactly 4 findings; got:\n{:#}",
             serde_json::Value::Array(findings.clone())
         );
 
@@ -2636,9 +3025,9 @@ mod cli {
             );
         }
 
-        // (3) Exactly the two code-less files, keyed by path. Membership is
+        // (3) Exactly the code-less files, keyed by path. Membership is
         // asserted as a set, so the coded / escaped / `tests`-segment fixtures
-        // being absent is the same assertion as these two being present.
+        // being absent is the same assertion as these being present.
         let mut keyed: Vec<&str> =
             findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
         keyed.sort_unstable();
@@ -2648,12 +3037,31 @@ mod cli {
                 "crates/reify-compiler/src/scenario05_codeless_pair.rs",
                 "crates/reify-eval/src/scenario01_codeless.rs",
                 "crates/reify-eval/src/scenario06_escape_leak.rs",
+                "crates/reify-eval/src/scenario07_code_absorption.rs",
             ],
             "only the code-less swept files may be keyed — the coded, escaped and \
              `tests`-segment fixtures must each contribute nothing, while scenario06 \
-             MUST be keyed: its unreviewed site sits inside the forward window of the \
-             reviewed opt-out below it, and an escape that reaches backwards over it is \
-             a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+             and scenario07 MUST be keyed: scenario06's unreviewed site sits inside the \
+             forward window of the reviewed opt-out below it, and scenario07's two sites \
+             sit where a neighbouring constructor's code used to reach them. Either \
+             absorption is a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+        );
+
+        // (5) Both of scenario07's sites are named, so a fix that closed only
+        // one half of the probe cannot pass here on the other half's back.
+        // `format_site_lines` spells them into the High summary.
+        let absorption = findings
+            .iter()
+            .find(|f| {
+                f["task_id"].as_str() == Some("crates/reify-eval/src/scenario07_code_absorption.rs")
+            })
+            .expect("scenario07 must be keyed");
+        let summary = absorption["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("at lines 19, 23"),
+            "scenario07's summary must name BOTH code-less lines — 19 (the site above \
+             a coded one) and 23 (the site left of a coded one on one line); got: \
+             {summary:?}"
         );
 
         // Every hard-gate summary must route the reader to the policy doc;
@@ -2905,15 +3313,15 @@ mod cli {
 // calls [`spawn_mock_mcp_shaped`] directly with an explicit [`Framing`] and
 // [`ResultShape`] (e.g. `spawn_mock_mcp_shaped(Framing::Sse,
 // ResultShape::ContentText, ...)`), threaded through
-// [`write_response_framed`]. JSON drives `FusedMemoryClient::post`'s
-// bare-body `else` branch; [`Framing::Sse`] drives its
-// `ctype.contains("text/event-stream")` branch, and the mock wraps the
+// [`write_response_framed`]. JSON drives `mcp_wire::decode_body`'s
+// bare-body branch; [`Framing::Sse`] drives its
+// `contains("text/event-stream")` branch, and the mock wraps the
 // body as a realistic `event: message\ndata: <json>\n\n` frame rather
-// than a bare `data:` line so the client's line-scan is genuinely
+// than a bare `data:` line so the decode's line-scan is genuinely
 // exercised rather than getting lucky on a single-line body.
 // [`Framing::SseNoData`] and [`Framing::SseMalformedData`] are the SSE
 // branch's two failure modes — a data-less keep-alive-shaped frame, and a
-// `data:` line whose payload isn't valid JSON — for locking `post()`'s
+// `data:` line whose payload isn't valid JSON — for locking the decode's
 // "no SSE data line in response" and "SSE data parse" refusals
 // respectively. The `notifications/initialized` leg always answers 202
 // with an empty body under ALL framings: that matches real MCP, and
@@ -3001,9 +3409,9 @@ fn read_request(stream: &mut TcpStream) -> Option<(Vec<(String, String)>, serde_
 const MOCK_SESSION_ID: &str = "mock-mcp-session";
 
 /// Which wire framing the mock's accept loop answers with. Mirrors the two
-/// branches `FusedMemoryClient::post` distinguishes on `content-type`:
-/// [`Framing::Json`] drives the `else` bare-JSON-body branch,
-/// [`Framing::Sse`] drives the `ctype.contains("text/event-stream")`
+/// branches `mcp_wire::decode_body` distinguishes on `content-type`:
+/// [`Framing::Json`] drives the bare-JSON-body branch,
+/// [`Framing::Sse`] drives the `contains("text/event-stream")`
 /// branch.
 #[derive(Clone, Copy, PartialEq)]
 enum Framing {
@@ -3011,22 +3419,19 @@ enum Framing {
     Sse,
     /// A degenerate SSE frame carrying no `data:` line at all — just
     /// `event: message\n\n`, as a keep-alive/comment-only chunk might
-    /// look. Exercises `post()`'s "no SSE data line in response"
+    /// look. Exercises the decode's "no SSE data line in response"
     /// refusal — one of the SSE branch's two failure modes; see
     /// [`Framing::SseMalformedData`] for the other. The `body` argument
     /// passed to [`write_response_framed`] is ignored under this
     /// variant: there is by definition no data to carry.
     SseNoData,
     /// An SSE frame WITH a `data:` line, but whose payload is not valid
-    /// JSON — `event: message\ndata: {not json\n\n`. Exercises `post()`'s
-    /// "SSE data parse" refusal, the SSE branch's other failure mode
-    /// alongside [`Framing::SseNoData`]. Verified uncovered anywhere else
-    /// in the crate: `fused_memory_client.rs`'s own `mod tests` never
-    /// constructs a `FusedMemoryClient` or exercises `post()` at all. As
-    /// with `SseNoData`, the `body` argument passed to
-    /// [`write_response_framed`] is ignored under this variant: the
-    /// payload is fixed garbage regardless of what the caller asked to
-    /// send.
+    /// JSON — `event: message\ndata: {not json\n\n`. Exercises the
+    /// decode's "SSE data parse" refusal, the SSE branch's other failure
+    /// mode alongside [`Framing::SseNoData`]. As with `SseNoData`, the
+    /// `body` argument passed to [`write_response_framed`] is ignored
+    /// under this variant: the payload is fixed garbage regardless of
+    /// what the caller asked to send.
     SseMalformedData,
 }
 
@@ -3078,7 +3483,7 @@ fn write_response_with_session(
 /// Under [`Framing::Sse`] the body is wrapped as a realistic MCP
 /// streamable-HTTP frame — `event: message\ndata: <json>\n\n` — rather
 /// than a bare `data:` line. The `event:` line and trailing blank line
-/// matter: they prove the client's `post()` SSE branch's `body.lines()`
+/// matter: they prove `mcp_wire::decode_body`'s SSE `body.lines()`
 /// scan actually skips a non-`data:` line rather than getting lucky on a
 /// single-line body. `Content-Length` is computed over the WRAPPED bytes,
 /// matching what a real server would send. [`Framing::SseNoData`] and
@@ -3457,9 +3862,9 @@ mod http_loader {
     /// Proves what the JSON sibling does not: the full three-POST MCP
     /// handshake and the `get_task` `structuredContent` decode complete
     /// when the server answers `Content-Type: text/event-stream` instead
-    /// of `application/json` — i.e. `post()`'s
-    /// `ctype.contains("text/event-stream")` branch is exercised
-    /// end-to-end through the real binary for the first time.
+    /// of `application/json` — i.e. `mcp_wire::decode_body`'s
+    /// `contains("text/event-stream")` branch is exercised through
+    /// `FusedMemoryClient::post` end-to-end via the real binary.
     ///
     /// Also locks the session-id-on-every-POST contract on this same run
     /// (folded in here rather than kept as its own test — a second full
@@ -3812,8 +4217,9 @@ mod http_loader {
     /// Negative SSE lock: a data-less SSE frame (e.g. a keep-alive or
     /// comment-only chunk, no `data:` line at all) on the `initialize`
     /// leg must be refused rather than silently treated as an empty or
-    /// successful response. Exercises `post()`'s "no SSE data line in
-    /// response" refusal — one of the SSE branch's two failure modes; see
+    /// successful response. Exercises the "no SSE data line in response"
+    /// refusal `post()` gets from `mcp_wire::decode_body` — one of the SSE
+    /// branch's two failure modes; see
     /// [`pre_done_via_http_loader_sse_malformed_data_exits_125`] below for
     /// the other (a `data:` line whose payload isn't valid JSON).
     #[test]
@@ -3877,14 +4283,10 @@ mod http_loader {
 
     /// Negative SSE lock: an SSE `data:` line whose payload is not valid
     /// JSON must be refused rather than silently treated as an empty or
-    /// successful response. Exercises `post()`'s "SSE data parse" refusal
-    /// — the SSE branch's other failure mode, sibling to
+    /// successful response. Exercises the "SSE data parse" refusal
+    /// `post()` gets from `mcp_wire::decode_body` — the SSE branch's other
+    /// failure mode, sibling to
     /// [`pre_done_via_http_loader_sse_no_data_line_exits_125`] above.
-    /// Verified uncovered anywhere else in the crate before this test:
-    /// `fused_memory_client.rs`'s own `mod tests` only covers
-    /// `parse_iso8601_to_epoch`, `days_from_civil` and
-    /// `task_metadata_from_wire` — it never constructs a
-    /// `FusedMemoryClient` or exercises `post()` at all.
     #[test]
     fn pre_done_via_http_loader_sse_malformed_data_exits_125() {
         let tmp = tempfile::tempdir().expect("tempdir");

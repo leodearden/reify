@@ -4287,6 +4287,7 @@ dependencies = [
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reify-build-utils",
  "reify-compiler",
  "reify-config",
@@ -4452,6 +4453,7 @@ dependencies = [
  "reify-test-support",
  "rustc-hash",
  "serde",
+ "serde_json",
  "strum 0.26.3",
  "tempfile",
  "tokio",
@@ -4527,6 +4529,7 @@ dependencies = [
  "reify-geometry",
  "reify-ir",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-mesh-morph",
@@ -4686,10 +4689,12 @@ dependencies = [
 name = "reify-mesh-morph"
 version = "0.1.0"
 dependencies = [
+ "reify-build-utils",
  "reify-compiler",
  "reify-core",
  "reify-eval",
  "reify-ir",
+ "reify-kernel-gmsh",
  "reify-solver-elastic",
  "reify-test-support",
  "serde",
@@ -4739,6 +4744,10 @@ dependencies = [
  "reify-test-support",
  "tracing",
 ]
+
+[[package]]
+name = "reify-spec-conformance"
+version = "0.1.0"
 
 [[package]]
 name = "reify-stdlib"

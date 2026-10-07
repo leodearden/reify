@@ -4,12 +4,10 @@
 //! MCP tool (`crates/reify-mcp/src/tools/reference.rs`, via
 //! `language_chunks::get_chunk`).
 //!
-//! Unlike its sibling `geometry_chunk_smoke.rs` — which curates fixtures
-//! because `geometry.md` intermixes non-compilable schematic notation with
-//! real call forms — this module SCRAPES the fenced `.ri` source out of the
-//! served bytes and runs it through the real compiler. The Option Type
-//! section is a single complete example, so scraping is feasible here, and it
-//! is strictly stronger: a curated fixture can drift away from the doc it
+//! This module SCRAPES the fenced `.ri` source out of the served bytes and runs
+//! it through the real compiler. The Option Type section is a single complete
+//! example, so scraping is feasible here, and it is strictly stronger than
+//! curating: a curated fixture can drift away from the doc it
 //! claims to pin (which is exactly how the `some(c) => base + c.thickness`
 //! defect survived), whereas scraping makes the served bytes themselves the
 //! thing under test. This is the mechanism
@@ -52,75 +50,41 @@ use reify_test_support::{
     parse_and_compile_with_stdlib,
 };
 
-/// The served `enums` chunk, read from `reify-mcp`'s source tree at compile
-/// time. `include_str!` (not `fs::read_to_string`) so a moved/renamed chunk
-/// file is a build error rather than a runtime panic.
-const ENUMS_CHUNK: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/enums.md"
-));
+use crate::chunk_io::{ENUMS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{parse_fences, section_body};
+use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Heading that opens the section under test.
 const SECTION_HEADING: &str = "## Option Type";
 
-/// The lines of the `## Option Type` section body: everything after the
-/// heading up to the next `## ` heading (or EOF).
-///
-/// Panics if the heading is absent, so renaming the section fails loudly here
-/// instead of silently reducing every test in this module to a vacuous pass.
-fn option_section_lines() -> Vec<&'static str> {
-    let all: Vec<&str> = ENUMS_CHUNK.lines().collect();
-    let start = all
-        .iter()
-        .position(|l| l.trim_end() == SECTION_HEADING)
-        .unwrap_or_else(|| {
-            panic!(
-                "`{SECTION_HEADING}` section not found in \
-                 crates/reify-mcp/src/tools/chunks/enums.md — the section was renamed or \
-                 removed. This module pins that section's examples against the real \
-                 compiler; re-point it at the new heading rather than deleting it."
-            )
-        });
-    let rest = &all[start + 1..];
-    let end = rest
-        .iter()
-        .position(|l| l.starts_with("## "))
-        .unwrap_or(rest.len());
-    rest[..end].to_vec()
-}
-
 /// The BODY of every fenced code block inside the `## Option Type` section, in
-/// document order. A fence delimiter is a line whose trimmed form starts with
-/// three backticks and is excluded from the body; an opening delimiter may
-/// carry any info string, which is deliberately discarded rather than asserted
-/// on here — fence-tag discipline is #5477 leaf β's repo-wide `fence_gate.rs`
-/// gate, not this module's job. This module's subject is what the fences
-/// EVALUATE to, not how they are spelled.
+/// document order.
+///
+/// Fence and section semantics are `chunk_markdown`'s — [`section_body`] and
+/// [`parse_fences`] — so a delimiter is a column-0 run, exactly as the fence
+/// gate reads it, and a heading absent from the chunk panics naming it rather
+/// than reducing every test in this module to a vacuous pass. Every fence is
+/// taken whatever its info string: tag discipline is the fence gate's job, and
+/// this module's subject is what the fences EVALUATE to, not how they are
+/// spelled.
 ///
 /// Panics if the section contains no fence at all, so a section that loses its
 /// example does not silently pass.
 fn option_section_fences() -> Vec<String> {
-    let mut fences: Vec<String> = Vec::new();
-    let mut open: Option<Vec<&str>> = None;
-    for line in option_section_lines() {
-        if line.trim_start().strip_prefix("```").is_some() {
-            match open.take() {
-                // Closing delimiter: emit the accumulated body.
-                Some(body) => fences.push(body.join("\n")),
-                // Opening delimiter: start accumulating, info string discarded.
-                None => open = Some(Vec::new()),
-            }
-        } else if let Some(body) = open.as_mut() {
-            body.push(line);
-        }
-    }
-    assert!(
-        open.is_none(),
-        "unterminated code fence in the `{SECTION_HEADING}` section of enums.md"
+    let section = section_body(
+        &read_chunk(ENUMS_CHUNK_PATH),
+        SECTION_HEADING,
+        ENUMS_CHUNK_PATH,
+        SECTION_HEADING,
     );
+    let fences: Vec<String> = parse_fences(&section)
+        .unwrap_or_else(|e| panic!("{ENUMS_CHUNK_PATH} `{SECTION_HEADING}`: {e}"))
+        .into_iter()
+        .map(|fence| fence.body)
+        .collect();
     assert!(
         !fences.is_empty(),
-        "the `{SECTION_HEADING}` section of enums.md contains no fenced code block — \
+        "the `{SECTION_HEADING}` section of {ENUMS_CHUNK_PATH} contains no fenced code block — \
          this module exists to pin that example against the compiler, so an empty \
          section is a failure, not a pass"
     );
@@ -140,19 +104,19 @@ fn as_module(fence: &str) -> String {
 /// `match coating { some(c) => base + c.thickness \n none => base }`, which is
 /// a hard parse error — the pattern grammar has no positional production
 /// (`tree-sitter-reify/grammar.js` `match_pattern`), so `some(c)` cannot be
-/// written at all. `compile_source_with_stdlib` panics on parse errors, so the
-/// pre-fix failure surfaces as a parse-error panic naming the snippet.
+/// written at all. "Compiles clean" is `module_compile.rs`'s, so that pre-fix
+/// failure reads as a parse rejection naming the snippet.
 #[test]
 fn option_section_fences_compile_clean() {
     for (ordinal, fence) in option_section_fences().iter().enumerate() {
-        let compiled = compile_source_with_stdlib(&as_module(fence));
-        let errors = errors_only(&compiled);
-        assert!(
-            errors.is_empty(),
-            "`{SECTION_HEADING}` fence #{ordinal} must compile with zero Error diagnostics.\n\
-             --- fence source ---\n{fence}\n\
-             --- Error diagnostics ---\n{errors:#?}"
-        );
+        if let Some(messages) = compile_module(&as_module(fence)).rejection() {
+            panic!(
+                "`{SECTION_HEADING}` fence #{ordinal} must compile with zero Error diagnostics.\n\
+                 --- fence source ---\n{fence}\n\
+                 --- Error diagnostics ---\n{}",
+                ModuleCompile::rendered(&messages)
+            );
+        }
     }
 }
 
@@ -498,7 +462,7 @@ fn undef_subject_propagates_through_every_documented_combinator() {
             Value::Undef,
             "`{combinator}` must propagate an `undef` subject as `undef` (Kleene \
              three-valued, option_recovery.rs INV-2). It now recovers instead — the \
-             `## Option Type` section in crates/reify-mcp/src/tools/chunks/enums.md \
+             `## Option Type` section in {ENUMS_CHUNK_PATH} \
              claims propagation holds for EVERY combinator, so that sentence must be \
              rewritten in this same diff."
         );
@@ -556,7 +520,7 @@ fn undef_subject_propagates_through_every_documented_combinator() {
 /// `match` expression cannot be produced by a future typing error on
 /// `param c : Option<Length>` or a resolution error on the wrapper — precisely the confound
 /// the paragraph above says this test exists to guard against. It also stops the ratchet
-/// depending on generic-message wording, whose broadening is #5392's follow-up #6156.
+/// depending on generic-message wording.
 ///
 /// The final assertion uses the non-panicking `_allow_parse_errors` variant
 /// deliberately: the plain `compile_source_with_stdlib` panics on parse errors,
@@ -661,7 +625,7 @@ fn binderless_option_match_still_evaluates_to_undef() {
              compile clean — the chunk's warning calls this failure mode `silent`. The \
              compiler now diagnoses it: {compile_errors:#?}\n\
              That is an improvement, but the `## Option Type` warning in \
-             crates/reify-mcp/src/tools/chunks/enums.md must be rewritten in this same \
+             {ENUMS_CHUNK_PATH} must be rewritten in this same \
              diff to stop claiming the form is accepted without complaint."
         );
 
@@ -684,7 +648,7 @@ fn binderless_option_match_still_evaluates_to_undef() {
              yield undef *silently* — that word in the `## Option Type` warning is why \
              this form is worse than the loud parse error. The evaluator now diagnoses \
              it: {eval_errors:#?}\n\
-             Rewrite the warning in crates/reify-mcp/src/tools/chunks/enums.md in this \
+             Rewrite the warning in {ENUMS_CHUNK_PATH} in this \
              same diff."
         );
     }

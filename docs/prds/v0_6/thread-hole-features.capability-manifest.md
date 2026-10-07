@@ -167,7 +167,7 @@ The D3 workflow (Enumerator → Prover ‖ Adversary → Synthesize, 32 agents) 
   sweep/sweep_guided docs must state real arg-type constraints (adversary falsified
   "any 3 geometry args pass").
 - **Substrate premise verified during disposition**: examples-CI runner exists
-  (`crates/reify-compiler/tests/examples_smoke.rs`) — ζ's "examples run in CI" is real.
+  (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`) — ζ's "examples run in CI" is real.
 - No finding falsified a premise about EXISTING substrate; no numeric bound was at or
   below a method floor.
 

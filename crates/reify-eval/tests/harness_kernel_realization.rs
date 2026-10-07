@@ -82,3 +82,5 @@ mod realization_produced_repr_pinning;
 mod realization_read_api;
 #[path = "harness_kernel_realization/selective_eviction_changed_realizations.rs"]
 mod selective_eviction_changed_realizations;
+#[path = "harness_kernel_realization/shell_voxel_resolution_window.rs"]
+mod shell_voxel_resolution_window;

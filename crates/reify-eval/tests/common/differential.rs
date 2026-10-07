@@ -1288,6 +1288,54 @@ pub const SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC: &str = r#"pub structure Select
     let b = box(p, p, p)
 }"#;
 
+/// Geometry-LIST let under selective demand (task #5385, review esc-5385-4).
+///
+/// - body_a = `let a = box(10mm, 10mm, 10mm)`: the always-visible body, so the
+///   demand set is never empty while `merged` is hidden.
+/// - `let holes = generate(3, |i| cylinder(r, h))` unrolls at compile time into
+///   three sibling realizations `holes#0..2`, regrouped at eval into ONE
+///   `List<Geometry>` value cell `holes`.
+/// - `let merged = union_all(holes)`: the consumer that pulls
+///   `NodeId::Value(SelectiveGeomList.holes)` into the demand cone, so hiding it
+///   makes `holes` leave the cone (⇒ `mark_demand_pruned_pending` marks it
+///   `Pending`) and un-hiding it makes `holes` demanded AND `Pending` — exactly
+///   Part B's candidate shape in `refresh_and_gate_demanded_realizations`.
+///
+/// ITS CONSUMERS, all in `harness_cache/selective_demand_redemand_staleness.rs`:
+/// - `edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed` is a
+///   FULL-SCOPE build → `edit_param` → rebuild test (review esc-5385-7): it never
+///   calls `set_demand_selective`, so it pins the rebuild path, not the demand
+///   path.
+/// - `set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list`
+///   drives a FIRST tessellate under a selective cone.
+/// - The three reuse-pass tests (task #6460) drive the demand-cone transitions
+///   described above: a repeat no-op tessellate, a hide → un-hide of `merged`,
+///   and the no-op pass after an edit. Each pins that a pass which re-executes
+///   nothing serves `holes` backed exactly as the scalar let `a` is, with the
+///   identity of the pass that built it — never `List([Undef; 3])`.
+pub const SELECTIVE_DEMAND_GEOM_LIST_SRC: &str = r#"pub structure SelectiveGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    let a = box(10mm, 10mm, 10mm)
+    let holes = generate(3, |i| cylinder(r, h))
+    let merged = union_all(holes)
+}"#;
+
+/// Geometry-LIST let whose elements read DIFFERENT params (task #6460).
+///
+/// `parts#0 = cylinder(r, h)` and `parts#1 = box(w, w, w)`, so editing `w`
+/// changes only `parts#1`'s inputs. Under selective demand the next
+/// `tessellate_snapshot` then re-executes `parts#1` and hash-exempts `parts#0`:
+/// a PARTLY re-executed list, which [`SELECTIVE_DEMAND_GEOM_LIST_SRC`]'s
+/// `generate(3, |i| cylinder(r, h))` cannot produce because every element reads
+/// the same params.
+pub const SELECTIVE_DEMAND_HETEROGENEOUS_GEOM_LIST_SRC: &str = r#"pub structure SelectiveHeteroGeomList {
+    param r : Length = 5mm
+    param h : Length = 20mm
+    param w : Length = 10mm
+    let parts = [cylinder(r, h), box(w, w, w)]
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere

@@ -39,6 +39,7 @@ use std::borrow::Cow;
 use crate::{
     CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE,
     auto_size::AutoSizeConfig,
+    mesh_size_scope::MeshSizeScope,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
     repair::{RepairConfig, repair_surface_mesh_with_correspondence},
@@ -603,12 +604,18 @@ fn run_meshing_with_entity_queries(
         )));
     }
 
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Placed above the first `?` so every early return is covered, not
+    // only the success path. See `mesh_size_scope` for both directions.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
-    // Mesh-size options
+    // Mesh-size options: this function's own deviation from the size defaults
+    // the scope just established, and dying with it.
     if let Some(s) = options.mesh_size
         && s > 0.0
     {
@@ -620,17 +627,10 @@ fn run_meshing_with_entity_queries(
     ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
     // Thread count
-    let num_threads: f64 = if options.deterministic {
-        1.0
-    } else {
-        match options.threads {
-            Some(t) => t as f64,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        }
-    };
-    ffi::option_set_number("General.NumThreads", num_threads)?;
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
 
     // Element order
     let order_value: f64 = match element_order {
@@ -691,7 +691,20 @@ fn run_meshing_with_entity_queries(
     let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
     ffi::geo_synchronize()?;
 
-    ffi::mesh_generate(3)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
+    //
+    // This site is NOT test-covered, unlike `mesh_to_volume`'s and
+    // `refine_volume_with_size_field`'s. Reaching a failed `mesh_generate(3)`
+    // from here needs a surface this entry point's own watertight preflight
+    // accepts, and `tests/mesher_poison_recovery.rs`'s open triangle is not
+    // one: it is rejected upstream of gmsh as `MeshContractViolation {
+    // invariant: Closed, open_edges: 3 }`. A probe of the two cheap
+    // closed-but-degenerate candidates — a doubled triangle enclosing no
+    // volume, then two interpenetrating cubes — was killed at 25 minutes with
+    // neither call having returned. A fixture that can hang the suite is worse
+    // than an uncovered site, so this stays verified by code review.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // -----------------------------------------------------------------------
     // Entity-membership queries (must happen BEFORE ffi::clear)
@@ -756,22 +769,16 @@ fn run_meshing_with_entity_queries(
         )));
     }
 
-    let elem_type = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 11,
+    let elem_node_tags = match init::read_tet_connectivity(
+        "mesh_surface_to_volume_with_attribution",
+        element_order,
+    ) {
+        Ok(tags) => tags,
+        Err(e) => {
+            let _ = ffi::clear();
+            return Err(e);
+        }
     };
-    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    let nodes_per_elem: usize = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh element stride mismatch: elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len()
-        )));
-    }
 
     // Sort by tag → assign local indices
     let mut paired: Vec<(u64, [f64; 3])> = all_node_tags
@@ -917,11 +924,6 @@ mod tests {
     /// tie) and (b) emits exactly one WARN at
     /// `reify_kernel_gmsh::mesh_boundary` documenting the exclusion.
     fn assert_non_finite_candidate_excluded_and_warns(coord: f64) {
-        // Prime the callsite cache so per-test with_default subscribers see
-        // events even if a prior test thread hit the callsite with no
-        // subscriber active.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [coord, 0.0, 0.0]),
@@ -972,8 +974,6 @@ mod tests {
     /// the nearer handle.
     #[test]
     fn all_finite_candidates_emit_no_warn() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1009,8 +1009,6 @@ mod tests {
     /// a bad query anchor from a bad candidate anchor.
     #[test]
     fn non_finite_query_anchor_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [f64::NAN, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1059,8 +1057,6 @@ mod tests {
     /// WARN.
     #[test]
     fn all_candidates_non_finite_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![(GeometryHandleId(1), [f64::NAN, 0.0, 0.0])];
         let tol_sq = 1.0;
@@ -1095,8 +1091,6 @@ mod tests {
     /// widespread corruption.
     #[test]
     fn n_excluded_counts_only_non_finite_candidates() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [f64::NAN, 0.0, 0.0]),

@@ -5,6 +5,9 @@
 # Both are lightweight tripwires over the same staged warn → enforce →
 # break-glass rollout, with INDEPENDENT switches; neither is a verify-runner.
 #
+# Whether git actually runs this hook in a given worktree (the core.hooksPath
+# clobber): scripts/hooks-armed-guard.sh.
+#
 # This is the ONLY git hook that fires on a *local* `git reset` / `git update-ref`
 # / fast-forward of a branch ref — the exact operations that pre-commit and
 # pre-merge-commit miss (those fire only when a commit / merge-commit is created).

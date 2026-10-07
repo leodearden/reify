@@ -49,8 +49,10 @@ pub use ffi::ffi::TopologyCacheBuildCounts;
 
 /// Zero the calling thread's boolean-op-pass count (task 5213).
 ///
-/// Incremented once per completed OCCT boolean `Build()` (the binary
-/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// Incremented once per completed OCCT boolean `Build()`, at the single
+/// `Build()` site every boolean goes through: the binary fuse/cut/common ops,
+/// their `*_with_history` siblings (the production realization path) and the
+/// single-pass `fuse_shape_list`.  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
 /// single-pass change.
@@ -95,10 +97,30 @@ pub fn reset_boolean_pass_count() {}
 pub fn boolean_pass_count() -> u64 {
     0
 }
+
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+mod boolean_parallelism;
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use boolean_parallelism::{
+    BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
+};
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
+
+// Same re-export rationale for the #6344 STEP plane-angle guard seam: the
+// `export_step_with_injected_fault_for_test` wrapper below returns the probe
+// result and takes the fault by value, so integration tests must be able to
+// name both.
+#[cfg(has_occt)]
+pub use ffi::ffi::{StepGuardFault, StepGuardProbeResult};
+
+/// Re-exported so callers can name [`OcctKernel::volume_measurement`]'s return
+/// type without reaching into the private bridge module.
+#[cfg(has_occt)]
+pub use ffi::ffi::VolumeMeasurement;
 
 /// Fixture for integration tests: runs only the post-sort/dedup helper on
 /// a synthetic flat-records input, without requiring real OCCT geometry.
@@ -643,19 +665,11 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
-/// type, for ops whose result kind depends on their input rather than being
-/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
-/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
-/// [`BRepKind::Solid`] (matches `store`'s implicit default).
-///
-/// Callers:
-/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
-///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
-///   must not claim a multi-body result is a single `Solid`.
-/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
-///   `loft_guided_profiles` solidify only when the section(s) were faces and
-///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
+/// Map an `OcctShape`'s top-level TopAbs type to its [`BRepKind`]: `SOLID` →
+/// [`BRepKind::Solid`]; the multi-body aggregates `COMPSOLID` and `COMPOUND` →
+/// [`BRepKind::Compound`]; `SHELL`/`WIRE`/`FACE`/`EDGE`/`VERTEX` → the
+/// same-named kind; anything unrecognized → [`BRepKind::Solid`] (`store`'s
+/// default).
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
@@ -808,6 +822,17 @@ impl OcctKernel {
             id: GeometryHandleId(id),
             repr: Some(repr),
         }
+    }
+
+    /// Store `shape` stamped with the [`BRepKind`] of its real top-level type
+    /// (see [`brep_kind_of_shape`]), for ops whose result kind depends on
+    /// their inputs.
+    fn store_classified(
+        &mut self,
+        shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let repr = brep_kind_of_shape(&shape)?;
+        Ok(self.store_with_repr(shape, repr))
     }
 
     /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
@@ -1169,19 +1194,14 @@ impl OcctKernel {
             }
             ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
         };
-        // Stamp the repr from the ACTUAL result type rather than assuming
-        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
-        // COMPSOLID for a disjoint one, and — in the single-element identity
-        // path — the sole input shape unchanged (any kind). A hardcoded Solid
-        // would mislead future `repr_of()` consumers that trust it to tell a
-        // single solid from a multi-body compound/compsolid.
-        let repr = if handles.len() == 1 {
-            // Identity passthrough: preserve the sole input's classification.
-            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
-        } else {
-            brep_kind_of_shape(&fused)?
-        };
-        Ok(self.store_with_repr(fused, repr))
+        // The single-element path is an identity passthrough of the sole
+        // input shape (any kind), so it keeps that input's classification;
+        // a real fuse is classified by `store_classified`.
+        if handles.len() == 1 {
+            let repr = self.repr_of(handles[0]).unwrap_or(BRepKind::Solid);
+            return Ok(self.store_with_repr(fused, repr));
+        }
+        self.store_classified(fused)
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).
@@ -1701,10 +1721,11 @@ impl OcctKernel {
     ///
     /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
     /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
-    /// arm, and the handle's `BRepKind` is classified from that real shape —
-    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
-    /// not `Solid`. The history records describe the parent ↔ result correspondence
-    /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
+    /// arm, and the handle's `BRepKind` is classified from that real shape by
+    /// `store_classified` — so a disjoint fuse registers as the multi-body
+    /// `BRepKind::Compound`, not `Solid`. The history records describe the
+    /// parent ↔ result correspondence emitted by
+    /// `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
     /// topology attributes onto the result handles.
@@ -1721,7 +1742,7 @@ impl OcctKernel {
         right: GeometryHandleId,
     ) -> Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError> {
         // Run the FFI call inside a scope that drops the immutable borrow
-        // before we mutate `self` via `store_with_repr`.
+        // before we mutate `self` via `store_classified`.
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
@@ -1729,19 +1750,17 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Cut` on `left` and `right` (left − right), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_cut` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1760,19 +1779,17 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
     /// Run `BRepAlgoAPI_Common` on `left` and `right` (A ∩ B), capturing
     /// the per-parent face/edge Modified/Generated/Deleted history records
-    /// alongside the result solid.
+    /// alongside the result shape.
+    ///
+    /// The result is normalized like the plain `boolean_common` arm and its
+    /// `BRepKind` is classified from the real shape (see `store_classified`),
+    /// so an empty or multi-body result is `BRepKind::Compound`, not `Solid`.
     ///
     /// Returns `Err(GeometryError::InvalidReference(_))` if either handle
     /// is unknown to this kernel, or `Err(GeometryError::OperationFailed(_))`
@@ -1791,13 +1808,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        // Stamp the repr from the ACTUAL result shape, matching the plain
-        // boolean arms: `extract_boolean_history` normalizes its result too
-        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
-        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
-        // consumer that trusts it to tell one solid from a multi-body result.
-        let repr = brep_kind_of_shape(&result_shape)?;
-        let handle = self.store_with_repr(result_shape, repr);
+        let handle = self.store_classified(result_shape)?;
         Ok((handle, records))
     }
 
@@ -2786,15 +2797,10 @@ impl OcctKernel {
                 ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            // The three binary booleans return EARLY rather than falling
-            // through to the shared `Ok(self.store(shape))` tail below, which
-            // hardcodes `BRepKind::Solid`. Since task 7054 the C++ side
-            // normalizes every boolean result (`normalize_boolean_result`), so
-            // a fuse of disjoint operands genuinely yields a COMPSOLID and a
-            // hardcoded Solid would be a lie to any `repr_of()` consumer that
-            // trusts it to tell a single solid from a multi-body aggregate.
-            // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
-            // already uses — deliberately not a second classifier.
+            // The three binary booleans return EARLY through `store_classified`
+            // rather than falling through to the shared `Ok(self.store(shape))`
+            // tail below, which hardcodes `BRepKind::Solid`: since task 7054 a
+            // fuse of disjoint operands genuinely yields a multi-body result.
             //
             // One consumer does more than READ the repr: `run_local_feature_with_history`
             // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
@@ -2806,24 +2812,21 @@ impl OcctKernel {
                 let r = self.get_shape(*right)?;
                 let fused = ffi::ffi::boolean_fuse(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&fused)?;
-                return Ok(self.store_with_repr(fused, repr));
+                return self.store_classified(fused);
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let cut = ffi::ffi::boolean_cut(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&cut)?;
-                return Ok(self.store_with_repr(cut, repr));
+                return self.store_classified(cut);
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
                 let common = ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                let repr = brep_kind_of_shape(&common)?;
-                return Ok(self.store_with_repr(common, repr));
+                return self.store_classified(common);
             }
             GeometryOp::Fillet {
                 target,
@@ -3044,6 +3047,9 @@ impl OcctKernel {
                 plane,
             } => {
                 // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
+                // The magnitude taken is SI RADIANS and crosses to the FFI
+                // unconverted; this line is where the dimension tag is
+                // discarded. Contract: `GeometryOp::Draft.angle` (INV-AD-4).
                 let angle_rad = extract_f64(angle)?;
                 if faces.is_empty() {
                     // 3-arg / empty-selection back-compat: draft ALL draftable
@@ -3442,8 +3448,7 @@ impl OcctKernel {
                 // Solid on the latter would make `repr_of()` report a closed
                 // solid for a shape whose `IsClosed` is false, and mislead the
                 // sub-shape classification keyed off the repr.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                return self.store_classified(shape);
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3473,8 +3478,7 @@ impl OcctKernel {
                 // `loft_guided()` can supply — is capped into a SOLID, while a
                 // mixed or all-wire set stays an un-capped SHELL. Stamp the
                 // repr the shape actually has rather than the default Solid.
-                let repr = brep_kind_of_shape(&shape)?;
-                return Ok(self.store_with_repr(shape, repr));
+                return self.store_classified(shape);
             }
             GeometryOp::LineSegment {
                 x1,
@@ -3890,6 +3894,35 @@ impl OcctKernel {
             }
         };
         Ok(self.store(shape))
+    }
+
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `GeometryQuery::Volume` answers with the number alone, which leaves a
+    /// caller unable to tell an exact integral from the tessellation fallback.
+    /// This reports both, from the same single arm-selection site, so the two
+    /// agree bit-for-bit.
+    ///
+    /// `tessellation_fallback == true` reads NARROWLY today: on OCCT 7.8 every
+    /// shape measured to reach that arm is a face-less compound, whose exact
+    /// integral and tessellation arm both sum nothing, so the flag means "this
+    /// shape has no measurable volume" rather than "an approximation was
+    /// substituted for an exact number".
+    ///
+    /// It is correspondingly the caller's signal that the rest of the
+    /// mass-property family — `Centroid`, `CenterOfMass`, `MomentOfInertia`,
+    /// `InertiaTensor` — is returning its degenerate origin/zero default for
+    /// this shape rather than a measurement: those queries have no fallback arm
+    /// of their own.
+    pub fn volume_measurement(
+        &self,
+        id: GeometryHandleId,
+    ) -> Result<VolumeMeasurement, QueryError> {
+        let shape = self
+            .get_shape(id)
+            .map_err(|_| QueryError::InvalidHandle(id))?;
+        ffi::ffi::query_volume_measurement(shape)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -4817,6 +4850,77 @@ impl OcctKernel {
 /// real isolation comes from the cfg gate above.
 #[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
+    /// Run the FULL production STEP export — same mutex, same
+    /// `wrap_occt_call("export_step")` label, same INV-AD-4 plane-angle
+    /// refusal guard — with exactly one fault injected into the transferred
+    /// STEP model, returning the guard's audit counts alongside the file text.
+    ///
+    /// This is the ONLY way to reach the guard's failure arms; why no real
+    /// input can, and what each fault corrupts, are both on
+    /// [`StepGuardFault`].
+    ///
+    /// # Errors
+    ///
+    /// - `ExportError::InvalidHandle` — if the handle is unknown.
+    /// - `ExportError::FormatError` — the guard REFUSED the export (the
+    ///   interesting case), or the fault could not be injected into this
+    ///   fixture. Both surface with the production `"export_step: "`
+    ///   attribution, so a test asserting refusal text is asserting exactly
+    ///   what a user would see.
+    #[doc(hidden)]
+    pub fn export_step_with_injected_fault_for_test(
+        &self,
+        handle: GeometryHandleId,
+        schema: &str,
+        fault: StepGuardFault,
+    ) -> Result<StepGuardProbeResult, ExportError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        ffi::ffi::export_step_with_injected_fault_for_test(shape, schema, fault)
+            .map_err(|e| ExportError::FormatError(e.to_string()))
+    }
+
+    /// The same injected export, REPORTING the guard's finding in
+    /// [`StepGuardProbeResult::refusal`] instead of returning `Err`.
+    ///
+    /// It differs from `export_step_with_injected_fault_for_test` in its
+    /// `StepGuardDisposition` and in nothing else; what that word covers is on
+    /// the enum itself, in `cpp/occt_wrapper.cpp`.
+    ///
+    /// WHY BOTH EXIST. The refusing hook is the only place the production
+    /// behaviour is observable — a guard violation must surface as
+    /// `ExportError::FormatError` with Reify's own attribution. But on that
+    /// path the audit counts are reachable only as digits inside an English
+    /// sentence, so every negative test had to scan the message for them. This
+    /// one hands the same numbers back as `u32` fields; a test uses both and
+    /// asserts the two texts agree.
+    ///
+    /// `refusal` is empty iff the export was accepted. When it is non-empty no
+    /// file was written and `content` is empty — reporting a refusal does not
+    /// weaken it into a warning.
+    ///
+    /// # Errors
+    ///
+    /// - `ExportError::InvalidHandle` — if the handle is unknown.
+    /// - `ExportError::FormatError` — the fault could not be injected into
+    ///   this fixture. That is a fixture defect rather than a finding about
+    ///   the model, so it still surfaces as an error here: a fixture with
+    ///   nothing to corrupt must not read as a guard hit.
+    #[doc(hidden)]
+    pub fn step_guard_probe_for_test(
+        &self,
+        handle: GeometryHandleId,
+        schema: &str,
+        fault: StepGuardFault,
+    ) -> Result<StepGuardProbeResult, ExportError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        ffi::ffi::step_guard_probe_for_test(shape, schema, fault)
+            .map_err(|e| ExportError::FormatError(e.to_string()))
+    }
+
     /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
     ///
     /// Test-side counterpart to `kernel.query(GeometryQuery::FaceNormal(id))`
@@ -5150,6 +5254,21 @@ mod tests {
             })
             .expect("Box creation must succeed")
             .id
+    }
+
+    /// Store the EMPTY `TopoDS_Compound` fixture and return its handle ID.
+    ///
+    /// The simplest member of the face-less-compound class that reaches
+    /// `compute_volume_arm`'s tessellation fallback; the class boundary and the
+    /// measured values live in the canonical note on the fixture's definition
+    /// in occt_wrapper.cpp. Reached through `store_raw` rather than the
+    /// `test-fixtures`-gated `store_*_for_test` helpers, which only
+    /// `tests/harness_occt/*.rs` can see.
+    fn store_empty_compound(kernel: &mut OcctKernel) -> GeometryHandleId {
+        kernel.store_raw(
+            ffi::ffi::make_empty_compound_for_test()
+                .expect("make_empty_compound_for_test should succeed"),
+        )
     }
 
     /// Assert that the volume of the shape at `handle_id` is within `tolerance`
@@ -6914,6 +7033,10 @@ mod tests {
             "Volume query on null-topology shape must return Err, not crash/Ok"
         );
         assert!(
+            kernel.volume_measurement(h).is_err(),
+            "volume_measurement on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
             kernel.query(&GeometryQuery::Centroid(h)).is_err(),
             "Centroid query on null-topology shape must return Err"
         );
@@ -6937,8 +7060,9 @@ mod tests {
     /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
     /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
     /// any future or direct-FFI path that skips `get_shape` still fails safely.
-    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
-    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// Covers the mass-property queries (volume/volume_measurement/centroid/
+    /// bbox/inertia) plus the surface/linear-property queries
+    /// (face_centroid/area/edge_length);
     /// `query_face_centroid` is the one reached from the production `Centroid`
     /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
     /// gap the get_shape chokepoint already covers.
@@ -6961,6 +7085,12 @@ mod tests {
         assert!(
             ffi::ffi::query_volume(&null_shape).is_err(),
             "query_volume on null-topology shape must return Err, not crash"
+        );
+        // Same crash vector, second entry point: both delegate to
+        // compute_volume_arm, which is where the IsNull guard now lives.
+        assert!(
+            ffi::ffi::query_volume_measurement(&null_shape).is_err(),
+            "query_volume_measurement on null-topology shape must return Err, not crash"
         );
         assert!(
             ffi::ffi::query_centroid(&null_shape).is_err(),
@@ -8342,21 +8472,6 @@ mod tests {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0);
                 eprintln!("inner Thicken(-0.5mm) volume = {:.3e} m³ (expected ~7.29e-7 = (9mm)³)", inner_v);
-
-                // Try Difference(outer, inner)
-                let diff_result = kernel.execute(&GeometryOp::Difference {
-                    left: outer_h.id,
-                    right: inner_h.id,
-                });
-                eprintln!("Difference result: {:?}", diff_result.as_ref().map(|h| h.id));
-                if let Ok(diff_h) = diff_result {
-                    let diff_vol = kernel.query(&GeometryQuery::Volume(diff_h.id));
-                    eprintln!("Difference volume: {:?}", diff_vol);
-                    let diff_v = diff_vol.ok().and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    eprintln!("zone_profile volume = {:.3e} m³ (expected ~6e-7 for (11mm)³-(9mm)³)", diff_v);
-                } else {
-                    eprintln!("Difference failed: {:?}", diff_result.err());
-                }
             }
             Err(e) => {
                 eprintln!("negative Thicken failed: {}", e);
@@ -8533,69 +8648,6 @@ mod tests {
     }
 
     // --- OffsetSolid high-level execute tests ---
-
-    #[test]
-    fn offset_solid_outward_increases_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Outward offset 2.0 — same primitive as thicken, same 10³ box → vol > 1000
-        let grown_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(grown_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => assert!(
-                v > 1000.0,
-                "outward-offset volume should exceed original 1000, got {v}"
-            ),
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn offset_solid_inward_valid_shrinks_volume() {
-        let mut kernel = OcctKernel::new();
-        // 10×10×10 box = volume 1000; inradius = 5
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Inward offset -2.0 (< inradius 5) → valid smaller solid, 0 < vol < 1000
-        let shrunk_h = kernel
-            .execute(&GeometryOp::OffsetSolid {
-                target: box_h.id,
-                distance: Value::Real(-2.0),
-            })
-            .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(shrunk_h.id))
-            .unwrap();
-        match vol {
-            Value::Real(v) => {
-                assert!(v > 0.0, "shrunk volume must be positive, got {v}");
-                assert!(
-                    v < 1000.0,
-                    "shrunk volume must be less than original 1000, got {v}"
-                );
-            }
-            other => panic!("expected Value::Real, got {:?}", other),
-        }
-    }
 
     #[test]
     fn offset_solid_degenerate_collapse_returns_error() {
@@ -9281,7 +9333,7 @@ mod tests {
         // where BOTH forms produced geometry, and requiring at least one.
         let mut compared = 0usize;
         for face in [faces[0], *faces.last().unwrap()] {
-            let bare = kernel.execute(&GeometryOp::Draft {
+            let draft_bare = GeometryOp::Draft {
                 target: target.id,
                 faces: vec![face],
                 // Stays bare deliberately — task 5777. This is the CONTROL arm of
@@ -9290,7 +9342,9 @@ mod tests {
                 // `draft`, but not this site.
                 angle: Value::Real(angle_rad),
                 plane: plane.id,
-            });
+            };
+            assert_ungated_fields_are_bare(&draft_bare);
+            let bare = kernel.execute(&draft_bare);
             let dimensioned = kernel.execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![face],
@@ -12417,6 +12471,257 @@ mod tests {
         );
     }
 
+    // --- Volume-measurement provenance (task 6568) ---
+
+    /// Real solids report the exact integral, never the tessellation fallback.
+    ///
+    /// `query_volume`'s original in-code comment blamed "parametric surfaces
+    /// (e.g. revolution surfaces)" for integrating to 0 — the fallback's stated
+    /// reason to exist. On OCCT 7.8 that was stale, so this task deleted it and
+    /// this test is what keeps it deleted: the revolve case below is precisely
+    /// that shape class, it is the load-bearing one here, and it must report
+    /// `tessellation_fallback == false`.
+    ///
+    /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
+    /// `torus_execute_volume` uses for an analytic primitive, whose in-file
+    /// comment records a measured rel_err of ~1.8e-16; the box's 20·10·5
+    /// product is additionally exact in binary f64. 2e-2 is copied verbatim
+    /// from the gate-passing `revolve_circle_face_full_volume`, which builds
+    /// this identical revolved torus.
+    ///
+    /// The `m.volume == query(Volume)` assertion is EXACT f64 equality on
+    /// purpose: both entry points must come from the one arm-selection site,
+    /// and OCCT's integration is deterministic.
+    #[test]
+    fn volume_measurement_reports_exact_for_real_solids() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+
+        let box_id = make_box_20_10_5(&mut kernel);
+        let cylinder_id = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(10.0),
+                height: Value::Real(20.0),
+            })
+            .expect("Cylinder creation must succeed")
+            .id;
+        let profile_id = make_torus_profile(&mut kernel, 5.0, 20.0);
+        let revolved_id = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: profile_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve full should succeed")
+            .id;
+
+        for (label, id, expected, tolerance) in [
+            ("box 20×10×5", box_id, 1000.0f64, 1e-9f64),
+            (
+                "cylinder r10 h20",
+                cylinder_id,
+                std::f64::consts::PI * 100.0 * 20.0,
+                1e-9f64,
+            ),
+            (
+                "revolved circle face (revolution surface)",
+                revolved_id,
+                2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0,
+                2e-2f64,
+            ),
+        ] {
+            let m = kernel
+                .volume_measurement(id)
+                .unwrap_or_else(|e| panic!("{label}: volume_measurement must succeed: {e:?}"));
+
+            assert!(
+                !m.tessellation_fallback,
+                "{label}: OCCT's exact volume integral returns non-zero mass here, \
+                 so the tessellation fallback must not fire (got {m:?})"
+            );
+            let rel_err = (m.volume - expected).abs() / expected;
+            assert!(
+                rel_err < tolerance,
+                "{label}: volume expected ≈{expected}, got {} (relative error {rel_err:.3e})",
+                m.volume
+            );
+
+            let via_query = kernel
+                .query(&GeometryQuery::Volume(id))
+                .expect("Volume query must succeed")
+                .as_f64()
+                .expect("Volume must be numeric");
+            assert_eq!(
+                m.volume, via_query,
+                "{label}: volume_measurement().volume must equal GeometryQuery::Volume \
+                 exactly — both must come from the one arm-selection site"
+            );
+        }
+    }
+
+    /// The simplest shape that takes the fallback, and the parity contract for
+    /// the rest of the mass-property family.
+    ///
+    /// It is not the only one: any face-less compound reaches the same arm (see
+    /// the canonical note on `make_empty_compound_for_test` in
+    /// occt_wrapper.cpp). The empty compound is chosen because it is the
+    /// cheapest member to build, and every member answers identically — both
+    /// arms sum zero faces.
+    ///
+    /// CONTRACT: `tessellation_fallback == true` is the caller's signal that
+    /// every other mass-property answer for this shape is a default, not a
+    /// measurement.
+    ///
+    /// `query_centroid`, `query_moment_of_inertia` and `query_inertia_tensor`
+    /// have no fallback arm, so for a zero-mass shape they return the
+    /// degenerate origin / 0 / all-zero tensor rather than failing. This task
+    /// ACCEPTS that asymmetry and makes it discriminable instead of removing
+    /// it, so those degenerate values are pinned here: a future change must not
+    /// silently turn them into errors, nor into plausible-looking non-zero
+    /// noise.
+    ///
+    /// Every bound is exact f64 equality: an empty compound has no faces, so
+    /// the exact integral and `mesh_based_volume` both sum nothing, and OCCT's
+    /// centre-of-mass and inertia matrix for zero mass are exact zeros.
+    #[test]
+    fn volume_measurement_reports_fallback_and_family_degrades_for_empty_compound() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = store_empty_compound(&mut kernel);
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for an empty compound");
+        assert!(
+            m.tessellation_fallback,
+            "an empty compound integrates to bitwise 0.0 with ShapeType COMPOUND (0) \
+             <= TopAbs_SOLID (2), so the tessellation fallback must fire (got {m:?})"
+        );
+        assert_eq!(
+            m.volume, 0.0,
+            "an empty compound has no faces, so the tessellation arm sums nothing"
+        );
+
+        let via_query = kernel
+            .query(&GeometryQuery::Volume(id))
+            .expect("Volume query must succeed")
+            .as_f64()
+            .expect("Volume must be numeric");
+        assert_eq!(
+            m.volume, via_query,
+            "volume_measurement().volume must equal GeometryQuery::Volume exactly — \
+             both must come from the one arm-selection site"
+        );
+
+        // The rest of the family still answers, degenerately rather than erroring.
+        for (label, query) in [
+            ("Centroid", GeometryQuery::Centroid(id)),
+            (
+                "CenterOfMass",
+                GeometryQuery::CenterOfMass {
+                    handle: id,
+                    density: 1000.0,
+                },
+            ),
+        ] {
+            let value = kernel
+                .query(&query)
+                .unwrap_or_else(|e| panic!("{label} query must succeed: {e:?}"));
+            let point = match &value {
+                Value::String(s) => parse_centroid_json(s),
+                other => panic!("{label} must return a centroid JSON string, got {other:?}"),
+            };
+            assert_eq!(
+                point,
+                (0.0, 0.0, 0.0),
+                "{label}: zero mass yields the origin default, not a measurement"
+            );
+        }
+
+        let tensor = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 1000.0,
+            })
+            .expect("InertiaTensor query must succeed");
+        let entries = extract_3x3_tensor_entries(&tensor);
+        for (i, row) in entries.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                assert_eq!(
+                    *entry, 0.0,
+                    "InertiaTensor[{i}][{j}]: zero mass yields the all-zero default, \
+                     not a measurement"
+                );
+            }
+        }
+
+        let moi = kernel
+            .query(&GeometryQuery::MomentOfInertia {
+                handle: id,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("MomentOfInertia query must succeed")
+            .as_f64()
+            .expect("MomentOfInertia must be numeric");
+        assert_eq!(
+            moi, 0.0,
+            "MomentOfInertia: zero mass yields the 0 default, not a measurement"
+        );
+    }
+
+    /// The fallback guard is bitwise `vol == 0.0`, not a near-zero tolerance.
+    ///
+    /// `make_nonmanifold_compound_for_test` is a COMPOUND (ShapeType 0, so it
+    /// passes the `<= TopAbs_SOLID` half of the guard) whose three
+    /// coplanar-with-origin faces integrate to pure FP noise. It is therefore
+    /// exactly the input a tolerance-based guard (`std::abs(vol) < eps`) would
+    /// mis-classify as "no volume" and hand to the tessellation arm, and this
+    /// test is what stops that substitution passing.
+    ///
+    /// BOUND BASIS: b96716462a records this fixture measuring
+    /// -6.6174449004242214e-24, deterministic over three runs — twelve orders
+    /// of magnitude inside the 1e-12 bound asserted here. The magnitude is
+    /// deliberately NOT pinned: only the non-zero-and-tiny window is, so the
+    /// test tracks the guard's precision rather than one OCCT build's FP noise.
+    #[test]
+    fn volume_measurement_fallback_guard_is_bitwise_not_tolerance() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = kernel.store_raw(
+            ffi::ffi::make_nonmanifold_compound_for_test()
+                .expect("make_nonmanifold_compound_for_test should succeed"),
+        );
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for a non-manifold compound");
+        assert!(
+            !m.tessellation_fallback,
+            "the exact integral produced a non-zero number, so the fallback must not \
+             fire — a tolerance-based guard would wrongly fire here (got {m:?})"
+        );
+        assert_ne!(
+            m.volume, 0.0,
+            "this fixture no longer discriminates bitwise-vs-tolerance on this OCCT \
+             build: its origin-coplanar faces summed to exact zero instead of FP \
+             noise, which is a property of OCCT's summation order, not of reify. \
+             REPAIR by finding a shape whose exact integral is tiny-but-nonzero; do \
+             NOT relax or delete this assertion — that silently unpins the guard."
+        );
+        assert!(
+            m.volume.abs() < 1e-12,
+            "that noise must stay negligible; got {}",
+            m.volume
+        );
+    }
+
     /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
     /// `Precision::Confusion()` value at runtime.
     ///
@@ -14185,6 +14490,120 @@ mod tests {
         });
     }
 
+    /// Positive precondition backing `occt_non_length_fields_stay_ungated`:
+    /// asserts that each of `op`'s deliberately-ungated numeric fields
+    /// (`HalfSpace.nx`/`ny`/`nz`, `CircularPattern.angle`, `Draft.angle`) is
+    /// a bare, undimensioned `Value::Real`/`Value::Int` — never a
+    /// `Value::Scalar` of any dimension.
+    ///
+    /// `occt_non_length_fields_stay_ungated` proves a field stayed on the
+    /// context-free `extract_f64` by observing that no LENGTH-tripwire WARN
+    /// names it, which is informative only because a bare `Value::Real`/
+    /// `Int` is the one shape `reify_ir::check_length_field`
+    /// (`crates/reify-ir/src/kernel_validation.rs:163`) can never wave
+    /// through: its early return is gated on `Value::Scalar { dimension,
+    /// .. } if dimension == LENGTH`, not on the `Scalar` variant alone, so
+    /// an ANGLE-dimensioned fixture would still warn on a rewire to
+    /// `extract_length_f64` *today* — ANGLE is not LENGTH. Keeping the
+    /// fixture bare is what preserves that reach even if the predicate is
+    /// later loosened to wave through any dimensioned `Scalar`, not just
+    /// `LENGTH`. This guard reads the value out of the SAME `op` the
+    /// control executes, so there is no second copy to drift out of sync.
+    /// See `docs/notes/angle-literal-migration-ledger.md` §1.2.1; task 5780
+    /// (δ) owns migrating `Draft.angle`, task 5781 (ε) owns migrating
+    /// `CircularPattern.angle`.
+    ///
+    /// Panics naming `{op.kind_name()}.{field}` if a field is dimensioned,
+    /// or naming the op kind if it carries no deliberately-ungated field at
+    /// all — an unrecognised variant must fail loudly rather than silently
+    /// check nothing.
+    fn assert_ungated_fields_are_bare(op: &GeometryOp) {
+        let fields: Vec<(&str, &Value)> = match op {
+            GeometryOp::HalfSpace { nx, ny, nz, .. } => vec![("nx", nx), ("ny", ny), ("nz", nz)],
+            GeometryOp::CircularPattern { angle, .. } => vec![("angle", angle)],
+            GeometryOp::Draft { angle, .. } => vec![("angle", angle)],
+            other => panic!(
+                "{} carries no deliberately-ungated field — teach \
+                 assert_ungated_fields_are_bare this variant or stop \
+                 calling it on this op kind",
+                other.kind_name()
+            ),
+        };
+        for (field, value) in fields {
+            assert!(
+                matches!(value, Value::Real(_) | Value::Int(_)),
+                "{}.{field} is {value:?}, not a bare Value::Real/Int — a \
+                 bare value is the one shape check_length_field can never \
+                 wave through, so only it stays reachable if \
+                 check_length_field's Scalar+LENGTH predicate is ever \
+                 loosened to accept other dimensioned Scalars; retyping \
+                 this fixture gives that reach up for nothing",
+                op.kind_name(),
+            );
+        }
+    }
+
+    /// Regression teeth: a migration that retypes `CircularPattern.angle` to
+    /// a dimensioned `Value` (task 5781's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "CircularPattern.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_circular_pattern_angle() {
+        assert_ungated_fields_are_bare(&GeometryOp::CircularPattern {
+            target: GeometryHandleId(1),
+            axis_origin: [0.0; 3],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            angle: Value::angle(std::f64::consts::PI),
+        });
+    }
+
+    /// Regression teeth: a migration that retypes `Draft.angle` to a
+    /// dimensioned `Value` (task 5780's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "Draft.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_draft_angle() {
+        assert_ungated_fields_are_bare(&GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::angle(0.05),
+            plane: GeometryHandleId(1),
+        });
+    }
+
+    /// Pins that the guard keys on the `Scalar` VARIANT, not on the
+    /// dimension being non-dimensionless: a DIMENSIONLESS `Scalar` must
+    /// still red, because a bare `Value::Real` is the one shape
+    /// `check_length_field` can never wave through.
+    #[test]
+    #[should_panic(expected = "HalfSpace.ny")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_half_space_normal() {
+        assert_ungated_fields_are_bare(&GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
+            },
+            nz: Value::Real(1.0),
+        });
+    }
+
+    /// Closes the guard's own vacuity hole: an op kind it does not
+    /// recognise must fail loudly rather than silently assert nothing.
+    #[test]
+    #[should_panic(expected = "no deliberately-ungated field")]
+    fn ungated_fixture_guard_reds_on_an_op_with_no_ungated_field() {
+        assert_ungated_fields_are_bare(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+    }
+
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
     /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
@@ -14195,6 +14614,10 @@ mod tests {
     ///
     /// Without this control a blanket conversion of all 46 sites would pass
     /// every other test in this module.
+    ///
+    /// Bareness of the five fixtures below is now ENFORCED by
+    /// `assert_ungated_fields_are_bare`, not merely asserted in a comment:
+    /// the control cannot pass vacuously if a fixture is later dimensioned.
     #[test]
     fn occt_non_length_fields_stay_ungated() {
         reify_test_support::prime_tracing_callsite_cache();
@@ -14215,16 +14638,18 @@ mod tests {
         // 3 dimensionless unit-normal components. Point coords are properly
         // dimensioned, so a correct build emits nothing at all here.
         let mut kernel = OcctKernel::new();
+        let half_space = GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        };
+        assert_ungated_fields_are_bare(&half_space);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::HalfSpace {
-                px: Value::length(0.0),
-                py: Value::length(0.0),
-                pz: Value::length(0.0),
-                nx: Value::Real(0.0),
-                ny: Value::Real(0.0),
-                nz: Value::Real(1.0),
-            });
+            let _ = kernel.execute(&half_space);
         });
         for n in ["nx", "ny", "nz"] {
             assert_no_warn_for_field(&capture, n);
@@ -14235,36 +14660,34 @@ mod tests {
         // converted, a `field = "angle"` warn would appear.
         let mut kernel = OcctKernel::new();
         let target = make_box_20_10_5(&mut kernel);
+        let circular_pattern = GeometryOp::CircularPattern {
+            target,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            // Stays bare deliberately — task 5777. ε (5781) migrates
+            // `circular_pattern` angles, but NOT this one: it is a control
+            // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+            // fixture, and bareness is enforced below by
+            // `assert_ungated_fields_are_bare`. See
+            // docs/notes/angle-literal-migration-ledger.md §1.2.1.
+            angle: Value::Real(std::f64::consts::PI),
+        };
+        let draft = GeometryOp::Draft {
+            target,
+            faces: vec![],
+            // Stays bare deliberately — task 5777, same control contract as
+            // the arm above, but δ's (5780): `draft` is δ's migration
+            // target.
+            angle: Value::Real(0.05),
+            plane: target,
+        };
+        assert_ungated_fields_are_bare(&circular_pattern);
+        assert_ungated_fields_are_bare(&draft);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::CircularPattern {
-                target,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                count: 2,
-                // Stays bare deliberately — task 5777. ε (5781) migrates
-                // `circular_pattern` angles, but NOT this one: it is a control
-                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
-                // fixture. A bare `Value::Real` is the one shape
-                // `check_length_field` can never wave through — its early
-                // return is gated on the `Value::Scalar` variant — so the arm
-                // still catches a rewire to `extract_length_f64` even if that
-                // predicate is later loosened to accept any dimensioned
-                // `Scalar`. A retyped arm would still warn on a rewire today
-                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
-                // reach up for nothing. See
-                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
-                angle: Value::Real(std::f64::consts::PI),
-            });
-            let _ = kernel.execute(&GeometryOp::Draft {
-                target,
-                faces: vec![],
-                // Stays bare deliberately — task 5777, same control contract as
-                // the arm above, but δ's (5780): `draft` is δ's migration
-                // target.
-                angle: Value::Real(0.05),
-                plane: target,
-            });
+            let _ = kernel.execute(&circular_pattern);
+            let _ = kernel.execute(&draft);
         });
         assert_no_warn_for_field(&capture, "angle");
     }

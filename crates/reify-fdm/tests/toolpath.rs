@@ -34,10 +34,10 @@ fn bracket_fixture_yields_populated_toolpath() {
         assert!(b.layer_z > 0.0, "bead {i} layer_z must be > 0, got {}", b.layer_z);
         // Nominal extruder temp captured from the preamble's M104/M109 S210
         // (the trailing M104 S0 fires only after every bead is laid down).
-        assert!(
-            (b.nominal_temp - 210.0).abs() < 1e-9,
-            "bead {i} nominal_temp must be 210 (from M104/M109 S210), got {}",
-            b.nominal_temp
+        assert_eq!(
+            b.nominal_temp,
+            Some(210.0),
+            "bead {i} nominal_temp must be 210 (from M104/M109 S210)"
         );
         assert!(
             b.centerline.len() >= 2,

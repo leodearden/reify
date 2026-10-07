@@ -290,7 +290,7 @@ export interface ValueData {
    */
   last_substantive_value?: string | null;
   /**
-   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * Canonical dimension name for this cell's VALUE (e.g. `"Volume"`,
    * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
    * absent for non-scalar, dimensionless, or composed-dimension values
    * (task #5199: drives the Parameters panel's per-cell unit picker — only
@@ -308,6 +308,13 @@ export interface ValueData {
    * the IPC wire (task #5199 engine_state decision: additive-only).
    */
   si_value?: number | null;
+  /**
+   * Mirrors Rust `ValueData.declared_dimension` (task #6962): the canonical
+   * dimension the cell's DECLARED type requires; `''` / absent = none. Drives
+   * the input gate, unit alphabet and edit-seed unit. `dimension` stays the
+   * value's own and drives the picker.
+   */
+  declared_dimension?: string;
 }
 
 /** One selectable display unit within a {@link DimensionLadder} (task #5199). */
@@ -687,6 +694,35 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
 export interface EvaluationStatus {
   phase: 'idle' | 'evaluating' | 'resolving';
   progress?: number;
+}
+
+/**
+ * Payload for the `eval-generation` Tauri event channel (task 7853): an edit or
+ * evaluation of `generation` is about to run. Mirrors
+ * `gui/src-tauri/src/types.rs::EvalGeneration`.
+ */
+export interface EvalGeneration {
+  generation: number;
+}
+
+/**
+ * A whole-state command reply: `state` is exactly the snapshot the backend
+ * published under `generation`. Mirrors `gui/src-tauri/src/eval_queue.rs::PublishedState`.
+ */
+export interface PublishedState {
+  generation: number;
+  state: GuiState;
+}
+
+/** Wire-format {@link PublishedState} as received from Tauri IPC. */
+export interface RawPublishedState {
+  generation: number;
+  state: RawGuiState;
+}
+
+/** Convert a wire-format published state's GUI state to typed arrays. */
+export function convertRawPublishedState(raw: RawPublishedState): PublishedState {
+  return { generation: raw.generation, state: convertRawGuiState(raw.state) };
 }
 
 /** Type aliases for event update payloads (same shape as base types). */

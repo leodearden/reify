@@ -1,0 +1,13 @@
+// affine_from_transform_length.ri — the control for
+// affine_from_transform_dimensionless.ri: a LENGTH translation still exits 0 and
+// prints the AffineMap with its translation in SI metres, so the sibling's exit 1
+// is the gate rather than a broken builtin.
+//
+// Declares its module explicitly, as its sibling does, so stderr carries no
+// W_MODULE_DECL_MISSING warning.
+
+module affine_from_transform_length
+
+structure def AffineFromTransformLength {
+    let m = affine_from_transform(transform3(orient_identity(), vec3(5mm, 0mm, 0mm)))
+}

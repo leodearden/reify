@@ -449,24 +449,23 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 /// The conversion is TOTAL over the dimensional fields: every field names its
 /// own unit, so there is no carve-out left for a reader to have to remember.
 ///
-/// # This is NOT the regime the FDM slice surface uses
+/// # The FDM slice surface shares this regime
 ///
-/// Worth knowing before writing the next g-code-derived payload, because the
-/// sibling one diverges: `reify_eval::compute_targets::fdm_slice`'s
-/// `toolpath_to_value` marshals its geometry scalars as undimensioned
-/// `Value::Real`, and `crates/reify-compiler/stdlib/fdm_slice.ri` accordingly
-/// declares `Bead.width` / `.height` / `.layer_z` / `.speed` and the
-/// centerline as `Real` / `Point3<Real>` in RAW millimetres and mm·min⁻¹.
-/// Native units therefore survive all the way THROUGH that DSL surface, and
-/// the mm→SI conversion happens later and deeper, inside Rust, at the θ
-/// `FDMPrint` mapping (the two `MM_TO_M` sites cited on the constant above).
+/// Worth knowing before writing the next g-code-derived payload: the sibling
+/// one agrees, field for field. `reify_eval::compute_targets::fdm_slice`'s
+/// `toolpath_to_value` converts at its own projection too, and
+/// `crates/reify-compiler/stdlib/fdm_slice.ri` declares the units there —
+/// `Bead.width` / `.height` / `.layer_z` and `Layer.z` as `Length`, `.speed`
+/// as `Velocity`, `.nominal_temp` as `Temperature`, and the centerline as
+/// `List<Point3<Length>>`. Its parser-side `reify_fdm::Toolpath` stays in
+/// native millimetres for exactly the lossless-fidelity reason this module's
+/// [`Waypoint`] does.
 ///
-/// The two g-code-derived payloads consequently sit in OPPOSITE regimes
-/// today, so a reader arriving from the FDM surface should not assume this
-/// one matches it. A new DSL-visible payload should follow the regime HERE:
-/// converting at the projection is what lets a design author's dimensional
-/// arithmetic see the units at all, and it keeps the whole conversion at one
-/// nameable boundary instead of spreading it through downstream consumers.
+/// So converting at the projection is THE convention for a DSL-visible
+/// payload. It is what lets a design author's
+/// dimensional arithmetic see the units at all, and it keeps the whole
+/// conversion at one nameable boundary instead of spreading it through
+/// downstream consumers.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("x".to_string()), Value::length(wp.x * MM_TO_M));

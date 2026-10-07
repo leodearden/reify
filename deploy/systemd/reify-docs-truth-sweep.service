@@ -1,0 +1,13 @@
+[Unit]
+Description=Reify docs-truth sweep: book one human adjudication sitting at L2 for new PPRDSTATUS/PCITE findings
+Documentation=file:///home/leo/src/reify/docs/notes/docs-truth-sweep.md
+
+[Service]
+Type=oneshot
+Nice=10
+# Bare, at the main-checkout path: scripts/docs-truth-sweep.sh owns every flag.
+ExecStart=/home/leo/src/reify/scripts/docs-truth-sweep.sh
+StandardOutput=journal
+StandardError=journal
+
+# No [Install] section: reify-docs-truth-sweep.timer owns activation.

@@ -32,8 +32,8 @@
 //! would otherwise make every downstream corpus test in this suite
 //! vacuously green.
 
-/// The corpus walker and the ONE engine constructor this file's sweeps share
-/// with `harness_corpus_gates`'s unified corpus sweep. `#[path]` (not `mod
+/// The ONE engine constructor this file's sweeps share with
+/// `harness_corpus_gates`'s unified corpus sweep. `#[path]` (not `mod
 /// common;`) follows the `common/differential.rs` precedent — see that file's
 /// header for why the 312-line `common/mod.rs` is deliberately not pulled in.
 #[path = "common/eval_gate_support.rs"]
@@ -46,6 +46,9 @@ use reify_eval::cache::NodeId;
 use reify_eval::deps::DependencyTrace;
 use reify_eval::graph::{EvaluationGraph, ValueCellNode};
 use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value};
+use reify_test_support::examples_corpus::{
+    discover_ri_files, examples_dir, relative_to_examples_dir,
+};
 
 /// Seeded state: `producer` is resolved (non-Undef); `consumer`'s
 /// `default_expr` is a `ValueRef(producer)` — NOT an undef literal — and its
@@ -1077,9 +1080,10 @@ const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[BuildSurfaceCase] = &[
 ///
 /// `worst_buckling_case` consumes the result, so a degraded dispatch still
 /// surfaces as a stale-Undef violation here exactly as it would on the real
-/// example. Argument binding is POSITIONAL (`name:` labels are cosmetic), so
-/// `BucklingOptions(n_modes: 1)` binds the FIRST declared param and leaves the
-/// rest at their defaults — see examples/buckling_column_p2.ri's header.
+/// example. Ctor args bind BY NAME (task 4522), so
+/// `BucklingOptions(n_modes: 1)` binds the `n_modes` param specifically (it
+/// happens to also be the first declared param) and leaves the rest at their
+/// defaults — see examples/buckling_column_p2.ri's header.
 const BUCKLING_MULTI_CASE_PROBE_SRC: &str = r#"structure BucklingMultiCaseProbe {
     param length : Length = 200mm
     param width  : Length = 20mm
@@ -1485,13 +1489,11 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 /// prose the way "that yields 18 candidate files" did.
 struct OptimizedCallerSurvey {
     /// How many `.ri` files were walked under `examples/` — recursively, via
-    /// `eval_gate_support::collect_ri_files`. That is the SAME walker the unified
-    /// eval sweep uses, so this surface and that one cannot disagree about which
-    /// files exist. Task #7431 changed what enforces that and not whether it
-    /// holds: the walker used to be a private fn the two sweeps shared by living
-    /// in one file, and is now a single `pub fn` in `tests/common/eval_gate_support.rs`
-    /// that both compile units declare by `#[path]` — shared deliberately rather
-    /// than by co-residence, which is the stronger guarantee.
+    /// `reify_test_support::examples_corpus::discover_ri_files` over
+    /// `examples_dir()`. The unified eval sweep
+    /// (`harness_corpus_gates::eval_invariant_corpus_sweep::corpus_files`) routes
+    /// through the SAME shared walker, so this surface and that one cannot
+    /// disagree about which files exist.
     files_scanned: usize,
     /// `(examples/-relative extension-stripped name, targets it calls)` for every
     /// caller file, sorted by name. The name shape matches `BuildSurfaceCase::name`
@@ -1504,8 +1506,6 @@ struct OptimizedCallerSurvey {
 /// Runs the survey. Cheap enough to call from more than one `#[test]`: one
 /// stdlib compile plus a 260-file read.
 fn survey_optimized_callers() -> OptimizedCallerSurvey {
-    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-
     let stdlib_fns = stdlib_optimized_fns();
     assert!(
         !stdlib_fns.is_empty(),
@@ -1518,9 +1518,7 @@ fn survey_optimized_callers() -> OptimizedCallerSurvey {
     stdlib_targets.sort();
     stdlib_targets.dedup();
 
-    let mut files: Vec<std::path::PathBuf> = Vec::new();
-    eval_gate_support::collect_ri_files(&examples_dir, &mut files);
-    files.sort();
+    let files = discover_ri_files(examples_dir());
 
     let mut callers: Vec<(String, Vec<String>)> = Vec::new();
     for path in &files {
@@ -1537,11 +1535,11 @@ fn survey_optimized_callers() -> OptimizedCallerSurvey {
         if targets.is_empty() {
             continue;
         }
-        let rel = path
-            .strip_prefix(&examples_dir)
-            .unwrap_or(path)
-            .with_extension("");
-        callers.push((rel.to_string_lossy().into_owned(), targets));
+        let rel = std::path::Path::new(&relative_to_examples_dir(path))
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned();
+        callers.push((rel, targets));
     }
 
     OptimizedCallerSurvey {

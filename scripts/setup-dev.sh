@@ -420,7 +420,7 @@ install_build_services() {
     # nothing Requires= these units.  Host convention is therefore that a
     # host-global unit names the stable MAIN checkout; see the inline notes on
     # deploy/systemd/reify-warm-lane{,-gc}.service (#4720) and the identical
-    # fix shape in scripts/setup-agent-cache-redirect.sh:498-507,549-560.
+    # fix shape in scripts/setup-agent-cache-redirect.sh's install_boot_unit().
     #
     # ONLY the two jobserver ExecStarts (and the chmod that makes exactly those
     # two executables runnable) are pinned.  sccache.service's ExecStart is

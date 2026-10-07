@@ -6,37 +6,49 @@
 
 pub mod builders;
 pub mod ctor_conformance;
+pub mod ctor_conformance_debt;
+pub mod examples_corpus;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
 pub mod ignore_hygiene;
 pub mod kernel_assertions;
 pub mod lsp_fixtures;
+pub mod mesh_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
+pub mod prd_gate_probe_set;
+pub mod ptodo_cite_marker;
+pub mod rust_fixture_scan;
+pub mod skip_sets;
 pub mod specialization_fixtures;
 pub mod temp_dirs;
+pub mod tensegrity_fixtures;
 pub mod tolerance_fixtures;
+pub mod tracing_hygiene;
 pub mod tracing_support;
 pub mod value_decompose;
 pub mod values;
+pub mod workspace_sweep;
 
+// Not every module is glob-exported below. These five are held back
+// deliberately: their item names are generic enough that hoisting them into a
+// crate root which many test files glob-import (`use reify_test_support::*;`)
+// would turn a future same-named item in any other glob-exported module into an
+// E0659 ambiguity at every such use site. Their readers spell the module path.
+// - `ctor_conformance_debt`
+// - `examples_corpus`
+// - `git_env`
+// - `mesh_fixtures`
+// - `rust_fixture_scan`
 pub use builders::*;
 pub use ctor_conformance::*;
 pub use fixtures::*;
-// Deliberately NOT `pub use git_env::*;`. `sanitize` and `REPO_REDIRECT_VARS`
-// are generic enough names that hoisting them into a crate root which many
-// test files glob-import (`use reify_test_support::*;`) would turn a future
-// same-named item in any other glob-exported module into an E0659 ambiguity at
-// every such use site. Both real consumers already spell the module path —
-// `reify_audit::git_env` re-exports from `reify_test_support::git_env`, and
-// `orphan_audit` uses `crate::git_env::sanitize` — and a repo-wide grep finds
-// no user of the crate-root path, so `pub mod git_env;` above is the whole
-// surface.
 pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
 pub use orphan_audit::*;
+pub use skip_sets::*;
 pub use temp_dirs::*;
 pub use tolerance_fixtures::*;
 pub use tracing_support::*;

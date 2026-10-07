@@ -9,12 +9,12 @@
 //! this harness root is an integration-test crate root, where a bare `mod <file>;` would
 //! resolve to the sibling `tests/<file>.rs`, not the `harness_topology_selector/` subdir.
 //!
-//! The `selective_demand_*` subsystem now lives in the sibling `harness_selective_demand`
-//! (task #5620), and took the shared `#[path = "common/differential.rs"]` include with it —
-//! those six files were its only referents. Under the C2 kLOC cap that shared include is
-//! charged to every unit that compiles a copy of it, which had put this harness at 21470
-//! lines, over CAP_LINES = 20000; rule (a)'s remedy is a split, not a cap bump. This unit is
-//! now 16786 lines with no out-of-module-dir include at all.
+//! The `selective_demand_*` subsystem was split out by task #5620 because its
+//! `#[path = "common/differential.rs"]` include put this unit over the cap: under the C2
+//! kLOC cap that shared include is charged to every unit that compiles a copy of it, which
+//! had put this harness at 21470 lines, over CAP_LINES = 20000; rule (a)'s remedy is a
+//! split, not a cap bump. That subsystem now lives in `harness_cache`, beside the helper's
+//! other consumers (task #7033).
 #[path = "harness_topology_selector/rounded_box_curated_fillet_e2e.rs"]
 mod rounded_box_curated_fillet_e2e;
 #[path = "harness_topology_selector/selector_boundary_gate.rs"]

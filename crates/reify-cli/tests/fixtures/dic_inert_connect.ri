@@ -1,0 +1,18 @@
+module dic_inert_connect
+
+// An ad-hoc @-selector connect generates a frame_align constraint that is
+// INDETERMINATE in every run (structurally inert): the face-selector frames
+// carry no value-cell inputs, so the checker records the reason "operator
+// undefined for these operand kinds". The connect_compat constraint beside it
+// is satisfied.
+
+trait T {
+    param d : Length
+}
+
+structure def DicInertRig {
+    let shape = cylinder(10mm, 20mm)
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a @ face("top") -> b @ face("bottom")
+}

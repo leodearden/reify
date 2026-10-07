@@ -1,0 +1,21 @@
+module getar_match_err_first_arm_panics
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
+// before-image (R5 case: the FIRST arm's body is typed by the unbound param).
+// MEASURED 2026-09-29:
+//   target/debug/reify:   check/eval EXIT 101, panic "unrepresentable
+//                         cell_type: value cell `W.v` has cell_type TypeParam("E")"
+//   target/release/reify: check/eval EXIT 0, `W.v = "ok"` (right value, wrong
+//                         static cell type; the release profile never checks).
+// This file still fails after δ alone: the subject becomes
+// `Applied{Result,[Length, <placeholder E>]}`, the Err binder `e` is typed with
+// that placeholder, and the match's result type is the FIRST arm's body type,
+// so `v` is typed by the placeholder — which `is_representable_cell_type`
+// (crates/reify-eval/src/engine_eval.rs) rejects. Only R5 (pick the first
+// arm whose type carries no placeholder) closes it.
+// EXPECTED after δ+ε (debug build): check EXIT 0, eval `W.v = "ok"`.
+
+structure def W {
+    let r = Ok { value: 5mm }
+    let v = match r { Err { error: e } => e, Ok { value: x } => "ok" }
+}

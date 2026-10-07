@@ -641,7 +641,7 @@ fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec
 ///     measurement above — ctor CONFORMANCE by diagnostic-CODE identity
 ///     (`CTOR_CONFORMANCE_PINNED_CLEAN`, asserted gate-resident by
 ///     `pinned_clean_files_emit_no_ctor_conformance_diagnostic` in
-///     `ctor_conformance_corpus_survey.rs`).
+///     `harness_ctor_conformance_survey/disposition.rs`).
 ///
 /// That code-keyed pin and this prose-keyed one overlap on the fixture
 /// DELIBERATELY — the survey's own doc says so and leaves this one alone —

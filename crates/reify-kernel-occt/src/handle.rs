@@ -604,8 +604,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -629,8 +630,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_cut_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -654,8 +656,9 @@ impl OcctKernelHandle {
     /// history records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_common_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -2391,7 +2394,12 @@ mod tests {
     /// its own unit entities) but STEP explicitly permits several contexts to
     /// share one unit instance, so an OCCT bump that deduped unit entities
     /// would have failed the proxy on a perfectly correct file. Walking the
-    /// association is the form task #6344's runtime guard also plans to use.
+    /// association is the form task #6344's runtime guard uses too: this
+    /// helper's model-level mirror is `audit_step_plane_angle_units` in
+    /// `cpp/occt_wrapper.cpp`, pinned by
+    /// `tests/harness_step_export/step_plane_angle_guard_integration.rs`. That
+    /// guard refuses the export before any bytes are written; this pin quantifies
+    /// over the bytes that were.
     fn plane_angle_unit_audit(stripped: &str) -> PlaneAngleAudit {
         // Instance table: `#N` -> whole record (`#N=(...)`), for every Part-21
         // instance in the file. HEADER-section records carry no `#N =` and are

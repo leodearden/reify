@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import WorkerRpcFlakeReporter, {
   classifyWorkerRpcFlake,
   WORKER_RPC_FLAKE_ARTIFACT,
+  type FailedTestRecord,
   type ReportedModule,
   type WorkerRpcFailureSummary,
 } from '../../vitest-worker-rpc-flake-reporter'
@@ -14,15 +15,39 @@ import WorkerRpcFlakeReporter, {
 const rpcTimeout = (method: string, tail?: string) =>
   `[vitest-worker]: Timeout calling "${method}"` + (tail === undefined ? '' : ` with "${tail}"`)
 
+// vitest 3.2.4's own test-timeout text (@vitest/runner dist/chunk-hooks.js:2006).
+const TEST_TIMEOUT = (ms: number) =>
+  `Test timed out in ${ms}ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".`
+
 const summary = (
   failedSuites: WorkerRpcFailureSummary['failedSuites'],
-  failedTestCount = 0,
+  failedTests: WorkerRpcFailureSummary['failedTests'] = [],
   rest: Partial<WorkerRpcFailureSummary> = {},
-): WorkerRpcFailureSummary => ({ failedSuites, failedTestCount, ...rest })
+): WorkerRpcFailureSummary => ({ failedSuites, failedTests, ...rest })
+
+const failedTest = (filepath: string, ...errorMessages: string[]): FailedTestRecord => ({
+  filepath,
+  errorMessages,
+})
 
 /** The recorded 7431 signature, reused wherever a POSITIVE input is needed. */
 const starvedSuites = (): WorkerRpcFailureSummary['failedSuites'] => [
   { filepath: 'src/__tests__/engineStore.test.ts', errorMessages: [rpcTimeout('fetch', '[\\"x\\"]')] },
+]
+
+// The recorded esc-7094-6 run (task 7833): one suite starved on the setupFile
+// fetch, and Editor.test.tsx failed ONE TEST whose `?raw` import outlived the
+// test's own 60 s timeout — so that module reports no error of its own.
+const RAIL_GATE = 'test/visual/railLengtheningGate.test.ts'
+const EDITOR = 'src/__tests__/Editor.test.tsx'
+const RAIL_GATE_FETCH_TIMEOUT = rpcTimeout(
+  'fetch',
+  '[\\"/home/leo/src/reify/gui/vitest.setup.ts\\",\\"web\\"]',
+)
+const ESC_7094_6_RUN_LEVEL = [
+  rpcTimeout('onQueued'),
+  rpcTimeout('snapshotSaved'),
+  rpcTimeout('onTaskUpdate'),
 ]
 
 describe('classifyWorkerRpcFlake', () => {
@@ -61,23 +86,142 @@ describe('classifyWorkerRpcFlake', () => {
     expect(verdict!.methods).toEqual(['fetch'])
   })
 
-  // THE LOAD-BEARING VETO. A genuine code defect always produces failed TESTS.
-  // Without this rule the retry in scripts/gui-vitest-run.sh could re-run — and
-  // so mask — a real failure that happened to coincide with a starvation event.
-  it('returns null when any test failed, even with a perfect RPC-timeout signature', () => {
+  // THE LOAD-BEARING VETO. An ordinary assertion failure is a genuine code
+  // defect, never starvation. Without this rule the retry in
+  // scripts/gui-vitest-run.sh could re-run — and so mask — a real failure that
+  // happened to coincide with a starvation event.
+  it('returns null when a test failed an assertion, even with a perfect RPC-timeout signature', () => {
     const verdict = classifyWorkerRpcFlake(
       summary(
-        [
-          {
-            filepath: 'src/__tests__/engineStore.test.ts',
-            errorMessages: [rpcTimeout('fetch', '[\\"…/engineStore.test.ts\\",\\"web\\"]')],
-          },
-        ],
-        1,
+        [...starvedSuites(), { filepath: EDITOR, errorMessages: [] }],
+        [failedTest(EDITOR, "AssertionError: expected 'x' to contain 'editorTheme'")],
       ),
     )
 
     expect(verdict).toBeNull()
+  })
+
+  // THE FAILED-TEST SHAPE (task 7833; recorded as esc-7094-6). The same host
+  // stall can land inside a test BODY, where the test's own timeout fires
+  // before birpc's: the test fails with vitest's "Test timed out", not with
+  // the RPC text. It classifies only alongside a suite that starved outright.
+  it('classifies the recorded esc-7094-6 run: a starved suite plus one timed-out test', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(
+        [
+          { filepath: RAIL_GATE, errorMessages: [RAIL_GATE_FETCH_TIMEOUT] },
+          { filepath: EDITOR, errorMessages: [] },
+        ],
+        [failedTest(EDITOR, TEST_TIMEOUT(60000))],
+        { unhandledErrorMessages: ESC_7094_6_RUN_LEVEL, runEndReason: 'failed' },
+      ),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.kind).toBe('worker_rpc_timeout')
+    expect(verdict!.suites).toEqual([])
+    expect(verdict!.methods).toEqual(['fetch', 'onQueued', 'onTaskUpdate', 'snapshotSaved'])
+  })
+
+  it('narrows the esc-7094-6 shape to both failing modules when nothing failed at run level', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(
+        [
+          { filepath: RAIL_GATE, errorMessages: [RAIL_GATE_FETCH_TIMEOUT] },
+          { filepath: EDITOR, errorMessages: [] },
+        ],
+        [failedTest(EDITOR, TEST_TIMEOUT(60000))],
+      ),
+    )
+
+    expect(verdict!.suites).toEqual([RAIL_GATE, EDITOR])
+    expect(verdict!.methods).toEqual(['fetch'])
+  })
+
+  it('classifies a failed test whose own error is an RPC timeout, alongside a starved suite', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(
+        [...starvedSuites(), { filepath: EDITOR, errorMessages: [] }],
+        [failedTest(EDITOR, rpcTimeout('fetch', '[\\"…/Editor?raw\\"]'))],
+      ),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.methods).toContain('fetch')
+  })
+
+  // A lone test timeout is exactly what a genuine hang looks like. Only an
+  // INDEPENDENT starved suite makes it evidence of starvation.
+  it('returns null for a timed-out test with no starved suite to corroborate it', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([{ filepath: EDITOR, errorMessages: [] }], [failedTest(EDITOR, TEST_TIMEOUT(60000))]),
+      ),
+    ).toBeNull()
+  })
+
+  it("returns null for a timed-out test corroborated only by its OWN module's RPC timeout", () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary(
+          [{ filepath: EDITOR, errorMessages: [rpcTimeout('onTaskUpdate')] }],
+          [failedTest(EDITOR, TEST_TIMEOUT(60000))],
+        ),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null for a timed-out test corroborated only by a RUN-level RPC timeout', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([{ filepath: EDITOR, errorMessages: [] }], [failedTest(EDITOR, TEST_TIMEOUT(60000))], {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved')],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it.each([
+    ['a timeout AND an assertion error', [TEST_TIMEOUT(60000), 'AssertionError: expected 1 to be 2']],
+    ['no error message at all', []],
+    [
+      'a HOOK timeout',
+      [
+        'Hook timed out in 90000ms.\nIf this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".',
+      ],
+    ],
+    ['prose that merely quotes the phrase', ["expected 'Test timed out in 5ms.' to equal ''"]],
+  ])('returns null for a failed test carrying %s, even beside a starved suite', (_name, messages) => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary(
+          [...starvedSuites(), { filepath: EDITOR, errorMessages: [] }],
+          [failedTest(EDITOR, ...messages)],
+        ),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null when the timed-out test sits in a module with a non-RPC error of its own', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary(
+          [...starvedSuites(), { filepath: EDITOR, errorMessages: ['SyntaxError: boom'] }],
+          [failedTest(EDITOR, TEST_TIMEOUT(60000))],
+        ),
+      ),
+    ).toBeNull()
+  })
+
+  // SCOPE: absorbing a failed test is safe only because the retry re-runs it.
+  // The classifier must never narrow past its module, even when that module is
+  // not among the failed suites it was handed.
+  it("names the timed-out test's module even when it is not among the failed suites", () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(starvedSuites(), [failedTest(EDITOR, TEST_TIMEOUT(60000))]),
+    )
+
+    expect(verdict!.suites).toEqual(['src/__tests__/engineStore.test.ts', EDITOR])
   })
 
   it('returns null for an ordinary suite failure (module resolution / syntax)', () => {
@@ -122,27 +266,128 @@ describe('classifyWorkerRpcFlake', () => {
   it('returns null when any suite never reached a terminal state', () => {
     expect(
       classifyWorkerRpcFlake(
-        summary(starvedSuites(), 0, { unfinishedSuites: ['src/__tests__/never-ran.test.ts'] }),
+        summary(starvedSuites(), [], { unfinishedSuites: ['src/__tests__/never-ran.test.ts'] }),
       ),
     ).toBeNull()
   })
 
   it('classifies normally when the unfinished-suite list is empty', () => {
-    expect(classifyWorkerRpcFlake(summary(starvedSuites(), 0, { unfinishedSuites: [] }))).not.toBeNull()
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), [], { unfinishedSuites: [] }))).not.toBeNull()
   })
 
   it('returns null when the run was interrupted, however clean the signature', () => {
     expect(
-      classifyWorkerRpcFlake(summary(starvedSuites(), 0, { runEndReason: 'interrupted' })),
+      classifyWorkerRpcFlake(summary(starvedSuites(), [], { runEndReason: 'interrupted' })),
     ).toBeNull()
   })
 
   it.each(['passed', 'failed'])('still classifies when the run ended as "%s"', (reason) => {
-    expect(classifyWorkerRpcFlake(summary(starvedSuites(), 0, { runEndReason: reason }))).not.toBeNull()
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), [], { runEndReason: reason }))).not.toBeNull()
   })
 
   it('returns null when no suites failed at all', () => {
     expect(classifyWorkerRpcFlake(summary([]))).toBeNull()
+  })
+
+  // THE RUN-SCOPE SHAPE (task 7724; recorded as esc-7600-1). `snapshotSaved` is
+  // issued after a file's tests have already passed, so its timeout surfaces at
+  // RUN level with no module to attribute it to: the run reports zero failed
+  // suites, zero failed tests, and unhandled errors that are themselves RPC
+  // timeouts. It must be told apart from the all-green run below — conflating
+  // the two is exactly what left this event unclassified.
+  it('classifies a run whose ONLY failures are run-level RPC timeouts', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary([], [], {
+        unhandledErrorMessages: [rpcTimeout('snapshotSaved'), rpcTimeout('snapshotSaved')],
+        runEndReason: 'failed',
+      }),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.kind).toBe('worker_rpc_timeout')
+    // No suite to narrow to; the runner reads this as "re-run what was asked".
+    expect(verdict!.suites).toEqual([])
+    expect(verdict!.methods).toEqual(['snapshotSaved'])
+  })
+
+  it('returns null for an all-green run: nothing failed, so there is nothing to retry', () => {
+    expect(classifyWorkerRpcFlake(summary([], [], { unhandledErrorMessages: [] }))).toBeNull()
+  })
+
+  // The all-or-nothing veto still holds when a run-level error is the only
+  // evidence there is.
+  it('returns null when the only run-level error is not an RPC timeout', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], [], {
+          unhandledErrorMessages: ['Error: unhandled rejection in a passing suite'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null when the run-level errors are a MIX of RPC and non-RPC', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], [], {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved'), 'SyntaxError: boom'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  // A dying forks pool is not absorbed just because no suite was marked failed.
+  it('returns null for the run-scope shape when a suite never reached a terminal state', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], [], {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved')],
+          unfinishedSuites: ['src/__tests__/never-ran.test.ts'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null for the run-scope shape when the run was interrupted', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], [], {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved')],
+          runEndReason: 'interrupted',
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  // SCOPE, not classification. A run-level timeout has no module to attribute
+  // it to, so a retry narrowed to the suites that FAILED would never re-exercise
+  // whatever produced it. That bites hardest on `onUnhandledError`: a timeout on
+  // THAT RPC means a genuine unhandled error was lost in transit, raised by a
+  // module which — every suite here having passed — is not among the failures.
+  // Any run-level timeout therefore names NO suite, so the retry re-runs the
+  // whole original invocation. Widening a retry can never mask a failure, the
+  // same argument partition_args already makes.
+  it('names NO suite when a run-level RPC timeout rides alongside failed suites', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(starvedSuites(), [], {
+        unhandledErrorMessages: [rpcTimeout('onUnhandledError', 'boom')],
+        runEndReason: 'failed',
+      }),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.suites).toEqual([])
+    // The failed suite is still ACCOUNTED for — in the method set, which is
+    // what says the two failures were the same event.
+    expect(verdict!.methods).toEqual(['fetch', 'onUnhandledError'])
+  })
+
+  // The converse, so the rule above cannot silently widen to every verdict:
+  // with no run-level error there IS a module to attribute every failure to,
+  // and the retry stays narrowed.
+  it('still names the failed suites when there is no run-level error at all', () => {
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), [], { unhandledErrorMessages: [] }))!.suites)
+      .toEqual(['src/__tests__/engineStore.test.ts'])
   })
 
   it('returns null for a failed suite carrying no error messages', () => {
@@ -179,7 +424,9 @@ describe('classifyWorkerRpcFlake', () => {
     expect(verdict!.methods).toEqual(['fetch', 'onQueued', 'snapshotSaved'])
   })
 
-  it('classifies a suite whose RPC timeout is one error among several', () => {
+  // All-or-nothing reaches inside a suite too: an RPC timeout explains only
+  // itself, never a sibling error in the same module.
+  it('returns null for a suite whose RPC timeout is one error among several', () => {
     const verdict = classifyWorkerRpcFlake(
       summary([
         {
@@ -189,7 +436,7 @@ describe('classifyWorkerRpcFlake', () => {
       ]),
     )
 
-    expect(verdict!.methods).toEqual(['onUnhandledError'])
+    expect(verdict).toBeNull()
   })
 
   it('does not match a message that merely mentions the phrase in prose', () => {
@@ -219,14 +466,30 @@ describe('classifyWorkerRpcFlake', () => {
  */
 const testModule = (
   moduleId: string,
-  opts: { failed?: boolean; state?: string; errors?: string[]; failedTests?: number } = {},
+  opts: {
+    failed?: boolean
+    state?: string
+    errors?: string[]
+    /** One error-message list per failed test. */
+    failedTests?: ReadonlyArray<readonly string[]>
+    /** Errors held by a NESTED describe suite, never by the module itself. */
+    suiteErrors?: string[]
+  } = {},
 ): ReportedModule => ({
   moduleId,
   state: () => opts.state ?? (opts.failed ? 'failed' : 'passed'),
   errors: () => (opts.errors ?? []).map((message) => ({ message })),
   children: {
     allTests: (state?: string) =>
-      state === 'failed' ? new Array(opts.failedTests ?? 0).fill(null) : [],
+      state === 'failed'
+        ? (opts.failedTests ?? []).map((messages) => ({
+            result: () => ({ state: 'failed', errors: messages.map((message) => ({ message })) }),
+          }))
+        : [],
+    allSuites: () =>
+      (opts.suiteErrors === undefined ? [] : [opts.suiteErrors]).map((messages) => ({
+        errors: () => messages.map((message) => ({ message })),
+      })),
   },
 })
 
@@ -281,6 +544,18 @@ const starvedRun = (): ReportedModule[] => [
   testModule(`${ROOT}/src/__tests__/diff.test.ts`),
 ]
 
+/**
+ * The recorded 7724 run-scope signature: every module PASSED, and the only
+ * failure is a run-level `snapshotSaved` timeout with no module to attribute
+ * it to. Paired with the run-level error below, since neither half is the
+ * signature on its own.
+ */
+const passedRun = (): ReportedModule[] => [
+  testModule(`${ROOT}/src/__tests__/a.test.ts`),
+  testModule(`${ROOT}/src/__tests__/b.test.ts`),
+]
+const RUN_LEVEL_TIMEOUT = [{ message: TIMEOUT_SNAPSHOT }]
+
 describe('WorkerRpcFlakeReporter — marker line', () => {
   it('emits exactly one column-0 @@REIFY_GUI_FLAKE@@ line on the positive signature', () => {
     const { reporter, lines } = recordingReporter()
@@ -290,12 +565,45 @@ describe('WorkerRpcFlakeReporter — marker line', () => {
     expect(lines[0].startsWith('@@REIFY_GUI_FLAKE@@ ')).toBe(true)
   })
 
-  it('carries kind, suite count and the method csv in the established key=value grammar', () => {
+  it('carries kind, scope, suite count and the method csv in the established key=value grammar', () => {
     const { reporter, lines } = recordingReporter()
     reporter.onTestRunEnd(starvedRun(), [])
 
     expect(lines[0]).toContain('kind=worker_rpc_timeout')
+    expect(lines[0]).toContain('scope=suites')
     expect(lines[0]).toContain('suites=2')
+    expect(lines[0]).toContain('methods=fetch,snapshotSaved')
+  })
+
+  // `suites=0` alone reads to an operator as "retrying zero suites", which is
+  // the re-diagnosis cost esc-7600-1 paid. These two pin that the marker says
+  // WHAT WILL BE RE-RUN, and that it varies with the verdict rather than being
+  // a constant.
+  it('says scope=run when the verdict names no suite to narrow to', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(passedRun(), RUN_LEVEL_TIMEOUT, 'failed')
+
+    expect(lines[0]).toContain('scope=run')
+    expect(lines[0]).toContain('suites=0')
+  })
+
+  it('says scope=suites when the verdict names the suites that failed', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines[0]).toContain('scope=suites')
+    expect(lines[0]).toContain('suites=2')
+  })
+
+  // Two suites DID fail here, and the marker still says run scope: a run-level
+  // timeout leaves nothing to narrow to, so `suites=` is the retry's breadth,
+  // not a count of what failed. `methods=` carries both halves of the event.
+  it('says scope=run when a run-level timeout rides alongside failed suites', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), RUN_LEVEL_TIMEOUT, 'failed')
+
+    expect(lines[0]).toContain('scope=run')
+    expect(lines[0]).toContain('suites=0')
     expect(lines[0]).toContain('methods=fetch,snapshotSaved')
   })
 
@@ -344,6 +652,21 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
     expect(artifact.methods).toEqual(['fetch', 'snapshotSaved'])
   })
 
+  // The run-scope shape driven through the REPORTER, not just the classifier:
+  // every module passed and the only failure is one run-level RPC timeout. Two
+  // outputs, exactly one of each, and a suite list that is EMPTY rather than
+  // absent — that emptiness is what tells the runner it has nothing to narrow to.
+  it('writes one artifact naming NO suite when the only failure is a run-level RPC timeout', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(passedRun(), RUN_LEVEL_TIMEOUT, 'failed')
+
+    expect(lines).toHaveLength(1)
+    expect(writes).toHaveLength(1)
+    const artifact = JSON.parse(writes[0].contents)
+    expect(artifact.suites).toEqual([])
+    expect(artifact.methods).toEqual(['snapshotSaved'])
+  })
+
   // The constructor's default is the real seam with scripts/gui-vitest-run.sh's
   // "$GUI_DIR/node_modules/.reify-gui-rpc-flake.json", so drive it rather than
   // asserting the exported constant equals itself.
@@ -363,14 +686,123 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
   })
 })
 
+/** The recorded esc-7094-6 modules: one starved suite, one timed-out test. */
+const esc7094Run = (): ReportedModule[] => [
+  testModule(`${ROOT}/${RAIL_GATE}`, { failed: true, errors: [RAIL_GATE_FETCH_TIMEOUT] }),
+  testModule(`${ROOT}/${EDITOR}`, { failed: true, failedTests: [[TEST_TIMEOUT(60000)]] }),
+  testModule(`${ROOT}/src/__tests__/diff.test.ts`),
+]
+
+describe('WorkerRpcFlakeReporter — a starved test body (task 7833, esc-7094-6)', () => {
+  it('classifies the recorded run at RUN scope when run-level RPC timeouts ride alongside', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      esc7094Run(),
+      ESC_7094_6_RUN_LEVEL.map((message) => ({ message })),
+      'failed',
+    )
+
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('scope=run')
+    expect(lines[0]).toContain('suites=0')
+    expect(lines[0]).toContain('methods=fetch,onQueued,onTaskUpdate,snapshotSaved')
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0].contents).suites).toEqual([])
+  })
+
+  it('narrows to BOTH failing modules, root-relative, when nothing failed at run level', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(esc7094Run(), [], 'failed')
+
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0].contents).suites).toEqual([RAIL_GATE, EDITOR])
+  })
+})
+
+// A failed describe-level beforeAll records its error on the NESTED suite and
+// marks that suite's tests skipped; TestModule.errors() never sees it
+// (@vitest/runner runSuite, dist/chunk-hooks.js:1706-1735).
+describe('WorkerRpcFlakeReporter — describe-level suite errors count as the module\'s own', () => {
+  it('vetoes a hook defect hiding beside a timed-out test in the same module', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/${RAIL_GATE}`, { failed: true, errors: [RAIL_GATE_FETCH_TIMEOUT] }),
+        testModule(`${ROOT}/${EDITOR}`, {
+          failed: true,
+          failedTests: [[TEST_TIMEOUT(60000)]],
+          suiteErrors: ['Error: beforeAll failed: fixture missing'],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('vetoes a module whose own describe-level RPC timeout is all that vouches for its timed-out test', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/${EDITOR}`, {
+          failed: true,
+          failedTests: [[TEST_TIMEOUT(60000)]],
+          suiteErrors: [TIMEOUT_SNAPSHOT],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('vetoes a starved module whose describe-level beforeAll ALSO failed for a real defect', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/src/__tests__/a.test.ts`, {
+          failed: true,
+          errors: [TIMEOUT_FETCH],
+          suiteErrors: ['Error: beforeAll failed: fixture missing'],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('reads a nested-suite RPC timeout as that module starving outright', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [testModule(`${ROOT}/src/__tests__/a.test.ts`, { failed: true, suiteErrors: [TIMEOUT_FETCH] })],
+      [],
+      'failed',
+    )
+
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0].contents).suites).toEqual(['src/__tests__/a.test.ts'])
+  })
+})
+
 describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
   // The artifact's ABSENCE is what vetoes the retry in scripts/gui-vitest-run.sh,
   // so every one of these is load-bearing, not merely tidy.
   const cases: Array<[string, () => ReportedModule[], unknown[]]> = [
     [
-      'a failed test alongside a perfect RPC signature',
+      'an assertion-failure test alongside a perfect RPC signature',
       () => [
-        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH], failedTests: 1 }),
+        testModule(`${ROOT}/a.test.ts`, {
+          failed: true,
+          errors: [TIMEOUT_FETCH],
+          failedTests: [['AssertionError: expected 1 to be 2']],
+        }),
       ],
       [],
     ],
@@ -465,7 +897,11 @@ describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
     )
 
     expect(writes).toHaveLength(1)
-    expect(JSON.parse(writes[0].contents).methods).toEqual(['fetch', 'onUnhandledError'])
+    const artifact = JSON.parse(writes[0].contents)
+    expect(artifact.methods).toEqual(['fetch', 'onUnhandledError'])
+    // ...and it names NO suite: the lost unhandled error came from a module the
+    // failures do not identify, so a narrowed retry would never re-run it.
+    expect(artifact.suites).toEqual([])
   })
 })
 

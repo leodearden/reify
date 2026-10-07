@@ -130,6 +130,35 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 
 **Severity:** high → escalate via `mcp__escalation__escalate_info` (or block via pre-done hook). The Phase-2 may10 incident catalog (`project_phantom_done_at_reap_premature_followup.md`, `project_phantom_done_metadata_files_strip_may09.md`, etc.) shows ~6 known incidents in the past 2 weeks — this is the highest-signal pattern.
 
+### PDCHECK — `delivered_checks` dead-path
+
+**Invariant:** For every `kind: grep` row in a **non-terminal** task's `metadata.delivered_checks`, at least one path in the row's `paths` resolves against the tracked-file set (an exact tracked file, or a directory prefix of one).
+
+**Detector:** `ls_files()` for the tracked set, plus a read-only (`SQLITE_OPEN_READ_ONLY`) walk of `.taskmaster/tasks/tasks.db`'s `tag = 'master'` rows — the same route all three PTODO DB lanes take. For each row whose paths are *all* absent, `last_commit_for_path` decides whether any of them ever existed; if none did, the row is presumed to name files the task will create and passes.
+
+**Two finding kinds, split on the row's `expect` polarity.** A `git grep` over a pathspec that matches nothing exits 1, and *both* readings of that rc=1 are silent — which is why one detector reports two different defects:
+
+| kind | polarity | how rc=1 reads | consequence | severity |
+|---|---|---|---|---|
+| `delivered-check-unsatisfiable-path` | `expect: present` | FAILED | every dependent blocks permanently at `DEP_CAPABILITY_NOT_DELIVERED` | **High** |
+| `delivered-check-vacuous-absent-path` | `expect: absent` | PASSED | the check succeeds while asserting nothing | **Medium** |
+
+The Medium kind is **not** a weaker version of the High one and must not be "fixed" into silence by a reader who knows only the loud half: a vacuous check is a hole in the gate, and it is invisible by construction — nothing else reports it, because from the runner's side it passed.
+
+**The ANY-match quantifier (load-bearing).** A multi-`paths` row is executed as ONE `git grep -E -e <pattern> <ref> -- <paths...>`, so it matches when ANY path matches; it is not a per-path conjunction. One dead path among live ones therefore leaves the row satisfiable. The detector consequently quantifies over the whole row — every path absent — and emits at most one finding per row; a per-path lane would flag every multi-path row carrying a single stale entry. This contract lives in dark-factory (`orchestrator/src/orchestrator/delivered_checks.py::_run_grep_check`) and is restated here because `delivered_checks` is parsed nowhere in this repo.
+
+**False-positive guards:**
+- Terminal (`done` / `cancelled`) tasks are skipped — only a task that can still land can block a dependent.
+- Directory and trailing-slash pathspecs count as present when any tracked file lives under them (shared with PTODO's ζ lane via `path_present_in_tracked`, so the two cannot drift).
+- A path with no git history passes (presumed to-be-created), which is what keeps healthy post-state rows quiet.
+- A rename target that is not itself tracked is never advertised as a repair hint.
+- Rename-vs-delete is carried as **evidence**, not as a kind split: it changes only the repair hint, not what is wrong.
+- A row carrying git **pathspec magic** (a leading `:`, as in `:(exclude)` / `:!`, or an fnmatch wildcard) is skipped whole. `path_present_in_tracked` models exact-match and directory-prefix membership only, so it would call `crates/reify-ir/src/*.rs` absent while git greps it fine — a High finding against a satisfiable row, and the lane's only false-positive class. Silence is the fail-safe direction: a pathspec this detector cannot resolve is unclassifiable, not dead.
+
+**Severity / wiring:** **Opt-in via `--pattern PDCHECK`**, and `--task <id>` narrows it to one task — being task-state-shaped it has a task to narrow to, unlike the structural lanes, and the likeliest caller is someone unblocking a single stuck dependent. It is not a member of the no-`--pattern` default sweep. The process exit code is the count of High-severity findings, and the default sweep is what `scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill run — so a High-capable detector there would turn both non-zero the moment any task's check row went stale. Same posture as PDIAG and PDOCCOVER.
+
+**A refuted heuristic — do not rebuild it.** The signal originally sketched for this defect (intersect a row's `paths` with the task's `metadata.files` and flag paths the task's description says it deletes or relocates) was validated against both precedent tasks and fails three ways: it is **direction-blind** (task #5791's `files` holds both the old and the new `arg_acceptance.rs`, so it fires identically on the defect and on its landed fix), it **false-positives** on the cross-crate `lib.rs`/`mod.rs` pairs that nearly every multi-crate Rust task touches, and it has **zero recall on the canonical precedent** — #5799, which permanently blocked #5919, involved no relocation at all and rewrote *lines* in paths with no same-basename sibling. Reading the description prose instead would be an ad-hoc parser over meaningful strings. Path resolvability was chosen because it is deterministic, has no false-positive mode, and is what actually surfaced the live defects on #5778 and #5762.
+
 ## 6. Intervention vocabulary (Q-F-3)
 
 Severity ladder:
@@ -559,7 +588,7 @@ compose.
 
 **The `done_at` derivation.** Fused-memory MCP does NOT currently expose an explicit done-flip timestamp on its task records (probed 2026-05-16; only `updatedAt` is available). P1's orphan-export grace window (see §5 P1) compares `ctx.now - done_at` against 14 days — so without a `done_at` value P1 silently skips every done task and becomes a no-op (this was the reviewer-blocking bug uncovered in task 3731 review cycle 1).
 
-The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string (stripping the `.NNN` millisecond suffix that jq 1.7's `fromdateiso8601` rejects) and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
+The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string, accepting the same shapes as the crate's live loader (`Z`, `±HH:MM`, `±HH`, or no TZ read as UTC; optional fractional seconds), and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
 
 Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change on the wrapper path — the crate's live loader does not implement this precedence (see §11.2.1).
 
@@ -575,55 +604,45 @@ Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback
 
 **Equivalent on the shared tier.** For `status == "done"`, both the jq
 sidecar and the crate's live loader derive `done_at` from the same
-top-level `updatedAt` field, and both tolerate the `.NNN` fractional-second
-suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
-`sub("\\.[0-9]+Z$"; "Z")`, `crates/reify-audit/src/fused_memory_client.rs:405`
-via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
-tasks and for an absent or `null` `updatedAt`. The Rust parser
-additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
-`fromdateiso8601` rejects. Unreachable today since fused-memory's writer
-only ever emits `...Z`; if it ever became reachable it would land in the
-failure tier below (jq aborts the whole snapshot) rather than degrading
-gracefully.
+top-level `updatedAt` field. Since task 7280 both loaders map `Z`,
+`±HH:MM`, `±HH` and no-TZ (read as UTC) timestamps, with or without a
+fractional-second suffix, to the same epoch: the sidecar's
+`iso8601_to_epoch_or_null` mirrors
+`crates/reify-audit/src/fused_memory_client.rs` `parse_iso8601_to_epoch` /
+`split_tz`. The pin is a shared instant, not a differential test: Check 5h
+of `tests/infra/test_reify_audit_predone_wrapper.sh` pins every sidecar
+shape to 1778917144, the instant the crate's `iso8601_*` unit tests pin,
+but those unit tests cover only the `Z`-with-fraction, `±HH:MM` and no-TZ
+shapes, so the `±HH`, half-hour-offset and fraction-plus-offset shapes are
+pinned on the sidecar side only. Both yield
+`null`/`None` for non-done tasks and for an absent or `null` `updatedAt`.
+The residual difference is one-directional: the Rust parser also accepts
+some non-ISO input (text after `Z`, a non-numeric fraction, unpadded or
+out-of-range fields) and mis-reads a basic-format `±HHMM` offset, where the
+sidecar yields `null` and the wrapper warns. Tightening the Rust side is
+follow-up ticket `tkt_0RVBKGK1V4N31Q6T8XV5GEC3B9`.
 
 **Not equivalent on the precedence tier.** The jq filter prefers
 `.metadata.done_at` before falling back to `updatedAt`
-(`scripts/reify-audit-snapshot-filter.jq:70`). `task_metadata_from_wire`
-(`fused_memory_client.rs:364-370`) does not implement that precedence — it
-derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
-binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
-`consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
-never consulted.
+(the `.metadata.done_at //` precedence in
+`scripts/reify-audit-snapshot-filter.jq`). `task_metadata_from_wire`
+(`crates/reify-audit/src/fused_memory_client.rs`) does not implement that
+precedence — it derives `done_at` solely from the top-level `updatedAt`.
+Its `metadata` binding is read only for `files`, `done_provenance`, `prd`,
+`consumer_ref`, and `audit_foundation`; `metadata.done_at` is never
+consulted.
 
-**Not equivalent on the failure tier.** On an unparseable `updatedAt`
-the two paths diverge hard, in opposite directions. Measured against a
-`get_tasks` payload whose `status=="done"` row carries
-`"updatedAt":"garbage"`: `jq -r -f scripts/reify-audit-snapshot-filter.jq`
-prints `jq: error (at <stdin>:1): date "garbage" does not match format
-"%Y-%m-%dT%H:%M:%SZ"` and exits 5 with no output at all — the whole
-snapshot is lost, every task, not just the offending row. jq's
-`fromdateiso8601` raises rather than returning null, and the filter
-guards only the empty-string case (`if . == "" then null else
-(sub(...) | fromdateiso8601) end`,
-`scripts/reify-audit-snapshot-filter.jq:71-75`), so a
-non-empty-but-unparseable value reaches the raiser uncaught. The Rust
-path degrades per row instead: `parse_iso8601_to_epoch`
-(`crates/reify-audit/src/fused_memory_client.rs:398`) starts
-`s.split_once('T')?`, so `"garbage"` returns `None`; `done_at` is
-`None` for that row alone (`:364-370`) and every other task still
-loads. The blast radius lands on the wrapper: the jq failure trips
-`set -euo pipefail` in the `curl | jq` pipeline
-(`scripts/reify-audit-predone-wrapper.sh:298-299`), so `--tasks-file`
-materialization fails and the wrapper takes the `exit 125` arm
-(`:308`; its documented "Infrastructure error ... jq failure" code,
-`:130`) — through the synchronous pre-done hook once the §11.1 rewire
-lands (today §11.1.3 measures the raw binary invoked directly on the
-hook path, bypassing the wrapper entirely), that is a project-wide
-blocked done-flip caused by one malformed row. So the
-wrapper path is fail-closed and blast-radius-wide while the
-live-loader path is fail-open and per-row: which loader is wired
-(§11.1.3) changes not just the derived value but the failure mode
-itself.
+**Equivalent on the failure tier (since task 7236).** On an unparseable
+`updatedAt` both paths degrade per row. The sidecar's
+`iso8601_to_epoch_or_null` is total, so that row alone gets
+`done_at = null` and stays in the snapshot (Check 5f of
+`tests/infra/test_reify_audit_predone_wrapper.sh`), where the wrapper's
+missing-`done_at` WARNING names it; `parse_iso8601_to_epoch` returns
+`None` for that row alone and every other task still loads.
+*History (measured under task 6985, before 7236):* the sidecar's
+`fromdateiso8601` raised uncaught on such a row, so jq exited with no
+output, the wrapper took its `exit 125` infrastructure-error arm, and one
+malformed row lost the whole snapshot.
 
 **Consequence: a latent forward-compatibility hazard, not a live bug.**
 §11.2's claim that once fused-memory exposes an explicit `metadata.done_at`

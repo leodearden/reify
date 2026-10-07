@@ -91,7 +91,7 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
@@ -176,16 +176,28 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
+| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm the snapshot, or fused-memory for this `--project-root`, actually holds tasks |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
 
-**PTODO is unaffected by jcodemunch outages.** `--pattern PTODO` (and PTODO's participation in the default sweep) uses only deterministic grep + read-only sqlite — it never opens a jcodemunch connection and never degrades on a down serve. Only its liveness lane degrades gracefully when `tasks.db` is absent (one stderr breadcrumb; structural lane still runs; exit class unchanged). See `references/modes.md` §4 PTODO notes for detail.
+**The structural lanes — PTODO, PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK — are unaffected by jcodemunch outages.** Whether they run in the default sweep or because `--pattern` names them, each uses only deterministic tracked-file enumeration and working-tree reads, plus read-only sqlite for PTODO and PDCHECK. None opens a jcodemunch connection, so none degrades on a down serve. Two of them read `tasks.db` and degrade gracefully without it, with the exit class unchanged:
+
+- PTODO's `tasks.db`-backed lanes (liveness, inverse and G-allow) are skipped together behind one stderr breadcrumb; its structural lane still runs.
+- PDCHECK is skipped entirely. Like the jcodemunch breadcrumb below, its breadcrumb precedes the JSON array in the stderr tempfile:
+  ```
+  reify-audit: PDCHECK delivered_checks dead-path lane skipped — tasks.db absent at '<project-root>/.taskmaster/tasks/tasks.db': …; this is NOT a clean bill of health
+  ```
+  (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
+
+PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the loaded task corpus (the `--tasks-file` snapshot, or the fused-memory live loader), so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
+
+See `references/modes.md` §4 notes for detail.
 
 When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep, `--pattern P1`, and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. Instead:
 
 - P1 **and** the advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** (the inert `NoopJCodemunchOps` stub is used for all of them).
-- P2 (consumer-stub) and P5 (phantom-done) **still run** and produce normal findings — they never connect to jcodemunch.
+- Every selected detector that does not query jcodemunch — P2 (consumer-stub), P5 (phantom-done) and the structural lanes above — **still runs** and produces normal findings.
 - A breadcrumb line appears on stderr before the JSON array:
   ```
   reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
@@ -199,7 +211,7 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
 After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs. The outcome splits on what `--pattern` selected:
 
 - An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr (carrying a marker token in three of the four cases tabulated below). Nothing in the run set could have survived a refusal, so nothing is salvaged.
-- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
+- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, every other selected detector still runs, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
 
 The refusal returns **before any findings array is serialized**, so it emits no parseable JSON. That is precisely what lets the existing §3.1 disambiguator classify it correctly: the tempfile does not parse as a JSON array, so it is routed as an infra error rather than as 125 High findings. §3.1 needs no change for this — do not edit it.
 

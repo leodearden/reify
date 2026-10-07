@@ -46,11 +46,11 @@
 # partition above is only sound while the binary is PRESENT-but-stale.  The
 # same guard also returns 75 for an ABSENT binary, and returns 125 when the
 # rebuild path ran and the binary is STILL judged stale.  Neither rc implies
-# the binary is unusable: 125 in particular covers a `cargo build` that was a
-# legitimate no-op while the on-disk mtime still predates the last
-# crates/reify-audit commit — a warm-lane seeded target/ with stamped mtimes,
-# where $REIFY_AUDIT_BIN is fully executable (see the `return 125` site in
-# scripts/reify-audit-freshness.sh).  So BOTH rcs are split on detector
+# the binary is unusable: 125 in particular covers a FAILED rebuild that left
+# an older $REIFY_AUDIT_BIN fully executable, or an override $REIFY_AUDIT_BIN
+# that is not cargo's own artifact (see the `return 125` site in
+# scripts/reify-audit-freshness.sh; a SUCCESSFUL no-op build of cargo's own
+# artifact is fresh there since #7691).  So BOTH rcs are split on detector
 # USABILITY, never on the rc alone:
 #   PRESENT-but-stale → RATCHET_SKIP=1.  Only the precision-sensitive (a) is
 #     skipped; the staleness-stable (b)+(c) hard gate still runs, so the run
@@ -182,16 +182,15 @@ if [ "$_guard_rc" -eq 75 ]; then
 elif [ "$_guard_rc" -ne 0 ]; then
     # Any other nonzero rc — 125 from reify_audit_guard means the binary is
     # STILL judged stale after the rebuild path ran.  That covers two very
-    # different worlds: a failed `cargo build -p reify-audit` (no usable
-    # detector at all), and a build that was a legitimate no-op — cargo's
-    # fingerprint says up-to-date — while the on-disk mtime still predates the
-    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
-    # stamped mtimes, where the binary is fully usable.
+    # different worlds: a failed `cargo build -p reify-audit` with no usable
+    # detector at all, and a present binary the guard could not vouch for — a
+    # failed build that left an older binary behind, or an override
+    # REIFY_AUDIT_BIN that is not cargo's own artifact.
     #
     # So split on detector USABILITY, exactly as the rc-75 partition above
     # does and exactly as tests/infra/test_reify_audit_ptodo.sh does (#5962
     # review, esc-5405-9).  Collapsing both worlds into one unconditional
-    # `exit 1` turns every stamped-mtime warm-lane run into a spurious hard RED
+    # `exit 1` turns every such run into a spurious hard RED
     # while emitting a diagnostic ("could not be made usable") that is
     # factually wrong about an executable binary.
     if [ -x "$REIFY_AUDIT_BIN" ]; then

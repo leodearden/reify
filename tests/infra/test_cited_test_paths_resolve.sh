@@ -541,17 +541,31 @@ assert "D: two same-basename candidates yield an ambiguous:2 record listing both
         'crates/mycrate/tests/harness_a/dup.rs,crates/mycrate/tests/harness_b/dup.rs')"
 
 # ===========================================================================
-# Section E: SELF-EXCLUSION of the gate's own three artifacts.
+# Section E: SCAN EXCLUSIONS — mention, not use.
 #
-# LOAD-BEARING, not cosmetic. The committed baseline is ~300 rows each ENDING
-# in a stale cited path, and the lib and this file carry the citation regex
-# plus worked examples. Without exclusion the scan would harvest its own
-# baseline as ~300 fresh citations, every one of them stale, and regenerating
-# the baseline would fold it into itself. The exclusion list is defined ONCE
-# in the lib so the gate and the generator cannot drift apart.
+# LOAD-BEARING, not cosmetic. A file is excluded when the citation shape
+# appears in it as this tool's own subject matter rather than as a reference a
+# reader is meant to follow. Two kinds of member, asserted separately because
+# they rest on different things:
+#
+#   - the gate's OWN THREE ARTIFACTS, structurally. The committed baseline is
+#     ~300 rows each ENDING in a stale cited path, and the lib and this file
+#     carry the citation regex plus worked examples. Without exclusion the
+#     scan would harvest its own baseline as ~300 fresh citations, every one
+#     of them stale, and regenerating the baseline would fold it into itself.
+#   - docs/legibility/confusion-codebook.yaml, contingently. A sighting there
+#     records an agent handed a path that did not exist, so the stale path is
+#     the payload and repointing it would destroy the finding. Its exclusion
+#     rests on a MEASURED property of the file's content, not a structural
+#     guarantee — see the RE-AUDIT TRIGGER in the lib's exclusion block.
+#
+# Both assertions pair the exclusion with docs/elsewhere.md citing the SAME
+# stale path, so neither can pass by the scan simply finding nothing. The
+# exclusion list is defined ONCE in the lib so the gate and the generator
+# cannot drift apart.
 # ===========================================================================
 echo ""
-echo "--- Section E: the gate's own artifacts are excluded from the scan ---"
+echo "--- Section E: mention-not-use files are excluded from the scan ---"
 
 FIX_SELF="$(_mktmpd)/repo"
 _fixture_init "$FIX_SELF"
@@ -567,6 +581,21 @@ _fixture_commit "$FIX_SELF"
 
 assert "E: the same stale citation is ignored inside the baseline/lib/gate and reported everywhere else" \
     _expect_scan "$FIX_SELF" \
+    "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
+
+# The codebook, in its own fixture so its exclusion is proved independently of
+# the gate's three artifacts: a sighting quoting the stale path is the record,
+# not a reference, while the identical citation in ordinary prose still reds.
+FIX_CODEBOOK="$(_mktmpd)/repo"
+_fixture_init "$FIX_CODEBOOK"
+_fixture_write "$FIX_CODEBOOK" crates/mycrate/tests/harness_sub/moved_test.rs '// moved here'
+_fixture_write "$FIX_CODEBOOK" docs/legibility/confusion-codebook.yaml \
+    "    evidence_quote: 'no such file: crates/mycrate/tests/moved_test.rs'"
+_fixture_write "$FIX_CODEBOOK" docs/elsewhere.md 'see crates/mycrate/tests/moved_test.rs'
+_fixture_commit "$FIX_CODEBOOK"
+
+assert "E: the same stale citation is ignored inside the confusion codebook and reported everywhere else" \
+    _expect_scan "$FIX_CODEBOOK" \
     "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
 
 # ===========================================================================

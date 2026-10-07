@@ -15,13 +15,16 @@
 
 #![cfg(has_gmsh)]
 
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+use reify_kernel_gmsh::BackgroundSizeField;
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
+use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, MeshSizeScope};
 
 /// RAII reset of the process-global gmsh diagnostics state this file's
 /// logger and census tests perturb: `Mesh.ElementOrder`, `General.Terminal`,
 /// and the logger-capture buffer. Mirrors
-/// `reify_kernel_gmsh::mesh_size_clamp::MeshSizeClampReset`'s shape —
+/// `reify_kernel_gmsh::mesh_size_scope::MeshSizeScope`'s shape —
 /// [`Self::armed`] borrows the live `GMSH_LOCK` guard so `drop`'s restore
 /// FFI writes land on every exit path (assertion failure or panic included)
 /// while the lock is still held, not just the success path a trailing
@@ -507,4 +510,141 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
     // gmshClear(), so a later test must not inherit order 2 or silenced
     // stdout/stderr from this one.
     ffi::clear().expect("ffi::clear failed (teardown)");
+}
+
+/// `option_get_number` round-trips a written value, and reports an unknown
+/// option name as an error rather than a plausible-looking number.
+///
+/// This is the reader whose absence forced every pre-#6968 mesh-size guard in
+/// this crate to infer an option leak from mesh DENSITY — see
+/// `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`,
+/// whose docstrings each state the constraint. Those guards remain (a density
+/// probe fails on a leak by any route, not only via an option name a test
+/// thought to read), but a direct table read is decisive where a density probe
+/// is vacuous: `Mesh.MeshSizeExtendFromBoundary` has no measurable effect while
+/// `Mesh.MeshSizeMin == Mesh.MeshSizeMax`, which is every reachable
+/// `mesh_to_volume` path.
+///
+/// The unknown-name leg is the load-bearing one. A getter that reported
+/// "absent" as `Ok(0.0)` would make every guard built on it fail OPEN: `0.0` is
+/// a plausible reading for `Mesh.MeshSizeMin`, so a typo'd option name in a
+/// future guard would assert successfully against a value gmsh never supplied.
+#[test]
+fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name() {
+    let _guard = init::GMSH_LOCK
+        .lock()
+        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+    // Initialise BEFORE arming the scope, matching every production call site.
+    // Not cosmetic: `gmshOptionSetNumber` on an uninitialised library logs
+    // `Error : Gmsh has not been initialized`, does nothing, and still returns
+    // `ierr = 0` (measured, gmsh 4.15.2), so a scope entered above this line
+    // used to be silently inert — five stderr error lines per gate run, and
+    // the one test that reuses the production guard as a fixture exercising
+    // only its `drop` half.
+    init::ensure_initialized();
+
+    // Declared after `_guard` so it drops first: its restore lands while
+    // GMSH_LOCK is still held, on every exit path including a panic between
+    // the write below and the explicit restore. Reuses the production guard
+    // rather than a test-local copy, so the default this test leaves behind
+    // cannot drift from the one production writes.
+    let _size_scope = MeshSizeScope::entered(&_guard)
+        .expect("MeshSizeScope::entered must establish gmsh's size defaults");
+
+    // A value no production path writes, so a table left dirty by a sibling
+    // cannot make the round-trip pass by accident.
+    const DISTINCTIVE_MAX: f64 = 0.031_25;
+    ffi::option_set_number("Mesh.MeshSizeMax", DISTINCTIVE_MAX)
+        .expect("ffi::option_set_number(Mesh.MeshSizeMax) failed");
+    let read_back = ffi::option_get_number("Mesh.MeshSizeMax")
+        .expect("ffi::option_get_number(Mesh.MeshSizeMax) failed after a successful write");
+    assert_eq!(
+        read_back, DISTINCTIVE_MAX,
+        "option_get_number must return exactly what option_set_number wrote; \
+         wrote {DISTINCTIVE_MAX}, read {read_back}",
+    );
+
+    // The transition every outbound guard in this crate asserts: back to
+    // gmsh's documented default, observed rather than assumed.
+    ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT)
+        .expect("ffi::option_set_number(Mesh.MeshSizeMax=default) failed");
+    let restored = ffi::option_get_number("Mesh.MeshSizeMax")
+        .expect("ffi::option_get_number(Mesh.MeshSizeMax) failed after the restore");
+    assert_eq!(
+        restored, GMSH_MESH_SIZE_MAX_DEFAULT,
+        "after restoring gmsh's default, option_get_number must read it back exactly; \
+         expected {GMSH_MESH_SIZE_MAX_DEFAULT}, read {restored}",
+    );
+
+    let unknown = ffi::option_get_number("Mesh.NoSuchOptionReify");
+    assert!(
+        unknown.is_err(),
+        "an unknown option name must be reported as Err, not as a plausible-looking \
+         number a guard would then assert against; got {unknown:?}",
+    );
+}
+
+/// Removes a post-processing view on every exit path. Views are process-global
+/// and survive `gmshClear`, so a failing assertion must not leak one into the
+/// later tests of this binary.
+struct ViewRemoval(i32);
+
+impl Drop for ViewRemoval {
+    fn drop(&mut self) {
+        let _ = ffi::view_remove(self.0);
+    }
+}
+
+/// `ffi::view_probe` interpolates a scalar `"SS"` view where an element
+/// contains the point, and reports a miss as an empty result rather than an
+/// error. The list data comes from the production serialiser, so the probe is
+/// read against the same buffer layout `refine_volume` installs.
+#[test]
+fn view_probe_interpolates_inside_a_scalar_tet_view_and_returns_nothing_outside() {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+
+    let one_tet = VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.0, 1.0,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    let field = BackgroundSizeField::from_tet_mesh(&one_tet, &[1.0, 2.0, 3.0, 4.0])
+        .expect("a single P1 tet with positive sizes must serialise");
+
+    let tag = ffi::view_add("ffi_smoke_probe").expect("ffi::view_add failed");
+    let _view = ViewRemoval(tag);
+    ffi::view_add_list_data(tag, "SS", field.element_count(), field.list_data())
+        .expect("ffi::view_add_list_data failed");
+
+    let centroid = ffi::view_probe(tag, [0.25, 0.25, 0.25])
+        .expect("probing a point inside the view's element must succeed");
+    assert_eq!(
+        centroid.len(),
+        1,
+        "a scalar view with one time step must yield exactly one value at a contained \
+         point; got {centroid:?}",
+    );
+    assert!(
+        (centroid[0] - 2.5).abs() < 1e-12,
+        "the centroid of a linear tet must interpolate to the mean of its four vertex \
+         values (2.5); got {}",
+        centroid[0],
+    );
+
+    let outside = ffi::view_probe(tag, [5.0, 5.0, 5.0]);
+    assert!(
+        matches!(&outside, Ok(values) if values.is_empty()),
+        "a point no element contains must be reported as an empty Ok, not an error and \
+         not a closest-node value, so a probe can be issued at any point; got {outside:?}",
+    );
 }

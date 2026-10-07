@@ -20,6 +20,9 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     last_substantive_value: overrides.last_substantive_value,
     dimension: overrides.dimension,
     si_value: overrides.si_value,
+    // For a Scalar-valued cell the backend reports the two equal, so existing
+    // fixtures keep their meaning; a test that needs them to differ overrides it.
+    declared_dimension: overrides.declared_dimension ?? overrides.dimension,
   };
 }
 
@@ -409,6 +412,43 @@ describe('PropertyEditor blur-commit', () => {
     expect(onSetParam).not.toHaveBeenCalled();
     expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor commits once per gesture, never per keystroke', () => {
+  const values = EDITABLE_C1;
+
+  // `onSetParameter` is now the DURABLE write: every call rewrites the
+  // parameter's default in the source file. These pin that the edit box asks
+  // for exactly one such write per completed edit, under the async handler
+  // shape the App actually passes.
+  it('typing alone commits nothing', async () => {
+    const onSetParam = vi.fn(async () => {});
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    for (const value of ['7', '75', '750']) {
+      fireEvent.input(el, { target: { value } });
+    }
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
+  it('Enter commits the typed literal exactly once', async () => {
+    const onSetParam = vi.fn(async () => {});
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: '80mm' } });
+    fireEvent.keyDown(el, { key: 'Enter' });
+
+    expect(onSetParam).toHaveBeenCalledTimes(1);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
   });
 });
 
@@ -909,6 +949,42 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
   });
 });
 
+// The SAME curated ladders in both spellings. Every case that uses it runs
+// against both, so those blocks are agnostic to whether task #5788's relabel
+// has landed — and its addendum L5 fixture sweep cannot turn them red.
+const LADDERS_BY_SPELLING: Array<[string, UnitLadderMap]> = [
+  [
+    'superscript spelling (pre-#5788)',
+    {
+      Volume: [
+        { label: 'mm³', si_scale: 1e-9, is_default: true },
+        { label: 'cm³', si_scale: 1e-6, is_default: false },
+        { label: 'L', si_scale: 1e-3, is_default: false },
+        { label: 'm³', si_scale: 1.0, is_default: false },
+      ],
+      Density: [
+        { label: 'kg/m³', si_scale: 1.0, is_default: true },
+        { label: 'g/cm³', si_scale: 1000.0, is_default: false },
+      ],
+    },
+  ],
+  [
+    'ASCII spelling (post-#5788)',
+    {
+      Volume: [
+        { label: 'mm^3', si_scale: 1e-9, is_default: true },
+        { label: 'cm^3', si_scale: 1e-6, is_default: false },
+        { label: 'L', si_scale: 1e-3, is_default: false },
+        { label: 'm^3', si_scale: 1.0, is_default: false },
+      ],
+      Density: [
+        { label: 'kg/m^3', si_scale: 1.0, is_default: true },
+        { label: 'g/cm^3', si_scale: 1000.0, is_default: false },
+      ],
+    },
+  ],
+];
+
 describe('PropertyEditor quantity literal acceptance with a live unit ladder (task #6028)', () => {
   /**
    * Five cells covering every branch of the per-cell alphabet resolution:
@@ -997,42 +1073,6 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
     if (called) expect(onSetParam).toHaveBeenCalledWith(cellId, literal);
     return { accepted: called, onSetParam };
   }
-
-  // The SAME curated ladders in both spellings. Every case below runs against
-  // both, so this block is agnostic to whether task #5788's relabel has landed
-  // — and its addendum L5 fixture sweep cannot turn these red.
-  const LADDERS_BY_SPELLING: Array<[string, UnitLadderMap]> = [
-    [
-      'superscript spelling (pre-#5788)',
-      {
-        Volume: [
-          { label: 'mm³', si_scale: 1e-9, is_default: true },
-          { label: 'cm³', si_scale: 1e-6, is_default: false },
-          { label: 'L', si_scale: 1e-3, is_default: false },
-          { label: 'm³', si_scale: 1.0, is_default: false },
-        ],
-        Density: [
-          { label: 'kg/m³', si_scale: 1.0, is_default: true },
-          { label: 'g/cm³', si_scale: 1000.0, is_default: false },
-        ],
-      },
-    ],
-    [
-      'ASCII spelling (post-#5788)',
-      {
-        Volume: [
-          { label: 'mm^3', si_scale: 1e-9, is_default: true },
-          { label: 'cm^3', si_scale: 1e-6, is_default: false },
-          { label: 'L', si_scale: 1e-3, is_default: false },
-          { label: 'm^3', si_scale: 1.0, is_default: false },
-        ],
-        Density: [
-          { label: 'kg/m^3', si_scale: 1.0, is_default: true },
-          { label: 'g/cm^3', si_scale: 1000.0, is_default: false },
-        ],
-      },
-    ],
-  ];
 
   describe.each(LADDERS_BY_SPELLING)('against the %s', (_spelling, ladders) => {
     // Before #6028 every one of these was rejected: the alphabet was five
@@ -1367,6 +1407,112 @@ describe('PropertyEditor with the unit-ladder fetch failed (task #5757 amendment
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(input.hasAttribute('data-invalid')).toBe(false);
     expect(onSetParam).toHaveBeenCalledWith('tor', '15');
+  });
+});
+
+/**
+ * Task #6962: every INPUT-side decision — the bare-number gate and the per-cell
+ * unit alphabet — reads `declared_dimension`, the dimension the cell's TYPE
+ * requires, which is the fact the backend gate keys on. The value-derived
+ * `dimension` is empty for a `none`-valued `Option<Length>` cell, so a panel
+ * reading it admitted `120` for the engine to refuse behind an async toast.
+ */
+describe('PropertyEditor gates input on the DECLARED dimension (task #6962)', () => {
+  /** Type `literal` into the single cell `val` and report what the panel did. */
+  function typeIntoCell(val: ValueData, literal: string, unitLadders: UnitLadderMap | undefined) {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={{ [val.cell_id]: val }}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={unitLadders}
+      />
+    ));
+    const row = screen.getByTestId(`prop-row-${val.cell_id}`);
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: literal } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    return { input, onSetParam };
+  }
+
+  function expectRefusedInline(r: ReturnType<typeof typeIntoCell>, literal: string) {
+    expect(r.input.hasAttribute('data-invalid')).toBe(true);
+    expect(r.onSetParam).not.toHaveBeenCalled();
+    expect(r.input.value).toBe(literal);
+  }
+
+  function expectSubmittedVerbatim(r: ReturnType<typeof typeIntoCell>, cellId: string, literal: string) {
+    expect(r.input.hasAttribute('data-invalid')).toBe(false);
+    expect(r.onSetParam).toHaveBeenCalledWith(cellId, literal);
+  }
+
+  /** A `none`-valued cell: no value-side dimension, whatever its declared type. */
+  function noneValued(cellId: string, declared: string): ValueData {
+    return makeValue({
+      cell_id: cellId,
+      name: cellId,
+      entity_path: `Bracket.${cellId}`,
+      value: 'none',
+      unit: '',
+      dimension: '',
+      si_value: undefined,
+      declared_dimension: declared,
+    });
+  }
+
+  const LENGTH_LADDER: UnitLadderMap = {
+    Length: [
+      { label: 'mm', si_scale: 1e-3, is_default: true },
+      { label: 'm', si_scale: 1, is_default: false },
+    ],
+  };
+
+  describe.each([
+    ['a Length ladder', LENGTH_LADDER],
+    ['no ladders (the BASE_UNIT_DIMENSIONS floor)', undefined],
+  ])('an Option<Length> cell holding none, with %s', (_label, ladders) => {
+    const gap = noneValued('gap', 'Length');
+
+    it('refuses a bare number INLINE', () => {
+      expectRefusedInline(typeIntoCell(gap, '120', ladders), '120');
+    });
+
+    it('accepts a united literal verbatim', () => {
+      expectSubmittedVerbatim(typeIntoCell(gap, '120mm', ladders), 'gap', '120mm');
+    });
+  });
+
+  describe.each(LADDERS_BY_SPELLING)('an Option<Volume> cell holding none, against the %s', (_spelling, ladders) => {
+    const vol = noneValued('vol', 'Volume');
+
+    it('refuses a bare number INLINE', () => {
+      expectRefusedInline(typeIntoCell(vol, '5', ladders), '5');
+    });
+
+    it('accepts a Volume literal verbatim', () => {
+      expectSubmittedVerbatim(typeIntoCell(vol, '5L', ladders), 'vol', '5L');
+    });
+
+    it('scopes the unit alphabet to the declared dimension: a Density literal is refused', () => {
+      expectRefusedInline(typeIntoCell(vol, '7.8kg/m^3', ladders), '7.8kg/m^3');
+    });
+  });
+
+  it('does not fall back to the value-side dimension when nothing is declared', () => {
+    // The backend reports no declared dimension, so its gate accepts `20` too.
+    const nodecl = makeValue({
+      cell_id: 'nodecl',
+      name: 'nodecl',
+      entity_path: 'Tank.nodecl',
+      value: '20',
+      dimension: 'Volume',
+      si_value: 2e-8,
+      declared_dimension: '',
+    });
+    const [, ascii] = LADDERS_BY_SPELLING[1];
+    expectSubmittedVerbatim(typeIntoCell(nodecl, '20', ascii), 'nodecl', '20');
   });
 });
 

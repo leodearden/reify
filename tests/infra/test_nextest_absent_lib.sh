@@ -777,8 +777,12 @@ _t10b() {
 # (c) The composition is armed on ALL FOUR signals, not just EXIT — verify.sh
 # wraps infra tests in `timeout --kill-after`, so an outer kill must still tear
 # the temp tree down AND still run the caller's handler. Exercised by having the
-# probe signal ITSELF, once per child per signal, so a lib that replays on only
-# one of the three cannot pass an arm whose title claims all three.
+# probe signal ITSELF, once per child per signal, and reported as one assert per
+# signal whose title claims exactly that signal, so a lib that replays on only
+# one of the three cannot pass the other two. The probe is spawned via
+# _t10c_spawn with SIG at default disposition, so an inherited SIG_IGN (nohup, a
+# bare `&`) cannot turn that self-signal into a no-op; where the host cannot
+# reset it, that sub-arm SKIPs instead of being counted.
 #
 # WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
 # this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
@@ -799,6 +803,9 @@ set -euo pipefail
 cd "$1"
 _m="$2"
 _sig="$3"
+trap : "$_sig"
+if [ "$(trap -p "$_sig")" != "trap -- ':' SIG$_sig" ]; then echo "IGNORED_ON_ENTRY" >> "$_m"; exit 0; fi
+trap - "$_sig"
 caller_cleanup() { echo "CALLER_RAN" >> "$_m"; }
 trap caller_cleanup EXIT
 source tests/infra/nextest_absent_lib.sh
@@ -810,6 +817,12 @@ kill -KILL $$
 echo "SURVIVED_KILL" >> "$_m"
 TRAP_SIG
 
+# env --default-signal: GNU coreutils >= 8.31; BSD env and older GNU env lack it.
+_T10C_CAN_RESET_DISPOSITION=0
+if env --default-signal=TERM true >/dev/null 2>&1; then
+    _T10C_CAN_RESET_DISPOSITION=1
+fi
+
 # THE PER-ATTEMPT VERDICT TRAVELS ON THE EXIT CODE, not in a diagnostic string,
 # so the retry policy below branches on a value instead of re-parsing prose:
 #   _T10C_RC_OK        the trap contract held for this signal.
@@ -820,15 +833,38 @@ TRAP_SIG
 #                      or no WORKDIR= line. The probe never got far enough to say
 #                      anything about the contract, which is what makes this the
 #                      only outcome a retry may absorb.
+#   _T10C_RC_IGNORED_ON_ENTRY
+#                      the probe shell inherited SIG as SIG_IGN, and bash cannot
+#                      trap a signal ignored on entry, so the sub-arm could not
+#                      run. An environment fact, not a contract verdict, and
+#                      deterministic, so never retried.
 _T10C_RC_OK=0
 _T10C_RC_CONTRACT=1
 _T10C_RC_STARVED=2
+_T10C_RC_IGNORED_ON_ENTRY=3
 
 # _t10c_probe_once SIG MARKER — ONE attempt at the SIG arm. Echoes the same
-# diagnostics this arm has always echoed and returns one of the three verdict
+# diagnostics this arm has always echoed and returns one of the four verdict
 # codes above.
 #
-# PRECEDENCE, when an attempt shows both classes at once: STARVATION DOMINATES.
+# _t10c_spawn SIG MARKER — run 10c's probe child with SIG at DEFAULT disposition.
+# This CONSTRUCTS the arm's precondition, a deliverable SIG, instead of inheriting
+# whatever the launcher left. The reset is scoped to this short-lived child on
+# purpose: resetting the suite itself would make it killable by the very hangup
+# an operator nohup'd it against. The probe's own IGNORED_ON_ENTRY check stays
+# the check at use, for hosts without the capability.
+_t10c_spawn() {
+    if [ "$_T10C_CAN_RESET_DISPOSITION" = 1 ]; then
+        env --default-signal="$1" bash "$NX_TRAP_SIG" "$REPO_ROOT" "$2" "$1"
+    else
+        bash "$NX_TRAP_SIG" "$REPO_ROOT" "$2" "$1"
+    fi
+}
+
+# PRECEDENCE. IGNORED_ON_ENTRY is classified FIRST, before both other classes:
+# the probe writes it and exits before init, so it carries no WORKDIR= line and
+# the checks below would misread it as STARVED and retry it. Otherwise, when an
+# attempt shows both remaining classes at once: STARVATION DOMINATES.
 # A probe that wrote no marker, outlived its own SIGKILL, or never reached its
 # `echo WORKDIR=` line did not get far enough for its CALLER_RAN / leaked-workdir
 # evidence to mean anything, so promoting that evidence to a contract verdict
@@ -839,7 +875,7 @@ _t10c_probe_once() {
     rm -f "$_m"
     # 2>/dev/null: the parent shell reports the child's death as "Killed",
     # which is the expected outcome here, not evidence.
-    bash "$NX_TRAP_SIG" "$REPO_ROOT" "$_m" "$_sig" 2>/dev/null || true
+    _t10c_spawn "$_sig" "$_m" 2>/dev/null || true
     echo "--- SIG$_sig ---"
     if [ ! -f "$_m" ]; then
         echo "SIG$_sig: the probe wrote no marker at all"
@@ -847,6 +883,13 @@ _t10c_probe_once() {
     fi
     cat "$_m"
 
+    if grep -q '^IGNORED_ON_ENTRY$' "$_m"; then
+        echo "SIG$_sig: SIG$_sig was IGNORED ON ENTRY to the probe shell, an inherited"
+        echo "SIG_IGN (nohup ignores HUP; a bare \`cmd &\` from a shell without job"
+        echo "control ignores INT/QUIT). bash cannot trap a signal ignored on entry,"
+        echo "so this sub-arm could not be run. It says nothing about the trap contract."
+        return "$_T10C_RC_IGNORED_ON_ENTRY"
+    fi
     if grep -q '^SURVIVED_KILL$' "$_m"; then
         echo "SIG$_sig: the probe outlived its own SIGKILL, so CALLER_RAN could"
         echo "have come from the EXIT trap — this arm would be vacuous."
@@ -916,12 +959,27 @@ _t10c_probe() {
     return "$_rc"
 }
 
-_t10c() {
-    local sig rc=0
-    for sig in INT TERM HUP; do
-        _t10c_probe "$sig" "$NX_TRAP_DIR/signal-$sig.marker" || rc=1
-    done
-    return "$rc"
+# _t10c_replay OUT RC — replay an already-run probe's evidence under assert(), so
+# it lands in the FAIL dump, and hand back that probe's verdict.
+_t10c_replay() {
+    cat "$1"
+    return "$2"
+}
+
+# _t10c_report SIG — run 10c's SIG sub-arm and report it as ONE verdict. A signal
+# ignored on entry, and not resettable on this host, is a loud SKIP printed
+# OUTSIDE assert(), which shows captured output only on FAIL; nothing is counted
+# for a sub-arm that could not run.
+_t10c_report() {
+    local _sig="$1" _out="$NX_TRAP_DIR/signal-$1.out" _rc=0
+    _t10c_probe "$_sig" "$NX_TRAP_DIR/signal-$_sig.marker" > "$_out" 2>&1 || _rc=$?
+    if [ "$_rc" -eq "$_T10C_RC_IGNORED_ON_ENTRY" ]; then
+        echo "  SKIP: 10c SIG$_sig sub-arm not run: SIG$_sig was ignored on entry to the probe shell (inherited SIG_IGN, e.g. nohup for HUP, a bare & for INT) and could not be reset on this host — not a trap-contract verdict"
+        sed 's/^/  | /' "$_out"
+        return 0
+    fi
+    assert "10c: the composed trap is armed on SIG$_sig as well as EXIT" \
+        _t10c_replay "$_out" "$_rc"
 }
 
 # (d) The REAL consumer's shape, not a reduced probe, and the filesystem
@@ -1094,7 +1152,10 @@ _t10c_retry_expect() {
 
 assert "10a: a handler registered BEFORE nextest_absent_init still fires, after the lib's own teardown" _t10a
 assert "10b: nextest_absent_cleanup lets a handler registered AFTER init tear the env down itself" _t10b
-assert "10c: the composed trap is armed on INT/TERM/HUP as well as EXIT" _t10c
+for _sig in INT TERM HUP; do
+    _t10c_report "$_sig"
+done
+unset _sig
 assert "10d: a timeout kill of a semaphore_wiring-shaped consumer removes the CALLER's temp dirs too" _t10d
 
 echo ""
@@ -1128,6 +1189,134 @@ assert "10g: at factor 4 an always-starved probe FAILS after exactly 4 attempts,
 #     budget cannot dilute a genuine regression into an intermittent one.
 assert "10h: at factor 4 a contract verdict FAILS after exactly one attempt (a real regression is never retried)" \
     _t10c_retry_expect contract 4 "$_T10C_RC_CONTRACT" no 1
+
+# -- Test 10i-10l: arm 10c under an inherited SIG_IGN (nohup, bare &) ----------
+#
+# A non-interactive bash cannot trap a signal that was SIG_IGN on entry: `trap`
+# returns 0 and installs nothing (task 7360). nohup leaves HUP ignored, and a
+# bare `cmd &` from a shell without job control leaves INT/QUIT ignored, in
+# every descendant. 10c's probe then ran init, its self-kill was a no-op, and the
+# arm reported a trap-contract regression: a verdict about the lib drawn from a
+# fact about the launcher. These arms hand the probe an ignored-on-entry SIG the
+# same way those launchers do, `( trap '' SIG; ... )`, and drive the REAL probe
+# through _t10c_probe so they keep 10c's starvation tolerance.
+echo ""
+echo "--- Test 10i-10l: arm 10c under an inherited SIG_IGN (nohup, bare &) ---"
+
+# _t10c_under_ignored SIG RESET CMD... — run CMD in a subshell whose SIG is
+# SIG_IGN, with the host's disposition-reset capability forced to RESET (0|1).
+# The subshell keeps both overrides away from the parent suite.
+_t10c_under_ignored() {
+    local _sig="$1" _reset="$2"
+    shift 2
+    ( trap '' "$_sig"; _T10C_CAN_RESET_DISPOSITION="$_reset"; "$@" )
+}
+
+# (i) With no reset available, every sub-arm must come back IGNORED_ON_ENTRY:
+#     named as the environment fact it is, never in contract language, and
+#     before nextest_absent_init (no WORKDIR= line, so nothing could leak).
+_t10i() {
+    local _sig _m _out _rc _bad _fail=0
+    local _want="${_T10C_RC_IGNORED_ON_ENTRY:-}"
+    for _sig in INT TERM HUP; do
+        _m="$NX_TRAP_DIR/ignored-$_sig.marker"
+        _out="$NX_TRAP_DIR/ignored-$_sig.out"
+        _rc=0
+        _bad=0
+        _t10c_under_ignored "$_sig" 0 _t10c_probe "$_sig" "$_m" > "$_out" 2>&1 || _rc=$?
+        if [ -z "$_want" ]; then
+            echo "SIG$_sig: verdict code _T10C_RC_IGNORED_ON_ENTRY is not defined (probe rc=$_rc)"
+            _bad=1
+        elif [ "$_rc" != "$_want" ]; then
+            echo "SIG$_sig: probe verdict rc=$_rc, expected IGNORED_ON_ENTRY (rc=$_want)"
+            _bad=1
+        fi
+        if ! grep -qi 'ignored on entry' "$_out"; then
+            echo "SIG$_sig: the diagnostic never says SIG$_sig was ignored on entry"
+            _bad=1
+        fi
+        if grep -q 'is not implemented' "$_out"; then
+            echo "SIG$_sig: the diagnostic still reports a trap-contract regression"
+            _bad=1
+        fi
+        if [ -f "$_m" ] && grep -q '^WORKDIR=' "$_m"; then
+            echo "SIG$_sig: the probe ran nextest_absent_init before reporting, so it"
+            echo "had a workdir to leak"
+            _bad=1
+        fi
+        if [ "$_bad" -ne 0 ]; then
+            echo "--- SIG$_sig probe output ---"
+            cat "$_out"
+            _fail=1
+        fi
+    done
+    return "$_fail"
+}
+
+assert "10i: with SIG_IGN inherited and no reset, each of 10c's INT/TERM/HUP sub-arms reports IGNORED_ON_ENTRY, not a trap-contract verdict" \
+    _t10i
+
+# (j) The disposition is deterministic, so retrying it only burns forks.
+assert "10j: at factor 4 an IGNORED_ON_ENTRY verdict FAILS after exactly one attempt (an environment fact is never retried)" \
+    _t10c_retry_expect ignored 4 "${_T10C_RC_IGNORED_ON_ENTRY:-}" no 1
+
+# (k) Where the host can reset a disposition, an inherited SIG_IGN must not cost
+#     10c its coverage: the probe is handed SIG at default and the arm runs.
+_t10k() {
+    local _sig _out _rc _fail=0
+    for _sig in INT TERM HUP; do
+        _out="$NX_TRAP_DIR/reset-$_sig.out"
+        _rc=0
+        _t10c_under_ignored "$_sig" 1 _t10c_probe "$_sig" "$NX_TRAP_DIR/reset-$_sig.marker" > "$_out" 2>&1 || _rc=$?
+        if [ "$_rc" -ne "$_T10C_RC_OK" ]; then
+            echo "SIG$_sig: under an inherited SIG_IGN the probe returned rc=$_rc, not OK"
+            echo "--- SIG$_sig probe output ---"
+            cat "$_out"
+            _fail=1
+        fi
+    done
+    return "$_fail"
+}
+
+if [ "$_T10C_CAN_RESET_DISPOSITION" = 1 ]; then
+    assert "10k: with SIG_IGN inherited (as under nohup or a bare &), 10c's INT/TERM/HUP sub-arms still run and pass because the probe is handed a default disposition" \
+        _t10k
+else
+    echo "  SKIP: 10k: env(1) on this host has no --default-signal (GNU coreutils >= 8.31), so the probe cannot be handed a default disposition; under an inherited SIG_IGN arm 10c SKIPs that signal instead"
+fi
+
+# (l) What the operator SEES for a sub-arm that could not run: a loud SKIP that
+#     names the signal and the inherited disposition, and no PASS/FAIL line at
+#     all. assert() always emits one of those, so their absence proves nothing
+#     was counted. The subshell keeps any counter it bumps away from the suite.
+_t10l() {
+    local _out="$NX_TRAP_DIR/report-HUP.out" _bad=0
+    _t10c_under_ignored HUP 0 _t10c_report HUP > "$_out" 2>&1 || true
+    if ! grep -qE '^  SKIP: .*SIGHUP' "$_out"; then
+        echo "no '  SKIP:' line naming SIGHUP"
+        _bad=1
+    fi
+    if ! grep -qi 'ignored on entry' "$_out"; then
+        echo "the report never says SIGHUP was ignored on entry"
+        _bad=1
+    fi
+    if grep -qE '^  (PASS|FAIL): ' "$_out"; then
+        echo "an assert verdict was recorded for a sub-arm that could not run"
+        _bad=1
+    fi
+    if grep -q 'is not implemented' "$_out"; then
+        echo "the report still reads as a trap-contract regression"
+        _bad=1
+    fi
+    if [ "$_bad" -ne 0 ]; then
+        echo "--- _t10c_report HUP output ---"
+        cat "$_out"
+    fi
+    return "$_bad"
+}
+
+assert "10l: a 10c sub-arm whose signal was ignored on entry is reported as a loud SKIP naming the signal and the inherited disposition, never as a PASS or FAIL" \
+    _t10l
 
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------
