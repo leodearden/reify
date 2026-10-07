@@ -169,9 +169,8 @@ fn every_prose_idiom_in_a_gated_chunk_compiles() {
             .iter()
             .find(|(gated, _)| gated == stem)
             .unwrap_or_else(|| panic!("sentinel chunk `{stem}` must be in IDIOM_GATED_CHUNKS"));
-        let idioms = prose_idioms(markdown).unwrap_or_else(|error| {
-            panic!("{}: {error} — repair the markup", chunk_label(stem))
-        });
+        let idioms = prose_idioms(markdown)
+            .unwrap_or_else(|error| panic!("{}: {error} — repair the markup", chunk_label(stem)));
         assert!(
             idioms
                 .iter()
@@ -250,10 +249,7 @@ fn an_idiom_whose_only_unresolved_names_are_its_metavariables_compiles_clean() {
             "a lambda whose body names metavariables",
         ),
         ("distance(a, b) > tol", "a comparison opened by a call"),
-        (
-            "snapshot(m, [])",
-            "an empty-list WARNING never counts",
-        ),
+        ("snapshot(m, [])", "an empty-list WARNING never counts"),
     ] {
         assert_eq!(
             idiom_violations(span),
@@ -285,7 +281,9 @@ fn a_stale_idiom_is_reported_whichever_layer_rejects_it() {
     ] {
         let violations = idiom_violations(span);
         assert!(
-            violations.iter().any(|violation| violation.contains(needle)),
+            violations
+                .iter()
+                .any(|violation| violation.contains(needle)),
             "`{span}` must be reported naming `{needle}`: {why}; got {violations:#?}"
         );
     }
@@ -299,10 +297,7 @@ fn prose_idiom_violations_names_chunk_line_and_span_and_clears_once_the_idiom_is
 
     assert_eq!(violations.len(), 1, "got {violations:#?}");
     let location = format!("{}:3", chunk_label("demo"));
-    for needle in [
-        location.as_str(),
-        "`translate(cylinder(r, h), 0, 0, -h/2)`",
-    ] {
+    for needle in [location.as_str(), "`translate(cylinder(r, h), 0, 0, -h/2)`"] {
         assert!(
             violations[0].contains(needle),
             "the violation must name `{needle}`, got: {}",

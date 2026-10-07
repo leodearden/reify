@@ -130,7 +130,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `sphere` | **centred at origin** | radius extends equally in all directions from `(0,0,0)` |
 | `torus` | **centred at origin**; axis is **+Z** | major/minor radii both measured from the ring centred on the origin |
 | `cylinder` | **base at z=0**, axis **+Z**, x/y **centred at origin** | top face at `z = height`; NOT centred on z — a common hand-centering workaround is `translate(cylinder(r, h), 0mm, 0mm, -h/2)` — note the dimensioned zeros; `translate`'s components are length-semantic and a bare `0` is rejected |
-| `cylinder_centered` | **z-centred at origin**, axis **+Z**, x/y centred | equivalent to `cylinder` + `translate(z=-height/2)`, composed for you — prefer this over the hand-rolled workaround above |
+| `cylinder_centered` | **z-centred at origin**, axis **+Z**, x/y centred | equivalent to `translate(cylinder(radius, height), 0mm, 0mm, -height/2)`, composed for you — prefer this over the hand-rolled workaround above |
 | `cone` | **base at z=0**, axis **+Z**, x/y centred at origin | same base-anchor convention as `cylinder`; base radius at z=0, top radius at z=height |
 | `tube` | **base at z=0**, axis **+Z**, x/y centred at origin | composed from `outer cylinder − inner cylinder`, so it inherits `cylinder`'s base-at-z0 anchor |
 | `wedge` | **min-corner at origin**, occupying the **+X/+Y/+Z octant** | the one primitive anchored at a corner rather than centred or base-centred; no `wedge_centered` variant exists yet |
