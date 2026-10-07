@@ -89,6 +89,8 @@ mod cli_dfm_overhang;
 mod cli_dfm_thickness;
 #[path = "harness_cli/cli_doc.rs"]
 mod cli_doc;
+#[path = "harness_cli/cli_eval_annotation_after_valued_member.rs"]
+mod cli_eval_annotation_after_valued_member;
 #[path = "harness_cli/cli_eval_auto_resolve.rs"]
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
