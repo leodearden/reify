@@ -40,14 +40,19 @@ echo "=== audit-orphan-producers.sh collision-detection tests ==="
 # ---------------------------------------------------------------------------
 FIXTURE="$(mktemp -d)"
 # FIXTURE2 (a second, isolated fixture tree for the genuinely-malformed
-# case below) is declared here but only mktemp'd where it is built, further
-# down. ONE trap covers both dirs -- bash EXIT traps do not stack (see
+# case below) and STUB (the audit copies of the shared-lexer wiring section)
+# are declared here but only mktemp'd where they are built, further down.
+# ONE trap covers every dir -- bash EXIT traps do not stack (see
 # tests/infra/test_helpers.sh's own commentary on this), so a second
 # `trap ... EXIT` here would silently replace this one instead of adding
-# to it. cleanup() reads $FIXTURE2 at EXIT time (not at definition time),
-# so it sees whatever mktemp assigns it later; the `-n` guard skips
-# removal while it is still empty, and while set -u is active.
-cleanup() { rm -rf "$FIXTURE"; [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"; }
+# to it. cleanup() reads $FIXTURE2 and $STUB at EXIT time (not at definition
+# time), so it sees whatever mktemp assigns them later; the `-n` guards skip
+# removal while they are still empty, and while set -u is active.
+cleanup() {
+    rm -rf "$FIXTURE"
+    [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"
+    [ -n "${STUB:-}" ] && rm -rf "$STUB"
+}
 trap cleanup EXIT
 
 git -C "$FIXTURE" init -q
@@ -65,6 +70,7 @@ pub mod dangling_raw;
 pub mod dangling_comment;
 pub mod dangling_char;
 pub mod dangling_multiline;
+pub mod dangling_cstr;
 pub mod lifetime_wired;
 pub mod stmt_trailing_comment;
 pub mod comment_header_target;
@@ -231,6 +237,23 @@ mod comment_tests {
 
 // G-allow: hermetic fixture for nested block-comment depth counting
 pub fn after_nested_comment_guard() -> i32 { 1 }
+RUST
+
+# dangling_cstr.rs — same defect, but the unbalanced `{` sits inside a
+# C-string RAW literal (`cr#"..."#`): grammar the retired Python lexer lacked,
+# so its `"` closed the literal early and the `{` counted as code.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_cstr.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = cr#"a"{"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture
+pub fn after_cstr_guard() -> i32 { 1 }
 RUST
 
 # lifetime_wired.rs — negative guard.  A genuinely-called pub fn whose own
@@ -432,10 +455,12 @@ RUST
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Run the audit against the fixture and emit JSON to stdout.
-audit_json() {
-    ( cd "$FIXTURE" && bash "$AUDIT" --format json --quiet --scope 'crates/reify-*/src' )
+# audit_json_via SCRIPT — run the audit at SCRIPT against the fixture and
+# emit JSON to stdout. audit_json runs the real audit.
+audit_json_via() {
+    ( cd "$FIXTURE" && bash "$1" --format json --quiet --scope 'crates/reify-*/src' )
 }
+audit_json() { audit_json_via "$AUDIT"; }
 
 # assert_orphan NAME — succeeds iff NAME appears in orphans[] with callers==0.
 assert_orphan() {
@@ -474,10 +499,12 @@ PY
 # assert_allowed NAME — succeeds iff NAME appears EXACTLY ONCE in allowed[]
 # with callers==0.  Distinguishes "correctly allow-listed" from "invisible
 # because a cfg(test) mask swallowed it", which assert_not_orphan cannot.
-assert_allowed() {
-    local name="$1"
+# assert_allowed_via SCRIPT NAME asks the same of the audit at SCRIPT.
+assert_allowed() { assert_allowed_via "$AUDIT" "$1"; }
+assert_allowed_via() {
+    local script="$1" name="$2"
     local json
-    json="$(audit_json)"
+    json="$(audit_json_via "$script")"
     python3 - "$json" "$name" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])
@@ -599,6 +626,9 @@ assert "after_multiline_raw_guard (dangling { inside a raw string spanning multi
 assert "after_nested_comment_guard (dangling { inside a nested block comment) is allow-listed, not swallowed" \
     assert_allowed after_nested_comment_guard
 
+assert "after_cstr_guard (dangling { inside a C-string RAW literal cr#\"…\"#) is allow-listed, not swallowed" \
+    assert_allowed after_cstr_guard
+
 assert "comment_header_target (block comment between #[cfg(test)] and its item header) is flagged orphan, not hidden by the leaked test body" \
     assert_orphan comment_header_target
 
@@ -668,6 +698,84 @@ assert "unterminated string literal (lexer state still open at EOF) warns on std
 
 assert "well-formed shared fixture triggers no lexer-state-open warning (no false positives)" \
     assert_stderr_lacks "$FIXTURE" "literal/comment lexer state"
+
+# ---------------------------------------------------------------------------
+# Shared-lexer wiring and failure modes (task 6202). The audit's code view
+# comes from the SIBLING scripts/lib_rust_production_view.sh, proven with
+# audit copies beside stub libs. Every way that lexer can fail to deliver is
+# exit 3 ("could not run") with an EMPTY stdout, so no partial JSON ever
+# reaches reify_test_support::run_orphan_audit.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- shared-lexer wiring and failure modes ---"
+
+STUB="$(mktemp -d)"
+mkdir -p "$STUB/ident/scripts" "$STUB/nolib/scripts" "$STUB/doubled/scripts" "$STUB/awk-fail"
+cp "$AUDIT" "$STUB/ident/scripts/"
+cp "$AUDIT" "$STUB/nolib/scripts/"
+cp "$AUDIT" "$STUB/doubled/scripts/"
+# ident: a lexer that blanks nothing, i.e. the raw-text view.
+cat > "$STUB/ident/scripts/lib_rust_production_view.sh" <<'STUB_LIB'
+RUST_LEXER_AWK='function _strip_line(line) { carried_in = 0; comment_tail = ""; return line }
+function _lexer_open_state() { return "" }
+function _lexer_reset() { }'
+STUB_LIB
+# doubled: a lexer that breaks row alignment (two rows per source line).
+cat > "$STUB/doubled/scripts/lib_rust_production_view.sh" <<'STUB_LIB'
+RUST_LEXER_AWK='function _strip_line(line) { carried_in = 0; comment_tail = ""; return line "\n" line }
+function _lexer_open_state() { return "" }
+function _lexer_reset() { }'
+STUB_LIB
+printf '#!/bin/sh\nexit 1\n' > "$STUB/awk-fail/awk"
+chmod +x "$STUB/awk-fail/awk"
+
+# assert_swallowed_via SCRIPT NAME — the audit at SCRIPT ran (its stdout
+# parses as JSON) and NAME is in NEITHER orphans[] nor allowed[]: a mask hid it.
+assert_swallowed_via() {
+    local script="$1" name="$2"
+    local json
+    json="$(audit_json_via "$script")"
+    python3 - "$json" "$name" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+name = sys.argv[2]
+seen = any(r["name"] == name for key in ("orphans", "allowed") for r in data.get(key, []))
+sys.exit(1 if seen else 0)
+PY
+}
+
+# exits_3_silently PATTERN CMD... — CMD exits EXACTLY 3 with an EMPTY stdout
+# and a stderr matching the extended regex PATTERN. rc, stdout and stderr are
+# captured separately.
+exits_3_silently() {
+    local pattern="$1"
+    shift
+    local out err rc=0 ok=0
+    out="$(mktemp)"
+    err="$(mktemp)"
+    "$@" >"$out" 2>"$err" || rc=$?
+    if [ "$rc" -ne 3 ]; then echo "expected exit 3, got $rc"; ok=1; fi
+    if [ -s "$out" ]; then echo "expected an empty stdout, got $(wc -c <"$out") bytes"; ok=1; fi
+    if ! grep -qE -- "$pattern" "$err"; then echo "stderr does not match /$pattern/:"; cat "$err"; ok=1; fi
+    rm -f "$out" "$err"
+    return "$ok"
+}
+
+assert "b1: an audit copy beside a lexer that blanks nothing swallows after_str_guard — masking follows the sibling lib" \
+    assert_swallowed_via "$STUB/ident/scripts/audit-orphan-producers.sh" after_str_guard
+
+assert "b2: an audit copy with NO sibling lib exits 3 with an empty stdout, naming lib_rust_production_view.sh" \
+    exits_3_silently 'lib_rust_production_view\.sh' \
+        audit_json_via "$STUB/nolib/scripts/audit-orphan-producers.sh"
+
+assert "b3: a failing awk makes the real audit exit 3 (not 0, not 1) with an empty stdout, naming awk" \
+    exits_3_silently 'awk.*fail' \
+        env "PATH=$STUB/awk-fail:$PATH" \
+        bash -c 'cd "$1" && bash "$2" --format json --quiet --scope "crates/reify-*/src"' _ "$FIXTURE" "$AUDIT"
+
+assert "b4: a lexer that breaks row alignment makes the audit exit 3 with an empty stdout, naming a fixture file" \
+    exits_3_silently 'crates/reify-fixture/src/' \
+        audit_json_via "$STUB/doubled/scripts/audit-orphan-producers.sh"
 
 # ---------------------------------------------------------------------------
 test_summary
