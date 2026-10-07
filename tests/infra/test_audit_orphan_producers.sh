@@ -418,8 +418,8 @@ RUST
 # unterminated_string_before_cfg_test.rs -- a DIFFERENT failure mode from
 # unterminated.rs above: here the brace count is never even reached. A
 # string literal earlier in the file (in ordinary, non-cfg(test) code)
-# never closes, so strip_literals_and_comments()'s "string" state carries
-# to EOF and every code-view line from that point on is entirely blank.
+# never closes, so the shared lexer's "string" state carries to EOF and
+# every code-view line from that point on is entirely blank.
 # When mask_cfg_test then reaches the #[cfg(test)] below, its item-header
 # test (BLOCK_KW_RE on the blank code view) finds no block keyword, so
 # is_block is False, only the `mod tests {` line itself gets masked, and
