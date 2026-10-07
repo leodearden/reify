@@ -95,7 +95,8 @@ use crate::chunk_markdown::{
     catalogue_table_names, catalogue_table_rows, marker_closed_region, section_body,
 };
 use crate::doc_forms::{
-    Arity, call_forms, callee_names, documented_unfenced_forms, fence_call_forms,
+    arity_drift, call_forms, callee_names, documented_signature_arities, fence_arities,
+    fence_call_forms,
 };
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
@@ -724,81 +725,6 @@ fn geometry_reify_fences_call_every_worked_example_form() {
     }
 }
 
-/// The arities `name` is DOCUMENTED at in `section`, read off its
-/// `name(<args>) -> <Type>` signatures: code spans of the section's UNFENCED
-/// prose that [`doc_form_of_span`](crate::doc_forms::doc_form_of_span) reads as
-/// signature-shaped whole. Fence bodies (the fence side's jurisdiction) and HTML
-/// maintainer notes are never read.
-///
-/// The `->` is what separates a SIGNATURE from a mere mention, and the
-/// distinction is load-bearing: the traps subsection deliberately writes
-/// `min_clearance(a, b)` (the unsupported 2-arg overload) and
-/// `min_clearance(s, id, id)` (the self-pair rider) as prose. Neither is a
-/// contract the fences should be held to.
-///
-/// PANICS on unreadable markup, and on a variadic signature, which has no fixed
-/// arity for the fences to mirror.
-fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
-    documented_unfenced_forms(section)
-        .unwrap_or_else(|e| panic!("{CHUNK_PATH}: {e} — so no signature in it can be read"))
-        .into_iter()
-        .filter(|documented| documented.form.name == name && documented.span.contains("->"))
-        .map(|documented| match documented.form.arity {
-            Arity::Exact(arity) => arity,
-            Arity::AtLeast(_) => panic!(
-                "{CHUNK_PATH}: `{}` is a variadic signature, which has no fixed arity for the \
-                 ```reify fences to mirror — document `{name}` at each arity a fence calls it at",
-                documented.span
-            ),
-        })
-        .collect()
-}
-
-/// The arities the compiling fences call `name` at, out of their
-/// [`fence_call_forms`].
-fn fence_arities(fence_forms: &[(String, usize)], name: &str) -> Vec<usize> {
-    fence_forms
-        .iter()
-        .filter(|(callee, _)| callee == name)
-        .map(|(_, arity)| *arity)
-        .collect()
-}
-
-/// Every way the arities `name` is `documented` at and the arities the
-/// compiling fences call it at (`exercised`) have drifted apart, in either
-/// direction, one actionable line each.
-fn arity_drift(name: &str, documented: &[usize], exercised: &[usize]) -> Vec<String> {
-    const FIX: &str = "The fences are what actually compile, so fix whichever of the two is \
-                       wrong — a designer copies whichever they read first.";
-    let distinct = |arities: &[usize]| {
-        let mut arities = arities.to_vec();
-        arities.sort_unstable();
-        arities.dedup();
-        arities
-    };
-    let documented = distinct(documented);
-    let exercised = distinct(exercised);
-
-    let mut drift = Vec::new();
-    for arity in documented.iter().filter(|arity| !exercised.contains(arity)) {
-        drift.push(format!(
-            "{CHUNK_PATH} documents `{name}` at {arity} argument(s), but no ```reify fence calls \
-             it at that arity (fence call arities: {exercised:?}). Either the documented \
-             signature is a phantom the compiler was never shown, or a fence drifted off the form \
-             it demonstrates. {FIX}"
-        ));
-    }
-    for arity in exercised.iter().filter(|arity| !documented.contains(arity)) {
-        drift.push(format!(
-            "a ```reify fence in {CHUNK_PATH} calls `{name}` at {arity} argument(s), but no \
-             `{name}(…) -> <Type>` signature documents that arity (documented arities: \
-             {documented:?}). Either the fence demonstrates a form the section never states, or \
-             the section lost the signature. {FIX}"
-        ));
-    }
-    drift
-}
-
 /// The oracle section's documented signature arities and the arities its
 /// compiling fences call those names at must be the SAME set: a documented arity
 /// no fence exercises and a fence arity no signature documents are both drift,
@@ -824,7 +750,7 @@ fn oracle_signature_arities_match_the_compiling_fences() {
 
     let mut drift = Vec::new();
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
-        let documented = documented_signature_arities(&section, name);
+        let documented = documented_signature_arities(&section, name, CHUNK_PATH);
         // Anti-vacuity. A signature form that loses its `-> <Type>` annotation,
         // or stops being one whole code span, would otherwise drop out of this
         // check silently instead of failing it.
@@ -838,7 +764,7 @@ fn oracle_signature_arities_match_the_compiling_fences() {
 
         let in_fences = fence_arities(&fence_forms, name);
 
-        drift.extend(arity_drift(name, &documented, &in_fences));
+        drift.extend(arity_drift(CHUNK_PATH, name, &documented, &in_fences));
     }
     report(
         &format!(
@@ -890,7 +816,7 @@ fn measurement_signature_arities_match_the_compiling_fences() {
 
     let mut drift = Vec::new();
     for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
-        let documented = documented_signature_arities(&section, name);
+        let documented = documented_signature_arities(&section, name, CHUNK_PATH);
         // Anti-vacuity, per name. Without it, a name that lost its `-> <Type>`
         // annotation or its backticks — or was dropped from the signature list
         // entirely — would silently contribute zero assertions instead of failing.
@@ -912,7 +838,7 @@ fn measurement_signature_arities_match_the_compiling_fences() {
         // stand in for it.
         let in_fences = fence_arities(&fence_forms, name);
 
-        drift.extend(arity_drift(name, &documented, &in_fences));
+        drift.extend(arity_drift(CHUNK_PATH, name, &documented, &in_fences));
     }
     report(
         &format!(
@@ -1287,95 +1213,4 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          or narrow the chunk's claim to the constructors the example does exercise.",
         absent.join(", ")
     );
-}
-
-// --- arity_drift unit tests --------------------------------------------------
-
-#[test]
-fn arity_drift_reports_a_documented_arity_no_fence_calls() {
-    let drift = arity_drift("interferes", &[1, 2], &[1]);
-
-    assert_eq!(drift.len(), 1, "got {drift:#?}");
-    assert!(
-        drift[0].contains("`interferes`") && drift[0].contains("at 2 argument(s)"),
-        "the line must name the documented form no fence exercises, got: {}",
-        drift[0]
-    );
-}
-
-#[test]
-fn arity_drift_reports_a_fence_arity_no_signature_documents() {
-    let drift = arity_drift("distance", &[2], &[2, 3]);
-
-    assert_eq!(drift.len(), 1, "got {drift:#?}");
-    for needle in ["`distance`", "at 3 argument(s)", "[2]"] {
-        assert!(
-            drift[0].contains(needle),
-            "the line must name the undocumented fence arity and the documented set \
-             (`{needle}`), got: {}",
-            drift[0]
-        );
-    }
-}
-
-#[test]
-fn arity_drift_is_silent_on_equal_sets_whatever_the_duplicates() {
-    assert_eq!(arity_drift("volume", &[1], &[1]), Vec::<String>::new());
-    assert_eq!(
-        arity_drift("volume", &[1, 1], &[1, 1, 1]),
-        Vec::<String>::new(),
-        "a form documented twice or called by several fences is still one arity"
-    );
-    assert_eq!(
-        arity_drift("min_clearance", &[3, 1], &[1, 3]),
-        Vec::<String>::new(),
-        "order does not matter"
-    );
-}
-
-#[test]
-fn arity_drift_reports_both_directions_at_once() {
-    let drift = arity_drift("min_clearance", &[3], &[2]);
-
-    assert_eq!(
-        drift.len(),
-        2,
-        "a documented 3 no fence calls AND a fence 2 nothing documents, got {drift:#?}"
-    );
-}
-
-// --- documented_signature_arities unit tests ---------------------------------
-
-#[test]
-fn documented_signature_arities_reads_only_signature_spans_in_unfenced_prose() {
-    let section = "\
-<!-- SYNC note: `distance(a, b, c) -> Length` was the old form -->
-
-The gap is `distance(a, b) -> Length`; the one-argument `distance(a)` is a trap.
-
-Written bare, distance(x, y, z, w) -> Length is not a code span.
-
-```reify
-structure def Gap {
-    // distance(a, b, c, d, e) -> Length
-    let g = distance(x, y)
-}
-```
-";
-
-    assert_eq!(
-        documented_signature_arities(section, "distance"),
-        vec![2],
-        "only a whole `name(params) -> Type` code span in unfenced prose is a documented \
-         signature: an HTML maintainer note, an un-backticked form, a mention with no `->` and \
-         anything inside a fence (comment or call) are never read as one"
-    );
-}
-
-#[test]
-#[should_panic(expected = "variadic signature")]
-fn documented_signature_arities_panics_on_a_variadic_signature() {
-    let section = "The gap is `distance(a, …) -> Length`.\n";
-
-    let _ = documented_signature_arities(section, "distance");
 }
