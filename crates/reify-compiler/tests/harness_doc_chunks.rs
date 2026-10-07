@@ -49,6 +49,10 @@
 //! - `schematic_listing_gate` (#6956) — every signature in a gated chunk's
 //!   ```` ```reify-schematic ```` listings is exercised by a compile-verified
 //!   fixture.
+//! - `measurement_chunk_smoke` (#7344) — truth checks for the `measurement`
+//!   chunk, split out of geometry.md with the guards that cover it.
+//! - `topology_chunk_smoke` (#7344) — truth checks for the `topology` chunk,
+//!   split out of geometry.md with the guard that covers it.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
@@ -74,6 +78,8 @@ mod fence_gate;
 mod functions_chunk_overloading_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/measurement_chunk_smoke.rs"]
+mod measurement_chunk_smoke;
 #[path = "harness_doc_chunks/module_compile.rs"]
 mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
@@ -84,6 +90,8 @@ mod schematic_listing_gate;
 mod signature_fixtures;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
+#[path = "harness_doc_chunks/topology_chunk_smoke.rs"]
+mod topology_chunk_smoke;
 #[path = "harness_doc_chunks/unfenced_signature_gate.rs"]
 mod unfenced_signature_gate;
 #[path = "harness_doc_chunks/units_chunk_smoke.rs"]
