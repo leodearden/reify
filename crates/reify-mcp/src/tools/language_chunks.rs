@@ -113,7 +113,12 @@ mod tests {
     fn every_topic_fits_one_retrieval_budget() {
         let oversized: Vec<(&str, usize)> = TOPICS
             .iter()
-            .map(|topic| (*topic, get_chunk(topic).unwrap().len()))
+            .map(|topic| {
+                let chunk = get_chunk(topic).unwrap_or_else(|| {
+                    panic!("topic `{topic}` is in TOPICS but has no get_chunk arm")
+                });
+                (*topic, chunk.len())
+            })
             .filter(|(_, len)| *len > MAX_CHUNK_BYTES)
             .collect();
         assert!(
