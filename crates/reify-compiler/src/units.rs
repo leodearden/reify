@@ -6348,6 +6348,42 @@ mod tests {
                  list-helper (`single`/`flat_map` — earlier arm in the \
                  NoUserFunctions ladder would shadow it)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle orientation family, \
+                 task #6082)"
+            );
+            assert!(
+                !DATUM_CONSTRUCTOR_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 DATUM_CONSTRUCTOR_NAMES (datum-constructor family, a \
+                 resolver-only slice promoted by task #5371)"
+            );
+            assert!(
+                !SELECTOR_COMPOSITION_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 SELECTOR_COMPOSITION_NAMES (selector-composition family, a \
+                 resolver-only slice promoted by task #5371)"
+            );
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (type-preserving allowlist, task #5371) \
+                 — the flexure arm types it StructureRef(\"FlexureJoint\"), so \
+                 the first-arg fallback never sees it"
+            );
+            // ...and the two slice-less vocabularies.
+            assert!(
+                !crate::relation_signatures::is_relation_shared_verb(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be an \
+                 arity-gated relation shared verb"
+            );
+            assert!(
+                !crate::expr::DETERMINACY_PREDICATE_NAMES.contains(name),
+                "FLEXURE_CTOR_FN_NAMES entry {name:?} must NOT also be in \
+                 DETERMINACY_PREDICATE_NAMES"
+            );
         }
     }
 }

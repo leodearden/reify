@@ -594,6 +594,7 @@ mod tests {
         ("RELATION_FN_NAMES", RELATION_FN_NAMES),
         ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
         ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
+        ("FLEXURE_CTOR_FN_NAMES", crate::flexure_signatures::FLEXURE_CTOR_FN_NAMES),
     ];
 
     /// The four families promoted from resolver-only `match` arms to real
