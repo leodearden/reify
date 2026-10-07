@@ -79,8 +79,11 @@ module.exports = grammar({
     // bytes between `"`, `{`, and `}` delimiters — including whitespace — that
     // would otherwise be eaten by the extras `/\s/` rule.  Aliased to the visible
     // `string_chunk` node at each call site in `interpolated_string`.
-    // ENUM ORDER: must remain the LAST entry so appending preserves all prior indices.
     $._string_content,
+    // SELECTOR_AT: the ad_hoc_selector `@`, emitted by scanner.c only when it
+    // shares its base expression's line (spec §6.1.3).
+    // ENUM ORDER: must remain the LAST entry so appending preserves all prior indices.
+    $._selector_at,
   ],
 
   extras: $ => [
@@ -2047,9 +2050,10 @@ module.exports = grammar({
     // ── Ad-hoc port selector ────────────────────────────────
     // expr @ ident(args) — selects a port on a substructure using a named selector
     // Binds tighter than index_access (prec 9) but looser than member_access (prec 11)
+    // The `@` must be on its base's line; an `@` that begins a line is an annotation.
     ad_hoc_selector: $ => prec.left(10, seq(
       field('base', $._expression),
-      '@',
+      alias($._selector_at, '@'),
       field('selector', $.identifier),
       callTail($),
     )),

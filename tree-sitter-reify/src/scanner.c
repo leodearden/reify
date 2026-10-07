@@ -24,7 +24,8 @@
 /* IMPORTANT: enum order MUST match the grammar.js externals array order.
  * grammar.js externals: [_unit_expr_start(0), _unit_mul_op(1), _unit_div_op(2),
  *                         _auto_token(3), _auto_reservation_sentinel(4),
- *                         _radix_literal(5)] */
+ *                         _radix_literal(5), _string_content(6),
+ *                         _selector_at(7)] */
 enum TokenType {
   UNIT_EXPR_START,            /* index 0 — zero-width quantity-literal gate    */
   UNIT_MUL_OP,                /* index 1 — '*' inside unit_expr                */
@@ -43,11 +44,11 @@ enum TokenType {
                                *   - section C of auto_binding_sites_grammar_tests.rs
                                */
   RADIX_LITERAL,              /* index 5 — 0x.../0b... integer literal          */
-  /* STRING_CONTENT: index 6 — content-run token for interpolated strings.
-   * ENUM-ORDER INVARIANT: must remain LAST — appending preserves all prior
-   * indices and matches the externals array order in grammar.js.
-   * See: grammar.js `externals` array comment and STRING_CONTENT scan block. */
   STRING_CONTENT,             /* index 6 — literal bytes between `"`, `{`, `}` */
+  /* SELECTOR_AT: index 7 — the ad_hoc_selector `@`, same line as its base.
+   * ENUM-ORDER INVARIANT: must remain LAST — appending preserves all prior
+   * indices and matches the externals array order in grammar.js. */
+  SELECTOR_AT,
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -353,6 +354,34 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
       return true;
     }
     /* Whitespace or non-unit-start: fall through to AUTO_TOKEN check. */
+  }
+
+  /* ── SELECTOR_AT: the ad_hoc_selector `@`, only on its base's line ────────
+   *
+   * Refused when a newline separates the `@` from the base expression, so the
+   * internal lexer's `@` (annotation start) takes it instead.  A non-`@`
+   * lookahead FALLS THROUGH: RADIX_LITERAL and AUTO_TOKEN below re-read the
+   * lookahead and still work after this whitespace skip.  Placed after the
+   * UNIT_* blocks, which test the un-advanced `c`.
+   */
+  if (valid_symbols[SELECTOR_AT]) {
+    bool crossed_newline = false;
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
+           lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+      if (lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+        crossed_newline = true;
+      }
+      lexer->advance(lexer, true);
+    }
+    if (lexer->lookahead == '@') {
+      if (crossed_newline) {
+        return false;
+      }
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      lexer->result_symbol = SELECTOR_AT;
+      return true;
+    }
   }
 
   /* ── RADIX_LITERAL: 0x.../0b... integer literals ──────────────────────────
