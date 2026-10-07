@@ -218,7 +218,10 @@
 #     flock -s is held on that gen during that lane's α call (D8 reader-refcount
 #     seam; same contract as the acquire path). Never once per pass: a
 #     refresh-warm-base.sh rotation mid-pass can reap the gen a pass-start
-#     resolve would have named.
+#     resolve would have named. A gen that vanishes between the resolve and the
+#     lock is re-resolved (bounded; refresh unlinks a reaped gen's .lock, so a
+#     lock won on it protects nothing); if none can be pinned the seed is never
+#     invoked and the lane is left cold via the non-certify path (reset_cold).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
 #   - Stdout: machine-readable summary line only —
 #     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N reset_cold=N`.
@@ -299,6 +302,7 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
              only preserve reason that can shield an entry indefinitely;
              C is the share of N left COLD because the α seed REFUSED — its
              uncertified target/ discarded here, or nothing staged to discard —
+             or because no base generation could be pinned to seed from;
              PRD docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13)
     stderr: all diagnostics.
 EOF
@@ -317,6 +321,9 @@ EXTRA_PROTECT_GLOB="${REIFY_WARM_LANE_GC_EXTRA_PROTECT_GLOB:-}"
 SEED_SCRIPT="${REIFY_WARM_LANE_GC_SEED_SCRIPT:-}"
 # Disk-pressure fast-path (task 5167): any non-empty value = on; off by default.
 DISK_PRESSURE="${REIFY_WARM_LANE_GC_DISK_PRESSURE:-}"
+# Resolve→lock→verify rounds _reseed_lane_pinned makes before giving up on a lane.
+# A constant, not a knob: it only has to stop a dangling base from looping.
+readonly _BASE_GEN_PIN_ATTEMPTS=3
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 SUBCOMMAND=""
@@ -489,12 +496,22 @@ _resolve_base_gen() { readlink -f "$BASE_TARGET" 2>/dev/null; }
 # (D8) for this one seed, so refresh-warm-base.sh Step 6 cannot reap it mid-clone.
 # Per lane, never per pass, like the live-reference gate; the ( ) body scopes FD 9
 # to the reseed, and `>>` never truncates the lock. See test_warm_lane_gc.sh Block T.
+# Lock-then-verify: Step 6 unlinks a reaped gen's .lock, so a lock won on a vanished gen
+# protects nothing — re-check after locking, re-resolve (Step 5 moves the link first).
 _reseed_lane_pinned() (
-    local lane="$1" gen
-    gen="$(_resolve_base_gen)" || return 1
-    exec 9>>"${gen}.lock"
-    flock -s 9
-    "$SEED_SCRIPT" "$gen" "$lane" --fresh-checkout --assume-lane-lock-held
+    local lane="$1" gen="" attempt
+    for (( attempt = 1; attempt <= _BASE_GEN_PIN_ATTEMPTS; attempt++ )); do
+        gen="$(_resolve_base_gen)" || break
+        [ -d "$gen" ] || continue
+        if exec 9>>"${gen}.lock" && flock -s 9 && [ -d "$gen" ]; then
+            info "pinned base gen $gen for ${lane##*/}"
+            "$SEED_SCRIPT" "$gen" "$lane" --fresh-checkout --assume-lane-lock-held
+            return
+        fi
+        exec 9>&-
+    done
+    err "cannot pin a base generation for ${lane##*/}: $BASE_TARGET resolves to ${gen:-<unresolvable>}, which is missing or could not be locked"
+    return 1
 )
 
 # ── reclaim subcommand ─────────────────────────────────────────────────────────
@@ -517,7 +534,8 @@ _do_reclaim() {
     # seed left with no usable target/ — whether it aborted fail-closed onto the
     # uncertified clone this script then discarded (§9.5 inv.13 caller
     # obligation) or refused before staging one at all, leaving nothing to
-    # discard. The two are not distinguishable from here (see the discard branch)
+    # discard — and lanes for which no base generation could be pinned, so no seed
+    # ran at all. These are not distinguishable from here (see the discard branch)
     # and need not be: what the count names is the lane's OUTCOME — reset to
     # nothing — not which guard produced it. Reported separately because a bare
     # reset=N cannot distinguish a lane reset WARM — the normal, valuable
@@ -678,6 +696,10 @@ _do_reclaim() {
                 ok "  reset lane: $name"
                 reset_count=$((reset_count + 1))
             else
+                # Reached on a failed base-generation pin as well as a refusing
+                # seed: both are non-zero out of _reseed_lane_pinned, and a pin
+                # failure is a refusal before any lane mutation (no seed invoked).
+                #
                 # A non-zero α exit means the seed did NOT certify this lane, and
                 # its three fail-closed post-conditions all fire AFTER target/ has
                 # been replaced with the CoW clone — so the abort lands ONTO the
@@ -696,7 +718,7 @@ _do_reclaim() {
                 # anyway — the α call's whole output is piped through the [seed]
                 # warn loop above, to protect this script's own single-line
                 # stdout contract.
-                warn "  reset did not certify $name (seed-script exited non-zero); discarding any target/ it left behind"
+                warn "  reset did not certify $name (no base generation could be pinned, or the seed-script exited non-zero); discarding any target/ it left behind"
                 # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its
                 # own status cannot tell "removed the uncertified target/" from
                 # "there was nothing there". A seed can refuse with the lane
