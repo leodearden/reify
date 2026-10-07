@@ -216,12 +216,9 @@
 #     pool at rest never is.
 #   - α reuse: the base symlink is resolved to its concrete gen PER LANE, and
 #     flock -s is held on that gen during that lane's α call (D8 reader-refcount
-#     seam; same contract as the acquire path). Never once per pass: a
-#     refresh-warm-base.sh rotation mid-pass can reap the gen a pass-start
-#     resolve would have named. A gen that vanishes between the resolve and the
-#     lock is re-resolved (bounded; refresh unlinks a reaped gen's .lock, so a
-#     lock won on it protects nothing); if none can be pinned the seed is never
-#     invoked and the lane is left cold via the non-certify path (reset_cold).
+#     seam; same contract as the acquire path). If no gen can be pinned the seed
+#     is not invoked and the lane is left cold (reset_cold). Rationale for the
+#     per-lane pin and the re-check once locked: test_warm_lane_gc.sh Block T.
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
 #   - Stdout: machine-readable summary line only —
 #     `reclaim: reset=N removed=N preserved=N preserved_live_ref=N reset_cold=N`.
@@ -492,12 +489,9 @@ _is_reclaimable() {
 # copies a symlink rather than its target.
 _resolve_base_gen() { readlink -f "$BASE_TARGET" 2>/dev/null; }
 
-# _reseed_lane_pinned <lane>: resolve the gen live NOW and hold its reader lock
-# (D8) for this one seed, so refresh-warm-base.sh Step 6 cannot reap it mid-clone.
-# Per lane, never per pass, like the live-reference gate; the ( ) body scopes FD 9
-# to the reseed, and `>>` never truncates the lock. See test_warm_lane_gc.sh Block T.
-# Lock-then-verify: Step 6 unlinks a reaped gen's .lock, so a lock won on a vanished gen
-# protects nothing — re-check after locking, re-resolve (Step 5 moves the link first).
+# _reseed_lane_pinned <lane>: reseed <lane> from the gen BASE_TARGET resolves to
+# now, under that gen's D8 reader lock (FD 9, scoped to this ( ) body). The gen is
+# re-checked once locked; why, and why per lane: test_warm_lane_gc.sh Block T.
 _reseed_lane_pinned() (
     local lane="$1" gen="" attempt
     for (( attempt = 1; attempt <= _BASE_GEN_PIN_ATTEMPTS; attempt++ )); do
@@ -549,8 +543,9 @@ _do_reclaim() {
 
     info "warm-lane-gc.sh reclaim: worktrees_dir=$WORKTREES_DIR  base_target=$BASE_TARGET  main_ref=$MAIN_REF"
 
-    # Validates the argument only: the gen each reseed consumes is pinned per lane
-    # by _reseed_lane_pinned, never taken from this check.
+    # Argument check only. readlink -f fails when a directory on the path is
+    # missing but accepts a missing final component, so a dangling base passes
+    # here and is handled per lane by _reseed_lane_pinned.
     if ! _resolve_base_gen >/dev/null; then
         err "Cannot resolve base-target symlink: $BASE_TARGET"
         return 1  # runtime error; exit 2 is reserved for usage/wiring errors
@@ -681,24 +676,22 @@ _do_reclaim() {
                 preserved_count=$((preserved_count + 1))
             fi
         else
-            # Invoke α while the lane lock is held in the parent shell (FD 8; the
-            # helper's subshell inherits it, the parent still owns the lock) AND
-            # _reseed_lane_pinned holds the shared gen lock on FD 9 (flock -s; D8
-            # reader-refcount seam). It passes --assume-lane-lock-held:
-            # seed-warm-lane.sh acquires the lane lock BY DEFAULT under
-            # --fresh-checkout (esc-5214/task 5354 fail-safe), and its own FD-9
-            # acquire would BOTH self-refuse against gc's FD-8 lane lock AND
-            # clobber gc's FD-9 gen lock. The opt-out makes seed skip its own
-            # acquire; gc's held locks already provide the inv.2 one-consumer
-            # exclusivity + the gen reader-refcount.
+            # Invoke α while the lane lock is held in the parent shell (FD 8;
+            # the helper's subshell inherits it, the parent still owns the lock)
+            # AND a shared gen lock is held on FD 9 (flock -s; D8 reader-refcount
+            # seam) — both via _reseed_lane_pinned, which passes
+            # --assume-lane-lock-held: seed-warm-lane.sh acquires the
+            # lane lock BY DEFAULT under --fresh-checkout (esc-5214/task 5354
+            # fail-safe), and its own FD-9 acquire would BOTH self-refuse against
+            # gc's FD-8 lane lock AND clobber gc's FD-9 gen lock. The opt-out
+            # makes seed skip its own acquire; gc's held locks already provide the
+            # inv.2 one-consumer exclusivity + the gen reader-refcount.
             info "  resetting lane: $name"
             if _reseed_lane_pinned "$lane" 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
                 ok "  reset lane: $name"
                 reset_count=$((reset_count + 1))
             else
-                # Reached on a failed base-generation pin as well as a refusing
-                # seed: both are non-zero out of _reseed_lane_pinned, and a pin
-                # failure is a refusal before any lane mutation (no seed invoked).
+                # Also reached when no gen could be pinned, so no seed ran.
                 #
                 # A non-zero α exit means the seed did NOT certify this lane, and
                 # its three fail-closed post-conditions all fire AFTER target/ has
@@ -718,7 +711,7 @@ _do_reclaim() {
                 # anyway — the α call's whole output is piped through the [seed]
                 # warn loop above, to protect this script's own single-line
                 # stdout contract.
-                warn "  reset did not certify $name (no base generation could be pinned, or the seed-script exited non-zero); discarding any target/ it left behind"
+                warn "  reset did not certify $name; discarding any target/ it left behind"
                 # Probe BEFORE the rm: `rm -rf` exits 0 on a missing path, so its
                 # own status cannot tell "removed the uncertified target/" from
                 # "there was nothing there". A seed can refuse with the lane
