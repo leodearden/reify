@@ -496,10 +496,6 @@
     fn three_nearest_node_indices_warns_once_on_non_finite_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
 
-        // Inoculate against tracing's per-callsite Interest cache — see
-        // `prime_tracing_callsite_cache` in reify-test-support for why.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
             // Two non-finite nodes (indices 0 and 1) in one call must still
@@ -627,8 +623,6 @@
     #[test]
     fn build_mixed_region_mesh_warns_once_on_non_finite_node_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        reify_test_support::prime_tracing_callsite_cache();
 
         let mut poisoned_shell = make_shell_mesh();
         poisoned_shell.vertices[1] = [f64::NAN, 0.0, 0.0];
@@ -769,8 +763,6 @@
     #[test]
     fn build_mixed_region_mesh_warns_once_on_non_finite_location_and_is_quiet_on_finite() {
         use reify_test_support::warn_capturing_subscriber;
-
-        reify_test_support::prime_tracing_callsite_cache();
 
         let shell = make_shell_mesh();
         let tet = make_tie_tet_mesh();
@@ -1416,10 +1408,8 @@
         use reify_ir::{ExportFormat, ReprKind};
         use reify_test_support::{
             CapturingSubscriberBuilder, CompiledModuleBuilder, MockConstraintChecker,
-            TopologyTemplateBuilder, prime_tracing_callsite_cache,
+            TopologyTemplateBuilder,
         };
-
-        prime_tracing_callsite_cache();
 
         let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
 

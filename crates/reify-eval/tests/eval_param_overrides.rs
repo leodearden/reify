@@ -1636,7 +1636,11 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     // Module B: param p is Money (Param kind — non-auto default preserves Param kind
     // so the override survives prune_param_overrides_against).
     // The MASS override mismatches the MONEY cell_type → ScalarDimensionMismatch warning.
-    let module_b = compile_source("structure S { param p: Money = 0 }");
+    // `USD` is declared inline because it is a stdlib `pub unit` (stdlib/units.ri),
+    // not a lexer-builtin like the `kg` above, and `compile_source` carries no
+    // prelude. The declaration is what a user module would write; the "USD" the
+    // assertions below look for is reify-core's MONEY display unit either way.
+    let module_b = compile_source("unit USD : Money\nstructure S { param p: Money = 0USD }");
     let result_b = engine.eval(&module_b);
 
     // Exactly one Warning mentioning S.p must be emitted.

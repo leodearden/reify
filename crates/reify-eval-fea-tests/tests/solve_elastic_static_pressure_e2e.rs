@@ -8,7 +8,7 @@
 // and multi-case delegation (solve_load_cases → solve_elastic_static_trampoline)
 // paths are exercised here.
 
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -232,5 +232,89 @@ fn e2e_pressure_flows_through_multi_case() {
         si_value.is_finite() && si_value > 0.0,
         "pressure_case max_von_mises must be finite > 0 (PressureLoad must flow \
          through multi_case delegation), got: {si_value}"
+    );
+}
+
+// ── #7875: an inline PressureLoad reaches the solve ───────────────────────────
+//
+// The same beam and load as `examples/fea_pressure_smoke.ri`, once with the
+// PressureLoad (and its nested `face(..)` selector) inline in the
+// `solve_elastic_static` call and once let-bound. Both must hand the solver the
+// identical load, so the results must be bit-identical.
+
+const INLINE_PRESSURE_SOURCE: &str = r#"
+structure def InlinePressureBeam {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    let material = Steel_AISI_1045()
+    let mount = FixedSupport(target: "root")
+    let body = box(length, width, height)
+    let result = solve_elastic_static(
+        material, length, width, height,
+        [PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")],
+        [mount], ElasticOptions()
+    )
+}
+"#;
+
+const LET_BOUND_PRESSURE_SOURCE: &str = r#"
+structure def LetBoundPressureBeam {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    let material = Steel_AISI_1045()
+    let mount = FixedSupport(target: "root")
+    let body = box(length, width, height)
+    let pressure = PressureLoad(magnitude: 1.0e6, face: face(body, "x_max"), direction: "normal")
+    let result = solve_elastic_static(
+        material, length, width, height, [pressure], [mount], ElasticOptions()
+    )
+}
+"#;
+
+/// Eval `source`; return every eval diagnostic and `<entity>.result`.
+fn eval_solve_result(source: &str, entity: &str) -> (Vec<Diagnostic>, Value) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let mut eval_result = engine.eval(&compiled);
+    let result = eval_result
+        .values
+        .get(&ValueCellId::new(entity, "result"))
+        .cloned()
+        .unwrap_or_else(|| panic!("cell {entity}.result not found in eval result"));
+    (std::mem::take(&mut eval_result.diagnostics), result)
+}
+
+#[test]
+fn e2e_inline_pressure_load_in_solve_call_is_applied() {
+    let (inline_diagnostics, inline) =
+        eval_solve_result(INLINE_PRESSURE_SOURCE, "InlinePressureBeam");
+    let (_, let_bound) = eval_solve_result(LET_BOUND_PRESSURE_SOURCE, "LetBoundPressureBeam");
+
+    assert!(
+        !inline_diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FeaNoLoads)),
+        "the inline PressureLoad must reach the solver; diagnostics: {inline_diagnostics:?}"
+    );
+    assert_eq!(extract_field(&inline, "converged"), Some(Value::Bool(true)));
+
+    let inline_mvm = extract_field(&inline, "max_von_mises");
+    assert!(
+        matches!(inline_mvm, Some(Value::Scalar { .. })),
+        "inline max_von_mises must be a Scalar, got: {inline_mvm:?}"
+    );
+    assert_eq!(
+        inline_mvm,
+        extract_field(&let_bound, "max_von_mises"),
+        "identical load and inputs into the deterministic solver must give bit-identical stress"
+    );
+
+    let disp_data = extract_sampled_field_data(&inline, "displacement");
+    assert!(
+        disp_data.iter().any(|v| v.is_finite() && v.abs() > 1e-30),
+        "inline displacement must have a finite non-zero sample (all-zero means no load)"
     );
 }

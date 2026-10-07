@@ -260,11 +260,11 @@ const JointRow: Component<JointRowProps> = (props) => {
    * holds only the most RECENT preview promise — the RAF re-arms as soon as a
    * frame fires, so frame N+1 can dispatch while frame N's IPC is outstanding,
    * and awaiting N+1 proves nothing about N. The real guarantee is that every
-   * one of these calls is submitted to `large_stack::run_on_worker`'s ENGINE
-   * lane, which has a single consumer and serves its queue in order: the
-   * engine applies them in the order they were submitted, and the commit was
-   * submitted last. The await is belt-and-braces for the RESPONSE path, so the
-   * commit's state is the last one this row reasons about.
+   * preview and the commit carry a per-page `EditOrder` and go through the
+   * backend's evaluation queue, where a commit supersedes every older preview
+   * of its cell — queued, or arriving late — so no intermediate drag value can
+   * land after the commit. The await is belt-and-braces for the RESPONSE path,
+   * so the commit's reply is the last one this row reasons about.
    */
   async function commitDisplayValue(displayValue: number): Promise<void> {
     const param = effectiveParamCellId();

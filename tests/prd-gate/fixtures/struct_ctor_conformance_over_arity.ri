@@ -1,0 +1,23 @@
+// PRD probe fixture — docs/prds/struct-ctor-field-type-conformance.md §7 row 12, task δ (#5306).
+//
+// A surplus POSITIONAL argument on a one-param constructor. ε (#5303) minted
+// `E_CTOR_ARITY` for the over-arity binder site (crates/reify-compiler/src/expr.rs),
+// emitting at the same CTOR_FIELD_CONFORMANCE_SEVERITY knob as the α type surface.
+// Unlike E_CTOR_UNKNOWN_FIELD this is one-per-CALL, not one-per-argument.
+//
+// PRE (knob at Severity::Warning): `reify check` exits 0, "All constraints satisfied." —
+// the surplus arg is silently appended.
+// POST (task δ / #5306): `reify check` exits 1 with
+// "E_CTOR_ARITY: Widget() expects at most 1 argument, got 2".
+//
+// Asserted by tests/prd-gate/struct-ctor-conformance-probe-set.json, gated by
+// tests/infra/test_prd_gate_struct_ctor_conformance.sh.
+module struct_ctor_conformance_over_arity
+
+structure def Widget {
+    param label : String
+}
+
+structure def OverArity {
+    let w = Widget("a", "b")
+}

@@ -9,28 +9,13 @@
 #   (3rd-party numeric deps are already opt-level=3 in both profiles per
 #   Cargo.toml:155-158), so non-sensitive crates are fully covered by the debug pass.
 #
-# How to verify:
-#   Run the three greps below over the workspace and collect their crate hits:
-#
-#   Mechanism A — tests ignored in debug, exercised only in release:
-#     grep -rlE '^\s*#\[cfg_attr\(debug_assertions,\s*ignore' \
-#         --include='*.rs' crates/ gui/src-tauri/
-#
-#   Mechanism B — code compiled only in release (debug_assert! elided):
-#     grep -rlE '^\s*#\[cfg\(not\(debug_assertions\)\)\]' \
-#         --include='*.rs' crates/ gui/src-tauri/
-#
-#   Mechanism C — runtime cfg!(debug_assertions) profile branching (macro must appear
-#   before any '/' on the line to exclude comment lines):
-#     grep -rlE '^[^/]*cfg!\(debug_assertions\)' \
-#         --include='*.rs' crates/ gui/src-tauri/
-#     grep -rlE '^[^/]*cfg!\(not\(debug_assertions\)\)' \
-#         --include='*.rs' crates/ gui/src-tauri/
-#
-#   Map each hit file to its crate (crates/<dir> → <dir>; gui/src-tauri/* → reify-gui).
-#   Mechanisms A+B anchor on '^\s*#\[' to exclude doc-comment false positives.
-#   Mechanism C anchors on '^[^/]*' (macro before first '/') to exclude comment lines.
-#   The union of all hit sets (sorted, unique) must equal this list.
+# How to verify (from the repo root, in bash):
+#     source scripts/release-scope-lib.sh
+#     diff <(release_declared_set | sort) <(release_sensitive_set)
+#   Empty output means this list is in sync; '<' lines are declared only, '>' lines
+#   are derived only.  release_sensitive_set is the ONLY home of the
+#   release-sensitivity mechanisms and their patterns — read its doc comment there
+#   rather than copying a grep into this header.
 #
 # Cross-references:
 #   scripts/release-scope-lib.sh — provides release_declared_set (reads this file)

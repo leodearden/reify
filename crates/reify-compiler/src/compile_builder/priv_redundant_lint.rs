@@ -298,6 +298,47 @@ structure S {
         );
     }
 
+    /// `priv let` inside a `sketch { … }` body is found, and labelled at the let.
+    ///
+    /// Fails if the walk is wired to a recursion set that skips a sketch body —
+    /// every set except `ALL_MEMBER_BODIES` does, for sketch-local scoping.
+    #[test]
+    fn priv_let_inside_a_sketch_body_is_redundant() {
+        let source = r#"
+structure S {
+    sketch p {
+        priv let a = point(0mm, 0mm)
+    }
+}
+"#;
+        let members = parse_first_structure_members(source);
+
+        // NON-VACUITY: the `priv let` must live INSIDE the sketch body, not be
+        // hoisted to a position a pre-existing recursion site already reaches.
+        let sketch = match members.as_slice() {
+            [reify_ast::MemberDecl::Sketch(s)] => s,
+            other => panic!("fixture must lower to exactly one Sketch member, got {other:#?}"),
+        };
+        let let_span = match sketch.members.as_slice() {
+            [reify_ast::MemberDecl::Let(l)] if l.is_priv => l.span,
+            other => panic!("the sketch body must hold exactly one `priv let`, got {other:#?}"),
+        };
+
+        let redundant = priv_redundant_diags(&members);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "expected 1 PrivRedundant for `priv let` inside a sketch body, got {}: {:?}",
+            redundant.len(),
+            messages(&redundant)
+        );
+        assert_eq!(
+            redundant[0].labels.first().map(|l| l.span),
+            Some(let_span),
+            "the PrivRedundant label must span the `priv let` itself"
+        );
+    }
+
     // --- recursion-set discriminator: keyed sub entries ---
 
     /// The overrides of the single keyed entry of the single `sub` member in

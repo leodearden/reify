@@ -149,7 +149,8 @@ intersect that list with your own diff. The Medium advisories carry no lines,
 because their remedy is regeneration rather than an edit at a site.
 
 Three legitimate remedies for a site you are responsible for, in preference
-order — plus (d), for a file that merely moved:
+order — plus (d) and (e), for a file that merely moved and for a manifest that
+moved under the detector itself:
 
 ### (a) Attach a code — the default
 
@@ -163,8 +164,9 @@ widest landed constructor-to-`.with_code(` gap is exactly 15. So a genuinely
 coded diagnostic whose attachment lands 16+ non-comment lines below its
 constructor is counted code-less and turns your diff RED even though you did
 remedy (a). It is the main direction in which the detector is not permissive;
-`crates/reify-audit/src/pdiag.rs`'s residual-imprecision list names the only
-other one, a rarer comment-masking case that takes the same escape.
+`crates/reify-audit/src/pdiag.rs`'s residual-imprecision list names the two
+others — the probe's second bound, immediately below, and a rarer
+comment-masking case that takes the same escape.
 If it happens: move the `.with_code(` up the chain (nearly always possible —
 it is a builder method, and ordering among `.with_*` calls is free), or take
 remedy (b) with that as the stated reason. The window is not widened to buy
@@ -174,6 +176,35 @@ constructor's `.with_code(` mark this site coded, which silently retires real
 code-less sites from the gate. `PDIAG_CODE_WINDOW` in
 `crates/reify-audit/src/pdiag.rs` is the canonical value; appendix A below
 carries the measurements behind it.
+
+**The probe also stops at another constructor — but only across a statement
+end.** Distance is not the only bound: the scan terminates at the first
+`Diagnostic::error` / `Diagnostic::warning` that is separated from your site by
+a `;`. Without that bound, adding a code-less diagnostic directly above — or to
+the left of — an already-coded one was silently absorbed by the neighbour's
+code and never reached the gate at all. A `;` alone does not stop the scan and
+another constructor alone does not stop it; only the pair does, precisely so
+the common `let d = if bad { …error(m) } else { …warning(m) };` /
+`d.with_code(code)` shape, whose code lands in a LATER statement, keeps
+reading as coded. Only a real statement end counts: a `;` inside your message
+string, or a `';'` char literal, is skipped, so punctuating a diagnostic
+message never moves the bound.
+
+The cost is one narrow false RED: an **interleaved binding**, where a second
+constructor is both bound and coded in between your site and your site's own
+code —
+
+```rust
+let a = Diagnostic::error(m);                 // reads code-less: `b`'s anchor
+let b = Diagnostic::warning(m2).with_code(c); // sits past the `;` above
+a.with_code(c2);
+```
+
+No such shape exists in the swept corpus. If you write one, the fixes are, in
+order: attach the code inside the constructor's own statement (`let a =
+Diagnostic::error(m).with_code(c2);`), which is better code anyway; reorder so
+nothing intervenes; or take remedy (b) with the interleaving as the stated
+reason. Appendix A carries the measurement that fixed this bound.
 
 ### (b) Escape the site — only when code-less is deliberate
 
@@ -235,13 +266,47 @@ cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
   > crates/reify-audit/pdiag-baseline.txt
 ```
 
-This is the exception to "regenerating is NOT a remediation", and it is a
-narrow one: nothing is re-blessed, because the same sites were already blessed
-under the old path. **The review check is that the two counts match** — the new
+This is the first of the two exceptions to "regenerating is NOT a
+remediation" — (e) is the other — and it is a narrow one: nothing is
+re-blessed, because the same sites were already blessed under the old path. **The review check is that the two counts match** — the new
 row's count equals the count the orphaned row allowed. If the new count is
 higher, the diff added code-less sites on top of the move and those go back to
 (a)/(b). When that is hard to see in review, split the move and the edits into
 separate commits.
+
+### (e) The detector itself got stricter — regenerate
+
+A manifest row can also rise because the **scanner** changed, with the scanned
+file untouched. When a bound is tightened, sites that were previously hidden by
+an imprecision become visible, the live count exceeds the baseline row, and the
+file goes High — for a file nobody in the diff edited.
+
+This is the second and last shape where regeneration is the whole fix, and,
+like (d), it is **not** the ratchet being re-blessed away. Nothing was allowed that was not already there:
+the sites always existed, and what changed is that the detector can now see
+them. Attaching codes to them is a different task, usually in a different
+crate, and blocking the detector fix on it is backwards.
+
+The review checks are the ones that make it falsifiable:
+
+- the diff to `pdiag-baseline.txt` is **exactly** the rows the detector change
+  explains, and no others;
+- each newly surfaced site is inspected and named in the commit message or in
+  appendix A;
+- the manifest is regenerated **in the same commit as the detector change**, or
+  the gate is RED at every commit in between.
+
+Worked example: bounding the code probe (2026-09, task #5887) raised
+`crates/reify-eval/src/geometry_ops.rs` from 137 to 139 and moved no other ROW
+— which is exactly why the first check above is necessary but not sufficient.
+It surfaced FOUR sites, not two: `modal_ops.rs` and `reify-stdlib/src/geometry.rs`
+each carried a pre-existing stale row with one of headroom, which absorbed
+their new site without moving a row, so a reviewer reading only the manifest
+diff sees two of the four movers not at all. The census diff does show them,
+which is why the second check names sites rather than rows. All four are
+inspected one by one in appendix A — two carry an in-source note declaring them
+code-less *by class*, so coding them would have been wrong, not merely out of
+scope.
 
 ### When the finding is not about your diff
 
@@ -316,12 +381,14 @@ construction, not by exemption.
 
 ## Appendix A — corpus measurements behind the detector (snapshot)
 
-**Snapshot, not a claim about the current tree.** Everything below was measured
-once, on the tree as it stood when PDIAG was built (task #5405, 2026-08/09).
-These figures justify design choices that are now fixed in code; nothing
-re-derives them, and nothing should be taken as describing today's corpus. The
-committed `crates/reify-audit/pdiag-baseline.txt` is the only authority on
-current counts. Re-measure before citing any of it in a new argument.
+**Snapshot, not a claim about the current tree.** Each subsection below was
+measured once, on the tree as it stood at its stated date — PDIAG's own build
+(task #5405, 2026-08/09) unless the heading says otherwise. These figures
+justify design choices that are now fixed in code; nothing re-derives them, and
+nothing should be taken as describing today's corpus. The committed
+`crates/reify-audit/pdiag-baseline.txt` is the only authority on current counts.
+Re-measure before citing any of it in a new argument. Figures from different
+subsections are **not comparable** — the corpus moved between them.
 
 ### Why a bounded line window rather than paren matching
 
@@ -362,6 +429,126 @@ Two readings, the second load-bearing:
 So the window trades hard-gate coverage for headroom, and 15 was the largest
 value that retired nothing.
 
+### Why the code probe is bounded at a constructor beyond a statement end
+
+*Re-measured 2026-09-21, task #5887, on the tree the bound was written against:
+529 swept files / 67 with rows / **644** code-less sites. Not comparable with the
+window table above, which is a #5405-era corpus. The branch was later rebased;
+the figures for the tree it actually lands on are under "Rebased" at the end of
+this subsection.*
+
+The probe used to run its whole 15-line window unconditionally, so a brand-new
+code-less site parked directly ABOVE an existing coded one was censused as
+coded — a hole in the hard gate rather than mere imprecision, and its same-line
+twin let a new site be parked to the LEFT of a coded one on one line. Two
+candidate bounds were run over the full corpus and their censuses diffed.
+
+Both are reported on one convention, so the two paragraphs below can be read
+against each other: a **mover** is one site whose verdict changed, **files** are
+the distinct files those movers sit in, and **rows** are the
+`pdiag-baseline.txt` entries that actually moved. Rows are always the smallest
+of the three, because a stale row carrying headroom absorbs a new site without
+moving — which is the whole reason §3(e)'s second review check names sites and
+not rows.
+
+**Rejected — terminate at a line whose trailing non-comment character is `;`.**
+644 → **651** sites: **seven movers across five files, three rows moved**. Four
+of the seven are the genuine sites the accepted rule also finds — the three
+files tabled under it below. The other THREE are false REDs on landed,
+genuinely-coded code, in two further files:
+
+| false RED | manifest row | shape |
+|---|---|---|
+| `crates/reify-eval/src/engine_compute.rs:166,168` | 1 → 3 | `let diagnostic = if … { Diagnostic::warning(m) } else { Diagnostic::error(m) };` then `diagnostic.with_code(…)` |
+| `crates/reify-compiler/src/expr.rs:3314` | 64 → 65 | `let base_diag = Diagnostic::error(…)` / `.with_label(…);` then `base_diag.with_code(…)` in a later statement |
+
+The two rows in that table are two of the three; the third is
+`geometry_ops.rs` 137 → 138, the same row the accepted rule moves. The other
+two genuine movers — `modal_ops.rs` and `reify-stdlib/src/geometry.rs` — are
+absorbed by stale headroom under BOTH rules, so five files hold seven movers
+but only three rows change.
+
+All three false REDs BIND the constructor to a variable and attach the code in
+a LATER statement, so a bare statement terminator cuts exactly between the site
+and its own code — the same failure class that killed paren-depth matching. Worse,
+`expr.rs:3314` is the very site the window table above names as the 14 → 15
+step, so this rule would have invalidated `PDIAG_CODE_WINDOW`'s own
+justification.
+
+**Accepted — terminate at the first CONSTRUCTOR separated from this site by a
+statement terminator.** `;` alone never bounds; an anchor alone never bounds
+(that is `escape_in_window`'s bound, and it reds the
+`if {…} else {…}.with_code(code)` dispatch); the ordered pair `; … <anchor>`
+does. It is exactly right because a `.with_code(` belonging to a DIFFERENT
+constructor is necessarily preceded by that constructor's own anchor, while a
+code attached to THIS site through a variable in a later statement has no
+intervening anchor.
+
+644 → **648** sites: four movers across three files, ONE row moved, **zero**
+false REDs, **zero** newly exempt.
+
+| site | why it is genuinely code-less |
+|---|---|
+| `crates/reify-eval/src/geometry_ops.rs:381` | non-finite `Length` value-domain verdict |
+| `crates/reify-eval/src/geometry_ops.rs:692` | non-finite `Angle`, carrying an in-source "CODE-LESS BY CLASS, not by omission" note |
+| `crates/reify-eval/src/modal_ops.rs:556` | `W_ModalConvergence`, a real code-less warning: nothing on its chain codes it, and it was absorbed by `ShiftSkippedModes`'s `.with_code(` at :589 — 33 lines below, but reachable because the 18 intervening comment lines cost no window budget |
+| `crates/reify-stdlib/src/geometry.rs:1987` | a real code-less warning, absorbed by the coded `affine_translate` error below it |
+
+Both negative controls held: `fea_diagnostics.rs:48-53` stays coded, and the
+two binding shapes above stay coded. The same-line half moved nothing — the
+corpus carries zero such deltas — so it was landed on the unit tests and the
+`scenario07_code_absorption.rs` fixture rather than on a census movement.
+
+**The terminator is literal-aware, and that is not fastidiousness.** A `;`
+inside a diagnostic MESSAGE is not a statement end, and reading it as one arms
+the bound a statement early: measured on the first cut of this rule, both
+`Diagnostic::error("a ; b")` and `Diagnostic::error(fmt(';'))` cut the first
+arm of a severity dispatch off from the shared trailing `.with_code(`, so a
+genuinely-coded site read code-less. The ingredient is LIVE in the corpus —
+`crates/reify-compiler/src/compile_builder/pre_pass.rs:112` carries a `;`
+inside the message of exactly that two-arm shape — and flips no verdict there
+only because both of its arms happen to be code-less today, which is one edit
+away from not being true. `pdiag.rs`'s `statement_end` therefore skips a `;`
+inside `"…"` or `';'`. Measured census-neutral when it landed: 529 swept / 67
+with rows / **648** sites, reproducing `pdiag-baseline.txt` byte-identically,
+so it closed a latent false RED without moving a verdict.
+
+Because all four movers are genuine, the correct action was to re-bless them —
+but only ONE manifest row moved, and the gap matters to §3(e)'s first review
+check. `geometry_ops.rs` gained two sites against a row carrying one of
+headroom, so it rose 137 → 138 on that tree (137 → 139 on the rebased one, see
+below). `modal_ops.rs` (row 25, live 24) and
+`reify-stdlib/src/geometry.rs` (row 2, live 1) each carried a pre-existing
+STALE row with exactly one of headroom, which silently absorbed their new site:
+live rose, the row did not, and the manifest diff shows nothing. So "the diff
+to `pdiag-baseline.txt` is exactly the rows the detector change explains" is a
+necessary check, not a sufficient one — a census diff is what makes every mover
+visible. See §3(e).
+
+The figures above are a re-measurement, and the first record of them was wrong
+in a way worth naming: it recorded the starting census as 645 rather than 644
+and named only three movers. Both follow from ONE omitted site — `modal_ops.rs:556`,
+which is absorbed by a stale row and so leaves no manifest trace — and, counted
+off that inflated start, +7 read as +6 for the rejected rule and +4 as +3 for
+the accepted one. Derive the census and the mover list from the SAME pair of
+generator runs; an endpoint that looks right (651 here did) does not confirm
+the start.
+
+**Rebased.** *Re-measured 2026-09-26 on the tree the bound lands on: 530 swept
+files / 67 with rows.* The accepted rule takes it from **645 → 649** sites. It
+moves the same four sites, now at `geometry_ops.rs:382` and `:693`,
+`modal_ops.rs:556` and `reify-stdlib/src/geometry.rs:2231`, and only the
+`geometry_ops.rs` row moves, but that row now goes **137 → 139**, not 137 → 138.
+The reason is task #5666 (`528945134e`), which landed on `main` after the first
+measurement. It added one code-less `Diagnostic::warning` to `geometry_ops.rs`,
+and that site used up the row's one site of headroom on `main` (row 137, live
+137). So the row rises by the full two movers. The pre-rebase row of 138 was
+green on the branch as committed and red on the rebased tree. That is the rule
+under "Regeneration is tree-bound" in action: a green captured before a rebase
+says nothing about what lands.
+The rejected rule was not re-run on the rebased tree, so its 644 → 651 is still
+the pre-rebase figure.
+
 ### Comment-mask incidence
 
 The `* ` block-comment-continuation rule also matches a wrapped arithmetic
@@ -370,9 +557,10 @@ comment-only: **19** such lines existed in the swept corpus
 (`shell_assembly.rs`, `modal/transient.rs`, …), none within 30 lines below a
 constructor, so the live census was unaffected.
 
-The two false-RED routes the module header enumerates were both latent rather
-than live at this snapshot: no swept file ended at non-zero block-comment
-depth, and no masked line carried a `.with_code(`.
+The two false-RED routes the module header enumerated *at this snapshot* were
+both latent rather than live: no swept file ended at non-zero block-comment
+depth, and no masked line carried a `.with_code(`. (The header lists three
+today; the probe-bound route was added in 2026-09 — see the subsection above.)
 
 ### Re-measuring
 
@@ -384,6 +572,19 @@ cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . > /dev/nul
 ```
 
 Do not commit a manifest generated at a non-canonical window.
+
+To measure a DETECTOR change instead of a constant, generate a manifest with
+each version of `pdiag.rs` — the old one is `git show <base>:crates/reify-audit/src/pdiag.rs`
+— and diff the two files. The diff gives per-file counts, and the stderr census
+line gives the totals; take both from the same pair of runs.
+
+That diff names files, not sites. To name the moved SITES, drop the affected
+rows from `pdiag-baseline.txt` so every site in them is reported, and run
+`reify-audit --pattern PDIAG --runs-db <tmp> --no-jcodemunch`: each High
+summary lists its file's code-less lines, and the set difference between the
+two runs is the mover list. Raise `PDIAG_SUMMARY_LINE_CAP` while doing so —
+summaries elide past 12 lines, and a mover past the cut is invisible. Both
+mutations are measurement scaffolding; revert them before committing.
 
 ---
 

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -25,6 +26,7 @@
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepAlgoAPI_BuilderAlgo.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -275,12 +277,12 @@ static const char* topabs_name(TopAbs_ShapeEnum type) {
     }
 }
 
-/// Reduce a swept-section profile to the shape `BRepFill_Section` accepts.
-///
-/// `BRepOffsetAPI_MakePipeShell::Add` funnels every section through
-/// `BRepFill_Section`, which stores only a `TopoDS_Wire` or a `TopoDS_Vertex`.
-/// Anything else — including a `TopAbs_FACE` and a bare `TopAbs_EDGE` — raises
-/// `Standard_Failure "BRepFill_Section: bad shape type of section"`. Faces are
+/// Reduce a section profile to a `TopoDS_Wire` or `TopoDS_Vertex` — the only
+/// section shapes either section consumer accepts:
+/// `BRepOffsetAPI_MakePipeShell` (make_pipe_shell, loft_guided_profiles), whose
+/// `BRepFill_Section` raises "bad shape type of section" on anything else, and
+/// `BRepOffsetAPI_ThruSections` (loft_profiles, make_loft_with_history, via
+/// `add_loft_section`), which takes only `AddWire` / `AddVertex`. Faces are
 /// the profile kind the Reify compiler actually produces (`circle(r)` lowers to
 /// `CircleProfile` → `make_circle_face`), so they are reduced here to their
 /// outer wire rather than rejected.
@@ -348,6 +350,19 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
                 + "'; section profile must be a Wire, a Vertex, or a Face "
                   "(reduced to its outer wire)");
     }
+}
+
+/// Add one loft section to `loft` and return the section actually added (the
+/// wire or vertex `section_profile_to_wire` reduced `profile` to).
+static TopoDS_Shape add_loft_section(BRepOffsetAPI_ThruSections& loft,
+                                     const TopoDS_Shape& profile) {
+    const TopoDS_Shape section = section_profile_to_wire(profile);
+    if (section.ShapeType() == TopAbs_VERTEX) {
+        loft.AddVertex(TopoDS::Vertex(section));
+    } else {
+        loft.AddWire(TopoDS::Wire(section));
+    }
+    return section;
 }
 
 /// Downcast a spine/guide argument to `TopoDS_Wire`, rejecting anything else
@@ -721,8 +736,10 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 // --- Boolean-op-pass counter (task 5213) ---
 
 // PER-THREAD count of completed OCCT boolean passes, incremented once per
-// successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
-// single-pass fuse_shape_list.  Each thread observes only the boolean passes it
+// successful Build() in build_boolean_pass: the single Build() site every OCCT
+// boolean goes through, i.e. the binary fuse/cut/common, their *_with_history
+// siblings (the production realization path) and the single-pass
+// fuse_shape_list.  Each thread observes only the boolean passes it
 // performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
 // count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
 // it lets tests assert that a K-instance pattern performs exactly ONE boolean
@@ -739,15 +756,15 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 // trusted.  Per-thread storage restores the isolation that per-binary processes
 // used to provide, and does so in every execution mode (plain `cargo test`,
 // `--test-threads=1`, and nextest's process-per-test) rather than only under
-// the last.  It is sound because all four increment sites run synchronously on
-// the calling thread immediately after the corresponding Build() returns, so no
-// pass is ever attributed to a thread other than the one that performed it.
+// the last.  It is sound because the one increment site, in build_boolean_pass,
+// runs synchronously on the calling thread immediately after Build() returns, so
+// no pass is ever attributed to a thread other than the one that performed it.
 //
 // `static` (internal linkage) matches the file's convention for file-scope
 // state (cf. g_step_export_mutex): nothing outside this TU names the variable —
 // only the two accessors below — so exporting the TLS symbol would needlessly
 // widen the ABI surface and force the general-dynamic TLS access model
-// (a __tls_get_addr call) at every increment site instead of local-exec.
+// (a __tls_get_addr call) at the increment site instead of local-exec.
 static thread_local uint64_t t_boolean_pass_count = 0;
 
 void reset_boolean_pass_count() {
@@ -756,6 +773,30 @@ void reset_boolean_pass_count() {
 
 uint64_t boolean_pass_count() {
     return t_boolean_pass_count;
+}
+
+// --- Boolean parallelism mode (task 7439) ---
+
+// Whether build_bop_algorithm runs OCCT's parallel mode, per calling thread like
+// the pass counter above. Rationale and contract: src/boolean_parallelism.rs.
+constexpr bool kBooleanRunParallelByDefault = true;
+static thread_local bool t_boolean_run_parallel = kBooleanRunParallelByDefault;
+
+void set_boolean_run_parallel(bool parallel) {
+    t_boolean_run_parallel = parallel;
+}
+
+bool boolean_run_parallel() {
+    return t_boolean_run_parallel;
+}
+
+// Completed BOP Builds that OCCT itself ran in parallel mode, read back from
+// each algorithm rather than from t_boolean_run_parallel, so a policy point that
+// stopped handing the mode to OCCT shows up here. Test observability only.
+static thread_local uint64_t t_parallel_bop_build_count = 0;
+
+uint64_t parallel_bop_build_count() {
+    return t_parallel_bop_build_count;
 }
 
 // --- Compound assembly ---
@@ -1151,6 +1192,51 @@ TopTools_ListOfShape operand_pair(const TopoDS_Shape& left, const TopoDS_Shape& 
     return operands;
 }
 
+namespace {
+
+// A binary boolean's sole argument or sole tool.
+TopTools_ListOfShape single_shape_list(const TopoDS_Shape& shape) {
+    TopTools_ListOfShape list;
+    list.Append(shape);
+    return list;
+}
+
+// The policy point: every BOP algorithm in this file (booleans, fuse_shape_list,
+// Splitter) is Build()-ed here, in the calling thread's parallelism mode.
+void build_bop_algorithm(BRepAlgoAPI_BuilderAlgo& op, const char* failure_message) {
+    op.SetRunParallel(t_boolean_run_parallel);
+    op.Build();
+    if (!op.IsDone()) {
+        throw std::runtime_error(failure_message);
+    }
+    if (op.RunParallel()) {
+        t_parallel_bop_build_count += 1;
+    }
+}
+
+// The one Build() site, and so the one pass-counter increment, for every OCCT
+// boolean. In OCCT 7.8.1 the operand-bearing BRepAlgoAPI constructors already
+// Build(), and Build() clears and reruns, so every boolean default-constructs
+// and comes through here. Two guards keep an eagerly built op out: the
+// IsDone() precondition below at runtime, and
+// tests/harness_occt/boolean_single_build_guard.rs over the source.
+void build_boolean_pass(BRepAlgoAPI_BooleanOperation& op,
+                        const TopTools_ListOfShape& arguments,
+                        const TopTools_ListOfShape& tools,
+                        const char* failure_message) {
+    if (op.IsDone()) {
+        throw std::logic_error(
+            "build_boolean_pass: op is already built (constructed with operands?); "
+            "default-construct it so the boolean runs once");
+    }
+    op.SetArguments(arguments);
+    op.SetTools(tools);
+    build_bop_algorithm(op, failure_message);
+    t_boolean_pass_count += 1;
+}
+
+} // anonymous namespace
+
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
 
 // Fuse every member of `shapes` into a single result in ONE BOP pass.
@@ -1194,14 +1280,7 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
         tools.Append(it.Value());
     }
     BRepAlgoAPI_Fuse fuse;
-    fuse.SetArguments(args);
-    fuse.SetTools(tools);
-    fuse.Build();
-    if (!fuse.IsDone()) {
-        throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
-    }
-    // One completed boolean pass, regardless of instance count (task 5213).
-    t_boolean_pass_count += 1;
+    build_boolean_pass(fuse, args, tools, "fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     // Behaviour-identical to the inline block this replaced (task 5213): the
     // unwrap rule now lives once, in `normalize_boolean_result`, shared with the
     // three binary boolean ops (task 7054).
@@ -1241,12 +1320,9 @@ rust::String shape_type_name(const OcctShape& shape) {
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_fuse", [&]() {
-        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
-        fuse.Build();
-        if (!fuse.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
-        }
-        t_boolean_pass_count += 1;
+        BRepAlgoAPI_Fuse fuse;
+        build_boolean_pass(fuse, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Fuse failed");
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
         return result;
@@ -1255,12 +1331,9 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
 
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_cut", [&]() {
-        BRepAlgoAPI_Cut cut(left.shape, right.shape);
-        cut.Build();
-        if (!cut.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Cut failed");
-        }
-        t_boolean_pass_count += 1;
+        BRepAlgoAPI_Cut cut;
+        build_boolean_pass(cut, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Cut failed");
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
         return result;
@@ -1269,12 +1342,9 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
 
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_common", [&]() {
-        BRepAlgoAPI_Common common(left.shape, right.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
-        }
-        t_boolean_pass_count += 1;
+        BRepAlgoAPI_Common common;
+        build_boolean_pass(common, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Common failed");
         auto result = std::make_unique<OcctShape>();
         result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
         return result;
@@ -1446,8 +1516,8 @@ rust::Vec<uint32_t> to_rust_vec(const std::vector<uint32_t>& src) {
 
 /// Shared body: run `emit_history_for_parent` for both operands / both
 /// sub-shape kinds and populate a fresh `BooleanOpHistory`. The caller
-/// constructs `op` (Fuse, Cut, or Common), calls `.Build()`, checks
-/// `IsDone()`, and then delegates to this helper. `op` is accepted as a
+/// default-constructs `op` (Fuse, Cut, or Common), runs it through
+/// `build_boolean_pass`, and then delegates to this helper. `op` is accepted as a
 /// non-const reference because `BRepAlgoAPI_BooleanOperation::Modified()`
 /// and `Generated()` are non-const in OCCT.
 std::unique_ptr<BooleanOpHistory> extract_boolean_history(
@@ -1499,33 +1569,27 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
 
 std::unique_ptr<BooleanOpHistory> boolean_fuse_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_fuse_with_history", [&]() {
-        BRepAlgoAPI_Fuse fuse(left.shape, right.shape);
-        fuse.Build();
-        if (!fuse.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Fuse failed");
-        }
+        BRepAlgoAPI_Fuse fuse;
+        build_boolean_pass(fuse, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Fuse failed");
         return extract_boolean_history(fuse, left, right);
     });
 }
 
 std::unique_ptr<BooleanOpHistory> boolean_cut_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_cut_with_history", [&]() {
-        BRepAlgoAPI_Cut cut(left.shape, right.shape);
-        cut.Build();
-        if (!cut.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Cut failed");
-        }
+        BRepAlgoAPI_Cut cut;
+        build_boolean_pass(cut, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Cut failed");
         return extract_boolean_history(cut, left, right);
     });
 }
 
 std::unique_ptr<BooleanOpHistory> boolean_common_with_history(const OcctShape& left, const OcctShape& right) {
     return wrap_occt_call("boolean_common_with_history", [&]() {
-        BRepAlgoAPI_Common common(left.shape, right.shape);
-        common.Build();
-        if (!common.IsDone()) {
-            throw std::runtime_error("BRepAlgoAPI_Common failed");
-        }
+        BRepAlgoAPI_Common common;
+        build_boolean_pass(common, single_shape_list(left.shape), single_shape_list(right.shape),
+                           "BRepAlgoAPI_Common failed");
         return extract_boolean_history(common, left, right);
     });
 }
@@ -2351,10 +2415,12 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // caller hard-codes `true` to match `GeometryOp::Loft`'s contract.
         BRepOffsetAPI_ThruSections loft(
             is_solid ? Standard_True : Standard_False, Standard_False);
+        std::vector<TopoDS_Shape> sections;
+        sections.reserve(profiles.shapes.size());
         for (const auto& shape : profiles.shapes) {
             // Per profile, and AFTER the count check above (see `loft_profiles`).
             reject_empty_input_shape(shape, "profile");
-            loft.AddWire(TopoDS::Wire(shape));
+            sections.push_back(add_loft_section(loft, shape));
         }
         loft.Build();
         if (!loft.IsDone()) {
@@ -2372,9 +2438,10 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // unused — `BRepOffsetAPI_ThruSections::GeneratedFace` is the
         // sole correspondence accessor we exercise here.
 
-        // Per-section walk: for each profile section i ∈ [0, N), walk
-        // its edges in canonical TopExp `MapShapes(profile, TopAbs_EDGE, _)`
-        // order; for each edge call `loft.GeneratedFace(edge)` to recover
+        // Per-section walk: for each section i ∈ [0, N) AS ADDED to the
+        // builder (`GeneratedFace` is keyed on those edges), walk its edges
+        // in canonical TopExp `MapShapes(section, TopAbs_EDGE, _)` order;
+        // for each edge call `loft.GeneratedFace(edge)` to recover
         // the lateral side face in the result; look up the result face's
         // 0-based index in `result_face_map` and emit a flat triple
         // `(parent_index = i, parent_subshape_index = edge_idx_in_section,
@@ -2383,11 +2450,10 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         // CANNOT REUSE `emit_sweep_generated_cross_type` because that
         // helper hard-codes `parent_index = 0` (single-parent contract);
         // loft's per-section walk needs distinct `parent_index` per section.
-        const std::size_t n_sections = profiles.shapes.size();
+        const std::size_t n_sections = sections.size();
         for (std::size_t i = 0; i < n_sections; ++i) {
-            const TopoDS_Shape& profile_shape = profiles.shapes[i];
             TopTools_IndexedMapOfShape section_edge_map;
-            TopExp::MapShapes(profile_shape, TopAbs_EDGE, section_edge_map);
+            TopExp::MapShapes(sections[i], TopAbs_EDGE, section_edge_map);
             const Standard_Integer n_edges = section_edge_map.Extent();
             for (Standard_Integer e = 1; e <= n_edges; ++e) {
                 const TopoDS_Shape& section_edge = section_edge_map.FindKey(e);
@@ -2955,6 +3021,13 @@ std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = gtransform.Shape();
+        // BRepBuilderAPI_GTransform has no copy-mesh switch: BRepTools_GTrsfModification
+        // carries the source's triangulation and polygons onto the result even though it
+        // rewrites every analytic surface as a B-spline. A source tessellated first thus
+        // yields a result BRepCheck_Analyzer rejects and whose re-tessellation silently
+        // reuses the carried mesh. Dropping it matches the theCopyMesh=false default of
+        // BRepBuilderAPI_Transform, which every gp_Trsf transform here relies on (#6652).
+        ::BRepTools::Clean(result->shape);
         return result;
     });
 }
@@ -3221,12 +3294,95 @@ std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) 
     });
 }
 
+// Floored at Precision::Confusion() so sub-micron (but still valid, non-zero)
+// offsets don't get an unusably tight tolerance from the 1e-3 scale factor.
+static double offset_join_tolerance(double distance) {
+    return std::max(1e-3 * std::abs(distance), Precision::Confusion());
+}
+
+static double enclosed_volume(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape, props);
+    return props.Mass();
+}
+
+static int solid_count(const TopoDS_Shape& shape) {
+    int count = 0;
+    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+        ++count;
+    }
+    return count;
+}
+
+// Canonical wire-format names documented on `GeometryQuery::FaceSurfaceKind`
+// and decoded by `FaceSurfaceKind::try_from_str`. Surfaces of revolution and
+// extrusion collapse into "Other", as do future GeomAbs variants.
+static const char* surface_kind_name(GeomAbs_SurfaceType type) {
+    switch (type) {
+        case GeomAbs_Plane:           return "Plane";
+        case GeomAbs_Cylinder:        return "Cylinder";
+        case GeomAbs_Cone:            return "Cone";
+        case GeomAbs_Sphere:          return "Sphere";
+        case GeomAbs_Torus:           return "Torus";
+        case GeomAbs_BezierSurface:   return "BezierSurface";
+        case GeomAbs_BSplineSurface:  return "BSplineSurface";
+        case GeomAbs_OffsetSurface:   return "OffsetSurface";
+        default:                      return "Other";
+    }
+}
+
+// Join mode extends each offset face to meet its neighbours. An elementary
+// surface extends exactly; a BSpline face's extension warps, and the result
+// still passes BRepCheck (a lofted cylinder's outward offset measured 5.9%
+// under π(r+d)²(h+2d)).
+static std::optional<GeomAbs_SurfaceType> first_non_elementary_surface(const TopoDS_Shape& shape) {
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        const GeomAbs_SurfaceType type = BRepAdaptor_Surface(TopoDS::Face(ex.Current())).GetType();
+        switch (type) {
+            case GeomAbs_Plane:
+            case GeomAbs_Cylinder:
+            case GeomAbs_Cone:
+            case GeomAbs_Sphere:
+            case GeomAbs_Torus:
+                continue;
+            default:
+                return type;
+        }
+    }
+    return std::nullopt;
+}
+
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance) {
     return wrap_occt_call("offset_solid_shape", [&]() {
+        constexpr double kDegenerateVolumeRelFloor = 1e-9;
+        if (!std::isfinite(distance) || std::abs(distance) < Precision::Confusion()) {
+            throw std::runtime_error("offset_solid_shape: distance must be finite and non-zero");
+        }
+        // Join on a multi-solid CompSolid yields a non-solid, so refuse it by name.
+        const int solids = solid_count(shape.shape);
+        if (solids > 1) {
+            throw std::runtime_error("offset_solid_shape: offset_solid needs a single solid; got "
+                + std::to_string(solids) + " solids");
+        }
+        // Join on a single-solid compound returns a shell, so offset the bare solid.
+        const TopoDS_Shape input = unwrap_boolean_compound(shape.shape);
+        const double input_volume = enclosed_volume(input);
+        if (!(input_volume > 0.0)) {
+            throw std::runtime_error(
+                "offset_solid_shape: target encloses no volume — offset_solid needs a solid "
+                "(offset_surface offsets a face)");
+        }
+        if (const auto freeform = first_non_elementary_surface(input)) {
+            throw std::runtime_error(std::string("offset_solid_shape: offset_solid is exact only on "
+                "plane, cylinder, cone, sphere and torus faces; got a ")
+                + surface_kind_name(*freeform) + " face");
+        }
         BRepOffsetAPI_MakeOffsetShape maker;
-        maker.PerformBySimple(shape.shape, distance);
+        maker.PerformByJoin(input, distance, offset_join_tolerance(distance), BRepOffset_Skin,
+            Standard_False, Standard_False, GeomAbs_Intersection);
         if (!maker.IsDone()) {
-            throw std::runtime_error("BRepOffsetAPI_MakeOffsetShape failed");
+            throw std::runtime_error("offset_solid_shape: join offset failed (BRepOffset_Error "
+                + std::to_string(static_cast<int>(maker.MakeOffset().Error())) + ")");
         }
         TopoDS_Shape result = maker.Shape();
         if (result.IsNull()) {
@@ -3235,9 +3391,10 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
         if (!BRepCheck_Analyzer(result).IsValid()) {
             throw std::runtime_error("offset_solid_shape: result shape is invalid");
         }
-        GProp_GProps props;
-        BRepGProp::VolumeProperties(result, props);
-        if (props.Mass() <= Precision::Confusion()) {
+        if (result.ShapeType() != TopAbs_SOLID) {
+            throw std::runtime_error("offset_solid_shape: result is not a solid");
+        }
+        if (!(enclosed_volume(result) > kDegenerateVolumeRelFloor * input_volume)) {
             throw std::runtime_error("offset_solid_shape: result has degenerate (near-zero) volume");
         }
         auto out = std::make_unique<OcctShape>();
@@ -3247,22 +3404,17 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
 }
 
 // Offset a surface (open face/shell) along its normal via BRepOffsetAPI_MakeOffsetShape
-// in Skin (surface) mode -- distinct from offset_solid_shape's PerformBySimple solid
-// mode above. Positive `distance` offsets along the face's +normal (e.g. a planar
+// in Skin (surface) mode -- distinct from offset_solid_shape above, which offsets
+// a closed solid. Positive `distance` offsets along the face's +normal (e.g. a planar
 // rectangle face built with a +Z-normal wire lands at z = +distance).
 std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance) {
     return wrap_occt_call("make_offset_surface", [&]() {
         if (std::abs(distance) < Precision::Confusion()) {
             throw std::runtime_error("make_offset_surface: zero distance");
         }
-        // Floor the tolerance at Precision::Confusion() so sub-micron (but
-        // still valid, non-zero) offsets don't get an unusably tight
-        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
-        // guard used just above for the zero-distance check.
-        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
         BRepOffsetAPI_MakeOffsetShape maker;
-        maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
-            Standard_False, Standard_False, GeomAbs_Intersection);
+        maker.PerformByJoin(shape.shape, distance, offset_join_tolerance(distance),
+            BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
         if (!maker.IsDone()) {
             throw std::runtime_error("make_offset_surface: BRepOffsetAPI_MakeOffsetShape failed");
         }
@@ -4213,7 +4365,7 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
             // Per profile, and AFTER the count check above, so a caller who
             // passed only one still gets the diagnostic naming THAT mistake.
             reject_empty_input_shape(shape, "profile");
-            loft.AddWire(TopoDS::Wire(shape));
+            add_loft_section(loft, shape);
         }
         loft.Build();
         if (!loft.IsDone()) {
@@ -4737,26 +4889,7 @@ rust::String face_surface_kind(const OcctShape& shape) {
         if (face.IsNull()) {
             throw std::runtime_error("face_surface_kind: face is null");
         }
-        BRepAdaptor_Surface adaptor(face);
-        // Map OCCT's `GeomAbs_SurfaceType` to the canonical wire-format names
-        // documented on `GeometryQuery::FaceSurfaceKind` and decoded by
-        // `FaceSurfaceKind::try_from_str`. `GeomAbs_SurfaceOfRevolution` and
-        // `GeomAbs_SurfaceOfExtrusion` collapse into "Other" because the
-        // typed Rust enum (`FaceSurfaceKind`) intentionally omits them — the
-        // PRD line 78 vocabulary is `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/
-        // `%Torus` plus the spline/offset arms. Forward-compat for new
-        // GeomAbs variants is the same "Other" arm.
-        switch (adaptor.GetType()) {
-            case GeomAbs_Plane:           return rust::String("Plane");
-            case GeomAbs_Cylinder:        return rust::String("Cylinder");
-            case GeomAbs_Cone:            return rust::String("Cone");
-            case GeomAbs_Sphere:          return rust::String("Sphere");
-            case GeomAbs_Torus:           return rust::String("Torus");
-            case GeomAbs_BezierSurface:   return rust::String("BezierSurface");
-            case GeomAbs_BSplineSurface:  return rust::String("BSplineSurface");
-            case GeomAbs_OffsetSurface:   return rust::String("OffsetSurface");
-            default:                      return rust::String("Other");
-        }
+        return rust::String(surface_kind_name(BRepAdaptor_Surface(face).GetType()));
     });
 }
 
@@ -6931,10 +7064,7 @@ std::unique_ptr<OcctShapeVec> split_shape(
         BRepAlgoAPI_Splitter splitter;
         splitter.SetArguments(args);
         splitter.SetTools(tools);
-        splitter.Build();
-        if (!splitter.IsDone()) {
-            throw std::runtime_error("split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
-        }
+        build_bop_algorithm(splitter, "split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
         // Extract all solids from the result.
         auto out = std::make_unique<OcctShapeVec>();
         for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {

@@ -8,7 +8,7 @@
 use reify_core::Severity;
 use reify_eval::{BuildResult, Engine};
 use reify_ir::ExportFormat;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
+use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source};
 
 /// Source shared by both tests: a plate structure with a cylindrical hole
 /// patterned around the Z-axis.  The angle argument differs between tests.
@@ -29,14 +29,26 @@ fn plate_source(angle_expr: &str) -> String {
 }
 
 /// Build a plate from the given source using a MockGeometryKernel so that
-/// compile_geometry_op is exercised.  Returns the full BuildResult so callers
-/// can verify both that the build succeeded and what diagnostics it produced.
-fn build_plate(source: &str) -> BuildResult {
-    let compiled = parse_and_compile(source);
+/// compile_geometry_op is exercised.  Returns BOTH layers' output from ONE
+/// compile: the compiled module, whose diagnostics are the COMPILE-layer
+/// verdict, and the full BuildResult, whose diagnostics are the EVAL-layer one.
+///
+/// NOT `parse_and_compile` — that helper `assert!`s the compiled module has no
+/// Error-severity diagnostics, and the bare-angle fixture below is a deliberate
+/// COMPILE-layer rejection since PRD 3 leaf ζ gave `circular_pattern` an ANGLE
+/// slot at both its forms. Under the panicking helper the bare case would die
+/// inside the helper before reaching a single assertion of its own, and the
+/// failure would read as "the fixture is wrong" rather than "the gate fired".
+/// Restoring `parse_and_compile` here re-breaks it; the dimensioned case keeps
+/// the guarantee it used to get from the helper by asserting the compile
+/// module is error-free itself.
+fn build_plate(source: &str) -> (reify_compiler::CompiledModule, BuildResult) {
+    let compiled = compile_source(source);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    engine.build(&compiled, ExportFormat::Step)
+    let result = engine.build(&compiled, ExportFormat::Step);
+    (compiled, result)
 }
 
 // ── step-6 ───────────────────────────────────────────────────────────────────
@@ -49,8 +61,38 @@ fn build_plate(source: &str) -> BuildResult {
 #[test]
 fn circular_pattern_bare_360_is_rejected() {
     let source = plate_source("360");
-    let result = build_plate(&source);
+    let (compiled, result) = build_plate(&source);
 
+    // ── COMPILE layer (PRD 3 leaf ζ) ────────────────────────────────────────
+    //
+    // Observed independently of the eval assertions below: PRD decision D3
+    // says the compile slots COMPLEMENT the eval gate, never replace it, so
+    // each layer's verdict is asserted on its own module.
+    //
+    // The hint's WORDING is pinned by the hard-coded `ANGLE_HINT` in
+    // `reify-compiler`'s `builtin_arg_signature_tests.rs`. Built from the shared
+    // const here, this assertion checks only that both layers agree.
+    let compile_rejections: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        compile_rejections,
+        vec![format!(
+            "circular_pattern: angle argument expects Angle, got Int; {}",
+            reify_core::units::ANGLE_MIGRATION_HINT
+        )],
+        "the compile layer must reject exactly the bare angle, with the one \
+         shared hint; got: {:?}",
+        compiled.diagnostics
+    );
+
+    // ── EVAL layer (PRD 3 leaf ε) ───────────────────────────────────────────
     let rejection = result
         .diagnostics
         .iter()
@@ -91,7 +133,21 @@ fn circular_pattern_bare_360_is_rejected() {
 #[test]
 fn circular_pattern_360deg_no_deprecation_warning() {
     let source = plate_source("360deg");
-    let result = build_plate(&source);
+    let (compiled, result) = build_plate(&source);
+
+    // Guard: ensure COMPILE produced no hard errors. `parse_and_compile` used
+    // to assert this on our behalf; `compile_source` does not, so the
+    // dimensioned case states it itself rather than losing it.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "an explicit `360deg` must satisfy the compile-layer ANGLE slot: {:?}",
+        compile_errors
+    );
 
     // Guard: ensure the build did not fail with hard errors (which would make
     // the "no warning" assertion vacuously true).

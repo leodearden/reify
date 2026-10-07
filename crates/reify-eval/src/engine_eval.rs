@@ -15,7 +15,7 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, CompiledFunction,
+    AutoParam, CompiledExpr, CompiledExprKind, CompiledFunction,
     DeterminacyState, ErrorRef, Freshness, InterpolationKind, ObjectiveCombination,
     ObjectiveProvenance, ObjectiveSense, ObjectiveSet, OptimalityStatus, PersistentMap,
     RankedSolveResult, ResolutionProblem, SampledField, SampledGridKind, SelectorKind,
@@ -274,6 +274,42 @@ pub(crate) fn compute_value_input_for_ref(
         }
         _ => None,
     }
+}
+
+/// task #6661: build a `ComputeNodeData::value_inputs` list from an `@optimized`
+/// call's args — a duplicate-free dependency SET, in first-occurrence order.
+///
+/// Shared by the two @optimized dispatch sites (primary and mirror), the same
+/// two callers as [`compute_value_input_for_ref`], to which each arg's
+/// classification is delegated verbatim so the type-based exclusion contract
+/// (graph-absent refs AND `Type::Geometry` cells) lives in exactly one place.
+///
+/// The `seen: HashSet` guard is the one the realization sibling
+/// [`Engine::build_compute_realization_inputs`](crate::Engine) has always had —
+/// which is exactly why the `realization_inputs` duplicate assert never fired
+/// while the value side, `filter_map`ing without a dedupe at both sites,
+/// aborted `reify eval` on a square cross-section
+/// (`solve_elastic_static(material, span, h, h, ...)`).
+///
+/// Why `value_inputs` is a SET, and where the multiplicity/position signal IS
+/// carried: `compute_cache_key`'s §"Missing-input and duplicate-input policy".
+pub(crate) fn build_compute_value_inputs(
+    graph: &crate::graph::EvaluationGraph,
+    args: &[reify_ir::CompiledExpr],
+) -> Vec<reify_core::ValueCellId> {
+    let mut inputs: Vec<reify_core::ValueCellId> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for arg in args {
+        if let reify_ir::CompiledExprKind::ValueRef(target_cell) = &arg.kind
+            && let Some(id) = compute_value_input_for_ref(graph, target_cell)
+            && seen.insert(id.clone())
+        {
+            inputs.push(id);
+        }
+    }
+
+    inputs
 }
 
 /// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
@@ -2956,6 +2992,28 @@ fn objective_unconsumed_finding(
     }
 
     Some(objective_unconsumed_diagnostic(scope, objective, &unconsumed))
+}
+
+/// `W_SOLVER_OPTIMALITY_UNPROVEN` (γ, task #4804) for one objective solve, or `None`.
+///
+/// Fires on a `BestFound` solve whose reason [`reify_ir::BestFoundReason::stopped_at_budget`];
+/// branching on the variant, not the message, keeps the gate immune to rewording
+/// (task #4871, S2). The per-template objective branch of `eval` and
+/// `dispatch_merged_cluster_solve` both call this, so the two cannot drift apart.
+fn optimality_unproven_finding(optimality_status: Option<&OptimalityStatus>) -> Option<Diagnostic> {
+    let Some(OptimalityStatus::BestFound { reason }) = optimality_status else {
+        return None;
+    };
+    if !reason.stopped_at_budget() {
+        return None;
+    }
+    Some(
+        Diagnostic::warning(format!(
+            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove optimality ({})",
+            reason.describe()
+        ))
+        .with_code(DiagnosticCode::SolverOptimalityUnproven),
+    )
 }
 
 /// Structure name → its SINGLE non-collection instance path, for the
@@ -6251,9 +6309,14 @@ impl Engine {
                 let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
                     if problem.objective.is_some() {
                         match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                            // `..` drops the `completeness` verdict deliberately:
+                            // the engine does not consume the completeness axis
+                            // yet. δ #6709 → #6901 is the leaf that reads it (the
+                            // §3.4 verdict policy).
                             RankedSolveResult::Ranked {
                                 mut candidates,
                                 optimality,
+                                ..
                             } => {
                                 assert!(
                                     !candidates.is_empty(),
@@ -6504,23 +6567,8 @@ impl Engine {
                     }
                 }
 
-                // γ (task #4804): surface W_SOLVER_OPTIMALITY_UNPROVEN when the
-                // objective solve hit the iteration limit.  Gate: BestFound AND
-                // reason == BestFoundReason::IterationLimit — converged solves share
-                // the BestFound variant but carry ConvergedWithinBudget, which does
-                // NOT match the gate (B6 no-false-positive).  Variant match is
-                // structurally immune to rewording (task #4871, S2).
-                if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-                    && matches!(reason, BestFoundReason::IterationLimit)
-                {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                             optimality ({})",
-                            reason.describe()
-                        ))
-                        .with_code(DiagnosticCode::SolverOptimalityUnproven),
-                    );
+                if let Some(diag) = optimality_unproven_finding(optimality_status.as_ref()) {
+                    diagnostics.push(diag);
                 }
 
                 // DIC γ (task #5417): surface E_OBJECTIVE_UNCONSUMED when this
@@ -7662,9 +7710,12 @@ impl Engine {
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
                 match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
+                    // `..` drops `completeness` for the reason given at the
+                    // per-template site in `eval()`.
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,
+                        ..
                     } => {
                         assert!(
                             !candidates.is_empty(),
@@ -7958,20 +8009,8 @@ impl Engine {
             }
         }
 
-        // γ (task #4804), generalized to the merged problem: surface
-        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve hit
-        // the iteration limit. Mirrors the per-template gate above verbatim.
-        if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-            && matches!(reason, BestFoundReason::IterationLimit)
-        {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "W_SOLVER_OPTIMALITY_UNPROVEN: objective solve did not prove \
-                     optimality ({})",
-                    reason.describe()
-                ))
-                .with_code(DiagnosticCode::SolverOptimalityUnproven),
-            );
+        if let Some(diag) = optimality_unproven_finding(optimality_status.as_ref()) {
+            diagnostics.push(diag);
         }
 
         // DIC γ (task #5417): the MERGED-CLUSTER arm of
@@ -10554,18 +10593,12 @@ impl Engine {
                                 // contract (excludes graph-absent refs AND
                                 // geometry-typed cells, which flow through
                                 // `realization_inputs` instead).
-                                let mut value_inputs: Vec<reify_core::ValueCellId> = args
-                                    .iter()
-                                    .filter_map(|arg| match &arg.kind {
-                                        reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                            compute_value_input_for_ref(
-                                                &snapshot.graph,
-                                                target_cell,
-                                            )
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect();
+                                // task #6661: `build_compute_value_inputs` applies
+                                // that classification and DEDUPES, so one cell
+                                // passed to two params of this call yields a set,
+                                // not a bag.
+                                let mut value_inputs: Vec<reify_core::ValueCellId> =
+                                    build_compute_value_inputs(&snapshot.graph, args);
 
                                 if let Some(feed) = shell_extract_feed {
                                     value_inputs.push(feed);
@@ -11583,15 +11616,11 @@ impl Engine {
                         // task #4726 / β: mirror of the primary dispatch site —
                         // see `compute_value_input_for_ref`'s doc comment for the
                         // type-based exclusion contract.
-                        let mut value_inputs: Vec<reify_core::ValueCellId> = args
-                            .iter()
-                            .filter_map(|arg| match &arg.kind {
-                                reify_ir::CompiledExprKind::ValueRef(target_cell) => {
-                                    compute_value_input_for_ref(&snapshot.graph, target_cell)
-                                }
-                                _ => None,
-                            })
-                            .collect();
+                        // task #6661: `build_compute_value_inputs` applies that
+                        // classification and DEDUPES, so one cell passed to two
+                        // params of this call yields a set, not a bag.
+                        let mut value_inputs: Vec<reify_core::ValueCellId> =
+                            build_compute_value_inputs(&snapshot.graph, args);
 
                         // task 3594/δ step-12: on the shell route, the upstream
                         // `shell-extract::extract` node's synthetic output cell

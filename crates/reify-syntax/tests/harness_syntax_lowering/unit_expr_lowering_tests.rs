@@ -290,11 +290,8 @@ fn parse_shape(source: &str) -> (usize, usize, Vec<String>) {
 /// message.
 ///
 /// The negative locks below need the span: a message-only check for the offending
-/// character is satisfied by SOURCE ECHO.  Measured on this branch, the targeted
-/// diagnostics are `syntax error: · m` spanning `[28..32]` — starting exactly at
-/// the `·` — while nearby malformed inputs (`5N·/m`) produce the whole-line form
-/// `invalid let: let x = 5N·/m` spanning `[18..32]`, i.e. starting at `let`.  Both
-/// strings contain `·`; only the first POINTS at it.
+/// character is satisfied by any diagnostic whose source excerpt merely CONTAINS
+/// it, such as `invalid let: let x = 5N·/m`, wherever that diagnostic points.
 fn parse_shape_spanned(source: &str) -> (usize, usize, Vec<(String, reify_core::SourceSpan)>) {
     let module = reify_syntax::parse(
         source,
@@ -386,15 +383,12 @@ fn middot_multiple_bindings_in_one_structure_all_survive_lowering() {
 /// binding as a member carrying the ERROR node, so the observable outcome is a
 /// loud member — not a vanished one, and not a dropped declaration.  Measured on
 /// this branch: all three sources give `(decls, members) == (1, 1)` with one
-/// `syntax error: …` diagnostic starting at the middle dot.
+/// `syntax error in structure body` diagnostic starting at the middle dot.
 ///
 /// "Points at" is asserted POSITIONALLY, on the span.  An earlier version tested
-/// `message.contains('·')`, which any diagnostic that echoes the source line
-/// satisfies: `5N·/m` produces `invalid let: let x = 5N·/m` spanning the whole
-/// binding from `let`, and would have passed a message-only check while pointing
-/// nowhere near the operator.  Measured spans for the three sources below:
-/// `5N· m` → `[28..32]`, `5N ·m` → `[29..32]`, `5N·3` → `[28..31]`, each starting
-/// exactly at the `·` byte.
+/// `message.contains('·')`, which a diagnostic satisfies merely by quoting source
+/// that contains the `·` — `5N·/m` reports `invalid let: let x = 5N·/m` — so it
+/// said nothing about where the diagnostic points.
 fn assert_loud_middot_parse_error(source: &str) {
     let (decls, members, errors) = parse_shape_spanned(source);
     assert!(

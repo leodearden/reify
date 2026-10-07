@@ -42,7 +42,7 @@
 //
 // Pinning tests:
 //   crates/reify-eval/tests/kernel_queries_integration.rs (all tests in this file)
-//   crates/reify-compiler/tests/examples_smoke.rs (auto-discovered, compile-smoked)
+//   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (auto-discovered, compile-smoked)
 
 structure def AllQueriesWalk {
 

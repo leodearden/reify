@@ -73,8 +73,8 @@ module whole_model_joint_drive
 //
 // The solver's penalty method has a stationary point offset slightly INSIDE
 // that floor, which therefore reads as infeasible; the CLAMP derived from
-// `effective_constraints` (`derive_param_intervals` / `resolve_bounds` with
-// `include_strict = false`, solver.rs) is what snaps the
+// `effective_constraints` (`derive_param_intervals` / `resolve_bounds` under
+// `StrictBound::Dropped`, solver.rs) is what snaps the
 // converged point back onto the floored bound.  That clamp — not a seed
 // fallback — is what produces the published figure: `solve_core` is NOT
 // returning its `initially_feasible` seed here.  The fixed `0.01` seed

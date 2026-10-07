@@ -40,6 +40,7 @@
 //!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
+//!     apply_patch_resultant, free_faces_within,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
 //!     solve_cg, solve_cg_warm, CgSolverOptions, CgResult, SolverMode,
@@ -563,6 +564,9 @@ pub mod shell_result;
 pub mod shell_solve;
 pub mod solver;
 pub(crate) mod sparse_util;
+// Task 7602: a sparse Cholesky factor whose G⁻¹ / G⁻ᵀ halves apply separately,
+// for the Cholesky-symmetrized shift-invert Lanczos in `eigensolve`.
+pub mod split_cholesky;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
@@ -595,8 +599,8 @@ pub use assembly::{
     assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
-    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
-    apply_traction_load,
+    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination,
+    apply_patch_resultant, apply_point_load, apply_traction_load, free_faces_within,
 };
 pub use constitutive::{
     ConstitutiveLaw, IsotropicElastic, OrthotropicMaterial, TransverseIsotropicMaterial,
@@ -687,10 +691,12 @@ pub use qoi::{
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{
-    EigenSolverOptions, EigenSolverResult, MetricOp, ShiftInvertFailure, SparseFactorRef,
-    SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
-    solve_eigen_shift_invert, try_solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, LanczosMetric, MetricOp, ShiftInvertFailure,
+    SparseFactorRef, SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert,
+    lanczos_shift_invert_in_metric, solve_eigen_dense, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
+pub use split_cholesky::SplitCholesky;
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
 pub use buckling_kernel::{
@@ -733,9 +739,9 @@ pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_s
 // (task 2988 sweep step, task 2989 eval-side wiring) can reach them via
 // `reify_solver_elastic::*` without descending into the `mesher` module.
 pub use mesher::{
-    Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
-    auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
-    ring_self_intersects_2d, ring_signed_area_2d,
+    DEGENERATE_RING_AREA_TOLERANCE, Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport,
+    ProfileBoundary, SweepElementTarget, auto_mesh_size_from_boundary, compute_quad_skew,
+    mesh_swept_profile_2d, recombine_quality_ok, ring_self_intersects_2d, ring_signed_area_2d,
 };
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.

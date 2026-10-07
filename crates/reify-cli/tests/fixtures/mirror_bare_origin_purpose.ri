@@ -21,7 +21,7 @@ module mirror_bare_origin_purpose
 // receives a Plane and the consumer-side ox/oy/oz triple is no longer reached.
 // The fixture stays deliberately BARE — it is now a test OF that gate.
 //
-//   reify check --purpose mfg_ready=MirrorBareOriginPurpose <this file>   exit 0
+//   reify check --purpose mfg_ready=MirrorBareOriginPurpose <this file>   exit 1
 //     stdout: "  OK purpose:mfg_ready@MirrorBareOriginPurpose#constraint[0]"
 //             "All constraints satisfied."
 //     stderr: error: plane_yz: offset argument expects Length, got Int; pass a
@@ -36,8 +36,13 @@ module mirror_bare_origin_purpose
 //   collapses it to one — which is the property the count pin asserts.
 //
 // Before leaf β the stderr did NOT contain "failed to compile geometry
-// operation" at all.  After it, the error appears exactly once; the exit code
-// stays 0 until leaf γ (#5403) lands the Severity::Error gate.
+// operation" at all.  After it, the error appears exactly once.  `check` exits
+// non-zero because `check_gating_error` gates on any non-allowlisted
+// Severity::Error in the merged set (#5403), and no CHECK_ERROR_EXIT_ALLOWLIST
+// entry covers the plane_yz producer rejection or the geometry-compile family —
+// deliberately: they are genuine design errors, as `reify eval` agrees.
+// Asserted by cli_check.rs::check_purpose_surfaces_geometry_compile_error and
+// check_purpose_does_not_contradict_definite_verdicts.
 
 structure MirrorBareOriginPurpose {
     param width         : Length = 80mm

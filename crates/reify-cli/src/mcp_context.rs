@@ -528,14 +528,14 @@ impl ReifyToolContext for CliToolContext {
             return Err(ToolError::EngineError("no engine initialized".to_string()));
         }
 
-        // Parse cell_id: "Entity.member"
-        let (entity, member) = cell_id.split_once('.').ok_or_else(|| {
-            ToolError::InvalidParams(format!(
-                "cell_id must be 'Entity.member' format, got: {cell_id}"
-            ))
+        // Parse cell_id through the SHARED grammar (reify-core's `FromStr for
+        // ValueCellId`, sited next to the `Display` it inverts) rather than a
+        // second hand-rolled split. This boundary and the GUI's must agree
+        // about what a cell id denotes, and two copies of the rule is exactly
+        // how they came to disagree.
+        let cell_id_obj: reify_core::ValueCellId = cell_id.parse().map_err(|e| {
+            ToolError::InvalidParams(format!("invalid cell_id '{cell_id}': {e}"))
         })?;
-
-        let cell_id_obj = reify_core::ValueCellId::new(entity, member);
 
         // Parse the value as f64
         let numeric_val: f64 = value
@@ -906,6 +906,74 @@ structure AnglePin {
             "update_source after open_file must reuse the engine \
              (got engine_construction_count={count_after_update})"
         );
+    }
+
+    #[test]
+    fn set_parameter_refuses_an_ambiguous_instance_path_cell_id() {
+        // The GUI and this MCP boundary must agree about what a cell id
+        // denotes; they had drifted into two hand-rolled splits. Both now route
+        // through `ValueCellId`'s `FromStr`, whose Display is not injective, so
+        // an id whose member half still holds a `.` names no single cell.
+        //
+        // The hand-rolled `split_once` here used to yield entity "Bracket",
+        // member "sub.width", falling through to the `cell not found` arm — a
+        // rejection that MISATTRIBUTED the cause. The id is not unknown, it is
+        // unanswerable, and the negative assertion below is what holds those
+        // two categories apart.
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // Positive control on the same context, so a failure below cannot be
+        // blamed on the fixture or the load.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("Bracket.width is a real settable cell");
+
+        let err = ctx
+            .set_parameter("Bracket.sub.width", "0.12")
+            .expect_err("an ambiguous cell id must be refused");
+
+        // Category plus substrings — the taxonomy is the contract, the wording
+        // is not.
+        match err {
+            ToolError::InvalidParams(msg) => {
+                for needle in ["Bracket.sub.width", "ambiguous"] {
+                    assert!(
+                        msg.contains(needle),
+                        "refusal should mention {needle:?}, got: {msg}"
+                    );
+                }
+                assert!(
+                    !msg.contains("cell not found"),
+                    "the id is refused for AMBIGUITY, not for naming a cell that \
+                     happens to be absent: {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_parameter_still_refuses_a_cell_id_with_no_separator() {
+        // The pre-existing contract: an id with no '.' at all was always
+        // InvalidParams, and stays so.
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        let err = ctx
+            .set_parameter("width", "0.12")
+            .expect_err("a cell id with no separator must be refused");
+
+        match err {
+            ToolError::InvalidParams(msg) => {
+                assert!(
+                    msg.contains("width"),
+                    "refusal should name the offending id, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
     }
 
     /// Verify that a parameter override set via `set_parameter` persists across
@@ -2125,8 +2193,8 @@ structure AnglePin {
     ///   column 13), not at the `@@@` that opens the fault (column 5); pinning the exact
     ///   column would ratchet on a recovery detail rather than on locatability.
     /// - The message WORDING is not pinned: the assertion is that whatever message the
-    ///   parser produced survives verbatim, so rewording the generic diagnostic
-    ///   (follow-up #6156) cannot break this test.
+    ///   parser produced survives verbatim, so rewording the generic diagnostic cannot
+    ///   break this test.
     ///
     /// `reify-cli` is a binary-only package (no lib target), so this runs under
     /// `cargo test -p reify-cli --bins`, not `--lib`.

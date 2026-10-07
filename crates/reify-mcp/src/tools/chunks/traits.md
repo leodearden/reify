@@ -13,7 +13,7 @@ pub trait Rigid : Physical {
 
 Every name above is real: `Physical` is the stdlib trait supplying the
 `geometry` and `material` params, and `moment_of_inertia(solid, density)` is a
-compiler builtin. This is the stdlib's own `Rigid` (`stdlib/structural_physical.ri`)
+compiler builtin. This is the stdlib's own `Rigid` (`crates/reify-compiler/stdlib/structural_physical.ri`)
 minus its positive-definiteness constraint — the `body_density` line is not
 decoration, it binds `material.density` to a name so the builtin receives a
 value reference rather than a member access.
@@ -23,7 +23,7 @@ value reference rather than a member access.
 | Member kind | Description |
 |------------|-------------|
 | Parameters | Required named parameters with types |
-| Ports | Required interaction points |
+| Ports *(deferred — not implemented)* | Do NOT write `port` inside a trait body; it is not a trait member kind yet (spec §4.2, tracker #7882). Ports *typed by* a trait (`port x : RotaryPort` in a structure) work. |
 | Sub-structure slots | Required contained sub-structures satisfying a trait |
 | Associated types | Type-level members that implementing types must bind |
 | Constraints | Logical requirements on member relationships |

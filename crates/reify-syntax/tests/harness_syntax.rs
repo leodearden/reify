@@ -50,6 +50,8 @@ mod auto_type_arg_tests;
 mod boundary1_producer;
 #[path = "harness_syntax/cfg_import_attachment_tests.rs"]
 mod cfg_import_attachment_tests;
+#[path = "harness_syntax/check_and_lower_fault_location_tests.rs"]
+mod check_and_lower_fault_location_tests;
 #[path = "harness_syntax/check_and_lower_snippet_bound_tests.rs"]
 mod check_and_lower_snippet_bound_tests;
 #[path = "harness_syntax/connect_chain_tests.rs"]
@@ -106,6 +108,8 @@ mod numeric_separators_grammar_tests;
 mod occurrence_tests;
 #[path = "harness_syntax/option_tests.rs"]
 mod option_tests;
+#[path = "harness_syntax/parse_error_lookup.rs"]
+mod parse_error_lookup;
 #[path = "harness_syntax/port_tests.rs"]
 mod port_tests;
 #[path = "harness_syntax/pragma_tests.rs"]

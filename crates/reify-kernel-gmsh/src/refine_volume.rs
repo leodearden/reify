@@ -8,12 +8,12 @@
 //!
 //! # Cache-invalidation contract
 //!
-//! Different `vertex_sizes` slices produce byte-distinct `VolumeMesh` outputs
+//! Different size fields produce byte-distinct `VolumeMesh` outputs
 //! (different tet counts and connectivity) so upstream cache keys — which are
 //! keyed on all inputs — diverge automatically. No new cache-key field is
 //! needed; the existing `volume_mesh_cache_key` derivation already covers this.
 //!
-//! # Global mesh-size clamp: inherits nothing, leaves nothing
+//! # Global mesh-size options: inherits nothing, leaves nothing
 //!
 //! Gmsh's option table is process-global and survives `gmshClear()`. Since
 //! task #6211 this function
@@ -37,8 +37,8 @@
 //! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
 //! can rot into a comment: inbound is
 //! `uniform_size_field_refines_monotonically_under_leaked_global_clamp`
-//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_caps_
-//! the_rest`; outbound is
+//! (assertion 2) and `non_uniform_size_field_refines_marked_region_and_does_
+//! not_coarsen_the_rest`; outbound is
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
@@ -46,21 +46,43 @@
 //! not just the `MeshSizeMin`/`MeshSizeMax` pair. The
 //! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
 //! `MeshSizeExtendFromBoundary` writes below used to be left behind for a
-//! later caller to inherit; `MeshSizeScope` now restores them too. Measured
-//! against gmsh 4.15.2, only `MeshSizeExtendFromBoundary` — written `0` here
-//! against a measured default of `1` — deviated far enough to change a later
-//! caller's mesh, which is why the leak was invisible for so long. See the
-//! inline rationale at the option writes below, and
+//! later caller to inherit; `MeshSizeScope` now restores them too. Two of the
+//! three deviate from gmsh 4.15.2's measured defaults.
+//! `MeshSizeExtendFromBoundary` — written `0` here against a default of `1` —
+//! was the only one before task #7447, and it deviated far enough to change a
+//! later caller's mesh, which is why the leak was invisible for so long.
+//! `MeshSizeFromPoints` joined it when #7447 moved sizing onto a background
+//! field: it is now written `0` against a default of `1`, and a leaked `0`
+//! would DISABLE point-driven sizing for every later call in the process,
+//! where the `1` this function used to write merely re-asserted the default.
+//! See the inline rationale at the option writes below, and
 //! [`crate::mesh_size_scope`] for which guard holds this writer; that map is
 //! kept in one place rather than restated per writer.
 //!
 //! # Cost basis: full remesh from surface
 //!
 //! `gmshModelMeshRefine()` refines uniformly across the entire existing mesh,
-//! defeating localized-refinement requirements. Full remesh with per-vertex
-//! `gmshModelMeshSetSize` and `Mesh.MeshSizeFromPoints=1` is the only Gmsh
-//! path that honours localised size hints. This means every call regenerates
-//! the entire volume mesh from the surface boundary.
+//! defeating localized-refinement requirements, so every call regenerates the
+//! entire volume mesh from the surface boundary.
+//!
+//! Sizing comes from a gmsh BACKGROUND size field — a `"SS"` post view read by
+//! a `PostView` mesh-size field, built by [`crate::BackgroundSizeField`]. This
+//! file used to claim that per-vertex `gmshModelMeshSetSize` with
+//! `Mesh.MeshSizeFromPoints=1` was "the only Gmsh path that honours localised
+//! size hints". That is measurably false, and it is the belief that produced
+//! task #7447's defect: `classify_surfaces` yields eight 0D entities on a box,
+//! and eight corner scalars interpolate monotonically along each axis, so a
+//! field with an INTERIOR minimum is unrepresentable that way. Measured on the
+//! unit cube with `0.04 + 0.9*|x - 0.5|` (finest at mid-span), mean tet edge by
+//! centroid band:
+//!
+//! | sizing mechanism           | mid-span | ends  | ratio |
+//! |----------------------------|----------|-------|-------|
+//! | 0D corner anchors          | 0.5399   | 0.338 | 1.60  |
+//! | PostView background field  | 0.0949   | 0.312 | 0.304 |
+//!
+//! Corner anchoring left the mid-span COARSER than the ends rather than merely
+//! unrefined; the background field tracks an analytic MathEval reference to ~1%.
 //!
 //! This is the explicit cost-basis the v0.4 PRD names as the trigger criterion
 //! for the MMG3D bookmark (task #3003): if a refinement loop spends >30% of
@@ -70,23 +92,29 @@ use std::collections::HashMap;
 
 use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
 
+use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
-use crate::mesh_size_scope::{
-    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope,
-};
+use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 
-/// Remesh the volume enclosed by `surface` using per-vertex size hints.
+/// Remesh the volume enclosed by `surface`, sized by a background size field.
 ///
-/// `vertex_sizes[i]` is the target characteristic element edge length at
-/// surface vertex `i` (same indexing as `surface.vertices / 3`). Every
-/// surface vertex must have a hint; pass `vec![uniform_size; n_verts]` for
-/// a uniform refinement.
+/// `size_field` carries a target characteristic element edge length at every
+/// vertex of its own sizing mesh, INTERIOR vertices included — which is the
+/// point. It is installed as a gmsh background mesh size field rather than
+/// projected onto the boundary, so an interior minimum survives. Build one
+/// with [`BackgroundSizeField::from_tet_mesh`].
 ///
 /// The function performs a **full remesh** from the surface boundary rather
 /// than incrementally refining the current volume mesh (see module-level doc
 /// for the cost/accuracy rationale).
+///
+/// # Threading
+///
+/// `options.threads` and `options.deterministic` are honoured through
+/// [`MeshingOptions::resolved_num_threads`], as in the sibling entry points.
+/// `options.mesh_size` is deliberately unread; see the `Mesh.MeshSizeMax` write.
 ///
 /// # Errors
 ///
@@ -98,22 +126,27 @@ use crate::mesh_size_scope::{
 /// detect this via `msg.contains(STUB_UNAVAILABLE_MARKER)`.
 /// Real FFI-backed remesh implementation.
 ///
-/// Mirrors `crates/reify-kernel-gmsh/src/kernel_real.rs::mesh_to_volume` with
-/// two additional steps:
-/// 1. After `geo_synchronize`, query all 0D corner entities and set their
-///    target mesh size via `gmshModelMeshSetSize`.
-/// 2. Enable `Mesh.MeshSizeFromPoints=1` so gmsh interpolates sizes between
-///    the corner hints across the whole domain.
+/// Mirrors `crates/reify-kernel-gmsh/src/kernel_real.rs::mesh_to_volume` and
+/// diverges from it in three places:
+/// 1. After `geo_synchronize`, install `size_field` as a `"SS"` post view and
+///    point a `PostView` mesh-size field at it as the background mesh.
+/// 2. Turn `Mesh.MeshSizeFromPoints` OFF, so that background field is the only
+///    thing deciding element size.
+/// 3. Pre-build the view's lookup octree before meshing (see
+///    `BackgroundFieldGuard::install`).
 #[cfg(has_gmsh)]
 pub fn refine_volume_with_size_field(
     surface: &Mesh,
-    vertex_sizes: &[f64],
+    size_field: &BackgroundSizeField,
     options: &MeshingOptions,
     order: ElementOrderTag,
 ) -> Result<VolumeMesh, GeometryError> {
     use crate::{ffi, init};
 
-    // --- Input validation (mirrors mesh_to_volume, with extra vertex_sizes check) ---
+    // --- Input validation (mirrors mesh_to_volume) ---
+    //
+    // The size field needs none: `BackgroundSizeField::from_tet_mesh` validates
+    // at construction, so an empty or non-finite field is unconstructible.
     if !surface.vertices.len().is_multiple_of(3) {
         return Err(GeometryError::OperationFailed(format!(
             "refine_volume_with_size_field: surface.vertices.len()={} is not divisible by 3",
@@ -127,14 +160,6 @@ pub fn refine_volume_with_size_field(
         )));
     }
     let n_verts = surface.vertices.len() / 3;
-    if vertex_sizes.len() != n_verts {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: vertex_sizes.len()={} != n_verts={}; \
-             one size hint required per surface vertex",
-            vertex_sizes.len(),
-            n_verts,
-        )));
-    }
     if let Some(&bad) = surface.indices.iter().find(|&&i| (i as usize) >= n_verts) {
         return Err(GeometryError::OperationFailed(format!(
             "refine_volume_with_size_field: surface.indices contains {bad}, out of bounds \
@@ -162,17 +187,14 @@ pub fn refine_volume_with_size_field(
     ffi::option_set_number("General.Terminal", 0.0)?;
 
     // --- Gmsh options (mirrors mesh_to_volume) ---
-    let num_threads: f64 = if options.deterministic {
-        1.0
-    } else {
-        match options.threads {
-            Some(t) => t as f64,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        }
-    };
-    ffi::option_set_number("General.NumThreads", num_threads)?;
+    //
+    // Threads resolve exactly as in the sibling entry points. Safe only because
+    // `BackgroundFieldGuard::install` pre-builds the view's lookup octree; see
+    // docs/notes/gmsh-postview-background-field-threading.md.
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
     let element_order_value: f64 = match order {
         ElementOrderTag::P1 => 1.0,
         ElementOrderTag::P2 => 2.0,
@@ -201,9 +223,11 @@ pub fn refine_volume_with_size_field(
     // geometry (90° dihedral angles at each edge), this ensures all 12 edges
     // become 1D curve entities and all 8 cube-corner vertices become 0D point
     // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
-    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2), leaving
-    // nowhere to attach per-vertex size hints; that is also what broke
-    // `mesh_to_volume` in #6200, which is why it no longer uses PI/2 either.
+    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2); that
+    // is what broke `mesh_to_volume` in #6200, which is why it no longer uses
+    // PI/2 either.  Before #7447 this path also attached its size hints to
+    // those corner entities; since #7447 sizing comes from the background
+    // field below, and `Mesh.MeshSizeFromPoints=0` keeps the corners out of it.
     // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
     // hard, not just the feature edges), so it is NOT folded into the shared
     // constant.
@@ -234,37 +258,42 @@ pub fn refine_volume_with_size_field(
     let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
     ffi::geo_synchronize()?;
 
-    // --- Per-vertex size hints ---
+    // --- Background size field ---
     //
-    // `Mesh.MeshSizeFromPoints=1`: use 0D-entity (corner) sizes as mesh-size
-    // anchors; gmsh interpolates these sizes across the surface and into the
-    // volume.
+    // The whole size field, interior included. Declared after `_size_scope`,
+    // so the field is torn down before the size options are restored, and
+    // both land before `_guard` releases the lock.
+    let _background_field = BackgroundFieldGuard::install(_guard.size_scope_witness(), size_field)?;
+
+    // --- Size sources: the background field and nothing else ---
     //
-    // `Mesh.MeshSizeFromCurvature=0`: disable curvature-based refinement so
-    // only our explicit corner hints drive the mesh size, preventing gmsh from
-    // independently inserting small elements where the surface curves sharply.
+    // `Mesh.MeshSizeFromPoints=0`: the background field decides size, so any 0D
+    // entity `classify_surfaces` happened to create must not compete with it.
     //
-    // `Mesh.MeshSizeExtendFromBoundary=0`: do NOT propagate the gradient of
-    // the 2D boundary mesh sizes into the 3D volume.  With this enabled
-    // (default=1), a fine surface mesh on one face (e.g. the marked region at
-    // x<0.5) extends its fineness deep into the volume, over-refining the
-    // adjacent unmarked region.  Disabling this ensures that only the 0D
-    // corner-entity sizes (set by `gmshModelMeshSetSize` below) drive the
-    // interior mesh density, with a smooth interpolation between corners rather
-    // than an aggressive gradient from the finest boundary face.
+    // `Mesh.MeshSizeFromCurvature=0`: no curvature-driven refinement, so gmsh
+    // does not independently insert small elements where the surface curves.
+    //
+    // `Mesh.MeshSizeExtendFromBoundary=0`: do NOT propagate the gradient of the
+    // 2D boundary mesh sizes into the 3D volume. With it on (gmsh's default) a
+    // fine patch on one face extends its fineness deep into the interior,
+    // overriding what the background field asks for there.
     //
     // All three are written unconditionally and independently of
     // `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS`: each is a REQUIREMENT of
-    // the per-vertex size field below, so this function states it rather than
-    // inheriting it from a default that is gmsh's to change. See "no test can
-    // tell" below for what that costs.
-    ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
+    // the background field, so this function states it rather than inheriting
+    // it from a default that is gmsh's to change. `FromCurvature = 0` happens
+    // to coincide with today's default; see "no test can tell" below for what
+    // that costs. `FromPoints = 0` and `ExtendFromBoundary = 0` deviate from
+    // it, and `_size_scope` (armed above) returns all three to gmsh's defaults
+    // on every exit path, early `?`-returns included, so nothing downstream
+    // inherits this call's size sources.
+    ffi::option_set_number("Mesh.MeshSizeFromPoints", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
 
     // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
     //
-    // INVARIANT: `vertex_sizes` alone decides element size here. Gmsh's option
+    // INVARIANT: `size_field` alone decides element size here. Gmsh's option
     // table is process-global and is NOT reset by `gmshClear()`, so a sibling
     // entry point that wrote `Mesh.MeshSizeMin`/`MeshSizeMax` and never
     // restored them used to pin every element of THIS remesh to ITS size,
@@ -286,120 +315,46 @@ pub fn refine_volume_with_size_field(
     // inbound clamp needs if it is ever to stand without the scope beneath it.
     //
     // Min = gmsh's default: no floor, so the finest hint is honoured.
-    // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
-    // finer than the finest hint anywhere in the domain — a new, untested
+    // Deliberately not the field's finest value, which would forbid gmsh from
+    // going finer than the finest hint anywhere in the domain — a new, untested
     // constraint on the localized-refinement path for no measured benefit.
     //
-    // Max = the COARSEST requested hint, because with
-    // `Mesh.MeshSizeExtendFromBoundary = 0` (set above) the 3D mesher is
-    // otherwise free to grow interior elements arbitrarily coarser than
-    // anything the caller asked for. Deliberately not `options.mesh_size`:
-    // that is the baseline target the per-vertex field exists to supersede, and
-    // feeding it back in would re-create the very clamp this defends against.
+    // Max = the COARSEST requested hint. It was written for the 0D corner-anchor
+    // path, where nothing sized the interior and, with
+    // `Mesh.MeshSizeExtendFromBoundary = 0`, the 3D mesher was free to grow
+    // interior elements arbitrarily coarser than anything the caller asked for.
+    // Under the background field the cap CANNOT BIND, measured (task #7447,
+    // libgmsh 4.15.2). Inside the sizing mesh the field interpolates vertex
+    // sizes that are all `<= max_size()`. Outside it, gmsh's `PostView` field
+    // takes the NEAREST node's size (its `UseClosest` option, left at gmsh's
+    // default) instead of falling back to an unsized value.
+    // `tests/refine_volume_tests.rs::the_region_outside_a_partial_sizing_mesh_takes_the_nearest_hint_not_the_cap`
+    // pins the outside half. Forcing the cap to gmsh's default leaves both of
+    // that file's non-uniform fixtures bit-identical, and every test in
+    // reify-kernel-gmsh and in reify-solver-elastic's refinement suites green.
     //
-    // The `is_finite` fallback degrades degenerate input to gmsh's "no cap"
-    // default rather than propagating a nonsense clamp. Validating
-    // `vertex_sizes` is the caller's job and is already done at
-    // `reify_solver_elastic::volume_refine`'s entry point.
+    // It is kept anyway because removing it is still a behaviour change: on a
+    // UNIFORM field it moves the mesh by a few tets (17484 -> 17412 for 0.25 on
+    // `[0,4]^3`). Every uniform-field seed mesh in the solver-elastic
+    // calibrations was produced with it, and their recorded figures move with
+    // it (the L-shaped gate's localization ratio reads 5.33 capped, 5.24
+    // uncapped). Deleting the write means re-measuring those figures, which is
+    // a change of its own, not a side effect of this one.
+    //
+    // Deliberately not `options.mesh_size`: that is the baseline target the
+    // per-vertex field exists to supersede, and feeding it back in would
+    // re-create the very clamp this defends against.
+    //
+    // No degenerate-input fallback is needed: `BackgroundSizeField` validates
+    // every emitted size at construction, so `max_size()` is finite and
+    // positive by construction.
     //
     // `MeshSizeScope` closes the outbound direction: every size option — this
     // pair and the three set above — is returned to gmsh's defaults on every
     // exit path, so the same leak does not run from here into a later
     // defaults-relying call.
-    let max_hint = vertex_sizes
-        .iter()
-        .copied()
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let max_hint = if max_hint.is_finite() {
-        max_hint
-    } else {
-        GMSH_MESH_SIZE_MAX_DEFAULT
-    };
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
-    ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
-
-    // For each 0D corner entity created by classify_surfaces + create_geometry,
-    // map the corner back to its original input surface vertex by **coordinate
-    // proximity** (nearest-neighbour scan), then set the target mesh size from
-    // `vertex_sizes`.
-    //
-    // Why coord-based, not tag-based: `classify_surfaces` + `create_geometry`
-    // rebuild the discrete entity, and gmsh does not contractually preserve
-    // the original mesh-node tags pushed via `add_nodes_2d`. If gmsh ever does
-    // reassign tags, a tag-based lookup would silently skip every corner and
-    // the refine would return a baseline-looking unrefined mesh — a regression
-    // invisible to downstream callers and to the localized-refinement test in
-    // `volume_refine_tests.rs`. Coordinates are anchored to physical geometry
-    // and therefore robust under reclassification. This mirrors the same
-    // proximity-based mapping convention used by
-    // `reify_solver_elastic::volume_refine::project_volume_to_surface_vertices`.
-    //
-    // We track `applied` (corners that successfully received a SetSize call)
-    // and `skipped` (corners that failed at any step) so we can fail loudly
-    // when zero corners are assigned: a "successful" call without any size
-    // field application would silently degrade to the global default mesh
-    // size and downstream tests would mistake the result for a working refine.
-    let corner_tags = ffi::get_entity_tags(0)?;
-    let mut applied: usize = 0;
-    let mut skipped: usize = 0;
-    for &corner_tag in &corner_tags {
-        let (corner_x, corner_y, corner_z) = match ffi::get_nodes_at_entity(0, corner_tag) {
-            Ok((_node_tags_at_corner, coords_at_corner)) => {
-                match coords_at_corner.chunks_exact(3).next() {
-                    Some(xyz) => (xyz[0], xyz[1], xyz[2]),
-                    None => {
-                        skipped += 1;
-                        continue;
-                    }
-                }
-            }
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-        // Nearest-neighbour scan over input surface vertices. O(n_verts) per
-        // corner is acceptable here because n_corners is small (typically <=
-        // O(10s) for FEA geometries — one per "hard" feature vertex).
-        let mut best_idx: usize = 0;
-        let mut best_d2: f64 = f64::INFINITY;
-        for i in 0..n_verts {
-            let vx = surface.vertices[3 * i] as f64;
-            let vy = surface.vertices[3 * i + 1] as f64;
-            let vz = surface.vertices[3 * i + 2] as f64;
-            let dx = vx - corner_x;
-            let dy = vy - corner_y;
-            let dz = vz - corner_z;
-            let d2 = dx * dx + dy * dy + dz * dz;
-            if d2 < best_d2 {
-                best_d2 = d2;
-                best_idx = i;
-            }
-        }
-        match ffi::mesh_set_size_at_entity(0, corner_tag, vertex_sizes[best_idx]) {
-            Ok(()) => applied += 1,
-            Err(_) => skipped += 1,
-        }
-    }
-
-    if applied == 0 {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: no corner sizes applied \
-             ({} corner entities found, {} skipped — size field would have no effect)",
-            corner_tags.len(),
-            skipped
-        )));
-    }
-    if skipped > 0 {
-        tracing::debug!(
-            target: "reify_kernel_gmsh::refine_volume",
-            applied = applied,
-            skipped = skipped,
-            total_corners = corner_tags.len(),
-            "some corner sizes were not applied"
-        );
-    }
+    ffi::option_set_number("Mesh.MeshSizeMax", size_field.max_size())?;
 
     // --- Tet meshing ---
     // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
@@ -468,7 +423,7 @@ pub fn refine_volume_with_size_field(
 #[cfg(not(has_gmsh))]
 pub fn refine_volume_with_size_field(
     _surface: &Mesh,
-    _vertex_sizes: &[f64],
+    _size_field: &BackgroundSizeField,
     _options: &MeshingOptions,
     _order: ElementOrderTag,
 ) -> Result<VolumeMesh, GeometryError> {
@@ -477,4 +432,91 @@ pub fn refine_volume_with_size_field(
          (libgmsh not detected at build time)",
         crate::STUB_UNAVAILABLE_MARKER,
     )))
+}
+
+/// RAII removal of the post view + `PostView` mesh-size field that
+/// [`refine_volume_with_size_field`] installs.
+///
+/// Both are PROCESS-GLOBAL and survive `gmshClear()`. The trailing
+/// `ffi::clear()` on the success path takes the view down, but every early
+/// `?` return between the install and that line would otherwise leak one into
+/// every later mesh in the process — the same defect class as task #6211.
+///
+/// Borrows the `GMSH_LOCK` guard for its lifetime on the same reasoning as
+/// [`MeshSizeScope`]: the FFI calls in `drop` mutate process-global gmsh
+/// state, so the type is unconstructible without a live lock guard in hand and
+/// dropck forces the removal to land before that lock is released.
+#[cfg(has_gmsh)]
+struct BackgroundFieldGuard<'g> {
+    view_tag: i32,
+    /// `None` until `FieldAdd` succeeds, so a failure between the view and the
+    /// field still tears the view down and never removes a field-tag gmsh
+    /// never assigned.
+    field_tag: Option<i32>,
+    _lock: std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>,
+}
+
+/// Where `BackgroundFieldGuard::install` probes its view. Any point works: a
+/// hit and a miss both build the view's lookup octree.
+#[cfg(has_gmsh)]
+const OCTREE_BUILD_PROBE_POINT: [f64; 3] = [0.0; 3];
+
+#[cfg(has_gmsh)]
+impl<'g> BackgroundFieldGuard<'g> {
+    /// Install `size_field` as the model's background mesh size field, ready
+    /// to be evaluated concurrently by the multi-threaded mesher.
+    ///
+    /// Armed before the first fallible step that needs cleaning up, so the
+    /// `?`s below unwind through this type's own `Drop` rather than through a
+    /// hand-written error path that could forget one.
+    fn install(
+        guard: &'g std::sync::MutexGuard<'g, ()>,
+        size_field: &BackgroundSizeField,
+    ) -> Result<Self, GeometryError> {
+        use crate::ffi;
+
+        let _ = guard;
+        let view_tag = ffi::view_add("reify_refine_bgm")?;
+        let mut installed = Self {
+            view_tag,
+            field_tag: None,
+            _lock: std::marker::PhantomData,
+        };
+
+        ffi::view_add_list_data(
+            view_tag,
+            "SS",
+            size_field.element_count(),
+            size_field.list_data(),
+        )?;
+        // gmsh 4.15.2 builds a view's lookup octree lazily behind an orphaned
+        // OpenMP barrier that deadlocks when first reached from inside the
+        // multi-threaded mesher. Probing once here, on the calling thread,
+        // builds it outside any parallel region; see
+        // docs/notes/gmsh-postview-background-field-threading.md.
+        ffi::view_probe(view_tag, OCTREE_BUILD_PROBE_POINT)?;
+
+        let field_tag = ffi::field_add("PostView")?;
+        installed.field_tag = Some(field_tag);
+        // "ViewTag", never "ViewIndex": the latter is a position in the
+        // currently-loaded view list and silently selects a different view as
+        // views are removed.
+        ffi::field_set_number(field_tag, "ViewTag", f64::from(view_tag))?;
+        ffi::field_set_as_background_mesh(field_tag)?;
+
+        Ok(installed)
+    }
+}
+
+#[cfg(has_gmsh)]
+impl Drop for BackgroundFieldGuard<'_> {
+    fn drop(&mut self) {
+        // Best-effort, like `MeshSizeScope`'s restore and the trailing
+        // `ffi::clear()`: a failure here cannot be reported from `drop` and
+        // must not mask the real result.
+        if let Some(field_tag) = self.field_tag {
+            let _ = crate::ffi::field_remove(field_tag);
+        }
+        let _ = crate::ffi::view_remove(self.view_tag);
+    }
 }

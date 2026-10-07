@@ -41,23 +41,28 @@
 
 // The clamp probe and its serialising mutex, shared verbatim with
 // `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`.
-// Declared by path rather than through `common/mod.rs`, whose stated scope is
-// the #6200 geometry fixtures; see `common/clamp_probe.rs` for why one copy
+// Declared by `#[path]`; see `common/clamp_probe.rs` for why, and why one copy
 // matters.
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
+// The uniform size field the two refine calls below remesh under, shared by
+// `#[path]` with `tests/mesh_size_option_hermeticity.rs`.
+#[path = "common/size_field.rs"]
+mod size_field;
+
 use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, refine_volume_with_size_field};
-use reify_test_support::fixtures::unit_cube_mesh;
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
+use size_field::uniform_unit_cube_size_field;
 
 /// A single open triangle: a surface gmsh accepts and classifies happily but
 /// that HXT cannot 3D-mesh, because it bounds no closed region.
 ///
 /// This is the cheapest known input that reaches `gmshModelMeshGenerate(3)`
 /// and fails there — the precise failure this binary needs. Not hoisted into
-/// `reify_test_support::fixtures`: it has exactly one consumer, and
+/// `reify_test_support::mesh_fixtures`: it has exactly one consumer, and
 /// `tests/common/mod.rs` states in its own header that no new shared fixture
 /// belongs there.
 fn unmeshable_open_triangle() -> Mesh {
@@ -100,6 +105,20 @@ fn assert_failed_at_the_mesher<T>(
     err
 }
 
+/// Options asking gmsh for more worker threads than either refine fixture here
+/// has classified curves: the open triangle classifies to 3, the cube to 14.
+/// gmsh 4.15.2 hangs once threads exceed the curve count unless refine
+/// pre-builds its view octree, so a literal keeps these guards from going
+/// vacuous on a small host; see
+/// `docs/notes/gmsh-postview-background-field-threading.md`.
+fn many_threads() -> MeshingOptions {
+    MeshingOptions {
+        threads: Some(32),
+        deterministic: false,
+        ..MeshingOptions::default()
+    }
+}
+
 /// Poison the shared mesher through `GmshKernel::mesh_to_volume`.
 fn poison_via_mesh_to_volume() {
     assert_failed_at_the_mesher(
@@ -114,14 +133,18 @@ fn poison_via_mesh_to_volume() {
 
 /// Poison the shared mesher through `refine_volume_with_size_field`.
 ///
-/// One size hint per surface vertex; the open triangle has three.
+/// The size field is a sizing MESH in its own right, independent of the
+/// surface being remeshed, so it is built over the unit cube rather than over
+/// the open triangle: a degenerate field would be rejected at construction and
+/// the failure would land before gmsh, proving nothing about recovery.
+/// `assert_failed_at_the_mesher` is what holds that line.
 fn poison_via_refine() {
     assert_failed_at_the_mesher(
         "refine_volume_with_size_field",
         refine_volume_with_size_field(
             &unmeshable_open_triangle(),
-            &[0.5, 0.5, 0.5],
-            &MeshingOptions::default(),
+            &uniform_unit_cube_size_field(0.5),
+            &many_threads(),
             ElementOrderTag::P1,
         ),
     );
@@ -210,12 +233,10 @@ fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
 
     poison_via_mesh_to_volume();
 
-    // The unit cube has 8 vertices, and this entry point requires one size
-    // hint per surface vertex.
     let recovered = refine_volume_with_size_field(
         &unit_cube_mesh(),
-        &[0.5; 8],
-        &MeshingOptions::default(),
+        &uniform_unit_cube_size_field(0.5),
+        &many_threads(),
         ElementOrderTag::P1,
     )
     .expect(

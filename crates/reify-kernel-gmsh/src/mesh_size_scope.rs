@@ -152,7 +152,9 @@ pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 /// `refine_volume_with_size_field` WRITES `Mesh.MeshSizeExtendFromBoundary =
 /// 0` as its own deliberate deviation, but gmsh's DEFAULT is `1` — restoring
 /// `0` here would entrench the very leak this seam closes, and was the entire
-/// measured content of it (task #6968).
+/// measured content of it (task #6968). Since task #7447 it writes
+/// `Mesh.MeshSizeFromPoints = 0` against a default of `1` as well, so its
+/// background size field is the only size source.
 pub const GMSH_SIZE_OPTION_DEFAULTS: [(&str, f64); 5] = [
     ("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT),
     ("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT),

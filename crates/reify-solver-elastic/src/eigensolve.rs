@@ -14,8 +14,10 @@
 //!   honors `opts.sigma` as a selection key over the full computed spectrum
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos: at σ=0 a sparse
 //!   Cholesky of `K`, at σ≠0 a `K − σB` assembly factored Cholesky-then-LU,
-//!   driving `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back
-//!   to dense when the Krylov window would exceed the problem dimension.
+//!   driving `faer::matrix_free::eigen::partial_self_adjoint_eigen` on the
+//!   Euclidean operator iff `B = cI` and the Cholesky-symmetrized one otherwise;
+//!   falls back to dense when the Krylov window would exceed the problem
+//!   dimension.
 //! - [`try_solve_eigen_shift_invert`] — the same solve, reporting the two DOMAIN
 //!   failures as a typed [`ShiftInvertFailure`] instead of panicking: `K` not
 //!   SPD (task 6663, for callers that can legitimately be handed an
@@ -23,8 +25,10 @@
 //!   resource failure (out of memory / index overflow) still panics and so can
 //!   never arrive disguised as either.
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
-//!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
-//!   is responsible for small-problem dispatch).
+//!   [`StiffnessOp`] / [`MetricOp`] operator pairs, valid ONLY for `B = cI`;
+//!   no dense fallback (caller is responsible for small-problem dispatch).
+//! - [`lanczos_shift_invert_in_metric`] — the Cholesky-symmetrized Lanczos core
+//!   for any other symmetric `B` ([`LanczosMetric`]); likewise no fallback.
 //!
 //! Both concrete functions are neutral on the sign convention of (K, M): the
 //! buckling-specific sign flip `M = −K_g` is the responsibility of the caller
@@ -34,10 +38,13 @@
 //! # Dual-consumer pattern
 //!
 //! The buckling pipeline (`buckling_kernel.rs`) calls
-//! `solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts)` — unchanged.
-//! The modal-analysis pipeline (task 3819) may call `lanczos_shift_invert`
-//! directly with custom `StiffnessOp`/`MetricOp` implementations (e.g.
-//! matrix-free K, lumped diagonal M) without going through the sparse wrapper.
+//! `solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts)`, and the modal
+//! pipeline (`reify-eval`) calls [`try_solve_eigen_shift_invert`]; the sparse
+//! entry points choose the Lanczos operator themselves.  A caller driving a core
+//! directly must choose it instead: [`lanczos_shift_invert`] ONLY when `B = cI`
+//! (e.g. a matrix-free K with a uniform scalar mass), and
+//! [`lanczos_shift_invert_in_metric`] for every other symmetric `B` — a lumped
+//! diagonal M included, since a non-uniform diagonal is not `cI`.
 //!
 //! # Shift contract (C1–C6)
 //!
@@ -88,8 +95,8 @@
 //!
 //! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
 //! |---|---|---|
-//! | C1 | implemented | implemented, and STRUCTURAL — σ=0 factors `K` itself |
-//! | C2 | implemented | implemented (same helper) |
+//! | C1 | implemented | for `B = cI`: implemented, and STRUCTURAL — σ=0 factors `K` itself; waived for `B ≠ cI` (PRD §6 amendment) |
+//! | C2 | implemented | implemented (same helper), for every symmetric `B` — the operator is chosen per `B` |
 //! | C3 | implemented (shared helper) | implemented (same helper) |
 //! | C4 | n/a — no shift is ever applied to invert | implemented (`λ = σ + 1/μ`) |
 //! | C5 | implemented, EXACT | implemented, conservative BOOLEAN (Sylvester) |
@@ -117,7 +124,8 @@
 //! faer's `partial_self_adjoint_eigen` orthogonalizes in the EUCLIDEAN inner
 //! product, while `(K − σB)⁻¹B` is self-adjoint in the `(K − σB)` form — which
 //! stops being an inner product at all once that matrix is indefinite, i.e.
-//! exactly when σ rises above some mode.  Whether that costs accuracy is an
+//! exactly when σ rises above some mode.  For `B = cI` the operator is
+//! Euclidean-self-adjoint anyway; whether σ costs accuracy there is an
 //! empirical question, so it was measured rather than argued.
 //!
 //! Measured 2026-09-16 on fixture C (`K` = tridiag(−1,2,−1) 80×80, `B` = I,
@@ -136,17 +144,13 @@
 //! `converged: false` response is called for, and certainly no Krylov rewrite —
 //! a B-orthogonal or `(K − σB)`-orthogonal Lanczos is out of scope per PRD §8.
 //!
-//! **What this measurement does NOT cover**, stated so the table is not read as
-//! more than it is: `B` = I makes `(K − σB)⁻¹B = (K − σI)⁻¹`, which IS
-//! Euclidean-self-adjoint however indefinite it becomes.  Fixture C therefore
-//! cannot exercise the hazard in its general form.  A companion probe with
-//! `B` = diag(1 + i/80) (SPD, non-identity) was also measured and behaves quite
-//! differently — the residual is 3.58e-1 there — but that is a PRE-EXISTING
-//! property of this path, not a σ effect: it is WORST at σ=0, it improves
-//! monotonically to 9.3e-3 as σ grows, and the same 3.58e-1 is measured at the
-//! pre-PRD base commit.  Recorded as esc-7259-1 and filed as a follow-up task;
-//! it is out of scope here because the affected path is σ=0, which this module
-//! is required to leave byte-for-byte unchanged.
+//! **Operator selection.** The table covers `B = cI` only, and only there may
+//! faer be handed `(K − σB)⁻¹B` directly: for any other symmetric `B` that
+//! operator is not Euclidean-symmetric and the Lanczos returns pairs that are
+//! not eigenpairs.  So the sparse entry points run the Euclidean operator iff
+//! `B = cI`, and otherwise the Cholesky-symmetrized operator of
+//! [`LanczosMetric`] (PRD §6, 2026-09-29 amendment) — a change of the operator
+//! faer is handed, not a Krylov rewrite.
 //!
 //! # Design decisions
 //!
@@ -183,6 +187,7 @@
 //!
 //! [profile.dev.package.reify-solver-elastic]
 //! opt-level = 2   # faer generic kernels monomorphised here; assertions kept on
+//! overflow-checks = false   # faer's QZ relies on usize wrapping (task 7602)
 //! ```
 //!
 //! If a debug-mode performance regression appears (hundreds of seconds),
@@ -206,6 +211,11 @@ use faer::sparse::linalg::LuError as SparseLuError;
 use faer::sparse::{SparseColMat, SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::{Llt, Lu};
 use faer::reborrow::ReborrowMut;
+
+use crate::split_cholesky::SplitCholesky;
+
+mod symmetrized;
+pub use symmetrized::{LanczosMetric, lanczos_shift_invert_in_metric};
 
 /// Options controlling the eigensolver kernel.
 ///
@@ -265,8 +275,31 @@ pub struct EigenSolverResult {
     /// converged Krylov eigenvalues were near-zero and filtered out.
     pub n_converged: usize,
     /// `true` iff all requested `n_modes` eigenvalues were returned
-    /// (`eigenvalues.len() == n_modes`).
+    /// (`eigenvalues.len() == n_modes`) AND every returned pair passed the
+    /// post-solve residual check
+    /// ([`residual_check_failures`](Self::residual_check_failures) `== 0`).
     pub converged: bool,
+    /// How many RETURNED Lanczos pairs failed the post-solve residual check.
+    ///
+    /// faer's lock test reads a Krylov ESTIMATE and never re-applies the
+    /// operator, so a pair is re-checked here on the operator `S` the Lanczos
+    /// actually ran: it is verified iff
+    /// `‖S·y − μ·y‖ ≤ max(10·tol·μ_max, 1e-6·|μ|)·‖y‖`, where `μ_max` is the
+    /// largest returned `|μ|`, a lower bound on `‖S‖₂`.
+    ///
+    /// Both arms are RELATIVE, so the check means the same thing in any units.
+    /// That matters because `μ = 1/(λ − σ)` carries the pencil's units: an
+    /// SI-unit modal pencil has `|μ| ~ 1e-8`, and an absolute bound near `tol`
+    /// would pass every pair there however wrong.  By Bauer–Fike, a verified μ
+    /// is within `10·tol·‖S‖₂` of an eigenvalue of `S`, or within 1e-6 of one
+    /// relative to itself.  For the Cholesky-symmetrized operator the residual
+    /// equals `|μ|·‖G⁻¹(Kφ − λBφ)‖`: the generalized residual, in the `W⁻¹`
+    /// norm the Lanczos ran in.
+    ///
+    /// Failed pairs are still returned (C2 selection is unchanged); they make
+    /// [`converged`](Self::converged) `false`.  Always `0` on the dense path,
+    /// which computes the spectrum directly.
+    pub residual_check_failures: usize,
     /// Whether any eigenvalue of the pencil lies STRICTLY between zero and
     /// [`shift`](Self::shift) AND is absent from the returned set — i.e.
     /// whether this result is a *window* around σ rather than the bottom of the
@@ -610,9 +643,9 @@ fn any_eigenvalue_skipped_between_zero_and_shift(
 /// a different elimination tree, therefore a different summation order and
 /// different rounding.  The answer would be *close*, which is exactly the
 /// hazard: it would drift every pinned σ=0 golden by an amount no tolerance
-/// catches.  `try_solve_eigen_shift_invert` therefore routes σ=0 to
-/// `k.sp_cholesky(Side::Lower)` on the row-major K verbatim and never calls this
-/// function, and `sigma_zero_factors_k_itself_not_k_minus_zero_b` in
+/// catches.  `try_solve_eigen_shift_invert` therefore routes σ=0 to a Cholesky
+/// of the row-major K verbatim, on both operator arms, and never calls this
+/// function; `sigma_zero_factors_k_itself_not_k_minus_zero_b` in
 /// `tests/eigensolve_shift_contract.rs` is the executable form of that rule.
 ///
 /// # Panics
@@ -667,9 +700,12 @@ pub enum ShiftInvertFailure {
     /// pivot.  The model is under-constrained (a DOF no element and no
     /// Dirichlet BC restrains), or the assembled `K` is otherwise singular.
     ///
-    /// NOT reported at σ≠0: see [`try_solve_eigen_shift_invert`] for why that
-    /// detection limit is deliberate and what a caller using this as an
-    /// under-constrained-model detector must do about it.
+    /// Reported at σ=0, and at σ≠0 when `B ≠ cI` and `K − σB` is indefinite:
+    /// that arm runs in the `K` inner product (PRD §6 amendment), which needs
+    /// `K` SPD.  NOT detected on the `B = cI` σ≠0 path or the dense fallback:
+    /// see [`try_solve_eigen_shift_invert`] for why that detection limit is
+    /// deliberate and what a caller using this as an under-constrained-model
+    /// detector must do about it.
     KNotSpd,
     /// `K − σB` is singular, or numerically indistinguishable from singular, at
     /// this shift: σ sits on (or within the pencil's own resolution floor of)
@@ -797,6 +833,13 @@ fn shift_provenance_from_factorization(sigma: f64, cholesky_succeeded: bool) -> 
 ///   B = 0 to machine precision); the routine handles benign degenerate β
 ///   internally by filtering eigenvalues, so the panic indicates a
 ///   pre-decomposition QZ breakdown rather than a near-singular eigenvalue.
+/// - That claim holds only under release ARITHMETIC semantics.  faer's QZ is
+///   monomorphised in this crate and relies on `usize` wrapping in its
+///   aggressive-early-deflation step, so a build of this crate with
+///   overflow-checks ON panics "attempt to subtract with overflow" on healthy
+///   pencils (e.g. an indefinite B).  The root `Cargo.toml` disables
+///   overflow-checks for this package in dev for that reason;
+///   `dense_solve_completes_on_the_indefinite_136dof_pencil` is the tripwire.
 pub fn solve_eigen_dense(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -902,6 +945,7 @@ pub fn solve_eigen_dense(
         eigenvectors,
         n_converged: 0,
         converged: n_take == opts.n_modes,
+        residual_check_failures: 0,
         shift: opts.sigma,
         shift_skipped_modes,
     }
@@ -976,6 +1020,14 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 /// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the λ nearest σ by
 /// maximizing |μ| = 1/|λ − σ| in the Krylov subspace of `(K − σM)⁻¹ · M`.
 ///
+/// # Valid ONLY for `M = cI`
+///
+/// faer's Lanczos assumes the operator it is handed is Euclidean-symmetric, and
+/// `(K − σM)⁻¹M` is that only when `M` is a scalar multiple of the identity.
+/// For any other symmetric `M` it returns Ritz pairs that are not eigenpairs
+/// and labels them converged.  Such a pencil must use
+/// [`lanczos_shift_invert_in_metric`].
+///
 /// # `opts.sigma` is a DESCRIPTION of `k_op`, not an instruction to it
 ///
 /// This function never forms `K − σB`; it is handed an already-built
@@ -986,8 +1038,8 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 /// **The core cannot verify the claim.** A `k_op` factoring `K − 0.3·B` passed
 /// with `opts.sigma = 0.7` produces a plausible, wrong spectrum, and nothing
 /// here can detect it — the operator is opaque by design, which is what lets
-/// matrix-free and lumped-diagonal callers use this path at all.  Keeping the
-/// two consistent is the caller's obligation.
+/// matrix-free callers use this path at all.  Keeping the two consistent is the
+/// caller's obligation.
 ///
 /// C6 (a singular or numerically-degenerate `K − σB` is a typed failure
 /// carrying σ) therefore belongs to whoever BUILT the factorization, not here:
@@ -1022,7 +1074,84 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     m_op: &M,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
-    // Contract guards for the generic entry point.
+    check_lanczos_options(&opts);
+    assert_eq!(
+        k_op.n(),
+        m_op.n(),
+        "lanczos_shift_invert: dimension mismatch — k_op.n() = {} but m_op.n() = {}",
+        k_op.n(),
+        m_op.n(),
+    );
+
+    let n = k_op.n();
+    let op = CompositeShiftInvertOp { k_op, m_op, n };
+    let ritz = run_partial_self_adjoint_eigen(&op, n, &opts);
+    // Euclidean operator: the Ritz vectors ARE the pencil's eigenvectors.
+    finish_lanczos_result(&op, ritz, &opts, |_| {})
+}
+
+/// The `κ` in `‖S·y − μ·y‖ ≤ max(κ·tol·μ_max, δ·|μ|)·‖y‖`: a pair meeting the
+/// caller's tolerance RELATIVE TO THE OPERATOR is never rejected (PRD
+/// `docs/prds/v0_6/shift-invert-eigensolve.md` §11 Q1).
+const RITZ_RESIDUAL_TOL_SLACK: f64 = 10.0;
+
+/// The `δ` in the same bound: a pair accurate to 1e-6 relative is never
+/// rejected, even below the operator's rounding floor (PRD §11 Q1).
+const RITZ_RELATIVE_RESIDUAL_FLOOR: f64 = 1e-6;
+
+/// Whether a Ritz pair `(μ, y)` with recomputed residual `‖S·y − μ·y‖` is a
+/// verified eigenpair of `S`.  A non-finite residual never is.
+///
+/// `operator_scale` is `μ_max`, the largest returned `|μ|`.  BOTH arms are
+/// relative — one to the operator, one to the pair — so the verdict does not
+/// depend on the pencil's units.  An absolute `κ·tol` would pass every pair once
+/// `|μ|` drops below `tol`, and an SI-unit modal pencil has `|μ| ~ 1e-8`.
+fn ritz_pair_is_verified(
+    residual_norm: f64,
+    mu: f64,
+    y_norm: f64,
+    tol: f64,
+    operator_scale: f64,
+) -> bool {
+    residual_norm
+        <= y_norm
+            * f64::max(
+                RITZ_RESIDUAL_TOL_SLACK * tol * operator_scale,
+                RITZ_RELATIVE_RESIDUAL_FLOOR * mu.abs(),
+            )
+}
+
+/// How many of the pairs `(mu[j], ritz_vectors[:, j])` fail
+/// [`ritz_pair_is_verified`] on `op`, with one batched apply.
+///
+/// The operator scale is the largest `|mu[j]|`.  `S` is symmetric, so `‖S‖₂` is
+/// its largest `|eigenvalue|` and no Ritz value exceeds it: this is a LOWER
+/// bound on `‖S‖₂`, which can only make the check stricter.
+fn count_unverified_ritz_pairs(
+    op: &dyn LinOp<f64>,
+    ritz_vectors: MatRef<'_, f64>,
+    mu: &[f64],
+    tol: f64,
+) -> usize {
+    let n_pairs = ritz_vectors.ncols();
+    if n_pairs == 0 {
+        return 0;
+    }
+    let operator_scale = mu.iter().fold(0.0_f64, |scale, m| scale.max(m.abs()));
+    let mut applied = Mat::<f64>::zeros(ritz_vectors.nrows(), n_pairs);
+    let mut buf = MemBuffer::new(op.apply_scratch(n_pairs, Par::Seq));
+    op.apply(applied.as_mut(), ritz_vectors, Par::Seq, MemStack::new(&mut buf));
+    (0..n_pairs)
+        .filter(|&j| {
+            let y = ritz_vectors.col(j);
+            let residual = (applied.col(j) - y * faer::Scale(mu[j])).norm_l2();
+            !ritz_pair_is_verified(residual, mu[j], y.norm_l2(), tol, operator_scale)
+        })
+        .count()
+}
+
+/// Option guards shared by both Lanczos cores.
+fn check_lanczos_options(opts: &EigenSolverOptions) {
     assert!(
         opts.n_modes >= 1,
         "EigenSolverOptions.n_modes = {} is invalid; must be >= 1",
@@ -1042,24 +1171,23 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         "EigenSolverOptions.sigma = {} must be finite",
         opts.sigma,
     );
-    assert_eq!(
-        k_op.n(),
-        m_op.n(),
-        "lanczos_shift_invert: dimension mismatch — k_op.n() = {} but m_op.n() = {}",
-        k_op.n(),
-        m_op.n(),
-    );
+}
 
-    let n = k_op.n();
+/// The Ritz pairs faer's thick-restart Lanczos converged on an operator, before
+/// any back-shift, selection or eigenvector recovery.
+struct RitzPairs {
+    vectors: Mat<f64>,
+    mu: Vec<f64>,
+    n_converged: usize,
+}
 
-    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
-    // is documented to report.  It is `opts.sigma` because `k_op` is a
-    // factorization of `K − σB` for THAT σ — see this function's rustdoc on why
-    // the core cannot verify that and why C6 belongs to whoever built it.
-    let shift_used = opts.sigma;
-
-    let op = CompositeShiftInvertOp { k_op, m_op, n };
-
+/// Run `partial_self_adjoint_eigen` on `op` with the deterministic start vector
+/// and Krylov window shared by both Lanczos cores.
+fn run_partial_self_adjoint_eigen(
+    op: &dyn LinOp<f64>,
+    n: usize,
+    opts: &EigenSolverOptions,
+) -> RitzPairs {
     // Deterministic unit start vector: v₀ = (1/√n) · 1ₙ
     // (PRD §14 tactical default; fixes Lanczos seed for bit-stable test output).
     let v0 = Col::<f64>::from_fn(n, |_| 1.0 / (n as f64).sqrt());
@@ -1082,19 +1210,14 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     let mut eigvecs = Mat::<f64>::zeros(n, opts.n_modes);
     let mut eigvals_mu = vec![0.0_f64; opts.n_modes];
 
-    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(
-        &op as &dyn LinOp<f64>,
-        opts.n_modes,
-        Par::Seq,
-        params,
-    );
+    let scratch_req = partial_self_adjoint_eigen_scratch::<f64>(op, opts.n_modes, Par::Seq, params);
     let mut buf = MemBuffer::new(scratch_req);
     let stack = MemStack::new(&mut buf);
 
     let info = partial_self_adjoint_eigen(
         eigvecs.as_mut(),
         &mut eigvals_mu,
-        &op as &dyn LinOp<f64>,
+        op,
         v0.as_ref(),
         opts.tol,
         Par::Seq,
@@ -1102,7 +1225,31 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         params,
     );
 
-    let n_conv = info.n_converged_eigen;
+    RitzPairs {
+        vectors: eigvecs,
+        mu: eigvals_mu,
+        n_converged: info.n_converged_eigen,
+    }
+}
+
+/// Turn converged Ritz pairs into an [`EigenSolverResult`]: back-shift (C4),
+/// select (C2), order (C3), verify each selected pair on `op` — the operator
+/// the Lanczos ran on — and then `recover_eigenvectors` maps the selected Ritz
+/// vectors to the pencil's eigenvectors in place (identity for the Euclidean
+/// operator).
+fn finish_lanczos_result(
+    op: &dyn LinOp<f64>,
+    ritz: RitzPairs,
+    opts: &EigenSolverOptions,
+    recover_eigenvectors: impl FnOnce(MatMut<'_, f64>),
+) -> EigenSolverResult {
+    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
+    // is documented to report.  It is `opts.sigma` because the operator embeds
+    // a factorization of `K − σB` for THAT σ — see `lanczos_shift_invert`'s
+    // rustdoc on why the core cannot verify that and why C6 belongs to whoever
+    // built it.
+    let shift_used = opts.sigma;
+    let n_conv = ritz.n_converged;
 
     // C4 — back-shift μ → λ = σ + 1/μ for the converged modes only.  (At σ=0
     // this is the pre-PRD `λ = 1/μ`, bit-exactly: `0.0 + x == x` for every
@@ -1115,7 +1262,7 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     // `try_solve_eigen_shift_invert`, which has the matrices needed to size it.
     let mut pairs: Vec<(f64, usize)> = (0..n_conv)
         .filter_map(|i| {
-            let mu = eigvals_mu[i];
+            let mu = ritz.mu[i];
             if mu.abs() < f64::MIN_POSITIVE {
                 return None;
             }
@@ -1135,34 +1282,40 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     // prefix cannot move anything.  C1 is preserved.
     let n_take = select_nearest_to_shift(&mut pairs, shift_used, opts.n_modes);
     order_by_abs_lambda(&mut pairs[..n_take]);
-    // Track what the caller actually receives: converged iff we hand back
-    // all n_modes eigenvalues.
-    let converged = n_take == opts.n_modes;
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
-    let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
+    let mut eigenvectors = Mat::<f64>::zeros(ritz.vectors.nrows(), n_take);
     for (out_col, &(_, src_col)) in pairs[..n_take].iter().enumerate() {
         // Column-major faer storage: copy whole column slice in one memcpy.
         eigenvectors
             .col_as_slice_mut(out_col)
-            .copy_from_slice(eigvecs.col_as_slice(src_col));
+            .copy_from_slice(ritz.vectors.col_as_slice(src_col));
     }
+    let selected_mu: Vec<f64> = pairs[..n_take].iter().map(|&(_, src)| ritz.mu[src]).collect();
+    let residual_check_failures =
+        count_unverified_ritz_pairs(op, eigenvectors.as_ref(), &selected_mu, opts.tol);
+    recover_eigenvectors(eigenvectors.as_mut());
+
+    // Track what the caller actually receives: converged iff we hand back all
+    // n_modes eigenvalues AND every one of them is a verified eigenpair.
+    let converged = n_take == opts.n_modes && residual_check_failures == 0;
 
     EigenSolverResult {
         eigenvalues,
         eigenvectors,
         n_converged: n_conv,
         converged,
+        residual_check_failures,
         shift: shift_used,
         // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
-        // cannot count what it skipped may not assume `false`.  This core is
-        // handed an OPAQUE factorization, so it has no evidence to establish
-        // `false` at σ≠0 and C5 forbids it assuming one.
+        // cannot count what it skipped may not assume `false`.  Both cores are
+        // handed OPAQUE factorizations, so they have no evidence to establish
+        // `false` at σ≠0 and C5 forbids them assuming one.
         //
         // `try_solve_eigen_shift_invert` BUILT the factorization and therefore
         // does have the evidence; it overrides this with
         // `shift_provenance_from_factorization` via `with_provenance`.  A caller
-        // driving this core directly keeps the conservative answer, which is the
+        // driving a core directly keeps the conservative answer, which is the
         // correct one for what it knows.
         shift_skipped_modes: conservative_shift_provenance(shift_used),
     }
@@ -1244,7 +1397,7 @@ pub fn solve_eigen_shift_invert(
 /// `Err` means EXACTLY ONE CLASS OF THING — a fact about the (K, B, σ) handed
 /// in, enumerated by [`ShiftInvertFailure`] and distinguishable arm by arm.
 /// `Err(KNotSpd)` in particular means EXACTLY that `K` is not SPD
-/// (`sp_cholesky` returned `LltError::Numeric`, i.e. a non-positive pivot).
+/// (a Cholesky of `K` returned `LltError::Numeric`, i.e. a non-positive pivot).
 /// Every other precondition is still a hard contract and still panics: the
 /// option/shape preconditions via [`check_eigen_options_and_shapes`] (bad
 /// `n_modes`, shape mismatch, …), and a `LltError::Generic` factorization
@@ -1260,13 +1413,19 @@ pub fn solve_eigen_shift_invert(
 /// domain failures DISTINGUISHABLE; [`ShiftInvertFailure::ShiftAtEigenvalue`]
 /// states why that distinction is load-bearing.
 ///
-/// # `Err(KNotSpd)` is reported at σ=0 only — a DETECTION limit, not a claim
+/// The Lanczos operator is chosen by `B`: the Euclidean `(K − σB)⁻¹B` iff
+/// `B = cI` (C1 stands, bit for bit), else the Cholesky-symmetrized operator of
+/// [`LanczosMetric`] (PRD §6, 2026-09-29 amendment).
 ///
-/// `K`'s own SPD-ness is measured only where `K` itself is factored, which is
-/// the σ=0 branch. At σ≠0 the factored matrix is `K − σB`, and on a problem
-/// small enough to route to [`solve_eigen_dense`] nothing is factored at all —
-/// so the very same singular `K` yields `Err(KNotSpd)` at σ=0 and `Ok(dense
-/// result)` at σ≠0.
+/// # Where `Err(KNotSpd)` is detected — a DETECTION limit, not a claim
+///
+/// `K`'s own SPD-ness is measured only where `K` itself is factored: at σ=0 on
+/// every pencil, and at σ≠0 when `B ≠ cI` and `K − σB` is indefinite (the
+/// symmetrized operator then runs in the `K` inner product, PRD §6 amendment).
+/// Elsewhere at σ≠0 the factored matrix is `K − σB` — on a `B = cI` pencil, or
+/// a `B ≠ cI` one whose `K − σB` is SPD — and on a problem small enough to
+/// route to [`solve_eigen_dense`] nothing is factored at all.  So the very same
+/// singular `K` can yield `Err(KNotSpd)` at σ=0 and `Ok(dense result)` at σ≠0.
 ///
 /// The asymmetry is deliberate rather than hoisted away. `Ok` at σ≠0 is not
 /// wrong: the dense QZ path tolerates a singular `K` and returns the real
@@ -1325,8 +1484,175 @@ pub fn try_solve_eigen_shift_invert(
     opts: EigenSolverOptions,
 ) -> Result<EigenSolverResult, ShiftInvertFailure> {
     check_eigen_options_and_shapes(k, b, &opts);
+    if is_scalar_multiple_of_identity(b) {
+        solve_with_operator::<EuclideanOperator>(k, b, opts)
+    } else {
+        solve_with_operator::<SymmetrizedOperator>(k, b, opts)
+    }
+}
+
+/// Whether `b = c·I` for some scalar c, judged by VALUE: every stored
+/// off-diagonal entry is exactly zero and every diagonal entry (a missing one
+/// reads as zero) equals the same c.  `B = 0` counts, and keeps today's path.
+///
+/// This is the operator-selection rule: `(K − σB)⁻¹B` is Euclidean-symmetric
+/// iff B is a scalar multiple of the identity, so only then may the Euclidean
+/// Lanczos core run.
+fn is_scalar_multiple_of_identity(b: &SparseRowMat<usize, f64>) -> bool {
+    let b_ref = b.as_ref();
+    let symbolic = b_ref.symbolic();
+    let mut diagonal = vec![0.0_f64; b.nrows()];
+    for (i, d) in diagonal.iter_mut().enumerate() {
+        for (&j, &value) in symbolic.col_idx_of_row_raw(i).iter().zip(b_ref.val_of_row(i)) {
+            if i == j {
+                *d += value;
+            } else if value != 0.0 {
+                return false;
+            }
+        }
+    }
+    diagonal.windows(2).all(|pair| pair[0] == pair[1])
+}
+
+/// What differs between the two Lanczos operators, as [`solve_with_operator`]
+/// sees it: how an SPD matrix is factored for the operator, and how the
+/// operator runs on that factor or on an LU of an indefinite `K − σB`.
+///
+/// Everything else is the dispatch's own and is written once: σ=0 routing,
+/// the dense fallback, the Cholesky-first dispatch, the C6 guard and the C5
+/// evidence.
+trait PencilOperator {
+    /// The Cholesky factor of an SPD `K` or `K − σB`.
+    type SpdFactor;
+
+    /// The σ=0 factorization: a Cholesky of `K` itself, read verbatim.
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError>;
+
+    /// A Cholesky of the assembled `K − σB`.
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError>;
+
+    /// The Lanczos on the SPD matrix `factor` factors.
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult;
+
+    /// The Lanczos when `K − σB` is indefinite and was factored as `lu`.
+    fn lanczos_on_indefinite_pencil(
+        k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure>;
+}
+
+/// The `B = cI` operator: `(K − σB)⁻¹B` itself, unchanged, so C1 stands for
+/// every such pencil.
+struct EuclideanOperator;
+
+impl PencilOperator for EuclideanOperator {
+    type SpdFactor = Llt<usize, f64>;
+
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError> {
+        k.sp_cholesky(Side::Lower)
+    }
+
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError> {
+        shifted.sp_cholesky(Side::Lower)
+    }
+
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult {
+        // The chained matvec+backsolve through the adapters is byte-equivalent
+        // to the former ShiftInvertOp composition (same faer calls in the same
+        // order), so the B = cI goldens pass bit-for-bit.
+        let k_op = SparseStiffnessOp {
+            factor: SparseFactorRef::Cholesky(factor),
+            n: b_op.n(),
+        };
+        lanczos_shift_invert(&k_op, b_op, opts)
+    }
+
+    fn lanczos_on_indefinite_pencil(
+        _k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure> {
+        let k_op = SparseStiffnessOp {
+            factor: SparseFactorRef::Lu(lu),
+            n: b_op.n(),
+        };
+        Ok(lanczos_shift_invert(&k_op, b_op, opts))
+    }
+}
+
+/// The `B ≠ cI` operator: the Cholesky-symmetrized `S` of [`LanczosMetric`]
+/// (PRD §6, 2026-09-29 amendment).
+///
+/// An SPD `K − σB` (σ=0 ⇒ `K`) is the metric itself.  When `K − σB` is
+/// indefinite it is applied through LU and the metric is `K`, which must then
+/// be SPD (`Err(KNotSpd)` if not).
+struct SymmetrizedOperator;
+
+impl PencilOperator for SymmetrizedOperator {
+    type SpdFactor = SplitCholesky;
+
+    fn factor_stiffness(k: &SparseRowMat<usize, f64>) -> Result<Self::SpdFactor, SparseLltError> {
+        SplitCholesky::try_new(k)
+    }
+
+    fn factor_shifted_pencil(
+        shifted: &SparseColMat<usize, f64>,
+    ) -> Result<Self::SpdFactor, SparseLltError> {
+        SplitCholesky::try_new_col_major(shifted.as_ref())
+    }
+
+    fn lanczos_on_spd_factor(
+        factor: &Self::SpdFactor,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> EigenSolverResult {
+        lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(factor), b_op, opts)
+    }
+
+    fn lanczos_on_indefinite_pencil(
+        k: &SparseRowMat<usize, f64>,
+        lu: &Lu<usize, f64>,
+        b_op: &SparseMetricOp<'_>,
+        opts: EigenSolverOptions,
+    ) -> Result<EigenSolverResult, ShiftInvertFailure> {
+        let k_factor = stiffness_factor_or_k_not_spd(SplitCholesky::try_new(k))?;
+        let shifted_inverse = SparseStiffnessOp {
+            factor: SparseFactorRef::Lu(lu),
+            n: b_op.n(),
+        };
+        let metric = LanczosMetric::Stiffness {
+            k_factor: &k_factor,
+            shifted_inverse: &shifted_inverse,
+        };
+        Ok(lanczos_shift_invert_in_metric(metric, b_op, opts))
+    }
+}
+
+/// The dispatch of [`try_solve_eigen_shift_invert`], for either operator: σ=0
+/// routing, the dense fallback, the Cholesky-first factorization of `K − σB`,
+/// the C6 guard and the C5 evidence, each placed exactly once.
+fn solve_with_operator<O: PencilOperator>(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> Result<EigenSolverResult, ShiftInvertFailure> {
     let n = k.nrows();
-    let m_op = SparseMetricOp { m: b.as_ref() };
+    let b_op = SparseMetricOp { m: b.as_ref() };
 
     // ---- σ=0: TODAY'S EXACT PATH, and deliberately not one line more. -------
     //
@@ -1338,47 +1664,17 @@ pub fn try_solve_eigen_shift_invert(
     // carries the full argument; `sigma_zero_factors_k_itself_not_k_minus_zero_b`
     // is the executable form.
     if opts.sigma == 0.0 {
-        // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD
-        // — the one condition this entry point reports rather than panics on.
-        //
-        // The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
-        // does mean only that. faer's sparse `LltError` also carries a `Generic` arm
-        // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
-        // failure channel would let a resource failure factorizing a large `K_free`
-        // surface to the user as `W_ModalRigidBodyMode: K_free is singular (the model
-        // is under-constrained)` — a confidently wrong diagnosis of an allocation
-        // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
-        // serve. A `Generic` failure is not a domain fact about the model, so it
-        // keeps the panicking contract.
-        let llt = match k.sp_cholesky(Side::Lower) {
-            Ok(llt) => llt,
-            // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
-            Err(SparseLltError::Numeric(_)) => return Err(ShiftInvertFailure::KNotSpd),
-            Err(e @ SparseLltError::Generic(_)) => panic!(
-                "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
-                 ({e:?}) — this is a resource/index failure (allocation or index \
-                 overflow), NOT an under-constrained model; do not report it as a \
-                 rigid-body mode"
-            ),
-        };
+        // A NUMERIC failure here means K is not SPD — the one condition this
+        // entry point reports rather than panics on.
+        let factor = stiffness_factor_or_k_not_spd(O::factor_stiffness(k))?;
 
         if routes_to_dense_fallback(n, opts.n_modes) {
             // Problem too small for Lanczos; delegate to the direct dense solver.
-            // The dense result already satisfies the EigenSolverResult contract
-            // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
             return Ok(solve_eigen_dense(k, b, opts));
         }
 
-        // Delegate to the generic Lanczos core via zero-cost adapter pair.
-        // The chained matvec+backsolve through the adapters is byte-equivalent to
-        // the former ShiftInvertOp composition (same faer calls in same order),
-        // so buckling goldens pass bit-for-bit.
-        let k_op = SparseStiffnessOp {
-            factor: SparseFactorRef::Cholesky(&llt),
-            n,
-        };
         return Ok(with_provenance(
-            lanczos_shift_invert(&k_op, &m_op, opts),
+            O::lanczos_on_spd_factor(&factor, &b_op, opts),
             0.0,
             true,
         ));
@@ -1408,42 +1704,16 @@ pub fn try_solve_eigen_shift_invert(
     // statement that no eigenvalue of the pencil lies between zero and σ.  That
     // one bit is the C5 discriminator `with_provenance` reads off this dispatch.
     //
-    // PRD §5.3 PART A lives here: the one singular-shift case faer reports
-    // directly.
-    let (result, cholesky_succeeded) = match shifted.sp_cholesky(Side::Lower) {
-        Ok(llt) => {
-            let k_op = SparseStiffnessOp {
-                factor: SparseFactorRef::Cholesky(&llt),
-                n,
-            };
-            (lanczos_shift_invert(&k_op, &m_op, opts), true)
-        }
+    // PRD §5.3 PART A — the one singular-shift case faer reports directly —
+    // lives in `lu_of_indefinite_shifted_pencil`.
+    let (result, cholesky_succeeded) = match O::factor_shifted_pencil(&shifted) {
+        Ok(factor) => (O::lanczos_on_spd_factor(&factor, &b_op, opts), true),
         // `K − σB` is indefinite — the expected case for a σ above some mode,
         // not an error. LU handles it.
-        Err(SparseLltError::Numeric(_)) => match shifted.sp_lu() {
-            Ok(lu) => {
-                let k_op = SparseStiffnessOp {
-                    factor: SparseFactorRef::Lu(&lu),
-                    n,
-                };
-                (lanczos_shift_invert(&k_op, &m_op, opts), false)
-            }
-            // STRUCTURAL rank deficiency — no pivot exists anywhere in the
-            // pattern, so `K − σB` is singular and shift-invert has no operator
-            // to apply.  faer reports the elimination step at which the pivot
-            // search failed (`index`); it is deliberately NOT carried in the
-            // typed value, because C6's remedy is "move σ" and an internal
-            // elimination index names nothing the caller can act on.  It is
-            // recorded here rather than dropped silently.
-            Err(SparseLuError::SymbolicSingular { .. }) => {
-                return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
-            }
-            Err(e @ SparseLuError::Generic(_)) => panic!(
-                "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
-                 ({e:?}) — this is a resource/index failure (allocation or index \
-                 overflow), NOT a singular shift; do not report it as one"
-            ),
-        },
+        Err(SparseLltError::Numeric(_)) => {
+            let lu = lu_of_indefinite_shifted_pencil(&shifted, sigma)?;
+            (O::lanczos_on_indefinite_pencil(k, &lu, &b_op, opts)?, false)
+        }
         Err(e @ SparseLltError::Generic(_)) => panic!(
             "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
              ({e:?}) — this is a resource/index failure (allocation or index \
@@ -1464,6 +1734,60 @@ pub fn try_solve_eigen_shift_invert(
     }
 
     Ok(with_provenance(result, sigma, cholesky_succeeded))
+}
+
+/// A Cholesky of `K` itself: a NUMERIC failure is the documented
+/// `Err(KNotSpd)`, and anything else panics.
+///
+/// The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
+/// does mean only that. faer's sparse `LltError` also carries a `Generic` arm
+/// (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
+/// failure channel would let a resource failure factorizing a large `K_free`
+/// surface to the user as `W_ModalRigidBodyMode: K_free is singular (the model
+/// is under-constrained)` — a confidently wrong diagnosis of an allocation
+/// problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
+/// serve. A `Generic` failure is not a domain fact about the model, so it keeps
+/// the panicking contract.
+fn stiffness_factor_or_k_not_spd<F>(
+    factorization: Result<F, SparseLltError>,
+) -> Result<F, ShiftInvertFailure> {
+    match factorization {
+        Ok(factor) => Ok(factor),
+        // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
+        Err(SparseLltError::Numeric(_)) => Err(ShiftInvertFailure::KNotSpd),
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT an under-constrained model; do not report it as a \
+             rigid-body mode"
+        ),
+    }
+}
+
+/// LU of a `K − σB` whose Cholesky found it indefinite — the expected case for a
+/// σ above some mode, not an error.
+///
+/// PRD §5.3 PART A lives here: STRUCTURAL rank deficiency — no pivot exists
+/// anywhere in the pattern, so `K − σB` is singular and shift-invert has no
+/// operator to apply.  faer reports the elimination step at which the pivot
+/// search failed (`index`); it is deliberately NOT carried in the typed value,
+/// because C6's remedy is "move σ" and an internal elimination index names
+/// nothing the caller can act on.
+fn lu_of_indefinite_shifted_pencil(
+    shifted: &SparseColMat<usize, f64>,
+    sigma: f64,
+) -> Result<Lu<usize, f64>, ShiftInvertFailure> {
+    match shifted.sp_lu() {
+        Ok(lu) => Ok(lu),
+        Err(SparseLuError::SymbolicSingular { .. }) => {
+            Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma })
+        }
+        Err(e @ SparseLuError::Generic(_)) => panic!(
+            "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT a singular shift; do not report it as one"
+        ),
+    }
 }
 
 /// The pencil's own λ-space resolution floor: the distance below which two
@@ -1630,67 +1954,8 @@ fn with_provenance(
     }
 }
 
-/// Fixtures shared by this module's own tests, the crate's integration tests,
-/// and `reify-eval`'s in-crate modal tests.
-///
-/// `#[doc(hidden)] pub` rather than `#[cfg(test)]` for the same reason
-/// [`crate::assembly::test_support`] is: an integration test compiles against
-/// the built library, so a `#[cfg(test)]` item is invisible to it and every
-/// consumer ends up with its own copy. The closed form in particular was
-/// maintained in four places before this seam existed.
 #[doc(hidden)]
-pub mod test_support {
-    use faer::sparse::{SparseRowMat, Triplet};
-
-    /// The `n`-DOF 1-D Dirichlet Laplacian pencil: `K = tridiag(−1, 2, −1)`
-    /// (symmetric positive definite) with `B = I`.
-    ///
-    /// Its spectrum is closed-form ([`laplacian_lambda`]), which is what lets a
-    /// test place σ EXACTLY on an eigenvalue in f64 rather than near one to
-    /// within whatever tolerance some prior solve happened to reach.
-    ///
-    /// `n > 64` is the threshold above which [`super::routes_to_dense_fallback`]
-    /// is false and the real Lanczos path runs.
-    pub fn laplacian_pencil(n: usize) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-        let mut k_trips = Vec::with_capacity(3 * n - 2);
-        for i in 0..n {
-            k_trips.push(Triplet::new(i, i, 2.0));
-            if i > 0 {
-                k_trips.push(Triplet::new(i, i - 1, -1.0));
-            }
-            if i + 1 < n {
-                k_trips.push(Triplet::new(i, i + 1, -1.0));
-            }
-        }
-        (
-            SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap(),
-            identity(n),
-        )
-    }
-
-    /// `I` (`n`×`n`), as a sparse row matrix.
-    pub fn identity(n: usize) -> SparseRowMat<usize, f64> {
-        let trips: Vec<Triplet<usize, usize, f64>> =
-            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-        SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
-    }
-
-    /// Closed-form `λ_k = 2(1 − cos(kπ/(n+1)))` of [`laplacian_pencil`],
-    /// 1-INDEXED (λ₁ is the first mode, not λ₀), matching the formula.
-    pub fn laplacian_lambda(n: usize, k: usize) -> f64 {
-        assert!(
-            (1..=n).contains(&k),
-            "an n = {n} pencil has modes k = 1..={n}, not {k}",
-        );
-        2.0 * (1.0 - f64::cos(k as f64 * std::f64::consts::PI / (n as f64 + 1.0)))
-    }
-
-    /// The `m` smallest closed-form eigenvalues of [`laplacian_pencil`],
-    /// ascending.
-    pub fn laplacian_lambdas<const M: usize>(n: usize) -> [f64; M] {
-        std::array::from_fn(|i| laplacian_lambda(n, i + 1))
-    }
-}
+pub mod test_support;
 
 // ---------------------------------------------------------------------------
 // Unit tests for the private K − σB assembly
@@ -1754,6 +2019,76 @@ mod singular_shift_predicate_tests {
             !shift_is_numerically_singular(&[0.5 + 2.0 * floor], 0.5, floor),
             "the floor is a threshold, not a neighbourhood the guard rounds up",
         );
+    }
+}
+
+/// Unit tests for the private post-solve residual predicate.
+///
+/// In-crate for the same reason as `singular_shift_predicate_tests`: the
+/// predicate is private, and its PUBLIC consequence —
+/// [`EigenSolverResult::residual_check_failures`] — is pinned from
+/// `tests/eigensolve_synthetic.rs`. What these add is the boundary between its
+/// two arms, which no solve can place exactly.
+#[cfg(test)]
+mod ritz_verification_predicate_tests {
+    use super::ritz_pair_is_verified;
+
+    /// A pair meeting the caller's tolerance relative to the operator is never
+    /// rejected, however large its residual relative to ITSELF: μ = 1e-6 under
+    /// an operator of scale 1 makes ρ = 5e-4 here.
+    #[test]
+    fn a_residual_within_ten_tol_of_the_operator_is_verified_even_when_relatively_large() {
+        assert!(ritz_pair_is_verified(5e-10, 1e-6, 1.0, 1e-10, 1.0));
+        assert!(
+            ritz_pair_is_verified(10.0 * 1e-10 * 1e3 * 2.0, 1e-6, 2.0, 1e-10, 1e3),
+            "the tol arm is inclusive at exactly 10·tol·μ_max·‖y‖",
+        );
+    }
+
+    /// A pair accurate to 1e-6 relative is never rejected, even when the
+    /// caller's tol is below the operator's rounding floor.
+    #[test]
+    fn a_relatively_small_residual_is_verified_even_above_ten_tol() {
+        assert!(ritz_pair_is_verified(1e-8, 1e3, 1.0, 1e-14, 1e3));
+        assert!(
+            ritz_pair_is_verified(1e-6 * 1e3 * 2.0, 1e3, 2.0, 1e-14, 1e3),
+            "the relative arm is inclusive at exactly 1e-6·|μ|·‖y‖",
+        );
+    }
+
+    #[test]
+    fn a_residual_exceeding_both_arms_is_not_verified() {
+        assert!(!ritz_pair_is_verified(1.0, 1.0, 1.0, 1e-10, 1.0));
+        assert!(!ritz_pair_is_verified(2e-6, 1.0, 1.0, 1e-10, 1.0));
+    }
+
+    /// The verdict is unit-free: shrinking the whole operator by 1e10 shrinks
+    /// the residual and every μ by 1e10, and the answer must not change. An
+    /// absolute `10·tol` arm would flip the rejected pair to verified here.
+    #[test]
+    fn the_verdict_does_not_depend_on_the_operator_scale() {
+        let (residual, mu, tol) = (1e-2, 1e3, 1e-8);
+        assert!(!ritz_pair_is_verified(residual, mu, 1.0, tol, mu));
+        assert!(
+            !ritz_pair_is_verified(residual * 1e-10, mu * 1e-10, 1.0, tol, mu * 1e-10),
+            "a ρ = 1e-5 pair must not become verified because |μ| fell below tol",
+        );
+        assert!(ritz_pair_is_verified(1e-12, mu, 1.0, tol, mu));
+        assert!(ritz_pair_is_verified(1e-22, mu * 1e-10, 1.0, tol, mu * 1e-10));
+    }
+
+    /// The relative arm scales with |μ|, so a negative μ (λ below σ) is judged
+    /// exactly as its positive mirror.
+    #[test]
+    fn a_negative_mu_is_judged_by_its_magnitude() {
+        assert!(ritz_pair_is_verified(1e-8, -1e3, 1.0, 1e-14, 1e3));
+        assert!(!ritz_pair_is_verified(1e-2, -1e3, 1.0, 1e-14, 1e3));
+    }
+
+    #[test]
+    fn a_non_finite_residual_is_not_verified() {
+        assert!(!ritz_pair_is_verified(f64::NAN, 1.0, 1.0, 1e-10, 1.0));
+        assert!(!ritz_pair_is_verified(f64::INFINITY, 1.0, 1.0, 1e-10, 1.0));
     }
 }
 

@@ -643,7 +643,7 @@ _harness_layout_mod_decls() {
 #
 # The measure is the TRANSITIVE `mod`-graph closure reachable from the root —
 # transitive because `tests/common/mod.rs` itself declares `pub mod
-# alloc_counter;` / `pub mod as_printed;`, so a one-hop walk would miss them.
+# as_printed;`, so a one-hop walk would miss it.
 # Targets are resolved the way rustc resolves them:
 #
 #   `#[path = "P"] mod X;`  in file F  ->  dirname(F)/P

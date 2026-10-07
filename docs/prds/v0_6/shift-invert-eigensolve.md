@@ -32,7 +32,8 @@ constructed and never read by anything.
 After this PRD:
 
 - **The shift is real.** A non-zero `sigma` / `shift_frequency` assembles and factors `K − σB` and
-  returns the eigenvalues nearest σ, not the eigenvalues nearest zero.
+  returns the eigenvalues nearest σ, not the eigenvalues nearest zero. *(For B ≠ cI on the Lanczos
+  path, accurate since #7602 landed; see the §6 amendment of 2026-09-29.)*
 - **The unconservative read is closed.** A shifted solve records whether it skipped modes; the three
   `modes[0]` helpers (`critical_load`, `safety_factor_buckling`, `first_frequency`) raise a coded
   Error rather than reporting a mode from the middle of the spectrum as if it were the first.
@@ -159,6 +160,8 @@ if sigma == 0.0 {
 Rationale: the σ==0 guard means **no landed golden moves** — `euler_column_pin_pin.rs` (four BC
 families with pinned tolerances), `buckling_smoke.rs`, `buckling_persistent_cache_round_trip.rs` and
 the modal goldens are structurally untouched, because σ=0 takes the same faer calls in the same order.
+*(Amended 2026-09-29: this holds for this PRD's own leaves only. For non-identity-B pencils those σ=0
+results are wrong on the Lanczos path, and #7602 may move them — see the §6 amendment.)*
 The Cholesky-first attempt is not merely an optimization for reason 2 above: **its success/failure IS
 the correctness discriminator of §5.4**, so it is load-bearing, not a perf tweak.
 
@@ -274,6 +277,42 @@ and the two wiring leaves must cover both.
 
 ## 6. The contract (H component)
 
+> **AMENDMENT 2026-09-29 (Leo, esc-7260-4) — non-identity-B pencils (B ≠ cI).** The Lanczos path
+> hands faer's `partial_self_adjoint_eigen` the operator `CompositeShiftInvertOp` = `(K − σB)⁻¹B`.
+> That routine assumes the Euclidean inner product. The operator is Euclidean-self-adjoint only when
+> B = cI. For buckling (`B = −K_g`) and modal (`B = M`) it is self-adjoint in the K inner product,
+> not the Euclidean one, so Lanczos returns inaccurate or spurious eigenvalues. It still reports
+> `converged: true`, because `converged` only means that `n_modes` values came back and no residual
+> is checked. This is live on main **at σ=0**: `solve_buckling_kernel` / `_p2` and modal's
+> `solve_generalized_eigen` (`crates/reify-eval/src/modal_ops.rs`) take this path above
+> `n = max(64, 2·n_modes)`. The
+> #7260 architect measured a 136-DOF column at λ₂ = 6.143e-2 against the dense 5.373e-2 (λ₁ was
+> correct). β #7259's own probe with `B = diag(1 + i/80)` measured a residual of 3.58e-1 at σ=0. That
+> is the same residual as at the pre-PRD base, and β deferred it *because* C1 froze σ=0. Scoped to
+> **B ≠ cI pencils**, the ruling is:
+>
+> 1. **C1 and BT1 are waived.** The σ=0 results they freeze are wrong, and #7602's fix must be free
+>    to change them. For B = cI they stand unchanged.
+> 2. **C2, BT2 and BT4 do not hold until #7602 lands.** "Nearest σ", dense/Lanczos agreement and
+>    `modes[0]` equality are only as good as the eigenpairs, and the eigenpairs are wrong here. The
+>    dense path (`gevd_real`, QZ) is unaffected and stays the reference.
+> 3. **#7602 owns the fix** (moved from β #7259; see §11 Q1). That covers the operator, a post-solve
+>    generalized-residual check so that a non-eigenpair can never report `converged: true`, and the
+>    faer `gevd_real` overflow panic on the dense path. `(K − σB)⁻¹B` is self-adjoint in the K inner
+>    product for every σ (K is SPD). So a Cholesky-symmetrised form `Lᵀ(K − σB)⁻¹BL⁻ᵀ` (with
+>    `K = LLᵀ`) keeps faer's Lanczos. That is consistent with §8's "no Krylov rewrite", but the design
+>    choice belongs to #7602.
+>
+> **RESOLVED 2026-10-01 (#7602).** The operator is now chosen per pencil. It stays Euclidean iff
+> B = cI. Otherwise it is Cholesky-symmetrised in an SPD metric W = G·Gᵀ (`LanczosMetric`):
+> W = K − σB when that is SPD (σ=0 ⇒ K), else W = K with a `(K − σB)⁻¹` correction applied through LU.
+> In that second arm K must be SPD, so `ShiftInvertFailure::KNotSpd` is now reachable at σ≠0. Every
+> returned Lanczos pair is re-checked on the operator it ran on
+> (`EigenSolverResult::residual_check_failures`), and `converged` requires zero failures. The faer QZ overflow panic is closed by a dev-profile
+> `overflow-checks = false` for `reify-solver-elastic`. C2, BT2 and BT4 hold again for B ≠ cI. C1/BT1
+> stay waived there. σ=0 results on such pencils now come from the symmetrised operator, and no landed
+> buckling or modal golden left its tolerance (measurements in #7602's commits).
+
 `EigenSolverOptions.sigma` is the shift **in eigenvalue (λ) space** for both callers. Unit conversion
 is the caller's job, not the eigensolver's (§7 seam table).
 
@@ -281,9 +320,11 @@ Every implementation of the generalized eigensolve must satisfy all six clauses:
 
 - **C1 — σ=0 is the identity.** `sigma == 0.0` produces the same eigenvalues, the same order and the
   same code path as before this PRD. Structurally guaranteed by the §5.1 dispatch, not asserted as a
-  numerical tolerance.
+  numerical tolerance. *Scoped to B = cI; waived for B ≠ cI, whose σ=0 Lanczos results are wrong and
+  may be changed by #7602 (amendment above).*
 - **C2 — Selection.** The returned set is the `n_modes` eigenvalues of the pencil with smallest
-  |λ − σ| that the method converged.
+  |λ − σ| that the method converged. *Did not hold on the Lanczos path for B ≠ cI until #7602 landed
+  (amendment above); it holds again since.*
 - **C3 — Order.** `eigenvalues` is ascending by |λ|, with `eigenvectors` columns permuted to match.
 - **C4 — Back-shift.** Eigenvalues are returned in the original λ space (`λ = σ + 1/μ` on the Lanczos
   path), never in shifted or μ space.
@@ -300,14 +341,16 @@ The seam is `eigensolve.rs` ↔ its two callers, and the contract is implemented
 face both ways:
 
 - **BT1 — σ=0 identity, both implementations.** For a fixture pencil, dense and Lanczos at σ=0
-  reproduce the pre-PRD eigenvalues and order.
+  reproduce the pre-PRD eigenvalues and order. *B = cI pencils only (C1 waiver above).*
 - **BT2 — cross-implementation agreement.** For a pencil sized to be solvable both ways, dense and
   Lanczos at the same σ≠0 return the same eigenvalue *set* to solver tolerance, the same order (C3),
-  and the same C5 provenance boolean.
+  and the same C5 provenance boolean. *Was not expected to pass for B ≠ cI until #7602 landed; it
+  does since.*
 - **BT3 — selection really moved.** At a σ above λ₁ the returned set differs from the σ=0 set. This is
   the mechanical form of the G2 signal at the solver layer.
 - **BT4 — provenance is honest, both directions.** σ below λ₁ ⟹ `skipped == false` and `modes[0]`
-  equals the σ=0 first mode. σ above λ₁ ⟹ `skipped == true`.
+  equals the σ=0 first mode. σ above λ₁ ⟹ `skipped == true`. *The `modes[0]` equality did not hold
+  on the Lanczos path for B ≠ cI until #7602 landed (amendment above); it holds again since.*
 - **BT5 — singular shift.** σ placed on a known eigenvalue of a small analytic pencil produces the C6
   typed failure, not a panic and not a finite-looking wrong answer.
 - **BT6 — caller-facing.** Both trampolines convert their surface value into λ-space σ correctly, and
@@ -353,7 +396,9 @@ them. The conversion lives at the trampoline, not in the eigensolver.
   convenience helper #6097's text mentions exists nowhere in the tree and is not built here.
 - **B-orthogonal or (K−σB)-orthogonal Lanczos.** The existing path hands faer's
   `partial_self_adjoint_eigen` an operator that is self-adjoint in a non-Euclidean form; this PRD
-  preserves that arrangement rather than replacing the Krylov method. See §11 Q1.
+  preserves that arrangement rather than replacing the Krylov method. See §11 Q1. *(2026-09-29: that
+  arrangement is wrong for B ≠ cI. The fix belongs to #7602, which keeps the Krylov method; see the §6
+  amendment.)*
 - **The signed-`|λ|` convention for a negative first mode.** With `|λ|` ordering, a reversed-load mode
   at λ=−0.5 already sorts ahead of a forward mode at λ=+4.1e4 and `critical_load` already returns a
   negative Force **today at σ=0**. Pre-existing, unchanged here, and worth its own task (§11 Q3).
@@ -496,6 +541,24 @@ and the LIVE/AS-AUTHORED map, and applies the matching header to the capability 
    whether convergence quality degrades at large σ rather than predict it, and if it does, the
    response is a convergence diagnostic (`converged: false` already exists on `EigenSolverResult`),
    not a Krylov rewrite — that is out of scope per §8.
+
+   **AMENDMENT 2026-09-29 (Leo, esc-7260-4).** β #7259's recorded measurement used fixture C only
+   (`K` = tridiag(−1,2,−1), `B = I`) and found no degradation. With `B = I`, `(K − σI)⁻¹` is
+   Euclidean-self-adjoint however indefinite it gets, so that fixture cannot show the hazard. β's
+   non-identity companion probe was deferred as pre-existing σ=0 behaviour (§6 amendment). For
+   non-identity-B pencils (buckling `B = −K_g`, modal `B = M`) the Euclidean-Lanczos premise above
+   ("the existing σ=0 path … its goldens pass") **fails, at σ=0 as well**. β closed without the
+   convergence diagnostic. That diagnostic, now a post-solve generalized-residual check, **moved to
+   #7602** together with the operator fix. See the §6 amendment.
+
+   **RESOLVED 2026-10-01 (#7602).** The operator is Cholesky-symmetrised for B ≠ cI (§6 amendment
+   resolution), so faer's Lanczos still runs. A returned pair is verified iff
+   `‖S·y − μ·y‖ ≤ max(10·tol·μ_max, 1e-6·|μ|)·‖y‖` on the operator S the Lanczos ran. Here `μ_max` is
+   the largest returned `|μ|`, a lower bound on `‖S‖₂`. Failures are counted in
+   `EigenSolverResult::residual_check_failures` and make `converged` false; the pairs are still returned.
+   Both arms are relative on purpose. `μ = 1/(λ − σ)` carries the pencil's units, and an SI-unit modal
+   pencil has `|μ| ~ 1e-8`. An absolute `10·tol` arm, as first landed, passed every pair there however
+   wrong (review of #7602; pinned by `euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs`).
 2. **Residual threshold for §5.3 part 2.** The numerically-singular guard needs a concrete threshold.
    Derive it from the pencil's scale at implementation time; do not import a constant from another
    solver.

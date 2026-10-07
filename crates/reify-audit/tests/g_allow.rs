@@ -46,7 +46,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output};
 
-use reify_test_support::run_orphan_audit;
+use reify_test_support::{ORPHAN_AUDIT_SKIP_MARKER, run_orphan_audit};
 
 mod common;
 
@@ -227,7 +227,7 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
 /// So this pins a discrimination, not a direction: it fails both if the
 /// tightening over-fires on a supported environment and if it is loosened into
 /// never firing at all. Each half asserts FIRST that the child's stderr carries
-/// `skipping orphan audit`, which is what ATTRIBUTES it to the deprived
+/// [`ORPHAN_AUDIT_SKIP_MARKER`], which is what ATTRIBUTES it to the deprived
 /// fixture; the counts then come from libtest's summary rather than from the
 /// tightening panic's prose, so rewording that panic does not fail this test.
 ///
@@ -248,15 +248,10 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
          signal the outer run does not have",
     );
 
-    // The wording `run_orphan_audit`'s prerequisite-probe skip notes share, so
-    // reordering those probes among themselves (an empty PATH hides `git` too)
-    // moves this test onto another of them instead of reddening it. A copy of a
-    // string living in another crate's `eprintln!`s: a reword there reddens
-    // both halves below rather than silently un-attributing them. The
-    // single-source fix — a `pub const` in `reify-test-support` that its
-    // `eprintln!`s and this test both read — needs an edit outside this task's
-    // lock set and is filed as #7070.
-    const SKIP_MARKER: &str = "skipping orphan audit";
+    // ORPHAN_AUDIT_SKIP_MARKER is the wording every `run_orphan_audit`
+    // prerequisite-probe skip note shares, so reordering those probes among
+    // themselves (an empty PATH hides `git` too) moves this test onto another
+    // of them instead of reddening it.
 
     // Literally the same filter the replay harness uses — the module-level
     // const, not a second spelling of it — so this fixture cannot pin the
@@ -269,11 +264,11 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     let plain_stderr = String::from_utf8_lossy(&plain.stderr);
 
     assert!(
-        plain_stderr.contains(SKIP_MARKER),
-        "the deprived child did not report {SKIP_MARKER:?}, so this half is not \
-         exercising an environment that cannot run the audit: either its empty \
-         PATH no longer reaches any of `run_orphan_audit`'s prerequisite \
-         probes, or the wording they share changed (update SKIP_MARKER).\n\
+        plain_stderr.contains(ORPHAN_AUDIT_SKIP_MARKER),
+        "the deprived child did not report {ORPHAN_AUDIT_SKIP_MARKER:?}, so this \
+         half is not exercising an environment that cannot run the audit: its \
+         empty PATH no longer reaches any of `run_orphan_audit`'s prerequisite \
+         probes.\n\
          --- child stderr (truncated) ---\n{:.600}",
         plain_stderr,
     );
@@ -309,10 +304,10 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     let envelope_stderr = String::from_utf8_lossy(&envelope.stderr);
 
     assert!(
-        envelope_stderr.contains(SKIP_MARKER),
-        "the deprived child did not report {SKIP_MARKER:?} — same diagnosis as \
-         half A: this half is not exercising an environment that cannot run \
-         the audit, so whatever it proves is not what it claims.\n\
+        envelope_stderr.contains(ORPHAN_AUDIT_SKIP_MARKER),
+        "the deprived child did not report {ORPHAN_AUDIT_SKIP_MARKER:?} — same \
+         diagnosis as half A: this half is not exercising an environment that \
+         cannot run the audit, so whatever it proves is not what it claims.\n\
          --- child stderr (truncated) ---\n{:.600}",
         envelope_stderr,
     );

@@ -395,8 +395,9 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 /// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
 /// the line, in source order.
 ///
-/// [`has_canonical_cite`], [`extract_cites`] and [`has_malformed_cite`]'s `#N`
-/// pass are all expressed over this one iterator, so the grammar they share —
+/// [`has_canonical_cite`], [`extract_cites`] (both via
+/// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
+/// all expressed over this one iterator, so the grammar they share —
 /// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
 /// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
 /// CONSTRUCTION. It was previously three hand-rolled copies required to stay
@@ -441,32 +442,36 @@ fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
     })
 }
 
-/// §8.2 canonical citation: `true` when the line carries at least one
-/// [`cite_occurrences`] cite (`#` + 1..=5 digits, value ≥1) that is NOT a
-/// PRD-relative index.
+/// §8.2 canonical cite occurrences: every [`cite_occurrences`] cite (`#` +
+/// 1..=5 digits, value ≥1) that is NOT a PRD-relative index, yielded as
+/// `(byte_offset_of_the_hash, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
 /// document, not a task, so it cannot anchor tracking. The filter is applied
-/// per-OCCURRENCE, so a line carrying both idioms still reports the genuine
-/// cite. An all-PRD-relative (or all-zero) line falls through to the structural
-/// `untracked` / `malformed-cite` classification.
+/// per-OCCURRENCE, so a line carrying both idioms still yields the genuine
+/// cite. This is the ONE definition of a canonical task cite, shared by
+/// [`has_canonical_cite`], [`extract_cites`] and PPRDSTATUS's cite lane, which
+/// needs the offset to find the cite's adjacent status parenthetical.
+pub(crate) fn canonical_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
+    cite_occurrences(line).filter(|&(at, id)| !prd_relative_cite(line.as_bytes(), at, id))
+}
+
+/// §8.2 canonical citation: `true` when the line carries at least one
+/// [`canonical_cite_occurrences`] cite. An all-PRD-relative (or all-zero) line
+/// falls through to the structural `untracked` / `malformed-cite`
+/// classification.
 fn has_canonical_cite(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    cite_occurrences(line).any(|(at, id)| !prd_relative_cite(bytes, at, id))
+    canonical_cite_occurrences(line).next().is_some()
 }
 
 /// §8.2 cite extraction (β liveness lane): every canonical id on the line, in
 /// source order.
 ///
-/// Shares [`cite_occurrences`] with [`has_canonical_cite`] and applies the same
-/// [`prd_relative_cite`] filter, so the two are lock-step by construction: a
-/// cite that is not canonical is also not extracted.
+/// Expressed over [`canonical_cite_occurrences`], like [`has_canonical_cite`],
+/// so the two are lock-step by construction: a cite that is not canonical is
+/// also not extracted.
 fn extract_cites(line: &str) -> Vec<u32> {
-    let bytes = line.as_bytes();
-    cite_occurrences(line)
-        .filter(|&(at, id)| !prd_relative_cite(bytes, at, id))
-        .map(|(_, id)| id)
-        .collect()
+    canonical_cite_occurrences(line).map(|(_, id)| id).collect()
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
@@ -869,8 +874,8 @@ const PHANTOM_PHRASES: &[&str] = &[
 ];
 
 /// §8.3 phantom-tracking detection: `true` when the line contains any of the
-/// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
-/// is applied by the caller ([`scan_file`]).
+/// [`PHANTOM_PHRASES`] (case-insensitive). The caller ([`scan_file`]) splits
+/// on the canonical-cite precondition.
 fn phantom_phrase(line: &str) -> bool {
     let lower = line.to_lowercase();
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
@@ -1057,24 +1062,43 @@ pub fn is_swept_ext(path: &str) -> bool {
 // §8.3 per-file classification
 // -----------------------------------------------------------------------
 
-/// The four structural-lane finding kinds α emits (all Medium severity). The
-/// §8.3 `kind` token is carried as a stable summary prefix under the single
-/// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A TODO-family marker with no task citation at all.
-    Untracked,
-    /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
-    MalformedCite,
-    /// Prose claiming the work is tracked elsewhere, with no canonical cite.
-    PhantomTracking,
-    /// A bare `#[ignore]` attribute (no reason string).
-    BareIgnore,
+/// Declares a fieldless enum together with its `ALL` list from ONE variant
+/// list, so a variant cannot exist without being in `ALL`.
+macro_rules! enum_with_all {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident { $($(#[$variant_meta:meta])* $variant:ident,)+ }
+    ) => {
+        $(#[$enum_meta])*
+        enum $name { $($(#[$variant_meta])* $variant,)+ }
+
+        impl $name {
+            /// Every variant, in declaration order.
+            const ALL: &'static [$name] = &[$($name::$variant),+];
+        }
+    };
+}
+
+enum_with_all! {
+    /// The structural-lane finding kinds α emits (severity per
+    /// [`Kind::severity`]). The §8.3 `kind` token is carried as a stable summary prefix under the single
+    /// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// A TODO-family marker with no task citation at all.
+        Untracked,
+        /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
+        MalformedCite,
+        /// Prose claiming the work is tracked elsewhere, with no canonical cite.
+        PhantomTracking,
+        /// A bare `#[ignore]` attribute (no reason string).
+        BareIgnore,
+    }
 }
 
 impl Kind {
     /// The §8.3 kind token, used as the finding summary prefix.
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Kind::Untracked => "untracked",
             Kind::MalformedCite => "malformed-cite",
@@ -1098,6 +1122,19 @@ impl Kind {
         }
     }
 }
+
+/// The §8.3 kind tokens the structural lane emits — the only kinds a §6.6
+/// baseline may carry (PRD §19). One token per [`Kind`], derived from
+/// `Kind::ALL`, so a new variant joins it without a second edit.
+pub const STRUCTURAL_KINDS: [&str; Kind::ALL.len()] = {
+    let mut tokens = [""; Kind::ALL.len()];
+    let mut i = 0;
+    while i < tokens.len() {
+        tokens[i] = Kind::ALL[i].as_str();
+        i += 1;
+    }
+    tokens
+};
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
 /// is either *structurally* offending (no canonical cite → α's domain) or
@@ -1136,7 +1173,8 @@ enum LineClass {
 /// 5. lane δ-A (`.rs`): an `#[allow(…dead_code…)]` attribute whose trailing
 ///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
 ///    else `Structural(Untracked)`.
-/// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 6. phantom phrase: no canonical cite → `Structural(PhantomTracking)`;
+///    canonical cite, not a `// G-allow:` line → `Cited(on-line cites)`.
 /// 7. lane δ-B (`.rs`): an ordinary comment line (trimmed, starts `//` — so
 ///    `//`, `///` and `//!` alike) that carries BOTH a canonical `#NNNN` cite
 ///    and deferral prose, and is not a `// G-allow:` marker →
@@ -1186,12 +1224,7 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
                 // canonical cite → tracked; β resolves the on-line cites. No
                 // above-line lookback here (that is a stub-macro convention),
                 // so an unrelated cite on the prior line cannot mask this one.
-                // Deduped like arm (4): `resolve_liveness_keyed` emits one
-                // finding per id, so a line naming the same id twice would
-                // otherwise report it twice.
-                let mut ids = extract_cites(line);
-                dedup_in_place(&mut ids);
-                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+                out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
             } else if has_malformed_cite(line) {
                 out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
@@ -1258,9 +1291,14 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
-        } else if phantom_phrase(line) && !has_canon {
+        } else if !has_canon && phantom_phrase(line) {
             // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
+        } else if has_canon && phantom_phrase(line) && g_allow_marker_body(line).is_none() {
+            // (6′) discharged phantom tracking: the cite backs the claim, so β
+            // re-checks it as arm (3) does (PRD §19(d)). A `// G-allow:` line
+            // stays with its own lane, as in arm (7) choice (iii).
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         } else if is_rust
             && line.trim_start().starts_with("//")
             && has_canon
@@ -1284,8 +1322,8 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // `Untracked`; δ-B has only the comment, so the cite IS the anchor
             // — which is what stops the lane firing on every prose comment
             // containing "pending". It emits only `Cited` and reaches ONLY the
-            // unchanged β liveness lane, leaving §8.3's taxonomy, `VALID_KINDS`
-            // and the §8.4 severity map untouched.
+            // unchanged β liveness lane, leaving §8.3's taxonomy,
+            // `STRUCTURAL_KINDS` and the §8.4 severity map untouched.
             //
             // (iii) The `g_allow_marker_body` guard delegates the ENTIRE
             // `// G-allow:` register to its owner lane, which has its own
@@ -1313,14 +1351,22 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // §8.2's `prd_relative_cite` kills the PRD-relative class
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
-            let mut ids = extract_cites(line);
-            dedup_in_place(&mut ids);
-            out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
         }
 
         prev = Some(line);
     }
     out
+}
+
+/// The canonical cites on `line`, each id once, in first-seen order — the
+/// payload of a `Cited` entry anchored on its own line. Deduped because
+/// `resolve_liveness_keyed` emits one finding per id, so a line naming the
+/// same id twice would otherwise report it twice.
+fn on_line_cites(line: &str) -> Vec<u32> {
+    let mut ids = extract_cites(line);
+    dedup_in_place(&mut ids);
+    ids
 }
 
 /// Order-preserving in-place dedup of cite ids. Cite lists are tiny (1–2
@@ -1816,14 +1862,14 @@ fn fold_whitespace(s: &str) -> String {
 /// hard gate in both the engine-seam primitive and the repo-wide lane; task
 /// η #4559 analogue) and `g-allow-unknown-id` (Medium).
 ///
-/// Used by `ptodo-baseline-gen` and the `(B)` baseline ratchet to exclude the
-/// G-allow advisory lane from the source-marker baseline, mirroring the ζ
-/// inverse-lane exclusion: G-allow findings are a distinct
-/// orphan-suppression-provenance taxonomy (path-keyed, `.rs` files) whose kind
-/// strings (`g-allow-*`) are outside `baseline_is_well_formed`'s `VALID_KINDS`
-/// set — including them in the baseline would make a regen fail the kind check.
-// G-allow: pub for external callers (tests/ptodo_baseline.rs, src/bin/ptodo-baseline-gen.rs —
-// separate crates / bins that cannot see crate-private items). Mirrors the
+/// Used by `ptodo-baseline-gen` to exclude the G-allow advisory lane from the
+/// source-marker baseline, mirroring the ζ inverse-lane exclusion: G-allow
+/// findings are a distinct orphan-suppression-provenance taxonomy (path-keyed,
+/// `.rs` files) whose kind strings (`g-allow-*`) are outside
+/// [`STRUCTURAL_KINDS`] — including them in the baseline would make a regen
+/// fail `baseline_is_well_formed`'s kind check.
+// G-allow: pub for an external caller (src/bin/ptodo-baseline-gen.rs — a
+// separate bin that cannot see crate-private items). Mirrors the
 // resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn is_g_allow_finding(f: &Finding) -> bool {
     f.summary.starts_with("g-allow-")
@@ -1899,6 +1945,30 @@ pub struct ScanStats {
     pub files_scanned: usize,
     /// [`scan_file`]-classified marker lines across those files.
     pub markers_examined: usize,
+    /// Whether the DB-dependent lanes ran. It exists so the §6.6 ratchet can
+    /// PROVE it ran DB-absent (PRD §19).
+    pub tasks_db: TasksDbMode,
+}
+
+/// Whether [`check_with_stats`] resolved the task DB.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TasksDbMode {
+    /// The §6.7 degrade path fired (the DB is missing, unreadable, or failed to
+    /// resolve), so no DB-dependent lane (β, ζ, G-allow) contributed.
+    #[default]
+    Absent,
+    /// The DB opened and all three DB-dependent lanes resolved.
+    Present,
+}
+
+impl TasksDbMode {
+    /// The token the scan-evidence line carries for this mode.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            TasksDbMode::Absent => "absent",
+            TasksDbMode::Present => "present",
+        }
+    }
 }
 
 /// PTODO sweep (§5/§8) — see [`check_with_stats`], of which this is the
@@ -2016,6 +2086,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         Ok((live, inv, g_allow))
     }) {
         Ok((live, inv, g_allow)) => {
+            stats.tasks_db = TasksDbMode::Present;
             keyed.extend(live);
             inverse_findings = inv;
             // Insert G-allow findings into keyed so they sort with the other
@@ -3418,7 +3489,7 @@ mod tests {
     /// δ-B emits NO structural kind, ever — the whole lane is invisible to α
     /// and reaches only the unchanged β liveness lane. Pinned as its own
     /// assertion because it is the property that keeps §8.3's taxonomy (and
-    /// therefore `VALID_KINDS`, `fingerprint` and the §8.4 severity map)
+    /// therefore `STRUCTURAL_KINDS`, `fingerprint` and the §8.4 severity map)
     /// byte-unchanged by this lane.
     #[test]
     fn scan_file_delta_b_emits_no_structural_kind() {
@@ -3575,6 +3646,102 @@ mod tests {
             (4, Kind::PhantomTracking, "tracked separately".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 arm (6) — phantom phrase discharged by a canonical cite (§19(d))
+    // -------------------------------------------------------------------
+
+    /// A phantom-tracking phrase backed by a canonical cite is discharged: its
+    /// cites go to β exactly as a cited comment marker's do. The line carries
+    /// no deferral prose, so δ-B cannot be what claims it.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_is_cited() {
+        let line = "// tracked separately as #5835";
+        assert!(
+            !has_deferral_prose(line),
+            "δ-B must not be able to claim this line"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![5835]), line.to_string())]
+        );
+    }
+
+    /// The discharged arm covers every swept extension. Both shapes are taken
+    /// from the live population (an `.ri` example and a `.ts` test).
+    #[test]
+    fn scan_file_discharged_phantom_tracking_non_rust() {
+        for (line, id) in [
+            ("// one — tracked as a follow-up (#5835)", 5835),
+            ("  // so the fix is tracked separately, by #6564.", 6564),
+        ] {
+            assert_eq!(
+                scan_file(line, false),
+                vec![(1, LineClass::Cited(vec![id]), line.trim().to_string())],
+                "discharged phantom line not classified Cited([{id}]): {line}"
+            );
+        }
+    }
+
+    /// Repeated ids collapse to one and distinct ids keep source order, as on
+    /// every other `Cited` arm.
+    #[test]
+    fn scan_file_discharged_phantom_tracking_dedups_cites() {
+        let line = "/// tracked separately as #6156 (see #6156) and #7756";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![6156, 7756]), line.to_string())]
+        );
+    }
+
+    /// A PRD-relative `#N` names a position in a PRD, not a task, so it cannot
+    /// discharge the claim: the line stays structural phantom tracking.
+    #[test]
+    fn scan_file_phantom_with_only_prd_relative_cite_stays_structural() {
+        let line = "// tracked separately under §7#5";
+        assert!(
+            !has_canonical_cite(line),
+            "§7#5 must be PRD-relative for this test to mean anything"
+        );
+        assert_eq!(
+            scan_file(line, true),
+            vec![(
+                1,
+                LineClass::Structural(Kind::PhantomTracking),
+                line.to_string()
+            )]
+        );
+    }
+
+    /// A `// G-allow:` line stays with its own lane, whatever the extension,
+    /// even when it carries a phantom phrase and a canonical cite.
+    #[test]
+    fn scan_file_discharged_phantom_g_allow_line_is_delegated() {
+        let line = "// G-allow: wiring tracked separately as #5235 — no non-test caller until then";
+        assert!(g_allow_marker_body(line).is_some());
+        for is_rust in [true, false] {
+            assert_eq!(scan_file(line, is_rust), vec![], "is_rust={is_rust}");
+        }
+    }
+
+    /// The structural projection is unchanged by the discharged arm: only the
+    /// uncited claim reaches α, so the §6.6 baseline cannot move.
+    #[test]
+    fn classify_file_discharged_phantom_tracking_adds_no_structural_entry() {
+        let content = [
+            "// tracked as a follow-up task",
+            "// tracked separately as #5835",
+        ]
+        .join("\n");
+        assert_eq!(
+            classify_file(&content, true),
+            vec![(
+                1,
+                Kind::PhantomTracking,
+                "// tracked as a follow-up task".to_string()
+            )]
+        );
     }
 
     // -------------------------------------------------------------------
@@ -4109,9 +4276,9 @@ mod tests {
     ///
     /// Rationale for the exclusion: g-allow-orphaned / g-allow-unknown-id are a
     /// distinct orphan-suppression-provenance taxonomy (path-keyed, .rs files).
-    /// Including them in the baseline would (a) make the on-demand (B) ratchet
-    /// RED against the intentionally-empty baseline and (b) make a future regen
-    /// emit lines whose `kind` fails `VALID_KINDS` in `baseline_is_well_formed`.
+    /// Including them in the baseline would make a regen emit lines whose
+    /// `kind` is outside [`STRUCTURAL_KINDS`], which `baseline_is_well_formed`
+    /// rejects.
     /// The `fingerprint()` check below documents WHY the exclusion is necessary.
     ///
     /// RED until step-6 adds `pub fn is_g_allow_finding`.
@@ -4158,25 +4325,16 @@ mod tests {
         );
 
         // Demonstrate WHY exclusion is needed: fingerprint() extracts the kind
-        // segment "g-allow-orphaned", which is NOT in the source-marker VALID_KINDS
-        // taxonomy {untracked, malformed-cite, phantom-tracking, bare-ignore,
-        // orphaned, unknown-id}.  A regen including it would fail
+        // segment "g-allow-orphaned", which is NOT one of the STRUCTURAL_KINDS a
+        // baseline may carry. A regen including it would fail
         // baseline_is_well_formed's kind check — so it must be excluded upstream.
         let fp = fingerprint(&g_allow_orphaned);
         let kind_segment = fp.split(" :: ").nth(1).unwrap_or("");
-        const SOURCE_MARKER_VALID_KINDS: &[&str] = &[
-            "untracked",
-            "malformed-cite",
-            "phantom-tracking",
-            "bare-ignore",
-            "orphaned",
-            "unknown-id",
-        ];
         assert!(
-            !SOURCE_MARKER_VALID_KINDS.contains(&kind_segment),
-            "fingerprint kind {kind_segment:?} must NOT be in the source-marker \
-             VALID_KINDS — this documents why g-allow findings must be excluded \
-             from the baseline ratchet"
+            !STRUCTURAL_KINDS.contains(&kind_segment),
+            "fingerprint kind {kind_segment:?} must NOT be in STRUCTURAL_KINDS — \
+             this documents why g-allow findings must be excluded from the \
+             baseline ratchet"
         );
     }
 }

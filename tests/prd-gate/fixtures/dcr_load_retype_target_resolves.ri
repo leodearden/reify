@@ -15,6 +15,14 @@ module dcr_load_retype_target_resolves
 // param types, the `0N` / `0Pa` / `0N/m^3` dimensioned defaults, and the
 // dimensioned ctor arguments are all EXISTING grammar with no substrate work.
 // MEASURED at decompose 2026-07-28 (main efba5a8036): exit 0, zero diagnostics.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 0 / `reify eval` EXIT 0, zero diagnostics, UNCHANGED.
+//   The local shapes already declare Force / Pressure / ForceDensity and are
+//   called with dimensioned arguments, so the now-Error ctor-conformance walk
+//   accepts every site. The clean-at-exit-0 claim above still holds, and this
+//   file now also shows that the retyped shapes pass δ's Error-severity walk.
 
 structure def DcrRetypedPointLoad {
     param point     : String     = ""

@@ -689,6 +689,35 @@ export interface EvaluationStatus {
   progress?: number;
 }
 
+/**
+ * Payload for the `eval-generation` Tauri event channel (task 7853): an edit or
+ * evaluation of `generation` is about to run. Mirrors
+ * `gui/src-tauri/src/types.rs::EvalGeneration`.
+ */
+export interface EvalGeneration {
+  generation: number;
+}
+
+/**
+ * A whole-state command reply: `state` is exactly the snapshot the backend
+ * published under `generation`. Mirrors `gui/src-tauri/src/eval_queue.rs::PublishedState`.
+ */
+export interface PublishedState {
+  generation: number;
+  state: GuiState;
+}
+
+/** Wire-format {@link PublishedState} as received from Tauri IPC. */
+export interface RawPublishedState {
+  generation: number;
+  state: RawGuiState;
+}
+
+/** Convert a wire-format published state's GUI state to typed arrays. */
+export function convertRawPublishedState(raw: RawPublishedState): PublishedState {
+  return { generation: raw.generation, state: convertRawGuiState(raw.state) };
+}
+
 /** Type aliases for event update payloads (same shape as base types). */
 export type MeshUpdate = MeshData;
 export type ValueUpdate = ValueData;

@@ -528,7 +528,8 @@ structure FEABodyCantilever {
 /// "fixed" by the WRONG implementation: recursing `tensor_quantity` into the
 /// Field codomain would also silence the DimensionMismatch, but would type
 /// `vm` as a bare `Scalar<Pressure>` while eval hands back a `Value::Field`
-/// (`crates/reify-expr/src/analysis.rs:132-157`) — a kind lie that
+/// (`compute_von_mises` → `wrap_tensor_field`,
+/// `crates/reify-expr/src/analysis.rs`) — a kind lie that
 /// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) rejects.
 #[test]
 fn von_mises_over_solver_stress_field_types_as_pressure_field() {

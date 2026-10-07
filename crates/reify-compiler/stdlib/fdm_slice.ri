@@ -56,26 +56,20 @@ structure def Bead {
     // `degC` is affine, so a Temperature is always absolute.
     //
     // The default is `0degC` (= 273.15K), not `0K`, because 0 °C is this
-    // field's NOT-OBSERVED sentinel: the ζ parser initialises its temperature
-    // accumulator to 0 °C (`reify_fdm::toolpath`'s `Sweep::new`) and never
-    // distinguishes "no M104/M109 was seen" from a genuine 0 °C setpoint, so a
-    // bead marshalled from temperature-less G-code reports 0degC. Defaulting to
-    // the same value keeps a default-constructed `Bead()` and a marshalled
-    // unset bead in agreement — the affine conversion is the only one under
-    // which "zero" does not survive, so this is the one field where the two
-    // could disagree. Consumers MUST NOT read 0degC as a measurement: in
-    // particular `bead.nominal_temp > 0K` is TRUE for every temperature-less
-    // toolpath and is not an "is a temperature known" test.
-    //
-    // KNOWN GAP: that warning has to live in prose because nothing in this
-    // surface encodes it — 273.15K is an in-range, plausible absolute
-    // temperature no predicate can tell from a measurement, so a design author
-    // gating on this field silently gets 0degC physics for temperature-less
-    // G-code. Making "not observed" OBSERVABLE (an Option-shaped field, a
-    // `temp_observed : Bool` companion, or a W_FDM_NO_TEMPERATURE Info
-    // diagnostic from the ζ parser) is out of scope for #6301, which decided
-    // the unit regime only; it is tracked as #7138.
+    // field's NOT-OBSERVED sentinel: a bead the ζ parser saw no M104/M109
+    // before is marshalled as 0degC. Defaulting to the same value keeps a
+    // default-constructed `Bead()` and a marshalled unobserved bead in
+    // agreement — the affine conversion is the only one under which "zero"
+    // does not survive, so this is the one field where the two could disagree.
+    // Whether a temperature is known at all is `nominal_temp_observed`, not any
+    // test on this value.
     param nominal_temp : Temperature = 0degC
+    // False exactly when the ζ parser saw no M104/M109 before this bead, in
+    // which case `nominal_temp` holds the 0degC sentinel. Gate
+    // temperature-dependent logic on it, e.g.
+    // `bead.nominal_temp_observed && bead.nominal_temp > 200degC`. The default
+    // `false` keeps `Bead()` consistent with that sentinel.
+    param nominal_temp_observed : Bool = false
     // Active feedrate when the bead began extruding.
     param speed : Velocity = 0m/s
 }

@@ -33869,21 +33869,22 @@
     //
     // Every degenerate case above has a signed area of EXACTLY 0.0 (collinear,
     // identical, 2-point), and the smallest accepted ring above has area 5e-5.
-    // That leaves the whole open interval (0, 1e-4) passing the suite unchanged
-    // — so an accidental widening of the constant to, say, 1e-6, which would
-    // start silently rejecting legitimately small profiles, would ship green.
+    // So without the two tests below, the gate's behaviour on every area
+    // strictly between those two is unconstrained — including whether it
+    // consults the threshold at all.
     //
-    // Two DIFFERENT guards close that, and it is worth being precise about
-    // which does what, because the obvious reading is wrong. The two boundary
-    // tests below derive their rings FROM the constant (0.5x and 2x), so they
-    // MOVE WITH IT: they do NOT catch a retune on their own. What they pin is
-    // that the gate honours whatever value the constant holds, with the right
-    // sense and scale — verified by mutation: widening the comparison to
-    // `< TOLERANCE * 4.0` fails the 2x test, and halving the shoelace result
-    // fails the 0.5x test. The ABSOLUTE magnitude is pinned separately, by
-    // `degenerate_ring_area_tolerance_matches_mesher_gate`, which compares
-    // against the mesher's own literal — also verified by mutation: setting the
-    // constant to 1e-6 fails exactly that test and no other.
+    // They derive their rings FROM the constant (0.5x and 2x), so they MOVE
+    // WITH IT. What they pin is that the gate honours the constant's value with
+    // the right sense and scale — verified by mutation: widening the comparison
+    // to `< TOLERANCE * 4.0` fails the 2x test, and narrowing it to
+    // `< TOLERANCE * 0.25` fails the 0.5x test.
+    //
+    // The constant is not this crate's. It is `reify_solver_elastic`'s
+    // `pub const`, the binding `validate_boundary` compares against, so parity
+    // with the mesher is structural, and the mesher's own
+    // `validate_boundary_*_area_tolerance` tests pin both of its call sites.
+    // Its numeric value is deliberately pinned nowhere: a retune is an edit to
+    // that one declaration and moves both gates together.
 
     /// Helper: coordinate args for a right triangle with the requested shoelace
     /// signed area, in SI m².
@@ -33902,9 +33903,9 @@
     }
 
     /// A ring with |signed area| BELOW the tolerance is degenerate and rejected.
-    /// Half the tolerance, not one ulp below it: the point is to pin the
-    /// constant's magnitude, and a 2x margin keeps the test itself immune to
-    /// float noise in the shoelace sum.
+    /// Half the tolerance, not one ulp below it: the 2x margin keeps the test
+    /// immune to float noise in the shoelace sum while still pinning that the
+    /// gate rejects rings below the shared constant.
     #[test]
     fn compile_geometry_op_polygon_profile_area_just_below_tolerance_returns_err() {
         let target = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
@@ -33948,99 +33949,6 @@
             "an accepted ring must be silent, got: {:?}",
             diagnostics
         );
-    }
-
-    /// Resolve this crate's manifest dir, preferring the RUNTIME
-    /// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake.
-    ///
-    /// The bake goes stale when a seeded warm-lane `target/` is reused from a
-    /// since-deleted worktree — `CARGO_MANIFEST_DIR` is not part of cargo's
-    /// fingerprint, so a content-identical rebuild is never triggered. Same
-    /// hazard and same fix as `resolve_manifest_dir` in
-    /// `crates/reify-ast/tests/dag_invariant.rs` (esc-4906-57).
-    fn eval_crate_manifest_dir() -> String {
-        std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
-    }
-
-    /// STRUCTURAL PARITY GUARD — the local tolerance must equal the mesher's.
-    ///
-    /// `DEGENERATE_RING_AREA_TOLERANCE` is documented as a strict pre-image of
-    /// the threshold `validate_boundary` (`reify-solver-elastic/src/mesher.rs`)
-    /// applies to a sampled ring, and that relationship only holds while the two
-    /// values are equal.
-    ///
-    /// HALF of the original duplication is now gone: task 5218 promoted
-    /// `ring_signed_area_2d` to `pub` and re-exported it at that crate's root,
-    /// so `profile_polygon` calls the SHARED formula rather than a copy. The
-    /// THRESHOLD did not come with it — over there it is still an inline
-    /// `1e-14` literal inside the private `validate_boundary`, so there is
-    /// nothing to import and the local `const` remains.
-    ///
-    /// So that half of the parity is asserted from the outside: read the
-    /// mesher's source and compare the literals. That makes drift over there
-    /// fail HERE, loudly, instead of quietly dissolving the pre-image claim.
-    /// The proper fix is to promote the threshold to a `pub const` beside the
-    /// function and delete this one; that edits a crate this task holds no lock
-    /// on, and is filed as follow-up.
-    #[test]
-    fn degenerate_ring_area_tolerance_matches_mesher_gate() {
-        let mesher_path = std::path::Path::new(&eval_crate_manifest_dir())
-            .join("../reify-solver-elastic/src/mesher.rs");
-        let src = std::fs::read_to_string(&mesher_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to read {} for the tolerance parity check: {}",
-                mesher_path.display(),
-                e
-            )
-        });
-
-        // `validate_boundary` gates both the outer ring and each hole with
-        // `ring_signed_area_2d(..).abs() < <literal>`. Collect every such
-        // literal; each must equal our copy. The `pub fn` DEFINITION line also
-        // contains `ring_signed_area_2d(` but no `.abs() < `, so `split_once`
-        // filters it out rather than mis-parsing it.
-        const NEEDLE: &str = ".abs() < ";
-        let thresholds: Vec<&str> = src
-            .lines()
-            .filter(|line| line.contains("ring_signed_area_2d("))
-            .filter_map(|line| line.split_once(NEEDLE))
-            .map(|(_, tail)| {
-                tail.trim_start()
-                    .split(|c: char| c.is_whitespace() || c == '{')
-                    .next()
-                    .unwrap_or("")
-            })
-            .collect();
-
-        assert!(
-            thresholds.len() >= 2,
-            "expected at least 2 `ring_signed_area_2d(..).abs() < <lit>` gates in {} (outer ring \
-             + holes), found {:?}. If `validate_boundary` was refactored — e.g. the threshold \
-             lifted to a named const, or the comparison reformatted across lines — this guard can \
-             no longer see it: re-point it, or better, make the const `pub` and import it here so \
-             the parity becomes structural.",
-            mesher_path.display(),
-            thresholds
-        );
-
-        for raw in &thresholds {
-            let parsed: f64 = raw.parse().unwrap_or_else(|e| {
-                panic!(
-                    "could not parse the mesher's degenerate-ring threshold {:?} as f64: {}",
-                    raw, e
-                )
-            });
-            assert_eq!(
-                parsed, DEGENERATE_RING_AREA_TOLERANCE,
-                "the mesher's degenerate-ring threshold ({:e}) no longer equals \
-                 DEGENERATE_RING_AREA_TOLERANCE ({:e}) in geometry_ops.rs. The build-time polygon \
-                 gate is only a strict PRE-IMAGE of `validate_boundary` while these are equal — \
-                 if they diverge, a ring this crate accepts can be rejected downstream (or vice \
-                 versa) with no diagnostic explaining why. Update both, together.",
-                parsed, DEGENERATE_RING_AREA_TOLERANCE
-            );
-        }
     }
 
     // ── Self-intersection: a ring that encloses area, but not ONCE ─────────

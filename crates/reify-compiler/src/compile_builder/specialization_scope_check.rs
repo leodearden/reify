@@ -97,7 +97,7 @@ fn forbidden_decl_info(member: &MemberDecl) -> Option<(&'static str, &str, Sourc
 /// convention used elsewhere in the compiler (`shadow_lint`,
 /// `find_named_member_span`) and to keep pathological fuzzer inputs from
 /// blowing the stack.
-fn for_each_specialization_member<F>(parsed: &ParsedModule, visitor: &mut F)
+pub(crate) fn for_each_specialization_member<F>(parsed: &ParsedModule, visitor: &mut F)
 where
     F: FnMut(&MemberDecl),
 {

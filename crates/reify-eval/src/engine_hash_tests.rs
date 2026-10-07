@@ -1,0 +1,394 @@
+//! Guards on what `ENGINE_VERSION_HASH` covers: every source a persisted
+//! target runs must move the hash, and every workspace path crate in
+//! reify-eval's closure must be explicitly classified. PRD
+//! `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine version".
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
+
+use crate::engine_hash_algo::{
+    Coverage, EngineVersionHash, LockPackage, WORKSPACE_CRATE_COVERAGE, contributor_paths,
+    engine_version_hash_for, parse_cargo_lock_stanzas, parse_closure_manifest,
+};
+
+/// Which files implement each persisted target: its trampoline and the code
+/// that trampoline calls. Paths are files relative to `crates/reify-eval`.
+/// A byte change in any of them must move `ENGINE_VERSION_HASH`, or a stale
+/// persisted result would be served. Kept by hand: in a partially hashed crate
+/// (reify-eval, reify-stdlib) a callee missing from this table is a gap no
+/// test detects, so list each file a trampoline newly reaches.
+const PERSISTED_TARGET_SOURCES: &[(&str, &[&str])] = &[
+    (
+        "solver::elastic_static",
+        &[
+            "src/compute_targets/elastic_static.rs",
+            "src/compute_targets/bc_resolve.rs",
+            "src/compute_targets/shell_solve.rs",
+            "src/compute_targets/fea_diagnostics.rs",
+            "src/compute_targets/mod.rs",
+            "src/topology_selectors.rs",
+            "src/selector_vocabulary_v2.rs",
+            "../reify-solver-elastic/src/lib.rs",
+            "../reify-kernel-gmsh/src/lib.rs",
+            "../reify-fdm/src/as_printed.rs",
+            "../reify-ir/src/lib.rs",
+            "../reify-core/src/lib.rs",
+            "../reify-compute-contract/src/lib.rs",
+        ],
+    ),
+    (
+        "solver::buckling",
+        &[
+            "src/compute_targets/buckling.rs",
+            "src/compute_targets/elastic_static.rs",
+            "src/compute_targets/mod.rs",
+            "../reify-solver-elastic/src/lib.rs",
+        ],
+    ),
+    (
+        "shell-extract::extract",
+        &[
+            "src/shell_extract_compute.rs",
+            "../reify-shell-extract/src/lib.rs",
+        ],
+    ),
+];
+
+fn real_manifest_dir() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Recreate, under `mirror_root`, exactly the files and directories `real`
+/// reports having read, at their repo-relative positions. Returns the mirror's
+/// `crates/reify-eval` manifest dir.
+fn mirror_hash_inputs(
+    real_manifest: &Path,
+    real: &EngineVersionHash,
+    mirror_root: &Path,
+) -> PathBuf {
+    for path in &real.rerun_paths {
+        let rel = path
+            .strip_prefix(real_manifest)
+            .expect("every reported path is manifest_dir.join(..)");
+        let mirrored = mirror_root.join(repo_relative(rel));
+        if path.is_dir() {
+            std::fs::create_dir_all(&mirrored).expect("create mirror dir");
+        } else {
+            std::fs::create_dir_all(mirrored.parent().expect("mirrored file has a parent"))
+                .expect("create mirror parent");
+            std::fs::copy(path, &mirrored).expect("copy into mirror");
+        }
+    }
+    mirror_root.join("crates/reify-eval")
+}
+
+/// `crates/reify-eval/<manifest_relative>`, with each `..` popping a component
+/// lexically — the mirror paths do not exist yet, so the OS cannot resolve them.
+fn repo_relative(manifest_relative: &Path) -> PathBuf {
+    let mut normalised = PathBuf::new();
+    for component in Path::new("crates/reify-eval")
+        .join(manifest_relative)
+        .components()
+    {
+        match component {
+            Component::ParentDir => {
+                normalised.pop();
+            }
+            Component::CurDir => {}
+            other => normalised.push(other),
+        }
+    }
+    normalised
+}
+
+fn regular_file_count(hash: &EngineVersionHash) -> usize {
+    hash.rerun_paths.iter().filter(|p| p.is_file()).count()
+}
+
+#[test]
+fn engine_version_hash_for_panics_naming_the_first_missing_contributor() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let first = contributor_paths()
+        .next()
+        .expect("WORKSPACE_CRATE_COVERAGE hashes at least one path");
+    let payload = std::panic::catch_unwind(|| engine_version_hash_for(tmp.path()))
+        .err()
+        .expect("a manifest dir with no contributors must panic");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the panic carries a formatted message");
+    let expected = format!("ENGINE_VERSION_HASH contributor not found: {first} (");
+    assert!(
+        message.contains(&expected),
+        "the panic must name {first:?}, got: {message}"
+    );
+}
+
+#[test]
+fn the_baked_engine_version_hash_is_engine_version_hash_for_this_checkout() {
+    assert_eq!(
+        crate::persistent_cache::ENGINE_VERSION_HASH,
+        engine_version_hash_for(real_manifest_dir()).hex,
+        "build.rs must bake exactly engine_version_hash_for(CARGO_MANIFEST_DIR), unmodified"
+    );
+}
+
+#[test]
+fn engine_version_hash_over_a_mirror_of_exactly_the_files_it_read_reproduces_the_real_hash() {
+    let real = engine_version_hash_for(real_manifest_dir());
+    assert!(
+        real.hex.len() == 32
+            && real
+                .hex
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "hex must be 32 lowercase hex chars, got {:?}",
+        real.hex
+    );
+    for closure_pin_input in ["Cargo.lock", "engine_hash_closure.txt"] {
+        assert!(
+            real.rerun_paths
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == closure_pin_input)),
+            "the closure-pin input {closure_pin_input} must be among the reported paths"
+        );
+    }
+
+    let mirror_root = tempfile::TempDir::new().expect("create temp dir");
+    let mirror_manifest = mirror_hash_inputs(real_manifest_dir(), &real, mirror_root.path());
+    let mirrored = engine_version_hash_for(&mirror_manifest);
+
+    assert_eq!(
+        mirrored.hex, real.hex,
+        "a mirror of exactly the reported files must reproduce the real hash"
+    );
+    assert_eq!(regular_file_count(&mirrored), regular_file_count(&real));
+}
+
+#[test]
+fn parse_cargo_lock_stanzas_reports_each_stanzas_source_and_none_for_path_crates() {
+    let lock = r#"# This file is automatically @generated by Cargo.
+version = 4
+
+[[package]]
+name = "aho-corasick"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e60d3430d3a69478a0e0d6c8b20f5b1a0e0c8a3b71d7d5e0e0c8a3b7"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "reify-path-crate"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+]
+
+[[package]]
+name = "git-dep"
+version = "0.3.0"
+source = "git+https://example.invalid/x?rev=abc#abc"
+
+[[patch.unused]]
+name = "ghost-should-be-ignored"
+version = "9.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let package = |name: &str, version: &str, source: Option<&str>| LockPackage {
+        name: name.to_string(),
+        version: version.to_string(),
+        source: source.map(str::to_string),
+    };
+    assert_eq!(
+        parse_cargo_lock_stanzas(lock),
+        vec![
+            package(
+                "aho-corasick",
+                "1.1.3",
+                Some("registry+https://github.com/rust-lang/crates.io-index"),
+            ),
+            package("reify-path-crate", "0.1.0", None),
+            package(
+                "git-dep",
+                "0.3.0",
+                Some("git+https://example.invalid/x?rev=abc#abc"),
+            ),
+        ],
+    );
+}
+
+#[test]
+fn persisted_target_sources_cover_exactly_the_persistable_targets() {
+    let declared: BTreeSet<&str> = PERSISTED_TARGET_SOURCES
+        .iter()
+        .map(|(target, _)| *target)
+        .collect();
+    let persistable: BTreeSet<&str> = crate::compute_persist::PERSISTABLE_TARGETS
+        .iter()
+        .copied()
+        .collect();
+    let undeclared: Vec<&str> = persistable.difference(&declared).copied().collect();
+    let stale: Vec<&str> = declared.difference(&persistable).copied().collect();
+    assert!(
+        undeclared.is_empty() && stale.is_empty(),
+        "PERSISTED_TARGET_SOURCES must name exactly PERSISTABLE_TARGETS.\n\
+         Persisted but undeclared: {undeclared:?} — list each target's trampoline and \
+         implementing-crate files in PERSISTED_TARGET_SOURCES, and make them hashed via \
+         src/engine_hash_algo.rs.\n\
+         Declared but not persisted: {stale:?} — remove those rows."
+    );
+}
+
+#[test]
+fn every_persisted_target_source_changes_engine_version_hash_when_one_byte_flips() {
+    let real = engine_version_hash_for(real_manifest_dir());
+    let mirror_root = tempfile::TempDir::new().expect("create temp dir");
+    let mirror_manifest = mirror_hash_inputs(real_manifest_dir(), &real, mirror_root.path());
+    let baseline = engine_version_hash_for(&mirror_manifest).hex;
+
+    let mut targets_by_file: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (target, files) in PERSISTED_TARGET_SOURCES {
+        for file in *files {
+            targets_by_file.entry(*file).or_default().push(*target);
+        }
+    }
+
+    let mut uncovered: Vec<String> = Vec::new();
+    for (file, targets) in &targets_by_file {
+        let mirrored = mirror_root.path().join(repo_relative(Path::new(file)));
+        if !mirrored.exists() {
+            std::fs::create_dir_all(mirrored.parent().expect("mirrored file has a parent"))
+                .expect("create mirror parent");
+            std::fs::copy(real_manifest_dir().join(file), &mirrored)
+                .unwrap_or_else(|e| panic!("copy {file} into the mirror: {e}"));
+        }
+        let original = std::fs::read(&mirrored).expect("read mirrored source");
+        let mut flipped = original.clone();
+        match flipped.first_mut() {
+            Some(first) => *first ^= 0xFF,
+            None => flipped.push(0),
+        }
+        std::fs::write(&mirrored, &flipped).expect("write flipped source");
+        let moved = engine_version_hash_for(&mirror_manifest).hex != baseline;
+        std::fs::write(&mirrored, &original).expect("restore mirrored source");
+        if !moved {
+            uncovered.extend(targets.iter().map(|target| format!("{target}: {file}")));
+        }
+    }
+    assert!(
+        uncovered.is_empty(),
+        "flipping one byte of these persisted-target sources left ENGINE_VERSION_HASH \
+         unchanged, so a change to them would serve stale persisted results:\n{}",
+        uncovered.join("\n")
+    );
+}
+
+/// The Cargo.lock stanzas of every crate named in `engine_hash_closure.txt`.
+fn closure_stanzas() -> Vec<LockPackage> {
+    let read = |rel: &str| {
+        let path = real_manifest_dir().join(rel);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    };
+    let closure: BTreeSet<String> = parse_closure_manifest(&read("engine_hash_closure.txt"))
+        .into_iter()
+        .collect();
+    parse_cargo_lock_stanzas(&read("../../Cargo.lock"))
+        .into_iter()
+        .filter(|package| closure.contains(&package.name))
+        .collect()
+}
+
+#[test]
+fn every_path_crate_in_the_engine_hash_closure_is_classified() {
+    let path_crates: BTreeSet<String> = closure_stanzas()
+        .into_iter()
+        .filter(|package| package.source.is_none())
+        .map(|package| package.name)
+        .collect();
+    for expected in ["reify-eval", "reify-shell-extract"] {
+        assert!(
+            path_crates.contains(expected),
+            "{expected} must be among the closure's path crates, got {path_crates:?}"
+        );
+    }
+
+    let mut rows_per_crate: BTreeMap<&str, usize> = BTreeMap::new();
+    for row in WORKSPACE_CRATE_COVERAGE {
+        *rows_per_crate.entry(row.crate_name).or_default() += 1;
+    }
+    let mut problems: Vec<String> = Vec::new();
+    for (crate_name, rows) in &rows_per_crate {
+        if *rows > 1 {
+            problems.push(format!("{crate_name}: {rows} rows; keep exactly one"));
+        }
+        if !path_crates.contains(*crate_name) {
+            problems.push(format!(
+                "{crate_name}: not a path crate in reify-eval's closure; remove the row"
+            ));
+        }
+    }
+    for crate_name in &path_crates {
+        if !rows_per_crate.contains_key(crate_name.as_str()) {
+            problems.push(format!(
+                "{crate_name}: unclassified. Its Cargo.lock version is a constant, so the \
+                 closure pin never invalidates on a source change; add a row: \
+                 Hashed(paths) or NotHashed(reason)"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "WORKSPACE_CRATE_COVERAGE (src/engine_hash_algo.rs) must classify every path crate \
+         in engine_hash_closure.txt exactly once:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[test]
+fn every_non_path_closure_member_is_registry_sourced() {
+    let offenders: Vec<String> = closure_stanzas()
+        .into_iter()
+        .filter_map(|package| {
+            let source = package.source?;
+            (!source.starts_with("registry+"))
+                .then(|| format!("{} {}: {source}", package.name, package.version))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these closure members are neither registry- nor path-sourced. (name, version) does \
+         not determine a git/[patch] crate's content, so the closure pin would not \
+         invalidate on a change; fold source/checksum into cargo_lock_closure_pins:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn each_hashed_row_names_paths_inside_its_own_crate() {
+    let mut misplaced: Vec<String> = Vec::new();
+    for row in WORKSPACE_CRATE_COVERAGE {
+        let Coverage::Hashed(paths) = row.coverage else {
+            continue;
+        };
+        let own_prefix = format!("../{}/", row.crate_name);
+        for path in paths {
+            let inside = if row.crate_name == "reify-eval" {
+                !path.starts_with("../")
+            } else {
+                path.starts_with(&own_prefix)
+            };
+            if !inside {
+                misplaced.push(format!("{}: {path}", row.crate_name));
+            }
+        }
+    }
+    assert!(
+        misplaced.is_empty(),
+        "a Hashed row's paths are relative to crates/reify-eval and must lie inside the \
+         row's own crate (reify-eval's own paths carry no `../`; any other crate's start \
+         with `../<crate_name>/`), so each row's crate_name stays truthful:\n{}",
+        misplaced.join("\n")
+    );
+}

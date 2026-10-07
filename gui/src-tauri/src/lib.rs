@@ -8,6 +8,14 @@
 // reify-compiler, reify-constraints, reify-test-support).
 #![allow(clippy::mutable_key_type)]
 
+// Links reify_kernel_openvdb's object files so its `inventory::submit!`
+// registration reaches the kernel registry that
+// `EngineSession::with_registered_kernel` acquires OpenVDB from. Twin of the
+// anchor in crates/reify-cli/src/main.rs; covers the `reify-gui` bin too,
+// since it links this lib.
+#[cfg(has_openvdb)]
+extern crate reify_kernel_openvdb as _;
+
 pub mod claude_bridge;
 pub mod commands;
 pub mod path_key;
@@ -15,16 +23,20 @@ pub mod debug;
 #[cfg(feature = "gui")]
 pub mod debug_server;
 #[cfg(feature = "gui")]
+pub mod dev_url;
+#[cfg(feature = "gui")]
 pub mod event_bus;
 pub mod diff;
 pub mod display_units;
 pub mod engine;
 pub mod engine_lock;
+pub mod eval_queue;
 pub mod gui_state_schema;
 pub mod kernel_status;
 pub mod large_stack;
 pub mod lsp_bridge;
 pub mod mcp_context;
+pub mod tcp_port;
 pub mod types;
 pub mod watcher;
 

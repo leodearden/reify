@@ -31,7 +31,7 @@
 // (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
 // requires it to compile with ZERO Error-severity diagnostics.  The dedicated
 // regression test at
-//   crates/reify-compiler/tests/robustness_examples_tests.rs
+//   crates/reify-compiler/tests/harness_diagnostics_robustness/robustness_examples_tests.rs
 // pins the same compile-clean contract plus the EIShaper / input_shape source
 // pins.
 // ─────────────────────────────────────────────────────────────────────────────

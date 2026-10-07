@@ -207,9 +207,9 @@ use reify_solver_elastic::{
     DORFLER_THETA, DirichletBc, DiscreteCellField, ElementOrder, FaceOrder, GradientElement,
     GridSpec, IsotropicElastic, OrthotropicMaterial, RefinementBudget, ScalarElement,
     StressElement, TransverseIsotropicMaterial, apply_body_force, apply_dirichlet_row_elimination,
-    apply_point_load, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
+    apply_patch_resultant, apply_traction_load, assemble_global_stiffness, compute_zz_indicator,
     curl_from_gradient, element_gradient_p1, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
+    element_stress_p1, free_faces_within, recover_nodal_gradient_p1, recover_nodal_scalar_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resample_nodal_to_grid,
     resolve_execution_modes, run_adaptive_refinement, solve_cg_with_warm_state,
     solve_cg_with_warm_state_progress, tet_volume_p1,
@@ -277,7 +277,8 @@ pub(crate) struct CantileverFeaSolve {
     pub u: Arc<Vec<f64>>,
     /// Node coordinates (length n_nodes).
     pub coords: Vec<[f64; 3]>,
-    /// Indices of tip-face nodes (ix == nx) — for tip-deflection queries.
+    /// The loaded node set: the x_max face (synthetic `ix == nx`; realized by
+    /// coordinate) or a selector-resolved load set (task 4092).
     pub tip_nodes: Vec<usize>,
     /// Maximum von Mises stress across all elements (Pa).
     pub max_von_mises: f64,
@@ -555,8 +556,9 @@ pub fn solve_elastic_static_trampoline(
     // Two load kinds are bridged here (task 4264), read in a single pass by
     // `extract_loads`:
     //
-    //   PointLoad   — `force: Real` → scalar tip_force (distributed as -Z point
-    //                 loads across the tip-face nodes via apply_point_load).
+    //   PointLoad   — `force: Real` → scalar tip_force (a -Z resultant spread
+    //                 as a uniform traction over the tip face via
+    //                 apply_patch_resultant).
     //
     //   PressureLoad — `magnitude: Real, face: String, direction: String` →
     //                 face-traction assembled via apply_traction_load(f,
@@ -851,10 +853,12 @@ pub fn solve_elastic_static_trampoline(
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
             // task 4565/β: gradient and curl are tet-only derivative channels;
-            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set, and
+            // task #6183 adds `shear_angles` (projected from gradient).
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
             ("rotation".to_string(), Value::Undef),
+            ("shear_angles".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1197,6 +1201,12 @@ pub fn solve_elastic_static_trampoline(
     let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
+    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
+    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
+    let shear_angles_field = super::sampled_shear_angles_field(
+        super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
+    );
     let grad_field = super::sampled_gradient_field(grad_sf);
     // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
     // here rather than resampled independently — note there is deliberately NO
@@ -1258,12 +1268,12 @@ pub fn solve_elastic_static_trampoline(
     //     `run_adaptive_refinement` live in `reify_solver_elastic::adaptive`,
     //     outside this task's locked scope, and cannot accept a pre-computed
     //     first estimate.
-    //  2. Serialized remeshes: `RealizedAdaptiveProblem` forces
-    //     `deterministic: true`, which sets `General.NumThreads = 1` in
-    //     `refine_volume_with_size_field`, and every remesh additionally
-    //     serializes on the process-global `reify_kernel_gmsh::init::GMSH_LOCK`.
-    //     Load-bearing, not incidental: it is what makes the loop's
-    //     per-iteration output bit-stable.
+    //  2. Serialized remeshes: since task #7447 `refine_volume_with_size_field`
+    //     pins `General.NumThreads = 1` unconditionally (gmsh deadlocks
+    //     evaluating a background size field from several mesher threads), and
+    //     every remesh additionally serializes on the process-global
+    //     `reify_kernel_gmsh::init::GMSH_LOCK`. Load-bearing, not incidental:
+    //     it is what makes the loop's per-iteration output bit-stable.
     //  3. `max_dofs` bounds whether a FURTHER refine happens, not how large a
     //     single remesh may grow the mesh — `run_adaptive_refinement` evaluates
     //     it only after `solve_and_estimate` returns. A sliver element yields a
@@ -1274,11 +1284,12 @@ pub fn solve_elastic_static_trampoline(
     //     meaning of the size field handed to gmsh and would need its own RED
     //     test against a real sliver mesh; deliberately NOT done as a
     //     drive-by amendment.
-    //  4. Each refine is a FULL remesh from the extracted boundary surface, not
-    //     an incremental subdivision, and the size field's surface projection
-    //     (`project_volume_to_surface_vertices`) is O(n_surf x n_vol). Both are
-    //     properties of the landed `reify-solver-elastic` primitive and are
-    //     surfaced to callers in the lane's post-loop Info diagnostic.
+    //  4. Each refine is a FULL remesh from the extracted boundary surface,
+    //     not an incremental subdivision — a property of the landed
+    //     `reify-solver-elastic` primitive, surfaced to callers in the lane's
+    //     post-loop Info diagnostic. (The second cost this note used to list,
+    //     an O(n_surf x n_vol) projection of the size field onto the surface,
+    //     is gone: task #7447 hands gmsh the volume field directly.)
     //
     // Cancellation IS handled: `RealizedAdaptiveProblem::solve_and_estimate`
     // polls the ambient cancel handle on every CG iteration and the post-loop
@@ -1434,12 +1445,11 @@ pub fn solve_elastic_static_trampoline(
                             // of elements is the observable signature of
                             // mark-driven local refinement — something the
                             // uniform fallback structurally cannot report,
-                            // since it never remeshes. Also records the two
-                            // costs inherited from the reify-solver-elastic
-                            // primitive so a caller can see them: each refine
-                            // is a FULL remesh from surface (not an
-                            // incremental subdivision), and the size field's
-                            // surface projection is O(n_surf x n_vol).
+                            // since it never remeshes. Also records the cost
+                            // inherited from the reify-solver-elastic primitive
+                            // so a caller can see it: each refine is a FULL
+                            // remesh from surface, not an incremental
+                            // subdivision.
                             //
                             // Phrased on `refine_count`, NOT on lane selection
                             // (reviewer_comprehensive amendment):
@@ -1470,9 +1480,7 @@ pub fn solve_elastic_static_trampoline(
                                      iteration(s)): elements {n_elements_before} -> \
                                      {n_elements_after}. Cost note: each refinement iteration \
                                      is a FULL remesh from the extracted boundary surface, not \
-                                     an incremental subdivision, and the per-element size field \
-                                     is projected onto that surface by an O(n_surf x n_vol) \
-                                     nearest-vertex scan",
+                                     an incremental subdivision",
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
@@ -1480,8 +1488,8 @@ pub fn solve_elastic_static_trampoline(
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
-                            // or non-manifold surface, zero classified corner
-                            // entities, ...). An `adaptive: true` request must
+                            // or non-manifold surface, no volume elements
+                            // produced, ...). An `adaptive: true` request must
                             // never regress from "an answer with
                             // uniform-fallback a-posteriori fields" to Failed,
                             // so re-run on the uniform lane.
@@ -1607,6 +1615,9 @@ pub fn solve_elastic_static_trampoline(
         // radian enters (Vector3<Angle>). Derived from the curl SampledField at
         // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
         ("rotation".to_string(), rotation_field),
+        // task #6183: Voigt engineering shears (Vector3<Angle>), derived from
+        // the gradient SampledField the same way. Shell path emits Undef.
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -1672,9 +1683,10 @@ type SolverMesh = (Vec<[f64; 3]>, Vec<[usize; 4]>);
 type BcNodeSetOverride = Option<(Option<Vec<usize>>, Option<Vec<usize>>)>;
 
 /// Minimum x-extent (mesh units) for which the cantilever BC model is well-posed
-/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip) face
-/// sets selected by `solve_cantilever_fea` collapse into one — every DOF both
-/// Dirichlet-clamped AND tip-loaded, a physically meaningless over-constraint —
+/// on a realized mesh. At or below this, the x_min (clamp) and x_max (tip)
+/// face sets selected by `realized_cantilever_bc_node_sets` collapse into one —
+/// every DOF both Dirichlet-clamped AND tip-loaded, a physically meaningless
+/// over-constraint —
 /// so `realized_solver_mesh` rejects the mesh and the trampoline falls back to
 /// the synthetic box (task 4091 review #2; honest degradation,
 /// realization-read-api §3.2-5). 1e-9 sits orders of magnitude above the
@@ -2216,7 +2228,9 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
 /// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
 /// byte-exact golden test). So this direction needs no `rotation` arm, and
-/// existing persisted entries gain a correct `.rotation` for free.
+/// existing persisted entries gain a correct `.rotation` for free. The same
+/// holds for `shear_angles` (task #6183), derived from the persisted `gradient`
+/// slab: no extract arm, no wire change.
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2479,9 +2493,18 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_divergence_field(sf),
         None => Value::Undef,
     };
-    let grad_field = match build_sf(er.gradient.clone(), "gradient") {
-        Some(sf) => super::sampled_gradient_field(sf),
-        None => Value::Undef,
+    // task #6183: shear_angles is derived from the SAME reconstructed gradient
+    // slab, never persisted — one `build_sf` feeds both, exactly as for
+    // curl/rotation below. This is the trust boundary for the slab's stride:
+    // nothing upstream checks that a decoded gradient is stride-9, so a
+    // malformed one leaves shear_angles honestly absent instead of panicking.
+    let (grad_field, shear_angles_field) = match build_sf(er.gradient.clone(), "gradient") {
+        Some(sf) => {
+            let shear = super::shear_angles_sf_from_gradient(&sf)
+                .map_or(Value::Undef, super::sampled_shear_angles_field);
+            (super::sampled_gradient_field(sf), shear)
+        }
+        None => (Value::Undef, Value::Undef),
     };
     // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
     // never persisted — the compute-contract wire header is frozen (`curl_len`
@@ -2555,6 +2578,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
         ("rotation".to_string(), rotation_field),
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2718,6 +2742,44 @@ fn synthetic_grid_counts(length: f64, height: f64) -> (usize, usize, usize) {
     (nx, ny, nz)
 }
 
+/// The realized cantilever's `(root, tip)` node sets: the nodes on the x_min
+/// face (clamped) and the x_max face (loaded) of `coords`' bounding box,
+/// selected by coordinate (task 4091 design_dec[2]).
+///
+/// The tolerance is relative to the x-extent, with a small absolute floor.
+/// `realized_solver_mesh` guarantees an x-extent of at least
+/// [`MIN_SOLVE_X_EXTENT`], so the two sets cannot overlap into one
+/// over-constrained set (task 4091 review #2).
+fn realized_cantilever_bc_node_sets(coords: &[[f64; 3]]) -> (Vec<usize>, Vec<usize>) {
+    let (aabb_min, aabb_max) = aabb(coords);
+    let x_tol = (aabb_max[0] - aabb_min[0]).max(1e-12) * 1e-6 + 1e-12;
+    let nodes_where = |on_face: &dyn Fn(f64) -> bool| -> Vec<usize> {
+        (0..coords.len())
+            .filter(|&n| on_face(coords[n][0]))
+            .collect()
+    };
+    (
+        nodes_where(&|x| x <= aabb_min[0] + x_tol),
+        nodes_where(&|x| x >= aabb_max[0] - x_tol),
+    )
+}
+
+/// The cantilever tip resultant `tip_force` as the uniform traction over the
+/// free faces spanned by `tip_nodes`, returned as a fresh `3 * coords.len()`
+/// load vector (task 7448). Its total and line of action (the tip-face
+/// centroid) do not depend on the mesh; a zero-area tip set (a vertex or edge
+/// selector target) keeps the equal nodal split.
+fn cantilever_tip_load(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    tip_nodes: &[usize],
+    tip_force: [f64; 3],
+) -> Vec<f64> {
+    let mut f = vec![0.0; 3 * coords.len()];
+    apply_patch_resultant(&mut f, coords, tets, tip_nodes, tip_force);
+    f
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -2830,24 +2892,7 @@ pub(crate) fn solve_cantilever_fea(
             let dz = ext[2].max(1e-9);
             let nx = ((ext[0] / dz * nz as f64).round() as usize).max(1);
             let ny = ((ext[1] / dz * nz as f64).round() as usize).max(1);
-            // Node sets by coordinate: x ≈ x_min → clamp, x ≈ x_max → tip.
-            // Relative tol on the x-extent plus a small absolute floor. The
-            // x-extent is guaranteed non-degenerate (≥ MIN_SOLVE_X_EXTENT) by
-            // `realized_solver_mesh`, so the two face sets cannot overlap into a
-            // single over-constrained set here (task 4091 review #2).
-            let x_tol = ext[0].max(1e-12) * 1e-6 + 1e-12;
-            let root_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] <= aabb_min[0] + x_tol)
-                .map(|(i, _)| i)
-                .collect();
-            let tip_nodes: Vec<usize> = coords
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c[0] >= aabb_max[0] - x_tol)
-                .map(|(i, _)| i)
-                .collect();
+            let (root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
             (coords, tet_connectivity, nx, ny, nz, tip_nodes, root_nodes)
         }
         // ── Synthetic path (byte-identical to the pre-4091 solver) ─────────────
@@ -3032,21 +3077,11 @@ pub(crate) fn solve_cantilever_fea(
 
     let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
-    // ── Build load vector; distribute tip load over the tip-face nodes ────────
+    // ── Build load vector; spread the tip resultant over the tip face ─────────
     //
-    // `tip_nodes` was selected during mesh acquisition above (the x_max face on
-    // both the synthetic and realized paths). Force is distributed equally across
-    // them — the bending (-Z) direction for the canonical cantilever tip load.
-    let mut f = vec![0.0f64; 3 * n_nodes];
-    let n_tip = tip_nodes.len().max(1) as f64;
-    let force_per_tip = [
-        tip_force[0] / n_tip,
-        tip_force[1] / n_tip,
-        tip_force[2] / n_tip,
-    ];
-    for &tn in &tip_nodes {
-        apply_point_load(&mut f, tn, force_per_tip);
-    }
+    // Mesh-independent because the adaptive lanes re-derive `tip_nodes` on
+    // every remesh (task 7448).
+    let mut f = cantilever_tip_load(&coords, &tet_connectivity, &tip_nodes, tip_force);
 
     // ── Face pressure loads (task 4264; box-only — task 4091) ──────────────────
     //
@@ -3079,6 +3114,10 @@ pub(crate) fn solve_cantilever_fea(
     //
     // `root_nodes` was selected during mesh acquisition above (the x_min face on
     // both the synthetic and realized paths).
+    //
+    // The fully fixed root face is a deliberate modelling choice. Its perimeter
+    // is a re-entrant clamp singularity (stress unbounded at the clamp edges), so
+    // the Z-Z indicator and Dörfler marks concentrate there under refinement.
     let mut bcs: Vec<DirichletBc> = Vec::new();
     for &rn in &root_nodes {
         for axis in 0..3usize {
@@ -3134,8 +3173,8 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Detection predicate: `!converged && iterations < max_iter`
     //
-    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
-    // predicate as follows:
+    // `reify_solver_elastic::solver::cg_loop`'s exit-condition contract maps to
+    // this predicate as follows:
     //   - Convergence                          → converged = true       (predicate false)
     //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
     //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
@@ -3147,8 +3186,8 @@ pub(crate) fn solve_cantilever_fea(
     // The predicate is true for the overwhelmingly common cancel case.  A cancel
     // firing on the exact final iteration (iter + 1 == max_iter) makes
     // iterations == max_iter so the predicate is false — stress recovery runs
-    // on partial displacements, but the §6b post-solve cancel check
-    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // on partial displacements, but the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` still returns ComputeOutcome::Cancelled so
     // correctness is preserved.  The wasted stress-recovery work is accepted for
     // this rare edge case; it does not affect the common-case latency improvement.
     //
@@ -3156,9 +3195,9 @@ pub(crate) fn solve_cantilever_fea(
     // so it only reaches non-converged at iterations == max_iter — predicate
     // stays false there too, leaving the existing callers completely unaffected.
     //
-    // On the cancelled path the trampoline's §6b post-solve cancel check
-    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
-    // stress fields, so a stress-less struct is correct.
+    // On the cancelled path the §6b post-solve cancel check in
+    // `solve_elastic_static_trampoline` returns ComputeOutcome::Cancelled and
+    // never reads stress fields, so a stress-less struct is correct.
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
@@ -3718,10 +3757,8 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// # Inherited costs
 ///
 /// Each `refine` is a FULL remesh from surface, not an incremental
-/// subdivision; and `project_volume_to_surface_vertices` is O(n_surf × n_vol)
-/// (its own comment notes a spatial index would be needed at production
-/// scale). Both are properties of the landed `reify-solver-elastic` primitive,
-/// not of this wiring, and are surfaced to callers in the post-loop Info
+/// subdivision — a property of the landed `reify-solver-elastic` primitive,
+/// not of this wiring, and surfaced to callers in the post-loop Info
 /// diagnostic.
 ///
 /// Confined to isotropic materials for the same reason as
@@ -3774,8 +3811,8 @@ impl RealizedAdaptiveProblem {
     /// initial mesh; that was inert and is removed rather than documented as
     /// future-proofing. `refine_marked_elements` →
     /// `refine_with_size_field_validated` →
-    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads ONLY
-    /// `options.deterministic` and `options.threads`; the per-vertex size field
+    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads NO field of
+    /// `options` at all since task #7447; the background volume size field
     /// supersedes any baseline, and that function's own comment says its
     /// `Mesh.MeshSizeMax` is "deliberately NOT `options.mesh_size`". Two things
     /// must be settled before any future revision wires it through: the units
@@ -3786,9 +3823,9 @@ impl RealizedAdaptiveProblem {
     /// against. This struct's `meshing_options` therefore carries only
     /// `deterministic`/`threads` to the remesher today.
     ///
-    /// `deterministic: true` is load-bearing, not decorative — it forces
-    /// `General.NumThreads = 1` in the remesher, which is what makes the
-    /// loop's per-iteration output bit-stable.
+    /// `deterministic: true` is kept as a statement of intent, but it is no
+    /// longer what buys bit-stability: since #7447 the remesher pins
+    /// `General.NumThreads = 1` unconditionally and reads the flag no more.
     ///
     /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
     /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
@@ -3843,7 +3880,7 @@ impl RealizedAdaptiveProblem {
 
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// zero classified corner entities, or libgmsh absent from this build —
+    /// a gmsh FFI error, or libgmsh absent from this build —
     /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
     /// distinct, already-modelled variants). The wiring site catches this and
     /// re-runs on the uniform lane rather than failing the solve.
@@ -3954,10 +3991,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// # Cost
     ///
-    /// A FULL remesh from surface, not an incremental subdivision, and
-    /// `project_volume_to_surface_vertices` is O(n_surf × n_vol). Both are
-    /// properties of the `reify-solver-elastic` primitive; the wiring site
-    /// surfaces them to callers in its post-loop diagnostic.
+    /// A FULL remesh from surface, not an incremental subdivision — a
+    /// property of the `reify-solver-elastic` primitive; the wiring site
+    /// surfaces it to callers in its post-loop diagnostic.
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
         let refined = reify_solver_elastic::refine_marked_elements(
             &self.surface,
@@ -4272,6 +4308,17 @@ enum FeaValueShapeError {
     ExpectedList { context: &'static str, got: String },
     /// A required `StructureInstance` field was absent.
     MissingField { context: &'static str, field: &'static str },
+    /// A present, defined `Value::Scalar` whose dimension is not the one this
+    /// reader position expects (task #7019). Distinct from `ExpectedScalar`,
+    /// which fires when the value is not a `Value::Scalar` at all: this
+    /// variant is for the wrong dimension on the RIGHT shape — e.g. a
+    /// LENGTH-dimensioned Scalar at a position that expects DIMENSIONLESS,
+    /// or vice versa. `expected` names the position's `ArgSpec::type_name`.
+    WrongDimension {
+        context: &'static str,
+        expected: &'static str,
+        got: String,
+    },
 }
 
 impl std::fmt::Display for FeaValueShapeError {
@@ -4294,6 +4341,13 @@ impl std::fmt::Display for FeaValueShapeError {
             FeaValueShapeError::MissingField { context, field } => {
                 write!(f, "missing field {field:?} for {context}")
             }
+            FeaValueShapeError::WrongDimension {
+                context,
+                expected,
+                got,
+            } => {
+                write!(f, "expected {expected} for {context}, got {got}")
+            }
         }
     }
 }
@@ -4304,21 +4358,37 @@ impl std::fmt::Display for FeaValueShapeError {
 /// slice.
 ///
 /// `shape_context` labels a `< 3`-components arity error; `component_context`
-/// labels a per-component read failure; `noun` names the shape
-/// (`"Point"`/`"Vector"`) for the arity error's message.
+/// labels a per-component read failure, and is threaded into `component` so
+/// the reader itself owns its rejection wording instead of this caller
+/// inventing one; `noun` names the shape (`"Point"`/`"Vector"`) for the
+/// arity error's message.
 ///
-/// `component` is what SPLITS the two callers (task 5848). They differ in
-/// DIMENSION, so they differ in which `Value` spellings are legitimate:
-/// `extract_point3_si` reads a genuinely dimensioned `Point3<Length>` and
-/// stays strict ([`dimensioned_component`]); `extract_vec3_si` reads the
-/// dimensionless `MaterialFrame` axes and is tolerant
-/// ([`dimensionless_component`]).
+/// `component` is what SPLITS the two callers (task 5848; task #7019 gives it
+/// its final shape). They differ in DIMENSION, so they differ in which
+/// `Value` spellings are legitimate: `extract_point3_si` reads a genuinely
+/// dimensioned `Point3<Length>` via [`dimensioned_component`];
+/// `extract_vec3_si` reads the dimensionless `MaterialFrame` axes via
+/// [`dimensionless_component`]. Both are thin adapters over the same
+/// [`spec_component`]/`accept_arg` rule, so this parameter carries the one
+/// axis of variability between the two positions rather than a bespoke
+/// per-caller predicate.
+///
+/// `comp` (below) is the ONE place this function's `Value::Undef` policy is
+/// expressed (task #7019 review [reviewer_comprehensive]): it maps
+/// `ComponentRead::Undefined` to `Err(ExpectedScalar)`, preserving BOTH
+/// triple extractors' pre-existing behaviour unchanged — a deliberate hold,
+/// not an oversight; see [`ComponentRead`]'s doc for why the policy is
+/// decided here rather than inside `component`, and
+/// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
+/// characterization lock. Follow-up #7793 is filed to decide, deliberately
+/// and with its own test coverage, whether this position should widen to
+/// quiet degradation too.
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
     component_context: &'static str,
     noun: &'static str,
-    component: fn(&Value) -> Option<f64>,
+    component: fn(&Value, &'static str) -> ComponentRead,
 ) -> Result<[f64; 3], FeaValueShapeError> {
     if comps.len() < 3 {
         return Err(FeaValueShapeError::ExpectedList {
@@ -4326,44 +4396,160 @@ fn extract_scalar_triple(
             got: format!("{noun} with {} components", comps.len()),
         });
     }
-    let comp = |v: &Value| {
-        component(v).ok_or_else(|| FeaValueShapeError::ExpectedScalar {
+    let comp = |v: &Value| match component(v, component_context) {
+        ComponentRead::Accepted(x) => Ok(x),
+        ComponentRead::Undefined => Err(FeaValueShapeError::ExpectedScalar {
             context: component_context,
             got: format!("{v:?}"),
-        })
+        }),
+        ComponentRead::Rejected(e) => Err(e),
     };
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+}
+
+/// The outcome of reading ONE component of a triple. Mirrors
+/// `reify_ir::arg_acceptance::Acceptance` 1:1, carrying this module's
+/// [`FeaValueShapeError`] in place of `ArgRejection`.
+///
+/// `Undefined` is surfaced rather than folded into `Rejected` because the
+/// right response to an unresolved value is the CALLER's to choose, not
+/// [`spec_component`]'s (task #7019 review [reviewer_comprehensive], fixing a
+/// regression where folding the two together made `read_direction_or_neg_z`
+/// hard-fail the whole solve on transient solver state instead of degrading
+/// quietly). `extract_scalar_triple`'s `comp` closure treats `Undefined` as a
+/// shape error — today's pre-existing behaviour, preserved out of this
+/// task's charter (follow-up #7793 is filed to decide, deliberately and with
+/// its own test coverage, whether to widen it) — while
+/// `read_direction_or_neg_z` degrades it quietly to `0.0`, per PRD
+/// `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef` out,
+/// quietly"). Dimension EXPECTATION (what `spec_component` classifies) and
+/// undef POLICY (what the caller decides) are orthogonal axes; this enum is
+/// what keeps a catch-all arm from fusing them back together.
+enum ComponentRead {
+    /// The value has the expected dimension; carries the SI f64.
+    Accepted(f64),
+    /// The value is `Value::Undef` — an unresolved cell, not a mistake. The
+    /// caller decides what that means at this position.
+    Undefined,
+    /// The value is defined but the wrong shape/dimension.
+    Rejected(FeaValueShapeError),
+}
+
+/// Shared spec-driven per-component classifier (task #7019): classifies `v`
+/// against `spec` via the canonical `reify_ir::arg_acceptance::accept_arg`,
+/// so [`dimensioned_component`]/[`dimensionless_component`] differ only in
+/// which `ArgSpec` they pass, not in a hand-written `match` over `Value`.
+///
+/// Returns [`ComponentRead`], not a `Result`: this function's job is to
+/// CLASSIFY `v` against `spec`, not to decide what an `Acceptance::Undefined`
+/// result means to its caller — see `ComponentRead`'s doc. The match below
+/// names all three `Acceptance` variants explicitly, with no catch-all, so a
+/// future fourth variant is a compile error here rather than a silent
+/// miscategorisation.
+///
+/// The `matches!(v, Value::Scalar { .. })` discriminator applies to the
+/// `Rejected` arms ONLY, and distinguishes two genuinely different faults: a
+/// `Value::Scalar` whose `dimension` is wrong
+/// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
+/// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
+/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. Both
+/// arms reuse the `ArgRejection` that `accept_arg` already built (task #7019
+/// review [reviewer_comprehensive]) instead of re-deriving a second wording
+/// from `format!("{v:?}")`: `rej.got` is `value_short_label`'s rendering
+/// (e.g. `"Length Scalar"`) and `rej.expected` is `spec.type_name`, so a
+/// `WrongDimension` at a `dimensionless_spec` position reads "expected Real
+/// … got Length Scalar" instead of a raw `Value::Scalar { .. }` `Debug` dump
+/// that names the dimension but not in the same words the `expected` side
+/// uses.
+fn spec_component(
+    v: &Value,
+    spec: &crate::arg_acceptance::ArgSpec,
+    context: &'static str,
+) -> ComponentRead {
+    use crate::arg_acceptance::{Acceptance, accept_arg};
+
+    match accept_arg(v, spec) {
+        Acceptance::Accepted(x) => ComponentRead::Accepted(x),
+        Acceptance::Undefined => ComponentRead::Undefined,
+        Acceptance::Rejected(rej) if matches!(v, Value::Scalar { .. }) => {
+            ComponentRead::Rejected(FeaValueShapeError::WrongDimension {
+                context,
+                expected: rej.expected,
+                got: rej.got,
+            })
+        }
+        Acceptance::Rejected(rej) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
+            context,
+            got: rej.got,
+        }),
+    }
 }
 
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
 /// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
 /// by `extract_point3_si_rejects_non_scalar_component`).
-fn dimensioned_component(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        _ => None,
-    }
+///
+/// Task #7019: a thin adapter over `reify_ir::arg_acceptance::length_spec`,
+/// the single definition of this acceptance set (`Scalar{LENGTH}` only —
+/// unlike [`dimensionless_component`]'s position, a bare `Real`/`Int` here
+/// stays rejected, per PRD `dimension-checked-readers.md` invariant I3,
+/// "strict equality"). A `Value::Scalar` carrying any dimension OTHER than
+/// LENGTH (e.g. a MASS-dimensioned corner) is now rejected too, instead of
+/// having its SI magnitude reinterpreted as metres.
+///
+/// This reader and [`dimensionless_component`] stay distinct functions: they
+/// differ only in which `ArgSpec` they pass to [`spec_component`] — the
+/// acceptance RULE is shared, the expectation is per-position, which is the
+/// orthogonal axis of variability `extract_scalar_triple`'s `component`
+/// parameter already isolates.
+///
+/// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
+/// no Undef policy of its own — its caller (`extract_scalar_triple`'s `comp`
+/// closure) does.
+fn dimensioned_component(v: &Value, context: &'static str) -> ComponentRead {
+    use crate::arg_acceptance::length_spec;
+
+    spec_component(v, &length_spec(), context)
 }
 
 /// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
 /// `Vector3<Dimensionless>` axes (task 5848). A dimensionless `.ri` literal
 /// compiles to `Value::Int`/`Value::Real` and reaches this reader verbatim, so
-/// all three numeric spellings must read; mirrors `modal_ops::read_scalar_si`,
-/// the landed tolerant reader serving `ModalOptions.reference_direction`. A
-/// genuinely non-numeric component still fails.
-fn dimensionless_component(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        Value::Real(r) => Some(*r),
-        Value::Int(n) => Some(*n as f64),
-        _ => None,
-    }
+/// all three numeric spellings must read; `Int` is not redundant with `Real`,
+/// since an integer `.ri` literal (e.g. `vec3(0, 1, 0)`) compiles to
+/// `Value::Int` specifically.
+///
+/// Task #7019: a thin adapter over `reify_ir::arg_acceptance::dimensionless_spec`,
+/// the canonical definition of this acceptance set (`Real | Int |
+/// Scalar{DIMENSIONLESS}`, PRD `dimension-checked-readers.md` Leg B,
+/// invariant I3) — this reader CONSUMES that spec rather than mirroring a
+/// sibling copy of it. A `Value::Scalar` carrying any OTHER dimension (e.g. a
+/// LENGTH-spelled axis) is now REJECTED instead of having its SI magnitude
+/// reinterpreted as the bare component; a genuinely non-numeric component
+/// still fails. `tensegrity_crack::crack_dimensionless_scalar` is the sibling
+/// reader at the same Leg B position, consuming the same spec.
+///
+/// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
+/// no Undef policy of its own — each of its two callers
+/// (`extract_scalar_triple`'s `comp` closure for `extract_vec3_si`, and
+/// `read_direction_or_neg_z` directly) decides its own.
+fn dimensionless_component(v: &Value, context: &'static str) -> ComponentRead {
+    use crate::arg_acceptance::dimensionless_spec;
+
+    spec_component(v, &dimensionless_spec(), context)
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
+/// Those corners are `Point3<Length>`: a bare `Value::Real`/`Value::Int`
+/// component is a genuinely missing dimension and is rejected (task #5080),
+/// and (task #7019) a `Value::Scalar` carrying any dimension OTHER than
+/// LENGTH is now rejected too, instead of having its SI magnitude
+/// reinterpreted as metres — see [`dimensioned_component`], a thin adapter
+/// over the canonical `reify_ir::arg_acceptance::length_spec` (PRD
+/// `dimension-checked-readers.md` invariant I3, "strict equality").
 fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Point(v) => v,
@@ -4387,9 +4573,14 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// components.
 ///
 /// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
-/// Those axes are `Vector3<Dimensionless>` (task 5848), so the components
-/// arrive as `Int`/`Real` from a `.ri` literal and as `Scalar` from a Rust
-/// minter — see [`dimensionless_component`].
+/// Those axes are `Vector3<Dimensionless>` (task 5848): a `Scalar{DIMENSIONLESS}`,
+/// `Real`, or `Int` component all read alike, but (task #7019) a
+/// `Value::Scalar` carrying any OTHER dimension is rejected instead of
+/// having its SI magnitude reinterpreted as the bare component — see
+/// [`dimensionless_component`], a thin adapter over the canonical
+/// `reify_ir::arg_acceptance::dimensionless_spec` (PRD
+/// `dimension-checked-readers.md` Leg B, invariant I3). Its sibling at the
+/// same Leg B position is `tensegrity_crack::crack_dimensionless_scalar`.
 fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Vector(v) => v,
@@ -4663,13 +4854,19 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// the isotropic shape — instead of just the field that happened to be
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
-/// inside the fixed 5-variant `FeaValueShapeError` taxonomy: `MissingField`
-/// has no `got: String` to carry the extra context, so this re-emits as
-/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
-/// elsewhere in this module (see `scalar_si_field`'s comment).
+/// inside the (six-variant as of task #7019) `FeaValueShapeError` taxonomy:
+/// `MissingField` and `WrongDimension` each get their own `reason` arm below
+/// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
+/// `field` to report); the rest have no `got: String` distinct enough to
+/// need one and re-emit as `ExpectedScalar`, whose `got` is already a
+/// free-form diagnostic string elsewhere in this module (see
+/// `scalar_si_field`'s comment).
 fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
     let reason = match err {
         FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::WrongDimension { expected, got, .. } => {
+            format!("expected {expected}, got {got}")
+        }
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
@@ -4828,22 +5025,40 @@ fn extract_density(val: &Value) -> f64 {
 ///   is the exact silent-corruption failure this reader exists to close.
 ///
 /// Per-component reads delegate to [`dimensionless_component`], so a component
-/// spelled `Value::Scalar` (dimensionless), `Value::Real` or `Value::Int` all
-/// read alike; a genuinely non-numeric component contributes `0.0`.
+/// spelled `Value::Scalar{DIMENSIONLESS}`, `Value::Real` or `Value::Int` all
+/// read alike. Task #7019 (PRD `dimension-checked-readers.md` invariant I2 —
+/// no coercion for a *present* value): a DEFINED, genuinely non-numeric OR
+/// wrong-dimension component now returns `Err` instead of silently
+/// contributing `0.0` — for a direction like `[0, 1, 0]`, coercing an
+/// unreadable middle component to `0.0` would silently delete the load's
+/// entire direction, which is strictly worse than the unit-strip it replaces.
 ///
-/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is
-/// intentional forward-compatibility contract, pinned by
-/// `extract_loads_malformed_direction_defaults_to_neg_z`.
-fn read_direction_or_neg_z(direction: Option<&Value>) -> [f64; 3] {
+/// This reader draws THREE failure classes, each with its own outcome: an
+/// absent or mis-SHAPED `direction` (not 3 elements, not a Vector/List at
+/// all) keeps the `_ => [0.0, 0.0, -1.0]` fallback below — a separate,
+/// intentional forward-compatibility contract pinned by
+/// `extract_loads_malformed_direction_defaults_to_neg_z` (decision 3,
+/// "Absent != wrong"); a PRESENT, DEFINED component that fails to read is
+/// the `Err` above (invariant I2); a PRESENT but `Value::Undef` component —
+/// a THIRD class, distinct from both — degrades quietly to `0.0`
+/// per-component instead (decision 2). See [`ComponentRead`]'s doc for why
+/// that Undef policy belongs to this reader rather than to
+/// `dimensionless_component`/`spec_component`.
+fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaValueShapeError> {
     match direction {
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
             let mut d = [0.0f64; 3];
-            for (slot, e) in d.iter_mut().zip(elems.iter()) {
-                *slot = dimensionless_component(e).unwrap_or(0.0);
+            for (slot, component) in d.iter_mut().zip(elems.iter()) {
+                *slot =
+                    match dimensionless_component(component, "read_direction_or_neg_z component") {
+                        ComponentRead::Accepted(x) => x,
+                        ComponentRead::Undefined => 0.0,
+                        ComponentRead::Rejected(err) => return Err(err),
+                    };
             }
-            d
+            Ok(d)
         }
-        _ => [0.0, 0.0, -1.0],
+        _ => Ok([0.0, 0.0, -1.0]),
     }
 }
 
@@ -4887,7 +5102,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
                 if let Some(Value::Real(f)) = data.fields.get("force") {
-                    let dir = read_direction_or_neg_z(data.fields.get("direction"));
+                    let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                     for axis in 0..3 {
                         tip_force_vec[axis] += f * dir[axis];
                     }
@@ -4903,7 +5118,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let dir = read_direction_or_neg_z(data.fields.get("direction"));
+                let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                 for axis in 0..3 {
                     body_force[axis] += density * magnitude * dir[axis];
                 }
@@ -5081,10 +5296,10 @@ fn box_face_plane(
 /// - `extent` — physical coordinate of the plane.
 /// - `eps`    — point-on-plane tolerance (1e-9 recommended).
 ///
-/// For each tet's 4 triangular faces, a face is included if all 3 of its nodes
-/// satisfy the plane predicate (`coord[axis] >= extent - eps` for at_max,
-/// `coord[axis] <= eps` for lower).  A boundary face belongs to exactly one tet
-/// so there is no double-counting.
+/// Returns the free (boundary) tet faces whose 3 nodes all satisfy the plane
+/// predicate (`coord[axis] >= extent - eps` for at_max, `coord[axis] <= eps`
+/// for lower), via `free_faces_within`, so a face shared by two tets is never
+/// included.
 fn collect_box_face_triangles(
     coords: &[[f64; 3]],
     tets: &[[usize; 4]],
@@ -5093,9 +5308,6 @@ fn collect_box_face_triangles(
     extent: f64,
     eps: f64,
 ) -> Vec<[usize; 3]> {
-    // Four triangular faces of a tet [a, b, c, d]:
-    const FACE_IDX: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-
     // NOTE: `eps` is an **absolute** tolerance. For the current fixtures
     // (SI-metre beams, node spacing >> 1e-9 m) this is safe. If sub-millimetre
     // or sub-micron FEA geometries are ever supported, consider scaling eps
@@ -5109,19 +5321,7 @@ fn collect_box_face_triangles(
             coord <= eps
         }
     };
-
-    let mut result = Vec::new();
-    for tet in tets {
-        for fi in &FACE_IDX {
-            let n0 = tet[fi[0]];
-            let n1 = tet[fi[1]];
-            let n2 = tet[fi[2]];
-            if on_plane(n0) && on_plane(n1) && on_plane(n2) {
-                result.push([n0, n1, n2]);
-            }
-        }
-    }
-    result
+    free_faces_within(tets, on_plane)
 }
 
 /// Apply face-pressure tractions from `pressures` into the global force vector `f`.
@@ -5133,7 +5333,7 @@ fn collect_box_face_triangles(
 ///
 /// The traction vector is `magnitude · inward_normal`.  Only `"normal"` direction
 /// is supported in v1; other direction strings are treated as `"normal"`.
-/// Accumulates additively into `f` — composable with the existing tip point loads.
+/// Accumulates additively into `f` — composable with the tip load.
 ///
 /// **Performance note:** the full tet mesh is scanned once per `PressureSpec`
 /// (O(|pressures| × n_tets)).  For the current fixtures (≤ 2 specs, small meshes)
@@ -5904,14 +6104,14 @@ mod tests {
     /// A gmsh-realized tet mesh can carry a surface vertex with no incident
     /// tet. On the realized solve path, node sets are chosen by COORDINATE
     /// (the x_min face → clamp, x_max face → tip —
-    /// `solve_cantilever_fea`'s realized arm, ~L2420-2431), so an orphan
+    /// `solve_cantilever_fea`'s realized arm), so an orphan
     /// sitting on the x_min face gets coordinate-selected into the Dirichlet
     /// clamp set even though it belongs to no element. `assemble_global_stiffness`
     /// sizes K at `3 * coords.len()`, so an orphan's row/column are entirely
     /// zero. The CG solver's Jacobi preconditioner
     /// (`reify_solver_elastic::solver::extract_diag_jacobi`) unconditionally
     /// asserts a stored, non-zero diagonal at EVERY K row and panics
-    /// otherwise (documented panic, `solver.rs:303-304`) — so restricting
+    /// otherwise (documented in `solve_cg`'s `# Panics` section) — so restricting
     /// only BC *selection* to tet-referenced nodes is not enough; the orphan
     /// must never reach the solve mesh at all.
     ///
@@ -7842,6 +8042,110 @@ mod tests {
         );
     }
 
+    /// `[length, width, height]` (m) of the synthetic box the traction tests load.
+    const TRACTION_TEST_BOX: [f64; 3] = [1.0, 0.1, 0.1];
+    const TRACTION_TEST_PRESSURE: f64 = 1.0e6;
+
+    /// Solves `TRACTION_TEST_BOX` once under `TRACTION_TEST_PRESSURE` on `face`
+    /// and once under `tip_force` on the tip set `load_set` picks from the mesh
+    /// (`None`: the solve's own x_max face), and asserts the two displacement
+    /// fields agree to CG stopping noise: the tip force assembles as that
+    /// pressure.
+    fn assert_tip_force_loads_like_face_pressure(
+        case: &str,
+        grid_override: Option<(usize, usize, usize)>,
+        face: &str,
+        tip_force: [f64; 3],
+        load_set: impl Fn(&[[f64; 3]]) -> Option<Vec<usize>>,
+    ) {
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let solve = |tip_force, pressures: &[PressureSpec], bc_override| {
+            let (result, _warm) = solve_cantilever_fea(
+                &model,
+                length,
+                width,
+                height,
+                None,
+                tip_force,
+                None,
+                pressures,
+                [0.0; 3],
+                true,
+                None,
+                None,
+                bc_override,
+                grid_override,
+            );
+            assert!(result.converged, "{case}: solve did not converge");
+            result
+        };
+        let pressure = [PressureSpec {
+            magnitude: TRACTION_TEST_PRESSURE,
+            face: face.to_string(),
+            direction: "normal".to_string(),
+        }];
+        let by_pressure = solve([0.0; 3], &pressure, None);
+        let bc_override = load_set(&by_pressure.coords).map(|load| (None, Some(load)));
+        let by_tip_force = solve(tip_force, &[], bc_override);
+
+        let scale = by_pressure.u.iter().fold(0.0_f64, |m, u| m.max(u.abs()));
+        let gap = by_tip_force
+            .u
+            .iter()
+            .zip(by_pressure.u.iter())
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        // Empirical: CG's tolerance bounds the residual, not this gap.
+        assert!(
+            gap <= 1e-6 * scale,
+            "{case}: tip-force and {face}-pressure solves differ by {gap:e} \
+             (max |u| = {scale:e})",
+        );
+    }
+
+    /// Task 7448: the tip force loads the synthetic x_max face as the uniform
+    /// traction of its resultant, on the default grid and on a grid the
+    /// uniform adaptive lane produces.
+    #[test]
+    fn tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face() {
+        let [_, width, height] = TRACTION_TEST_BOX;
+        let x_max_resultant = [-TRACTION_TEST_PRESSURE * width * height, 0.0, 0.0];
+        for grid_override in [None, Some((8, 2, 4))] {
+            assert_tip_force_loads_like_face_pressure(
+                &format!("grid {grid_override:?}"),
+                grid_override,
+                "x_max",
+                x_max_resultant,
+                |_| None,
+            );
+        }
+    }
+
+    /// Task 7448: a selector-resolved (task 4092) load set on a face other
+    /// than x_max also gets the uniform traction of the tip resultant.
+    #[test]
+    fn selector_resolved_load_set_gets_the_uniform_traction_of_its_resultant() {
+        let [length, width, height] = TRACTION_TEST_BOX;
+        let z_max_resultant = [0.0, 0.0, -TRACTION_TEST_PRESSURE * length * width];
+        let z_max_face_nodes = |coords: &[[f64; 3]]| {
+            Some(
+                (0..coords.len())
+                    .filter(|&n| coords[n][2] >= height - 1e-9)
+                    .collect(),
+            )
+        };
+        assert_tip_force_loads_like_face_pressure(
+            "z_max load set",
+            None,
+            "z_max",
+            z_max_resultant,
+            z_max_face_nodes,
+        );
+    }
+
     /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
     /// band test at L/h = 8.
     ///
@@ -8972,6 +9276,187 @@ mod tests {
         assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
     }
 
+    /// PRD invariant I2 ("no coercion: a reader never substitutes a
+    /// default, a `0.0` floor, or a `1.0` sentinel for a *present* value",
+    /// `dimension-checked-readers.md`) applied to a PRESENT,
+    /// correctly-SHAPED `direction` component that carries a unit: it must
+    /// be rejected, not silently coerced.
+    ///
+    /// Why the MaterialFrame axis gate and this fix had to land in one
+    /// commit: gating `dimensionless_component` alone, without also
+    /// Result-ifying `read_direction_or_neg_z`'s old `.unwrap_or(0.0)`,
+    /// would have turned a unit-strip (this component's SI magnitude read
+    /// as the bare component, `fy == -800.0`) into something strictly
+    /// worse — the stale `.unwrap_or` would have coerced the now-rejected
+    /// component to `0.0`, silently deleting the whole load direction
+    /// instead of just stripping a unit from one axis.
+    #[test]
+    fn extract_loads_rejects_a_dimensioned_direction_component() {
+        let dir = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Scalar {
+                si_value: -1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+        ]);
+        let point_load = point_load_with_direction_value(800.0, dir);
+
+        let res = extract_loads(&Value::List(vec![point_load]), 0.0);
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
+             PRESENT, correctly-shaped direction component carrying a unit — \
+             without the gate the unit is silently stripped and this reads \
+             as fy=-800.0; without also Result-ifying read_direction_or_neg_z \
+             the same input would instead give fy=0.0, silently deleting the \
+             whole load direction. Asserting the variant (not just is_err) \
+             pins that this is a real dimension check, not a fluke \
+             ExpectedScalar; got: {:?}",
+            res
+        );
+    }
+
+    /// [reviewer_comprehensive] test-coverage (task #7019): the sibling
+    /// REJECT case to the dimensioned-Scalar test above — a DEFINED,
+    /// non-numeric direction component inside an otherwise correctly-shaped
+    /// 3-element direction must also be rejected, not just a wrong-dimension
+    /// Scalar. This pins the OTHER side of the boundary
+    /// `read_direction_or_neg_z` draws between a present-but-unreadable
+    /// component (`Err`) and a mis-SHAPED whole `direction` field (the
+    /// documented `-Z` fallback, pinned by
+    /// `extract_loads_malformed_direction_defaults_to_neg_z`'s own
+    /// `Value::String` leg) — that leg's `Value::String` replaces the WHOLE
+    /// `direction` field, while this one plants it as one of three elements.
+    #[test]
+    fn extract_loads_rejects_a_non_numeric_direction_component() {
+        let dir = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::String("up".to_string()),
+            Value::Real(0.0),
+        ]);
+        let loads = Value::List(vec![point_load_with_direction_value(800.0, dir)]);
+        let res = extract_loads(&loads, 0.0);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a non-numeric direction \
+             component inside an otherwise correctly-shaped 3-element \
+             direction — distinct from a mis-shaped WHOLE direction field, \
+             which keeps the documented -Z fallback instead; got: {:?}",
+            res
+        );
+    }
+
+    /// Regression guard (task #7019 review [reviewer_comprehensive]) for a
+    /// bug in an earlier version of `read_direction_or_neg_z`: folding
+    /// `Acceptance::Undefined` into the `Rejected` handling turned a
+    /// `Value::Undef` direction component into `Err(ExpectedScalar)`,
+    /// hard-failing the whole solve via `extract_loads` → `gate_or_fail!`
+    /// instead of degrading quietly. PRD `dimension-checked-readers.md`
+    /// decision 2 — "`Undef` in => `Undef` out, quietly" — and acceptance
+    /// row B6 forbid that: an unresolved component is expected transient
+    /// solver state, not a mistake, and only a *defined-but-wrong* value is
+    /// a fault. See [`ComponentRead`]'s doc for the fix (Undef surfaced to
+    /// the caller rather than folded away) and
+    /// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
+    /// sibling characterization lock on the OTHER reader's (deliberately
+    /// different) policy.
+    ///
+    /// Four legs, covering both `PointLoad` and `Gravity` and both the
+    /// `Value::Vector` and `Value::List` direction spellings.
+    #[test]
+    fn extract_loads_undef_direction_component_degrades_quietly() {
+        // (a) PointLoad, all-Undef-bearing direction: the pre-diff outcome
+        // exactly — the Undef component reads 0.0, the direction collapses to
+        // zero, and the load contributes nothing.
+        let dir_a = Value::Vector(vec![Value::Real(0.0), Value::Undef, Value::Real(0.0)]);
+        let loads_a = Value::List(vec![point_load_with_direction_value(800.0, dir_a)]);
+        let res_a = extract_loads(&loads_a, 0.0);
+        assert!(
+            res_a.is_ok(),
+            "an Undef direction component is transient unresolved solver \
+             state (PRD decision 2), not a defined-but-wrong value — it must \
+             degrade quietly to 0.0 per-component, not hard-fail the whole \
+             solve; got: {:?}",
+            res_a
+        );
+        let ([fx, fy, fz], _, _) = res_a.unwrap();
+        assert!(
+            fx.abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "all-Undef-bearing direction [0, Undef, 0] must collapse to a \
+             zero direction and contribute nothing, got [{fx}, {fy}, {fz}]"
+        );
+
+        // (b) PointLoad, MIXED direction — the case where "restore pre-diff"
+        // and "skip the load" diverge, so it is pinned deliberately rather
+        // than left to fall out. This is a deliberate exact-preservation of
+        // pre-diff semantics under decision 2's operative clause ("keeps its
+        // EXISTING quiet degradation"); whether a partially-Undef direction
+        // should instead suppress the whole load is a genuinely open
+        // question this task does not answer (follow-up filed).
+        let dir_b = Value::Vector(vec![Value::Real(1.0), Value::Undef, Value::Real(0.0)]);
+        let loads_b = Value::List(vec![point_load_with_direction_value(800.0, dir_b)]);
+        let res_b = extract_loads(&loads_b, 0.0);
+        assert!(
+            res_b.is_ok(),
+            "a MIXED direction with one Undef component must still degrade \
+             quietly per-component rather than fail the whole load, got: {:?}",
+            res_b
+        );
+        let ([fx, fy, fz], _, _) = res_b.unwrap();
+        assert!(
+            (fx - 800.0).abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "mixed direction [1, Undef, 0] with force 800 must give \
+             tip_force=[800, 0, 0] — the Undef component alone reads 0.0 — \
+             got [{fx}, {fy}, {fz}]"
+        );
+
+        // (c) Gravity: both consumers must be covered, because
+        // read_direction_or_neg_z is ?-threaded at both the PointLoad arm and
+        // the Gravity arm of extract_loads.
+        let dir_c = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Undef]);
+        let gravity = gravity_with_direction_value(9.81, dir_c);
+        let res_c = extract_loads(&Value::List(vec![gravity]), 7850.0);
+        assert!(
+            res_c.is_ok(),
+            "a Gravity direction with an Undef component must also degrade \
+             quietly — read_direction_or_neg_z is ?-threaded at both the \
+             PointLoad and Gravity arms of extract_loads, got: {:?}",
+            res_c
+        );
+        let (_, _, [bx, by, bz]) = res_c.unwrap();
+        assert!(
+            bx.abs() < 1e-9 && by.abs() < 1e-9 && bz.abs() < 1e-9,
+            "all-Undef-bearing Gravity direction [0, 0, Undef] must give \
+             body_force=[0, 0, 0], got [{bx}, {by}, {bz}]"
+        );
+
+        // (d) Value::List spelling — repeats leg (a) with Value::List instead
+        // of Value::Vector, since the reader accepts both deliberately and
+        // Rust-constructed fixtures legitimately build a List.
+        let dir_d = Value::List(vec![Value::Real(0.0), Value::Undef, Value::Real(0.0)]);
+        let loads_d = Value::List(vec![point_load_with_direction_value(800.0, dir_d)]);
+        let res_d = extract_loads(&loads_d, 0.0);
+        assert!(
+            res_d.is_ok(),
+            "the Value::List spelling of an all-Undef-bearing direction must \
+             degrade quietly exactly like the Value::Vector spelling, got: {:?}",
+            res_d
+        );
+        let ([fx, fy, fz], _, _) = res_d.unwrap();
+        assert!(
+            fx.abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "List-spelled all-Undef-bearing direction [0, Undef, 0] must \
+             collapse to a zero direction, got [{fx}, {fy}, {fz}]"
+        );
+    }
+
     // ── task 5905: `direction` retyped to Vector3<Dimensionless> ─────────────
 
     /// Build a `PointLoad` whose `direction` field is the supplied `Value`
@@ -9866,6 +10351,15 @@ mod tests {
                     &make_sf("curl", 3, 500.0),
                 )),
             ),
+            // task #6183 σ: like rotation, shear_angles is not persisted, so hash
+            // identity holds only if the cache path re-derives it byte-for-byte.
+            (
+                "shear_angles".to_string(),
+                super::super::sampled_shear_angles_field(
+                    super::super::shear_angles_sf_from_gradient(&make_sf("gradient", 9, 400.0))
+                        .expect("stride-9 gradient fixture"),
+                ),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -10240,10 +10734,15 @@ mod tests {
     /// Targets the local `cos_threshold` guard, the third branch this
     /// function owns directly. Elements 0..2 are well-formed so the leaf
     /// extractors ahead of it succeed via `?` first, proving the error
-    /// comes from this check and not an earlier one.
+    /// comes from this check and not an earlier one. `point` is LENGTH-
+    /// dimensioned (task #7019 fixture-honesty fix, same pattern as
+    /// `extract_point3_si_accepts_point`): `aabb_min`/`aabb_max` are
+    /// `Point3<Length>`, and since `dimensioned_component` was narrowed to
+    /// `length_spec()`, a DIMENSIONLESS scalar here would now be rejected by
+    /// the leaf extractor before reaching the guard this test targets.
     #[test]
     fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         let params = Value::List(vec![
             Value::Real(2.0),
@@ -10826,7 +11325,7 @@ mod tests {
     fn extract_point3_si_rejects_wrong_arity() {
         let one_component = Value::Point(vec![Value::Scalar {
             si_value: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
+            dimension: DimensionVector::LENGTH,
         }]);
         let res = extract_point3_si(&one_component);
         assert!(
@@ -10842,7 +11341,10 @@ mod tests {
     /// per-component check, not `ExpectedList`.
     #[test]
     fn extract_point3_si_rejects_non_scalar_component() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let mixed = Value::Point(vec![scalar(1.0), Value::Real(2.0), scalar(3.0)]);
         let res = extract_point3_si(&mixed);
         assert!(
@@ -10858,9 +11360,58 @@ mod tests {
     /// error paths above.
     #[test]
     fn extract_point3_si_accepts_point() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
+    }
+
+    /// `extract_point3_si` reads `aabb_min`/`aabb_max` at a `Point3<Length>`
+    /// position; [`dimensioned_component`] narrows to `length_spec()`, so a
+    /// MASS-dimensioned corner is rejected instead of having its SI
+    /// magnitude silently read as metres. These corners feed
+    /// `reify_fdm::AxisAlignedBox` and drive `classify_point`'s
+    /// wall/skin/infill zone assignment, so a wrong-dimension corner would
+    /// otherwise silently mis-zone the whole part. The assertion below pins
+    /// `WrongDimension` specifically, which is what makes this a real
+    /// dimension check rather than a fluke `ExpectedScalar` ("not a Scalar
+    /// at all").
+    #[test]
+    fn extract_point3_si_rejects_a_wrong_dimension_component() {
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let wrong_dimension = Value::Point(vec![
+            len(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            len(3.0),
+        ]);
+        let res = extract_point3_si(&wrong_dimension);
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Length",
+                    ..
+                })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Length\", .. }}) for a \
+             Point3<Length> corner with a MASS-dimensioned component, got: \
+             {:?} — aabb_min/aabb_max corners feed reify_fdm::AxisAlignedBox \
+             and drive classify_point's wall/skin/infill zone assignment, so \
+             a wrong-dimension corner silently mis-zones the whole part. \
+             Asserting the variant (not just is_err) is what distinguishes a \
+             real dimension check from a fluke ExpectedScalar — the existing \
+             ExpectedScalar-side tests already pin the non-Scalar half of \
+             that discriminator",
+            res
+        );
     }
 
     /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
@@ -11005,7 +11556,10 @@ mod tests {
     /// must update this test deliberately.
     #[test]
     fn extract_point3_si_ignores_trailing_components_past_three() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
@@ -11090,6 +11644,99 @@ mod tests {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
         let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
+    }
+
+    /// PRD `dimension-checked-readers.md` Leg B: `extract_vec3_si` rejects a
+    /// MaterialFrame axis component that carries a dimension other than
+    /// DIMENSIONLESS, instead of silently reinterpreting its SI magnitude as
+    /// the bare axis component. Asserts BOTH sides of the two-sided contract
+    /// in one test, the way `tensegrity_crack::crack_dimensionless_scalar`'s
+    /// rustdoc states it.
+    ///
+    /// REJECT half: without the gate this would return `Ok([1.0, 0.0,
+    /// 0.0])`, silently reading 1 metre as the bare component 1.0. Nothing
+    /// on the `extract_vec3_si` → `AnisotropicMaterial::from_law` →
+    /// `rotate_voigt` path normalises the frame (see the FENCE test
+    /// `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
+    /// below) and `D_global` is homogeneous of degree 4 in the frame's
+    /// entries, so a 1mm-spelled "unit" axis would silently rescale the
+    /// stiffness by 1e-12 with no diagnostic.
+    ///
+    /// ACCEPT half (characterization lock): a `Value::Vector` of
+    /// `Scalar{DIMENSIONLESS}`/`Real`/`Int` components still reads
+    /// `Ok([1.0, 2.0, 3.0])` — a future over-tightening to "bare Real only"
+    /// would be a regression, not a hardening (PRD Leg B side 1).
+    #[test]
+    fn extract_vec3_si_rejects_a_dimensioned_axis_component() {
+        let dimensioned = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let res = extract_vec3_si(&dimensioned);
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
+             LENGTH-dimensioned axis component instead of silently \
+             reinterpreting its SI magnitude as the bare component — nothing \
+             normalises the frame afterward and D_global is homogeneous of \
+             degree 4 in its entries, so a 1mm-spelled axis would silently \
+             rescale the stiffness by 1e-12. Asserting the variant (not just \
+             is_err) is what distinguishes a real dimension check from a \
+             fluke ExpectedScalar; got: {:?}",
+            res
+        );
+
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let legit = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
+        assert_eq!(
+            extract_vec3_si(&legit),
+            Ok([1.0, 2.0, 3.0]),
+            "Scalar{{DIMENSIONLESS}}/Real/Int axis components must still read — \
+             a future over-tightening to bare Real only would be a regression"
+        );
+    }
+
+    /// step-7 characterization lock (task #7019 review [reviewer_comprehensive]):
+    /// `extract_vec3_si` must keep TODAY's treatment of an Undef component —
+    /// `Err(ExpectedScalar)` — even though step-8 gives `read_direction_or_neg_z`
+    /// a different, quiet-degradation policy for the identical `Value::Undef`
+    /// input. This PASSES today and must keep passing.
+    ///
+    /// Why this is a deliberate ASYMMETRY rather than an inconsistency: PRD
+    /// decision 2 would arguably want quiet degradation here too, but that is
+    /// PRE-EXISTING behaviour (not a regression #7019 introduced), has no test
+    /// coverage to justify a change, and no charter in this task — and on the
+    /// MaterialFrame path an `Err` already becomes an Undef cell downstream
+    /// (`engine_build.rs:10328`/`:10530` match `Err(_)` and discard), so the
+    /// observable end state is already "Undef in, Undef out". Without this
+    /// lock, step-8's three-way `ComponentRead` refactor could silently widen
+    /// quiet degradation into the MaterialFrame/aabb readers too — a behaviour
+    /// change this task has no charter for. A follow-up is filed to consider
+    /// widening it deliberately, with its own test coverage.
+    #[test]
+    fn extract_vec3_si_treats_an_undef_component_as_a_shape_error() {
+        let with_undef = Value::Vector(vec![Value::Undef, Value::Real(0.0), Value::Real(0.0)]);
+        let res = extract_vec3_si(&with_undef);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "an Undef axis component must still report Err(ExpectedScalar), \
+             unchanged from today — read_direction_or_neg_z is the only \
+             reader in this file that gains quiet Undef degradation, got: {:?}",
+            res
+        );
     }
 
     // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
@@ -11988,14 +12635,23 @@ mod tests {
 
     /// Task 5848 retypes `MaterialFrame`'s three axes from `Vector3<Length>`
     /// to `Vector3<Dimensionless>`, so the DSL spelling moves from
-    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every numeric `Value` spelling a
-    /// component can arrive as must therefore yield a BITWISE identical
-    /// `D_global` — the retype moves the declaration, not the solve.
+    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every LEGITIMATE numeric
+    /// `Value` spelling a component can arrive as must therefore yield a
+    /// BITWISE identical `D_global` — the retype moves the declaration, not
+    /// the solve.
     ///
     /// The basis for exactness is NOT normalisation (there is none — see the
-    /// fence below). It is that the per-component reader takes the same f64
-    /// out of `Scalar { si_value: 1.0 }`, `Real(1.0)` and `Int(1)`, so the
-    /// identical numbers reach `rotate_voigt`'s `T`.
+    /// fence below). It is that `dimensionless_component` (task #7019) now
+    /// accepts exactly `reify_ir::arg_acceptance::dimensionless_spec`'s
+    /// `Real | Int | Scalar{DIMENSIONLESS}` acceptance set, and reads the
+    /// same f64 out of `Scalar { si_value: 1.0, dimension: DIMENSIONLESS }`,
+    /// `Real(1.0)` and `Int(1)`, so the identical numbers reach
+    /// `rotate_voigt`'s `T`. A `Scalar` carrying any OTHER dimension — e.g.
+    /// the LENGTH spelling this test used as its baseline before #7019 — is
+    /// no longer among the legitimate spellings and is rejected instead
+    /// (`extract_vec3_si_rejects_a_dimensioned_axis_component` above pins
+    /// the rejection; `material_frame_axes_reject_a_length_spelled_component`
+    /// below pins it through this test's own `d_global_under_frame` seam).
     ///
     /// The `Int` leg is the load-bearing one: an integer `.ri` literal
     /// compiles to `Value::Int`, so `vec3(0, 1, 0)` — the natural dimensionless
@@ -12004,25 +12660,64 @@ mod tests {
     #[test]
     fn material_frame_axes_read_identically_across_numeric_spellings() {
         let (x, y, z) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
-        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+        let as_dimensionless: fn(f64) -> Value = |v| Value::Scalar {
             si_value: v,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let as_real: fn(f64) -> Value = Value::Real;
         let as_int: fn(f64) -> Value = |v| Value::Int(v as i64);
 
-        let baseline = d_global_under_frame(x, y, z, as_length);
+        let baseline = d_global_under_frame(x, y, z, as_dimensionless);
         assert_eq!(
             d_global_under_frame(x, y, z, as_real),
             baseline,
             "Real-spelled axis components must give a bitwise-identical D_global \
-             to the former Length spelling"
+             to the Scalar{{DIMENSIONLESS}} spelling"
         );
         assert_eq!(
             d_global_under_frame(x, y, z, as_int),
             baseline,
             "Int-spelled axis components (what `vec3(0, 1, 0)` compiles to) must \
-             give a bitwise-identical D_global to the former Length spelling"
+             give a bitwise-identical D_global to the Scalar{{DIMENSIONLESS}} spelling"
+        );
+    }
+
+    /// step-1(c) RED companion to the retarget above (task #7019): a
+    /// LENGTH-spelled axis component — the baseline this test group used
+    /// before #7019 — must now FAIL to read. `d_global_under_frame`
+    /// `.expect()`s the read (see its own doc comment), so this asserts
+    /// through `anisotropic_material_from_value` directly — the same seam
+    /// `d_global_under_frame` calls — so the `Err` is observable instead of
+    /// panicking the test.
+    #[test]
+    fn material_frame_axes_reject_a_length_spelled_component() {
+        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), anisotropic_ortho_law()),
+            (
+                "frame".to_string(),
+                frame_with_axes([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_length),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
+            ),
+            "a LENGTH-dimensioned axis component must be rejected with \
+             WrongDimension {{ expected: \"Real\", .. }}, not silently \
+             reinterpreted as a bare dimensionless component and not a fluke \
+             ExpectedScalar, got: {:?}",
+            res
         );
     }
 
@@ -12418,32 +13113,43 @@ mod tests {
         sizes[best]
     }
 
-    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
-    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
-    /// `surface` is that gmsh mesh's own extracted boundary.
+    /// The bit-stable gmsh options every realized-mesh test meshes with.
+    fn deterministic_meshing_options(mesh_size: f64) -> reify_solver_elastic::MeshingOptions {
+        reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(mesh_size),
+            deterministic: true,
+            ..Default::default()
+        }
+    }
+
+    /// REAL GMSH OUTPUT for the fea_body_cantilever_adaptive.ri box
+    /// (1.0 × 0.1 × 0.1 m): a hand-built box's extracted boundary remeshed at
+    /// the uniform size `seed_size`.
     ///
     /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
     /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
     /// `inventory::submit!` in and break OCCT-only registry assertions
     /// (reify-eval/Cargo.toml's dead-strip invariant).
-    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
-        let opts = reify_solver_elastic::MeshingOptions {
-            mesh_size: Some(seed_size),
-            deterministic: true,
-            ..Default::default()
-        };
+    fn gmsh_box_volume_mesh(seed_size: f64) -> reify_ir::VolumeMesh {
         let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
         let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
             .expect("a P1 tet box has an extractable boundary");
         let (_, seed_tets) =
             volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
-        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+        reify_solver_elastic::refine_with_size_field(
             &seed_surface,
             &seed,
             &vec![seed_size; seed_tets.len()],
-            &opts,
+            &deterministic_meshing_options(seed_size),
         )
-        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        .expect("seeding a real gmsh volume from the box boundary must succeed")
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is
+    /// [`gmsh_box_volume_mesh`] and whose `surface` is that gmsh mesh's own
+    /// extracted boundary.
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let volume_mesh = gmsh_box_volume_mesh(seed_size);
         let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
             .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
 
@@ -12454,7 +13160,7 @@ mod tests {
             },
             volume_mesh,
             surface,
-            opts,
+            deterministic_meshing_options(seed_size),
             [0.0, 0.0, -1000.0],
             vec![],
             [0.0; 3],
@@ -12573,6 +13279,127 @@ mod tests {
              empty-mark remesh of the same seed: marked={n_after}, \
              unmarked={}",
             conns_unmarked.len(),
+        );
+    }
+
+    /// Task 7448: on the realized arm's tip set, the tip load keeps its
+    /// resultant and line of action (the tip-face centroid) across gmsh
+    /// remeshes that grade the tip face one-sidedly, so adaptive iterations
+    /// solve one boundary-value problem.
+    #[test]
+    fn realized_tip_load_keeps_its_resultant_and_line_of_action_across_remeshes() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const TIP_FORCE: [f64; 3] = [0.0, 0.0, -1000.0];
+        const SEED_SIZE: f64 = 0.05;
+        const REFINE_PASSES: usize = 2;
+        // Absorbs gmsh's f32 vertex rounding (~1e-7 m at x ≈ 1.0) should a
+        // tip-face vertex sit off the plane.
+        const CENTROID_TOL_M: f64 = 1e-6;
+        // Far above CENTROID_TOL_M, so the graded fixture tells an equal split
+        // from the traction.
+        const MIN_EQUAL_SPLIT_OFFSET_M: f64 = 1e-3;
+        let in_graded_region = |c: [f64; 3]| c[0] > 0.9 && c[1] < 0.05;
+
+        let seed = gmsh_box_volume_mesh(SEED_SIZE);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+        let mut meshes = vec![seed];
+        for _ in 0..REFINE_PASSES {
+            let current = meshes.last().expect("the seed is pushed first");
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(current).expect("gmsh output is widenable");
+            let marked: Vec<usize> = (0..tets.len())
+                .filter(|&e| in_graded_region(tet_centroid_of(&coords, &tets[e])))
+                .collect();
+            let refined = reify_solver_elastic::refine_marked_elements(
+                &surface,
+                current,
+                &marked,
+                &characteristic_sizes_from_solver_mesh(&coords, &tets),
+                &deterministic_meshing_options(SEED_SIZE),
+            )
+            .expect("a mark-driven gmsh remesh of the box must succeed");
+            meshes.push(refined);
+        }
+
+        struct TipLoadReading {
+            n_tip: usize,
+            resultant: [f64; 3],
+            line_of_action: [f64; 3],
+            face_centroid: [f64; 3],
+            equal_split_line_of_action: [f64; 3],
+        }
+        let f_norm_sq: f64 = TIP_FORCE.iter().map(|c| c * c).sum();
+        let read_tip_load = |mesh: &reify_ir::VolumeMesh| {
+            let (coords, tets) =
+                volume_mesh_to_solver_mesh(mesh).expect("gmsh output is widenable");
+            let (_root_nodes, tip_nodes) = realized_cantilever_bc_node_sets(&coords);
+            let f = cantilever_tip_load(&coords, &tets, &tip_nodes, TIP_FORCE);
+            let mut resultant = [0.0; 3];
+            let mut line_of_action = [0.0; 3];
+            for (n, x) in coords.iter().enumerate() {
+                let f_n = [f[3 * n], f[3 * n + 1], f[3 * n + 2]];
+                let share = (0..3).map(|a| f_n[a] * TIP_FORCE[a]).sum::<f64>() / f_norm_sq;
+                for a in 0..3 {
+                    resultant[a] += f_n[a];
+                    line_of_action[a] += share * x[a];
+                }
+            }
+            let (lo, hi) = aabb(&coords);
+            let n_tip = tip_nodes.len();
+            TipLoadReading {
+                n_tip,
+                resultant,
+                line_of_action,
+                face_centroid: [hi[0], 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])],
+                equal_split_line_of_action: std::array::from_fn(|a| {
+                    tip_nodes.iter().map(|&n| coords[n][a]).sum::<f64>() / n_tip as f64
+                }),
+            }
+        };
+        let readings: Vec<TipLoadReading> = meshes.iter().map(read_tip_load).collect();
+
+        let seed_reading = &readings[0];
+        let last_reading = readings.last().expect("at least the seed was read");
+        for (pass, r) in readings.iter().enumerate() {
+            for (a, &force_a) in TIP_FORCE.iter().enumerate() {
+                assert!(
+                    (r.resultant[a] - force_a).abs() <= 1e-12 * f_norm_sq.sqrt(),
+                    "pass {pass}: tip-load resultant {:?} != {TIP_FORCE:?}",
+                    r.resultant,
+                );
+                assert!(
+                    (r.line_of_action[a] - r.face_centroid[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} is off the tip-face \
+                     centroid {:?}",
+                    r.line_of_action,
+                    r.face_centroid,
+                );
+                assert!(
+                    (r.line_of_action[a] - seed_reading.line_of_action[a]).abs() <= CENTROID_TOL_M,
+                    "pass {pass}: tip-load line of action {:?} moved from the seed's {:?}",
+                    r.line_of_action,
+                    seed_reading.line_of_action,
+                );
+            }
+        }
+
+        assert!(
+            last_reading.n_tip > seed_reading.n_tip,
+            "fixture: the refine passes must re-triangulate the tip face: tip nodes \
+             {} -> {}",
+            seed_reading.n_tip,
+            last_reading.n_tip,
+        );
+        let equal_split_offset_y =
+            (last_reading.equal_split_line_of_action[1] - last_reading.face_centroid[1]).abs();
+        assert!(
+            equal_split_offset_y >= MIN_EQUAL_SPLIT_OFFSET_M,
+            "fixture: the graded tip face must move an equal split's line of action \
+             off the centroid in y, but it is only {equal_split_offset_y:e} m off",
         );
     }
 
@@ -13201,7 +14028,7 @@ mod tests {
 
     /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
     /// asserting the source kind on the way through.
-    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+    fn expect_sampled_field(v: &Value, what: &str) -> SampledField {
         match v {
             Value::Field { source, lambda, .. } => {
                 assert_eq!(
@@ -13222,7 +14049,7 @@ mod tests {
     // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
     // and the cache-reconstruction path below cannot drift apart from each
     // other or from the wrapper unit test.
-    use super::super::assert_rotation_is_half_of;
+    use super::super::{assert_rotation_is_half_of, assert_shear_angles_project_gradient};
 
     /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
     /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
@@ -13262,8 +14089,8 @@ mod tests {
             .get("rotation")
             .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
 
-        let curl_sf = rot6164_sampled(curl_v, "curl");
-        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        let curl_sf = expect_sampled_field(curl_v, "curl");
+        let rot_sf = expect_sampled_field(rot_v, "rotation");
         assert!(
             !curl_sf.data.is_empty(),
             "fixture sanity: the tet curl channel must be populated"
@@ -13387,11 +14214,11 @@ mod tests {
             panic!("value_from_elastic_result must return a StructureInstance")
         };
 
-        let curl_sf = rot6164_sampled(
+        let curl_sf = expect_sampled_field(
             d.fields.get("curl").expect("reconstructed curl field"),
             "curl",
         );
-        let rot_sf = rot6164_sampled(
+        let rot_sf = expect_sampled_field(
             d.fields
                 .get("rotation")
                 .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
@@ -13412,5 +14239,225 @@ mod tests {
              path's derive from the same curl data"
         );
         assert_eq!(rot_sf.name, live.name);
+    }
+
+    // ── task #6183 σ: the `shear_angles` derivative channel ───────────────────
+    //
+    // The Voigt engineering shears (γ_yz, γ_zx, γ_xy), the second named Angle
+    // crossing. Like `rotation` it is DERIVED at wrap time (from the `gradient`
+    // SampledField) in every production path and stored in none — see
+    // `shear_angles_sf_from_gradient`. These pin all three paths.
+
+    /// (a) TET path: `"shear_angles"` is the projection of the `"gradient"`
+    /// field, bit-exactly, on the bit-identical grid. The live
+    /// `debug_assert_eq!(sampled.len(), 5)` also guards "no 6th resample entry".
+    #[test]
+    fn shear_angles_channel_tet_path_projects_gradient() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let grad_v = fields
+            .get("gradient")
+            .expect("tet ElasticResult must carry a gradient field");
+        let shear_v = fields
+            .get("shear_angles")
+            .expect("tet ElasticResult must carry a shear_angles field (task #6183)");
+
+        let grad_sf = expect_sampled_field(grad_v, "gradient");
+        let shear_sf = expect_sampled_field(shear_v, "shear_angles");
+        assert!(
+            !grad_sf.data.is_empty(),
+            "fixture sanity: the tet gradient channel must be populated"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "tet");
+
+        match shear_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "shear_angles codomain must be Vector3<Angle> (task #6183)"
+            ),
+            other => panic!("shear_angles must be Value::Field, got {other:?}"),
+        }
+        match grad_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::tensor(2, 3, reify_core::Type::dimensionless_scalar()),
+                "gradient codomain must STAY Tensor<2,3,Real> — INV-AD-3: never retype \
+                 the tensor; angle readings are extracted by named channels"
+            ),
+            other => panic!("gradient must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path: `shear_angles` joins the tet-only derivative channels in
+    /// the honest-absence `Value::Undef` convention (PRD §7).
+    #[test]
+    fn shear_angles_channel_shell_path_is_undef() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("shear_angles")
+                    .expect("shell ElasticResult must carry a shear_angles key (task #6183)"),
+                Value::Undef
+            ),
+            "shell shear_angles must be Value::Undef — honest-absence (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path: a persisted record carries a `gradient`
+    /// slab and no shear slab, so `value_from_elastic_result` must derive
+    /// `shear_angles` bit-identically to the live tet path's derive.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_derives_from_gradient_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Non-symmetric, non-power-of-two gradient values, so an index swap or
+        // an antisymmetric leak cannot hide behind a coincidence.
+        let gradient: Vec<f64> = (0..n_nodes * 9).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        let shear_sf = expect_sampled_field(
+            d.fields
+                .get("shear_angles")
+                .expect("reconstructed ElasticResult must carry a shear_angles field (task #6183)"),
+            "shear_angles",
+        );
+        assert_eq!(
+            grad_sf.data, gradient,
+            "fixture sanity: the gradient slab must round-trip unchanged"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "cache");
+
+        let live = super::super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("fixture gradient slab is stride-9");
+        assert_eq!(
+            shear_sf.data, live.data,
+            "cache-reconstructed shear_angles must be bit-identical to the live tet \
+             path's derive from the same gradient data"
+        );
+        assert_eq!(shear_sf.name, live.name);
+    }
+
+    /// (d) CACHE-RECONSTRUCTION trust boundary: a decoded record whose
+    /// `gradient` slab is not stride-9 must not panic the evaluation. The
+    /// derived `shear_angles` is honestly absent (`Value::Undef`), while
+    /// `gradient` itself still reconstructs as before.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_malformed_gradient_is_undef() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        let n_nodes = 8usize;
+        let malformed_gradient: Vec<f64> = (0..n_nodes * 9 - 1).map(|i| i as f64).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: malformed_gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        assert_eq!(
+            grad_sf.data, malformed_gradient,
+            "the gradient slab must still reconstruct unchanged"
+        );
+        assert!(
+            matches!(
+                d.fields
+                    .get("shear_angles")
+                    .expect("reconstructed ElasticResult must carry a shear_angles key"),
+                Value::Undef
+            ),
+            "a non-stride-9 gradient slab must leave shear_angles Value::Undef"
+        );
     }
 }

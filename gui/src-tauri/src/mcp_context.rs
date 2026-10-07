@@ -8,6 +8,7 @@ use reify_mcp::{
 };
 
 use crate::engine::EngineSession;
+use crate::eval_queue::{EvalOutcome, EvalRequest};
 
 /// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
 type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
@@ -350,93 +351,47 @@ pub fn mcp_tool_call_impl(
         .map_err(|e| e.to_string())
 }
 
-/// Dispatch an MCP tool call on the persistent ENGINE lane — the entry point
-/// `main.rs::mcp_tool_call` delegates to (task 5466).
+/// [`mcp_tool_call_impl`] as a queued evaluation. The session's state is
+/// published after every tool, even a read-only or failed one: an unchanged
+/// state publishes an empty delta.
 ///
-/// # What relocating this ONE call covers
+/// This one request covers `TauriToolContext`'s WHOLE engine surface: a tool
+/// touches the engine only through [`ReifyToolContext`] methods, including
+/// `open_file`, `update_source` and `set_parameter`, which drive full
+/// recursive compiles.
 ///
-/// `TauriToolContext`'s WHOLE engine surface. An MCP tool never touches the
-/// engine directly: every touch is a [`ReifyToolContext`] method on the context,
-/// and those include `open_file`, `update_source` and `set_parameter`, which
-/// drive FULL recursive compiles. So there is no second site to migrate — the
-/// dispatch is the only place any of them can run.
+/// The cost of that granularity: `reify_focus_entity`,
+/// `reify_navigate_to_source`, `reify_get_selection` and
+/// `reify_get_eval_status` touch no engine, yet queue behind every evaluation
+/// ahead of them — worst for `reify_get_eval_status`, which a client polls to
+/// learn WHETHER an evaluation is in flight. They are not bypassed here,
+/// because a tool-name predicate would be a second copy of the registry's
+/// knowledge of which tool reaches the engine, and it would rot in the
+/// dangerous direction: a tool wrongly classed non-engine would leave the
+/// ENGINE lane's large stack. #7722 tracks the bypass without that copy — the
+/// registry classifying each tool where its handler is registered.
 ///
-/// # Why the engine lane, and not a per-call tier
-///
-/// An MCP tool call is a shared-lane client, not a once-per-file-open compile,
-/// so it takes the AMORTISED 256 MiB mapping rather than paying a fresh `mmap` +
-/// guard-page `mprotect` + `munmap` per call. Joining the existing lane is also
-/// what keeps "one worker design" true instead of adding a second mechanism
-/// alongside it.
-///
-/// # What the WHOLE-dispatch granularity costs
-///
-/// Four [`ReifyToolContext`] methods touch no engine at all: `focus_entity` and
-/// `navigate_to_source` only fire the emitter, `get_selection` reads the
-/// selection `RwLock`, and `get_eval_status` returns a constant. Their tools —
-/// `reify_focus_entity`, `reify_navigate_to_source`, `reify_get_selection`,
-/// `reify_get_eval_status` — therefore now QUEUE behind whatever engine job the
-/// single-consumer lane is running, where before this routing they answered
-/// immediately on a Tauri command thread. That is a new latency coupling for
-/// exactly the navigation tools an AI client uses while a drag is in flight, and
-/// it is not an instance of a cost already written down: `large_stack::Lane`'s
-/// "What the split does NOT buy" describes serialization among work that was
-/// ALREADY on the lane, not work newly enrolled into it. Worst on
-/// `reify_get_eval_status`, which is what a client polls to learn WHETHER an
-/// evaluation is in flight — the one call with the most reason to skip the
-/// queue.
-///
-/// Not bypassed HERE, because the only bypass available here is a
-/// tool-name-keyed predicate: a second copy of the registry's own knowledge of
-/// which tool reaches which context method, rotting silently the first time a
-/// tool gains an engine touch, and rotting in the dangerous direction (a tool
-/// wrongly classed non-engine gets the caller's ~2 MiB stack back, which is the
-/// overflow this module exists to remove). The safe granularity is the one the
-/// dispatch itself has.
-///
-/// TRACKED, not merely narrated: task #7722 carries the bypass that does NOT
-/// need a second copy — `reify_mcp::ToolRegistry` owning the classification at
-/// registration time, beside the handler, so `is_engine_bearing(name)` can pick
-/// lane-vs-inline from a single source of truth that defaults new tools to the
-/// lane. Filed rather than done here because the registry is in
-/// `crates/reify-mcp`, outside this task's scope. Cited for the reason
-/// `large_stack::Lane` gives for #6195 and #6517: a disclosed limit with no
-/// ticket behind it is indistinguishable from a limit nobody intends to close.
-///
-/// # Why here rather than in `commands.rs`
-///
-/// This path needs an OWNED `TauriToolContext` — engine `Arc` + emitter +
-/// selection — not the `&Mutex<EngineSession>` the other migrated sites pass.
-/// And `mcp_context.rs` is ungated, so this helper is headlessly testable, where
-/// `main.rs` (a `required-features = ["gui"]` `[[bin]]`) is not.
-///
-/// # Why by value
-///
-/// A persistent lane takes `'static` closures, so the context must be MOVED into
-/// the job. `TauriToolContext: Send + 'static` auto-derives from its three
-/// fields — `Arc<Mutex<EngineSession>>`, `Option<Box<dyn Fn(&str, Value) + Send +
-/// Sync>>` and `Arc<RwLock<SelectionInfo>>` — so no caller gains a new bound
-/// from this.
-///
-/// # The one behavioural delta callers must know
-///
-/// The event emitter now fires from the LANE thread rather than the caller's.
-/// Sound because `tauri::AppHandle` is `Send + Sync` and `emit` is callable from
-/// any thread.
-///
-/// # Preconditions inherited from [`crate::large_stack::run_on_worker`]
-///
-/// Must not be called from a job already running on `ENGINE_LANE` — the lane has
-/// a single consumer, so `assert_not_reentrant` panics LOUDLY rather than
-/// wedging it (see `run_on_worker`'s reentrancy section) — and must not be
-/// called while holding the engine mutex, or the job would block acquiring it
-/// while the caller blocks on the reply. Both hold at the only call site:
-/// Tauri's blocking command thread, which is never a lane thread and holds no
-/// engine lock.
-pub fn mcp_tool_call_on_large_stack(
+/// The context's event emitter fires from the ENGINE lane thread, which is
+/// sound because `tauri::AppHandle` is `Send + Sync`. The job dispatches
+/// directly because it already runs on that lane, whose single consumer cannot
+/// wait on a nested submission to itself.
+pub fn mcp_tool_call_evaluation(
     ctx: TauriToolContext,
+    engine: Arc<Mutex<EngineSession>>,
     name: String,
     params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    crate::large_stack::run_on_worker(move || mcp_tool_call_impl(&name, params, &ctx))
+) -> EvalRequest<serde_json::Value> {
+    EvalRequest::evaluation(move || {
+        let reply = mcp_tool_call_impl(&name, params, &ctx);
+        let publish = match crate::commands::get_initial_state_impl(&engine) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    "mcp_tool_call: delta sync failed, frontend model may be stale: {e}"
+                );
+                None
+            }
+        };
+        EvalOutcome { publish, reply }
+    })
 }

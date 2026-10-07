@@ -77,6 +77,8 @@ mod enum_type_param_lowering_tests;
 mod imaginary_literal_lowering_tests;
 #[path = "harness_syntax_lowering/joint_with_lowering_tests.rs"]
 mod joint_with_lowering_tests;
+#[path = "harness_syntax_lowering/method_call_rejection_lowering_tests.rs"]
+mod method_call_rejection_lowering_tests;
 #[path = "harness_syntax_lowering/namespaced_ref_lowering_tests.rs"]
 mod namespaced_ref_lowering_tests;
 #[path = "harness_syntax_lowering/numeric_separators_lowering_tests.rs"]
@@ -85,6 +87,8 @@ mod numeric_separators_lowering_tests;
 mod radix_literals_lowering_tests;
 #[path = "harness_syntax_lowering/relate_at_auto_lowering_tests.rs"]
 mod relate_at_auto_lowering_tests;
+#[path = "harness_syntax_lowering/sketch_block_lowering_tests.rs"]
+mod sketch_block_lowering_tests;
 #[path = "harness_syntax_lowering/trait_assoc_fn_call_lowering_tests.rs"]
 mod trait_assoc_fn_call_lowering_tests;
 #[path = "harness_syntax_lowering/trait_assoc_fn_member_lowering_tests.rs"]

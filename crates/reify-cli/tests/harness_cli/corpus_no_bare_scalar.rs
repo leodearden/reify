@@ -16,6 +16,9 @@
 //!   * `crates/reify-syntax/tests/`
 //!   * `crates/reify-ast/tests/`
 //!
+//! Excluded from scan (conformance corpus, must-reject fixtures are chartered):
+//!   * `crates/reify-spec-conformance/fixtures/` — see the exclusion arm below.
+//!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
 //! guard.
@@ -39,6 +42,10 @@
 //!     a violation.
 
 use std::path::{Path, PathBuf};
+
+/// The Ring-1 language-spec conformance fixture tree, repo-relative — excluded
+/// from the scan, and the home of the probe that keeps that exclusion honest.
+const SPEC_CONFORMANCE_FIXTURES: &str = "crates/reify-spec-conformance/fixtures";
 
 /// Resolve the workspace root from CARGO_MANIFEST_DIR.
 ///
@@ -231,6 +238,15 @@ fn corpus_has_zero_bare_scalar() {
     let ast_tests = root.join("crates").join("reify-ast").join("tests");
     files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
 
+    // The Ring-1 conformance fixture tree holds CHARTERED must-reject fixtures
+    // (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2) — bare-`Scalar`
+    // rejection is ITSELF a spec clause the suite must be free to test with a
+    // violating fixture. Directory-level for the same reason as the arm above.
+    // Charter: that tree's `README.md`. The test below keeps this arm
+    // non-vacuous.
+    let spec_conformance_fixtures = root.join(SPEC_CONFORMANCE_FIXTURES);
+    files.retain(|p| !p.starts_with(&spec_conformance_fixtures));
+
     let mut violations: Vec<String> = Vec::new();
 
     for path in &files {
@@ -257,6 +273,28 @@ fn corpus_has_zero_bare_scalar() {
          Migrate each `: Scalar` -> `: Length` and `-> Scalar` -> `-> Length`:\n\n{}",
         violations.len(),
         violations.join("\n")
+    );
+}
+
+/// The spec-conformance exclusion arm above is non-vacuous only while a live
+/// violator sits under it: the committed placement probe. If this guard is
+/// retired as compiler-redundant (see the header), retire the probe with it.
+#[test]
+fn spec_conformance_placement_probe_is_a_live_violator() {
+    let probe = workspace_root()
+        .join(SPEC_CONFORMANCE_FIXTURES)
+        .join("_placement-probe/placement_probe.ri");
+
+    let content = std::fs::read_to_string(&probe)
+        .unwrap_or_else(|e| panic!("placement probe {} unreadable: {e}", probe.display()));
+
+    assert!(
+        content.lines().any(line_has_bare_scalar),
+        "The placement probe {} no longer trips this guard's predicate, so the \
+         spec-conformance exclusion arm is vacuous. Do NOT \"fix\" the probe: \
+         restore its bare annotation, or retire the arm and the probe together. \
+         See {SPEC_CONFORMANCE_FIXTURES}/README.md.",
+        probe.display()
     );
 }
 

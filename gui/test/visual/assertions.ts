@@ -6,6 +6,11 @@
  */
 
 import type { RpcResult } from "./rpc.js";
+// The one app-runtime import this module allows itself.  orbitDistance.ts is deliberately
+// dependency-free (no three, no DOM), so it loads unchanged in the bare node process that
+// `tsx test/visual/run.ts` uses to drive a LIVE GUI over RPC.  Importing the real framing
+// formula is what stops the camera thresholds below from being a second, drifting copy of it.
+import { fittedDistanceFor } from "../../src/viewport/orbitDistance.js";
 
 // ─── getByPath ────────────────────────────────────────────────────────────────
 
@@ -79,6 +84,54 @@ export type ValueScenario = {
  * Primary scenario: open small_cube → call store_state → assert engine.meshCount === 1.
  * Additional scenarios for other fixtures will be added by downstream tool-leaf tasks.
  */
+// ─── small_cube camera geometry (task 6965) ──────────────────────────────────
+//
+// Every camera threshold below is DERIVED from the fixture and the framing
+// formula, never an observed output, so each assertion states the physics
+// rather than pinning whatever the GUI happened to print.
+//
+//   small_cube.ri declares `param size: Length = 10mm` and `box(size,size,size)`,
+//   so the framed box is a 10 mm cube — 0.01 in scene units (metres).
+//   fitCameraToBox frames the circumscribing SPHERE, radius = ½·box diagonal.
+const SMALL_CUBE_EDGE_M = 0.01;
+const SMALL_CUBE_RADIUS = 0.5 * Math.sqrt(3) * SMALL_CUBE_EDGE_M; // ≈ 8.660e-3
+
+/**
+ * Mirror of `CAMERA_FOV_DEG` (gui/src/viewport/scene.ts).
+ *
+ * Mirrored rather than imported because scene.ts pulls in three and the axis-label
+ * builders, which this module must stay clear of (see the import note above).
+ * `assertions.test.ts` pins this against the real constant, so a retuned field of view
+ * reds in the gate instead of silently invalidating every camera threshold below.
+ */
+export const SCENE_CAMERA_FOV_DEG = 60;
+
+// The fitted distance comes from fitCameraToBox's own formula, at the square-pane
+// reference aspect. The horizontal term binds only on a pane TALLER than wide
+// (fitCamera.ts design decision 2, esc-4280) and binds UPWARDS — so this is a lower
+// bound on the real fitted distance, which is what makes the atLeast/atMost pair below
+// sound for any pane shape.
+const SMALL_CUBE_FIT_DISTANCE = fittedDistanceFor(SMALL_CUBE_RADIUS, SCENE_CAMERA_FOV_DEG); // ≈ 1.905e-2
+
+// zoom_camera dollies MULTIPLICATIVELY: dollyIn(scale) ⇒ distance *= scale.
+const SMALL_CUBE_ZOOM_SCALE = 0.3;
+const SMALL_CUBE_ZOOMED_DISTANCE = SMALL_CUBE_ZOOM_SCALE * SMALL_CUBE_FIT_DISTANCE; // 0.66·r
+const SMALL_CUBE_ZOOM_DELTA = SMALL_CUBE_FIT_DISTANCE - SMALL_CUBE_ZOOMED_DISTANCE; // 1.54·r
+
+// Headroom on the upper bound, because a tall/narrow pane fits FARTHER back (above)
+// and so also lands farther back after the dolly. 8× covers aspect ratios down to
+// ≈0.2 and keeps the bound (≈4.6e-2) an order of magnitude below a fixed 0.5 m floor.
+const SMALL_CUBE_PANE_ASPECT_HEADROOM = 8;
+
+// An iso-ish close-in pose at the fitted distance, used to prove a pick still
+// resolves after the camera has been re-framed (#6496).
+const SMALL_CUBE_FRAMED_POSE = SMALL_CUBE_FIT_DISTANCE / Math.sqrt(3); // ≈ 1.100e-2
+
+// applied.position can differ from an unclamped request by ~1 ulp and applied.target
+// is exact (docs/debug-mcp-contract.md §6 point 1), so position is bracketed with this
+// tolerance — far above that drift, far below any clamp — and target uses `equals`.
+const CAMERA_READBACK_TOL = 1e-9;
+
 export const VALUE_SCENARIOS: ValueScenario[] = [
   {
     name: "store_state_meshcount_small_cube",
@@ -212,6 +265,83 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "azimuthDelta", op: "atLeast", expected: 0.001 },
     ],
   },
+  // task-6965: the three camera commands this task repaired. Live signal via
+  // `npm run test:e2e` only — NOT verify-gated, same caveat as the I2 entries above.
+  // Each asserts LIVE state through the command's own response fields (set_camera's
+  // `applied` and zoom_camera's `distance` are read back from the camera/controls
+  // after OrbitControls has applied its constraints), never a restatement of inputs.
+  //
+  // zoom_camera_small_cube pins the dogfood no-op (a fixed floor saturating the dolly,
+  // reported as `distanceDelta: 0`; docs/debug-mcp-contract.md §6 point 3).
+  {
+    name: "zoom_camera_small_cube",
+    fixture: "small_cube",
+    setup: [{ tool: "fit_to_view", args: {} }],
+    tool: "zoom_camera",
+    args: { scale: SMALL_CUBE_ZOOM_SCALE },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      // The dolly actually moved the camera. Half the computed delta leaves room
+      // for pane shape while staying far above the 0 the regression produced.
+      { path: "distanceDelta", op: "atLeast", expected: SMALL_CUBE_ZOOM_DELTA / 2 },
+      // ...and landed genuinely close to a 10 mm part, i.e. the floor now tracks
+      // the model bounds instead of sitting at a fixed 0.5 m.
+      {
+        path: "distance",
+        op: "atMost",
+        expected: SMALL_CUBE_ZOOMED_DISTANCE * SMALL_CUBE_PANE_ASPECT_HEADROOM,
+      },
+    ],
+  },
+  // Pins step-12's read-back contract end to end: `applied` is the LIVE pose after
+  // controls.update(), not the request echoed back. The fit_to_view setup makes the
+  // orbit floor this fixture's own, not whatever an earlier scenario last framed; the
+  // pose is then well inside both distance limits, so the unclamped path is exercised.
+  {
+    name: "set_camera_reports_live_pose",
+    fixture: "small_cube",
+    setup: [{ tool: "fit_to_view", args: {} }],
+    tool: "set_camera",
+    args: { position: [0.03, 0.03, 0.03], target: [0, 0, 0] },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      // target survives update() exactly, so it pins the read-back source.
+      { path: "applied.target", op: "equals", expected: [0, 0, 0] },
+      // position is bracketed rather than equated — see CAMERA_READBACK_TOL.
+      { path: "applied.position.0", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.0", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+      { path: "applied.position.1", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.1", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+      { path: "applied.position.2", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.2", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+    ],
+  },
+  // The #6496 screenshot → set_camera → pick → identify loop as a regression
+  // scenario: a pick immediately after a camera move must resolve against the pose
+  // set_camera just reported, with no intervening render. pick_entity_at_small_cube
+  // above deliberately exercises the DEFAULT camera and never moves it, so it cannot
+  // observe the stale-matrixWorld bug at all — this is its framed counterpart, not a
+  // duplicate of it. fit_to_view first, for the same fixture-owned floor as above.
+  {
+    name: "pick_after_set_camera_small_cube",
+    fixture: "small_cube",
+    setup: [
+      { tool: "fit_to_view", args: {} },
+      {
+        tool: "set_camera",
+        args: {
+          position: [SMALL_CUBE_FRAMED_POSE, SMALL_CUBE_FRAMED_POSE, SMALL_CUBE_FRAMED_POSE],
+          target: [0, 0, 0],
+        },
+      },
+    ],
+    tool: "pick_entity_at",
+    args: {},
+    assertions: [
+      { path: "hit", op: "equals", expected: true },
+      { path: "entityPath", op: "exists" },
+    ],
+  },
   // task-4303 F1 e2e signal scenarios (live-only via `npm run test:e2e`, NOT CI-gated
   // per PRD §4.10).  Structure validated in assertions.test.ts; live values asserted
   // only during a real reify-gui session.
@@ -337,9 +467,26 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
 
+/**
+ * Every op `evaluateAssertion` handles, and therefore every op a VALUE_SCENARIOS entry
+ * may name.  This array is the SOURCE, and `AssertionOp` is derived from it — not the
+ * other way round — so an op cannot exist in the type while being absent from the
+ * roster.  A hand-written roster typed `readonly AssertionOp[]` would allow exactly
+ * that: an array type constrains what MAY appear, never what MUST, so an omission
+ * typechecks cleanly and leaves the op unguarded by every consumer that iterates it.
+ *
+ * Derivation rather than a `satisfies` cross-check is what makes this hold HERE:
+ * `gui/tsconfig.json` includes only `src`, so nothing in this directory is typechecked
+ * by the gate and a compile-time-only guard would be inert.  A derived union survives
+ * that because the roster it is derived from is a runtime value the tests iterate.
+ */
+export const ASSERTION_OPS = ["equals", "atLeast", "atMost", "exists"] as const;
+
+export type AssertionOp = (typeof ASSERTION_OPS)[number];
+
 export type Assertion = {
   path: string;
-  op: "equals" | "atLeast" | "exists";
+  op: AssertionOp;
   expected?: unknown;
 };
 
@@ -370,6 +517,9 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * - 'equals': recursive deep equality (key-order insensitive); a missing path
  *   always fails — undefined is never considered equal to any expected value.
  * - 'atLeast': actual must be a number >= Number(expected)
+ * - 'atMost': actual must be a number <= Number(expected) — the mirror of
+ *   'atLeast', for stating an UPPER bound on a value computed through floating
+ *   point (an orbit distance, a delta) where 'equals' cannot tolerate the drift.
  * - 'exists': actual must not be undefined
  *
  * Failure message always includes the path plus expected vs actual.
@@ -400,6 +550,15 @@ export function evaluateAssertion(value: unknown, a: Assertion): AssertionResult
       return {
         ok: false,
         message: `${a.path}: expected atLeast ${String(a.expected)}, got ${JSON.stringify(actual)}`,
+      };
+    }
+    case "atMost": {
+      if (typeof actual === "number" && actual <= Number(a.expected)) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        message: `${a.path}: expected atMost ${String(a.expected)}, got ${JSON.stringify(actual)}`,
       };
     }
     case "exists": {
@@ -566,6 +725,8 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "open_menu",
   "press_tab",
   "set_fea_channel",
+  "scrub_range_input",
+  "edit_text_input",
   "set_window_size",
   "tab_order",
   "toggle_select",

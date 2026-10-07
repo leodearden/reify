@@ -71,7 +71,9 @@ pub struct GmshGuard(MutexGuard<'static, ()>);
 
 impl GmshGuard {
     /// The weaker witness [`crate::mesh_size_scope::MeshSizeScope::entered`]
-    /// still asks for, and the only way to obtain one from a [`GmshGuard`].
+    /// still asks for — as does `refine_volume`'s background-field guard, on
+    /// the same reasoning — and the only way to obtain one from a
+    /// [`GmshGuard`].
     ///
     /// A named `pub(crate)` accessor rather than an `impl Deref`: a
     /// `&MutexGuard<'_, ()>` is exactly the witness this type was introduced to

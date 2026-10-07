@@ -6,10 +6,10 @@
 //! diagnostics emitted by `check_and_lower!` carry a BOUNDED, single-line excerpt, while
 //! leaving the prefix — and any excerpt already inside the bound — untouched.
 //!
-//! SCOPE is `check_and_lower!` alone. Sibling `push_error` sites in `ts_parser.rs` — the
-//! `syntax error in <context>: {}` arms and the `lower_connect_body` mapping arms — still
-//! interpolate raw `node_text`, and are tracked separately by tasks #6156 and #7756, so
-//! nothing here says the diagnostic-excerpt class is closed across the parser.
+//! SCOPE is `check_and_lower!` alone. The sibling `syntax error in <context>: ` arms in
+//! `ts_parser.rs` no longer interpolate raw `node_text` (task #6156), but `lower_connect_body`'s
+//! parameter and port-mapping arms still do (task #7756), so nothing here says the
+//! diagnostic-excerpt class is closed across the parser.
 //!
 //! Asserted through the public `reify_syntax::parse` API on the messages it actually emits,
 //! not against the private `snippet` helper: the contract is the user-visible diagnostic.
@@ -20,31 +20,17 @@
 
 use reify_ast::ParseError;
 
+use crate::parse_error_lookup::{only_error_starting_with, parse_errors};
+
 /// The bound a `check_and_lower!` excerpt must honour: at most this many characters, plus the
 /// ellipsis that marks a cut.
 const MAX_EXCERPT_CHARS: usize = 40;
 
-/// Helper: parse source and return only the parse errors.
-fn parse_errors(source: &str) -> Vec<ParseError> {
-    reify_syntax::parse(source, reify_core::ModulePath::single("snippet_bound_test")).errors
-}
-
 /// The excerpt body of the one `invalid <label>: ` diagnostic, or a failure naming what was
 /// emitted.
-///
-/// Selects by prefix rather than requiring a lone error, so an unrelated diagnostic raised
-/// elsewhere in the same fixture cannot red these tests for a reason other than the bound.
 #[track_caller]
 fn diagnostic_body<'a>(errors: &'a [ParseError], prefix: &str) -> &'a str {
-    let mut matching = errors.iter().filter_map(|e| e.message.strip_prefix(prefix));
-    let body = matching
-        .next()
-        .unwrap_or_else(|| panic!("expected an error starting with {prefix:?}, got: {errors:?}"));
-    assert!(
-        matching.next().is_none(),
-        "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
-    );
-    body
+    &only_error_starting_with(errors, prefix).message[prefix.len()..]
 }
 
 /// Assert a cut excerpt: the BOUND first, then the exact text.

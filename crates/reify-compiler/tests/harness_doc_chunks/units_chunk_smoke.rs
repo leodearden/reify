@@ -2,22 +2,17 @@
 //! (`crates/reify-mcp/src/tools/chunks/units.md`), served to the in-GUI
 //! assistant via `reify_language_reference`.
 //!
-//! Sibling of `geometry_chunk_smoke.rs`, and deliberately built ON TOP of it:
-//! every scanner used here (`reify_tagged_fences`, `assert_module_compiles`,
-//! `strip_reify_comments`, `called_names`, `registry_family`) is that module's,
-//! raised to `pub(crate)` and parameterised by chunk path in task 5759's
-//! prerequisite refactor — as is the whole cited-path loop
-//! (`assert_cited_paths_resolve`), extracted in the same spirit once this file
-//! and its sibling had grown two copies of it. Copying any of them here would
-//! have made this harness binary's FIFTH near-identical scraper, which is
-//! exactly the tracked defect (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924)
-//! that geometry_chunk_smoke.rs's "Known duplication" section exists to stop
-//! growing.
+//! Reads units.md through the binary's shared scanners rather than scanners of
+//! its own: fences through `chunk_markdown.rs`'s `tagged_fence_bodies`, cites
+//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, call names
+//! through `call_scan.rs`'s comment-aware `strip_reify_comments` /
+//! `called_names`, and their registry through `callable_registries.rs`. What
+//! "compiles clean" means is `module_compile.rs`'s.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
-//! `rejected_form_rows`, `wrap_form`, `named_length_argument`,
-//! `squash_whitespace` — and those are pinned directly by the "Scanner unit
-//! tests" block at the bottom, following the same convention.
+//! `assert_module_compiles`, `rejected_form_rows`, `wrap_form`,
+//! `named_length_argument`, `squash_whitespace` — the last four pinned directly
+//! by the "Scanner unit tests" block at the bottom.
 //!
 //! # What this file guards
 //!
@@ -32,9 +27,10 @@
 //! Three properties are pinned, each by feeding CHUNK-DERIVED BYTES to the real
 //! compiler or to a live name registry:
 //!
-//! 1. Every ```` ```reify ````-tagged fence COMPILES with zero `Severity::Error`
-//!    (`reify_tagged_fences_in_units_chunk_compile`) — the documented migration
-//!    idiom is something the compiler actually accepts.
+//! 1. The ```` ```reify ````-tagged fences CALL the migration idiom's sentinel
+//!    forms (`units_reify_fences_call_the_migration_idiom_sentinels`), and the
+//!    fence gate compiles every such fence with zero `Severity::Error` — so the
+//!    documented migration idiom is something the compiler actually accepts.
 //! 2. Every call NAME in those fences is a real registry entry
 //!    (`documented_call_names_in_units_chunk_are_real_registry_entries`) — the
 //!    phantom-signature direction that cost live probe cycles in the 2026-07-24
@@ -63,30 +59,21 @@
 //!   that the eval-side cites it DOES make resolve to real tests.
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-use crate::geometry_chunk_smoke::{
-    assert_cited_paths_resolve, assert_module_compiles, called_names, phantom_name_panic,
-    registry_family, reify_tagged_fences, strip_reify_comments,
-};
-
-/// The chunk this file owns. Read (never written) at RUNTIME rather than
-/// `include_str!`d, mirroring `geometry_chunk_smoke.rs`'s `CHUNK_PATH`, so an
-/// edit to the markdown is seen by `cargo test` without a rebuild of this crate.
-/// If the chunk moves, this const must move with it — the failure mode is a loud
-/// `expect` on the read, not a silent skip.
-const UNITS_CHUNK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reify-mcp/src/tools/chunks/units.md"
-);
+use crate::call_scan::{called_names, strip_reify_comments};
+use crate::callable_registries::{phantom_name_panic, registry_family};
+use crate::chunk_cite_gate::assert_cited_paths_resolve;
+use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::tagged_fence_bodies;
+use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Info string of the fences that MUST compile clean.
 const REIFY_TAG: &str = "reify";
 
 /// Info string of the rejected-forms block. DELIBERATELY NOT `reify`.
 ///
-/// `reify_tagged_fences` matches the whole info string byte-exactly and its
-/// consumer asserts ZERO `Severity::Error` per fence, so a deliberately-invalid
+/// The fence gate compiles every fence tagged byte-exactly ```` ```reify ```` and
+/// asserts ZERO `Severity::Error` per fence, so a deliberately-invalid
 /// form inside a ```` ```reify ```` fence would fail the compile gate — and the
 /// failure would read as "the documented migration does not compile", which is
 /// the opposite of what is wrong. Any other explicit tag is exempt by the same
@@ -184,7 +171,7 @@ const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
 /// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
 /// test over a synthetic message rather than only through the live compiler,
 /// which is this file's convention for every hand-rolled text scan (see
-/// `geometry_chunk_smoke.rs`'s "Scanner unit tests" block).
+/// `call_scan.rs`'s "Scanner unit tests" block).
 fn named_length_argument(message: &str) -> Option<&str> {
     let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
     if before.len() == message.len() {
@@ -217,7 +204,7 @@ fn wrap_form(form: &str) -> String {
 fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
 
-    for fence in reify_tagged_fences(markdown, tag, UNITS_CHUNK_PATH) {
+    for fence in tagged_fence_bodies(markdown, tag, UNITS_CHUNK_PATH) {
         for line in strip_reify_comments(&fence).lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -237,13 +224,32 @@ fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
     rows
 }
 
-/// Compile one documented form and return its Error messages.
+/// Assert `module_src` compiles clean, in `module_compile`'s one sense of the
+/// word. The source is echoed in the panic, so a failing migration is fixable
+/// without re-reading the chunk.
+fn assert_module_compiles(label: &str, module_src: &str) {
+    if let Some(messages) = compile_module(module_src).rejection() {
+        panic!(
+            "{UNITS_CHUNK_PATH} — {label}: expected this module to compile with zero Error \
+             diagnostics, got:\n{}\n--- module source ---\n{module_src}\n--- end module source ---",
+            ModuleCompile::rendered(&messages)
+        );
+    }
+}
+
+/// Compile one documented form and return its compile-layer Error messages. A
+/// form that does not even PARSE panics: a rejected-forms row must be reify the
+/// units gate rejects, never text the parser does.
 fn error_messages(form: &str) -> Vec<String> {
-    let compiled = compile_source_with_stdlib(&wrap_form(form));
-    errors_only(&compiled)
-        .iter()
-        .map(|d| d.message.clone())
-        .collect()
+    match compile_module(&wrap_form(form)) {
+        ModuleCompile::Clean => Vec::new(),
+        ModuleCompile::SemanticErrors(messages) => messages,
+        ModuleCompile::ParseRejected(messages) => panic!(
+            "{UNITS_CHUNK_PATH} documents `{form}`, but it does not parse:\n{}\nA row is a \
+             call form the compile layer judges, so it must be well-formed reify.",
+            ModuleCompile::rendered(&messages)
+        ),
+    }
 }
 
 /// Assert `form` is REJECTED the way the chunk promises: at least one Error,
@@ -303,14 +309,6 @@ fn assert_rejected_as_documented(form: &str) {
     );
 }
 
-fn read_chunk() -> String {
-    std::fs::read_to_string(UNITS_CHUNK_PATH).unwrap_or_else(|e| {
-        panic!(
-            "{UNITS_CHUNK_PATH} must be readable ({e}) — update UNITS_CHUNK_PATH if the chunk moved"
-        )
-    })
-}
-
 /// The ```` ```reify ````-tagged fences of units.md, comment-stripped.
 ///
 /// Comment-free because every downstream scan here is a text scan: a call form
@@ -318,41 +316,36 @@ fn read_chunk() -> String {
 /// sentinel or contribute a name. Same reasoning — and the same helper — as
 /// `geometry_chunk_smoke.rs`'s fence sentinels.
 fn units_fence_code(markdown: &str) -> Vec<String> {
-    reify_tagged_fences(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
+    tagged_fence_bodies(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
         .iter()
         .map(|fence| strip_reify_comments(fence))
         .collect()
 }
 
-/// Every ```` ```reify ````-tagged fence in units.md must actually compile.
+/// Every form units.md's migration idiom turns on is CALLED, outside a comment,
+/// by one of its ```` ```reify ```` fences.
+///
+/// That is what makes the idiom compile-verified: the fence gate
+/// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
+/// bare ```` ```reify ```` fence of every chunk VERBATIM, and its
+/// `REIFY_FENCE_FLOORS` entry for units.md, held EXACT, is the one floor on how
+/// many there are. This test owns only the per-form half: a fence that silently
+/// stopped calling a sentinel would leave that gate green. The sentinel set is
+/// its own anti-vacuity.
 ///
 /// units.md had NO fence gate at all before task 5759: all of its fences were
 /// untagged, so the only test that read the chunk was
 /// `angle_crossings_diagnostics_smoke.rs`'s single `contains` on a parse
 /// diagnostic. The migration idiom the chunk now teaches — dimension every
 /// length-semantic geometry argument — is the kind of claim a designer copies
-/// verbatim, so it is compiled here rather than left as prose.
+/// verbatim, so it is compiled rather than left as prose.
 ///
 /// SCOPE — see "What is NOT established" in the module doc. This is a
-/// parse/shape/arg-slot acceptance guard, not a signature pin; the registry half
-/// is `documented_call_names_in_units_chunk_are_real_registry_entries`.
+/// call-presence guard, not a signature pin; the registry half is
+/// `documented_call_names_in_units_chunk_are_real_registry_entries`.
 #[test]
-fn reify_tagged_fences_in_units_chunk_compile() {
-    let markdown = read_chunk();
-    let fences = reify_tagged_fences(&markdown, REIFY_TAG, UNITS_CHUNK_PATH);
-
-    // Anti-vacuity. Without this, dropping the ```reify tag (or rewriting the
-    // idiom as an untagged block, which is what EVERY other fence in this chunk
-    // still is) empties the scan and the loop below iterates zero times — GREEN,
-    // protecting nothing.
-    assert!(
-        !fences.is_empty(),
-        "the ```{REIFY_TAG} fence scan found NO fences in {UNITS_CHUNK_PATH} — expected at least \
-         one, carrying the dimensioned-geometry-argument migration idiom. The scan matches the \
-         info string BYTE-EXACTLY, so a bare ``` fence, an indented fence, or a ```reify-rejected \
-         fence is invisible to it: the gate is vacuous and gives NO protection. Tag the idiom \
-         fence ```{REIFY_TAG}."
-    );
+fn units_reify_fences_call_the_migration_idiom_sentinels() {
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
 
     // Sentinels, scanned COMMENT-FREE. `box` is the primitive whose bare-number
     // rejection is the chunk's headline example; `mirror` is the form that
@@ -365,16 +358,10 @@ fn reify_tagged_fences_in_units_chunk_compile() {
             code.iter().any(|fence| fence.contains(sentinel)),
             "anti-vacuity: no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} contains `{sentinel}` \
              OUTSIDE A COMMENT — the documented migration idiom is no longer compile-verified, so \
-             a form the compiler outright rejects could ship as the recommended fix. (A call form \
-             mentioned only in a fence's `//` annotation does not count; it is never compiled.)"
-        );
-    }
-
-    for (index, fence) in fences.iter().enumerate() {
-        assert_module_compiles(
-            UNITS_CHUNK_PATH,
-            &format!("```{REIFY_TAG} fence #{}", index + 1),
-            fence,
+             a form the compiler outright rejects could ship as the recommended fix. The scan \
+             matches the info string BYTE-EXACTLY, so a bare ``` fence or a ```reify-rejected \
+             fence is invisible to it. (A call form mentioned only in a fence's `//` annotation \
+             does not count; it is never compiled.)"
         );
     }
 }
@@ -410,7 +397,7 @@ const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[];
 /// SCOPE — NAMES only; see "What is NOT established" in the module doc.
 #[test]
 fn documented_call_names_in_units_chunk_are_real_registry_entries() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
 
     let mut names: Vec<String> = Vec::new();
     for fence in units_fence_code(&markdown) {
@@ -471,7 +458,7 @@ fn documented_call_names_in_units_chunk_are_real_registry_entries() {
 /// test alone would stay green while the recommended fix rotted.
 #[test]
 fn documented_rejected_forms_are_actually_rejected() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     // Anti-vacuity #1: the floor. Without it, deleting the block (or retagging
@@ -491,7 +478,6 @@ fn documented_rejected_forms_are_actually_rejected() {
     // every form `reject` and pass the loop below for a reason that has nothing
     // to do with the units gate.
     assert_module_compiles(
-        UNITS_CHUNK_PATH,
         "positive control for the rejected-forms scan",
         &wrap_form("box(20mm, 20mm, 10mm)"),
     );
@@ -504,7 +490,6 @@ fn documented_rejected_forms_are_actually_rejected() {
         );
         assert_rejected_as_documented(rejected);
         assert_module_compiles(
-            UNITS_CHUNK_PATH,
             &format!("accepted migration for `{rejected}`"),
             &wrap_form(accepted),
         );
@@ -523,7 +508,7 @@ fn documented_rejected_forms_are_actually_rejected() {
 /// crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs::bare_zero_box_dimensions_are_not_special_cased
 #[test]
 fn bare_zero_is_not_special_cased() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, REJECTED_TAG);
 
     // WHITESPACE-INSENSITIVE on both sides: `box(0,0,0)` and `box( 0, 0, 0 )` are
@@ -580,7 +565,7 @@ const MINIMUM_RI_FILES: usize = 1;
 fn cited_test_paths_in_the_units_chunk_resolve() {
     assert_cited_paths_resolve(
         UNITS_CHUNK_PATH,
-        &read_chunk(),
+        &read_chunk(UNITS_CHUNK_PATH),
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,
@@ -620,7 +605,7 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// observes, and the chunk marks it UNPINNED for exactly that reason.
 #[test]
 fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
-    let markdown = read_chunk();
+    let markdown = read_chunk(UNITS_CHUNK_PATH);
     let rows = rejected_form_rows(&markdown, EVAL_ONLY_TAG);
 
     assert!(
@@ -662,7 +647,6 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
         );
 
         assert_module_compiles(
-            UNITS_CHUNK_PATH,
             &format!("accepted migration for `{rejected}`"),
             &wrap_form(accepted),
         );
@@ -675,8 +659,8 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
 // `wrap_form` are this module's own hand-rolled text helpers, and every
 // rejection assertion above is downstream of one of them. They are pinned
 // DIRECTLY here rather than only through the chunk, which is the posture
-// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes for the
-// scanners this file imports. The failure these guard against is
+// `call_scan.rs`'s own "Scanner unit tests" block establishes for the scanners
+// this file imports. The failure these guard against is
 // self-concealing: a helper that quietly stopped extracting anything would leave
 // every floor and sentinel above satisfied, because those are drawn from the
 // same helpers' output.
@@ -783,7 +767,6 @@ fn squash_whitespace_equates_respacings_but_not_different_forms() {
 #[test]
 fn wrap_form_binds_g_so_a_row_naming_it_compiles_clean() {
     assert_module_compiles(
-        UNITS_CHUNK_PATH,
         "wrap_form unit test: a dimensioned form referencing `g`",
         &wrap_form("mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)"),
     );

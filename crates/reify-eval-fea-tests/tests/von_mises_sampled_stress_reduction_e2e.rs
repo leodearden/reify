@@ -1,5 +1,6 @@
-//! Eval-level regression: `max(von_mises(<stress field>))` over a REAL
-//! `solve_elastic_static` result (task 7129).
+//! Eval-level regressions over a REAL `solve_elastic_static` result: the
+//! reductions `max` / `argmax` of `von_mises(<stress field>)` (task 7129), and
+//! pointwise `sample(von_mises(<stress field>), p)` (task 7131).
 //!
 //! `ElasticResult.stress` is a `Value::Field { source: FieldSourceKind::Sampled,
 //! lambda: Arc(Value::SampledField(_)) }` — see
@@ -249,6 +250,70 @@ fn argmax_von_mises_over_field(field: Value, field_type: Type) -> Value {
     eval_expr(&argmax_expr, &EvalContext::simple(&values))
 }
 
+/// Evaluate `sample(von_mises(<stress field>), at)` and return the resulting
+/// `Value`. `at` is typed as the stress field's domain.
+fn sample_von_mises_over_field(field: Value, field_type: Type, at: Value) -> Value {
+    let domain = match &field_type {
+        Type::Field { domain, .. } => domain.clone(),
+        other => panic!("expected a Type::Field, got: {other:?}"),
+    };
+    let vm_field_type = Type::Field {
+        domain: domain.clone(),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+
+    let vm_expr = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type,
+    );
+    let sample_expr = make_function_call(
+        "sample",
+        vec![vm_expr, CompiledExpr::literal(at, *domain)],
+        pressure_scalar_type(),
+    );
+
+    let values = ValueMap::new();
+    eval_expr(&sample_expr, &EvalContext::simple(&values))
+}
+
+/// The lower cell corner `[i, j, k]` of a 3-axis stride-9 grid whose own von
+/// Mises value is largest among corners whose whole 2×2×2 cell holds finite
+/// windows, with that value; the first of equal maxima wins.
+///
+/// Windows are indexed as `field_reductions::decompose_index` lays them out:
+/// row-major, axis 0 outermost, window `(i·n1 + j)·n2 + k`.
+fn peak_fully_finite_lower_corner(sf: &SampledField) -> Option<([usize; 3], f64)> {
+    let [n0, n1, n2] = [0, 1, 2].map(|axis| sf.axis_grids[axis].len());
+    let window = |i: usize, j: usize, k: usize| {
+        let start = ((i * n1 + j) * n2 + k) * 9;
+        &sf.data[start..start + 9]
+    };
+    let cell_is_finite = |i: usize, j: usize, k: usize| {
+        (0..8).all(|c| {
+            window(i + (c >> 2), j + ((c >> 1) & 1), k + (c & 1))
+                .iter()
+                .all(|v| v.is_finite())
+        })
+    };
+
+    let mut best: Option<([usize; 3], f64)> = None;
+    for i in 0..n0 - 1 {
+        for j in 0..n1 - 1 {
+            for k in 0..n2 - 1 {
+                if !cell_is_finite(i, j, k) {
+                    continue;
+                }
+                let vm = reify_stdlib::compute_von_mises_3x3(window(i, j, k));
+                if best.is_none_or(|(_, b)| vm > b) {
+                    best = Some(([i, j, k], vm));
+                }
+            }
+        }
+    }
+    best
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 /// THE REGRESSION: `max(von_mises(result.stress))` over a real solve must be a
@@ -487,4 +552,73 @@ fn argmax_von_mises_over_real_stress_field_returns_the_peak_grid_coordinate() {
              window (index-matched to the independent recomputation)"
         );
     }
+}
+
+/// THE POINTWISE REGRESSION: `sample(von_mises(result.stress), p)` over a real
+/// solve must be a PRESSURE scalar — not `Value::Undef`, which it was while
+/// `sample_field_at` fed the backing `Value::SampledField` to a lambda-only
+/// applicator.
+///
+/// The oracle is exact, not approximate. Pointwise sampling projects every
+/// node's stride-9 window with the same kernel the reductions use, then
+/// interpolates the projected node values trilinearly. At a lower cell corner
+/// every axis has t = 0, and with all eight corners of that cell finite the
+/// interpolation returns the corner's own value bit for bit — so the expected
+/// value is `compute_von_mises_3x3` of that node's own window. The corner is the
+/// fully-finite lower corner with the largest von Mises value, so the pinned
+/// value is a loaded one.
+#[test]
+fn sample_of_von_mises_over_real_stress_field_equals_its_node_projection() {
+    let result = solve_cantilever();
+    let (field, field_type) = stress_field(&result);
+
+    // Oracle, computed before `field` is moved into the expression.
+    let (at, expected_vm) = {
+        let sf = backing_sampled_field(&field);
+        assert_eq!(
+            sf.axis_grids.len(),
+            3,
+            "the cantilever stress field must be a 3-axis Regular3D grid"
+        );
+        let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+        assert_eq!(
+            sf.data.len(),
+            grid_count * 9,
+            "stride-9 buffer must hold one 3x3 tensor per grid point"
+        );
+        let (corner, vm) = peak_fully_finite_lower_corner(sf).expect(
+            "the stress grid must contain a cell whose eight corner windows are all \
+             finite — the cantilever fixture would need a grid overlapping the mesh",
+        );
+        assert!(
+            vm > 0.0,
+            "the peak fully-finite corner of a loaded cantilever must carry a positive \
+             von Mises value, got {vm:e}"
+        );
+        let coords = (0..3)
+            .map(|axis| Value::Scalar {
+                si_value: sf.axis_grids[axis][corner[axis]],
+                dimension: DimensionVector::LENGTH,
+            })
+            .collect();
+        (Value::Point(coords), vm)
+    };
+
+    let sampled = sample_von_mises_over_field(field, field_type, at);
+
+    assert_ne!(
+        sampled,
+        Value::Undef,
+        "sample(von_mises(result.stress), p) must not be Undef — the Sampled-backed \
+         wrapper samples its per-node projection"
+    );
+    assert_eq!(
+        sampled,
+        Value::Scalar {
+            si_value: expected_vm,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "at a lower cell corner of a fully finite cell the sample must be that node's \
+         own von Mises value, bit for bit"
+    );
 }

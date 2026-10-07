@@ -1,4 +1,5 @@
-//! The three-tier overload-resolution ladder — one definition, two consumers.
+//! The three-tier overload-resolution ladder — one definition, shared by the
+//! compile-time and eval-time resolvers (plus one tier-3-only consumer).
 //!
 //! This module is the NORMATIVE home of the per-slot predicates that decide
 //! whether a candidate function's declared parameter type accepts a given
@@ -56,13 +57,14 @@
 //! THIS arg?". Everything above the slot stays with the caller:
 //!
 //! - the arity check (`f.params.len() == arg_types.len()`);
-//! - computing `is_generic = !f.type_params.is_empty()` for the candidate;
+//! - computing the candidate's `is_generic` (for a `CompiledFunction`,
+//!   `!f.type_params.is_empty()`);
 //! - the per-candidate `.all()` over slots;
 //! - the final classification over the surviving set — `reify-compiler`
 //!   reports `Resolved` / `Ambiguous` / `NoMatch` by set size, while
 //!   `reify-expr` takes first-match-wins.
 //!
-//! Those differ legitimately between the two consumers. The DISJUNCT LISTS —
+//! Those differ legitimately between the two resolvers. The DISJUNCT LISTS —
 //! the thing that actually drifted — do not, and live here.
 //!
 //! # Why the API is per-SLOT and not per-candidate
@@ -90,15 +92,24 @@
 //! recursive walks below are still walks.
 //!
 //! `heads_unifiable` is deliberately left without it — a large recursive match
-//! reached only on the head tier's generic branch, so instantiating it in every
-//! consumer codegen unit is a code-size cost with no cheap-leaf case to repay
-//! it.
+//! reached only on the head tier's generic branch and on tier 3's headed
+//! type-param-carrying-arg case, so instantiating it in every consumer codegen
+//! unit is a code-size cost with no cheap-leaf case to repay it.
 //!
 //! # Consumers
 //!
 //! `reify_compiler::type_compat::resolve_function_overload` (compile time) and
-//! `reify_expr::find_matching_compiled_function` (eval time). Any new consumer
-//! must honour the tier-2-is-a-filter contract above.
+//! `reify_expr::find_matching_compiled_function` (eval time) — the drift pair
+//! this module exists for.
+//!
+//! Plus one tier-3-only consumer: reify-compiler's compile-time
+//! trait-assoc-fn dispatch (`obj.(Trait::fn)(args)`, the `TraitMethodCall` arm
+//! in `crates/reify-compiler/src/expr.rs`). It applies tier 3 plus an exact
+//! tie-break with no tier 2, so the tier-2 filter contract is trivially
+//! honoured. It passes `is_generic = true` because its candidates' genericity
+//! is not recorded; the rationale lives at that call site.
+//!
+//! Any new consumer must honour the tier-2-is-a-filter contract above.
 
 use crate::ty::Type;
 
@@ -336,10 +347,16 @@ pub fn type_carries_dim_param(t: &Type) -> bool {
 /// disambiguator between two generic overloads whose type-param-carrying
 /// params would otherwise both wildcard-match the same subject.
 ///
-/// Differences from `unify`, both deliberate:
+/// Differences from `unify`, all deliberate:
 /// - A bare `Type::TypeParam` / `Type::ScalarParam` (matched against a
 ///   concrete `Scalar`) leaf is a wildcard slot (`true`) — the slot itself
 ///   carries no constructor head to disagree on.
+/// - An R1 placeholder ARG (`Type::is_unbound_placeholder`) is a wildcard
+///   slot too: it records an unknown, not a disagreement (PRD
+///   `generic-enum-type-arg-retention.md` §4 step 5). A USER type param on
+///   the ARG side deliberately is NOT one — it falls to the `param == arg`
+///   catch-all, which is what keeps tier 3's headed-arg case (PRD C-4) from
+///   re-opening S-4.
 /// - `Applied{name, ..}` vs `Enum(name)` (same name) is a head match:
 ///   variant construction (`Ok { .. }` / `Err { .. }`) type-erases its
 ///   result to `Type::Enum(name)` (`variant_construct.rs`), so a declared
@@ -351,7 +368,8 @@ pub fn type_carries_dim_param(t: &Type) -> bool {
 ///
 /// DELIBERATELY `pub(crate)`, not `pub`. This is the *implementation* of the
 /// head tier, not a rung of the ladder: both consumers reach it only through
-/// [`slot_matches_head_tier`], and this module's own tests are in-crate. Its
+/// [`slot_matches_head_tier`] and [`slot_matches_wildcard_tier`]'s headed-arg
+/// case, and this module's own tests are in-crate. Its
 /// eval-side predecessor was `#[doc(hidden)] pub` purely for cross-crate test
 /// reachability — a concession #5689 was meant to retire, so do not re-widen
 /// it to `pub` (that would advertise it as `reify-core` API and pull it into
@@ -361,6 +379,7 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
         (Type::TypeParam(_), _) => true,
+        (_, arg) if arg.is_unbound_placeholder() => true,
         (Type::ScalarParam(_), Type::Scalar { .. }) => true,
 
         // Single-inner-Type constructors: same head → recurse on the child.
@@ -481,10 +500,26 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     }
 }
 
+/// D4's subject: a BARE user-declared type parameter — never an R1 placeholder.
+#[inline]
+fn is_bare_user_type_param(t: &Type) -> bool {
+    matches!(t, Type::TypeParam(_)) && !t.is_unbound_placeholder()
+}
+
+/// Tier 3's ARG-side admission (PRD C-4) — one arm per arg shape; see
+/// [`slot_matches_wildcard_tier`].
+#[inline]
+fn arg_side_admits(param_ty: &Type, arg_ty: &Type) -> bool {
+    match arg_ty {
+        Type::TypeParam(_) => !arg_ty.is_unbound_placeholder(),
+        headed => type_carries_type_param(headed) && heads_unifiable(param_ty, headed),
+    }
+}
+
 /// Tier 3 of the ladder — the broadest per-slot gate (WILDCARD).
 ///
-/// `is_generic` is the CANDIDATE's genericity (`!f.type_params.is_empty()`),
-/// computed caller-side.
+/// `is_generic` is the CANDIDATE's genericity, computed caller-side — for a
+/// `CompiledFunction` candidate, `!f.type_params.is_empty()`.
 ///
 /// For a GENERIC candidate, a type-param-carrying param is a resolution
 /// wildcard (matches any arg) — mirroring the trait-object wildcard. Gated on
@@ -494,22 +529,34 @@ pub(crate) fn heads_unifiable(param: &Type, arg: &Type) -> bool {
 /// so the call site can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic
 /// no-match.
 ///
-/// D4 (task-4232 γ): A type-param-carrying ARG also acts as a resolution
-/// wildcard (matches any param). This lets a generic fn body pass a
-/// `TypeParam`-typed value to a concrete-param function without a spurious
-/// NoMatch. It is self-scoping: `TypeParam` args only arise inside generic fn
-/// bodies, so concrete-arg calls (non-generic callers) are bit-for-bit
-/// unchanged — `type_carries_type_param(concrete) == false`. Note it is NOT
-/// gated on `is_generic`: the genericity in question belongs to the CALLER
-/// whose body produced the `T`-typed value, not to the candidate being
-/// matched.
+/// The ARG side (PRD docs/prds/v0_6/generic-enum-type-arg-retention.md §7
+/// C-4; the S-4 witness is tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri) (pg-drift:allow — prose only; nothing compiled reads it)
+/// has three cases, none gated on `is_generic` — the genericity in question
+/// belongs to the CALLER whose body produced a type-param-carrying value, not
+/// to the candidate being matched:
+///
+/// 1. A BARE user `TypeParam` arg matches any param (D4, task-4232 γ), so a
+///    generic fn body can pass a `T`-typed value to a concrete-param function
+///    without a spurious NoMatch.
+/// 2. A HEADED arg carrying a type param admits the param only where
+///    `heads_unifiable(param, arg)` holds: a leaky `Result<T, E>` is not a
+///    `Length`. The `type_carries_type_param(arg)` guard is load-bearing:
+///    without it `heads_unifiable`'s erased-subject arm would admit a concrete
+///    `Applied` param vs an `Enum` arg (see
+///    `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`).
+/// 3. A BARE R1 placeholder arg (`Type::is_unbound_placeholder`) gets no
+///    arg-side admission. It matches only where the PARAM is itself a
+///    wildcard (a generic candidate's type/dim-param slot, or a trait-object
+///    slot).
+///
+/// A concrete arg takes none of these, so concrete-arg calls are unaffected.
 ///
 /// DISJUNCT ORDER IS A COST HEURISTIC, NOT SEMANTICS. Every disjunct is pure
 /// and side-effect-free, so `||` short-circuiting can only change how much
-/// work is done, never the answer. `param_ty == arg_ty` is placed ahead of
-/// [`type_carries_type_param`]`(arg_ty)` because the equality bails on the
-/// first differing discriminant, whereas the arg-side walk descends the whole
-/// argument type — and on the eval hot path this predicate runs for every
+/// work is done, never the answer. `param_ty == arg_ty` is placed ahead of the
+/// arg-side disjunct because the equality bails on the first differing
+/// discriminant, whereas the arg side walks a headed argument type (and then
+/// `heads_unifiable`) — and on the eval hot path this predicate runs for every
 /// arity-matching non-exact candidate in the merged prelude table. Reordering
 /// (or adding) disjuncts is therefore free; do not read meaning into it.
 #[inline]
@@ -517,7 +564,7 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
     type_carries_trait_object(param_ty)
         || (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
         || param_ty == arg_ty
-        || type_carries_type_param(arg_ty)
+        || arg_side_admits(param_ty, arg_ty)
 }
 
 /// Tier 2 of the ladder — the middle tie-break gate (HEAD).
@@ -536,7 +583,8 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 /// disambiguation.
 ///
 /// D4 (task-4232 γ) in this tier: a type-param ARG is a wildcard ONLY when it
-/// is a BARE `Type::TypeParam` (a generic fn body passing a `T`-typed value) —
+/// is a BARE user `Type::TypeParam` (a generic fn body passing a `T`-typed
+/// value; R1 placeholders excluded, as in tier 3) —
 /// that slot carries no constructor head to disagree on, so `heads_unifiable`
 /// cannot discriminate it. A HEADED arg carrying a NESTED type-param (e.g. an
 /// `Applied{"Result", [T, E]}` produced by composing two generic stdlib fns
@@ -565,14 +613,14 @@ pub fn slot_matches_wildcard_tier(param_ty: &Type, arg_ty: &Type, is_generic: bo
 ///
 /// The disjuncts are listed in a DIFFERENT order from
 /// [`slot_matches_wildcard_tier`]'s, and that difference carries no meaning:
-/// this tier's arg-side disjunct is an O(1) `matches!` rather than a recursive
-/// walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
+/// this tier's arg-side disjunct is an O(1) bare-param check rather than a
+/// recursive walk, so there is nothing to hoist `param_ty == arg_ty` ahead of. See that
 /// function's cost-heuristic note.
 #[inline]
 pub fn slot_matches_head_tier(param_ty: &Type, arg_ty: &Type, is_generic: bool) -> bool {
     type_carries_trait_object(param_ty)
         || (is_generic && (heads_unifiable(param_ty, arg_ty) || type_carries_dim_param(param_ty)))
-        || matches!(arg_ty, Type::TypeParam(_))
+        || is_bare_user_type_param(arg_ty)
         || param_ty == arg_ty
 }
 
@@ -595,10 +643,7 @@ mod tests {
     fn heads_unifiable_corpus() -> Vec<(Type, Type, bool, &'static str)> {
         let t = || Type::TypeParam("T".to_string());
         let q = || Type::ScalarParam("Q".to_string());
-        let result_of = |args: Vec<Type>| Type::Applied {
-            name: "Result".to_string(),
-            args,
-        };
+        let result_of = |args: Vec<Type>| Type::applied("Result", args);
         let proj = |base: Type, member: &str| Type::Projection {
             base: Box::new(base),
             member: member.to_string(),
@@ -628,6 +673,43 @@ mod tests {
                 Type::Int,
                 false,
                 "ScalarParam vs non-Scalar (catch-all)",
+            ),
+            // R1 placeholder ARG wildcard (PRD §4 step 5) vs a USER param arg.
+            (
+                Type::Int,
+                ph("E"),
+                true,
+                "placeholder ARG vs concrete leaf (R1 unknown)",
+            ),
+            (
+                Type::Int,
+                t(),
+                false,
+                "USER TypeParam ARG is not an arg-side wildcard (catch-all)",
+            ),
+            (
+                Type::Option(Box::new(Type::Int)),
+                ph("T"),
+                true,
+                "bare placeholder ARG vs constructor param",
+            ),
+            (
+                result_of(vec![Type::length(), Type::String]),
+                result_of(vec![Type::length(), ph("E")]),
+                true,
+                "Applied recurse through a placeholder arg slot (U-1 after δ)",
+            ),
+            (
+                result_of(vec![Type::length(), Type::String]),
+                result_of(vec![Type::length(), t()]),
+                false,
+                "Applied recurse: a USER param arg slot does not unify with a concrete param slot",
+            ),
+            (
+                result_of(vec![Type::Int, Type::String]),
+                result_of(vec![Type::String, ph("E")]),
+                false,
+                "a placeholder slot never excuses a concrete mismatch elsewhere",
             ),
             // Single-inner-Type constructors, match + near-miss.
             (
@@ -984,6 +1066,16 @@ mod tests {
     /// TypeParam shorthand, matching the compile-side `tp` helper.
     fn tp(name: &str) -> Type {
         Type::TypeParam(name.to_string())
+    }
+
+    /// R1 unbound-placeholder shorthand.
+    fn ph(name: &str) -> Type {
+        Type::unbound_placeholder(name)
+    }
+
+    /// `Result<ok, err>` as an `Applied` type.
+    fn res(ok: Type, err: Type) -> Type {
+        Type::applied("Result", vec![ok, err])
     }
 
     /// `type_carries_trait_object` deliberately walks FEWER constructors than
@@ -1383,11 +1475,97 @@ mod tests {
             &Type::String,
             false
         ));
+
+        // ARG side (PRD generic-enum-type-arg-retention §7 C-4): one row per
+        // arm — (1) bare user param, (2) headed, (3) bare R1 placeholder.
+        let force = Type::Scalar {
+            dimension: crate::dimension::DimensionVector::FORCE,
+        };
+        let arg_side_rows = [
+            (
+                Type::Bool,
+                tp("U"),
+                false,
+                true,
+                "(1) D4: bare user TypeParam",
+            ),
+            (
+                Type::length(),
+                res(tp("T"), tp("E")),
+                false,
+                false,
+                "(2) headed: Length vs leaky Result<T,E> (S-4)",
+            ),
+            (
+                Type::dimensionless_scalar(),
+                Type::Option(Box::new(tp("T"))),
+                false,
+                false,
+                "(2) headed: Real vs Option<T>",
+            ),
+            (
+                Type::List(Box::new(Type::Int)),
+                Type::List(Box::new(tp("T"))),
+                false,
+                false,
+                "(2) headed: a nested USER param needs heads to unify",
+            ),
+            (
+                res(Type::length(), Type::String),
+                res(Type::length(), ph("E")),
+                false,
+                true,
+                "(2) headed: heads unify through a placeholder slot (U-1)",
+            ),
+            (
+                res(force, Type::String),
+                res(Type::length(), ph("E")),
+                false,
+                false,
+                "(2) headed: a placeholder slot does not excuse Force vs Length",
+            ),
+            (
+                Type::Bool,
+                ph("E"),
+                false,
+                false,
+                "(3) bare placeholder vs a concrete param",
+            ),
+            (
+                Type::Bool,
+                ph("E"),
+                true,
+                false,
+                "(3) bare placeholder vs a generic candidate's CONCRETE slot",
+            ),
+            (
+                tp("T"),
+                ph("E"),
+                true,
+                true,
+                "(3) bare placeholder vs a generic param (param side admits)",
+            ),
+            (
+                Type::TraitObject("Load".to_string()),
+                ph("E"),
+                false,
+                true,
+                "(3) bare placeholder vs the ungated trait-object param",
+            ),
+        ];
+        for (param, arg, is_generic, expected, arm) in &arg_side_rows {
+            assert_eq!(
+                super::slot_matches_wildcard_tier(param, arg, *is_generic),
+                *expected,
+                "C-4 arg side, {arm}: param={param:?}, arg={arg:?}, \
+                 is_generic={is_generic}"
+            );
+        }
     }
 
     /// THE UNIFICATION PIN (#5689).
     ///
-    /// A type-param-carrying ARG is itself a resolution wildcard: D4 /
+    /// A bare user `TypeParam` ARG is itself a resolution wildcard: D4 /
     /// task-4232 γ. A generic fn body passing a `T`-typed value to a
     /// CONCRETE-param overload must still select that overload rather than
     /// falling to a spurious no-match.
@@ -1409,7 +1587,7 @@ mod tests {
     /// `is_generic` — the genericity in question belongs to the CALLER whose
     /// body produced the `T`-typed value, not to the CANDIDATE being matched.
     #[test]
-    fn slot_matches_wildcard_tier_accepts_a_type_param_carrying_arg() {
+    fn slot_matches_wildcard_tier_accepts_a_bare_user_type_param_arg() {
         assert!(
             super::slot_matches_wildcard_tier(
                 &Type::dimensionless_scalar(),
@@ -1426,16 +1604,6 @@ mod tests {
         assert!(!super::slot_matches_wildcard_tier(
             &Type::dimensionless_scalar(),
             &Type::Int,
-            false,
-        ));
-        // A NESTED type-param arg also carries the wildcard at this tier —
-        // tier 2 is where headed args get discriminated, not here.
-        assert!(super::slot_matches_wildcard_tier(
-            &Type::dimensionless_scalar(),
-            &Type::Applied {
-                name: "Result".to_string(),
-                args: vec![tp("T"), tp("E")],
-            },
             false,
         ));
     }
@@ -1496,6 +1664,8 @@ mod tests {
         // The BARE-`TypeParam` ARG disjunct: ungated, matches any param.
         assert!(super::slot_matches_head_tier(&Type::Int, &tp("T"), false));
         assert!(super::slot_matches_head_tier(&option_t, &tp("T"), false));
+        // ...for a bare USER param only: an R1 placeholder is not D4's subject.
+        assert!(!super::slot_matches_head_tier(&Type::Int, &ph("E"), false));
         // ...but a HEADED arg carrying a NESTED type-param is NOT a wildcard
         // here (task #4038 δ) — it has a real head, so heads_unifiable
         // discriminates it.
@@ -1556,13 +1726,22 @@ mod tests {
 
         // The non-subset relation is CONFINED to generic candidates, and that
         // is worth pinning too: with `is_generic == false` the head tier
-        // collapses to `tcto(param) || matches!(arg, TypeParam(_)) || param ==
-        // arg`, and since a bare `TypeParam` arg also satisfies the wildcard
-        // tier's `type_carries_type_param(arg)` disjunct, head genuinely IS a
-        // subset there. So the screening requirement is not merely defensive
-        // hygiene — it is load-bearing exactly for the generic overloads the
-        // head tier was introduced to disambiguate.
+        // collapses to `tcto(param) || is_bare_user_type_param(arg) || param ==
+        // arg`, and since a bare user `TypeParam` arg also satisfies the
+        // wildcard tier's D4 arm, head genuinely IS a subset there. So the
+        // screening requirement is not merely defensive hygiene — it is
+        // load-bearing exactly for the generic overloads the head tier was
+        // introduced to disambiguate.
         assert!(!super::slot_matches_head_tier(&param, &arg, false));
         assert!(!super::slot_matches_wildcard_tier(&param, &arg, false));
+
+        // The non-generic subset relation also holds for a bare R1 placeholder
+        // arg: both tiers reject it against a concrete param.
+        assert!(!super::slot_matches_head_tier(&Type::Bool, &ph("E"), false));
+        assert!(!super::slot_matches_wildcard_tier(
+            &Type::Bool,
+            &ph("E"),
+            false
+        ));
     }
 }

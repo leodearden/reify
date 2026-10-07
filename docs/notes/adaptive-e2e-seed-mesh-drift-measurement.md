@@ -36,6 +36,11 @@ binary built once, idle host, `nproc=32`.
   refined tetrahedralization). The post-refine peak is 1002 dofs, against the
   fixture's 2_000_000 `max_dofs` cap.
 - **Flake rate, post-fix.** 25 of 25 consecutive runs passed in the same lane.
+- **Load model (added 2026-09-30).** Every number above was measured with the
+  pre-7448 tip load, an equal split of the resultant over the tip nodes; task
+  7448 replaced it with the consistent uniform traction
+  (`apply_patch_resultant`), and nothing here was re-measured, so do not compare
+  post-7448 measurements to these like-for-like.
 
 ## Hypothesis (NOT established fact) — RESOLVED by task 7411, see below
 

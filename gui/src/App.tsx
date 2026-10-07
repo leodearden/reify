@@ -1248,8 +1248,7 @@ const App: Component = () => {
     const fileData = await bridgeOpenFile(path);
     editorStore.openFile(fileData);
     // Load into engine for evaluation (meshes, values, constraints)
-    const guiState = await bridgeOpenFileEngine(path);
-    engineStore.initFromState(guiState);
+    engineStore.applyPublishedState(await bridgeOpenFileEngine(path));
 
     // Load persisted view state (sidecar > localStorage > null).
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
@@ -1285,8 +1284,8 @@ const App: Component = () => {
 
   // Guard for File→New and File→Open: returns true when it is safe to proceed.
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
-  // replaces the full engine state (initFromState), view state, and current path — any
-  // open buffer with unsaved edits is effectively unreachable after the switch.
+  // replaces the full engine state (applyPublishedState), view state, and current path —
+  // any open buffer with unsaved edits is effectively unreachable after the switch.
   async function confirmDiscardIfDirty(): Promise<boolean> {
     if (editorStore.state.dirtyFiles.length === 0) return true;
     return await bridgeAsk('You have unsaved changes. Discard them?');
@@ -1459,10 +1458,10 @@ const App: Component = () => {
     setInitPhase('loading');
 
     try {
-      const initialState = await getInitialState();
+      const initial = await getInitialState();
       if (!alive) return;
-      engineStore.initFromState(initialState);
-      for (const file of initialState.files) {
+      engineStore.applyPublishedState(initial);
+      for (const file of initial.state.files) {
         editorStore.openFile(file);
       }
     } catch (err) {

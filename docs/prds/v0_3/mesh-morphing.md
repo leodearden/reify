@@ -1,23 +1,58 @@
 # PRD: Mesh Morphing for Topology-Preserving Parameter Changes
 
-Status: deferred — candidate v0.3.x or v0.4 follow-on to `structural-analysis-fea.md`. Cross-cuts geometry kernel + FEA + persistent cache. Filed 2026-05-02 from FEA PRD spillover. Design resolved 2026-05-04 — see "Resolved design decisions" below.
+Status: deferred — candidate v0.3.x or v0.4 follow-on to `structural-analysis-fea.md`. Cross-cuts geometry kernel + FEA + persistent cache. Filed 2026-05-02 from FEA PRD spillover. Design resolved 2026-05-04 — see "Resolved design decisions" below. **Performance claims corrected 2026-09-23** — see "Measured performance status (2026-09-23)"; the speed figures in Goal/Background below are the original design-time estimates, retained for provenance and annotated where measurement contradicts them.
 
 ## Goal
 
-Avoid mesh-from-scratch on parameter changes that preserve topology (dimensional changes only — no add/remove of features). Detect such changes, morph existing mesh nodes to fit the updated boundary, reuse element connectivity. Big lever for any mesh-consuming workflow (FEA, CFD, toolpath, lattice generation), highest leverage for slider-driven and auto-resolve interactions. Also preserves FEA solver warm-start state across parameter ticks because element-to-DOF mapping survives the morph — compounding the speedup beyond mesh time alone.
+Avoid mesh-from-scratch on parameter changes that preserve topology (dimensional changes only — no add/remove of features). Detect such changes, morph existing mesh nodes to fit the updated boundary, reuse element connectivity. Applies to any mesh-consuming workflow (FEA, CFD, toolpath, lattice generation), with the most leverage in slider-driven and auto-resolve interactions. Preserves FEA solver warm-start state across parameter ticks because element-to-DOF mapping survives the morph, and removes remesh-to-remesh discretisation noise from the FEA outputs an auto-resolve loop steers on. *(Corrected 2026-09-23: the original text called this a "big lever" on wall-clock; measurement shows mesh time is roughly par with a from-scratch remesh at 100K elements, and the warm-start/connectivity benefit is the justification that remains — see "Measured performance status".)*
 
 ## Background
 
-The v0.3 FEA PRD (`structural-analysis-fea.md`) ships a Gmsh-based volume mesher that runs from scratch on every cache miss. For a typical parametric design — `param thickness : Length = auto` driving an auto-resolve loop, or a user dragging a dimension slider — every parameter tick changes the geometry, blowing the mesh cache on every step. At 100K elements, that's ~3s serial / ~0.3s parallel per tick of mesh time; auto-resolve loops with 50 evaluations pay this 50 times.
+The v0.3 FEA PRD (`structural-analysis-fea.md`) ships a Gmsh-based volume mesher that runs from scratch on every cache miss. For a typical parametric design — `param thickness : Length = auto` driving an auto-resolve loop, or a user dragging a dimension slider — every parameter tick changes the geometry, blowing the mesh cache on every step. At 100K elements, that's ~3s serial / ~0.3s parallel per tick of mesh time; auto-resolve loops with 50 evaluations pay this 50 times. *(Design-time estimate, superseded: gmsh measured ~2 s single-threaded at 109K tets on the characterisation harness — `docs/notes/morph-vs-remesh-scale-characterisation.md`.)*
 
-Yet for typical dimensional parameter changes — fillet radius, wall thickness, hole diameter — the mesh *topology* (element connectivity, surface-element correspondence) doesn't have to change. Only node positions need to update. Mesh morphing handles this in milliseconds.
+Yet for typical dimensional parameter changes — fillet radius, wall thickness, hole diameter — the mesh *topology* (element connectivity, surface-element correspondence) doesn't have to change. Only node positions need to update. *(Corrected 2026-09-23: "Mesh morphing handles this in milliseconds" is true only of the Laplacian quick-pass; the elasticity morph is a full assembly plus CG solve and is expected to cost single-digit seconds at 100K elements once #7834 lands — see "Measured performance status".)*
 
-Two compounding wins:
+Two claimed wins *(status per "Measured performance status (2026-09-23)": win 1 is NOT supported by measurement for the elasticity morph; win 2 is implemented as a mechanism and is measured by task 2952)*:
 
-1. **Mesh time elided.** Morph is O(milliseconds) where remesh is O(seconds).
+1. **Mesh time elided.** *Original claim:* morph is O(milliseconds) where remesh is O(seconds). *Measured:* at ~10K tets the elasticity morph is roughly par with gmsh (1.28x under release, slower under dev); at ~109K tets it was 63x SLOWER, 96% of which is a fixable O(n × |bcs|) loop in Dirichlet application (#7834). After that fix the expected relation is roughly par, not 10-100x.
 2. **FEA warm-start state preserved.** Because the morphed mesh has the same element connectivity as its source, the prior solver iterate's element-to-DOF mapping is still valid. Warm start carries through the morph intact. With remesh, the prior iterate would have to be projected onto the new mesh (an interpolation step) or warm start is abandoned. So morphing saves both the mesh build *and* keeps the FEA solver near its previous solution — the auto-resolve loop converges in many fewer iterations per parameter tick.
 
-This is the single biggest lever for sub-second slider response in FEA workflows. It also benefits any future mesh-consuming op (CFD, EM, CAM toolpaths, lattice infill, voxel-octree builders).
+*(Corrected 2026-09-23: the original text called this "the single biggest lever for sub-second slider response"; it is not a wall-clock lever on mesh time. Its value is the warm start and the stable connectivity across ticks.)* It also benefits any future mesh-consuming op (CFD, EM, CAM toolpaths, lattice infill, voxel-octree builders) in the same two ways.
+
+## Measured performance status (2026-09-23)
+
+Ruling by Leo in the esc-2953-7 design session (resolved_by `design-2953-morph`), on the measurements below: **the feature is retained**, the wall-clock promise is withdrawn, and the justification that remains is warm-start preservation plus stable connectivity across ticks. Both are mechanisms in the code today and neither has been measured yet; task 2952 is the measurement.
+
+### What was measured
+
+- **Task #6638**, `crates/reify-mesh-morph/tests/morph_scale_characterisation.rs`, digest `docs/notes/morph-vs-remesh-scale-characterisation.md`: at ~9.9K tets the elasticity morph is roughly par with single-threaded gmsh (1.28x faster under release, 0.70–0.75x under dev); at ~109K tets the morph took 124 s against gmsh's 2 s — **63x slower**, converged, profile-invariant.
+- **Profile, 2026-09-23** (same harness rebuilt at main HEAD, 104 gdb stack samples over the 109K leg, exact CG count by breakpoint on `spmv_seq`): **100 of 104 samples in `reify_solver_elastic::boundary::dirichlet::apply_dirichlet_row_elimination`**, 2 in `assemble_global_stiffness`, 0 in any CG or SpMV symbol; CG ran 208 iterations at 61,617 DOF and 89 at 6,507 DOF. So the solver is not the problem: the morph pins every surface node (13,932 prescribed DOFs) and the Dirichlet routine scans all rows once per prescribed DOF, an O(n × |bcs|) cost its own doc comment names as the pinned-surface failure mode. The characterisation note's attribution to "serial unpreconditioned CG" was wrong; the note carries a dated correction.
+
+### What the honest claim is
+
+- Mesh time: with #7834 landed, the 100K morph leg is expected to cost single-digit seconds (assembly plus ~200 CG iterations) against ~2 s single-threaded gmsh — **roughly par, possibly slower**, never 10×. At 10K, a modest win. The harness compares a bare tetrahedralisation against a bare morph solve; in the engine both arms carry more (tessellation and boundary attribution on the remesh side, projection and quality check on the morph side), so the in-engine ratio must be measured by task 2953, not inferred.
+- Warm start: `warm_start_beneficial` in `crates/reify-eval/src/compute_targets/elastic_static.rs` discards a prior iterate when the DOF count changes. A morph preserves the count; a gmsh remesh almost never does. A `deterministic` FEA solve ignores warm state entirely. Effect size: unmeasured until 2952.
+- Connectivity stability: a remesh injects discretisation noise into every FEA output between ticks; a morph does not. No code consumes this yet beyond the warm start; it is what an auto-resolve loop steering on FEA outputs would rely on.
+
+### How its use is managed today
+
+Nothing cost-aware. Eligibility (`morph_eligible`, Stage A + B) is purely topological; the only other dispatch input is the displacement-magnitude cutover to the Laplacian quick-pass (`LAPLACIAN_DISPLACEMENT_FRACTION = 0.05` of the bbox diagonal). No gate reads element count, DOF count or predicted cost. The morph arm fires only for realizations feeding `solver::elastic_static` (the sole boundary-demanding target), only when a prior in-memory source exists. There is no runtime kill switch: `MorphRegistration::{Enabled, Unavailable}` is chosen at Engine construction (CLI and GUI both `Enabled`). The refine-trigger that should force a fresh remesh at settled moments has no production call site. Whether a size or cost gate is warranted is to be judged on post-#7834 numbers, not added pre-emptively.
+
+### Deferred optimisations and what would justify or rule them out
+
+Recorded so they are not rediscovered. Owned by **[MILESTONE] task #7836**, dep-gated on #7834 and #2952; a pointer comment in `crates/reify-mesh-morph/src/elasticity.rs` at the hard-coded `Deterministic` mode site lands with #7834.
+
+1. **Cache the factorised post-BC stiffness matrix.** K depends only on the source mesh and the fictitious material; prescribed positions enter only the RHS, and `compose_morph` pins the same node set every tick, so the post-elimination matrix is tick-invariant for a fixed source. Factorise once (sparse Cholesky via faer, already used by `eigensolve.rs`) and reduce each tick to a triangular solve. Complication: the source policy is most-recent-in-memory, so the source changes every tick; this needs either a held reference mesh (changes the chain semantics #2951 measured) or per-source amortisation. *Justified if* the post-#7834 morph still exceeds the remesh arm or is a material share of the tick, and 2952 shows the warm-start benefit is real. *Ruled out if* post-fix morph is at or below remesh and a small share of the tick, or 2952 shows no benefit, or the reference-mesh policy fails on quality.
+2. **Parallel assembly and CG.** Both modes exist in `reify-solver-elastic` and are tolerance-equivalent across thread counts. The morph hard-codes the `Deterministic` modes and two tests pin bit-equality by name, for a cross-machine-stable warm-start cache that does not exist and that a deterministic FEA solve would not read. *Justified if* the post-fix profile shows assembly + CG dominating, the tick budget is unmet, and bit-identical morphed meshes are ruled not to be a requirement. *Ruled out if* option 1 is adopted (no CG per tick), or bit-determinism is affirmed, or the serial morph already meets the budget.
+3. **Widen the Laplacian cutover.** Cheap and fast, but the elasticity solve exists because Laplacian smoothing degrades under large displacement (#6637); judge on quality-reject rate, not speed.
+
+### Task disposition
+
+- **#7834** (high): fix the Dirichlet loop; re-measure the harness; add the pointer comment. The perf half of #3202, which landed only its comment half.
+- **2953** (rescoped): coverage ≥ 90% gate, both arms' wall-clock recorded, no ratio assertion; depends on #7834.
+- **2952** (unchanged, pending on #7332/#6643): the warm-start measurement.
+- **#7836** [MILESTONE]: the decision gate above.
+- **#7835** (low): retire the dead `morph_stats` counter surface (it reports zeros forever; the live counters are `mesh_morph_stats`) and add a diagnostics bucket for non-panic solver-error remeshes.
 
 ## Why deferred (and why a separate PRD)
 
@@ -136,7 +171,7 @@ Sixteen tasks. Several depend on FEA solver-kernel tasks and on `ReprKind::Volum
 13. **Quality-threshold calibration.** Run morph + from-scratch remesh on representative parametric geometries: fillet-radius sweep on a bracket, hole-diameter sweep on a plate, wall-thickness sweep on a box. Calibrate the three quality thresholds (min scaled J floor, % below 0.25, aspect-ratio increase) so morph is rejected only when remesh quality is materially better. Bake the calibrated defaults into `MorphOptions`. Depends on tasks #7 / #8, #9.
 14. **Morph-chain degradation bounds test.** Run a parameter-sweep auto-resolve loop (50+ ticks) with morphing enabled. Assert the quality metric distribution does not unboundedly degrade — confirms the elasticity morph's per-step BVP framing keeps chain degradation tight. Depends on tasks #7 / #8, #9, #10.
 15. **FEA warm-start preservation regression.** End-to-end: auto-resolve loop with morphing enabled vs. disabled. Assert (a) warm-start state survives morph (element-to-DOF mapping stays valid), (b) per-tick CG iteration count is materially lower with morphing enabled than without. Depends on task #10; FEA task #14 (2921) for warm-state plumbing; FEA task #16 (2924) for end-to-end ComputeNode invocation.
-16. **End-to-end slider-responsiveness benchmark.** Wall-clock benchmark: typical bracket geometry, 10K – 100K element mesh, drive a slider through 50 parameter values. Assert ≥10× wall-clock reduction vs. always-remesh baseline at the 100K scale. Surfaces in CI-tracked perf metrics. Depends on tasks #10, #11; FEA task #22 (2930) for the end-to-end example as a starting fixture.
+16. **End-to-end slider sweep — coverage gate, wall-clock recorded.** *(Rescoped 2026-09-23, task 2953; original: "Assert ≥10× wall-clock reduction vs. always-remesh baseline at the 100K scale. Surfaces in CI-tracked perf metrics.")* Bracket geometry at ~10K and ~100K tets, one dimensional parameter driven through 50 ticks through the real Engine, morph arm vs always-remesh arm (`MorphRegistration::Enabled` vs `Unavailable`). Hard gate: morph coverage ≥ 90% of ticks (from `reify_mesh_morph::diagnostics`). Recorded, not gated: both arms' wall-clock at both scales and per-tick FEA iteration counts. No ratio or absolute wall-clock assertion — the ≥10×/≥5× targets had no measurement basis and task #6638 measured the opposite; the CI-tracked-metrics arm is dropped. Depends on tasks #10, #11, #6638 and on #7834 (so the recorded numbers are post-fix).
 
 ## Out of scope for this PRD
 
@@ -150,7 +185,7 @@ Sixteen tasks. Several depend on FEA solver-kernel tasks and on `ReprKind::Volum
 
 ## Relationship to other PRDs and tasks
 
-- **Speeds up `structural-analysis-fea.md`** — cuts wallclock for slider/auto-resolve workflows by 10–100×; the single biggest interactive-smoothness lever, and preserves FEA solver warm-start state across parameter ticks (compounding the speedup).
+- **Serves `structural-analysis-fea.md`** — preserves FEA solver warm-start state and element connectivity across parameter ticks; mesh time itself is roughly par with a from-scratch remesh (the original "10–100×" claim was withdrawn 2026-09-23 — see "Measured performance status").
 - **Benefits future CFD / EM / CAM PRDs** — any mesh-consuming computation reuses the same morphing layer via the consumer-neutral `reify-mesh-morph` crate.
 - **Composes with `persistent-fea-cache.md`** — morphed meshes are *not* written to the persistent cache (only from-scratch results are). The two layers are orthogonal: persistent cache covers cross-session exact hits; morph covers within-session incremental updates. The persistent-fea-cache PRD's earlier note about caching morphed meshes with morph provenance should be removed.
 - **Hard-depends on `docs/prds/v0_2/persistent-naming-v2.md`** — Stage B's bijection check is the load-bearing primitive. Morph reliability is bounded by persistent-naming reliability.

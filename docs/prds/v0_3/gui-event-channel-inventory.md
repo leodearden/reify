@@ -45,9 +45,11 @@ The canonical machine-grep-friendly form lives at `docs/gui-event-channels.md` (
 | `constraint-removed` | `String` (node_id) | `delta_to_events` | `onConstraintRemoved` | |
 | `tessellation-diagnostics` | `Vec<DiagnosticInfo>` (full list) | `delta_to_events` | `onTessellationDiagnostics` | Full-snapshot semantics |
 | `compile-diagnostics` | `Vec<DiagnosticInfo>` (full list) | `delta_to_events` | `onCompileDiagnostics` | Full-snapshot semantics |
-| `evaluation-status` | `{phase: String, progress: Option<f32>}` | `main.rs::emit_status` | `onEvaluationStatus` | RAII IdleGuard emits `idle` on Drop |
+| `evaluation-status` | `{phase: String, progress: Option<f32>}` | `gui/src-tauri/src/eval_queue.rs::EvalQueue` via `main.rs::TauriEvalObserver` | `onEvaluationStatus` | Queue-level: `evaluating` when the first edit/evaluation is accepted while idle, `idle` after the last one's delta is published (panic-safe); reads and registrations never toggle it (task 7442) |
+| `eval-generation` | `EvalGeneration {generation: u64}` | `gui/src-tauri/src/eval_queue.rs::EvalQueue` (announces before running each edit/evaluation) via `main.rs::TauriEvalObserver` | `bridge.ts::onEvalGeneration` → newest-generation guard for `engineStore.applyPublishedState` | Fence: emitted when an edit/evaluation of that generation STARTS, before its engine emits and its delta; the whole-state replies of `get_initial_state` / `open_file_engine` carry `PublishedState {generation, state}` so a reply older than an announced generation never overwrites event-applied state (task 7853). Spec: [`eval-generation.md`](../../gui-event-channels/eval-generation.md) |
 | `kernel-status` | `KernelStatus {available, message}` | `main.rs` Tauri `setup()` | `onKernelStatus` | One-shot at startup |
 | `diagnostics` | `{uri, diagnostics}` (LSP-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; emitted only — no frontend subscriber since task 6227 |
+| `lsp-log` | `{type, message}` (LSP `LogMessageParams`-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; emitted only — no frontend subscriber; new in task 6329 |
 | `file-changed` | `FileData {path, content}` | `main.rs::create_watcher` | `onFileChanged` | File-watcher-driven |
 | `focus-entity` | `String` (entity_path) | `focus_entity` command + MCP `focus_entity` tool | `onFocusEntity` | Bidirectional (UI ↔ MCP) |
 | `navigate-to-source` | `{file, line, column, end_line, end_column}` | MCP `navigate_to_source` tool | `onNavigateToSource` | MCP-driven |

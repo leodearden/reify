@@ -605,6 +605,14 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
             MemberDecl::Relate(r) => {
                 r.relations.iter().any(|rel| expr_member_segment_hit(rel, off))
             }
+            // A `sketch { … }` block carries NO direct-scope expressions of its
+            // own — its `let` values and bare relations live in its nested
+            // member list, which the `for_each_child_scope` recursion below
+            // visits at `depth + 1` (constrained-2d-sketch α, task 5506). This
+            // is the `GuardedGroup`/`Port` shape, not the `Relate` shape: a
+            // relate block holds `Vec<Expr>` directly, a sketch holds
+            // `Vec<MemberDecl>`.
+            MemberDecl::Sketch(_) => false,
             // Not walked by `collect_uses` — no tracked binding.
             MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
         };
@@ -768,8 +776,8 @@ fn collect_bindings_in_scope(
 /// Invoke `visit` once for each nested member-list scope that lives directly
 /// inside `member` — EXACTLY the member lists [`collect_uses`] descends into: a
 /// `GuardedGroup`'s `where` and `else` branches, a `Port` body, a `Sub`'s
-/// specialization body and each keyed block's overrides, and a
-/// `MatchArmDeclGroup`'s per-arm member clusters.
+/// specialization body and each keyed block's overrides, a
+/// `MatchArmDeclGroup`'s per-arm member clusters, and a `Sketch` body.
 ///
 /// [`collect_bindings_in_scope`] uses this to recurse into nested bindings, while
 /// `collect_uses` recurses into the same lists (plus their member-level
@@ -799,6 +807,13 @@ fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[MemberDecl]
                 visit(std::slice::from_ref(&*arm.member));
             }
         }
+        // A `sketch { … }` body is a nested scope (constrained-2d-sketch α, task
+        // 5506). This arm is the single place both `collect_uses` and
+        // `collect_bindings_in_scope` learn that; rustc does not flag its
+        // absence (the `_ => {}` below swallows a new variant), and without it
+        // every use inside a sketch body is invisible to references/rename.
+        // Pinned by `collect_references_reach_into_a_sketch_body_which_owns_its_scope`.
+        MemberDecl::Sketch(s) => visit(s.members.as_slice()),
         _ => {}
     }
 }
@@ -858,6 +873,13 @@ fn member_span(member: &MemberDecl) -> Option<SourceSpan> {
         // A `relate { … }` block is walked by `collect_uses` (its relations carry
         // tracked uses), so it must be spanned here too (task δ 4384).
         MemberDecl::Relate(r) => Some(r.span),
+        // A `sketch { … }` block is walked by `collect_uses` (its body members
+        // carry tracked uses — e.g. `distance(a, b, slot_w)` uses the enclosing
+        // `slot_w` param), so the CRITICAL invariant above requires a span here
+        // (constrained-2d-sketch α, task 5506). Returning `None` while walking
+        // it would put every use collected from the body outside
+        // `entity_region` and mis-attribute it under shadowing.
+        MemberDecl::Sketch(s) => Some(s.span),
         // Not walked by `collect_uses` — no tracked binding or collected use.
         MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => None,
     }
@@ -1053,6 +1075,9 @@ fn for_each_member_direct_expr(member: &MemberDecl, visit: &mut dyn FnMut(&Expr)
         }
         // See the `MemberDecl::Fn` paragraph in this function's doc comment.
         MemberDecl::Fn(_) => {}
+        // A `sketch { … }` block carries no expression of its own; its body is a
+        // child scope, reached through `for_each_child_scope`.
+        MemberDecl::Sketch(_) => {}
         // Type-only / expression-free members.
         MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
     }
@@ -1855,7 +1880,8 @@ fn collect_decl_name_uses_in_members(
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
             | MemberDecl::MatchArmDeclGroup(_)
-            | MemberDecl::Relate(_) => {}
+            | MemberDecl::Relate(_)
+            | MemberDecl::Sketch(_) => {}
         }
         for_each_member_direct_expr(member, &mut |expr| {
             collect_type_name_uses_in_expr(expr, source, name, out);
@@ -4099,6 +4125,110 @@ structure S {
             from_port_use.declaration,
             span_of(w[2], "width"),
             "the port-body use must bind to the port-local declaration"
+        );
+    }
+
+    #[test]
+    fn collect_references_reach_into_a_sketch_body_which_owns_its_scope() {
+        // A `sketch { … }` body is a nested member-list scope
+        // (constrained-2d-sketch α, task 5506), reached by both `collect_uses`
+        // and `collect_bindings_in_scope` only through `for_each_child_scope`.
+        // (a) an outer param used inside the body is a reference of that param;
+        // (b) a sketch-local `let` owns the uses inside the block and the outer
+        // same-named `let` owns the uses outside it.
+        let source = "\
+structure S {
+    param slot_w: Length = 6mm
+    let anchor = point(0mm, 0mm)
+    let before = anchor
+    sketch profile {
+        let anchor = point(1mm, 0mm)
+        let tip = point(10mm, 0mm)
+        fix(anchor)
+        distance(anchor, tip, slot_w)
+    }
+    let after = anchor
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("sketchscope"));
+        assert!(
+            parsed.errors.is_empty(),
+            "sketch-scope fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // --- (a) outer param `slot_w`: its decl and its sketch-body use. ---
+        let slot = occurrences(source, "slot_w");
+        assert_eq!(slot.len(), 2, "slot_w: decl + the sketch-body use");
+        let slot_refs = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, slot[0] as u32),
+            true,
+        )
+        .expect("slot_w declaration resolves");
+        assert_eq!(slot_refs.kind, RefSymbolKind::Param);
+        assert_eq!(
+            slot_refs.references,
+            vec![span_of(slot[0], "slot_w"), span_of(slot[1], "slot_w")],
+            "the use inside the sketch body must be a reference of the outer param"
+        );
+
+        // --- (b) `anchor`: a[0]=outer decl, a[1]=outer use (before),
+        // a[2]=sketch-local decl, a[3]/a[4]=sketch-body uses, a[5]=outer use (after).
+        let a = occurrences(source, "anchor");
+        assert_eq!(
+            a.len(),
+            6,
+            "outer decl, 2 outer uses, sketch decl, 2 sketch uses"
+        );
+
+        let outer = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[0] as u32),
+            true,
+        )
+        .expect("outer anchor declaration resolves");
+        assert_eq!(outer.kind, RefSymbolKind::Let);
+        assert_eq!(
+            outer.references,
+            vec![
+                span_of(a[0], "anchor"),
+                span_of(a[1], "anchor"),
+                span_of(a[5], "anchor"),
+            ],
+            "the outer anchor owns its decl and the uses outside the sketch only"
+        );
+
+        let local = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[2] as u32),
+            true,
+        )
+        .expect("sketch-local anchor declaration resolves");
+        assert_eq!(local.kind, RefSymbolKind::Let);
+        assert_eq!(
+            local.references,
+            vec![
+                span_of(a[2], "anchor"),
+                span_of(a[3], "anchor"),
+                span_of(a[4], "anchor"),
+            ],
+            "the sketch-local anchor owns its decl and the uses inside the sketch only"
+        );
+
+        let from_body_use = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, a[4] as u32),
+            false,
+        )
+        .expect("sketch-body use resolves");
+        assert_eq!(
+            from_body_use.declaration,
+            span_of(a[2], "anchor"),
+            "a sketch-body use must bind to the sketch-local declaration"
         );
     }
 

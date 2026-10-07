@@ -627,17 +627,10 @@ fn run_meshing_with_entity_queries(
     ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
 
     // Thread count
-    let num_threads: f64 = if options.deterministic {
-        1.0
-    } else {
-        match options.threads {
-            Some(t) => t as f64,
-            None => std::thread::available_parallelism()
-                .map(|n| n.get() as f64)
-                .unwrap_or(1.0),
-        }
-    };
-    ffi::option_set_number("General.NumThreads", num_threads)?;
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
 
     // Element order
     let order_value: f64 = match element_order {
@@ -931,11 +924,6 @@ mod tests {
     /// tie) and (b) emits exactly one WARN at
     /// `reify_kernel_gmsh::mesh_boundary` documenting the exclusion.
     fn assert_non_finite_candidate_excluded_and_warns(coord: f64) {
-        // Prime the callsite cache so per-test with_default subscribers see
-        // events even if a prior test thread hit the callsite with no
-        // subscriber active.
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [coord, 0.0, 0.0]),
@@ -986,8 +974,6 @@ mod tests {
     /// the nearer handle.
     #[test]
     fn all_finite_candidates_emit_no_warn() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1023,8 +1009,6 @@ mod tests {
     /// a bad query anchor from a bad candidate anchor.
     #[test]
     fn non_finite_query_anchor_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [f64::NAN, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [0.1, 0.0, 0.0]),
@@ -1073,8 +1057,6 @@ mod tests {
     /// WARN.
     #[test]
     fn all_candidates_non_finite_returns_none_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![(GeometryHandleId(1), [f64::NAN, 0.0, 0.0])];
         let tol_sq = 1.0;
@@ -1109,8 +1091,6 @@ mod tests {
     /// widespread corruption.
     #[test]
     fn n_excluded_counts_only_non_finite_candidates() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let query = [0.0, 0.0, 0.0];
         let candidates = vec![
             (GeometryHandleId(1), [f64::NAN, 0.0, 0.0]),

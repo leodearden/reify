@@ -189,8 +189,8 @@ fn walk_structure(s: &reify_ast::StructureDef, diagnostics: &mut Vec<Diagnostic>
 /// Nesting and its depth bound belong to [`reify_ast::walk_all_member_bodies`];
 /// this lint contributes only [`walk_member_own_exprs`]. The widest recursion
 /// set is deliberate: spec §5.7 lints every user expression, so no member body
-/// may be skipped — sub specialization overrides (body or keyed) and match-arm
-/// members included (decision record: task #7127).
+/// may be skipped — sub specialization overrides (body or keyed), sketch bodies
+/// and match-arm members included (decision record: task #7127).
 fn walk_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
     walk_all_member_bodies(members, &mut |member| {
         walk_member_own_exprs(member, diagnostics)
@@ -216,6 +216,7 @@ fn walk_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
 ///     [`super::forall_walk::walk_forall_connect_body`]).
 ///   * `ForallConstraint`: `collection` + every body expr (delegated to
 ///     [`super::forall_walk::walk_forall_constraint_body`]).
+///   * `Sketch`: no own expressions; its body is reached via [`walk_members`].
 ///   * `AssociatedType`/`MetaBlock`: no expressions, no-op.
 ///
 /// The match has no `_` wildcard: reify-ast's walker forces the recursion
@@ -340,6 +341,10 @@ fn walk_member_own_exprs(member: &MemberDecl, diagnostics: &mut Vec<Diagnostic>)
                 walk_expr(&body.result_expr, diagnostics);
             }
         }
+        // A sketch block carries no expression of its own. Its body members
+        // (lets and bare relations) are reached by `walk_members`, because
+        // ALL_MEMBER_BODIES descends into sketch bodies (task 5506).
+        MemberDecl::Sketch(_) => {}
         // Members with no embedded expressions.
         MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
     }

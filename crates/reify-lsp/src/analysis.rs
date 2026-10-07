@@ -900,11 +900,12 @@ fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>
 /// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
 /// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
 /// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
-/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE; subs
-/// and ports form true nested nodes (a sub's specialization body and a port's
-/// internal members become grandchildren). Unlabeled constraints, connects,
-/// chains, minimize/maximize, and meta blocks have no stable identifier to jump
-/// to and are skipped.
+/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE,
+/// sketch→NAMESPACE (body nested); subs, ports and sketches form true nested
+/// nodes (a sub's specialization body, a port's internal members and a sketch's
+/// body become grandchildren — a sketch body is block-scoped, so it is never
+/// flattened). Unlabeled constraints, connects, chains, minimize/maximize, and
+/// meta blocks have no stable identifier to jump to and are skipped.
 ///
 /// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
 /// stack overflow on pathological input, matching the AST member-walk helpers.
@@ -977,8 +978,19 @@ fn members_to_symbols_depth(
                 name_selection_range(source, port.span, &port.name),
                 children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
             )),
-            // Constraints/connects/chains/minimize/maximize/meta are not emitted
-            // here — they have no stable identifier to jump to.
+            // A sketch is a named region enclosing its own declarations; its
+            // body nests rather than flattening, because sketch-local names are
+            // not visible outside the block.
+            MemberDecl::Sketch(sketch) => symbols.push(make_symbol(
+                &sketch.name,
+                SymbolKind::NAMESPACE,
+                span_to_range(source, sketch.span),
+                name_selection_range(source, sketch.span, &sketch.name),
+                children_or_none(members_to_symbols_depth(source, &sketch.members, depth + 1)),
+            )),
+            // Constraints/connects/chains/minimize/maximize/meta/relate carry no
+            // identifier of their own to jump to; associated types and fns are
+            // named but not outlined as members.
             _ => {}
         }
     }
@@ -3542,6 +3554,49 @@ mod tests {
         let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
         assert_eq!(guarded.kind, SymbolKind::FIELD);
         assert_selection_on_name(source, guarded);
+    }
+
+    /// A `sketch { … }` block is a named region: it appears in the outline as a
+    /// NAMESPACE whose body NESTS under it. Sketch-local names are not visible
+    /// outside the block (PRD `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1),
+    /// so — unlike guarded members — they are not flattened up to the structure.
+    #[test]
+    fn compute_document_symbols_nests_sketch_body_under_the_sketch() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "structure def T {\n    param w : Length = 5mm\n    sketch profile {\n        let a = point(0mm, 0mm)\n        fix(a)\n    }\n}";
+        let parsed = parse_one_clean(source, "test");
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(symbols.len(), 1, "one structure → one top-level symbol");
+        let children = symbols[0]
+            .children
+            .as_ref()
+            .expect("T should have children");
+
+        let shape = |syms: &[DocumentSymbol]| -> Vec<(String, SymbolKind)> {
+            syms.iter().map(|s| (s.name.clone(), s.kind)).collect()
+        };
+        assert_eq!(
+            shape(children),
+            vec![
+                ("w".to_string(), SymbolKind::FIELD),
+                ("profile".to_string(), SymbolKind::NAMESPACE),
+            ],
+            "the structure's children, in source order, are the param and the sketch — \
+             the sketch-local `a` must not be flattened up to the structure"
+        );
+
+        let profile = &children[1];
+        assert_selection_on_name(source, profile);
+        let profile_children = profile
+            .children
+            .as_ref()
+            .expect("the sketch's body members must nest under it");
+        assert_eq!(
+            shape(profile_children),
+            vec![("a".to_string(), SymbolKind::VARIABLE)],
+            "the sketch body's `let a` nests under the sketch; the bare relation `fix(a)` \
+             has no identifier and emits nothing"
+        );
     }
 
     // --- step-11: injectable document-symbol core over a shared ParsedModule ---

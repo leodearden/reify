@@ -26,13 +26,15 @@
 //! than here so that a measurement log cannot drift against the code it is
 //! embedded in.
 //!
-//! The outcome, qualitatively, so a reader learns it without the hop: at the
-//! 100K scale the morph is **more than an order of magnitude SLOWER** than the
-//! from-scratch remesh, so #2953's premise is inverted rather than merely
-//! unmet; at 10K the two arms are roughly par, with which one wins depending
-//! on the build profile. Every figure behind those two sentences is in the
-//! note and deliberately nowhere else — a number repeated here is a number
-//! that can go stale here.
+//! The outcome, qualitatively, so a reader learns it without the hop: since
+//! the Dirichlet fix (#7834) the morph at the 100K scale is still **SLOWER**
+//! than the from-scratch remesh, but within the same order of magnitude, so
+//! #2953's premise is unmet rather than inverted; at 10K the morph wins under
+//! the release profile. Before that fix the morph was more than an order of
+//! magnitude slower at 100K. Every figure behind these sentences is in the
+//! note — its "After the Dirichlet fix" section is the current measurement —
+//! and deliberately nowhere else: a number repeated here is a number that can
+//! go stale here.
 //!
 //! ## How to run
 //!

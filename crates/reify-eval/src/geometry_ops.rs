@@ -9,6 +9,7 @@ use reify_core::Diagnostic;
 use reify_ir::{
     CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
 };
+use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
 use crate::eval_ctx_with_meta;
 
@@ -5329,34 +5330,6 @@ fn profile_circle(
     Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
-/// Degenerate-ring tolerance, in SI square metres.
-///
-/// NOT an independently-chosen tolerance: this is the same value
-/// `validate_boundary` already applies to the sampled outer ring (and to each
-/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
-/// coordinates. Keeping the two equal is what makes the build-time check a
-/// strict pre-image of the existing downstream gate — a ring this check accepts
-/// can still fail later for other reasons, but a ring it rejects would
-/// certainly have failed there.
-///
-/// It is a local `const` only because the mesher's copy is still an INLINE
-/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
-/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
-/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
-/// root, which is why the shoelace formula itself is imported here rather than
-/// copied. Lifting the threshold to a `pub const` beside it would let this
-/// declaration go the same way.
-///
-/// That equality is load-bearing, so it is asserted in code rather than only in
-/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
-/// tests) reads the mesher source and fails if the two values diverge.
-/// Complementary but NOT a substitute — they derive their rings from this
-/// constant and so move with it — are the two boundary tests
-/// `..._area_just_below_tolerance_returns_err` /
-/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
-/// whatever value this holds, with the correct sense and scale.
-const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
-
 fn profile_polygon(
     kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -5411,12 +5384,14 @@ fn profile_polygon(
     // does so more than once is a separate defect, caught by the sweep that
     // follows.
     //
-    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
-    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
-    // calls — not a local re-derivation, so "pre-image" is a structural fact
-    // about one function rather than a claim about two copies staying in step.
-    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
-    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    // Both the shoelace formula and the threshold are SHARED:
+    // `reify_solver_elastic`'s crate-root `ring_signed_area_2d` and
+    // `DEGENERATE_RING_AREA_TOLERANCE`, exactly what `validate_boundary` applies
+    // to each ring before meshing. So this gate is a strict PRE-IMAGE of that
+    // one by construction: a ring rejected here would certainly have been
+    // rejected there, while one accepted here can still fail downstream for
+    // other reasons. (`sweep_classifier.rs` already uses that crate, so this
+    // adds no new dependency edge.)
     //
     // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
     // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
@@ -5483,6 +5458,25 @@ fn profile_ellipse(
 
 // ── Static dispatch tables ────────────────────────────────────────────────────
 
+/// Locks `$table`'s length to `$kind::VARIANT_COUNT` at compile time, so a variant
+/// added to or removed from the kind enum without a matching dispatch-table row (or
+/// vice versa) fails `cargo check` instead of only surfacing later as a `lookup_*`
+/// miss at runtime.
+macro_rules! lock_dispatch_table {
+    ($table:ident, $kind:ty) => {
+        const _: () = assert!(
+            $table.len() == <$kind>::VARIANT_COUNT,
+            concat!(
+                stringify!($table),
+                " / ",
+                stringify!($kind),
+                "::VARIANT_COUNT mismatch — a variant was added or removed without \
+                 updating this production dispatch table"
+            )
+        );
+    };
+}
+
 static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn)] = &[
     (reify_compiler::PrimitiveKind::Box, prim_box),
     (reify_compiler::PrimitiveKind::Cylinder, prim_cylinder),
@@ -5493,6 +5487,7 @@ static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn
     (reify_compiler::PrimitiveKind::Torus, prim_torus),
     (reify_compiler::PrimitiveKind::HalfSpace, prim_half_space),
 ];
+lock_dispatch_table!(PRIMITIVE_COMPILERS, reify_compiler::PrimitiveKind);
 
 static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Fillet, modify_fillet),
@@ -5506,6 +5501,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
+lock_dispatch_table!(MODIFY_COMPILERS, reify_compiler::ModifyKind);
 
 static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn)] = &[
     (reify_compiler::TransformKind::Translate, transform_translate),
@@ -5516,6 +5512,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
     (reify_compiler::TransformKind::ScaleNonUniform, transform_scale_non_uniform),
 ];
+lock_dispatch_table!(TRANSFORM_COMPILERS, reify_compiler::TransformKind);
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
     (reify_compiler::PatternKind::Linear, pattern_linear),
@@ -5524,6 +5521,7 @@ static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &
     (reify_compiler::PatternKind::Linear2D, pattern_linear2d),
     (reify_compiler::PatternKind::Arbitrary, pattern_arbitrary),
 ];
+lock_dispatch_table!(PATTERN_COMPILERS, reify_compiler::PatternKind);
 
 static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::Loft, sweep_loft),
@@ -5536,6 +5534,7 @@ static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::LoftGuided, sweep_loft_guided),
     (reify_compiler::SweepKind::Pipe, sweep_pipe),
 ];
+lock_dispatch_table!(SWEEP_COMPILERS, reify_compiler::SweepKind);
 
 static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::LineSegment, curve_line_segment),
@@ -5545,6 +5544,7 @@ static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::BezierCurve, curve_bezier_curve),
     (reify_compiler::CurveKind::NurbsCurve, curve_nurbs_curve),
 ];
+lock_dispatch_table!(CURVE_COMPILERS, reify_compiler::CurveKind);
 
 static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &[
     (reify_compiler::ProfileKind::Rectangle, profile_rectangle),
@@ -5552,6 +5552,7 @@ static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &
     (reify_compiler::ProfileKind::Polygon, profile_polygon),
     (reify_compiler::ProfileKind::Ellipse, profile_ellipse),
 ];
+lock_dispatch_table!(PROFILE_COMPILERS, reify_compiler::ProfileKind);
 
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
@@ -13231,3 +13232,6 @@ pub(crate) fn surface_subtree(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dispatch_table_uniqueness;

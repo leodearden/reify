@@ -431,7 +431,11 @@ impl crate::Engine {
             && crate::compute_persist::is_persistable_target(target)
         {
             match crate::compute_persist::persistent_lookup(cache_dir, target, cache_key) {
-                Some(result) => {
+                Some(crate::persistent_cache::WithDiagnostics {
+                    value: result,
+                    diagnostics: replayed,
+                    structured_detail: replayed_detail,
+                }) => {
                     // Fold hook — mirrors the Completed arm.
                     if target == "shell-extract::extract" {
                         crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
@@ -453,7 +457,21 @@ impl crate::Engine {
                         0.0,  // cost_per_byte unknown for a cache hit
                     );
                     self.persistent_hit_count += 1;
-                    return Ok((result, vec![], vec![]));
+                    // Tasks 7245 / 7345: replay the diagnostics and the
+                    // structured detail the original solve emitted, through
+                    // the SAME tuple slots the fresh (trampoline) path uses.
+                    // The eval-path consumers already `extend` from both, so
+                    // a warm serve there says what the cold serve said with
+                    // no consumer change. The engine_build hydration/cascade
+                    // sites drop the structured-detail slot on BOTH paths.
+                    //
+                    // #5062 / INV-EVAL-3 (each diagnostic has exactly one owner
+                    // per serve — replayed XOR freshly-pushed, never both)
+                    // holds STRUCTURALLY for both lists, with no flag and no
+                    // dedup pass: this arm `return`s on a HIT and falls through
+                    // to `invoke_compute_trampoline` only on a MISS, so a
+                    // single dispatch can never do both.
+                    return Ok((result, replayed, replayed_detail));
                 }
                 None => {
                     self.persistent_miss_count += 1;
@@ -684,11 +702,19 @@ impl crate::Engine {
                 if let Some(cache_dir) = self.persistent_cache_dir.as_deref()
                     && crate::compute_persist::is_persistable_target(target)
                 {
+                    // Tasks 7245 / 7345: the trampoline's diagnostics and
+                    // structured detail are stored alongside the value so a
+                    // later warm serve can replay both. Cloned here, before
+                    // the `Ok((..))` below moves them out.
                     crate::compute_persist::persistent_write(
                         cache_dir,
                         target,
                         cache_key,
-                        &effective_value,
+                        crate::persistent_cache::WithDiagnostics {
+                            diagnostics: diagnostics.clone(),
+                            structured_detail: structured_detail.clone(),
+                            value: &effective_value,
+                        },
                     );
                 }
                 // θ / task 3427 step-4: return effective_value (prior on
@@ -4745,6 +4771,216 @@ mod tests {
             "expected an Error diagnostic naming the target, \"panicked\", and the \
              panic payload \"boom_str\" (i.e. the same enriched conversion \
              invoke_compute_trampoline performs), got {diags:?}",
+        );
+    }
+
+    // ── Persistent-hit diagnostics replay (task 7245) ─────────────────────────
+
+    /// Dispatch counter for [`never_called_trampoline`], proving a persistent
+    /// HIT skipped the trampoline entirely.
+    static PERSISTENT_REPLAY_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    /// A trampoline that must never run on a persistent HIT. If it does, the
+    /// diagnostics under test would be freshly produced rather than replayed,
+    /// and the test would be measuring the wrong thing.
+    fn never_called_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        PERSISTENT_REPLAY_DISPATCH_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// The smallest `ElasticResult` a seeded persistent entry needs: a 1×1×1
+    /// cell grid (2×2×2 nodes) with every slab sized to match.
+    fn minimal_seed_elastic_result() -> crate::persistent_cache::ElasticResult {
+        let total_nodes: usize = 2 * 2 * 2;
+        crate::persistent_cache::ElasticResult {
+            displacement: vec![1.0; total_nodes * 3],
+            stress: vec![2.0; total_nodes * 9],
+            max_von_mises: 42.0,
+            converged: true,
+            iterations: 5,
+            solve_time_ms: 100,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 1.0, 1.0],
+            grid_counts: [1, 1, 1],
+            divergence: vec![3.0; total_nodes],
+            gradient: vec![4.0; total_nodes * 9],
+            curl: vec![5.0; total_nodes * 3],
+            aposteriori: None,
+        }
+    }
+
+    /// What one dispatch against a seeded persistent entry observed.
+    struct SeededEntryServe {
+        /// How often [`never_called_trampoline`] ran during the dispatch.
+        trampoline_runs: usize,
+        persistent_hits: u64,
+        diagnostics: Vec<reify_core::Diagnostic>,
+        structured_detail: Vec<StructuredComputeDetail>,
+    }
+
+    /// Seed `seed` under `cache_key` in a fresh on-disk cache, then run one
+    /// `solver::elastic_static` dispatch for that key with
+    /// [`never_called_trampoline`] registered, so whatever comes back on a HIT
+    /// was replayed, never freshly produced.
+    fn dispatch_against_seeded_entry(
+        seed: &crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
+        cache_key: reify_core::ContentHash,
+    ) -> SeededEntryServe {
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::deps::DependencyTrace;
+        use crate::persistent_cache::{ENGINE_VERSION_HASH, write_entry};
+        use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness};
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_entry(
+            tmp.path(),
+            ENGINE_VERSION_HASH,
+            &format!("{cache_key}"),
+            seed,
+        )
+        .expect("test seed write_entry must succeed");
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+        engine.register_compute_fn(
+            "solver::elastic_static",
+            never_called_trampoline as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "r_7245");
+        let c_id = ComputeNodeId::new("T", 7245);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let count_before = PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst);
+        let (_value, diagnostics, structured_detail) = engine
+            .run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "solver::elastic_static",
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .expect("the hit path must succeed");
+
+        SeededEntryServe {
+            trampoline_runs: PERSISTENT_REPLAY_DISPATCH_COUNT.load(Ordering::SeqCst) - count_before,
+            persistent_hits: engine.persistent_hit_count(),
+            diagnostics,
+            structured_detail,
+        }
+    }
+
+    /// A persistent HIT must return the diagnostics the original solve emitted.
+    ///
+    /// This is the defect at the dispatch boundary: the hit arm returns the
+    /// reconstructed `Value` but hardcodes `vec![]` for the diagnostics, so a
+    /// warm serve is silent where the cold serve warned. Every consumer does
+    /// `diagnostics.extend(diags)` on this tuple slot, so an empty vec means the
+    /// warning vanishes for the whole rest of the session.
+    #[test]
+    fn persistent_hit_returns_the_replayed_diagnostics() {
+        use crate::persistent_cache::WithDiagnostics;
+        use reify_core::{ContentHash, Severity};
+
+        let warning = reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick);
+
+        // Seed a persistent entry that CARRIES the warning.
+        let serve = dispatch_against_seeded_entry(
+            &WithDiagnostics {
+                diagnostics: vec![warning],
+                structured_detail: Vec::new(),
+                value: minimal_seed_elastic_result(),
+            },
+            ContentHash(0x7245_aaaa_7245_aaaa_7245_aaaa_7245_aaaa_u128),
+        );
+
+        assert_eq!(
+            serve.trampoline_runs, 0,
+            "the trampoline must not run — otherwise these diagnostics would be \
+             fresh, not replayed",
+        );
+        assert_eq!(
+            serve.persistent_hits, 1,
+            "the dispatch must have been served from the on-disk cache",
+        );
+        let diagnostics = &serve.diagnostics;
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Warning
+                && d.code == Some(reify_core::DiagnosticCode::ShellTooThick)),
+            "the persistent hit must replay the seeded ShellTooThick warning \
+             through the same tuple slot the trampoline path uses, got {diagnostics:?}",
+        );
+    }
+
+    /// A persistent HIT must return the structured detail the original solve
+    /// emitted, through the same third tuple slot the trampoline path fills.
+    ///
+    /// The seeded payload is the live Completed-path one: elastic_static emits
+    /// `Unconstrained` with all six rigid-body modes for an unsupported body.
+    #[test]
+    fn persistent_hit_returns_the_replayed_structured_detail() {
+        use crate::persistent_cache::WithDiagnostics;
+        use reify_core::ContentHash;
+        use reify_solver_elastic::DofDirection;
+
+        let seeded = vec![StructuredComputeDetail::Fea(
+            FeaDiagnosticDetail::Unconstrained {
+                rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+            },
+        )];
+        let serve = dispatch_against_seeded_entry(
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                structured_detail: seeded.clone(),
+                value: minimal_seed_elastic_result(),
+            },
+            ContentHash(0x7345_bbbb_7345_bbbb_7345_bbbb_7345_bbbb_u128),
+        );
+
+        assert_eq!(
+            serve.trampoline_runs, 0,
+            "the trampoline must not run — otherwise this detail would be \
+             fresh, not replayed",
+        );
+        assert_eq!(
+            serve.persistent_hits, 1,
+            "the dispatch must have been served from the on-disk cache",
+        );
+        assert_eq!(
+            serve.structured_detail, seeded,
+            "the persistent hit must replay the seeded structured detail exactly \
+             once through the third tuple slot",
         );
     }
 }

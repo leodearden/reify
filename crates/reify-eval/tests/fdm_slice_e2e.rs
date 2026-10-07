@@ -551,9 +551,8 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
 // ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
 
 /// A one-bead `Toolpath` whose bead never saw an `M104`/`M109` — i.e. carries
-/// `Sweep::new()`'s untouched `temp: 0.0` accumulator
-/// (`reify-fdm/src/toolpath.rs`). Every other field is arbitrary-but-plausible;
-/// only `nominal_temp` is load-bearing here.
+/// `nominal_temp: None` (`reify-fdm/src/toolpath.rs`). Every other field is
+/// arbitrary-but-plausible; only `nominal_temp` is load-bearing here.
 fn temperature_less_toolpath() -> reify_fdm::Toolpath {
     reify_fdm::Toolpath {
         beads: vec![reify_fdm::Bead {
@@ -564,7 +563,7 @@ fn temperature_less_toolpath() -> reify_fdm::Toolpath {
             layer_index: 0,
             layer_z: 0.2,
             // THE point of the fixture: no M104/M109 was ever seen.
-            nominal_temp: 0.0,
+            nominal_temp: None,
             speed: 1800.0,
         }],
         layers: vec![reify_fdm::Layer {
@@ -580,23 +579,25 @@ fn temperature_less_toolpath() -> reify_fdm::Toolpath {
 /// The "no temperature was ever observed" sentinel means the SAME Value on both
 /// sides of the marshalling boundary.
 ///
-/// `reify_fdm`'s sweep initialises its temperature accumulator to `0.0` °C and
-/// never distinguishes "no `M104`/`M109` was seen" from a genuine 0 °C setpoint
-/// (`crates/reify-fdm/src/toolpath.rs`, `Sweep::new`), so a temperature-less
-/// G-code yields beads reporting 0 °C. `nominal_temp` is the ONE field where
-/// that sentinel could silently disagree with the stdlib's default, because
-/// `degC` is the only AFFINE conversion in the regime — under `Length` or
-/// `Velocity` a zero stays a zero whatever the declared default's unit is,
-/// whereas `0degC` and `0K` are 273.15 K apart. This test pins the two halves
-/// together:
+/// `reify_fdm` reports a bead laid down before any `M104`/`M109` as
+/// `nominal_temp: None` (`crates/reify-fdm/src/toolpath.rs`). The marshaller
+/// projects that as the `0degC` sentinel in `nominal_temp` plus
+/// `nominal_temp_observed = false`, the companion that makes the sentinel
+/// observable. `nominal_temp` is the ONE field where the sentinel could
+/// silently disagree with the stdlib's default, because `degC` is the only
+/// AFFINE conversion in the regime — under `Length` or `Velocity` a zero stays
+/// a zero whatever the declared default's unit is, whereas `0degC` and `0K`
+/// are 273.15 K apart. This test pins the two halves together:
 ///
-///   * (a) MARSHALLER SIDE — `toolpath_to_value` maps a `nominal_temp: 0.0`
-///     bead to `Scalar { si_value: 273.15, dimension: TEMPERATURE }`; and
+///   * (a) MARSHALLER SIDE — `toolpath_to_value` maps a `nominal_temp: None`
+///     bead to `Scalar { si_value: 273.15, dimension: TEMPERATURE }` and
+///     `nominal_temp_observed = Bool(false)`; and
 ///   * (b) DECLARATION SIDE — a default-constructed `Bead()` in the DSL, whose
-///     `nominal_temp` default `fdm_slice.ri` declares as `0degC`, evaluates to
-///     that IDENTICAL Value.
+///     `nominal_temp` default `fdm_slice.ri` declares as `0degC` and whose
+///     `nominal_temp_observed` default is `false`, evaluates to those
+///     IDENTICAL Values.
 ///
-/// Both sides are exactly `273.15` — `0.0 + DEG_C_TO_K_OFFSET` in the
+/// Both temperatures are exactly `273.15` — `0.0 + DEG_C_TO_K_OFFSET` in the
 /// marshaller, `0 * 1.0 + 273.15` for `0degC` per `stdlib/units.ri`'s
 /// `pub unit degC : Temperature = 1 offset 273.15` — and adding to zero is
 /// exact in f64, so the agreement is BITWISE. It is asserted as Value equality
@@ -623,11 +624,18 @@ fn nominal_temp_zero_celsius_sentinel_agrees_across_the_marshalling_boundary() {
         "a bead that never saw an M104/M109 must marshal its 0 °C sentinel to \
          273.15 K, dimensioned TEMPERATURE"
     );
+    let marshalled_observed = struct_field(&beads[0], "Bead", "nominal_temp_observed").clone();
+    assert_eq!(
+        marshalled_observed,
+        Value::Bool(false),
+        "a bead that never saw an M104/M109 must marshal nominal_temp_observed = false"
+    );
 
     // ── (b) declaration side ───────────────────────────────────────────────
     let source = r#"
 structure def TempSentinelProbe {
     let t : Temperature = Bead().nominal_temp
+    let observed : Bool = Bead().nominal_temp_observed
 }
 "#;
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
@@ -658,5 +666,37 @@ structure def TempSentinelProbe {
          sentinel must be the SAME Value — declaring the default `0K` instead of \
          `0degC` puts them 273.15 K apart, so a default-constructed Bead and a \
          bead parsed from temperature-less G-code would silently disagree"
+    );
+
+    let observed_id = ValueCellId::new("TempSentinelProbe", "observed");
+    let declared_observed = result.values.get(&observed_id).unwrap_or_else(|| {
+        panic!(
+            "TempSentinelProbe.observed not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        *declared_observed, marshalled_observed,
+        "the stdlib `Bead.nominal_temp_observed` default and the marshalled flag of a \
+         bead parsed from temperature-less G-code must be the SAME Value"
+    );
+}
+
+/// The stdlib `Bead` declares `nominal_temp_observed : Bool`, the predicate a
+/// design author gates temperature-dependent logic on.
+#[test]
+fn stdlib_bead_declares_nominal_temp_observed_as_bool() {
+    assert_eq!(
+        prelude_member_type("Bead", "nominal_temp_observed"),
+        Type::Bool,
+        "Bead.nominal_temp_observed must be declared `Bool`"
+    );
+    assert_compiles_clean(
+        "structure P { param known : Bool = Bead().nominal_temp_observed }",
+        "Bead.nominal_temp_observed is Bool",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param t : Temperature = Bead().nominal_temp_observed }",
+        "mechanism control: Bead.nominal_temp_observed must not satisfy a Temperature param",
     );
 }

@@ -25,11 +25,10 @@
 //! because `scripts/check-harness-baseline-registration.sh` refuses a
 //! newly-added one.
 
-use reify_core::{DiagnosticCode, Severity};
-use reify_eval::{BuildResult, Engine};
-use reify_ir::{ExportFormat, GeometryOp};
+use reify_core::Severity;
+use reify_ir::GeometryOp;
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
 };
 
 /// Compile a source whose pattern spacing is deliberately BARE.
@@ -37,11 +36,14 @@ use reify_test_support::{
 /// Task 5652 added a compile-LAYER `ArgTypeMismatch` Error for bare pattern
 /// spacing, so these sources no longer compile clean and `parse_and_compile`
 /// (which hard-asserts zero Error diagnostics) would panic before eval ever
-/// runs. The non-asserting `compile_source` keeps this file testing what it
-/// exists to test: task 5214's EVAL-layer gate.
+/// runs. Delegates to the shared
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, whose
+/// lenient `compile_source` keeps this file testing what it exists to test:
+/// task 5214's EVAL-layer gate.
 ///
-/// The assertions below are what make that switch a TIGHTENING rather than a
-/// loosening. They keep BOTH halves of what `parse_and_compile` used to give:
+/// That shared helper's two assertions are what make the switch a TIGHTENING
+/// rather than a loosening — they keep BOTH halves of what `parse_and_compile`
+/// used to give for free:
 ///
 /// 1. The expected compile-layer `ArgTypeMismatch` really is emitted, so this
 ///    file cannot silently stop noticing if task 5652's gate regresses.
@@ -55,33 +57,9 @@ use reify_test_support::{
 /// Each caller's eval-layer assertions still run, because
 /// `check_builtin_arg_types` is anti-cascade: lowering is untouched, so the op
 /// is still emitted and must still be DROPPED at eval.
+#[track_caller]
 fn compile_bare_spacing(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a bare pattern spacing must ALSO be rejected at compile time (task 5652 \
-         ArgTypeMismatch), not only at eval; got no Error diagnostics in: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors
-            .iter()
-            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
-         callers' \"no pattern op reached the kernel\" assertions could pass \
-         because compilation broke rather than because the eval gate dropped the \
-         op; unexpected errors: {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
-            .collect::<Vec<_>>()
-    );
-    compiled
+    compile_expecting_only_arg_type_mismatch(source, "pattern spacing")
 }
 
 /// BARE `20` spacings on `linear_pattern_2d` → the op is dropped: at least one
@@ -100,16 +78,9 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
     "#;
 
     let compiled = compile_bare_spacing(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -117,13 +88,12 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
         !error_diags.is_empty(),
         "bare (dimensionless) linear_pattern_2d spacings must produce at least \
          one Error diagnostic; got diagnostics: {:?}",
-        result.diagnostics
+        diagnostics
     );
 
-    let ops = ops_ref.lock().unwrap();
     let pattern_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::LinearPattern2D { .. }))
+        .filter(|op| matches!(op, GeometryOp::LinearPattern2D { .. }))
         .collect();
     assert!(
         pattern_ops.is_empty(),
@@ -133,29 +103,22 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
     );
 }
 
-/// Build `source` against a mock kernel and return
+/// Build `compiled` against a mock kernel and return
 /// `(error_diagnostic_count, matching_op_count)`, where an op matches when
 /// `is_pattern` accepts it. Shared by the 1D `linear_pattern` pair below, whose
 /// two cases differ only in the source and the expected counts.
+#[track_caller]
 fn build_and_count(
-    compiled: &reify_compiler::CompiledModule,
+    compiled: reify_compiler::CompiledModule,
     is_pattern: fn(&GeometryOp) -> bool,
 ) -> (usize, usize) {
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_count = result
-        .diagnostics
+    let error_count = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .count();
-    let ops = ops_ref.lock().unwrap();
-    let op_count = ops.iter().filter(|r| is_pattern(&r.op)).count();
+    let op_count = ops.iter().filter(|op| is_pattern(op)).count();
     (error_count, op_count)
 }
 
@@ -171,7 +134,7 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
     let is_linear = |op: &GeometryOp| matches!(op, GeometryOp::LinearPattern { .. });
 
     let (bare_errors, bare_ops) = build_and_count(
-        &compile_bare_spacing(
+        compile_bare_spacing(
             r#"
         structure def BareSpacingRow {
             let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20)
@@ -195,7 +158,7 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
     // still compile with zero Error diagnostics, which is what proves the new
     // compile-layer slot does not fire on valid code.
     let (dim_errors, dim_ops) = build_and_count(
-        &parse_and_compile(
+        parse_and_compile(
             r#"
         structure def DimSpacingRow {
             let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20mm)
@@ -233,16 +196,9 @@ fn linear_pattern_2d_dimensioned_spacing_builds_op() {
     "#;
 
     let compiled = parse_and_compile(source);
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -252,10 +208,9 @@ fn linear_pattern_2d_dimensioned_spacing_builds_op() {
         error_diags
     );
 
-    let ops = ops_ref.lock().unwrap();
     let pattern_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::LinearPattern2D { .. }))
+        .filter(|op| matches!(op, GeometryOp::LinearPattern2D { .. }))
         .collect();
     assert_eq!(
         pattern_ops.len(),
@@ -305,16 +260,9 @@ fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname(
     // assertions below from passing because compilation broke.
     let compiled = parse_and_compile(source);
 
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let error_diags: Vec<_> = result
-        .diagnostics
+    let error_diags: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
@@ -323,7 +271,7 @@ fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname(
         1,
         "an unresolved spacing must produce EXACTLY ONE Error diagnostic (no \
          cascade); got: {:?}",
-        result.diagnostics
+        diagnostics
     );
     let msg = &error_diags[0].message;
     assert!(
@@ -337,10 +285,9 @@ fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname(
          nickname `linear`; got: {msg:?}"
     );
 
-    let ops = ops_ref.lock().unwrap();
     let pattern_ops: Vec<_> = ops
         .iter()
-        .filter(|r| matches!(&r.op, GeometryOp::LinearPattern { .. }))
+        .filter(|op| matches!(op, GeometryOp::LinearPattern { .. }))
         .collect();
     assert!(
         pattern_ops.is_empty(),
@@ -432,34 +379,26 @@ struct IsoBuild {
 /// vacuously: `isosurface` has no `builtin_arg_slots` row, so every source
 /// here — bare `iso` included — must compile clean, and a dropped op can then
 /// only mean the EVAL gate dropped it, never that lowering broke.
+#[track_caller]
 fn build_isosurface(source: &str) -> IsoBuild {
     let compiled = parse_and_compile(source);
 
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
-        Some(Box::new(kernel)),
-    );
-    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let (diagnostics, ops) = build_against_mock_kernel(compiled);
 
-    let errors: Vec<String> = result
-        .diagnostics
+    let errors: Vec<String> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .map(|d| d.message.clone())
         .collect();
-    let iso_advisories: Vec<String> = result
-        .diagnostics
+    let iso_advisories: Vec<String> = diagnostics
         .iter()
         .filter(|d| d.severity != Severity::Error && d.message.contains("isosurface"))
         .map(|d| d.message.clone())
         .collect();
 
-    let ops = ops_ref.lock().unwrap();
     let surfaces: Vec<(f64, bool)> = ops
         .iter()
-        .filter_map(|r| match &r.op {
+        .filter_map(|op| match op {
             GeometryOp::Surface {
                 iso_level,
                 adaptive,

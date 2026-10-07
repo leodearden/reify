@@ -582,7 +582,7 @@ Verified against live task records rather than copied from prose:
 | | Task | Scope |
 |---|---|---|
 | α | 5777 | this ledger; `.ri` corpus site; the 13 Draft fixtures |
-| β | 5778 | `angle_spec()` in `crates/reify-eval/src/arg_acceptance.rs`, and routing `resolve_scalar_dim_arg`'s inline ANGLE spec through it — the rejection/hint surface γ/δ/ε/ζ build their diagnostics from. **No literal site in any bucket here**: β changes how a rejection reads, never an angle literal. |
+| β | 5778 | `angle_spec()` in `crates/reify-ir/src/arg_acceptance.rs`, and routing `resolve_scalar_dim_arg`'s inline ANGLE spec through it — the rejection/hint surface γ/δ/ε/ζ build their diagnostics from. **No literal site in any bucket here**: β changes how a rejection reads, never an angle literal. |
 | γ | 5779 | gate `rotate` / `rotate_around` / `revolve` / `arc` at the eval chokepoint |
 | δ | 5780 | `draft` |
 | ε | 5781 | retire `resolve_bare_angle` (`circular_pattern`) |

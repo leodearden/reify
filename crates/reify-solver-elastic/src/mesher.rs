@@ -440,12 +440,26 @@ pub fn ring_self_intersects_2d(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
     None
 }
 
+/// Area floor, in SI square metres, below which a profile ring is degenerate.
+///
+/// [`mesh_swept_profile_2d`] rejects a boundary as
+/// [`Mesh2dError::DegenerateBoundary`] when the absolute
+/// [`ring_signed_area_2d`] of its outer ring, or of any hole, is below this
+/// value. The value is the area of a 0.1 µm square: a ring enclosing less is
+/// effectively a line segment, not a region.
+///
+/// It is `pub` and re-exported at the crate root beside
+/// [`ring_signed_area_2d`] so that an upstream gate can reject, before
+/// meshing, exactly the rings this area test rejects, by comparing against
+/// this binding instead of a copy of its value.
+pub const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
+
 /// Validation pre-pass shared by every `mesh_swept_profile_2d` target arm.
 ///
 /// Runs before lock acquisition / FFI so error diagnostics stay close to
 /// the real cause. Returns `Ok(())` only when the boundary is well-formed
-/// (outer ring non-empty, every ring has >=3 points, outer ring has
-/// non-zero signed area).
+/// (outer ring non-empty, every ring has >=3 points, every ring's absolute
+/// signed area is at least [`DEGENERATE_RING_AREA_TOLERANCE`]).
 fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
     if boundary.outer.is_empty() {
         return Err(Mesh2dError::EmptyBoundary);
@@ -458,18 +472,15 @@ fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
             return Err(Mesh2dError::DegenerateBoundary);
         }
     }
-    // Collinear outer ring -> signed area ~ 0. The threshold mirrors
-    // `auto_size`'s "geometric tolerance" floor; anything below it is
-    // effectively a line segment, not a region.
-    if ring_signed_area_2d(&boundary.outer).abs() < 1e-14 {
+    // Collinear outer ring -> signed area ~ 0; see the const's doc.
+    if ring_signed_area_2d(&boundary.outer).abs() < DEGENERATE_RING_AREA_TOLERANCE {
         return Err(Mesh2dError::DegenerateBoundary);
     }
     // Hole rings must also be non-degenerate: a collinear / near-zero-area
     // hole would either slip through gmsh as an opaque `GmshFailed` or get
     // silently meshed as a slit, neither of which is a useful contract.
-    // Mirror the outer-ring tolerance.
     for hole in &boundary.holes {
-        if ring_signed_area_2d(hole).abs() < 1e-14 {
+        if ring_signed_area_2d(hole).abs() < DEGENERATE_RING_AREA_TOLERANCE {
             return Err(Mesh2dError::DegenerateBoundary);
         }
     }
@@ -489,8 +500,8 @@ fn validate_boundary(boundary: &ProfileBoundary) -> Result<(), Mesh2dError> {
 ///
 /// # Errors
 /// - [`Mesh2dError::EmptyBoundary`] — outer ring is empty.
-/// - [`Mesh2dError::DegenerateBoundary`] — any ring has <3 points, or
-///   outer ring is collinear (zero signed area).
+/// - [`Mesh2dError::DegenerateBoundary`] — any ring has <3 points, or any
+///   ring's absolute signed area is below [`DEGENERATE_RING_AREA_TOLERANCE`].
 /// - [`Mesh2dError::GmshUnavailable`] — this build was compiled without
 ///   libgmsh (stub build).
 /// - [`Mesh2dError::GmshFailed`] — Gmsh returned an error during meshing.
@@ -1005,6 +1016,83 @@ mod tests {
         );
     }
 
+    // ---- task 5684: validate_boundary honours DEGENERATE_RING_AREA_TOLERANCE ----
+    //
+    // The collinear tests above pin only EXACTLY-zero areas. These straddle the
+    // shared threshold at 0.5x and 2x, once per call site (outer ring, hole), so
+    // a site that stops honouring the constant fails here: a literal that drifts
+    // from it, a flipped sense, a rescaled bound. That is what lets reify-eval's
+    // build-time polygon gate, which compares against the same constant, claim
+    // to be a strict pre-image of this one.
+    //
+    // They call the private `validate_boundary` directly because, through
+    // `mesh_swept_profile_2d`, the accept half would continue into Gmsh with a
+    // ~0.1 µm auto mesh size.
+
+    /// A CCW right triangle whose shoelace signed area is `area`.
+    fn right_triangle_ring_with_area(area: f64) -> Vec<[f64; 2]> {
+        let h = 1e-7_f64; // 0.1 µm
+        let b = 2.0 * area / h;
+        vec![[0.0, 0.0], [b, 0.0], [0.0, h]]
+    }
+
+    #[test]
+    fn validate_boundary_rejects_outer_ring_below_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let pb = ProfileBoundary {
+            outer: right_triangle_ring_with_area(area),
+            holes: vec![],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "outer ring of area {area:e} must be DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn validate_boundary_accepts_outer_ring_above_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let pb = ProfileBoundary {
+            outer: right_triangle_ring_with_area(area),
+            holes: vec![],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            r.is_ok(),
+            "outer ring of area {area:e} must be accepted, got {r:?}"
+        );
+    }
+
+    // Hole position and winding are moot: validate_boundary judges each |area| alone.
+    #[test]
+    fn validate_boundary_rejects_hole_below_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![right_triangle_ring_with_area(area)],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "hole of area {area:e} must be DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn validate_boundary_accepts_hole_above_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![right_triangle_ring_with_area(area)],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            r.is_ok(),
+            "hole of area {area:e} must be accepted, got {r:?}"
+        );
+    }
+
     // ---- amend: auto_mesh_size_from_boundary all-duplicate ring ----
     //
     // Pins the chosen semantics for the all-coincident-points case: the
@@ -1093,7 +1181,7 @@ mod tests {
     /// 0.0, so task 5664's degenerate-ring gate already rejects it and a test
     /// built on it would pass without this predicate existing. Widening the
     /// first vertex pair to 0.02 gives the same crossing with an area of
-    /// 5e-5 m² — nine orders above the 1e-14 degeneracy floor — so only a
+    /// 5e-5 m² — nine orders above `DEGENERATE_RING_AREA_TOLERANCE` — so only a
     /// non-zero-area bow-tie proves THIS predicate fires.
     ///
     /// The area assertion is in the SAME test as the crossing assertion on
@@ -1103,7 +1191,7 @@ mod tests {
     fn ring_self_intersects_2d_asymmetric_bowtie_reports_crossing_edges() {
         let ring = [[0.0, 0.0], [0.02, 0.0], [0.0, 0.01], [0.01, 0.01]];
         assert!(
-            ring_signed_area_2d(&ring).abs() > 1e-14,
+            ring_signed_area_2d(&ring).abs() > DEGENERATE_RING_AREA_TOLERANCE,
             "fixture must CLEAR the degenerate-area gate, else this test would \
              pass for the wrong reason; got area {}",
             ring_signed_area_2d(&ring)
