@@ -3030,6 +3030,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Orchestrated-task session in warm-lane worktree _lane-13 chained `sleep 100; cat <task-id>.output 2>/dev/null | tail -20` to poll a background task's output file; blocked by the anti-chaining guard, which named Monitor/run_in_background as the correct primitive.
+  - date: '2026-10-06'
+    project: reify
+    session: 9cd84bd6-606e-48f4-b54f-c40908696926
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 406: async task output polled with head -c piped to python3 JSON parsing; JSONDecodeError on empty content (line 1 column 1 / char 0) indicates premature polling before task completion or missing output file. Consistent with chained polling pattern instead of Monitor/run_in_background.'
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -6392,6 +6398,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Sed failed with ''unknown command: `,'''' — fragile line-range construction via grep output piped to sed with backtick substitution; shell metacharacters in sed string not escaped.'
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Sed line-range construction with escaped special characters in eval-wrapped bash: sed -n ''/^verify_pipeline_map_globs_resolve() {\$/,/^}\$/p'' attempted to extract test function code for dynamic execution; fragile pattern matching the ''grep-into-sed'' anti-pattern'
 - id: entry-cand-20260703-4
   title: Autonomous watcher conflates interactive auto-memory (Write-tool markdown files) with project fused-memory MCP writes
   severity: medium
@@ -7284,6 +7296,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Session in lane-specific worktree; not_found signals align with probing undocumented .task-meta/<lane>/iterations.jsonl path returning exit code 2
+  - date: '2026-10-06'
+    project: reify
+    session: 6c5de58a-90d0-4d8b-8f68-02da7abfdfba
+    origin_phase: unknown
+    manifested_phase: implement
+    note: 'Orchestrated-task in warm-lane encounters five path-not-found errors (exit code 2: ''does not exist'', ''no such file or directory'', ''command not found'') across turns 24, 34, 123, 219, 252, consistent with undocumented .task-meta probing attempts in warm-lane context'
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -9627,6 +9645,12 @@ entries:
     origin_phase: decompose
     manifested_phase: unknown
     note: Nested warm-lane worktree cwd (/worktrees/_lane-49) with 4 repeated not-found errors (turns 32, 73, 182, 328) consistent with repo-root-relative path guess failures in nested structure
+  - date: '2026-10-06'
+    project: reify
+    session: 0de8249e-e872-49f2-8c80-f8560073f903
+    origin_phase: architect
+    manifested_phase: unknown
+    note: Session runs from nested warm-lane worktree cwd (_lane-9) and emits 3 repeated file-not-found errors at turns 44, 68, 129, matching the pattern of repo-root-relative path guesses failing when worktree is nested under /worktrees/
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -26131,3 +26155,81 @@ candidates:
     origin_phase: decompose
     manifested_phase: verify
     evidence_quote: 'FAIL: PG-DRIFT: tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh''s _RUST_COUPLED_RI_FIXTURES)'
+- id: cand-20261006-1
+  title: Workflow script generation produces JavaScript syntax error
+  cause: Agent generates workflow JavaScript code with invalid syntax; Unexpected token at position 486:31 suggests possible TypeScript syntax contamination, unescaped special characters in template interpolation, or embedded MCP markup leaking into the generated code.
+  area: workflow/scripting
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: 9cd84bd6-606e-48f4-b54f-c40908696926
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Turn 282: Invalid workflow script: Script parse error: Unexpected token (486:31)'
+- id: cand-20261006-2
+  title: fused-memory submit_task times out on large task description
+  cause: Escalation follow-up task description (3560+ line file mentioned) exceeds fused-memory submit_task timeout or payload processing limits
+  area: fused-memory MCP integration, escalation task submission
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: b0b79c12-f42d-41f3-8ff9-4daf20fd7d82
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: '(turn 355) mcp__fused-memory__submit_task({"description": "Follow-up from task 7356 (escalation_id agent-followup-7356). tests/infra/test_run_all.sh is ~3,560 lines (33 `Test N` blocks), well past the 2,000-line alarm of code-quality heuristi..."}) -> The operation timed out.'
+- id: cand-20261006-3
+  title: Command substitution in rm -rf bypasses path-validation guard
+  cause: Agent constructs destructive rm command with $(cat ...) command substitution as path argument, deferring path validation until runtime and preventing pre-execution verification
+  area: bash tool parameter safety, command substitution validation
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: b0b79c12-f42d-41f3-8ff9-4daf20fd7d82
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '(turn 542) Bash({"command": "rm -rf \"$(cat /tmp/7356-priv1.path)\" \"$(cat /tmp/7356-priv2.path)\" && git show..."}) -> Dangerous rm operation detected: the target is the output of a command substitution (`$(...)` or backticks) and cannot be checked before the command runs.'
+- id: cand-20261006-4
+  title: Single-line pattern assumption misses tool-induced multiline structures; review assertion compounds false negatives
+  cause: Search/grep pattern assumes structural invariant (attributes fit single lines); formatting tool (rustfmt) violates invariant by breaking long attributes across lines; line-by-line pattern-based search produces false negatives; review assertion then incorrectly claims non-existence based on these false negatives, persisting until self-correction
+  area: Pattern matching, structural assumptions, search logic
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: 93eb8792-8374-484c-822b-df5dbfe43310
+    origin_phase: architect
+    manifested_phase: review
+    evidence_quote: 'The reviewer said no split attribute exists in the tree. That''s wrong: when an attribute is too long, rustfmt breaks it across lines, and the old line-by-line patterns missed four real files'
+- id: cand-20261006-5
+  title: Plan-tools MCP parameter name mismatch
+  cause: Agent calls plan-tools MCP with incorrect parameter names—add_plan_step uses {task_id, type} instead of expected {step_id, step_type}; mark_step_committed uses {commit_sha} instead of expected {sha}—indicating schema unavailability or outdated parameter mapping
+  area: plan-tools MCP interface
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: d5d5ddb2-9caa-426f-8746-df95ba3a8762
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'add_plan_step(task_id=''7103'', type=''impl'', description=''...'') validation errors: step_id missing, step_type missing, task_id unexpected, type unexpected; mark_step_committed(commit_sha=''b663fa28e0'', step_id=''step-1'') validation errors: sha missing, commit_sha unexpected'
+- id: cand-20261006-6
+  title: Escalation MCP get_escalation call times out without retry context
+  cause: Escalation MCP server unavailable, timeout, or systematic connectivity failure preventing escalation lookups for valid IDs
+  area: escalation MCP, cross-project coordination, warm-lane escalation watcher
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: c2017700-6698-4a3c-a9ed-348ff2fe709a
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__escalation__get_escalation({"escalation_id": "esc-6499-9"}) -> The operation timed out.'
