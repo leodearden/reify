@@ -74,7 +74,7 @@ journalctl --user -u orchestrator-reify.service --since '<start>' --until '<end>
   `systemctl --user is-active` → `active`; `systemctl is-active` → `inactive`. The
   same window queried in system scope (no `--user`) returns `-- No entries --`.
 - **Always bound the window.** Measured 2026-10-07:
-  - A ±10-minute window around a known timestamp answers in 2–7 s.
+  - A ±10-minute window around a known timestamp answers in 0.6–7 s.
   - `--since -6h` takes 11 s, and `--since -72h` takes 125 s.
   - `--since 2026-09-20` (about 17 days) did not finish within 600 s.
 
@@ -109,10 +109,12 @@ f. The two records already in the ledger are NOT sweeps. Both are dated
    the speculative "Merge task/7423 into main" commit of that day's 7423
    merge-verify and is on no branch. Their shape (`action=test`,
    `scope=all`, `profiles=both`, `pass`) matches the one infra suite that
-   runs the real `verify.sh` with `DF_VERIFY_ROLE=background` and no
+   ran the real `verify.sh` with `DF_VERIFY_ROLE=background` and no
    scratch `REIFY_BACKGROUND_SWEEP_LEDGER`:
    tests/infra/test_verify_semaphore_e2e.sh Section H, which runs both
-   directly and nested via test_verify_nextest_absent_suites.sh.
+   directly and nested via test_verify_nextest_absent_suites.sh. Since
+   `a612418e0a` Section H points the knob at a scratch file and asserts
+   the record lands there, so it adds no more.
    A sweep's `head` is always a main commit at sweep time, so
    `git -C /home/leo/src/reify merge-base --is-ancestor <head> main` failing
    rules a record out. The check is one-directional: a merge-verify
@@ -127,3 +129,46 @@ This note covers the reify-side check only. The sweep itself is dark-factory's:
 - DF #5812: warm-seed the sweep.
 
 All three were `pending` on 2026-10-07.
+
+## 5. Observed (task 7423, 2026-10-07)
+
+Produced by re-running the commands above. Each item says which channel it went
+through, because only the journal is live on main today.
+
+**Harness-driven sweep completions, through the journal (live on main).** The
+§2 command, with the window shown and its measured elapsed time:
+
+1. `--since '2026-09-21 12:40' --until '2026-09-21 13:00'` (5.4 s). e10e72d7's
+   first pass failed and its retry passed (the retry ran 1h56m):
+   ```
+   Sep 21 12:51:34 leo-MS-7C35 uv[1237512]: 2026-09-21 12:51:34 WARNING  [orchestrator.verify] run_main_tip_sweep: first-pass failure at e10e72d7da41 did NOT reproduce on retry (first-pass category=<FailureCategory.TREE_SITTER_GENERATE_ERROR: 'tree_sitter_generate_error'>, cause_hint='error: test run failed') — treating as transient flake and suppressing drift escalation. NOTE: retry-on-flake MAY MASK a real intermittent regression introduced by a recent merge.
+   ```
+2. `--since '2026-09-22 12:20' --until '2026-09-22 12:40'` (1.6 s). A red main was
+   caught and escalated:
+   ```
+   Sep 22 12:31:15 leo-MS-7C35 uv[1237512]: 2026-09-22 12:31:15 WARNING  [orchestrator.harness] Main-tip integrity sweep: filed L1 escalation esc-main-sweep-e49c9ee21884-1 for SHA e49c9ee21884 (test_failure)
+   ```
+3. `--since '2026-09-23 09:10' --until '2026-09-23 09:30'` (0.6 s). The failure was
+   confirmed, but the tip had moved:
+   ```
+   Sep 23 09:21:57 leo-MS-7C35 uv[1237512]: 2026-09-23 09:21:57 INFO     [orchestrator.harness] Main-tip integrity sweep: failure at 1bfe7d9471a4 unconfirmed on current tip (subset_confirmed=True tip_unchanged=False) — not filing (stale/transient)
+   ```
+4. `--since -24h`, run at 2026-10-07T11:20:48Z (28.9 s): `-- No entries --`. No
+   sweep failed in that window. Whether one passed is unreadable here (caveat a).
+
+**Offline lane entry point (GAP 1), executed in this lane.**
+`bash scripts/run-offline-deep.sh --test-threads=1 --confirm-failed; echo rc=$?`
+on task/7423 `a612418e0a` with no confirm manifest under `target/` gave
+`rc=0` and 0 bytes on merged stdout+stderr (0.18 s). Before 7423, this exact
+argv exited 64 at verify.sh's argument parser.
+
+**Ledger (§1).**
+- *Recording path, executed in this branch:* tests/infra/test_verify_background_sweep_ledger.sh
+  runs the real `verify.sh` with `DF_VERIFY_ROLE=background` against a scratch ledger.
+- *Harness-driven record, deferred:* the main checkout's ledger holds only the two
+  caveat-f records, at `ec35141500` (`merge-base --is-ancestor … main` → 1). No
+  sweep has written to it yet. The first live record appears on the first sweep after
+  7423 lands on main. Closing 7423 does not wait for it (Leo, 2026-09-23). To check
+  later, re-run the §1 `tail` command and look for a `head` that passes the
+  `--is-ancestor` check. Never write a synthetic record into the real ledger: tests use
+  scratch `REIFY_BACKGROUND_SWEEP_LEDGER` paths only.
