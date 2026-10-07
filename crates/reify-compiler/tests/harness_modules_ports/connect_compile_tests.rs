@@ -2728,3 +2728,66 @@ structure def S {
         warnings
     );
 }
+
+// ── `self.p` endpoints are held to the bare-`p` standard by auto-match ──
+
+/// `connect self.a -> self.b` names the same own ports as `connect a -> b`, so
+/// it must auto-match their members into the identical `port_mappings`.
+#[test]
+fn auto_match_self_dotted_ports_match_bare_ports() {
+    let mappings_for = |connect: &str| {
+        let source = format!(
+            r#"
+trait T {{ param d : Length }}
+structure def S {{
+    port a : out T {{ param d : Length = 1mm }}
+    port b : in T {{ param d : Length = 2mm }}
+    {connect}
+}}
+"#
+        );
+        let (template, diagnostics) = compile_first_template(&source);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(template.connections.len(), 1);
+        template.connections[0].port_mappings.clone()
+    };
+
+    let bare = mappings_for("connect a -> b");
+    assert_eq!(bare, vec![("d".to_string(), "d".to_string())]);
+    assert_eq!(mappings_for("connect self.a -> self.b"), bare);
+}
+
+/// The asymmetric-LocatedPort warning fires on the `self.` spelling exactly as
+/// it does on bare names.
+#[test]
+fn asymmetric_located_port_self_dotted_emits_warning() {
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def S {
+    port mech : out MechPort { param shaft_dia : Length = 10mm }
+    port data : in DataPort { param rate : Real = 100.0 }
+    connect self.mech -> self.data
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+    assert_eq!(
+        located_warnings.len(),
+        1,
+        "expected exactly one asymmetric LocatedPort warning for self.-spelled endpoints, got: {:?}",
+        diagnostics
+    );
+}

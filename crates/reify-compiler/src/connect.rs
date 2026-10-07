@@ -235,7 +235,10 @@ pub(crate) struct ConnectInput<'a> {
 /// other shape names something outside this entity (`sub.p`, `sub[k].p`) and
 /// yields `None`. Both the undefined-port diagnostic and `endpoint_direction`
 /// route through this single predicate, so the two can never disagree about
-/// which endpoints are the entity's own.
+/// which endpoints are the entity's own. The own-entity-only consumers in
+/// `compile_connection` (port-member auto-matching and the asymmetric-LocatedPort
+/// warning) resolve their `CompiledPort`s through it too, so `self.p` is
+/// treated exactly as bare `p` by every one of them.
 ///
 /// A bare name is returned verbatim even when it carries an indexer (`vents[0]`,
 /// the bare collection-sub reference `resolve_port_name` can produce): that
@@ -591,9 +594,13 @@ pub(crate) fn compile_connection(
     };
 
     // Hoist the own-entity port lookups once — they feed `auto_match_port_members`,
-    // which needs the whole `CompiledPort` and is deliberately own-entity-only.
-    let left_compiled = ctx.ports.iter().find(|p| p.name == left_port);
-    let right_compiled = ctx.ports.iter().find(|p| p.name == right_port);
+    // which needs the whole `CompiledPort` and is deliberately own-entity-only
+    // (`p` and `self.p` both resolve; a sub-member endpoint never does).
+    let own_port = |endpoint: &str| {
+        own_port_name(endpoint).and_then(|name| ctx.ports.iter().find(|p| p.name == name))
+    };
+    let left_compiled = own_port(&left_port);
+    let right_compiled = own_port(&right_port);
     // Directions are resolved separately and more widely: a dotted endpoint has
     // no `CompiledPort` here, but its declared direction is still knowable.
     let left_dir = endpoint_direction(ctx, &left_port);
@@ -602,9 +609,6 @@ pub(crate) fn compile_connection(
     // Every endpoint must name something that exists: an own-entity endpoint
     // (bare `p` or `self.p`) one of THIS entity's ports, a sub-member endpoint a
     // member its sub's resolved child declares — see `names_undefined_port`.
-    // Own-entity-only consumers below (auto-match, the asymmetric-LocatedPort
-    // warning) still gate on the endpoint being written bare.
-    let is_bare = |name: &str| !name.contains('.');
     if names_undefined_port(ctx, &left_port) {
         diagnostics.push(
             Diagnostic::error(format!(
@@ -683,60 +687,49 @@ pub(crate) fn compile_connection(
     };
 
     // Asymmetric LocatedPort check: warn when exactly one side of a connection
-    // satisfies LocatedPort (directly or via refinement chain). Dotted port names
-    // (sub-component references) are skipped because they cannot be resolved to a
-    // CompiledPort in the current entity scope.
+    // satisfies LocatedPort (directly or via refinement chain). Sub-component
+    // endpoints are skipped because they cannot be resolved to a CompiledPort in
+    // the current entity scope; `self.p` is the entity's own port like bare `p`.
     {
-        let is_bare = |name: &str| !name.contains('.');
-        if is_bare(&left_port) && is_bare(&right_port) {
-            let left_type = ctx
-                .ports
-                .iter()
-                .find(|p| p.name == left_port)
-                .map(|p| p.type_name.as_str());
-            let right_type = ctx
-                .ports
-                .iter()
-                .find(|p| p.name == right_port)
-                .map(|p| p.type_name.as_str());
+        let left_type = left_compiled.map(|p| p.type_name.as_str());
+        let right_type = right_compiled.map(|p| p.type_name.as_str());
 
-            // NOTE: this check only works for trait-typed ports. Ports declared with a
-            // structure type (or a built-in type) won't be found in the trait_registry,
-            // so trait_satisfies returns false for them — no warning is emitted even if
-            // the structure conforms to LocatedPort via a separate trait declaration.
-            // This is a known limitation acceptable for the current use-cases.
-            if let (Some(lt), Some(rt)) = (left_type, right_type) {
-                let mut visited_l = HashSet::new();
-                let mut visited_r = HashSet::new();
-                let left_located = trait_satisfies(
-                    lt,
-                    reify_core::LOCATED_PORT_TRAIT,
-                    ctx.trait_registry,
-                    &mut visited_l,
-                );
-                let right_located = trait_satisfies(
-                    rt,
-                    reify_core::LOCATED_PORT_TRAIT,
-                    ctx.trait_registry,
-                    &mut visited_r,
-                );
+        // NOTE: this check only works for trait-typed ports. Ports declared with a
+        // structure type (or a built-in type) won't be found in the trait_registry,
+        // so trait_satisfies returns false for them — no warning is emitted even if
+        // the structure conforms to LocatedPort via a separate trait declaration.
+        // This is a known limitation acceptable for the current use-cases.
+        if let (Some(lt), Some(rt)) = (left_type, right_type) {
+            let mut visited_l = HashSet::new();
+            let mut visited_r = HashSet::new();
+            let left_located = trait_satisfies(
+                lt,
+                reify_core::LOCATED_PORT_TRAIT,
+                ctx.trait_registry,
+                &mut visited_l,
+            );
+            let right_located = trait_satisfies(
+                rt,
+                reify_core::LOCATED_PORT_TRAIT,
+                ctx.trait_registry,
+                &mut visited_r,
+            );
 
-                if left_located != right_located {
-                    let (located_port, located_type, unlocated_port, unlocated_type) =
-                        if left_located {
-                            (&left_port, lt, &right_port, rt)
-                        } else {
-                            (&right_port, rt, &left_port, lt)
-                        };
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
-                             — frame alignment constraint will not be generated",
-                            located_port, located_type, unlocated_port, unlocated_type,
-                        ))
-                        .with_label(DiagnosticLabel::new(span, "asymmetric spatial frame")),
-                    );
-                }
+            if left_located != right_located {
+                let (located_port, located_type, unlocated_port, unlocated_type) =
+                    if left_located {
+                        (&left_port, lt, &right_port, rt)
+                    } else {
+                        (&right_port, rt, &left_port, lt)
+                    };
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
+                         — frame alignment constraint will not be generated",
+                        located_port, located_type, unlocated_port, unlocated_type,
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "asymmetric spatial frame")),
+                );
             }
         }
     }
@@ -903,10 +896,11 @@ pub(crate) fn compile_connection(
     // Skipping when incompatible avoids a misleading "members do not match" warning when the
     // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        // The is_bare guards are load-bearing: `compatible` is now decided for
-        // dotted endpoints too, but auto-matching still needs an own-entity
-        // `CompiledPort` on both sides, which a dotted endpoint never has.
-        if compatible && is_bare(&left_port) && is_bare(&right_port) {
+        // The own-port guards are load-bearing: `compatible` is now decided for
+        // sub-member endpoints too, but auto-matching still needs an own-entity
+        // `CompiledPort` on both sides, which a sub-member endpoint never has.
+        if compatible && own_port_name(&left_port).is_some() && own_port_name(&right_port).is_some()
+        {
             auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
         } else {
             Vec::new() // direction error already emitted, or dotted ports; skip auto-match
