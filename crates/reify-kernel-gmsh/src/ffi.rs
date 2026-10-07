@@ -31,10 +31,9 @@
 //! future dead-code sweep from deleting an otherwise unreferenced binding).
 //!
 //! The logger family is production code as of task #6969. It backs
-//! [`crate::log_capture::LogCapture`], which
-//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
-//! failure reports gmsh's own diagnosis rather than only the last ERROR
-//! line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
+//! [`crate::log_capture::LogCapture`], which every production mesher in this
+//! crate arms so a meshing failure reports gmsh's own diagnosis rather than
+//! only the last ERROR line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
 //! production caller, `init::mesh_generate_with_recovery`, which
 //! reads the capture before it recycles libgmsh. Those three carry no
 //! marker: a non-test workspace caller is itself the exemption, so a marker
