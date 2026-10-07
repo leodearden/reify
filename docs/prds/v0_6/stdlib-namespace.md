@@ -98,9 +98,9 @@ resolved via flat maps. Census (compile side):
 
 Eval-side template lookup is **first**-wins (`find_template_with_prelude`,
 reify-eval/src/engine_eval.rs:64-68) — compile and eval disagree about what `Mode` means
-*(probe)*. The `modal_analysis.ri:142-145` comment claiming "first-wins … makes this safe"
-is wrong on the compile side. resolution-unification's D-6 normalizes the **eval** side;
-its θ/ι/κ tasks do not touch these compile-side sites (scope fence recorded in its §6).
+*(probe)*. The `Mode` comment in `modal_analysis.ri` claiming "first-wins … makes this safe"
+(since corrected by #5496) is wrong on the compile side. resolution-unification's D-6
+normalizes the **eval** side; its θ/ι/κ tasks do not touch these compile-side sites (scope fence recorded in its §6).
 
 **Smell 2b — the module system half-exists in the parser only.** `ImportKind` supports
 selective (`import m.{A,B}`), aliased (`import m as x`), entity-aliased, and `pub import`
