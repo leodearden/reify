@@ -1,16 +1,21 @@
 module discrete_choice
 
 // discrete_choice.ri — IDIOM: keep a binary (+-1) choice IN the model, as an
-// auto the solver resolves. The exact form is a Bool auto mapped to a sign:
+// auto the solver resolves. The exact form is a Bool auto mapped to a sign,
+// plus a constraint that reads it:
 //
 //     param right : Bool = auto(free)
 //     let   side  = if right then 1.0 else -1.0     // exactly +1.0 or -1.0
+//     constraint side * side == 1                   // reads `right`
 //
-// A Bool auto that a constraint reads is enumerated by CP-SAT (default-on
-// since #5469) and resolves to an exact value; prefer it for a genuinely
-// binary choice. This file keeps the continuous Real form below, with a
-// dimensionless free auto and a quadratic constraint, and documents what that
-// form does and does not give you:
+// The constraint is not optional. `side * side == 1` always holds here; its
+// job is to read `right`, which hands it to the solver. With no constraint
+// reading `right`, it stays undef ("awaiting solve"). A constraint that
+// discriminates (e.g. `side < 0`) pins the alternative instead. CP-SAT
+// (default-on since #5469) enumerates `right` and resolves `side` to an exact
+// value; prefer this form for a genuinely binary choice. This file keeps the
+// continuous Real form below, with a dimensionless free auto and a quadratic
+// constraint, and documents what that form does and does not give you:
 //
 //     param side : Real = auto(free)
 //     constraint side * side == 1        // side is +1 or -1, nothing else
