@@ -8,6 +8,10 @@
 // The mapping from FeaFailure → reify_core::Diagnostic lives in
 // reify-eval/src/compute_targets/fea_diagnostics.rs.
 
+use std::fmt;
+
+use crate::result::tet_signed_volume_p1;
+
 /// The 6 rigid-body degrees of freedom of a connected 3D elastic continuum.
 ///
 /// These are the exact rigid-body null-space modes: 3 translations (X/Y/Z axis)
@@ -299,6 +303,79 @@ pub fn classify_degenerate(
     } else {
         None
     }
+}
+
+/// The smallest oriented [`tet_shape_quality`] a P1 tet may have. q is 1 for a regular
+/// tet at any size, and a P1 tet's stiffness entries scale as E·ℓ/q, so below 1e-8 one
+/// element swamps more f64 digits than the 1e-6 CG tolerance leaves room for.
+pub const MIN_TET_SHAPE_QUALITY: f64 = 1e-8;
+
+/// Signed volume-length shape quality `q = 6√2·V/ℓ_rms³` of a P1 tet, where `V` is its
+/// signed volume and `ℓ_rms` the RMS of its 6 edge lengths.
+///
+/// `q` is 1 for a regular tet, independent of scale, tends to 0 for slivers, needles,
+/// caps and flat tets, and changes sign with the node ordering. Coincident points give
+/// NaN.
+pub fn tet_shape_quality(phys: &[[f64; 3]; 4]) -> f64 {
+    const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let squared_length =
+        |(a, b): (usize, usize)| -> f64 { (0..3).map(|i| (phys[b][i] - phys[a][i]).powi(2)).sum() };
+    let mean_squared_edge = EDGES.into_iter().map(squared_length).sum::<f64>() / 6.0;
+    let rms_edge_cubed = mean_squared_edge * mean_squared_edge.sqrt();
+    6.0 * std::f64::consts::SQRT_2 * tet_signed_volume_p1(phys) / rms_edge_cubed
+}
+
+/// A tet that fails the [`MIN_TET_SHAPE_QUALITY`] gate, as found by
+/// [`find_degenerate_tet`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DegenerateTet {
+    /// Index of the element in the mesh's tet list.
+    pub element_id: usize,
+    /// Its [`tet_shape_quality`] ORIENTED against the mesh: negative means the tet is
+    /// inverted relative to the rest of the mesh, NaN means non-finite geometry.
+    pub quality: f64,
+}
+
+impl fmt::Display for DegenerateTet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shape = if self.quality < 0.0 {
+            "inverted relative to the rest of the mesh"
+        } else {
+            "a sliver, needle or flat tet"
+        };
+        write!(
+            f,
+            "element {} has oriented shape quality q = 6√2·V/ℓ_rms³ = {:e}, failing the \
+             minimum q ≥ {MIN_TET_SHAPE_QUALITY:e} (it is {shape})",
+            self.element_id, self.quality
+        )
+    }
+}
+
+/// The worst tet of a P1 mesh if it fails the [`MIN_TET_SHAPE_QUALITY`] gate, else `None`.
+///
+/// Orientation is relative to the mesh: each tet's [`tet_shape_quality`] is signed by the
+/// mesh's total signed volume, so a consistently mirrored mesh passes, matching the
+/// orientation-agnostic `|det J|` of assembly. A NaN quality fails closed. Every index in
+/// `tets` must be in range for `coords`, as for assembly.
+pub fn find_degenerate_tet(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Option<DegenerateTet> {
+    let nodes = |tet: &[usize; 4]| tet.map(|n| coords[n]);
+    let total_signed_volume: f64 = tets.iter().map(|t| tet_signed_volume_p1(&nodes(t))).sum();
+    let orientation = if total_signed_volume >= 0.0 { 1.0 } else { -1.0 };
+    let mut worst: Option<DegenerateTet> = None;
+    for (element_id, tet) in tets.iter().enumerate() {
+        let candidate = DegenerateTet {
+            element_id,
+            quality: orientation * tet_shape_quality(&nodes(tet)),
+        };
+        if candidate.quality.is_nan() {
+            return Some(candidate);
+        }
+        if worst.is_none_or(|w| candidate.quality < w.quality) {
+            worst = Some(candidate);
+        }
+    }
+    worst.filter(|w| !(w.quality >= MIN_TET_SHAPE_QUALITY))
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
