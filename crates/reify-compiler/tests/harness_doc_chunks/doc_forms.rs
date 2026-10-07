@@ -648,6 +648,55 @@ fn doc_form_of_span_reads_nothing_else_as_a_signature() {
 }
 
 #[test]
+fn span_callee_reads_the_name_a_span_opens_by_calling() {
+    let cases = [
+        (
+            "translate(z=-height/2)",
+            Some("translate"),
+            "a call-shaped opening, even though the span does not parse",
+        ),
+        (
+            "distance(a, b) > tol",
+            Some("distance"),
+            "the opening is what counts, not the whole span",
+        ),
+        ("mechanism()", Some("mechanism"), "an empty argument list"),
+        (
+            "point3(x, y, z)",
+            Some("point3"),
+            "digits are allowed after the first letter",
+        ),
+        (
+            "let all_faces = faces(b)",
+            None,
+            "a declaration, not a call",
+        ),
+        (
+            "fn faces(solid: Solid) -> List<Surface>",
+            None,
+            "a declaration, not a call",
+        ),
+        ("Selector(Face)", None, "a capitalised name"),
+        ("Engine::new(x)", None, "a qualified name"),
+        (
+            "2*corner_r < min(width, depth)",
+            None,
+            "an expression that does not open with a call",
+        ),
+        ("sel[0]", None, "no paren at all"),
+        (
+            "point3 (x)",
+            None,
+            "the name must be DIRECTLY followed by `(`",
+        ),
+    ];
+
+    for (span, expected, why) in cases {
+        assert_eq!(span_callee(span), expected, "`{span}`: {why}");
+    }
+}
+
+#[test]
 fn is_exercised_by_matches_exact_by_equality_and_at_least_by_minimum() {
     let calls = vec![("rotate".to_string(), 5), ("union_all".to_string(), 3)];
 
