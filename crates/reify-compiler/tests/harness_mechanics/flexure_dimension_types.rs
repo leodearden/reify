@@ -41,7 +41,7 @@ fn rotational_damping_param_resolves_and_folds() {
 // ─── Task #5799 (ruled by Leo 2026-07-29): the SEPARATION guarantee ──────────
 //
 // A dimension-checked reader keys on the DimensionVector alone: `accept_arg`
-// compares `*dimension == spec.dimension` (reify-eval/src/arg_acceptance.rs),
+// compares `*dimension == spec.dimension` (reify-ir/src/arg_acceptance.rs),
 // and `ArgSpec.type_name` is display-only. So two quantities that share a
 // vector are indistinguishable to every reader in the system, no matter what
 // names `NAMED_DIMENSIONS` hangs off that vector — a name-level alias row could

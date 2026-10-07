@@ -2634,7 +2634,7 @@ fn g_b3_compound_unit_literal_at_density_slot_is_silent() {
 //
 // A rejection at a DIMENSIONED `Scalar` slot carries a hint naming the expected
 // dimension and an example literal, mirroring `ArgRejection::message`'s shape in
-// `crates/reify-eval/src/arg_acceptance.rs` so the compile-time and runtime
+// `crates/reify-ir/src/arg_acceptance.rs` so the compile-time and runtime
 // diagnostics read consistently.
 //
 // Assertions are on the STABLE, semantic parts only — the fixed clause prefix

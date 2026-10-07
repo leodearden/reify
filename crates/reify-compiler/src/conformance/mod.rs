@@ -1325,10 +1325,14 @@ fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
 /// `Scalar` ctor slot.
 ///
 /// Shape: ``"pass a dimensioned <Dimension> literal such as `<example>`"``,
-/// COPIED from `ArgRejection::message` in `crates/reify-eval/src/arg_acceptance.rs`
+/// COPIED from `ArgRejection::message` in `crates/reify-ir/src/arg_acceptance.rs`
 /// so the compile-time and runtime diagnostics for the same authoring mistake
-/// read the same way. Copied and never imported: `reify-eval` depends on
-/// `reify-compiler`, so the reverse edge would be a dependency cycle (D9).
+/// read the same way. The clause itself is computed here rather than imported:
+/// the only hints `reify-ir` renders are the fixed LENGTH / Density / Angle
+/// literals it reads from `reify_core::units`, nothing that works for an
+/// arbitrary dimension — and the ctor-slot LENGTH wording deliberately differs
+/// from the shared one (pinned by
+/// `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`).
 ///
 /// Degrades rather than disappearing, so the hint is present unconditionally at
 /// a dimensioned slot:
