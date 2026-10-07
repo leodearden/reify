@@ -92,7 +92,29 @@ mod tests {
     }
 
     #[test]
-    fn available_topics_returns_17_entries() {
-        assert_eq!(available_topics().len(), 17);
+    fn available_topics_returns_19_entries() {
+        assert_eq!(available_topics().len(), 19);
+    }
+
+    const MAX_CHUNK_BYTES: usize = 36 * 1024;
+
+    /// `get_chunk` serves a whole file per retrieval, so every byte of a chunk is
+    /// paid on every lookup of its topic. A chunk that outgrows this ceiling
+    /// should have a section split into its own topic — the way task 7344 split
+    /// `measurement` and `topology` out of `geometry` — rather than the ceiling
+    /// raised. Raising it is a deliberate, diff-visible edit.
+    #[test]
+    fn every_topic_fits_one_retrieval_budget() {
+        let oversized: Vec<(&str, usize)> = TOPICS
+            .iter()
+            .map(|topic| (*topic, get_chunk(topic).unwrap().len()))
+            .filter(|(_, len)| *len > MAX_CHUNK_BYTES)
+            .collect();
+        assert!(
+            oversized.is_empty(),
+            "topic(s) over the {MAX_CHUNK_BYTES}-byte per-retrieval ceiling, as (topic, bytes): \
+             {oversized:?}. Split a section of each into its own topic rather than raising the \
+             ceiling."
+        );
     }
 }
