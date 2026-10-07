@@ -84,6 +84,8 @@ mod measurement_chunk_smoke;
 mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/prose_idiom_gate.rs"]
+mod prose_idiom_gate;
 #[path = "harness_doc_chunks/schematic_listing_gate.rs"]
 mod schematic_listing_gate;
 #[path = "harness_doc_chunks/signature_fixtures.rs"]
