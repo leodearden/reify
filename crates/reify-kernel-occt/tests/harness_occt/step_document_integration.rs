@@ -303,6 +303,39 @@ fn unreadable_and_rootless_files_are_typed_errors_naming_the_file() {
     assert_names_path(&error, &rootless);
 }
 
+/// A product with no shape at all: it is a transfer root, but OCCT's XDE
+/// transfer produces nothing from it and reports failure.
+const SHAPELESS_PRODUCT_STEP: &str = "ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('shapeless product'),'2;1');
+FILE_NAME('shapeless.step','2026-10-07T00:00:00',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+#1=APPLICATION_CONTEXT('automotive design');
+#2=PRODUCT_CONTEXT('',#1,'mechanical');
+#3=PRODUCT('Bare','Bare','',(#2));
+#4=PRODUCT_DEFINITION_FORMATION('','',#3);
+#5=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#6=PRODUCT_DEFINITION('design','',#4,#5);
+ENDSEC;
+END-ISO-10303-21;
+";
+
+#[test]
+fn a_rooted_file_whose_transfer_fails_is_a_typed_error_naming_the_file() {
+    let dir = reify_test_support::prefixed_tempdir("reify-step-document-");
+    let shapeless = dir.path().join("shapeless.step");
+    std::fs::write(&shapeless, SHAPELESS_PRODUCT_STEP).unwrap();
+
+    let error = read_error(&shapeless);
+    assert!(
+        matches!(&error, StepReadError::TransferFailed { path, .. } if path == &shapeless),
+        "shape-less product: {error:?}"
+    );
+    assert_names_path(&error, &shapeless);
+}
+
 #[test]
 fn reader_restores_the_cascade_unit_static() {
     let before = xstep_cascade_unit_for_test();
