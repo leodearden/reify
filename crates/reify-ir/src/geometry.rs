@@ -1107,7 +1107,13 @@ pub enum GeometryOp {
     /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
-    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
+    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
+    ///   scales the displacement. The eval producer (`modify_offset_curve` in
+    ///   reify-eval) normalises it and rejects a zero-magnitude vector, so
+    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR; the C++
+    ///   `make_offset_curve_directional` re-normalises and rejects a degenerate
+    ///   vector, guarding directly-constructed IR.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output

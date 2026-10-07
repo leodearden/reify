@@ -3686,7 +3686,11 @@ fn modify_offset_curve(
                     &eval_ctx_with_meta(values, functions, meta_map),
                 );
                 match point3_components(&v) {
-                    Some(dir) => (None, Some(dir)),
+                    Some(dir) => {
+                        let unit_dir = unit_vector3(dir)
+                            .map_err(|e| format!("{kind}: degenerate direction: {e}"))?;
+                        (None, Some(unit_dir))
+                    }
                     None => {
                         diagnostics.push(Diagnostic::warning(
                             "offset_curve: 3rd argument is neither a reference \
