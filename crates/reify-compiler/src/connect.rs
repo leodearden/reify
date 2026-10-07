@@ -11,10 +11,10 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
             // `MemberAccess { object: IndexAccess { Ident("vents"),
             //                                       NumberLiteral(0) },
             //                 member: "inlet" }`. Format as the dotted-bracket
-            // string `"vents[0].inlet"` so the dotted-port-name branches in
+            // string `"vents[0].inlet"` so the sub-member endpoint branches in
             // `compile_connection` — which skip the own-entity `CompiledPort`
-            // lookup for refs containing '.', and resolve the direction through
-            // `endpoint_direction` instead — flow unchanged.
+            // lookup (`own_compiled_port` is `None` for them) and resolve the
+            // direction through `endpoint_direction` instead — flow unchanged.
             reify_ast::ExprKind::IndexAccess {
                 object: inner,
                 index,
@@ -71,9 +71,10 @@ fn is_ad_hoc_selector(expr: &reify_ast::Expr) -> bool {
 /// Auto-match port members between two pre-looked-up ports when no explicit port_mappings given.
 ///
 /// Conditions for auto-matching:
-/// 1. Both compiled ports must be `Some` (bare ports that exist in the context).
-///    The caller is responsible for the bare-port guard and for passing `None` when a port
-///    was not found (undefined-port error will have been emitted by the caller).
+/// 1. Both compiled ports must be `Some` (own-entity ports that exist in the context).
+///    The caller resolves them with `own_compiled_port`, which is `None` for a sub-member
+///    endpoint and for a port that was not found (undefined-port error will have been
+///    emitted by the caller).
 /// 2. Both ports must share the same `type_name` (same trait).
 /// 3. All Param/Auto members on both sides must match by name (all-or-nothing).
 ///
@@ -237,8 +238,9 @@ pub(crate) struct ConnectInput<'a> {
 /// route through this single predicate, so the two can never disagree about
 /// which endpoints are the entity's own. The own-entity-only consumers in
 /// `compile_connection` (port-member auto-matching and the asymmetric-LocatedPort
-/// warning) resolve their `CompiledPort`s through it too, so `self.p` is
-/// treated exactly as bare `p` by every one of them.
+/// warning) resolve their `CompiledPort`s through it too, via
+/// `own_compiled_port`, so `self.p` is treated exactly as bare `p` by every one
+/// of them.
 ///
 /// A bare name is returned verbatim even when it carries an indexer (`vents[0]`,
 /// the bare collection-sub reference `resolve_port_name` can produce): that
@@ -256,7 +258,7 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 /// Accepted shapes:
 /// * `p` — a port on the entity being compiled; read from `ctx.ports`.
 /// * `self.p` — the same own port named the long way round; resolves identically
-///   to bare `p` (both through `own_port_name`), so writing the dot buys no
+///   to bare `p` (both through `own_compiled_port`), so writing the dot buys no
 ///   escape from this check, nor from the undefined-port check in
 ///   `compile_connection`.
 /// * `sub.p` — a port on a sub-component; read from `scope.sub_port_directions`,
@@ -292,15 +294,10 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 ///     happened to compile last — see `cluster_port_directions` in
 ///     `entity.rs`. Arms that AGREE resolve normally and are checked.
 fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
-    if let Some(own) = own_port_name(port_ref) {
-        return ctx
-            .ports
-            .iter()
-            .find(|p| p.name == own)
-            .map(|p| p.direction);
+    match sub_member_endpoint(port_ref) {
+        Some((sub, port)) => ctx.scope.sub_port_directions.get(sub)?.get(port).copied(),
+        None => own_compiled_port(ctx, port_ref).map(|p| p.direction),
     }
-    let (sub, port) = sub_member_endpoint(port_ref)?;
-    ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
 }
 
 /// Split a sub-member endpoint (`sub.m`, `sub[<idx-or-key>].m`) into
@@ -551,9 +548,26 @@ fn names_many_occurrences(ctx: &ConnectContext, sub: &str) -> bool {
     ctx.scope.collection_sub_names.contains(sub) || ctx.scope.keyed_sub_keys.contains_key(sub)
 }
 
+/// The enclosing entity's own port declared as `name`.
+fn find_own_port<'c>(ctx: &'c ConnectContext, name: &str) -> Option<&'c CompiledPort> {
+    ctx.ports.iter().find(|p| p.name == name)
+}
+
 /// Whether `name` is one of the enclosing entity's own ports.
 fn is_own_port(ctx: &ConnectContext, name: &str) -> bool {
-    ctx.ports.iter().any(|p| p.name == name)
+    find_own_port(ctx, name).is_some()
+}
+
+/// The `CompiledPort` a connect endpoint denotes on THIS entity: `p` and `self.p`
+/// both resolve; a sub-member endpoint, or an own name that is not one of the
+/// entity's ports, yields `None`.
+///
+/// The one endpoint-to-port resolution. Every consumer that needs the whole
+/// port (declared direction, member auto-matching, the asymmetric-LocatedPort
+/// check) reads it here, so none can disagree about which endpoints are the
+/// entity's own — see `own_port_name`.
+fn own_compiled_port<'c>(ctx: &'c ConnectContext, endpoint: &str) -> Option<&'c CompiledPort> {
+    find_own_port(ctx, own_port_name(endpoint)?)
 }
 
 /// Compile a single connection (from connect statement or chain desugaring).
@@ -593,16 +607,13 @@ pub(crate) fn compile_connection(
         }
     };
 
-    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`,
-    // which needs the whole `CompiledPort` and is deliberately own-entity-only
-    // (`p` and `self.p` both resolve; a sub-member endpoint never does).
-    let own_port = |endpoint: &str| {
-        own_port_name(endpoint).and_then(|name| ctx.ports.iter().find(|p| p.name == name))
-    };
-    let left_compiled = own_port(&left_port);
-    let right_compiled = own_port(&right_port);
-    // Directions are resolved separately and more widely: a dotted endpoint has
-    // no `CompiledPort` here, but its declared direction is still knowable.
+    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`
+    // and the asymmetric-LocatedPort check, which need the whole `CompiledPort`
+    // and are deliberately own-entity-only.
+    let left_compiled = own_compiled_port(ctx, &left_port);
+    let right_compiled = own_compiled_port(ctx, &right_port);
+    // Directions are resolved separately and more widely: a sub-member endpoint
+    // has no `CompiledPort` here, but its declared direction is still knowable.
     let left_dir = endpoint_direction(ctx, &left_port);
     let right_dir = endpoint_direction(ctx, &right_port);
 
@@ -716,12 +727,11 @@ pub(crate) fn compile_connection(
             );
 
             if left_located != right_located {
-                let (located_port, located_type, unlocated_port, unlocated_type) =
-                    if left_located {
-                        (&left_port, lt, &right_port, rt)
-                    } else {
-                        (&right_port, rt, &left_port, lt)
-                    };
+                let (located_port, located_type, unlocated_port, unlocated_type) = if left_located {
+                    (&left_port, lt, &right_port, rt)
+                } else {
+                    (&right_port, rt, &left_port, lt)
+                };
                 diagnostics.push(
                     Diagnostic::warning(format!(
                         "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
@@ -892,18 +902,16 @@ pub(crate) fn compile_connection(
     };
 
     // Determine effective port mappings: explicit takes priority; otherwise auto-match.
-    // Auto-matching is only attempted for bare (non-dotted) ports when directions are compatible.
+    // Auto-matching is only attempted when directions are compatible, and only between
+    // own-entity endpoints (`p` / `self.p`): a sub-member endpoint has no `CompiledPort`
+    // here, so `auto_match_port_members` declines it.
     // Skipping when incompatible avoids a misleading "members do not match" warning when the
     // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        // The own-port guards are load-bearing: `compatible` is now decided for
-        // sub-member endpoints too, but auto-matching still needs an own-entity
-        // `CompiledPort` on both sides, which a sub-member endpoint never has.
-        if compatible && own_port_name(&left_port).is_some() && own_port_name(&right_port).is_some()
-        {
+        if compatible {
             auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
         } else {
-            Vec::new() // direction error already emitted, or dotted ports; skip auto-match
+            Vec::new() // direction error already emitted; skip auto-match
         }
     } else {
         port_mappings.to_vec()

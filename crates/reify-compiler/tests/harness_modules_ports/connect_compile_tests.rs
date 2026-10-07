@@ -2729,10 +2729,20 @@ structure def S {
     );
 }
 
-// ── `self.p` endpoints are held to the bare-`p` standard by auto-match ──
+// ── `self.p` is held to the bare-`p` standard by auto-match and the LocatedPort check ──
+
+/// The `a -> b` connect between this entity's own ports, spelled with `self.` on
+/// both endpoints and then on each one alone. Each test below writes the bare
+/// `connect a -> b` out as its control.
+const SELF_SPELLED_CONNECTS_A_TO_B: [&str; 3] = [
+    "connect self.a -> self.b",
+    "connect self.a -> b",
+    "connect a -> self.b",
+];
 
 /// `connect self.a -> self.b` names the same own ports as `connect a -> b`, so
-/// it must auto-match their members into the identical `port_mappings`.
+/// it must auto-match their members into the identical `port_mappings` — as must
+/// each mixed spelling, where only one endpoint carries the `self.`.
 #[test]
 fn auto_match_self_dotted_ports_match_bare_ports() {
     let mappings_for = |connect: &str| {
@@ -2758,36 +2768,96 @@ structure def S {{
 
     let bare = mappings_for("connect a -> b");
     assert_eq!(bare, vec![("d".to_string(), "d".to_string())]);
-    assert_eq!(mappings_for("connect self.a -> self.b"), bare);
+    for spelling in SELF_SPELLED_CONNECTS_A_TO_B {
+        assert_eq!(mappings_for(spelling), bare, "{spelling}");
+    }
 }
 
-/// The asymmetric-LocatedPort warning fires on the `self.` spelling exactly as
-/// it does on bare names.
+/// A member mismatch between two own ports is reported identically under every
+/// spelling of the connect: writing `self.` neither hides the warning nor
+/// changes it. Pinned apart from the matching case above because this is the
+/// path on which auto-match adds a diagnostic to the compile.
+#[test]
+fn auto_match_self_dotted_member_mismatch_warns_like_bare_ports() {
+    let outcome_for = |connect: &str| {
+        let source = format!(
+            r#"
+trait T {{ param d : Length }}
+structure def S {{
+    port a : out T {{
+        param d : Length = 1mm
+        param l : Length = 1mm
+    }}
+    port b : in T {{
+        param d : Length = 2mm
+        param r : Length = 2mm
+    }}
+    {connect}
+}}
+"#
+        );
+        let (template, diagnostics) = compile_first_template(&source);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(template.connections.len(), 1);
+        let mismatch_warnings: Vec<String> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
+            .map(|d| d.message.clone())
+            .collect();
+        (
+            template.connections[0].port_mappings.clone(),
+            mismatch_warnings,
+        )
+    };
+
+    let bare = outcome_for("connect a -> b");
+    let (_, bare_warnings) = &bare;
+    assert_eq!(
+        bare_warnings.len(),
+        1,
+        "the bare control must warn exactly once, got: {bare_warnings:?}"
+    );
+    for spelling in SELF_SPELLED_CONNECTS_A_TO_B {
+        assert_eq!(outcome_for(spelling), bare, "{spelling}");
+    }
+}
+
+/// The asymmetric-LocatedPort warning fires on every `self.` spelling exactly as
+/// it does on bare names (`asymmetric_located_port_emits_warning`) — including
+/// the mixed ones, where only one endpoint carries the `self.`.
 #[test]
 fn asymmetric_located_port_self_dotted_emits_warning() {
-    let source = r#"
-trait LocatedPort { param frame : Real }
-trait MechPort : LocatedPort { param shaft_dia : Length }
-trait DataPort { param rate : Real }
-structure def S {
-    port mech : out MechPort { param shaft_dia : Length = 10mm }
-    port data : in DataPort { param rate : Real = 100.0 }
-    connect self.mech -> self.data
-}
-"#;
-    let (_, diagnostics) = compile_first_template(source);
-    let located_warnings: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning
-                && d.message.contains("LocatedPort")
-                && d.message.contains("asymmetric")
-        })
-        .collect();
-    assert_eq!(
-        located_warnings.len(),
-        1,
-        "expected exactly one asymmetric LocatedPort warning for self.-spelled endpoints, got: {:?}",
-        diagnostics
-    );
+    for connect in SELF_SPELLED_CONNECTS_A_TO_B {
+        let source = format!(
+            r#"
+trait LocatedPort {{ param frame : Real }}
+trait MechPort : LocatedPort {{ param shaft_dia : Length }}
+trait DataPort {{ param rate : Real }}
+structure def S {{
+    port a : out MechPort {{ param shaft_dia : Length = 10mm }}
+    port b : in DataPort {{ param rate : Real = 100.0 }}
+    {connect}
+}}
+"#
+        );
+        let (_, diagnostics) = compile_first_template(&source);
+        let located_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("LocatedPort")
+                    && d.message.contains("asymmetric")
+            })
+            .collect();
+        assert_eq!(
+            located_warnings.len(),
+            1,
+            "expected exactly one asymmetric LocatedPort warning for `{connect}`, got: {:?}",
+            diagnostics
+        );
+    }
 }
