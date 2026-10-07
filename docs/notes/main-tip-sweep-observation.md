@@ -49,7 +49,7 @@ jq -s -c 'group_by(.head)[] | {head: .[0].head[0:10], runs: map({timestamp,actio
 What one sweep writes. Observed by reading dark-factory main `d8ea20e0e8` (read-only):
 
 - `run_main_tip_sweep` calls `run_full_verification(..., role='background')` once per pass.
-- reify has no subproject `orchestrator.yaml`, so that call is one global
+- reify declares no per-subproject orchestrator config, so that call is one global
   `run_verification`. It runs reify's `test_command` and `lint_command`, both
   `./scripts/verify.sh … --scope branch --include-infra`, plus `type_check_command`,
   which is `true` and so writes no record.
