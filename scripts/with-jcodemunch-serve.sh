@@ -60,18 +60,18 @@
 # ...AND IT IS ONLY HALF THE IDENTITY CONTRACT. This lever fixes what the SERVE
 # answers AS. It cannot fix what the CLIENT asks FOR, and this script
 # deliberately does not reach into the wrapped command's argv — δ owns the serve
-# LIFECYCLE only. `reify-audit` still defaults `--jcodemunch-repo` to
-# `leodearden/reify` (`crates/reify-audit/src/bin/reify-audit.rs:111,215`), the
-# same empty husk, so the canonical composition
+# LIFECYCLE only. The client-side half is `reify-audit`'s, closed by γ (#6108):
+# `--jcodemunch-repo` has no hardcoded default, and omitted it is derived from
+# `--project-root` as the same per-path `local/<basename>-<sha1[..8]>` that β
+# (`scripts/jcodemunch-index-reify.sh`) indexes (`effective_repo_id` /
+# `Args::jcodemunch_repo` in `crates/reify-audit/src/bin/reify-audit.rs`;
+# `--print-repo-id` prints it). So the canonical composition
 #
 #     scripts/with-jcodemunch-serve.sh reify-audit --pattern P1 --project-root …
 #
-# is STILL vacuous unless the caller ALSO passes
-# `--jcodemunch-repo local/reify-<hash>` by hand. Retiring that default is γ
-# (#6108) and wiring the invocation is ζ; until one of them lands, every caller
-# carries the client-side half itself — which is exactly why this task's
-# recorded acceptance evidence passes it explicitly rather than relying on the
-# default.
+# needs no `--jcodemunch-repo`. Passing the retired `leodearden/reify` names the
+# empty husk, which the freshness gate refuses as `E_JC_INDEX_EMPTY` (codes and
+# remedies: `.claude/skills/audit/references/cli-invocation.md` §4.1).
 #
 # PIN-BUMP CHECKLIST: consolidated into `scripts/lib_jcodemunch_pin.sh` (#6454),
 # the ONE definition site for the pin, the interpreter and this lever. Its
