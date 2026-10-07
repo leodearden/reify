@@ -2560,10 +2560,10 @@ structure def Assembly {
 }
 
 /// Case (d): mixed — one bare+found ('a'), one dotted ('motor.shaft') → no auto-match.
-/// When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
-/// never runs even though the bare side resolved successfully. The dotted side
-/// skips the OWN-entity lookup; its existence is checked against `Motor`'s
-/// declared members instead (#7880), and `shaft` is declared there.
+/// When only one side is a sub-member endpoint it has no own-entity `CompiledPort`,
+/// so auto-match declines even though the bare side resolved successfully. The
+/// dotted side skips the OWN-entity lookup; its existence is checked against
+/// `Motor`'s declared members instead (#7880), and `shaft` is declared there.
 #[test]
 fn hoisted_lookup_mixed_bare_dotted() {
     let source = r#"
