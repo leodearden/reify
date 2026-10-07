@@ -2865,6 +2865,18 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     let body = box(width, width, width)
 }"#;
 
+/// One cell per declared-type shape `ValueData.declared_dimension` must
+/// report: an `Option<Length>` holding `none` (value-side dimension empty), a
+/// plain `Length`, a named-but-unladdered `Money`, a dimensionless `Real`, and
+/// a non-scalar `let`.
+const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
+    param gap : Option<Length> = none
+    param width : Length = 80mm
+    param cost : Money = 5USD
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
@@ -3019,9 +3031,24 @@ fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
         .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
         .expect("initial load");
 
-    session
+    let state = session
         .preview_parameter("GateScope.scale", "2.0")
         .expect("a Real cell must still take a bare number");
+    // A dimensionless cell's bare number is not reinterpreted as a Scalar.
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.name == "scale")
+        .expect("the Real cell must be in the payload");
+    assert_eq!(
+        (
+            scale.declared_dimension.as_str(),
+            scale.dimension.as_str(),
+            scale.unit.as_str()
+        ),
+        ("", "", ""),
+        "a dimensionless cell has no dimension or badge to carry; got {scale:?}"
+    );
     session
         .preview_parameter("GateScope.scale", "3")
         .expect("a Real cell must still take a bare integer");
@@ -3087,25 +3114,25 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
             .expect("the Money cell must be in the payload")
     }
 
-    // (b) The uncovered cell takes a bare number, and the magnitude lands
-    // verbatim as the canonical SI number.
+    // (b) The uncovered cell takes a bare number, the magnitude lands verbatim
+    // as the canonical SI number, and the cell keeps its dimension and badge.
     //
-    // Asserted in BOTH states because the transition is the observable cost of
-    // leaving the Int/Real coercion to reify-eval (see
-    // `parse_value_string_for_cell`, which explains why this gate deliberately
-    // does not touch it). The `5USD` default compiles to a
-    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
-    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
-    // reify-eval accepts through that wildcard — and a non-Scalar has no
-    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
-    // carries the magnitude. Pinned rather than described so a future change to
-    // that coercion surfaces here.
+    // reify-eval admits the bare number as a `Value::Int` through its
+    // dimension wildcard (see `parse_value_string_for_cell`). The payload reads
+    // a bare Int/Real held by a declared-dimensioned cell as that dimension's
+    // SI magnitude, so `value`/`unit`/`si_value`/`dimension` stay one coherent
+    // set across the edit instead of the badge dropping to "".
     let before = cost_cell(&loaded);
     assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
     assert_eq!(
         before.si_value,
         Some(5.0),
         "the default carries its SI magnitude; got {before:?}"
+    );
+    assert_eq!(before.declared_dimension, "Money", "got {before:?}");
+    assert!(
+        !before.unit.is_empty(),
+        "premise: the default shows a unit badge for the edit to preserve; got {before:?}"
     );
 
     let state = session
@@ -3117,11 +3144,16 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
     );
     assert_eq!(
-        (cost.dimension.as_str(), cost.si_value),
-        ("", None),
-        "a bare number lands as a `Value::Int`, which has no dimension to report — \
-         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+        cost.unit, before.unit,
+        "the unit badge the cell showed before the edit must survive it; got {cost:?}"
     );
+    assert_eq!(cost.dimension, "Money", "got {cost:?}");
+    assert_eq!(
+        cost.si_value,
+        Some(6.0),
+        "the bare number is the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(cost.declared_dimension, "Money", "got {cost:?}");
 
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
@@ -3144,6 +3176,84 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         err.contains("Cannot parse value") && err.contains("6USD"),
         "got {err:?}"
     );
+}
+
+/// Every cell carries the dimension its DECLARED type requires, whatever its
+/// runtime value holds — and that field and the backend's bare-number gate
+/// read one fact.
+///
+/// The panel's input gate keys on this field; the backend gate keys on the
+/// declared `cell_type`. (c) makes their agreement executable: for every
+/// param, "a curated ladder covers its declared dimension" holds exactly when
+/// `preview_parameter(id, "120")` is refused as a bare number.
+#[test]
+fn every_value_cell_reports_its_declared_dimension_whatever_its_value_holds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let loaded = session
+        .load_from_source(DECLARED_DIMENSION_SRC, "declared_dimension")
+        .expect("initial load");
+
+    let cell = |name: &str| -> crate::types::ValueData {
+        loaded
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("cell `{name}` must be in the payload"))
+            .clone()
+    };
+
+    // (a) PREMISE, asserted not assumed: a `none`-valued `Option<Length>` has
+    // no value-side dimension, which is the divergence this field closes.
+    let gap = cell("gap");
+    assert_eq!(gap.determinacy, "determined", "got {gap:?}");
+    assert_eq!(
+        gap.dimension, "",
+        "the value-side dimension of a `none` Option cell is empty; got {gap:?}"
+    );
+
+    // (b) The declared dimension, per shape.
+    for (name, expected) in [
+        ("gap", "Length"),
+        ("width", "Length"),
+        ("cost", "Money"),
+        ("scale", ""),
+        ("body", ""),
+    ] {
+        let v = cell(name);
+        assert_eq!(
+            v.declared_dimension, expected,
+            "`{name}` must report its declared dimension; got {v:?}"
+        );
+    }
+
+    // (c) GATE PARITY. Collected up front so each preview below starts from
+    // the loaded payload, not from an earlier accepted edit.
+    let params: Vec<(String, String)> = loaded
+        .values
+        .iter()
+        .filter(|v| v.kind == "Param")
+        .map(|v| (v.cell_id.clone(), v.declared_dimension.clone()))
+        .collect();
+    assert!(
+        params.len() >= 4,
+        "premise: the fixture's four params must all be in the payload; got {params:?}"
+    );
+    let ladders = crate::display_units::unit_ladders();
+    for (cell_id, declared) in params {
+        let covered = !declared.is_empty() && ladders.iter().any(|l| l.dimension == declared);
+        let result = session.preview_parameter(&cell_id, "120");
+        let refused = matches!(&result, Err(e) if e.contains("bare number"));
+        assert_eq!(
+            covered,
+            refused,
+            "`{cell_id}` (declared_dimension {declared:?}): the panel's coverage of the \
+             declared dimension must match the backend gate's verdict on a bare `120`; \
+             got {:?}",
+            result.as_ref().map(|_| "accepted")
+        );
+    }
 }
 
 /// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
@@ -3232,10 +3342,9 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
 /// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
 /// (`parasitic_error`), four `Option<Pressure>` params in
 /// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
-/// one of them, and the `none`-valued state is reachable from the panel's own
-/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
-/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
-/// lets the bare number through to be refused here.
+/// one of them. A `none`-valued Option cell reports `dimension: ""`, so the
+/// panel gates on `declared_dimension` instead, which peels the wrapper the
+/// same way (`every_value_cell_reports_its_declared_dimension_whatever_its_value_holds`).
 ///
 /// Not a corruption either way — reify-eval maps `Value::Int` onto
 /// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors

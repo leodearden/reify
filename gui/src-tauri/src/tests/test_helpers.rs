@@ -400,6 +400,7 @@ pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::Gu
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     };
     crate::types::GuiState {
         values: values.iter().map(value).collect(),
