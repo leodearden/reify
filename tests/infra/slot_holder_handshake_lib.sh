@@ -17,25 +17,23 @@
 # The primitives here close both sides: a causal barrier for the first, a
 # TEST-RELEASED owner for the second.
 #
-# WHAT WAS CONSOLIDATED HERE, AND WHAT WAS NOT.  The same facts were open-coded
-# in four divergent copies.  MIGRATED (task 6247): occt_wait_until_slot_held in
+# WHAT WAS CONSOLIDATED HERE.  The same facts were open-coded in four divergent
+# copies, all now migrated.  Task 6247: occt_wait_until_slot_held in
 # tests/infra/occt_flock_gate_lib.sh, whose occt_*-prefixed forwarder is now
 # deleted and whose call sites use holder_wait_until_held directly; an inline
 # `flock -xn` probe in tests/infra/test_run_all.sh; and _wait_for_reader_lock in
 # tests/infra/test_warm_lane_gc.sh, now deleted with all six of its call sites
-# on holder_wait_for_marker.
+# on holder_wait_for_marker.  Task 7361: the _wait_for_reader_lock in
+# tests/infra/test_warm_lane_pool.sh and the _wait_for_marker it forwarded to,
+# both deleted with their call sites on holder_wait_for_marker; the Block RH
+# unit tests that covered them were retired as redundant with
+# tests/infra/test_slot_holder_handshake_lib.sh section (b).
 #
-# STILL OUTSTANDING: tests/infra/test_warm_lane_pool.sh carries an
-# identically-named _wait_for_reader_lock twin, layered over a helper of its own
-# and with its own unit tests (its Block RH).  That file was outside task 6247's
-# lock set, so the copy stands; migrating it is follow-up work.  Until then this
-# lib is the single home for the suites that source it (`git grep -l
-# slot_holder_handshake_lib.sh -- tests/infra` lists them), NOT for every
-# marker-poll in tests/infra — do not read the SPOT claim wider than that set.
-#
-# The two argument conventions differ where a caller was migrated: this lib
-# counts POLL ITERATIONS (load-scaled), where _wait_for_reader_lock took a
-# deadline in SECONDS at a 0.05s tick.  30s there is 150 iterations here.
+# Legacy copies of _wait_for_reader_lock remain in other suites (`git grep -n
+# '^_wait_for_reader_lock()' -- tests/infra` lists them): this lib is the
+# canonical home for new code, not proof that none remain.  They take a
+# deadline in SECONDS at a 0.05s tick, where this lib counts POLL ITERATIONS
+# (load-scaled) at 0.2s: 30s there is 150 iterations here.
 #
 # WHAT THESE FUNCTIONS ASSERT — AND WHAT THEY DO NOT:
 # every barrier here returns on a CAUSAL OUTCOME (a non-blocking flock probe
