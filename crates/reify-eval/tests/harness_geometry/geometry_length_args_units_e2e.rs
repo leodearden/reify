@@ -315,11 +315,10 @@ fn nurbs_bare_pole_drops_op_dimensioned_builds() {
 ///
 /// Six args satisfies the compiler-side precondition (">= 6 args for 3 points",
 /// even count — the `"polygon"` arm of `compile_geometry_call_inner` in
-/// `reify-compiler/src/geometry.rs`), and the dimensioned control is
-/// byte-identical to the `polygon(...)` call in the `geometry.md` chunk's
-/// ```` ```reify ```` fence, which
-/// `crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs::every_reify_tagged_fence_compiles_clean`
-/// compiles verbatim, so the doc example and this signal cannot drift.
+/// `reify-compiler/src/geometry.rs`), and the dimensioned control matches the
+/// `polygon(...)` call in the `geometry.md` chunk's ```` ```reify ```` fence
+/// (compiled by
+/// `crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs::every_reify_tagged_fence_compiles_clean`).
 #[test]
 fn polygon_bare_vertex_drops_op_dimensioned_builds() {
     assert_length_gate(
