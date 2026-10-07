@@ -10,6 +10,24 @@ use reify_test_support::{
     try_get_value_cell_in_template,
 };
 
+/// Asserts `template` carries exactly one value cell for `member`, whatever its entity.
+/// `get_value_cell_in_template` cannot pin this count: it resolves the template's own
+/// `S.x` beside a trait-scoped `D.x` silently.
+#[track_caller]
+fn assert_one_value_cell_named(template: &TopologyTemplate, member: &str) {
+    let ids: Vec<String> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == member)
+        .map(|vc| vc.id.to_string())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        1,
+        "expected exactly 1 value cell '{member}', got {ids:?}"
+    );
+}
+
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
 #[test]
 fn compile_trait_produces_compiled_trait() {
@@ -226,17 +244,7 @@ structure def S : HasSize {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Only one 'size' value cell should exist (the structure's, not the trait default).
-    let size_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "size")
-        .collect();
-    assert_eq!(
-        size_cells.len(),
-        1,
-        "expected exactly 1 'size' value cell, got {}",
-        size_cells.len()
-    );
+    assert_one_value_cell_named(&template, "size");
 }
 
 /// Step 13: Multiple trait bounds — structure satisfies both traits.
@@ -399,17 +407,7 @@ structure def X : A + B {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Exactly one 'size' value cell should exist (not two).
-    let size_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "size")
-        .collect();
-    assert_eq!(
-        size_cells.len(),
-        1,
-        "expected exactly 1 'size' value cell after dedup, got {}",
-        size_cells.len()
-    );
+    assert_one_value_cell_named(&template, "size");
 }
 
 /// Step 25a: Default conflict across traits with different types.
@@ -477,12 +475,7 @@ structure def Y : A + B {
     );
 
     // Only one 'size' value cell.
-    let size_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "size")
-        .collect();
-    assert_eq!(size_cells.len(), 1, "expected exactly 1 'size' value cell");
+    assert_one_value_cell_named(&template, "size");
 }
 
 /// Step 27a: Unlabeled constraint defaults from two traits — both injected.
@@ -586,6 +579,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
+    assert_one_value_cell_named(&template, "x");
     let x_cell = get_value_cell_in_template(&template, "x");
     assert_eq!(
         x_cell.cell_type,
@@ -675,18 +669,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Exactly 1 value cell named 'x' (no duplication from diamond).
-    let x_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "x")
-        .collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 value cell 'x', got {}: {:?}",
-        x_cells.len(),
-        x_cells
-    );
+    assert_one_value_cell_named(&template, "x");
 }
 
 /// Task-189 step-7: Constraint from D injected exactly once in deep diamond.
@@ -769,6 +752,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
+    assert_one_value_cell_named(&template, "d");
     let d_cell = get_value_cell_in_template(&template, "d");
     assert_eq!(
         d_cell.cell_type,
@@ -808,18 +792,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Exactly 1 value cell named 'y' (let default dedup in diamond).
-    let y_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "y")
-        .collect();
-    assert_eq!(
-        y_cells.len(),
-        1,
-        "expected exactly 1 value cell 'y', got {}: {:?}",
-        y_cells.len(),
-        y_cells
-    );
+    assert_one_value_cell_named(&template, "y");
 }
 
 /// Task-189 step-13: Deep 5-level diamond — E:D, B:E, C:D, A:B+C, S:A.
@@ -859,9 +832,11 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
+    assert_one_value_cell_named(&template, "x");
     let x_cell = get_value_cell_in_template(&template, "x");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
+    assert_one_value_cell_named(&template, "y");
     let y_cell = get_value_cell_in_template(&template, "y");
 
     assert_eq!(
@@ -942,6 +917,7 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
+    assert_one_value_cell_named(&template, "x");
     let x_cell = get_value_cell_in_template(&template, "x");
     assert_eq!(
         x_cell.cell_type,
