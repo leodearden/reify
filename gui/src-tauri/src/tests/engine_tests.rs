@@ -858,11 +858,10 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter(
 
 /// User-observable signal: `bind(y_axis, 50mm)` must produce
 /// `JointBinding::LiteralBound { synth_param_name: "__joint_y_axis_v",
-/// initial_value_si: Some(0.05), scrubbable: true }`.
-///
-/// This is the primary contract test for the η-engine task.
+/// initial_value_si: Some(0.05), scrubbable: false }` — read-only, because no
+/// cell resolves the synth name (task #7375).
 #[test]
-fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_binding() {
+fn get_mechanism_descriptors_literal_bind_produces_read_only_literal_bound_binding() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -884,10 +883,10 @@ fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_bind
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.05),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 50mm) must produce LiteralBound {{ synth_param_name: \"__joint_y_axis_v\", \
-         initial_value_si: Some(0.05), scrubbable: true }}; got {:?}",
+         initial_value_si: Some(0.05), scrubbable: false }}; got {:?}",
         joint.binding
     );
 
@@ -923,11 +922,63 @@ fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.5),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 0.5) must produce LiteralBound {{ initial_value_si: Some(0.5) }}; got {:?}",
         joint.binding
     );
+}
+
+/// Sibling of `SNAPSHOT_LITERAL_BIND_SOURCE` with no `snapshot()`: the prismatic
+/// joint keeps the kind-based `LiteralBound` default with no literal value.
+const UNBOUND_PRISMATIC_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+}
+"#;
+
+/// Task #7375: a descriptor must never advertise a scrub the engine cannot
+/// honour. A literal-bound joint is `scrubbable` exactly when the engine accepts
+/// a preview under its `synth_param_name`.
+#[test]
+fn literal_bound_joint_is_scrubbable_only_if_the_engine_accepts_its_synth_name() {
+    for source in [SNAPSHOT_LITERAL_BIND_SOURCE, UNBOUND_PRISMATIC_SOURCE] {
+        let mut session = make_session();
+        session
+            .load_from_source(source, "kinematic")
+            .expect("load literal-bound mechanism source");
+
+        let literal_bound: Vec<(usize, String, bool)> = session
+            .get_mechanism_descriptors()
+            .into_iter()
+            .flat_map(|d| d.joints)
+            .filter_map(|j| match j.binding {
+                crate::types::JointBinding::LiteralBound {
+                    synth_param_name,
+                    scrubbable,
+                    ..
+                } => Some((j.joint_index, synth_param_name, scrubbable)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !literal_bound.is_empty(),
+            "fixture must yield at least one LiteralBound joint; source:\n{source}"
+        );
+
+        for (joint_index, synth_param_name, scrubbable) in literal_bound {
+            let preview = session.preview_parameter(&synth_param_name, "100mm");
+            assert_eq!(
+                scrubbable,
+                preview.is_ok(),
+                "joint {joint_index} ({synth_param_name}) advertises scrubbable={scrubbable} \
+                 but preview_parameter returned {:?}",
+                preview.err()
+            );
+        }
+    }
 }
 
 // ---- edge case tests (amendment pass, suggestion 8) -------------------------
@@ -10807,7 +10858,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a prismatic joint at joint_index 2.
 ///
 /// Note: joint_index is 0-based within the mechanism. To get index=2 we add 3 bodies
@@ -10858,7 +10909,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_2_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "prismatic at joint_index=2 must have synth_param_name='__joint_2_v'; got {:?}",
         joints[2].binding
@@ -10866,7 +10917,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a revolute joint at joint_index 0.
 #[test]
 fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
@@ -10882,7 +10933,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_0_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "revolute at joint_index=0 must have synth_param_name='__joint_0_v'; got {:?}",
         joints[0].binding
@@ -10989,7 +11040,7 @@ structure Kinematic {
 "#;
 
 /// `bind(y_axis, 50inch)` — "inch" is not a resolvable DSL unit symbol — must
-/// produce `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// produce `JointBinding::LiteralBound { initial_value_si: None, .. }`
 /// AND emit exactly one DEBUG event at the `literal_bind` target.
 #[test]
 fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
@@ -19756,8 +19807,8 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 ///     (head_solid + dock_solid).
 ///   - The prismatic `j_x` joint (`bind(j_x, 0mm)`) is exposed as
 ///     `JointBinding::LiteralBound { synth_param_name: "__joint_j_x_v",
-///     initial_value_si: Some(0.0), scrubbable: true }` — i.e.
-///     `MechanismPanel` would render a functional scrub slider for it.
+///     initial_value_si: Some(0.0), scrubbable: false }` — i.e.
+///     `MechanismPanel` renders a read-only literal row for it (task #7375).
 ///   - The `dock_solid` body's `fixed()` joint yields
 ///     `JointBinding::FixedNoMotion` (no scrubbable slider).
 ///   - A second `get_mechanism_descriptors()` call still reports
@@ -19768,7 +19819,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 /// debug-MCP `mechanism-descriptors` command wraps. The frontend scrub
 /// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
 #[test]
-fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
+fn dock_pickup_mechanism_exposes_read_only_literal_bound_joint_smoke() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/kinematic/dock_pickup.ri"
@@ -19795,7 +19846,7 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
             )
         });
 
-    // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    // j_x: prismatic, literal-bound at 0mm -> read-only literal row.
     //
     // Note: dock_pickup.ri also drives j_x via `sweep(m2, j_x, 0mm .. 500mm, 11)`
     // (cell `snaps`), independently of the `snapshot(m2, [bind(j_x, 0mm)])`
@@ -19815,9 +19866,9 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_j_x_v".to_string(),
             initial_value_si: Some(0.0),
-            scrubbable: true,
+            scrubbable: false,
         },
-        "j_x (bind(j_x, 0mm)) must produce a scrubbable LiteralBound slider descriptor; got {:?}",
+        "j_x (bind(j_x, 0mm)) must produce a read-only LiteralBound descriptor; got {:?}",
         j_x.binding
     );
 
