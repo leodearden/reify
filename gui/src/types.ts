@@ -867,6 +867,8 @@ export interface EntityTreeNode {
  * `driving_param_cell_id` and `current_value_si` on `JointDescriptor`
  * are backward-compat mirrors populated only for `param_bound` joints;
  * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
+ *
+ * `literal_bound` is read-only: `synth_param_name` is a reserved name, not a cell id, and the engine sends `scrubbable: false`.
  */
 export type JointBinding =
   | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }

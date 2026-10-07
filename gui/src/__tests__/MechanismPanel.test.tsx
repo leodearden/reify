@@ -521,7 +521,7 @@ describe('MechanismPanel', () => {
 
   describe('(f) only a joint with a write target renders a slider', () => {
     /** A literal-bound joint descriptor, as the engine reports `bind(j, <literal>)`. */
-    const literalBoundDescriptor = (
+    const literalJointDescriptor = (
       joint: Partial<JointDescriptor>,
       binding: Partial<Extract<JointBinding, { kind: 'literal_bound' }>>,
     ) =>
@@ -550,7 +550,7 @@ describe('MechanismPanel', () => {
     it('literal_bound prismatic joint renders no slider and a read-only literal badge', () => {
       render(() => (
         <MechanismPanel
-          descriptors={[literalBoundDescriptor({}, { initial_value_si: 0.1 })]}
+          descriptors={[literalJointDescriptor({}, { initial_value_si: 0.1 })]}
           onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
         />
       ));
@@ -563,7 +563,7 @@ describe('MechanismPanel', () => {
       render(() => (
         <MechanismPanel
           descriptors={[
-            literalBoundDescriptor(
+            literalJointDescriptor(
               { kind: 'revolute', dimension: 'angle', range_lower_si: 0, range_upper_si: Math.PI },
               { synth_param_name: '__joint_theta_v', initial_value_si: 0.5 },
             ),
@@ -579,7 +579,7 @@ describe('MechanismPanel', () => {
     it('an unbound joint (literal_bound with no literal) reads "unbound", not "fixed (no motion)"', () => {
       render(() => (
         <MechanismPanel
-          descriptors={[literalBoundDescriptor({}, { synth_param_name: '__joint_0_v', initial_value_si: null })]}
+          descriptors={[literalJointDescriptor({}, { synth_param_name: '__joint_0_v', initial_value_si: null })]}
           onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
         />
       ));
@@ -592,7 +592,7 @@ describe('MechanismPanel', () => {
     it('a literal_bound joint that arrives with scrubbable:true still renders no slider', () => {
       render(() => (
         <MechanismPanel
-          descriptors={[literalBoundDescriptor({}, { scrubbable: true })]}
+          descriptors={[literalJointDescriptor({}, { scrubbable: true })]}
           onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
         />
       ));
