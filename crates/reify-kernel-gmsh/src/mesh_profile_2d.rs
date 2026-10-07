@@ -71,7 +71,8 @@ pub struct MeshPlane2dResult {
 /// Returns `GeometryError::OperationFailed` on FFI failures (annotated
 /// with the failing gmsh function name) or, in stub builds, with the
 /// message "Gmsh not available" (mirroring the convention used by other
-/// kernel adapters).
+/// kernel adapters). A failure inside the capture window also carries the
+/// tail of gmsh's captured Info/Warning stream (see [`crate::log_capture`]).
 #[cfg(has_gmsh)]
 pub fn mesh_plane_2d(
     outer: &[[f64; 2]],
@@ -80,8 +81,6 @@ pub fn mesh_plane_2d(
     recombine: bool,
     deterministic: bool,
 ) -> Result<MeshPlane2dResult, GeometryError> {
-    use std::collections::HashMap;
-
     use crate::ffi;
     use crate::init;
     use crate::mesh_size_scope::MeshSizeScope;
@@ -95,6 +94,9 @@ pub fn mesh_plane_2d(
     let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
+    // gmsh's diagnosis now reaches only the capture; armed and dropped exactly
+    // as at `kernel_real::GmshKernel::mesh_to_volume`'s arm site (`log_capture`).
+    let log_capture = crate::log_capture::LogCapture::armed(&_guard);
 
     // This function's own deviation from the size defaults the scope just
     // established. With `mesh_size: None` there is no deviation and the mesh
@@ -116,9 +118,43 @@ pub fn mesh_plane_2d(
 
     ffi::model_add("reify_profile_2d")?;
 
+    build_plane_surface(&_guard, outer, holes, recombine).map_err(|e| log_capture.annotate(e))?;
+
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function. Wired for
+    // uniformity with the three 3D sites — no cheap 2D geometry that fails
+    // `mesh_generate(2)` was identified, so this site is NOT test-covered.
+    // MEASURED: degenerate outlines (collinear, duplicated or too few points)
+    // do not fail it — it returns zero elements, rejected at the readback —
+    // and a NaN vertex fails it only after ~98 s.
+    //
+    // Outside both seams: it annotates its own failure (see init.rs "Why the
+    // diagnosis is read here"), so a seam over it would append the tail twice.
+    init::mesh_generate_with_recovery(&_guard, 2)?;
+
+    read_back_plane_mesh(&_guard, outer.len(), holes.len()).map_err(|e| log_capture.annotate(e))
+}
+
+/// Push the outline into gmsh's built-in CAD as one plane surface, synchronise
+/// it into the model, and apply the recombine request to that surface.
+///
+/// The [`crate::init::GmshGuard`] is an admission ticket only, as in
+/// `kernel_real::build_meshable_region`: never touched, taken so holding
+/// `GMSH_LOCK` is a precondition the compiler checks. Split out of
+/// [`mesh_plane_2d`] so this span's failures reach the caller's `LogCapture`
+/// at one seam.
+#[cfg(has_gmsh)]
+fn build_plane_surface(
+    _guard: &crate::init::GmshGuard,
+    outer: &[[f64; 2]],
+    holes: &[Vec<[f64; 2]>],
+    recombine: bool,
+) -> Result<(), GeometryError> {
+    use crate::ffi;
+
     // Helper: push a closed polygonal ring (outer or hole) as
     // point → line → curve_loop. Returns the curve-loop tag.
-    let push_ring = |ring: &[[f64; 2]]| -> Result<i32, GeometryError> {
+    fn push_ring(ring: &[[f64; 2]]) -> Result<i32, GeometryError> {
         // Caller responsibility: ring length >= 3. We don't re-validate here
         // because mesh_swept_profile_2d does the input-shape check above us;
         // gmsh's own error path would surface a degenerate-ring failure
@@ -134,7 +170,7 @@ pub fn mesh_plane_2d(
             line_tags.push(ffi::geo_add_line(start, end)?);
         }
         ffi::geo_add_curve_loop(&line_tags)
-    };
+    }
 
     let outer_loop = push_ring(outer)?;
     let mut wire_tags: Vec<i32> = Vec::with_capacity(1 + holes.len());
@@ -160,12 +196,25 @@ pub fn mesh_plane_2d(
         // `recombine_quality_ok` re-validates with a configurable threshold.
         ffi::mesh_set_recombine(2, surf_tag, 45.0)?;
     }
+    Ok(())
+}
 
-    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
-    // a failure here must not outlive this call. See that function. Wired for
-    // uniformity with the three 3D sites — no cheap 2D geometry that fails
-    // `mesh_generate(2)` was identified, so this site is NOT test-covered.
-    init::mesh_generate_with_recovery(&_guard, 2)?;
+/// Read the 2D mesh gmsh just generated back out of the process-global model
+/// and remap it onto a [`MeshPlane2dResult`]'s 0-based local indices.
+///
+/// Same lock ticket as [`build_plane_surface`], and split out of
+/// [`mesh_plane_2d`] for the same reason: one `LogCapture` seam for the whole
+/// readback. `outer_len` and `holes_len` reach [`verify_plane_readback`]'s
+/// message only.
+#[cfg(has_gmsh)]
+fn read_back_plane_mesh(
+    _guard: &crate::init::GmshGuard,
+    outer_len: usize,
+    holes_len: usize,
+) -> Result<MeshPlane2dResult, GeometryError> {
+    use std::collections::HashMap;
+
+    use crate::ffi;
 
     // Readback nodes. The flat coord buffer is stride-3 (x, y, z); we drop
     // the z component (always 0 for a plane surface).
@@ -238,7 +287,7 @@ pub fn mesh_plane_2d(
     }
     let quad_indices = remap(&quad_node_tags)?;
 
-    verify_plane_readback(&triangle_indices, &quad_indices, outer.len(), holes.len())?;
+    verify_plane_readback(&triangle_indices, &quad_indices, outer_len, holes_len)?;
 
     // Note: we intentionally do NOT issue a trailing `ffi::clear()` here.
     // The leading `ffi::clear()?` at the top of every `mesh_plane_2d` call
@@ -268,8 +317,9 @@ pub fn mesh_plane_2d(
 ///
 /// Split out of [`mesh_plane_2d`], as `verify_tet_readback` is out of the tet
 /// readback, so the predicate is reachable from a unit test with no live gmsh
-/// model behind it — the only coverage it has, since no cheap 2D geometry that
-/// fails `mesh_generate(2)` was identified.
+/// model behind it. Its rejection is also driven end to end, by a degenerate
+/// outline that `mesh_generate(2)` meshes to nothing:
+/// `mesh_plane_2d_tests::a_degenerate_outline_reports_gmshs_captured_log_not_just_the_empty_readback`.
 ///
 /// `outer_len` and `holes_len` describe the outline that produced nothing and
 /// reach the message only.
@@ -313,9 +363,10 @@ pub fn mesh_plane_2d(
 /// Both directions of [`verify_plane_readback`]: the rejection it exists for,
 /// and the three element mixes a legitimate 2D mesh comes back as.
 ///
-/// This predicate has no integration coverage — nothing cheap fails
-/// `mesh_generate(2)` — so without these, inverting the `&&` to `||` would
-/// reject every clean-recombine quad-only mesh, the whole happy case of
+/// The rejection is also covered end to end (a degenerate outline in
+/// `tests/mesh_plane_2d_tests.rs`), but the three accepting mixes are covered
+/// only here — so without these, inverting the `&&` to `||` would reject every
+/// clean-recombine quad-only mesh, the whole happy case of
 /// `reify_solver_elastic::mesher::mesh_swept_profile_2d`'s HexPreferred path,
 /// and still ship green.
 #[cfg(all(test, has_gmsh))]

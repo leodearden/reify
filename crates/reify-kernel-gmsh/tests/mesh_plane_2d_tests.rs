@@ -276,7 +276,8 @@ fn mesh_plane_2d_with_hole_avoids_hole_interior() {
 fn a_degenerate_outline_reports_gmshs_captured_log_not_just_the_empty_readback() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
-    let err = mesh_plane_2d(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], &[], None, false, true)
+    const COLLINEAR: [[f64; 2]; 3] = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+    let err = mesh_plane_2d(&COLLINEAR, &[], None, false, true)
         .expect_err("three collinear points bound no area and must be rejected");
     let msg = format!("{err}");
 
