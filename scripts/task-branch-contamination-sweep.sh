@@ -469,6 +469,12 @@ _BRANCH_PREFIX_RE="$(task_citation_regex_escape "$BRANCH_PREFIX")"
 # ── per-branch measurement ────────────────────────────────────────────────────
 # Row fields, in the order the header documents. Set by _measure_branch and
 # consumed by the emitters; declared here so the field list has ONE definition.
+#
+# R_PEERS is the one field with three states, and this is where they are defined:
+#   "-"    unmeasured — set only by _row_unknown, like every count's placeholder
+#   ""     measured, no peers — _classify_scope's starting value
+#   "a,b"  measured: peer task ids, sorted-unique, comma-joined
+# Each renderer spells "" its own way: "-" in the table, [] in json.
 _DB_WARNED=0
 R_TASK=""; R_STATUS=""; R_MERGE_BASE=""; R_BEHIND=""; R_COMMITS=""
 R_PEER_COMMITS=""; R_CHANGED=""; R_FOREIGN=""; R_PEER_FILES=""; R_PEERS=""

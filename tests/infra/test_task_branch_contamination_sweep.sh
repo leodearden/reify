@@ -690,6 +690,7 @@ _assert_field "C2: peers is the sorted-unique UNION of commit- and file-derived 
 _assert_field "C3: peer_commits>0 -> signature=SUSPECT" 9510 signature SUSPECT
 
 run_helper --task 9510 --db "$C_DB" --repo "$REPO" --format json
+assert "C2/json: exits 0" test "$RC" -eq 0
 assert "C2/json: peers is an ARRAY of task-id numbers, not a comma-joined string" \
     bash -c 'printf "%s" "$1" | python3 -c "
 import json,sys
