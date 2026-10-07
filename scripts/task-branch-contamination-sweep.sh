@@ -58,7 +58,8 @@
 #   changed      files in `git diff -z --name-only <merge_base> <branch>`
 #   foreign      changed files absent from this task's metadata.files
 #   peer_files   foreign files declared by a non-terminal task that is NOT this one
-#   peers        the union of peer task ids implicated, sorted-unique, or "-"
+#   peers        the union of peer task ids implicated, sorted-unique and
+#                comma-joined, or "-" when there are none or it is unmeasured
 #   scope        CLEAN | OUT-OF-SCOPE | PEER-FILES | UNDECLARED | UNKNOWN
 #   signature    SUSPECT | -
 #
@@ -83,7 +84,8 @@
 #                       so an all-zero summary still reads as a clean pool.
 #
 # `--format json` emits one document: a `branches` array of objects carrying
-# the same keys, and a sibling `summary` object with the same counters.
+# the same keys, and a sibling `summary` object with the same counters. There,
+# `peers` is an array of task-id numbers (`[]` when none, "-" when unmeasured).
 #
 # ── Invariants ───────────────────────────────────────────────────────────────
 #   R1  Read-only on the task store. Opened strictly -readonly / mode=ro, and
@@ -646,7 +648,7 @@ _census_commits() {
     # ones, sorted-unique. Both halves feed ONE column because both answer the
     # same question: which other tasks are implicated in this branch.
     if [ -n "$commit_peers" ]; then
-        [ "$R_PEERS" = "-" ] || commit_peers="$commit_peers${R_PEERS//,/$'\n'}"$'\n'
+        [ -z "$R_PEERS" ] || commit_peers="$commit_peers${R_PEERS//,/$'\n'}"$'\n'
         R_PEERS="$(printf '%s' "$commit_peers" | sort -nu | paste -sd, -)"
     fi
     return 0
@@ -678,7 +680,7 @@ _census_commits() {
 # unused dimension of variability.
 _classify_scope() {
     local id="$1" declared path owner peers_found=""
-    R_FOREIGN=0; R_PEER_FILES=0; R_PEERS="-"
+    R_FOREIGN=0; R_PEER_FILES=0; R_PEERS=""
 
     declared="${_DECLARED["$id"]:-}"
     if [ -z "$declared" ]; then
@@ -775,9 +777,9 @@ import json, os, sys
 
 COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
         "changed", "foreign", "peer_files", "peers", "scope", "signature")
-# The counted columns are emitted as JSON numbers when they hold a count, and
-# as the "-" placeholder string when the branch could not be measured. A
-# consumer therefore never has to parse "-" out of an integer field.
+# Typed columns: counts are JSON numbers, and `peers` is an array of task-id
+# numbers ([] when none). An unmeasured branch carries the "-" placeholder
+# string in both, so a consumer never parses a list or a "-" out of them.
 NUMERIC = {"task", "behind", "commits", "peer_commits", "changed", "foreign",
            "peer_files"}
 
@@ -792,6 +794,8 @@ with open(os.environ["_TB_ROWS"]) as fh:
         for k in NUMERIC:
             if row[k].isdigit():
                 row[k] = int(row[k])
+        if row["peers"] != "-":
+            row["peers"] = [int(p) for p in row["peers"].split(",") if p]
         branches.append(row)
 
 doc = {"branches": branches}
@@ -812,7 +816,7 @@ PY
         [ -n "${c_task:-}" ] || continue
         printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
             "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
-            "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
+            "$c_changed" "$c_foreign" "$c_peer_files" "${c_peers:--}" "$c_scope" "$c_signature"
     done < "$_ROWS" || return 1
     [ -z "$summary" ] || printf 'SWEEP: %s\n' "$summary"
     return 0

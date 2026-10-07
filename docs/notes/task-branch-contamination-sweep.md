@@ -98,13 +98,14 @@ One row per audited branch, `key=value` pairs (table) or one object under `branc
 | `changed` | files in `git diff <merge_base> <branch>` |
 | `foreign` | changed files absent from this task's `metadata.files` |
 | `peer_files` | foreign files declared by a live task that is not this one |
-| `peers` | the union of implicated task ids, sorted-unique, or `-` |
+| `peers` | the union of implicated task ids, sorted-unique and comma-joined (table), or `-` when there are none |
 | `scope` | the file cross-check verdict (below) |
 | `signature` | `SUSPECT` or `-` (below) |
 
 A branch that could not be measured reports `-` in every count. Under `--format json` a count is a
-JSON **number** and the unmeasured placeholder is the **string** `"-"`, so a consumer never parses
-`-` out of an integer field.
+JSON **number**, `peers` is an **array** of task-id numbers (`[]` when there are none), and the
+unmeasured placeholder is the **string** `"-"` in both, so a consumer never parses a comma-joined
+list or a `-` out of a typed field.
 
 ### `scope` — the declared-scope cross-check
 
