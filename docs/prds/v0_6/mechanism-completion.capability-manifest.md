@@ -64,7 +64,7 @@ build.
 |---|---|---|
 | Anti-inversion (FK premise) | FK-interference core on main: `engine_build.rs:1998,2374` (post_process_kinematic_queries) + 3906 (done, `ApplyTransform` pre-probe) + `mechanism_interference_smoke.rs::fk_posed_cubes`. θ documents this, does not depend on building it. | **PASS** |
 | Swept-example ownership | `dock_pickup.ri` swept `.map(interferes)` + e2e owned by KCC **3848** (pending); θ depends-on it. | **PASS** (dep wired) |
-| Method-call-syntax fiction | `.map`/`.windows`/`.norm` appear only in comments as *non-expressible* (`modal_analysis.ri:57`); θ marks §13.6 forms non-Reify. | **PASS** |
+| Method-call-syntax fiction | `.map`/`.windows`/`.norm` appear only in comments as *non-expressible* (`modal_analysis.ri`'s `reference_direction.norm() > 0` notes); θ marks §13.6 forms non-Reify. | **PASS** |
 | Same-file-lock hygiene | All §13 prose edits consolidated into this one leaf (avoids 3-way `reify-stdlib-reference.md` lock contention). | **PASS** |
 | Grammar-fixture | Doc-only. | **N/A** |
 
