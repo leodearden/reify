@@ -1591,7 +1591,7 @@ connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive  // A
 connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
 ```
 
-The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`.
+The `@` operator creates an ad-hoc port on a structure by designating a geometric region. Syntax: `structure@selector(arguments)`. The selector `@` must be on the same line as the expression it selects from; an `@` that begins a line always begins an annotation (§12.1).
 
 **Canonical region-reference model (P0 D1/D3).** A region reference is a `Selector` value — representation-aware, content-hash-stable, and a deferred query spec resolved per-kernel at solve time. Topology selection is *one* resolution strategy, not the model's foundation: a region is named by *intent* (a predicate, a role, or a provenance feature) and resolved against whatever representation the body is realized as. Resolution is **fail-closed**: when the realized representation cannot answer the intent, `reify eval`/`check` emits `E_QUERY_NOT_SUPPORTED_ON_REPR` and the cell stays `Value::Undef` — never a silent fake. See `docs/prds/naming-convergence/P0-region-reference-layer-model.md` §3 D1/D3/D5.
 
@@ -2587,7 +2587,7 @@ The complete API reference for all `std.*` modules is in the [Standard Library R
 
 ### 12.1 Annotations
 
-Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain.
+Annotations use `@name` or `@name(arguments)`. They provide hints to the toolchain. An annotation on its own line attaches to the following member or declaration, whatever the preceding member ends with.
 
 **`@optimized`** -- registers that a language-level definition has a semantically equivalent optimized implementation in the runtime. The optimized implementation must produce identical results; it is a pure performance optimization:
 
