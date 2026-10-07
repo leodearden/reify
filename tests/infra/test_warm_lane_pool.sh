@@ -44,6 +44,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh (task 6247) — home of the causal holder-handshake
+# barriers (holder_wait_for_marker) that stand in for a fixed pause after
+# backgrounding a reader.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || {
+    echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"
+    exit 1
+}
+# shellcheck source=tests/infra/slot_holder_handshake_lib.sh
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== warm-lane pool end-to-end integration gate (task #4662) ==="
 
 # ─────────────────────────────────────────────────────────────────────────────
