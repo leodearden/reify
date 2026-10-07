@@ -21,7 +21,7 @@ function makeJoint(overrides: Partial<JointDescriptor> & { joint_index: number }
         ? { kind: 'coupling_derived', source_joint: '' }
         : kind === 'fixed'
           ? { kind: 'fixed_no_motion' }
-          : { kind: 'literal_bound', synth_param_name: `__joint_${overrides.joint_index}_v`, initial_value_si: current_value_si, scrubbable: true }
+          : { kind: 'literal_bound', synth_param_name: `__joint_${overrides.joint_index}_v`, initial_value_si: current_value_si, scrubbable: false }
   );
 
   return {
@@ -519,9 +519,13 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(f) literal-bound joints render functional sliders; coupling/fixed do not', () => {
-    it('literal_bound prismatic joint renders exactly one functional slider', () => {
-      const desc = makeDescriptor({
+  describe('(f) only a joint with a write target renders a slider', () => {
+    /** A literal-bound joint descriptor, as the engine reports `bind(j, <literal>)`. */
+    const literalBoundDescriptor = (
+      joint: Partial<JointDescriptor>,
+      binding: Partial<Extract<JointBinding, { kind: 'literal_bound' }>>,
+    ) =>
+      makeDescriptor({
         cell_id: 'Kinematic.m',
         joints: [
           makeJoint({
@@ -529,48 +533,70 @@ describe('MechanismPanel', () => {
             kind: 'prismatic',
             driving_param_cell_id: null,
             current_value_si: null,
+            range_lower_si: 0,
+            range_upper_si: 0.8,
+            ...joint,
             binding: {
               kind: 'literal_bound',
               synth_param_name: '__joint_x_axis_v',
               initial_value_si: 0.1,
-              scrubbable: true,
+              scrubbable: false,
+              ...binding,
             },
           }),
         ],
       });
+
+    it('literal_bound prismatic joint renders no slider and a read-only literal badge', () => {
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel
+          descriptors={[literalBoundDescriptor({}, { initial_value_si: 0.1 })]}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
+        />
       ));
-      const sliders = screen.getAllByRole('slider');
-      expect(sliders).toHaveLength(1);
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
+      const badge = screen.getByText(/literal 100\.0 mm/);
+      expect(badge.getAttribute('title')).toMatch(/bind it to a param/i);
     });
 
-    it('literal_bound revolute joint renders exactly one functional slider', () => {
-      const desc = makeDescriptor({
-        cell_id: 'Kinematic.m',
-        joints: [
-          makeJoint({
-            joint_index: 0,
-            kind: 'revolute',
-            dimension: 'angle',
-            range_lower_si: 0,
-            range_upper_si: Math.PI,
-            driving_param_cell_id: null,
-            current_value_si: null,
-            binding: {
-              kind: 'literal_bound',
-              synth_param_name: '__joint_theta_v',
-              initial_value_si: 0.5,
-              scrubbable: true,
-            },
-          }),
-        ],
-      });
+    it('literal_bound revolute joint renders no slider and a read-only literal badge', () => {
       render(() => (
-        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
+        <MechanismPanel
+          descriptors={[
+            literalBoundDescriptor(
+              { kind: 'revolute', dimension: 'angle', range_lower_si: 0, range_upper_si: Math.PI },
+              { synth_param_name: '__joint_theta_v', initial_value_si: 0.5 },
+            ),
+          ]}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
+        />
       ));
-      const sliders = screen.getAllByRole('slider');
-      expect(sliders).toHaveLength(1);
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
+      const badge = screen.getByText(/literal 28\.6°/);
+      expect(badge.getAttribute('title')).toMatch(/bind it to a param/i);
+    });
+
+    it('an unbound joint (literal_bound with no literal) reads "unbound", not "fixed (no motion)"', () => {
+      render(() => (
+        <MechanismPanel
+          descriptors={[literalBoundDescriptor({}, { synth_param_name: '__joint_0_v', initial_value_si: null })]}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
+        />
+      ));
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
+      const badge = screen.getByText('unbound');
+      expect(badge.getAttribute('title')).toMatch(/bind it to a param/i);
+      expect(screen.queryByText('fixed (no motion)')).toBeNull();
+    });
+
+    it('a literal_bound joint that arrives with scrubbable:true still renders no slider', () => {
+      render(() => (
+        <MechanismPanel
+          descriptors={[literalBoundDescriptor({}, { scrubbable: true })]}
+          onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
+        />
+      ));
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
     });
 
     it('coupling_derived joint still renders no slider (regression guard)', () => {
@@ -971,7 +997,7 @@ describe('MechanismPanel', () => {
   });
 
   describe('(k) binding-aware initial value + visual distinction', () => {
-    it('literal_bound joint with current_value_si:null uses binding.initial_value_si for slider init', () => {
+    it('literal_bound joint with current_value_si:null shows binding.initial_value_si in its badge', () => {
       const desc = makeDescriptor({
         cell_id: 'Kinematic.m',
         joints: [
@@ -986,7 +1012,7 @@ describe('MechanismPanel', () => {
               kind: 'literal_bound',
               synth_param_name: '__joint_x_axis_v',
               initial_value_si: 0.25,
-              scrubbable: true,
+              scrubbable: false,
             },
           }),
         ],
@@ -994,9 +1020,8 @@ describe('MechanismPanel', () => {
       render(() => (
         <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
-      const slider = screen.getByRole('slider') as HTMLInputElement;
       // 0.25 m → 250 mm display
-      expect(Number(slider.value)).toBeCloseTo(250, 0);
+      expect(screen.getByText(/literal 250\.0 mm/)).toBeTruthy();
     });
 
     it('literal_bound joint row carries data-binding="literal"', () => {
@@ -1012,7 +1037,7 @@ describe('MechanismPanel', () => {
               kind: 'literal_bound',
               synth_param_name: '__joint_x_axis_v',
               initial_value_si: 0.1,
-              scrubbable: true,
+              scrubbable: false,
             },
           }),
         ],
@@ -1022,8 +1047,8 @@ describe('MechanismPanel', () => {
       ));
       const row = screen.getByTestId('joint-row-0');
       expect(row.getAttribute('data-binding')).toBe('literal');
-      // Slider should still be present and functional
-      expect(screen.getAllByRole('slider')).toHaveLength(1);
+      // Read-only: no write target, so no slider
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
     });
 
     it('param_bound joint row carries data-binding="param"', () => {
@@ -1053,85 +1078,7 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(j) literal-bound slider previews and commits under its synth param name', () => {
-    it('literal_bound prismatic slider previews under synth_param_name with an "Xmm" value', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
-      try {
-        const onPreviewParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'prismatic',
-              driving_param_cell_id: null,
-              current_value_si: null,
-              range_lower_si: 0,
-              range_upper_si: 0.8,
-              binding: {
-                kind: 'literal_bound',
-                synth_param_name: '__joint_x_axis_v',
-                initial_value_si: 0.1,
-                scrubbable: true,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={onPreviewParameter} onScrubLocal={vi.fn()} />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '400' } });
-
-        // Must preview under the synth param name, not null
-        expect(onPreviewParameter).toHaveBeenCalledWith('__joint_x_axis_v', expect.stringMatching(/mm$/));
-      } finally {
-        rafSpy.mockRestore();
-      }
-    });
-
-    it('literal_bound revolute slider previews under synth_param_name with an "Xdeg" value', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
-      try {
-        const onPreviewParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'revolute',
-              dimension: 'angle',
-              driving_param_cell_id: null,
-              current_value_si: null,
-              range_lower_si: 0,
-              range_upper_si: Math.PI,
-              binding: {
-                kind: 'literal_bound',
-                synth_param_name: '__joint_theta_v',
-                initial_value_si: 0.5,
-                scrubbable: true,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={onPreviewParameter} onScrubLocal={vi.fn()} />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '90' } });
-
-        expect(onPreviewParameter).toHaveBeenCalledWith('__joint_theta_v', expect.stringMatching(/deg$/));
-      } finally {
-        rafSpy.mockRestore();
-      }
-    });
-
+  describe('(j) a param-bound slider previews under its param cell id', () => {
     it('param_bound joint still previews under param_cell_id (regression)', () => {
       const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
         cb(performance.now());
@@ -1163,87 +1110,6 @@ describe('MechanismPanel', () => {
         fireEvent.input(slider, { target: { value: '400' } });
 
         expect(onPreviewParameter).toHaveBeenCalledWith('Kinematic.y_pos', expect.stringMatching(/mm$/));
-      } finally {
-        rafSpy.mockRestore();
-      }
-    });
-
-    it('literal_bound slider change commits under synth_param_name', async () => {
-      const raf = installManualRaf();
-      try {
-        const onSetParameter = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'prismatic',
-              driving_param_cell_id: null,
-              current_value_si: null,
-              range_lower_si: 0,
-              range_upper_si: 0.8,
-              binding: {
-                kind: 'literal_bound',
-                synth_param_name: '__joint_x_axis_v',
-                initial_value_si: 0.1,
-                scrubbable: true,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel
-            descriptors={[desc]}
-            onSetParameter={onSetParameter}
-            onPreviewParameter={vi.fn()}
-            onScrubLocal={vi.fn()}
-          />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.change(slider, { target: { value: '400' } });
-        await flushPendingPromises();
-
-        expect(onSetParameter).toHaveBeenCalledWith('__joint_x_axis_v', '400mm');
-      } finally {
-        raf.restore();
-      }
-    });
-
-    it('literal_bound prismatic onScrubLocal receives SI value (~0.4 m) not display value', () => {
-      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
-        cb(performance.now());
-        return 1;
-      });
-      try {
-        const onScrubLocal = vi.fn();
-        const desc = makeDescriptor({
-          cell_id: 'Kinematic.m',
-          joints: [
-            makeJoint({
-              joint_index: 0,
-              kind: 'prismatic',
-              driving_param_cell_id: null,
-              current_value_si: null,
-              range_lower_si: 0,
-              range_upper_si: 0.8,
-              binding: {
-                kind: 'literal_bound',
-                synth_param_name: '__joint_x_axis_v',
-                initial_value_si: 0.1,
-                scrubbable: true,
-              },
-            }),
-          ],
-        });
-        render(() => (
-          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={onScrubLocal} />
-        ));
-        const slider = screen.getByRole('slider') as HTMLInputElement;
-        fireEvent.input(slider, { target: { value: '400' } });
-
-        expect(onScrubLocal).toHaveBeenCalled();
-        const thirdArg: number = onScrubLocal.mock.calls[0][2];
-        expect(thirdArg).toBeCloseTo(0.4, 6);
       } finally {
         rafSpy.mockRestore();
       }
