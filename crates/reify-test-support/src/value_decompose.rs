@@ -1,7 +1,7 @@
 //! Label-tagged, panicking decomposition of evaluated `Value`s for test assertions.
 
 use reify_core::ty::SelectorKind;
-use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode};
+use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{GeometryHandleId, Value};
 
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
@@ -63,18 +63,29 @@ pub fn assert_selector_leaf_targeting(
     check_query(query);
 }
 
+/// Assert `cell_value` holds a `Value::Selector` of the expected `kind` and
+/// return it, whatever its node shape (`Leaf`, `Union`, `Intersect`, ...).
+#[track_caller]
+pub fn assert_selector_value<'a>(
+    cell_value: Option<&'a Value>,
+    label: &str,
+    kind: SelectorKind,
+) -> &'a SelectorValue {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
+        other => panic!("{label} must be a Value::Selector, got: {other:?}"),
+    };
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    sv
+}
+
 #[track_caller]
 fn selector_leaf_parts<'a>(
     cell_value: Option<&'a Value>,
     label: &str,
     kind: SelectorKind,
 ) -> (&'a GeometryHandleRef, &'a LeafQuery) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!("{label} must be a Value::Selector, got: {other:?}"),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
+    match &assert_selector_value(cell_value, label, kind).node {
         SelectorNode::Leaf { target, query } => (target, query),
         other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
@@ -88,7 +99,10 @@ mod tests {
     use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
     use reify_ir::{GeometryHandleId, Value};
 
-    use super::{assert_selector_leaf, assert_selector_leaf_targeting, decompose_point3, read_f64};
+    use super::{
+        assert_selector_leaf, assert_selector_leaf_targeting, assert_selector_value,
+        decompose_point3, read_f64,
+    };
 
     // ── read_f64 tests ────────────────────────────────────────────────────────
 
@@ -299,5 +313,34 @@ mod tests {
             None,
             |_| {},
         );
+    }
+
+    // ── assert_selector_value tests ───────────────────────────────────────────
+
+    #[test]
+    fn assert_selector_value_returns_selector_of_any_node_shape() {
+        let Value::Selector(leaf) = selector_leaf_cell(SelectorKind::Face, LeafQuery::All, None)
+        else {
+            unreachable!("selector_leaf_cell always builds a Value::Selector");
+        };
+        let union = SelectorValue::union(vec![leaf]).expect("union construction");
+        let cell = Value::Selector(union.clone());
+        assert_eq!(
+            assert_selector_value(Some(&cell), "lbl", SelectorKind::Face),
+            &union
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Value::Selector")]
+    fn assert_selector_value_panics_on_absent_cell() {
+        assert_selector_value(None, "lbl", SelectorKind::Face);
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: selector kind")]
+    fn assert_selector_value_panics_on_kind_mismatch() {
+        let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, None);
+        assert_selector_value(Some(&cell), "lbl", SelectorKind::Face);
     }
 }
