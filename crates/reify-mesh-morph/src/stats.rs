@@ -79,6 +79,7 @@ pub fn record_rejection(reason: impl Into<String>) {
 /// (e.g. from `reify-gui`'s `[dev-dependencies]`) once engine wiring lands and
 /// recorders are called from production code paths (task #3429 — Mesh-morph engine wiring via ComputeNode).
 #[cfg(any(test, feature = "testing"))]
+// G-allow: test-isolation hook compiled only under cfg(test) / feature "testing"; its cross-crate callers are the gui/src-tauri/src/debug_server.rs tests, outside this audit's crates/reify-*/src scope
 pub fn reset_for_test() {
     let mut guard = state().lock().unwrap_or_else(|e| e.into_inner());
     *guard = StatsState::default();
