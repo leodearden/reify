@@ -50,6 +50,27 @@
 #                                  byte-identical to today. Primarily the offline
 #                                  deep-test lane's parallelism knob (task 5264;
 #                                  docs/design/offline-deep-test-lane.md §6).
+#   --confirm-failed               Re-run ONLY the tests a previous recording run
+#                                  recorded as failing, and print the bare id of
+#                                  each one that STILL fails — one per line on
+#                                  stdout, with nothing else on either stream.
+#                                  Valid for test/all only.
+#                                  THE COMBINED stdout+stderr IS THE CONTRACT:
+#                                  dark-factory's offline lane spawns this with
+#                                  the two streams merged and reads every
+#                                  non-blank line as one confirmed-failing test
+#                                  id, so any stray diagnostic becomes a bogus
+#                                  test name it files a fix task against. This
+#                                  mode therefore bypasses the plan executor
+#                                  (which echoes each command) and sends its own
+#                                  diagnostics to a private log under target/.
+#                                  Prints NOTHING and exits 0 both when nothing
+#                                  was recorded and when nothing still fails —
+#                                  the two are deliberately indistinguishable on
+#                                  the wire. Exits 100 when it printed ids, and
+#                                  64 when the recorded set belongs to a
+#                                  different tree (task 7423; PRD
+#                                  verify-confirm-failed-self-discovery).
 #   -h|--help                      Show usage.
 #
 # Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
@@ -290,6 +311,59 @@
 #   Out of α's scope: the @@REIFY_RETRY_SCOPE=failed_only@@ honest marker is
 #   emitted by sibling task δ (tests/infra/test_verify_retry_failed_only.sh).
 #
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery).
+# The offline lane RECORDS which tests failed, then CONFIRMS which of them
+# still fail. These name the three artifacts that carry the answer between the
+# two runs; all default under target/ and exist to be redirected by hermetic
+# tests. See the block beside _CONFIRM_MANIFEST_DEBUG for why each is shaped
+# the way it is.
+#   REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG / _RELEASE
+#                                — the recorded failing bare test ids for that
+#                                  profile (defaults
+#                                  target/reify-confirm-failed-<profile>.txt).
+#                                  Written by the recording pass, read by
+#                                  --confirm-failed as the subset to re-run.
+#                                  An EMPTY file means "recorded, zero
+#                                  failures"; an ABSENT one means "never
+#                                  recorded" — the confirm run treats both as
+#                                  print-nothing-exit-0, but only the empty
+#                                  case is a positive observation.
+#   REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG / _RELEASE
+#                                — the tree OID that manifest was recorded
+#                                  against (defaults
+#                                  target/reify-confirm-failed-<profile>.json),
+#                                  in the attempt-0 stamp's {tree_oid,
+#                                  profiles, timestamp} shape so one reader
+#                                  idiom covers both.
+#   REIFY_VERIFY_CONFIRM_JUNIT   — where nextest writes its JUnit report
+#                                  (default
+#                                  target/nextest/default/reify-confirm.xml),
+#                                  per the [profile.default.junit] table
+#                                  scripts/gen-nextest-config.sh appends. NOT
+#                                  profile-qualified: the path resolves under
+#                                  the NEXTEST profile, and only `default` is
+#                                  declared, so a --profile both run's two
+#                                  passes share one report — which is why the
+#                                  manifest write is fused into each pass.
+#
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#   REIFY_BACKGROUND_SWEEP_LEDGER — where a COMPLETED DF_VERIFY_ROLE=background
+#                                  run appends its one-line JSON verdict record
+#                                  (default: <main checkout>/data/orchestrator/
+#                                  verify-background-sweeps.jsonl). The default
+#                                  is resolved through
+#                                  scripts/lib_main_checkout.sh — deliberately
+#                                  NOT relative to the running worktree, because
+#                                  dark-factory's main-tip sweep executes in an
+#                                  ephemeral _mainsweep-<hex> worktree it deletes
+#                                  in a `finally`, so a record written inside it
+#                                  dies with the completion it was meant to
+#                                  prove. Every failure mode (no main checkout,
+#                                  unwritable path, missing helper) is silent
+#                                  and leaves the run's exit code untouched: an
+#                                  observation channel must never gate the
+#                                  integrity gate it observes.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -517,7 +591,7 @@ _VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATU
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
-    sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -662,6 +736,7 @@ SCOPE="all"
 NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
+CONFIRM_FAILED=0   # --confirm-failed: report which of a previously-recorded failed set still fails (task 7423). Its own code path; never reaches the plan executor.
 TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
 TEST_THREADS_SET=0   # 1 once --test-threads is seen; lets validation reject an explicit empty value ('--test-threads=') while an UNSET flag stays valid.
 
@@ -687,6 +762,8 @@ while [ "$#" -gt 0 ]; do
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
             PRINT_PLAN=1; shift ;;
+        --confirm-failed)
+            CONFIRM_FAILED=1; shift ;;
         --test-threads)
             TEST_THREADS="${2:?--test-threads requires an argument}"; TEST_THREADS_SET=1; shift 2 ;;
         --test-threads=*)
@@ -724,6 +801,51 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
     case "$TEST_THREADS" in ''|*[!0-9]*|0*)
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
+fi
+
+# --confirm-failed (task 7423): valid only where a recorded failed TEST set can
+# exist. lint and typecheck are single, unnarrowable passes with no such set, so
+# the flag is meaningless there — rejected in the same strict style --profile and
+# --scope use for an invalid value, rather than silently ignored.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    case "$ACTION" in test|all) ;; *)
+        echo "verify.sh: ERROR — --confirm-failed is valid only for action test|all (got '$ACTION')" >&2; exit 64 ;;
+    esac
+    # PRD §11's open question, resolved: REFUSE the combination rather than
+    # invent a precedence. --confirm-failed drives the REIFY_VERIFY_RETRY_*
+    # consumption pipeline itself, from a subset IT recorded; an externally-set
+    # REIFY_VERIFY_RETRY_SCOPE means a second caller is driving that same
+    # pipeline from a different subset. Either subset silently winning would be
+    # a wrong answer reported with full confidence, and the answer here is a
+    # list of test ids dark-factory files fix tasks against.
+    if [ -n "${REIFY_VERIFY_RETRY_SCOPE:-}" ]; then
+        echo "verify.sh: ERROR — --confirm-failed conflicts with REIFY_VERIFY_RETRY_SCOPE='${REIFY_VERIFY_RETRY_SCOPE}' (both drive the retry subset pipeline; refusing rather than picking one silently)" >&2
+        exit 64
+    fi
+fi
+
+# --confirm-failed: fd 2 belongs to a private log from here on (task 7423/γ).
+#
+# Installed HERE, immediately after validation and before ANY other work,
+# because the diagnostics that would corrupt the caller are emitted well before
+# the confirm path runs: the _idle_cargo_prio ionice/nice WARNINGs, the
+# "forcing --scope all" integrity-gate notice, the MERGE_HEAD notice, and the
+# retry pipeline's four "retry refused:" lines. dark-factory reads the MERGED
+# streams and treats every non-blank line as one confirmed-failing test id, so
+# any of those becomes a fabricated test name it files a fix task against.
+#
+# Redirecting once, early, is what makes stdout purity STRUCTURAL: it does not
+# depend on having enumerated every diagnostic verify.sh can emit, now or later.
+# The real stderr is kept on fd 8 and used for exactly one thing — the single
+# `verify.sh: ERROR` refusal line, which is the one form of loud output the
+# consumer already knows how to discard safely.
+_CONFIRM_LOG=""
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    _CONFIRM_LOG="${REIFY_VERIFY_CONFIRM_LOG:-$REPO_ROOT/target/reify-confirm-failed.log}"
+    mkdir -p "$(dirname "$_CONFIRM_LOG")" 2>/dev/null || true
+    : > "$_CONFIRM_LOG" 2>/dev/null || _CONFIRM_LOG=/dev/null
+    exec 8>&2
+    exec 2>>"$_CONFIRM_LOG"
 fi
 
 # THE CLI --test-threads SEAM (task 6375).  gen-nextest-config.sh is the ONE
@@ -873,6 +995,29 @@ _heavy_partition() {
     fi
 }
 
+# Offline --no-fail-fast fragment (task 7423/α, PRD verify-confirm-failed-
+# self-discovery §4.1.3): the offline recording pass must run its WHOLE heavy
+# set even after an early failure, because the confirm-manifest it feeds is
+# only sound if it names EVERY failing test. Under nextest's default fail-fast
+# the tests scheduled after the first failure are not run and are not even
+# attributed as skipped, so the recorded failed-set silently under-captures —
+# empirically verified, not merely prudent.
+#
+# A SEPARATE fragment, deliberately NOT folded into _OFFLINE_HEAVY_SELECT
+# above: the retry path strips that fragment's filterset with
+# `${_eff_offline_select##* -E \"*\"}` (see emit_nextest_pass), which keeps
+# the trailing ` --run-ignored all` but would relocate anything appended after
+# it. Keeping the flag in its own variable makes it invariant under that strip.
+#
+# Role-scoped to offline only, so task/merge/background keep their deliberate
+# fail-fast posture (a gate SHOULD stop at the first red). Empty on every
+# other role => those plans stay byte-for-byte identical — the same
+# empty-or-leading-space idiom as the two fragments above.
+_OFFLINE_NO_FAIL_FAST=""
+if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+    _OFFLINE_NO_FAIL_FAST=" --no-fail-fast"
+fi
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -888,6 +1033,44 @@ _heavy_partition() {
 # hermetic tests. Relative default is resolved against REPO_ROOT (verify.sh
 # cds there before build_plan/execute).
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
+
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery
+# §4.1.2/§4.2/§6.4). Three artifacts, all under target/ and all overridable
+# for hermetic tests, mirroring _ATTEMPT_SIDECAR_PATH's convention above:
+#
+#   MANIFEST — the failing bare test ids a recording run observed. Written by
+#     the recording pass, read by the confirm run as the subset to re-run.
+#   SIDECAR  — the tree OID that manifest was recorded against, in the
+#     attempt-0 stamp's {tree_oid, profiles, timestamp} shape so verify.sh's
+#     existing tolerant reader parses it unchanged.
+#   JUNIT    — where nextest writes its report, per the [profile.default.junit]
+#     table gen-nextest-config.sh appends. NOT cargo-profile-qualified: `path`
+#     resolves under target/nextest/<NEXTEST-profile>/, and this repo declares
+#     only the `default` nextest profile, so a --profile both run's debug and
+#     release passes share ONE report file. That is exactly why the manifest
+#     write is fused into each pass's own command below — each pass must
+#     extract before the next overwrites.
+#
+# DISTINCT PATHS, never target/reify-verify-attempt.json: that file is gated to
+# DF_VERIFY_ROLE=merge and is never written under the offline role, so sharing
+# it would silently pin nothing for this lane.
+#
+# Manifest and sidecar ARE profile-qualified, per PRD §11's collision note and
+# following the per-profile precedent of REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_
+# DEBUG/_RELEASE: a --profile both run records two independent failed-sets.
+_CONFIRM_MANIFEST_DEBUG="${REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG:-target/reify-confirm-failed-debug.txt}"
+_CONFIRM_MANIFEST_RELEASE="${REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE:-target/reify-confirm-failed-release.txt}"
+_CONFIRM_SIDECAR_DEBUG="${REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG:-target/reify-confirm-failed-debug.json}"
+_CONFIRM_SIDECAR_RELEASE="${REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE:-target/reify-confirm-failed-release.json}"
+_CONFIRM_JUNIT_PATH="${REIFY_VERIFY_CONFIRM_JUNIT:-target/nextest/default/reify-confirm.xml}"
+# Caller-supplied nextest config (task 7423). When set, emit_nextest_pass uses
+# it verbatim in BOTH print and execute mode, generates none, and _verify_cleanup
+# never removes it — the CALLER owns its lifetime. Exists so confirm_failed_run's
+# child emits a plan naming a REAL --config-file (print mode otherwise emits a
+# deliberate placeholder, which keeps --print-plan hermetic for everyone else)
+# with the JUnit table actually in force. Unset by default => every other
+# caller's plan is byte-identical.
+_NEXTEST_CONFIG_OVERRIDE="${REIFY_VERIFY_NEXTEST_CONFIG:-}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
 # _RETRY_SUBSET_ELIGIBLE: the caller asked for the narrowed retry scope
@@ -1161,6 +1344,213 @@ apply_env() {
     ENV_LINES+=("export LD_LIBRARY_PATH=${_PLAN_LD_LIBRARY_PATH:-}")
 }
 apply_env
+
+# ---------------------------------------------------------------------------
+# --confirm-failed — the dedicated, stdout-pure confirmation path (task 7423/γ;
+# PRD docs/prds/verify-confirm-failed-self-discovery.md §4.2)
+#
+# THE QUESTION IT ANSWERS: "of the tests a previous recording run observed
+# failing on this exact tree, which ones STILL fail?" The answer is a list of
+# bare test ids on stdout — nothing else, on either stream.
+#
+# WHY IT BYPASSES THE PLAN EXECUTOR. dark-factory spawns this with the two
+# streams MERGED and reads every non-blank line as one confirmed-failing test
+# id. The executor echoes `verify.sh: + <cmd>` for every plan line, so routing
+# this mode through it would hand the consumer a dozen fabricated "test names"
+# per run. Purity here is structural, not disciplinary: everything this path
+# runs has its stdout AND stderr redirected into a private log, so a diagnostic
+# nobody anticipated still cannot reach the caller.
+#
+# WHY IT RE-INVOKES verify.sh RATHER THAN RE-RUNNING THE WHOLE GATE. The child
+# is asked for a PLAN, and only the plan's test-execution region is executed.
+# Two reasons, both measured (esc-7423-5):
+#   - A full child run costs ~205s of npm / tree-sitter / infra poles even with
+#     no compilation at all — work that confirms nothing.
+#   - The executor stops on the first failure and the node lane precedes every
+#     nextest pass, so an unrelated npm failure would mean the subset pass never
+#     runs. With no report to read, a naive implementation would print nothing
+#     — and "nothing" is the wire encoding of "confirmed clean". That is a FALSE
+#     CLEAN, which is why the report's freshness is checked rather than assumed.
+#
+# WHAT IT DOES NOT REIMPLEMENT: which tests run. The child is handed the same
+# REIFY_VERIFY_RETRY_* inputs dark-factory's merge-gate retry supplies, so the
+# exact-match `test(=<id>)` filterset, its `&`-intersection with the offline
+# heavy filter, the tree-pin guard and the subset-size ceiling all come from the
+# one existing construction site.
+
+# Exact comment lines --print-plan emits in place of the @@SEMAPHORE_*@@
+# sentinels. They bracket the plan's test-execution region, which is what makes
+# that region machine-addressable in a printed plan. Named constants, shared
+# with the emitter, so the two cannot drift apart.
+_PLAN_TEST_REGION_BEGIN='# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS (TEST-EXECUTION gated, held in verify.sh)'
+_PLAN_TEST_REGION_END='# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)'
+
+# _confirm_subset_pass <profile> <manifest> <tree-oid> <sidecar>
+# Re-runs exactly <manifest>'s tests for <profile>. Called inside a subshell by
+# confirm_failed_run, so a handler that exits (_die_nextest_config) ends the
+# attempt rather than the process. Leaves a fresh JUnit report on success.
+_confirm_subset_pass() {
+    local _profile="$1" _manifest="$2" _tree_oid="$3" _sidecar="$4"
+
+    # Delete first, so the report's ABSENCE afterwards is proof this pass never
+    # produced one, rather than an ambiguity resolved in favour of "clean".
+    rm -f "$_CONFIRM_JUNIT_PATH"
+
+    local _cfg
+    _cfg="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+        || _die_nextest_config "$?"
+
+    # The child's own fused manifest write is aimed at throwaway paths: it is
+    # about to observe the NARROWED subset, and letting it overwrite the
+    # recording would silently shrink what a later confirm re-checks.
+    local _scratch="${_CONFIRM_JUNIT_PATH%/*}/confirm-child"
+    mkdir -p "$_scratch" || true
+
+    local _tt_args=()
+    [ -n "$TEST_THREADS" ] && _tt_args=(--test-threads="$TEST_THREADS")
+
+    # The child is asked for a PLAN, not a run. Everything it needs to build the
+    # right one is handed to it through the SAME REIFY_VERIFY_RETRY_* inputs
+    # dark-factory's merge-gate retry supplies, so the exact-match `test(=<id>)`
+    # filterset, its `&`-intersection with the offline heavy filter, the tree-pin
+    # guard and the subset-size ceiling all come from the one existing
+    # construction site — this path adds no logic for WHICH tests run.
+    local _plan
+    _plan="$(
+        REIFY_VERIFY_RETRY_SCOPE=failed_only \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG="$_manifest" \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE="$_manifest" \
+        REIFY_VERIFY_RETRY_TREE_OID="$_tree_oid" \
+        REIFY_VERIFY_ATTEMPT_SIDECAR="$_sidecar" \
+        REIFY_VERIFY_NEXTEST_CONFIG="$_cfg" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG="$_scratch/manifest-debug.txt" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$_scratch/manifest-release.txt" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG="$_scratch/sidecar-debug.json" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$_scratch/sidecar-release.json" \
+        bash "$SCRIPT_DIR/verify.sh" test --profile "$_profile" \
+            "${_tt_args[@]+"${_tt_args[@]}"}" --print-plan
+    )" || { rm -f "$_cfg"; return 1; }
+
+    # Exact string equality against the two region markers — no regex, nothing
+    # to escape, and a renamed marker yields an EMPTY region (caught below by
+    # the missing report) instead of silently selecting the wrong lines.
+    local _cmds
+    _cmds="$(printf '%s\n' "$_plan" | awk -v b="$_PLAN_TEST_REGION_BEGIN" -v e="$_PLAN_TEST_REGION_END" '
+        $0 == b { _inside = 1; next }
+        $0 == e { _inside = 0; next }
+        _inside && $0 !~ /^#/ && NF { print }
+    ')"
+
+    # Each plan line in its own subshell: they are built to be run that way and
+    # may end in `exit`. stdout joins stderr in the private log — a nextest
+    # progress banner on the caller's stdout is exactly the contamination this
+    # whole path exists to prevent.
+    local _line
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        ( eval "$_line" ) >>"$_CONFIRM_LOG" 2>&1 || true
+    done <<< "$_cmds"
+
+    rm -f "$_cfg"
+    [ -f "$_CONFIRM_JUNIT_PATH" ]
+}
+
+confirm_failed_run() {
+    # The tree this confirmation is about. An empty value (a git failure) is
+    # treated exactly like a mismatch: unprovable, therefore not confirmable.
+    local _tree_oid
+    _tree_oid="$(git rev-parse HEAD: 2>/dev/null || echo '')"
+
+    local _profile _manifest _sidecar _sidecar_oid _profile_ids
+    local _confirmed="" _refusal=""
+
+    for _profile in "${PROFILES[@]}"; do
+        if [ "$_profile" = "release" ]; then
+            _manifest="$_CONFIRM_MANIFEST_RELEASE"; _sidecar="$_CONFIRM_SIDECAR_RELEASE"
+        else
+            _manifest="$_CONFIRM_MANIFEST_DEBUG";   _sidecar="$_CONFIRM_SIDECAR_DEBUG"
+        fi
+
+        # Vacuous: nothing was recorded for this profile, or the recording found
+        # zero failures. Nothing to confirm — contribute nothing, move on.
+        [ -f "$_manifest" ] && [ -r "$_manifest" ] || continue
+        grep -q . "$_manifest" 2>/dev/null || continue
+
+        # Tree pin, through the SAME tolerant extractor the retry precompute
+        # uses, against a confirm-OWNED sidecar (never the merge-gated
+        # attempt-0 file, which is not written under this lane's role at all).
+        _sidecar_oid=""
+        if [ -f "$_sidecar" ]; then
+            _sidecar_oid="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_sidecar" 2>/dev/null | head -n1)"
+        fi
+        if [ -z "$_tree_oid" ] || [ -z "$_sidecar_oid" ] || [ "$_sidecar_oid" != "$_tree_oid" ]; then
+            # REFUSE, do not skip. A skip would produce the vacuous empty
+            # output, and empty is the wire encoding of "confirmed clean" —
+            # reporting a clean tree we never actually examined.
+            #
+            # ACCEPTED LIMITATION, recorded deliberately: on the wire, "cannot
+            # confirm (tree drift)" and "genuinely confirmed clean" collapse to
+            # the same dark-factory observation ([], logged as intermittent
+            # nondeterminism), because the banner is on its reject-to-[] list.
+            # That is strictly better than the status quo, where EVERY
+            # confirmation call collapses to [] unconditionally, but it is not
+            # the three-state contract the PRD (§6.8/§11) would prefer. Making
+            # the two distinguishable needs a dark-factory-side ConfirmationRunner
+            # change; reify cannot surface it unilaterally, and it is named as
+            # follow-up rather than half-built here.
+            #
+            # Both OIDs are named because a refusal that names only one side
+            # tells an operator that something drifted but not from what.
+            _refusal="confirm refused: tree drift — the $_profile manifest was recorded against tree ${_sidecar_oid:-<absent>}, but HEAD's tree is now ${_tree_oid:-<unknown>}"
+            break
+        fi
+
+        # A SUBSHELL: the generator's failure handler exits, and that must end
+        # the attempt, not the process — an exit here would print nothing and
+        # "nothing" is the wire encoding of "confirmed clean".
+        if ! ( _confirm_subset_pass "$_profile" "$_manifest" "$_tree_oid" "$_sidecar" ); then
+            _refusal="confirm refused: no report — the $_profile subset pass produced no JUnit report at $_CONFIRM_JUNIT_PATH (see $_CONFIRM_LOG)"
+            break
+        fi
+
+        if ! _profile_ids="$("$SCRIPT_DIR/confirm-failed-manifest.sh" extract "$_CONFIRM_JUNIT_PATH")"; then
+            _refusal="confirm refused: unreadable report — could not parse $_CONFIRM_JUNIT_PATH (see $_CONFIRM_LOG)"
+            break
+        fi
+        [ -n "$_profile_ids" ] && _confirmed="${_confirmed}${_profile_ids}"$'\n'
+    done
+
+    # A refusal is the ONE thing this mode says out loud, on the caller's real
+    # stderr (fd 8), and it deliberately reuses the pre-existing
+    # `verify.sh: ERROR` banner: dark-factory's live guard already treats that
+    # exact prefix as "discard this whole output", so the case degrades into its
+    # no-confirmed-failures path with zero DF-side change. A novel sentinel
+    # would be invisible to it — the consumer never inspects the exit code.
+    if [ -n "$_refusal" ]; then
+        echo "verify.sh: ERROR — $_refusal" >&8
+        return 64
+    fi
+
+    # Nothing confirmed: print NOTHING, exit 0. Deliberately the same observable
+    # as "nothing was ever recorded" — the consumer reads only the merged text
+    # and cannot tell them apart either way, so a distinction built here would
+    # be one nobody can observe.
+    [ -n "$_confirmed" ] || return 0
+
+    printf '%s\n' "$_confirmed" | grep . | sort -u
+    return 100
+}
+
+# --confirm-failed dispatch (task 7423/γ). Placed here, immediately after
+# apply_env and before build_plan: the subset pass needs the OCCT loader path
+# apply_env exports, and nothing between this point and the executor runs
+# anything. Everything below belongs to the ordinary verify path, which this
+# mode never enters — the executor's unconditional `verify.sh: + <cmd>` echo
+# would by itself corrupt the caller's parse.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    confirm_failed_run
+    exit $?
+fi
 
 # ---------------------------------------------------------------------------
 # Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE / GUI_PATH_SIGNAL
@@ -2731,12 +3121,98 @@ wrap_subshell() {
 # hermeticity".)
 _NEXTEST_CONFIG_FILE=""
 
+# ---------------------------------------------------------------------------
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#
+# dark-factory's main-tip integrity sweep enters this script with
+# DF_VERIFY_ROLE=background, inside an ephemeral `_mainsweep-<hex>` worktree it
+# removes in a `finally`, and harness.py::_run_main_tip_sweep returns silently
+# on every non-drift path. So a PASSING sweep emits nothing anywhere and its
+# worktree then vanishes: neither "passed" nor "never ran" leaves a trace, and
+# they are indistinguishable. reify's own merge gate defers release-sensitive
+# re-execution to that sweep ("role=background NEVER skips — the sweep IS the
+# backstop"), so the gate depends on a backstop nobody can observe.
+#
+# One append-only JSON line per COMPLETED background run closes that, entirely
+# reify-side: dark-factory already stamps the role, so no cross-repo change is
+# needed. The upstream fix — a log line or a runs.db event on the PASS path —
+# remains the better long-term answer and is recorded as follow-up in
+# docs/notes/main-tip-sweep-observation.md, not silently replaced by this.
+# ---------------------------------------------------------------------------
+
+# Where the record goes. An explicit knob wins; otherwise the MAIN checkout,
+# never this worktree — see the knob's header note for why that distinction is
+# the whole design. Prints nothing and returns non-zero when unresolvable.
+_sweep_ledger_path() {
+    if [ -n "${REIFY_BACKGROUND_SWEEP_LEDGER:-}" ]; then
+        printf '%s' "$REIFY_BACKGROUND_SWEEP_LEDGER"
+        return 0
+    fi
+    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
+    local _main=""
+    _main="$(reify_main_checkout 2>/dev/null)" || return 1
+    [ -n "$_main" ] || return 1
+    printf '%s' "$_main/data/orchestrator/verify-background-sweeps.jsonl"
+}
+
+# _record_background_verdict <exit-code>
+# FAILS OPEN at every step: an unresolvable checkout, an unwritable directory or
+# a missing helper all return 0 having written nothing. The caller's exit code
+# is never touched.
+_SWEEP_LEDGER_RECORDED=0
+_record_background_verdict() {
+    local _rc="$1"
+    [ "${DF_VERIFY_ROLE:-}" = "background" ] || return 0
+    # A dry run reaches no verdict: it executes nothing.
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    # Once per process. The INT/TERM/HUP traps call _verify_cleanup and then
+    # `exit`, which fires the EXIT trap in turn — without this, one killed sweep
+    # would leave two records of itself.
+    [ "$_SWEEP_LEDGER_RECORDED" -eq 0 ] || return 0
+    _SWEEP_LEDGER_RECORDED=1
+
+    local _ledger=""
+    _ledger="$(_sweep_ledger_path)" || return 0
+    [ -n "$_ledger" ] || return 0
+    mkdir -p "${_ledger%/*}" 2>/dev/null || return 0
+
+    local _verdict="fail"
+    if [ "$_rc" -eq 0 ]; then _verdict="pass"; fi
+
+    # {tree_oid, timestamp} are spelled exactly as the attempt-0 / confirm
+    # sidecar stamp spells them, so one reader idiom covers every stamp this
+    # script writes.
+    local _head="" _tree="" _ts=""
+    _head="$(git rev-parse HEAD 2>/dev/null)" || _head=""
+    _tree="$(git rev-parse HEAD: 2>/dev/null)" || _tree=""
+    _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || _ts=""
+
+    printf '{"role":"background","action":"%s","profiles":"%s","scope":"%s","verdict":"%s","exit_code":%d,"head":"%s","tree_oid":"%s","timestamp":"%s"}\n' \
+        "$ACTION" "$PROFILE" "$SCOPE" "$_verdict" "$_rc" "$_head" "$_tree" "$_ts" \
+        >> "$_ledger" 2>/dev/null || return 0
+    return 0
+}
+
 _verify_cleanup() {
+    # FIRST statement: $? is still the status the shell is exiting with. Any
+    # command before this one would overwrite it.
+    local _exit_rc=$?
+    _record_background_verdict "$_exit_rc" || true
     reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
     fi
+    # Deliberately ends on a no-op rather than re-returning _exit_rc: bash
+    # preserves the pre-trap exit status across an EXIT trap that does not
+    # itself call exit (measured), while the INT/TERM/HUP traps invoke this as
+    # `_verify_cleanup; exit 143` — under set -e a non-zero return there would
+    # pre-empt the explicit signal exit code.
+    true
 }
+# ONE EXIT trap, extended in place: bash EXIT traps do NOT stack, so a second
+# `trap … EXIT` here would silently displace the reaper/config cleanup above.
 trap '_verify_cleanup' EXIT
 trap '_verify_cleanup; exit 130' INT
 trap '_verify_cleanup; exit 143' TERM
@@ -2771,7 +3247,10 @@ emit_nextest_pass() {
     [ -n "$TEST_THREADS" ] && _tt_flag=" --test-threads=${TEST_THREADS}"
     if [ "$NEXTEST" -eq 1 ]; then
         local _cfg_path
-        if [ "$PRINT_PLAN" -eq 1 ]; then
+        if [ -n "$_NEXTEST_CONFIG_OVERRIDE" ]; then
+            # Caller owns this file; neither generate nor clean up.
+            _cfg_path="$_NEXTEST_CONFIG_OVERRIDE"
+        elif [ "$PRINT_PLAN" -eq 1 ]; then
             # Print mode: emit a representative placeholder so --print-plan is a
             # pure, hermetic oracle — no subprocess, no temp file created.
             # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
@@ -2921,7 +3400,49 @@ emit_nextest_pass() {
                 fi
             fi
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_OFFLINE_NO_FAIL_FAST}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        # Confirm-manifest write, FUSED INLINE into this pass's own command
+        # (task 7423/β, PRD §4.1.2). Two independent constraints force the
+        # fusion rather than a later `add` line:
+        #   - the write needs THIS pass's own exit code, which exists only
+        #     inside this command and is unobservable from any later line; and
+        #   - the plan executor stops on the first non-zero command, so on a
+        #     red pass — the interesting case — no later line runs at all.
+        #
+        # THE B11 WRITE-GATE IS THIS `if`, evaluated at plan-BUILD time. The
+        # manifest is only sound when nextest ran the WHOLE set, which is what
+        # --no-fail-fast buys; a fail-fast pass truncated after its first
+        # failure also exits 100 and is indistinguishable by exit code. Gating
+        # on the same variable that decides whether the flag reaches nextest
+        # makes "the flag was active" and "a manifest may be written" ONE fact
+        # rather than two that could drift. A runtime role re-check would be
+        # that second fact, and would be wrong the moment the fragment's own
+        # role scoping changes (--confirm-failed is deliberately not
+        # role-gated). When the fragment is empty this whole branch is skipped
+        # and the emitted command is byte-identical to today.
+        #
+        # The remaining half of the gate — "did nextest exit 0 or 100?" — is
+        # owned by confirm-failed-manifest.sh, so those two magic numbers live
+        # in exactly one place rather than in this emitted string.
+        if [ -n "$_OFFLINE_NO_FAIL_FAST" ]; then
+            local _confirm_profile="debug"
+            case "$rel" in *release*) _confirm_profile="release" ;; esac
+            local _confirm_manifest="$_CONFIRM_MANIFEST_DEBUG" _confirm_sidecar="$_CONFIRM_SIDECAR_DEBUG"
+            if [ "$_confirm_profile" = "release" ]; then
+                _confirm_manifest="$_CONFIRM_MANIFEST_RELEASE"
+                _confirm_sidecar="$_CONFIRM_SIDECAR_RELEASE"
+            fi
+            # A SUBSHELL, so the trailing `exit` ends this plan line and not
+            # verify.sh itself: reaper_run_in_pgroup normally evaluates a plan
+            # line in a background subshell, but under the break-glass knob
+            # REIFY_PROC_REAPER_DISABLE=1 it evaluates in the MAIN shell, where
+            # a bare `exit` would terminate the whole gate mid-plan.
+            #
+            # The recorder's own stdout is folded onto stderr: this pass's
+            # stdout is not a wire contract today, but the confirm run's is,
+            # and the two share this helper.
+            cmd="( ${cmd}; _confirm_rc=\$?; ./scripts/confirm-failed-manifest.sh record --nextest-rc \"\$_confirm_rc\" --junit \"${_CONFIRM_JUNIT_PATH}\" --manifest \"${_confirm_manifest}\" --sidecar \"${_confirm_sidecar}\" --profiles \"${_confirm_profile}\" >&2 || true; exit \$_confirm_rc )"
+        fi
     else
         # LOUD no-nextest full-fallback (never-silent invariant, PRD §4.3): the
         # cargo-test fallback plan has no `-E` filterset support, so an eligible
@@ -2953,7 +3474,7 @@ emit_nextest_pass() {
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
     # wedge the slot after the test pass exits (2026-04-20 wedge class).
     # Harmless no-op on the merge-exempt path.
-    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
+    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command (plus, under the offline role, the fused confirm-manifest write); needs OCCT
 }
 
 # The plan carries add_test_passes' passes iff this holds; the `# heavy
@@ -4074,14 +4595,14 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
         case "$_cmd" in
             '@@SEMAPHORE_ACQUIRE@@')
-                printf '# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS (TEST-EXECUTION gated, held in verify.sh)\n'
+                printf '%s\n' "$_PLAN_TEST_REGION_BEGIN"
                 printf '#     A contended wait emits @@REIFY_CLOCK_STOP@@/@@REIFY_CLOCK_HEARTBEAT@@/@@REIFY_CLOCK_START@@ markers\n'
                 printf '#     to stderr (reason=test_slot_starvation). dark_factory:1916 excludes the marked wait span\n'
                 printf '#     from verify_command_timeout_secs. REIFY_TEST_SEMAPHORE_WAIT=unlimited activates\n'
                 printf '#     continuous blocking wait (clock-stop mode); task 4838 activates the DF seam.\n'
                 ;;
             '@@SEMAPHORE_RELEASE@@')
-                printf '# <<< test-run semaphore: RELEASE held slot — clock-stop region ENDS (TEST-EXECUTION gated region finished)\n'
+                printf '%s\n' "$_PLAN_TEST_REGION_END"
                 ;;
             # Glob, not an exact string: task 5730 prefixes this plan line with
             # the add_tool() loader-path scrub, so an exact match silently went

@@ -112,6 +112,19 @@ scripts/occt-touching-crates.txt
 scripts/release-sensitive-crates.txt
 scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
+#
+# scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
+#   behind `--confirm-failed`. Both callers are inside the verify pipeline —
+#   the recording pass's inline manifest write (fused into emit_nextest_pass's
+#   own PLAN command) and the confirm run's own derivation — and an edit here
+#   changes which test IDs the offline lane reports as confirmed-still-failing,
+#   i.e. what dark-factory files a fix task against. It is neither sourced by
+#   verify.sh nor named as a standalone add()/add_tool() plan leaf (it appears
+#   only WITHIN a larger mixed shell+cargo command string), so neither of
+#   verify-pipeline-guard.sh's auto-derivation clauses reaches it. This is the
+#   narrow residual the header's ONE QUALIFICATION paragraph describes, so a
+#   row is the correct registration rather than a redundant one.
+scripts/confirm-failed-manifest.sh
 .config/nextest.toml
 #
 # scripts/lib_slot_acquire.sh: shared slot-acquire core sourced TRANSITIVELY

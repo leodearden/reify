@@ -1463,7 +1463,7 @@ _make_plan_fixture() {
     for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
               release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
               lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-              lib_git_env_scrub.sh \
+              lib_git_env_scrub.sh lib_main_checkout.sh \
               gen-nextest-config.sh heavy-test-filter-lib.sh; do
         cp "$REPO_ROOT/scripts/$_f" "$_dir/scripts/$_f"
     done
