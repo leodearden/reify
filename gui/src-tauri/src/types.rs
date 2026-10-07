@@ -1304,7 +1304,7 @@ pub struct JointDescriptor {
 /// | Variant | bind() form | Description |
 /// |---------|-------------|-------------|
 /// | `ParamBound` | `bind(j, param_ref)` | Joint driven by a named `param` cell; the param slider controls the joint position. |
-/// | `LiteralBound` | `bind(j, 100mm)` | Joint driven by a literal constant; surfaced as a scrub-virtual-param slider in the GUI. |
+/// | `LiteralBound` | `bind(j, 100mm)` / unbound | Joint driven by a literal constant, or by nothing; read-only in the GUI (no write target). |
 /// | `CouplingDerived` | coupling joint (no bind) | Joint position is geometrically derived from another driving joint. `source_joint` detection is deferred to ζ work. |
 /// | `FixedNoMotion` | fixed joint / default | Joint has no independent motion variable; position is fully constrained. |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1316,10 +1316,11 @@ pub enum JointBinding {
         param_cell_id: String,
         current_value_si: Option<f64>,
     },
-    /// Joint is driven by a literal constant via `bind(joint, <literal>)`.
-    /// Surfaced as a scrubbable synth-virtual-param slider in the GUI.
-    /// `synth_param_name` is the virtual param name used internally (e.g. `__joint_y_axis_v`).
-    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`).
+    /// Joint is driven by a literal constant via `bind(joint, <literal>)`, or by
+    /// no `bind()` at all. Construct with [`JointBinding::literal_bound`].
+    /// `synth_param_name` is the reserved `__joint_*_v` name (namespace guarded by
+    /// `W_KinematicReservedParamName`); it is NOT a resolvable cell id and not a write target.
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`), `None` when unbound.
     LiteralBound {
         synth_param_name: String,
         initial_value_si: Option<f64>,
@@ -1330,6 +1331,19 @@ pub enum JointBinding {
     CouplingDerived { source_joint: String },
     /// Joint has no independent motion variable (fixed joint or conservative default).
     FixedNoMotion,
+}
+
+impl JointBinding {
+    /// A literal-bound joint has no write target — no cell or source span resolves
+    /// its synth name — so it is never scrubbable.
+    /// See docs/prds/v0_3/kinematic-constraints-completion.md §8.3.
+    pub fn literal_bound(synth_param_name: String, initial_value_si: Option<f64>) -> Self {
+        JointBinding::LiteralBound {
+            synth_param_name,
+            initial_value_si,
+            scrubbable: false,
+        }
+    }
 }
 
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).

@@ -6360,11 +6360,9 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         "coupling" => JointBinding::CouplingDerived {
             source_joint: String::new(), // source detection deferred to ζ work
         },
-        "prismatic" | "revolute" => JointBinding::LiteralBound {
-            synth_param_name: format!("__joint_{joint_index}_v"),
-            initial_value_si: None,
-            scrubbable: true,
-        },
+        "prismatic" | "revolute" => {
+            JointBinding::literal_bound(format!("__joint_{joint_index}_v"), None)
+        }
         _ => JointBinding::FixedNoMotion, // conservative default for unknown kinds
     };
 
@@ -6656,11 +6654,10 @@ fn resolve_driving_params_from_ast(
                             // Refine the binding to LiteralBound using the joint cell name
                             // (not the index-based default) — first-wins guard.
                             if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
-                                jd.binding = JointBinding::LiteralBound {
-                                    synth_param_name: format!("__joint_{joint_cell_name}_v"),
+                                jd.binding = JointBinding::literal_bound(
+                                    format!("__joint_{joint_cell_name}_v"),
                                     initial_value_si,
-                                    scrubbable: true,
-                                };
+                                );
                             }
                         }
                     }
