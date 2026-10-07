@@ -168,8 +168,10 @@ structure def PrinterPrintEnvelope {
     // ConstraintInfeasible: input_shape returns Undef, track_tots comes back
     // empty, and peak_tots becomes exactly 0 — with exit 0 and ZERO diagnostics.
     // The cause is that this file's Waypoint.values are dimensionless JointValue
-    // (trajectory.ri:77, kinematic.ri:306) running 0 -> 50 -> 200 -> 0 at
-    // :115-118 below, which demands ~200 units/s; against a 0.3 m/s limit that is
+    // (`pub type JointValue = Real` in trajectory.ri; `SweepDim.range`'s note
+    // "JointValue = Real = dimensionless" in kinematic.ri) running
+    // 0 -> 50 -> 200 -> 0 in the `wp0`..`wp3` Waypoint lets above, which
+    // demands ~200 units/s; against a 0.3 m/s limit that is
     // infeasible. The limits and the waypoints have to be corrected TOGETHER.
     //
     // Task #5847 (dep-gated on #5412) owns that. The split state is pinned in
