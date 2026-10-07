@@ -7914,6 +7914,84 @@
         }
     }
 
+    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
+    /// direction, returning the eval-boundary result and its diagnostics.
+    fn compile_offset_curve_with_direction(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::literal(
+                        bare_real_vector3(x, y, z),
+                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                    ),
+                ),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &[GeometryHandleId(10)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// A zero-magnitude offset_curve direction is rejected at the eval boundary
+    /// with an error naming the builtin, rather than reaching the kernel.
+    #[test]
+    fn compile_geometry_op_offset_curve_zero_direction_is_rejected() {
+        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 0.0);
+        match result {
+            Err(msg) => {
+                assert!(
+                    msg.contains("offset_curve"),
+                    "error must name offset_curve: {msg}"
+                );
+                assert!(
+                    msg.contains("zero-magnitude"),
+                    "error must attribute the failure to the direction: {msg}"
+                );
+            }
+            Ok(op) => panic!("expected Err for a zero direction, got Ok({op:?})"),
+        }
+    }
+
+    /// A non-unit offset_curve direction is lowered as its unit vector, so the
+    /// IR is canonical for every magnitude of the same direction.
+    #[test]
+    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
+        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction: Some(d),
+                ..
+            }) => {
+                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                let expected = [0.6, 0.0, 0.8];
+                for (axis, (got, want)) in d.iter().zip(expected).enumerate() {
+                    assert!(
+                        (got - want).abs() < 1e-12,
+                        "direction component {axis}: got {got}, want {want} (full {d:?})"
+                    );
+                }
+            }
+            other => panic!("expected Ok(OffsetCurve) with a direction, got {other:?}"),
+        }
+    }
+
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
 
     /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
