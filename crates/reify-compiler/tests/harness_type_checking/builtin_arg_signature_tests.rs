@@ -791,7 +791,8 @@ fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
 /// `box_centered` lowers to `PrimitiveKind::Box`, and the eval-layer gate
 /// renders its `{builtin}` prefix from that kind's `Display`
 /// (`crates/reify-eval/src/geometry_ops.rs`'s `prim_box` passes `kind` as
-/// `kind_label`; `crates/reify-compiler/src/types.rs:1394` writes `"box"`), so
+/// `kind_label`; the `PrimitiveKind::Box` arm of its `Display` impl in
+/// `crates/reify-compiler/src/types.rs` writes `"box"`), so
 /// eval says `box:` for a bare `box_centered(20, 20, 10)`. The compile layer is
 /// keyed on the CALL, so it says `box_centered:`.
 ///
@@ -1173,9 +1174,11 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
 /// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
 /// and the second instance of that class. `circular_pattern` lowers to
 /// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
-/// `"circular"` (`crates/reify-compiler/src/types.rs:1748`), so eval says
+/// `"circular"` (the `PatternKind::Circular` arm of its `Display` impl in
+/// `crates/reify-compiler/src/types.rs`), so eval says
 /// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
-/// displays as `"mirror"` (types.rs:1749), so for `mirror` the two layers agree
+/// displays as `"mirror"` (the `PatternKind::Mirror` arm of the same `Display`
+/// impl), so for `mirror` the two layers agree
 /// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
 ///
 /// Both halves are pinned — the divergence AND its absence — because a reader
