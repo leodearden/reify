@@ -88,7 +88,10 @@
 #       resolve and its reader lock — the window that resolving per lane does not
 #       close, so only a re-check AFTER the lock passes; T3 points the base at a
 #       gen that never exists: the pin gives up in bounded time, never invokes
-#       the seed, creates no lock file, and leaves the lane cold
+#       the seed, creates no lock file, and leaves the lane cold; T4 makes the
+#       gen's lock impossible to OPEN while the caller has leaked an unrelated
+#       FD 9 into gc — the seed must still not run, rather than "lock" the
+#       leaked file and proceed with no reader lock on the gen
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -2263,7 +2266,7 @@ assert "S4: reset_cold=1 — a refusing seed left the lane COLD, clone or no clo
 # discards that lane's target/ and counts it reset_cold — cold-but-safe, but a
 # degradation that lasts for the rest of the pass.
 #
-# Three cases, because resolving per lane is necessary but not sufficient:
+# Four cases, because resolving per lane is necessary but not sufficient:
 #   T1  rotation BETWEEN lanes — closed by resolving per lane.
 #   T2  a reap between a reader's resolve and its `flock -s` — NOT closed by
 #       resolving per lane: Step 6 unlinks the .lock it reaped, so the reader can
@@ -2271,6 +2274,7 @@ assert "S4: reset_cold=1 — a refusing seed left the lane COLD, clone or no clo
 #       lock is held, and re-resolving, closes it.
 #   T3  a base that dangles (no gen at all) — the pin must give up in bounded
 #       time instead of looping, leave the lane cold-but-safe, and litter nothing.
+#   T4  a gen whose lock cannot be opened — the seed must not run unpinned.
 #
 # Fixtures use _gen_probe_seed_stub_body, whose refusal (exit 76) is what makes
 # that consequence observable, and whose optional rotation models Steps 5-6.
@@ -2448,6 +2452,46 @@ assert "T3e: the lane's target/ was discarded (cold-but-safe, as in S4)" \
     bash -c '[ ! -e "$1" ]' _ "$T3_WORKTREES/_lane-1/target"
 assert "T3f: no reader lock file was created for a gen that does not exist" \
     bash -c '[ ! -e "$1" ]' _ "$T3_BASE/target.gen.1.lock"
+
+# ── T4: the gen's lock cannot be OPENED — the seed must not run unpinned ───────
+# A failed `exec 9>>lock` neither exits the shell nor touches FD 9. If the caller
+# leaked its own open FD 9 into gc, a bare `flock -s 9` after it would succeed on
+# THAT file, and the seed would run with no reader lock on the gen at all — so the
+# open has to be part of the pin's condition. The open is made to fail by making
+# the lock path a directory, which needs no DAC (works as root too); FD 9 is leaked
+# by a per-command redirect, not an `exec 9>`, which would make this file an
+# offender candidate for test_flock_detached_fork_guard.sh.
+T4_REPO="$T_ROOT/t4-repo"
+T4_WORKTREES="$T_ROOT/t4-worktrees"
+T4_BASE="$T_ROOT/t4-base"
+T4_LEAKED_FD9="$T_ROOT/t4-leaked-fd9"
+mkdir -p "$T4_WORKTREES" "$T4_BASE/target.gen.1" "$T4_BASE/target.gen.1.lock"
+make_repo "$T4_REPO"
+ln -sfn "$T4_BASE/target.gen.1" "$T4_BASE/target"
+
+git -C "$T4_REPO" worktree add -q "$T4_WORKTREES/_lane-1"
+mkdir -p "$T4_WORKTREES/_lane-1/target"
+touch "$T4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+T4_SEED_LOG="$T_ROOT/t4-seed-calls.log"
+T4_SEED_STUB="$T_ROOT/t4-seed-stub.sh"
+_gen_probe_seed_stub_body > "$T4_SEED_STUB"
+chmod +x "$T4_SEED_STUB"
+export SEED_LOG="$T4_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$T4_WORKTREES" \
+    --base-target "$T4_BASE/target" \
+    --seed-script "$T4_SEED_STUB" 9>"$T4_LEAKED_FD9"
+
+assert "T4a: exit 0 — a lock that cannot be opened is a per-lane failure, not a pass abort" \
+    test "$RC" -eq 0
+assert "T4b: the seed was NOT invoked — an inherited FD 9 never stands in for the gen's lock" \
+    bash -c '[ ! -s "$1" ]' _ "$T4_SEED_LOG"
+assert "T4c: a stderr line says gc cannot pin a base generation" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "cannot pin a base generation"' _ "$ERR_OUT"
+assert "T4d: the lane is reset cold (reset=1 removed=0 preserved=0, reset_cold=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0 .*reset_cold=1"' _ "$OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
