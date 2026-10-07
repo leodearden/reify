@@ -729,3 +729,19 @@ tests/infra/test_docs_truth_sweep_units.py    tests/infra/test_docs_truth_sweep_
 scripts/graph-task-conflation-census.py    tests/infra/test_graph_task_conflation_census.sh
 scripts/task_reference_grammar.py    tests/infra/test_graph_task_conflation_census.sh
 tests/infra/test_graph_task_conflation_census.py    tests/infra/test_graph_task_conflation_census.sh
+# Task 6059: scripts/hooks-armed-guard.sh (does git actually run the stash
+# guard in this worktree) is pinned by a .py suite behind a thin .sh wrapper,
+# same pair shape. seed-warm-lane.sh and setup-main-gate-worktree-config.sh
+# select it because the suite drives both for real (seed's --fresh-checkout
+# tail calls the guard; the guard's arm delegates to the setup script). The
+# hook rows are there because the suite runs the REAL hook copies.
+scripts/hooks-armed-guard.sh    tests/infra/test_hooks_armed_guard.sh
+tests/infra/test_hooks_armed_guard.py    tests/infra/test_hooks_armed_guard.sh
+scripts/seed-warm-lane.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/setup-main-gate-worktree-config.sh    tests/infra/test_hooks_armed_guard.sh
+hooks/reference-transaction    tests/infra/test_hooks_armed_guard.sh
+hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
+# The pin's one definition, sourced by both the guard and the setup script, so
+# an edit to it selects both suites.
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh

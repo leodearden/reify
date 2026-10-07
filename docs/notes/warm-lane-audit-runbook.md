@@ -231,8 +231,17 @@ two things: the never-stash rule (CLAUDE.md → "Warm lanes") is not reaching th
 `hooks/reference-transaction` guard has been **disarmed** by the `core.hooksPath` clobber that
 Claude Code's worktree feature performs on every worktree enter (CLAUDE.md → "Landing on main").
 That second case is why this field exists at all: it is the **backstop that makes a silently
-disarmed guard visible**. Triage in that order — check the guard is live before concluding the rule
+disarmed guard visible**. Triage in that order — check the guard is live
+(`scripts/hooks-armed-guard.sh check <lane>`; read-only, exit 0 = armed) before concluding the rule
 is being ignored.
+
+One discriminator settles which case an entry is. A live guard logs every push it sees — a
+`stash-guard: refs/stash push <old> -> <new>` line, or its `BYPASS` variant — to
+`<common-git-dir>/reify-main-gate.log`, **even in warn-only mode**. So a stash entry whose sha
+(`git stash list --format=%H`) has no matching `-> <sha>` line there was pushed in a dark checkout;
+a matched one means the rule, or the warn-only rollout, is what failed. The same log carries
+`stash-guard: liveness:` lines for every lane an acquire re-armed, or found that the pin could not
+fix.
 
 For the guard's measured reach — including that it covers the **push direction only** — read
 `hooks/reference-transaction`'s header and `tests/infra/test_stash_guard.sh`, which are

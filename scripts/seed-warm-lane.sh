@@ -188,8 +188,8 @@ set -euo pipefail
 
 # Resolved once so sibling scripts/ helpers can be invoked by absolute path
 # regardless of the caller's CWD (this script is run from dark-factory, from
-# tests/infra fixtures, and by hand). Used by the rerere-disarm delegation at
-# the tail of this file.
+# tests/infra fixtures, and by hand). Used by the two delegations at the tail
+# of this file (the rerere disarm and the stash-guard liveness arm).
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── log helpers (all write to stderr) ────────────────────────────────────────
@@ -1681,13 +1681,15 @@ fi
 # CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
 #   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
 #   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
-#   the merge-spec slot, PRESENT TENSE, not hypothetically.  ONE live instance, and
-#   it is benign for its own reason rather than by luck of the gate: the build-dir
+#   the merge-spec slot, PRESENT TENSE, not hypothetically.  TWO live instances, each
+#   benign for its own reason rather than by luck of the gate: the build-dir
 #   invalidation above (lane-scoped, task lanes only — correct here for the first
-#   paragraph's reason).  The lane lock is NOT a second instance, though it reads
-#   like one: seed's own acquire is default-on under $FRESH_CHECKOUT, but DF's
-#   `--assume-lane-lock-held` clears it on BOTH production pool acquires, so that
-#   gate decides nothing for either role — see the --lane-lock note in the header.
+#   paragraph's reason), and the stash-guard liveness arm below (the merge-spec lane
+#   serves speculative merge verifies and is never handed to an agent).  The lane
+#   lock is NOT a third instance, though it reads like one: seed's own acquire is
+#   default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held` clears it
+#   on BOTH production pool acquires, so that gate decides nothing for either
+#   role — see the --lane-lock note in the header.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
@@ -1776,6 +1778,28 @@ if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
     unset _rerere_arm_rc
 elif [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ]; then
     warn "scripts/git-rerere-guard.sh not executable — skipping the shared-store rerere disarm"
+fi
+
+# ── stash-guard liveness at LANE cadence (task 6059) ─────────────────────────
+# DELEGATION: what "armed" means, the repair and the `0 | 2 | *` exit contract are
+# normative in scripts/hooks-armed-guard.sh's header.  FAIL-OPEN, like the block
+# above: an acquire never fails on this advisory defence.  >/dev/null keeps this
+# script's single-use stdout.  Gated on $FRESH_CHECKOUT, so the merge-spec lane is
+# skipped (benign: CONSEQUENCE RULE above).
+if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/hooks-armed-guard.sh" ]; then
+    _hooks_arm_rc=0
+    "$_SCRIPT_DIR/hooks-armed-guard.sh" arm "$LANE_DIR" >/dev/null || _hooks_arm_rc=$?
+    if [ "$_hooks_arm_rc" -eq 0 ]; then
+        info "stash-guard hooks armed in this lane"
+    elif [ "$_hooks_arm_rc" -eq 2 ]; then
+        warn "this lane's own hooks/reference-transaction cannot be armed by the pin;"
+        warn "  run 'scripts/hooks-armed-guard.sh check $LANE_DIR'"
+    else
+        warn "hooks-armed-guard.sh arm failed (exit $_hooks_arm_rc) — seed continues"
+    fi
+    unset _hooks_arm_rc
+elif [ -n "$FRESH_CHECKOUT" ]; then
+    warn "scripts/hooks-armed-guard.sh not executable — skipping the stash-guard liveness arm"
 fi
 
 ok "Warm lane seeded at $LANE_TARGET"
