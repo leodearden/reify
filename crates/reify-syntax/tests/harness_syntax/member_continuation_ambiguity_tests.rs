@@ -1123,3 +1123,86 @@ fn member_list_containers_cover_every_member_repeat_in_the_grammar() {
         "these rules are both covered and excluded, which is incoherent: {both:?}"
     );
 }
+
+// ── (h) an indented `@` line is no longer a selector continuation (#8300) ───
+//
+// Since #8300 a selector `@` must share its base's line, so an `@name(...)`
+// row indented past the member column — once a legal continuation — now
+// starts an annotation member. That layout reads as a continuation, so it is
+// reported rather than silently re-read.
+
+const INDENTED_ANNOTATION: &str =
+    "structure S {\n    let top = body\n        @face(\"top\")\n    param y : Real = 1\n}\n";
+
+#[test]
+fn an_indented_annotation_after_a_valued_member_is_reported() {
+    let line = INDENTED_ANNOTATION.lines().nth(2).expect("fixture row 2");
+    let at_col = line.len() - line.trim_start().len();
+    assert!(
+        at_col > 4,
+        "fixture must indent the `@` past the member column 4, got {at_col}"
+    );
+    assert_one_member_continuation_error_at(
+        "indented annotation after a let",
+        INDENTED_ANNOTATION,
+        "@face",
+        "@",
+    );
+}
+
+/// With no following member, `lower_members` would drop the annotation with
+/// no diagnostic at all — the case that most needs the report.
+#[test]
+fn an_indented_trailing_annotation_is_reported() {
+    let source = "structure S {\n    let top = body\n        @face(\"top\")\n}\n";
+    assert_one_member_continuation_error_at("indented trailing annotation", source, "@face", "@");
+}
+
+/// The rule is about layout, not about what the preceding member ends with.
+#[test]
+fn an_indented_annotation_is_reported_regardless_of_the_preceding_member_kind() {
+    let source = "structure S {\n    param x : Length = auto\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at(
+        "indented annotation after an auto param",
+        source,
+        "@deprecated",
+        "@",
+    );
+}
+
+#[test]
+fn an_annotation_at_the_member_column_is_clean() {
+    let hint = "    @solver_hint(\"discrete_set\", standard_bolt_lengths)\n";
+    let cases = [
+        format!("structure S {{\n    param a : Length = 5mm\n{hint}    param b : Length = auto\n}}\n"),
+        "structure S {\n    let sizes = [22mm, 24mm, 26mm]\n    @solver_hint(\"discrete_set\", sizes)\n    param b : Length = auto\n}\n".to_string(),
+        format!("structure S {{\n    param a : Length = 5mm\n    constraint a >= 1mm\n{hint}    param b : Length = auto\n}}\n"),
+        // First member: no preceding member to read it as a continuation of.
+        "structure S {\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n".to_string(),
+    ];
+    for source in &cases {
+        let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        assert_no_member_continuation_error(source, source);
+    }
+}
+
+#[test]
+fn annotations_at_the_member_column_in_both_guarded_bodies_are_clean() {
+    let source = concat!(
+        "structure S {\n",
+        "    where enabled {\n",
+        "        let a = 1mm\n",
+        "        @deprecated(\"x\")\n",
+        "        param b : Length = auto\n",
+        "    } else {\n",
+        "        let c = 2mm\n",
+        "        @deprecated(\"y\")\n",
+        "        param d : Length = auto\n",
+        "    }\n",
+        "}\n",
+    );
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    assert_no_member_continuation_error("guarded-block annotations", source);
+}
